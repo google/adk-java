@@ -425,4 +425,26 @@ public class TestVertexAiSessionService {
     assertThat(events.events()).hasSize(1);
     assertThat(events.events().get(0).id()).isEqualTo("123");
   }
+
+  @Test
+  public void appendEvent_success() {
+    Session session =
+        vertexAiSessionService.getSession("123", "user", "1", Optional.empty()).blockingGet();
+    Event event =
+        Event.builder()
+            .id("456")
+            .invocationId("456")
+            .author("user")
+            .timestamp(Instant.parse("2024-12-12T12:12:12.123456Z").toEpochMilli())
+            .content(Content.builder().parts(Arrays.asList(Part.fromText("testContent"))).build())
+            .build();
+    var unused = vertexAiSessionService.appendEvent(session, event).blockingGet();
+    ImmutableList<Event> events =
+        vertexAiSessionService
+            .listEvents(session.appName(), session.userId(), session.id())
+            .blockingGet()
+            .events();
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).author()).isEqualTo("user");
+  }
 }
