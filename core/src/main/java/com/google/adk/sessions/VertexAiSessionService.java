@@ -25,6 +25,7 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Splitter;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
@@ -70,6 +71,13 @@ public final class VertexAiSessionService implements BaseSessionService {
     this.project = project;
     this.location = location;
     this.apiClient = apiClient;
+  }
+
+  public VertexAiSessionService() {
+    this.project = "";
+    this.location = "";
+    this.apiClient =
+        new HttpApiClient(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
   }
 
   public VertexAiSessionService(
@@ -148,14 +156,18 @@ public final class VertexAiSessionService implements BaseSessionService {
     JsonNode getSessionResponseMap = getJsonResponse(getSessionApiResponse);
     Instant updateTimestamp =
         Instant.parse((String) getSessionResponseMap.get("updateTime").asText());
-    Map<String, Object> sessionState;
+    Map<String, Object> sessionState = new HashMap<>();
     try {
-      sessionState =
-          objectMapper.readValue(
-              getSessionResponseMap.get("sessionState").toString(),
-              new TypeReference<Map<String, Object>>() {});
+      if (getSessionResponseMap != null && getSessionResponseMap.has("sessionState")) {
+        JsonNode sessionStateNode = getSessionResponseMap.get("sessionState");
+        if (sessionStateNode != null) {
+          sessionState =
+              objectMapper.readValue(
+                  sessionStateNode.toString(), new TypeReference<Map<String, Object>>() {});
+        }
+      }
     } catch (JsonProcessingException e) {
-      sessionState = new HashMap<>();
+      logger.log(Level.WARNING, "Error while parsing session state: " + e.getMessage());
     }
     return Single.just(
         Session.builder(sessId)
@@ -258,14 +270,16 @@ public final class VertexAiSessionService implements BaseSessionService {
 
     Instant updateTimestamp =
         Instant.parse((String) getSessionResponseMap.get("updateTime").asText());
-    Map<String, Object> sessionState;
+    Map<String, Object> sessionState = new HashMap<>();
     try {
-      sessionState =
-          objectMapper.readValue(
-              getSessionResponseMap.get("sessionState").toString(),
-              new TypeReference<Map<String, Object>>() {});
+      Object sessionStateValue = getSessionResponseMap.get("sessionState");
+      if (sessionStateValue != null) {
+        sessionState =
+            objectMapper.readValue(
+                sessionStateValue.toString(), new TypeReference<Map<String, Object>>() {});
+      }
     } catch (JsonProcessingException e) {
-      sessionState = new HashMap<>();
+      logger.log(Level.WARNING, "Error while parsing session state: " + e.getMessage());
     }
     Session session =
         Session.builder(sessId)
@@ -286,14 +300,18 @@ public final class VertexAiSessionService implements BaseSessionService {
     }
 
     JsonNode getEventsResponseMap = getJsonResponse(listEventsApiResponse);
-    List<Map<String, Object>> listEventsResponse;
+    List<Map<String, Object>> listEventsResponse = new ArrayList<>();
     try {
-      listEventsResponse =
-          objectMapper.readValue(
-              getEventsResponseMap.get("sessionEvents").toString(),
-              new TypeReference<List<Map<String, Object>>>() {});
+      if (getEventsResponseMap != null && getEventsResponseMap.has("sessionEvents")) {
+        JsonNode sessionEventsNode = getEventsResponseMap.get("sessionEvents");
+        if (sessionEventsNode != null && !sessionEventsNode.isNull()) {
+          listEventsResponse =
+              objectMapper.readValue(
+                  sessionEventsNode.toString(), new TypeReference<List<Map<String, Object>>>() {});
+        }
+      }
     } catch (JsonProcessingException e) {
-      listEventsResponse = new ArrayList<>();
+      logger.log(Level.WARNING, "Error while parsing session events: " + e.getMessage());
     }
 
     List<Event> events = new ArrayList<>();
@@ -345,6 +363,100 @@ public final class VertexAiSessionService implements BaseSessionService {
         apiClient.request(
             "DELETE", "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId, "");
     return Completable.complete();
+  }
+
+  @Override
+  public Single<Event> appendEvent(Session session, Event event) {
+    BaseSessionService.super.appendEvent(session, event);
+
+    reasoningEngineId = parseReasoningEngineId(session.appName());
+    ApiResponse response =
+        apiClient.request(
+            "POST",
+            "reasoningEngines/" + reasoningEngineId + "/sessions/" + session.id() + ":appendEvent",
+            convertEventToJson(event));
+    // TODO(b/414263934)): Improve error handling for appendEvent.
+    if (response.getEntity().toString().contains("com.google.genai.errors.ClientException")) {
+      System.err.println("Failed to append event: " + event);
+    }
+    response.close();
+    return Single.just(event);
+  }
+
+  public String convertEventToJson(Event event) {
+    Map<String, Object> metadataJson = new HashMap<>();
+    metadataJson.put("partial", event.partial());
+    metadataJson.put("turnComplete", event.turnComplete());
+    metadataJson.put("interrupted", event.interrupted());
+    metadataJson.put("branch", event.branch().orElse(null));
+    metadataJson.put(
+        "long_running_tool_ids",
+        event.longRunningToolIds() != null ? event.longRunningToolIds().orElse(null) : null);
+    if (event.groundingMetadata() != null) {
+      metadataJson.put("grounding_metadata", event.groundingMetadata());
+    }
+
+    Map<String, Object> eventJson = new HashMap<>();
+    eventJson.put("author", event.author());
+    eventJson.put("invocationId", event.invocationId());
+    eventJson.put(
+        "timestamp",
+        new HashMap<>(
+            ImmutableMap.of(
+                "seconds",
+                event.timestamp() / 1000,
+                "nanos",
+                (event.timestamp() % 1000) * 1000000)));
+    eventJson.put("errorCode", event.errorCode());
+    eventJson.put("errorMessage", event.errorMessage());
+    eventJson.put("eventMetadata", metadataJson);
+
+    if (event.actions() != null) {
+      Map<String, Object> actionsJson = new HashMap<>();
+      actionsJson.put("skipSummarization", event.actions().skipSummarization());
+      actionsJson.put("stateDelta", event.actions().stateDelta());
+      actionsJson.put("artifactDelta", event.actions().artifactDelta());
+      actionsJson.put("transferAgent", event.actions().transferToAgent());
+      actionsJson.put("escalate", event.actions().escalate());
+      actionsJson.put("requestedAuthConfigs", event.actions().requestedAuthConfigs());
+      eventJson.put("actions", actionsJson);
+    }
+    if (event.content().isPresent()) {
+      eventJson.put("content", SessionUtils.encodeContent(event.content().get()));
+    }
+    if (event.errorCode().isPresent()) {
+      eventJson.put("errorCode", event.errorCode().get());
+    }
+    if (event.errorMessage().isPresent()) {
+      eventJson.put("errorMessage", event.errorMessage().get());
+    }
+    try {
+      return objectMapper.writeValueAsString(eventJson);
+    } catch (JsonProcessingException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  @Nullable
+  @SuppressWarnings("unchecked")
+  private Content convertMapToContent(Object rawContentValue) {
+    if (rawContentValue == null) {
+      return null;
+    }
+
+    if (rawContentValue instanceof Map) {
+      Map<String, Object> contentMap = (Map<String, Object>) rawContentValue;
+      try {
+        return objectMapper.convertValue(contentMap, Content.class);
+      } catch (IllegalArgumentException e) {
+        System.err.println("Error converting Map to Content: " + e.getMessage());
+        return null;
+      }
+    } else {
+      System.err.println(
+          "Unexpected type for 'content' in apiEvent: " + rawContentValue.getClass().getName());
+      return null;
+    }
   }
 
   public static String parseReasoningEngineId(String appName) {
@@ -402,21 +514,10 @@ public final class VertexAiSessionService implements BaseSessionService {
             .invocationId((String) apiEvent.get("invocationId"))
             .author((String) apiEvent.get("author"))
             .actions(eventActions)
-            // TODO(b/414263934): Currently works for text parts. Make it work with custom parts.
             .content(
                 Optional.ofNullable(apiEvent.get("content"))
-                    .map(
-                        content -> {
-                          List<Part> parts = new ArrayList<>();
-                          List<Object> partsList =
-                              (List<Object>) ((Map<String, Object>) content).get("parts");
-                          for (Object partObj : partsList) {
-                            Map<?, ?> partMap = (Map<?, ?>) partObj;
-                            String text = (String) partMap.get("text");
-                            parts.add(Part.fromText(text));
-                          }
-                          return Content.builder().parts(parts).build();
-                        })
+                    .map(rawContentValue -> convertMapToContent(rawContentValue))
+                    .map(contentObject -> SessionUtils.decodeContent(contentObject))
                     .orElse(null))
             .timestamp(Instant.parse((String) apiEvent.get("timestamp")).toEpochMilli())
             .errorCode(
@@ -440,10 +541,12 @@ public final class VertexAiSessionService implements BaseSessionService {
 
       event =
           event.toBuilder()
-              .partial((Boolean) eventMetadata.get("partial"))
-              .turnComplete((Boolean) eventMetadata.get("turnComplete"))
-              .interrupted((Boolean) eventMetadata.get("interrupted"))
-              .branch((String) eventMetadata.get("branch"))
+              .partial(Optional.ofNullable((Boolean) eventMetadata.get("partial")).orElse(false))
+              .turnComplete(
+                  Optional.ofNullable((Boolean) eventMetadata.get("turnComplete")).orElse(false))
+              .interrupted(
+                  Optional.ofNullable((Boolean) eventMetadata.get("interrupted")).orElse(false))
+              .branch(Optional.ofNullable((String) eventMetadata.get("branch")))
               .groundingMetadata(groundingMetadata)
               .longRunningToolIds(
                   longRunningToolIdsList != null ? new HashSet<>(longRunningToolIdsList) : null)
