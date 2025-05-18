@@ -24,9 +24,9 @@ import com.google.adk.events.Event;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 
 /** A {@link Session} object that encapsulates the {@link State} and {@link Event}s of a session. */
 @JsonDeserialize(builder = Session.Builder.class)

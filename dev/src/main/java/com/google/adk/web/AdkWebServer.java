@@ -150,6 +150,55 @@ public class AdkWebServer implements WebMvcConfigurer {
     return JsonBaseModel.getMapper();
   }
 
+  /** Service for creating and caching Runner instances. */
+  @Component
+  public static class RunnerService {
+    private static final Logger log = LoggerFactory.getLogger(RunnerService.class);
+
+    private final Map<String, BaseAgent> agentRegistry;
+    private final BaseArtifactService artifactService;
+    private final BaseSessionService sessionService;
+    private final Map<String, Runner> runnerCache = new ConcurrentHashMap<>();
+
+    @Autowired
+    public RunnerService(
+        @Qualifier("loadedAgentRegistry") Map<String, BaseAgent> agentRegistry,
+        BaseArtifactService artifactService,
+        BaseSessionService sessionService) {
+      this.agentRegistry = agentRegistry;
+      this.artifactService = artifactService;
+      this.sessionService = sessionService;
+    }
+
+    /**
+     * Gets the Runner instance for a given application name. Handles potential agent engine ID
+     * overrides.
+     *
+     * @param appName The application name requested by the user.
+     * @return A configured Runner instance.
+     */
+    public Runner getRunner(String appName) {
+      return runnerCache.computeIfAbsent(
+          appName,
+          key -> {
+            BaseAgent agent = agentRegistry.get(key);
+            if (agent == null) {
+              log.error(
+                  "Agent/App named '{}' not found in registry. Available apps: {}",
+                  key,
+                  agentRegistry.keySet());
+              throw new ResponseStatusException(
+                  HttpStatus.NOT_FOUND, "Agent/App not found: " + key);
+            }
+            log.info(
+                "RunnerService: Creating Runner for appName: {}, using agent" + " definition: {}",
+                appName,
+                agent.name());
+            return new Runner(agent, appName, this.artifactService, this.sessionService);
+          });
+    }
+  }
+
   /** Configuration class for OpenTelemetry, setting up the tracer provider and span exporter. */
   @Configuration
   public static class OpenTelemetryConfig {
@@ -508,12 +557,8 @@ public class AdkWebServer implements WebMvcConfigurer {
     private final BaseSessionService sessionService;
     private final BaseArtifactService artifactService;
     private final Map<String, BaseAgent> agentRegistry;
-    private final Map<String, Runner> runnerCache = new ConcurrentHashMap<>();
     private final ApiServerSpanExporter apiServerSpanExporter;
-
-    // TODO: Implement support for agentEngineId and VertexAiSessionService if needed
-    private final String agentEngineId = "";
-
+    private final RunnerService runnerService;
     private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
 
     /**
@@ -523,17 +568,20 @@ public class AdkWebServer implements WebMvcConfigurer {
      * @param artifactService The service for managing artifacts.
      * @param agentRegistry The registry of loaded agents.
      * @param apiServerSpanExporter The exporter holding all trace data.
+     * @param runnerService The service for obtaining Runner instances.
      */
     @Autowired
     public AgentController(
         BaseSessionService sessionService,
         BaseArtifactService artifactService,
         @Qualifier("loadedAgentRegistry") Map<String, BaseAgent> agentRegistry,
-        ApiServerSpanExporter apiServerSpanExporter) {
+        ApiServerSpanExporter apiServerSpanExporter,
+        RunnerService runnerService) {
       this.sessionService = sessionService;
       this.artifactService = artifactService;
       this.agentRegistry = agentRegistry;
       this.apiServerSpanExporter = apiServerSpanExporter;
+      this.runnerService = runnerService;
       log.info(
           "AgentController initialized with {} dynamic agents: {}",
           agentRegistry.size(),
@@ -543,54 +591,6 @@ public class AdkWebServer implements WebMvcConfigurer {
             "Agent registry is empty. Check 'adk.agents.source-dir' property and compilation"
                 + " logs.");
       }
-    }
-
-    /**
-     * Gets the Runner instance for a given application name. Handles potential agent engine ID
-     * overrides.
-     *
-     * @param appName The application name requested by the user.
-     * @return A configured Runner instance.
-     */
-    private Runner getRunner(String appName) {
-      return runnerCache.computeIfAbsent(
-          appName,
-          key -> {
-            BaseAgent agent = agentRegistry.get(key);
-            if (agent == null) {
-              log.error(
-                  "Agent/App named '{}' not found in registry. Available apps: {}",
-                  key,
-                  agentRegistry.keySet());
-              throw new ResponseStatusException(
-                  HttpStatus.NOT_FOUND, "Agent/App not found: " + key);
-            }
-            String effectiveAppName = getEffectiveAppName(appName);
-            log.info(
-                "Creating Runner for appName: {}, using agent definition: {}",
-                appName,
-                agent.name());
-            return new Runner(agent, effectiveAppName, this.artifactService, this.sessionService);
-          });
-    }
-
-    /**
-     * Checks if an agent engine ID is configured and non-empty.
-     *
-     * @return true if agentEngineId is configured, false otherwise.
-     */
-    private boolean isAgentEngineConfigured() {
-      return this.agentEngineId != null && !this.agentEngineId.isEmpty();
-    }
-
-    /**
-     * Determines the effective application name to use, considering the agent engine ID override.
-     *
-     * @param appName The application name from the request.
-     * @return The agentEngineId if configured, otherwise the provided appName.
-     */
-    private String getEffectiveAppName(String appName) {
-      return isAgentEngineConfigured() ? agentEngineId : appName;
     }
 
     /**
@@ -605,32 +605,31 @@ public class AdkWebServer implements WebMvcConfigurer {
      *     belongs to a different app/user.
      */
     private Session findSessionOrThrow(String appName, String userId, String sessionId) {
-      String effectiveAppName = getEffectiveAppName(appName);
       Maybe<Session> maybeSession =
-          sessionService.getSession(effectiveAppName, userId, sessionId, Optional.empty());
+          sessionService.getSession(appName, userId, sessionId, Optional.empty());
 
       Session session = maybeSession.blockingGet();
 
       if (session == null) {
         log.warn(
             "Session not found for appName={}, userId={}, sessionId={}",
-            effectiveAppName,
+            appName,
             userId,
             sessionId);
         throw new ResponseStatusException(
             HttpStatus.NOT_FOUND,
             String.format(
                 "Session not found: appName=%s, userId=%s, sessionId=%s",
-                effectiveAppName, userId, sessionId));
+                appName, userId, sessionId));
       }
 
-      if (!Objects.equals(session.appName(), effectiveAppName)
+      if (!Objects.equals(session.appName(), appName)
           || !Objects.equals(session.userId(), userId)) {
         log.warn(
             "Session ID {} found but appName/userId mismatch (Expected: {}/{}, Found: {}/{}) -"
                 + " Treating as not found.",
             sessionId,
-            effectiveAppName,
+            appName,
             userId,
             session.appName(),
             session.userId());
@@ -760,17 +759,16 @@ public class AdkWebServer implements WebMvcConfigurer {
      */
     @GetMapping("/apps/{appName}/users/{userId}/sessions")
     public List<Session> listSessions(@PathVariable String appName, @PathVariable String userId) {
-      String effectiveAppName = getEffectiveAppName(appName);
-      log.info("Request received for GET /apps/{}/users/{}/sessions", effectiveAppName, userId);
+      log.info("Request received for GET /apps/{}/users/{}/sessions", appName, userId);
 
       Single<ListSessionsResponse> sessionsResponseSingle =
-          sessionService.listSessions(effectiveAppName, userId);
+          sessionService.listSessions(appName, userId);
 
       ListSessionsResponse response = sessionsResponseSingle.blockingGet();
       if (response == null || response.sessions() == null) {
         log.warn(
             "Received null response or null sessions list for listSessions({}, {})",
-            effectiveAppName,
+            appName,
             userId);
         return Collections.emptyList();
       }
@@ -782,7 +780,7 @@ public class AdkWebServer implements WebMvcConfigurer {
       log.info(
           "Found {} non-evaluation sessions for app={}, user={}",
           filteredSessions.size(),
-          effectiveAppName,
+          appName,
           userId);
       return filteredSessions;
     }
@@ -804,11 +802,9 @@ public class AdkWebServer implements WebMvcConfigurer {
         @PathVariable String userId,
         @PathVariable String sessionId,
         @RequestBody(required = false) Map<String, Object> state) {
-
-      String effectiveAppName = getEffectiveAppName(appName);
       log.info(
           "Request received for POST /apps/{}/users/{}/sessions/{} with state: {}",
-          effectiveAppName,
+          appName,
           userId,
           sessionId,
           state);
@@ -832,8 +828,7 @@ public class AdkWebServer implements WebMvcConfigurer {
       try {
         Session createdSession =
             sessionService
-                .createSession(
-                    effectiveAppName, userId, new ConcurrentHashMap<>(initialState), sessionId)
+                .createSession(appName, userId, new ConcurrentHashMap<>(initialState), sessionId)
                 .blockingGet();
 
         if (createdSession == null) {
@@ -869,11 +864,10 @@ public class AdkWebServer implements WebMvcConfigurer {
         @PathVariable String userId,
         @RequestBody(required = false) Map<String, Object> state) {
 
-      String effectiveAppName = getEffectiveAppName(appName);
       log.info(
           "Request received for POST /apps/{}/users/{}/sessions (service generates ID) with state:"
               + " {}",
-          effectiveAppName,
+          appName,
           userId,
           state);
 
@@ -882,8 +876,7 @@ public class AdkWebServer implements WebMvcConfigurer {
 
         Session createdSession =
             sessionService
-                .createSession(
-                    effectiveAppName, userId, new ConcurrentHashMap<>(initialState), null)
+                .createSession(appName, userId, new ConcurrentHashMap<>(initialState), null)
                 .blockingGet();
 
         if (createdSession == null) {
@@ -914,15 +907,11 @@ public class AdkWebServer implements WebMvcConfigurer {
     @DeleteMapping("/apps/{appName}/users/{userId}/sessions/{sessionId}")
     public ResponseEntity<Void> deleteSession(
         @PathVariable String appName, @PathVariable String userId, @PathVariable String sessionId) {
-      String effectiveAppName = getEffectiveAppName(appName);
       log.info(
-          "Request received for DELETE /apps/{}/users/{}/sessions/{}",
-          effectiveAppName,
-          userId,
-          sessionId);
+          "Request received for DELETE /apps/{}/users/{}/sessions/{}", appName, userId, sessionId);
       try {
 
-        sessionService.deleteSession(effectiveAppName, userId, sessionId).blockingAwait();
+        sessionService.deleteSession(appName, userId, sessionId).blockingAwait();
         log.info("Session deleted successfully: {}", sessionId);
         return ResponseEntity.noContent().build();
       } catch (Exception e) {
@@ -952,11 +941,10 @@ public class AdkWebServer implements WebMvcConfigurer {
         @PathVariable String sessionId,
         @PathVariable String artifactName,
         @RequestParam(required = false) Integer version) {
-      String effectiveAppName = getEffectiveAppName(appName);
       String versionStr = (version == null) ? "latest" : String.valueOf(version);
       log.info(
           "Request received to load artifact: app={}, user={}, session={}, artifact={}, version={}",
-          effectiveAppName,
+          appName,
           userId,
           sessionId,
           artifactName,
@@ -964,14 +952,14 @@ public class AdkWebServer implements WebMvcConfigurer {
 
       Maybe<Part> artifactMaybe =
           artifactService.loadArtifact(
-              effectiveAppName, userId, sessionId, artifactName, Optional.ofNullable(version));
+              appName, userId, sessionId, artifactName, Optional.ofNullable(version));
 
       Part artifact = artifactMaybe.blockingGet();
 
       if (artifact == null) {
         log.warn(
             "Artifact not found: app={}, user={}, session={}, artifact={}, version={}",
-            effectiveAppName,
+            appName,
             userId,
             sessionId,
             artifactName,
@@ -1001,11 +989,10 @@ public class AdkWebServer implements WebMvcConfigurer {
         @PathVariable String sessionId,
         @PathVariable String artifactName,
         @PathVariable int versionId) {
-      String effectiveAppName = getEffectiveAppName(appName);
       log.info(
           "Request received to load artifact version: app={}, user={}, session={}, artifact={},"
               + " version={}",
-          effectiveAppName,
+          appName,
           userId,
           sessionId,
           artifactName,
@@ -1013,14 +1000,14 @@ public class AdkWebServer implements WebMvcConfigurer {
 
       Maybe<Part> artifactMaybe =
           artifactService.loadArtifact(
-              effectiveAppName, userId, sessionId, artifactName, Optional.of(versionId));
+              appName, userId, sessionId, artifactName, Optional.of(versionId));
 
       Part artifact = artifactMaybe.blockingGet();
 
       if (artifact == null) {
         log.warn(
             "Artifact version not found: app={}, user={}, session={}, artifact={}, version={}",
-            effectiveAppName,
+            appName,
             userId,
             sessionId,
             artifactName,
@@ -1042,15 +1029,14 @@ public class AdkWebServer implements WebMvcConfigurer {
     @GetMapping("/apps/{appName}/users/{userId}/sessions/{sessionId}/artifacts")
     public List<String> listArtifactNames(
         @PathVariable String appName, @PathVariable String userId, @PathVariable String sessionId) {
-      String effectiveAppName = getEffectiveAppName(appName);
       log.info(
           "Request received to list artifact names for app={}, user={}, session={}",
-          effectiveAppName,
+          appName,
           userId,
           sessionId);
 
       Single<ListArtifactsResponse> responseSingle =
-          artifactService.listArtifactKeys(effectiveAppName, userId, sessionId);
+          artifactService.listArtifactKeys(appName, userId, sessionId);
 
       ListArtifactsResponse response = responseSingle.blockingGet();
       List<String> filenames =
@@ -1077,17 +1063,16 @@ public class AdkWebServer implements WebMvcConfigurer {
         @PathVariable String userId,
         @PathVariable String sessionId,
         @PathVariable String artifactName) {
-      String effectiveAppName = getEffectiveAppName(appName);
       log.info(
           "Request received to list versions for artifact: app={}, user={}, session={},"
               + " artifact={}",
-          effectiveAppName,
+          appName,
           userId,
           sessionId,
           artifactName);
 
       Single<ImmutableList<Integer>> versionsSingle =
-          artifactService.listVersions(effectiveAppName, userId, sessionId, artifactName);
+          artifactService.listVersions(appName, userId, sessionId, artifactName);
       ImmutableList<Integer> versions = versionsSingle.blockingGet();
       log.info(
           "Found {} versions for artifact {}",
@@ -1112,17 +1097,16 @@ public class AdkWebServer implements WebMvcConfigurer {
         @PathVariable String userId,
         @PathVariable String sessionId,
         @PathVariable String artifactName) {
-      String effectiveAppName = getEffectiveAppName(appName);
       log.info(
           "Request received to delete artifact: app={}, user={}, session={}, artifact={}",
-          effectiveAppName,
+          appName,
           userId,
           sessionId,
           artifactName);
 
       try {
 
-        artifactService.deleteArtifact(effectiveAppName, userId, sessionId, artifactName);
+        artifactService.deleteArtifact(appName, userId, sessionId, artifactName);
         log.info("Artifact deleted successfully: {}", artifactName);
         return ResponseEntity.noContent().build();
       } catch (Exception e) {
@@ -1154,7 +1138,7 @@ public class AdkWebServer implements WebMvcConfigurer {
       }
       log.info("Request received for POST /run for session: {}", request.sessionId);
 
-      Runner runner = getRunner(request.appName);
+      Runner runner = this.runnerService.getRunner(request.appName);
       try {
 
         RunConfig runConfig = RunConfig.builder().setStreamingMode(StreamingMode.NONE).build();
@@ -1209,7 +1193,7 @@ public class AdkWebServer implements WebMvcConfigurer {
           () -> {
             Runner runner;
             try {
-              runner = getRunner(request.appName);
+              runner = this.runnerService.getRunner(request.appName);
             } catch (ResponseStatusException e) {
               log.warn(
                   "Setup failed for SseEmitter request for session {}: {}",
@@ -1523,45 +1507,14 @@ public class AdkWebServer implements WebMvcConfigurer {
 
     private final ObjectMapper objectMapper;
     private final BaseSessionService sessionService;
-    private final BaseArtifactService artifactService; // For Runner instantiation
-    private final Map<String, BaseAgent> agentRegistry; // For Runner instantiation
-    private final Map<String, Runner> runnerCache = new ConcurrentHashMap<>();
-    private final String agentEngineId = ""; // TODO: Mirror AgentController's agentEngineId logic
+    private final RunnerService runnerService;
 
     @Autowired
     public LiveWebSocketHandler(
-        ObjectMapper objectMapper,
-        BaseSessionService sessionService,
-        BaseArtifactService artifactService,
-        @Qualifier("loadedAgentRegistry") Map<String, BaseAgent> agentRegistry) {
+        ObjectMapper objectMapper, BaseSessionService sessionService, RunnerService runnerService) {
       this.objectMapper = objectMapper;
       this.sessionService = sessionService;
-      this.agentRegistry = agentRegistry;
-      this.artifactService = artifactService; // Store for getRunner
-    }
-
-    // Duplicates AgentController.getRunner, consider refactoring to a shared service/util
-    private Runner getRunner(String appName) {
-      return runnerCache.computeIfAbsent(
-          appName,
-          key -> {
-            BaseAgent agent = agentRegistry.get(key);
-            if (agent == null) {
-              log.error(
-                  "Agent/App named '{}' not found in registry for WebSocket. Available apps: {}",
-                  key,
-                  agentRegistry.keySet());
-              throw new ResponseStatusException(
-                  HttpStatus.NOT_FOUND, "Agent/App not found for WebSocket: " + key);
-            }
-            String effectiveAppName =
-                (agentEngineId != null && !agentEngineId.isEmpty()) ? agentEngineId : appName;
-            log.debug(
-                "Creating Runner for WebSocket appName: {}, using agent definition: {}",
-                appName,
-                agent.name());
-            return new Runner(agent, effectiveAppName, this.artifactService, this.sessionService);
-          });
+      this.runnerService = runnerService;
     }
 
     @Override
@@ -1619,16 +1572,12 @@ public class AdkWebServer implements WebMvcConfigurer {
 
       Session session;
       try {
-        String effectiveAppName =
-            (agentEngineId != null && !agentEngineId.isEmpty()) ? agentEngineId : appName;
         session =
-            sessionService
-                .getSession(effectiveAppName, userId, sessionId, Optional.empty())
-                .blockingGet();
+            sessionService.getSession(appName, userId, sessionId, Optional.empty()).blockingGet();
         if (session == null) {
           log.warn(
               "Session not found for WebSocket: app={}, user={}, id={}. Closing connection.",
-              effectiveAppName,
+              appName,
               userId,
               sessionId);
           wsSession.close(new CloseStatus(1002, "Session not found")); // 1002: Protocol Error
@@ -1650,7 +1599,7 @@ public class AdkWebServer implements WebMvcConfigurer {
 
       Runner runner;
       try {
-        runner = getRunner(appName);
+        runner = this.runnerService.getRunner(appName);
       } catch (ResponseStatusException e) {
         log.error(
             "Failed to get runner for app {} during WebSocket connection: {}",
