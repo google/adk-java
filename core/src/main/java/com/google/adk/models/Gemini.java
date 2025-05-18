@@ -19,6 +19,7 @@ package com.google.adk.models;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.Client;
 import com.google.genai.ResponseStream;
 import com.google.genai.types.Candidate;
@@ -64,6 +65,146 @@ public class Gemini extends BaseLlm {
   public Gemini(String modelName, Client apiClient) {
     super(modelName);
     this.apiClient = Objects.requireNonNull(apiClient, "apiClient cannot be null");
+  }
+
+  /**
+   * Constructs a new Gemini instance with a Google Gemini API key.
+   *
+   * @param modelName The name of the Gemini model to use (e.g., "gemini-2.0-flash").
+   * @param apiKey The Google Gemini API key.
+   */
+  public Gemini(String modelName, String apiKey) {
+    super(modelName);
+    Objects.requireNonNull(apiKey, "apiKey cannot be null");
+    this.apiClient = Client.builder().apiKey(apiKey).build();
+  }
+
+  /**
+   * Constructs a new Gemini instance with a Google Gemini API key.
+   *
+   * @param modelName The name of the Gemini model to use (e.g., "gemini-2.0-flash").
+   * @param vertexCredentials The Vertex AI credentials to access the Gemini model.
+   */
+  public Gemini(String modelName, VertexCredentials vertexCredentials) {
+    super(modelName);
+    Objects.requireNonNull(vertexCredentials, "vertexCredentials cannot be null");
+    Client.Builder apiClientBuilder = Client.builder();
+    vertexCredentials
+        .project()
+        .ifPresent(
+            project -> {
+              var unused = apiClientBuilder.project(project);
+            });
+    vertexCredentials
+        .location()
+        .ifPresent(
+            location -> {
+              var unused = apiClientBuilder.location(location);
+            });
+    vertexCredentials
+        .credentials()
+        .ifPresent(
+            credentials -> {
+              var unused = apiClientBuilder.credentials(credentials);
+            });
+    this.apiClient = apiClientBuilder.build();
+  }
+
+  /**
+   * Returns a new Builder instance for constructing Gemini objects. Note that when building a
+   * Gemini object, at least one of apiKey, vertexCredentials, or an explicit apiClient must be set.
+   * If multiple are set, the explicit apiClient will take precedence.
+   *
+   * @return A new {@link Builder}.
+   */
+  public static Builder builder() {
+    return new Builder();
+  }
+
+  /** Builder for {@link Gemini}. */
+  public static class Builder {
+    private String modelName;
+    private Client apiClient;
+    private String apiKey;
+    private VertexCredentials vertexCredentials;
+
+    private Builder() {}
+
+    /**
+     * Sets the name of the Gemini model to use.
+     *
+     * @param modelName The model name (e.g., "gemini-2.0-flash").
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder modelName(String modelName) {
+      this.modelName = modelName;
+      return this;
+    }
+
+    /**
+     * Sets the explicit {@link com.google.genai.Client} instance for making API calls. If this is
+     * set, apiKey and vertexCredentials will be ignored.
+     *
+     * @param apiClient The client instance.
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder apiClient(Client apiClient) {
+      this.apiClient = apiClient;
+      return this;
+    }
+
+    /**
+     * Sets the Google Gemini API key. If {@link #apiClient(Client)} is also set, the explicit
+     * client will take precedence. If {@link #vertexCredentials(VertexCredentials)} is also set,
+     * this apiKey will take precedence.
+     *
+     * @param apiKey The API key.
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder apiKey(String apiKey) {
+      this.apiKey = apiKey;
+      return this;
+    }
+
+    /**
+     * Sets the Vertex AI credentials. If {@link #apiClient(Client)} or {@link #apiKey(String)} are
+     * also set, they will take precedence over these credentials.
+     *
+     * @param vertexCredentials The Vertex AI credentials.
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder vertexCredentials(VertexCredentials vertexCredentials) {
+      this.vertexCredentials = vertexCredentials;
+      return this;
+    }
+
+    /**
+     * Builds the {@link Gemini} instance.
+     *
+     * @return A new {@link Gemini} instance.
+     * @throws NullPointerException if modelName is null.
+     * @throws IllegalStateException if none of apiKey, VertexCredentials, or an explicit apiClient
+     *     is set.
+     */
+    public Gemini build() {
+      Objects.requireNonNull(modelName, "modelName must be set.");
+
+      if (apiClient != null) {
+        return new Gemini(modelName, apiClient);
+      } else if (apiKey != null) {
+        return new Gemini(modelName, apiKey);
+      } else if (vertexCredentials != null) {
+        return new Gemini(modelName, vertexCredentials);
+      } else {
+        throw new IllegalStateException(
+            "Authentication strategy not set: Either apiKey, VertexCredentials, or an explicit"
+                + " apiClient must be provided.");
+      }
+    }
   }
 
   @Override
