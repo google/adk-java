@@ -55,8 +55,8 @@ public final class Functions {
   /**
    * Populates missing function call IDs in the provided event's content.
    *
-   * <p>If the event contains function calls without an ID, this method generates a unique client-side
-   * ID for each and updates the event content.
+   * <p>If the event contains function calls without an ID, this method generates a unique
+   * client-side ID for each and updates the event content.
    *
    * @param modelResponseEvent The event potentially containing function calls.
    */
@@ -76,7 +76,7 @@ public final class Functions {
     for (Part part : originalParts) {
       if (part.functionCall().isPresent()) {
         FunctionCall functionCall = part.functionCall().get();
-        if (functionCall.id().isEmpty()) {
+        if (functionCall.id().isEmpty() || functionCall.id().get().isEmpty()) {
           FunctionCall updatedFunctionCall =
               functionCall.toBuilder().id(generateClientFunctionCallId()).build();
           newParts.add(Part.builder().functionCall(updatedFunctionCall).build());
