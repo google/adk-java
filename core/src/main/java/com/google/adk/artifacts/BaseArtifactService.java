@@ -16,6 +16,7 @@
 
 package com.google.adk.artifacts;
 
+import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
@@ -40,6 +41,18 @@ public interface BaseArtifactService {
       String appName, String userId, String sessionId, String filename, Part artifact);
 
   /**
+   * Saves an artifact associated with the inputted session.
+   *
+   * @param session the session instance to associate this artifact with
+   * @param filename the artifact filename
+   * @param artifact the artifact's file content ' * @return the revision ID (version) of the saved
+   *     artifact.
+   */
+  default Single<Integer> saveArtifact(Session session, String filename, Part artifact) {
+    return saveArtifact(session.appName(), session.userId(), session.id(), filename, artifact);
+  }
+
+  /**
    * Gets an artifact.
    *
    * @param appName the app name
@@ -51,6 +64,18 @@ public interface BaseArtifactService {
    */
   Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, Optional<Integer> version);
+
+  /**
+   * Gets an artifact associated with the inputted session.
+   *
+   * @param session the session instance the artifact is associated with
+   * @param filename the artifact filename
+   * @return the artifact or empty if not found
+   */
+  default Maybe<Part> loadArtifact(Session session, String filename) {
+    return loadArtifact(
+        session.appName(), session.userId(), session.id(), filename, Optional.empty());
+  }
 
   /**
    * Lists all the artifact filenames within a session.
@@ -73,6 +98,16 @@ public interface BaseArtifactService {
   Completable deleteArtifact(String appName, String userId, String sessionId, String filename);
 
   /**
+   * Deletes an artifact associated with the inputted session.
+   *
+   * @param session the session instance the artifact is associated with
+   * @param filename the artifact filename
+   */
+  default Completable deleteArtifact(Session session, String filename) {
+    return deleteArtifact(session.appName(), session.userId(), session.id(), filename);
+  }
+
+  /**
    * Lists all the versions (as revision IDs) of an artifact.
    *
    * @param appName the app name
@@ -83,4 +118,15 @@ public interface BaseArtifactService {
    */
   Single<ImmutableList<Integer>> listVersions(
       String appName, String userId, String sessionId, String filename);
+
+  /**
+   * Lists all the versions (as revision IDs) of an artifact associated with the inputted session.
+   *
+   * @param session the session instance the artifact is associated with
+   * @param filename the artifact filename
+   * @return A list of integer version numbers.
+   */
+  default Single<ImmutableList<Integer>> listVersions(Session session, String filename) {
+    return listVersions(session.appName(), session.userId(), session.id(), filename);
+  }
 }
