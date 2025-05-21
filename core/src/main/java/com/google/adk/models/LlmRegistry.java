@@ -19,7 +19,15 @@ package com.google.adk.models;
 import com.google.genai.Client;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
+/**
+ * Registry for Large Language Models (LLMs).
+ *
+ * <p>This class provides a central repository for managing and accessing LLM instances. It supports
+ * dynamic registration of new LLM models and their corresponding factories.
+ */
 public class LlmRegistry {
 
   // A thread-safe cache mapping model names to LLM instances.
@@ -31,18 +39,21 @@ public class LlmRegistry {
     BaseLlm create(String modelName);
   }
 
-  // API clients
-  private static Client geminiApiClient = Client.builder().build();
-
   // Map of model name patterns regex to factories
   private static final Map<String, LlmFactory> llmFactories = new ConcurrentHashMap<>();
 
-  private static Client getGeminiApiClient() {
-    return geminiApiClient;
+  static {
+    registerGeminiLlm();
   }
 
-  static {
-    registerLlm("gemini-.*", modelName -> new Gemini(modelName, getGeminiApiClient()));
+  private static void registerGeminiLlm() {
+    try {
+      Client geminiApiClient = Client.builder().build();
+      registerLlm("gemini-.*", modelName -> new Gemini(modelName, geminiApiClient));
+    } catch (RuntimeException e) {
+      Logger.getLogger(LlmRegistry.class.getName())
+          .log(Level.WARNING, "Failed to register Gemini LLM", e);
+    }
   }
 
   public static void registerLlm(String modelNamePattern, LlmFactory factory) {
@@ -64,7 +75,12 @@ public class LlmRegistry {
 
   // This is for testing only.
   static void registerTestLlm(String modelNamePattern, LlmFactory factory) {
-    llmFactories.put(modelNamePattern, factory);
+    if (factory != null) {
+      llmFactories.put(modelNamePattern, factory);
+    } else {
+      // Used for testing
+      llmFactories.remove(modelNamePattern);
+    }
     // Clear any cached instances that match this pattern to ensure test isolation.
     instances.keySet().removeIf(modelName -> modelName.matches(modelNamePattern));
   }
