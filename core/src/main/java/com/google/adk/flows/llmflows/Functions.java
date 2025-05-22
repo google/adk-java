@@ -17,6 +17,8 @@
 package com.google.adk.flows.llmflows;
 
 import com.google.adk.Telemetry;
+import com.google.adk.agents.Callbacks.AfterToolCallback;
+import com.google.adk.agents.Callbacks.BeforeToolCallback;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
@@ -31,6 +33,7 @@ import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -242,10 +245,17 @@ public final class Functions {
       ToolContext toolContext) {
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
-      return agent
-          .beforeToolCallback()
-          .map(callback -> callback.call(invocationContext, tool, functionArgs, toolContext))
-          .orElse(Maybe.empty());
+
+      Optional<List<BeforeToolCallback>> callbacksOpt = agent.beforeToolCallback();
+      if (callbacksOpt.isEmpty() || callbacksOpt.get().isEmpty()) {
+        return Maybe.empty();
+      }
+      List<BeforeToolCallback> callbacks = callbacksOpt.get();
+
+      return Flowable.fromIterable(callbacks)
+          .concatMapMaybe(
+              callback -> callback.call(invocationContext, tool, functionArgs, toolContext))
+          .firstElement();
     }
     return Maybe.empty();
   }
@@ -258,12 +268,17 @@ public final class Functions {
       Map<String, Object> functionResult) {
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
-      return agent
-          .afterToolCallback()
-          .map(
+      Optional<List<AfterToolCallback>> callbacksOpt = agent.afterToolCallback();
+      if (callbacksOpt.isEmpty() || callbacksOpt.get().isEmpty()) {
+        return Maybe.empty();
+      }
+      List<AfterToolCallback> callbacks = callbacksOpt.get();
+
+      return Flowable.fromIterable(callbacks)
+          .concatMapMaybe(
               callback ->
                   callback.call(invocationContext, tool, functionArgs, toolContext, functionResult))
-          .orElse(Maybe.empty());
+          .firstElement();
     }
     return Maybe.empty();
   }
