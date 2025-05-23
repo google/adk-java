@@ -96,9 +96,7 @@ public class Runner {
           continue;
         }
         String fileName = "artifact_" + invocationContext.invocationId() + "_" + i;
-        var unused =
-            this.artifactService.saveArtifact(
-                this.appName, session.userId(), session.id(), fileName, part);
+        var unused = this.artifactService.saveArtifact(session, fileName, part);
 
         newMessage
             .parts()
