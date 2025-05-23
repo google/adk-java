@@ -110,8 +110,7 @@ public class FunctionTool extends BaseTool {
   }
 
   @Override
-  public Single<Map<String, Object>> runAsync(
-      Map<String, Object> args, ToolContext toolContext) {
+  public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
     try {
       return this.call(args, toolContext).defaultIfEmpty(ImmutableMap.of());
     } catch (Exception e) {

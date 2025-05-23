@@ -198,5 +198,4 @@ public final class LlmResponseTest {
     assertThat(deserializedResponse.errorMessage()).isEmpty();
     assertThat(deserializedResponse.interrupted()).isEmpty();
   }
-
 }

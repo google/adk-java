@@ -22,8 +22,8 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.genai.types.Content;
 import io.reactivex.rxjava3.core.Maybe;
-import java.util.Optional;
 import java.util.Map;
+import java.util.Optional;
 
 public final class Callbacks {
 

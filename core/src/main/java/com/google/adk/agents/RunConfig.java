@@ -38,7 +38,6 @@ public abstract class RunConfig {
     BIDI
   }
 
-
   public abstract @Nullable SpeechConfig speechConfig();
 
   public abstract ImmutableList<Modality> responseModalities();

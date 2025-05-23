@@ -68,8 +68,7 @@ public final class LoadArtifactsTool extends BaseTool {
   }
 
   @Override
-  public Single<Map<String, Object>> runAsync(
-      Map<String, Object> args, ToolContext toolContext) {
+  public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
     @SuppressWarnings("unchecked")
     List<String> artifactNames =
         (List<String>) args.getOrDefault("artifact_names", ImmutableList.of());

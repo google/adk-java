@@ -12,8 +12,8 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmResponse;
-import com.google.adk.testing.TestUtils;
 import com.google.adk.testing.TestLlm;
+import com.google.adk.testing.TestUtils;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -569,7 +569,9 @@ public final class CallbacksTest {
 
     Event functionResponseEvent =
         Functions.handleFunctionCalls(
-                invocationContext, event, ImmutableMap.of("echo_tool", new TestUtils.FailingEchoTool()))
+                invocationContext,
+                event,
+                ImmutableMap.of("echo_tool", new TestUtils.FailingEchoTool()))
             .blockingGet();
 
     assertThat(functionResponseEvent).isNotNull();
@@ -653,7 +655,9 @@ public final class CallbacksTest {
 
     Event functionResponseEvent =
         Functions.handleFunctionCalls(
-                invocationContext, event, ImmutableMap.of("echo_tool", new TestUtils.FailingEchoTool()))
+                invocationContext,
+                event,
+                ImmutableMap.of("echo_tool", new TestUtils.FailingEchoTool()))
             .blockingGet();
 
     assertThat(functionResponseEvent).isNotNull();
@@ -920,7 +924,9 @@ public final class CallbacksTest {
 
     Event functionResponseEvent =
         Functions.handleFunctionCalls(
-                invocationContext, event, ImmutableMap.of("echo_tool", new TestUtils.FailingEchoTool()))
+                invocationContext,
+                event,
+                ImmutableMap.of("echo_tool", new TestUtils.FailingEchoTool()))
             .blockingGet();
 
     assertThat(functionResponseEvent).isNotNull();

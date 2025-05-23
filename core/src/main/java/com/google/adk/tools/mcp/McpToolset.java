@@ -22,7 +22,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
-import com.google.adk.tools.mcp.SseServerParameters;
 import io.modelcontextprotocol.spec.McpSchema.ListToolsResult;
 import java.util.List;
 import java.util.Objects;

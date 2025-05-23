@@ -380,8 +380,8 @@ public final class VertexAiSessionService implements BaseSessionService {
     // TODO(b/414263934)): Improve error handling for appendEvent.
     try {
       if (response.getResponseBody().string().contains("com.google.genai.errors.ClientException")) {
-      System.err.println("Failed to append event: " + event);
-    }
+        System.err.println("Failed to append event: " + event);
+      }
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }

@@ -89,12 +89,12 @@ public final class ExampleUtils {
                 .append(FUNCTION_CALL_SUFFIX);
           } else if (part.functionResponse().isPresent()) {
             try {
-            output
-                .append(FUNCTION_RESPONSE_PREFIX)
-                .append(
-                    OBJECT_MAPPER.writeValueAsString(
-                        part.functionResponse().get().response().orElse(Collections.emptyMap())))
-                .append(FUNCTION_RESPONSE_SUFFIX);
+              output
+                  .append(FUNCTION_RESPONSE_PREFIX)
+                  .append(
+                      OBJECT_MAPPER.writeValueAsString(
+                          part.functionResponse().get().response().orElse(Collections.emptyMap())))
+                  .append(FUNCTION_RESPONSE_SUFFIX);
             } catch (JsonProcessingException e) {
               output.append(FUNCTION_RESPONSE_PREFIX).append(FUNCTION_RESPONSE_SUFFIX);
             }

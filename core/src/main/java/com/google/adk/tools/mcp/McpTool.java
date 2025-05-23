@@ -61,10 +61,7 @@ public final class McpTool extends BaseTool {
   McpSessionManager mcpSessionManager;
   ObjectMapper objectMapper;
 
-  public McpTool(
-      Tool mcpTool,
-      McpSyncClient mcpSession,
-      McpSessionManager mcpSessionManager) {
+  public McpTool(Tool mcpTool, McpSyncClient mcpSession, McpSessionManager mcpSessionManager) {
     this(mcpTool, mcpSession, mcpSessionManager, JsonBaseModel.getMapper());
   }
 

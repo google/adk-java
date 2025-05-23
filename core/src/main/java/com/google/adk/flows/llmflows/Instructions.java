@@ -16,8 +16,8 @@
 
 package com.google.adk.flows.llmflows;
 
-import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.sessions.Session;
 import com.google.adk.sessions.State;
@@ -91,7 +91,7 @@ public final class Instructions implements RequestProcessor {
         }
         matcher.appendReplacement(builder, Matcher.quoteReplacement(artifact.toString()));
       } else if (!isValidStateName(varName)) {
-          matcher.appendReplacement(builder, Matcher.quoteReplacement(placeholder));
+        matcher.appendReplacement(builder, Matcher.quoteReplacement(placeholder));
       } else if (context.session().state().containsKey(varName)) {
         Object value = context.session().state().get(varName);
         matcher.appendReplacement(builder, Matcher.quoteReplacement(String.valueOf(value)));
