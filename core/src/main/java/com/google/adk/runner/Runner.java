@@ -270,18 +270,6 @@ public class Runner {
     }
   }
 
-  public Flowable<Event> runLive(
-      String userId, String sessionId, LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
-    Session session =
-        this.sessionService.getSession(appName, userId, sessionId, Optional.empty()).blockingGet();
-    if (session == null) {
-      return Flowable.error(
-          new IllegalArgumentException(
-              String.format("Session not found: %s for user %s", sessionId, userId)));
-    }
-    return this.runLive(session, liveRequestQueue, runConfig);
-  }
-
   public Flowable<Event> runWithSessionId(
       String sessionId, Content newMessage, RunConfig runConfig) {
     // TODO(b/410859954): Add user_id to getter or method signature. Assuming "tmp-user" for now.
