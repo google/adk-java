@@ -19,8 +19,8 @@ package com.google.adk.agents;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
-import com.google.adk.agents.Callbacks.AfterAgentCallbackSync;
 import com.google.adk.agents.Callbacks.AfterAgentCallbackBase;
+import com.google.adk.agents.Callbacks.AfterAgentCallbackSync;
 import com.google.adk.agents.Callbacks.AfterModelCallback;
 import com.google.adk.agents.Callbacks.AfterModelCallbackBase;
 import com.google.adk.agents.Callbacks.AfterModelCallbackSync;
@@ -101,7 +101,7 @@ public class LlmAgent extends BaseAgent {
   private volatile Model resolvedModel;
   private final BaseLlmFlow llmFlow;
 
-  private LlmAgent(Builder builder) {
+  protected LlmAgent(Builder builder) {
     super(
         builder.name,
         builder.description,
@@ -546,7 +546,7 @@ public class LlmAgent extends BaseAgent {
       return this;
     }
 
-    public LlmAgent build() {
+    protected void validate() {
       this.disallowTransferToParent =
           this.disallowTransferToParent != null && this.disallowTransferToParent;
       this.disallowTransferToPeers =
@@ -578,7 +578,10 @@ public class LlmAgent extends BaseAgent {
                   + ": if outputSchema is set, tools must be empty.");
         }
       }
+    }
 
+    public LlmAgent build() {
+      validate();
       return new LlmAgent(this);
     }
   }
