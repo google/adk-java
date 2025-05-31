@@ -1,7 +1,7 @@
 # Contribution Guidelines
 
 **Before You Start:**
-Please take a look at [ADK Contribution Guidelines] (https://google.github.io/adk-docs/contributing-guide/)
+Please take a look at [ADK Contribution Guidelines](https://google.github.io/adk-docs/contributing-guide/).
 
 **Coding Guidelines For PR Approval:**
 
