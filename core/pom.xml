@@ -20,7 +20,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk</artifactId>
-  <version>0.1.0</version><!-- {x-version-update:google-adk:current} -->
+  <version>0.1.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   <packaging>jar</packaging>
   <name>Agent Development Kit</name>
   <url>https://github.com/google/adk-java</url>
