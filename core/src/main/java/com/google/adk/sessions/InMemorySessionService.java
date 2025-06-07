@@ -260,22 +260,10 @@ public final class InMemorySessionService implements BaseSessionService {
     session.lastUpdateTime(getInstantFromEvent(event));
 
     // --- Update the session stored in this service ---
-    Session storedSession =
-        sessions
-            .getOrDefault(appName, new ConcurrentHashMap<>())
-            .getOrDefault(userId, new ConcurrentHashMap<>())
-            .get(sessionId);
-
-    if (storedSession != null) {
-      // Apply the same logic directly to the mutable stored session instance
-      BaseSessionService.super.appendEvent(storedSession, event);
-      storedSession.lastUpdateTime(getInstantFromEvent(event));
-    } else {
-      logger.warn(
-          String.format(
-              "appendEvent called for session %s which is not found in InMemorySessionService",
-              sessionId));
-    }
+    sessions
+        .getOrDefault(appName, new ConcurrentHashMap<>())
+        .getOrDefault(userId, new ConcurrentHashMap<>())
+        .put(sessionId, session);
 
     return Single.just(event);
   }
