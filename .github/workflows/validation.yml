@@ -36,10 +36,6 @@ jobs:
             ${{ runner.os }}-maven-${{ matrix.java-version }}-
             ${{ runner.os }}-maven-
 
-      - name: Compile and install core module with Java ${{ matrix.java-version }}
-        working-directory: ./core
-        run: mvn clean compile install
-
-      - name: Compile dev module with Java ${{ matrix.java-version }}
-        working-directory: ./dev
-        run: mvn clean compile
+      - name: Compile and test (all) modules with Java ${{ matrix.java-version }}
+        # TODO After https://github.com/google/adk-java/pull/151: run: ./mvnw clean test
+        run: mvn clean test
