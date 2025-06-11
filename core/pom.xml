@@ -63,6 +63,7 @@
     <java-websocket.version>1.6.0</java-websocket.version>
     <jackson.version>2.19.0</jackson.version>
     <okhttp.version>4.12.0</okhttp.version>
+    <checkstyle-maven-plugin.version>3.6.0</checkstyle-maven-plugin.version>
   </properties>
   <distributionManagement>
     <repository>
@@ -409,6 +410,16 @@
             </configuration>
           </execution>
         </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-checkstyle-plugin</artifactId>
+        <version>${checkstyle-maven-plugin.version}</version>
+        <configuration>
+          <includeTestSourceDirectory>false</includeTestSourceDirectory>
+          <failOnViolation>true</failOnViolation>
+          <violationSeverity>warning</violationSeverity>
+        </configuration>
       </plugin>
     </plugins>
   </build>

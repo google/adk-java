@@ -53,6 +53,7 @@
       <graphviz.version>0.18.1</graphviz.version>
       <ecj.version>3.41.0</ecj.version>
       <otel.version>1.49.0</otel.version>
+      <checkstyle-maven-plugin.version>3.6.0</checkstyle-maven-plugin.version>
     </properties>
     <distributionManagement>
         <repository>
@@ -251,6 +252,16 @@
                 <version>3.1.1</version>
                 <configuration>
                     <skip>false</skip>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-checkstyle-plugin</artifactId>
+                <version>${checkstyle-maven-plugin.version}</version>
+                <configuration>
+                    <includeTestSourceDirectory>false</includeTestSourceDirectory>
+                    <failOnViolation>true</failOnViolation>
+                    <violationSeverity>warning</violationSeverity>
                 </configuration>
             </plugin>
         </plugins>
