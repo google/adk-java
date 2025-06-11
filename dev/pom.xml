@@ -259,6 +259,7 @@
                 <artifactId>maven-checkstyle-plugin</artifactId>
                 <version>${checkstyle-maven-plugin.version}</version>
                 <configuration>
+                    <propertyExpansion>checkstyle.header.file=../java.header</propertyExpansion>
                     <includeTestSourceDirectory>false</includeTestSourceDirectory>
                     <failOnViolation>true</failOnViolation>
                     <violationSeverity>warning</violationSeverity>

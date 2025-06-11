@@ -39,7 +39,7 @@ jobs:
 
       - name: License validation for ${{ matrix.module }}
         working-directory: ./${{ matrix.module }}
-        run: mvn checkstyle:check -Dcheckstyle.config.location=../license-checks.xml -Dcheckstyle.header.file=../java.header
+        run: mvn checkstyle:check -Dcheckstyle.config.location=../license-checks.xml
 
       - name: Compile and install core module with Java ${{ matrix.java-version }}
         working-directory: ./core
