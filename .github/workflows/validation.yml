@@ -6,8 +6,8 @@ on:
     branches:
       - main
     paths:
-      - 'core/**'
-      - 'dev/**'
+      - "core/**"
+      - "dev/**"
       # Add other module paths here
 
 jobs:
@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        java-version: ['17', '21']
+        java-version: ["17", "21"]
 
     steps:
       - name: Checkout code
@@ -38,8 +38,8 @@ jobs:
 
       - name: Compile and install core module with Java ${{ matrix.java-version }}
         working-directory: ./core
-        run: mvn clean compile install
+        run: ./mvnw clean compile install
 
       - name: Compile dev module with Java ${{ matrix.java-version }}
         working-directory: ./dev
-        run: mvn clean compile
+        run: ./mvnw clean compile
