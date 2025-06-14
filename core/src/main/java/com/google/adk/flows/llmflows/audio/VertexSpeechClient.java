@@ -36,10 +36,16 @@ public class VertexSpeechClient implements SpeechClientInterface {
     this.speechClient = SpeechClient.create();
   }
 
+  /**
+   * The original SpeechClient.recognize doesn't declare checked exceptions other than what might
+   * be runtime. The interface declares Exception to be more general for other implementations.
+   * 
+   * @param config The configuration for recognition, including language, encoding, etc.
+   * @param audio The audio data to be recognized.
+   * @return The response containing the recognition results.
+   */
   @Override
   public RecognizeResponse recognize(RecognitionConfig config, RecognitionAudio audio) {
-    // The original SpeechClient.recognize doesn't declare checked exceptions other than what might
-    // be runtime. The interface declares Exception to be more general for other implementations.
     return speechClient.recognize(config, audio);
   }
 

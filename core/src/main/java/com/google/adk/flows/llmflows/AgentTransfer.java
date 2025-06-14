@@ -29,9 +29,18 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
-/** {@link RequestProcessor} that handles agent transfer for LLM flow. */
+/** 
+ * A {@link RequestProcessor} that handles agent transfer for LLM flow. 
+ * This processor is responsible for identifying potential transfer targets (parent, peers, sub-agents)
+ * and injecting instructions and a {@code transferToAgent} function call into the LLM request
+ * to enable the LLM to decide on transferring the conversation to another agent.
+ */
 public final class AgentTransfer implements RequestProcessor {
 
+  /**
+   * Constructs a new {@code AgentTransfer} instance.
+   * This class is a stateless processor and does not require any specific initialization.
+   */
   public AgentTransfer() {}
 
   @Override
@@ -66,11 +75,28 @@ public final class AgentTransfer implements RequestProcessor {
         RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
   }
 
+  /**
+   * Builds a formatted string containing information about a target agent.
+   * The information includes the agent's name and description.
+   *
+   * @param targetAgent The {@link BaseAgent} for which to build the information string.
+   * @return A formatted string with the target agent's name and description.
+   */
   private String buildTargetAgentsInfo(BaseAgent targetAgent) {
     return String.format(
         "Agent name: %s\nAgent description: %s", targetAgent.name(), targetAgent.description());
   }
 
+  /**
+   * Constructs instructions for the LLM regarding available agents for transfer.
+   * This includes information about sub-agents, the parent agent (if applicable and allowed),
+   * and peer agents (if applicable and allowed). It also provides guidance on when to answer
+   * directly or transfer to another agent using the {@code transferToAgent} function.
+   *
+   * @param agent The current {@link LlmAgent} being processed.
+   * @param transferTargets A list of {@link BaseAgent} instances that are potential transfer targets.
+   * @return A string containing instructions for the LLM regarding agent transfer.
+   */
   private String buildTargetAgentsInstructions(LlmAgent agent, List<BaseAgent> transferTargets) {
     StringBuilder sb = new StringBuilder();
     sb.append("You have a list of other agents to transfer to:\n");
@@ -96,6 +122,14 @@ public final class AgentTransfer implements RequestProcessor {
     return sb.toString();
   }
 
+  /**
+   * Retrieves a list of potential transfer targets for a given LLM agent.
+   * This includes all sub-agents, the parent agent (if transfer to parent is allowed),
+   * and peer agents (if transfer to peers is allowed).
+   *
+   * @param agent The {@link LlmAgent} for which to find transfer targets.
+   * @return A {@link List} of {@link BaseAgent} instances that are potential transfer targets.
+   */
   private List<BaseAgent> getTransferTargets(LlmAgent agent) {
     List<BaseAgent> transferTargets = new ArrayList<>();
     transferTargets.addAll(agent.subAgents()); // Add all sub-agents
@@ -121,6 +155,14 @@ public final class AgentTransfer implements RequestProcessor {
     return transferTargets;
   }
 
+  /**
+   * Transfers the conversation to a specified agent. This method is designed to be called
+   * by the LLM as a tool function. It updates the {@link EventActions} in the {@link ToolContext}
+   * to indicate the target agent for transfer.
+   *
+   * @param agentName The name of the agent to transfer to.
+   * @param toolContext The {@link ToolContext} providing access to the current event's actions.
+   */
   public static void transferToAgent(String agentName, ToolContext toolContext) {
     EventActions eventActions = toolContext.eventActions();
     toolContext.setActions(eventActions.toBuilder().transferToAgent(agentName).build());

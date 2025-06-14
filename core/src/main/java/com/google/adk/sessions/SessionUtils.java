@@ -28,8 +28,21 @@ import java.util.Optional;
 /** Utility functions for session service. */
 public final class SessionUtils {
 
+  /**
+   * Private constructor to prevent instantiation of this utility class.
+   * This class provides only static helper methods.
+   */
   public SessionUtils() {}
 
+  /**
+   * Encodes the inline data (Blobs) within the parts of a {@link Content} object using Base64.
+   * This method iterates through all parts of the content. If a part contains inline binary data,
+   * that data is Base64 encoded, and the part is replaced with a new part containing the encoded data.
+   * Other parts (e.g., text parts) remain unchanged.
+   *
+   * @param content The {@link Content} object whose inline data parts are to be encoded.
+   * @return A new {@link Content} object with its inline data parts Base64 encoded.
+   */
   public static Content encodeContent(Content content) {
     List<Part> encodedParts = new ArrayList<>();
     for (Part part : content.parts().orElse(ImmutableList.of())) {
@@ -55,6 +68,15 @@ public final class SessionUtils {
     return toContent(encodedParts, content.role());
   }
 
+  /**
+   * Decodes the Base64 encoded inline data (Blobs) within the parts of a {@link Content} object.
+   * This method iterates through all parts of the content. If a part contains inline binary data
+   * that is Base64 encoded, that data is decoded, and the part is replaced with a new part
+   * containing the decoded raw data. Other parts (e.g., text parts) remain unchanged.
+   *
+   * @param content The {@link Content} object whose inline data parts are to be decoded.
+   * @return A new {@link Content} object with its inline data parts Base64 decoded.
+   */
   public static Content decodeContent(Content content) {
     List<Part> decodedParts = new ArrayList<>();
     for (Part part : content.parts().orElse(ImmutableList.of())) {
@@ -80,6 +102,14 @@ public final class SessionUtils {
     return toContent(decodedParts, content.role());
   }
 
+  /**
+   * Creates a {@link Content} object from a list of {@link Part} objects and an optional role.
+   * This is a helper method used internally to construct content objects.
+   *
+   * @param parts The {@link List} of {@link Part} objects to include in the content.
+   * @param role An {@link Optional} string representing the role of the content (e.g., "user", "model").
+   * @return A new {@link Content} object.
+   */
   private static Content toContent(List<Part> parts, Optional<String> role) {
     Content.Builder contentBuilder = Content.builder().parts(parts);
     role.ifPresent(contentBuilder::role);

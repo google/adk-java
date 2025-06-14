@@ -39,6 +39,11 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     this.artifacts = new HashMap<>();
   }
 
+  /**
+   * Creates a new instance of {@link InMemoryArtifactService} with an empty artifact store.
+   * 
+   * @return A new instance of {@link InMemoryArtifactService}.
+   */
   @Override
   public Single<Integer> saveArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact) {
@@ -52,6 +57,16 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     return Single.just(versions.size() - 1);
   }
 
+  /**
+   * Loads an artifact from the in-memory store.
+   *
+   * @param appName The name of the application.
+   * @param userId The ID of the user.
+   * @param sessionId The ID of the session.
+   * @param filename The name of the file to load.
+   * @param version Optional version number to load; if not provided, the latest version is returned.
+   * @return A {@link Maybe} containing the requested artifact, or empty if not found.
+   */
   @Override
   public Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, Optional<Integer> version) {
@@ -77,6 +92,14 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     }
   }
 
+  /**
+   * Lists the keys (filenames) of all artifacts stored for a given application, user, and session.
+   *
+   * @param appName The name of the application.
+   * @param userId The ID of the user.
+   * @param sessionId The ID of the session.
+   * @return A {@link Single} containing a response with a list of artifact filenames.
+   */
   @Override
   public Single<ListArtifactsResponse> listArtifactKeys(
       String appName, String userId, String sessionId) {
@@ -92,6 +115,15 @@ public final class InMemoryArtifactService implements BaseArtifactService {
             .build());
   }
 
+  /**
+   * Deletes an artifact from the in-memory store.
+   *
+   * @param appName The name of the application.
+   * @param userId The ID of the user.
+   * @param sessionId The ID of the session.
+   * @param filename The name of the file to delete.
+   * @return A {@link Completable} indicating the completion of the delete operation.
+   */
   @Override
   public Completable deleteArtifact(
       String appName, String userId, String sessionId, String filename) {
@@ -103,6 +135,15 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     return Completable.complete();
   }
 
+  /**
+   * Lists all versions of a specific artifact file for a given application, user, and session.
+   *
+   * @param appName The name of the application.
+   * @param userId The ID of the user.
+   * @param sessionId The ID of the session.
+   * @param filename The name of the file to list versions for.
+   * @return A {@link Single} containing a list of version numbers for the specified artifact file.
+   */
   @Override
   public Single<ImmutableList<Integer>> listVersions(
       String appName, String userId, String sessionId, String filename) {

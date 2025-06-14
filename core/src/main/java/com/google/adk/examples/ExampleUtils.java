@@ -51,6 +51,12 @@ public final class ExampleUtils {
 
   private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
+  /**
+   * Converts a list of examples into a formatted string representation.
+   *
+   * @param examples The list of examples to convert.
+   * @return A formatted string containing the examples.
+   */
   private static String convertExamplesToText(List<Example> examples) {
     StringBuilder examplesStr = new StringBuilder();
     for (int exampleNum = 0; exampleNum < examples.size(); exampleNum++) {
@@ -112,9 +118,20 @@ public final class ExampleUtils {
     return EXAMPLES_INTRO + examplesStr + EXAMPLES_END;
   }
 
+  /**
+   * Builds a formatted string of examples for a given query using the provided example provider.
+   *
+   * @param exampleProvider The provider that supplies examples.
+   * @param query The query for which examples are to be built.
+   * @return A formatted string containing the examples.
+   */
   public static String buildExampleSi(BaseExampleProvider exampleProvider, String query) {
     return convertExamplesToText(exampleProvider.getExamples(query));
   }
 
+  /**
+   * Private constructor to prevent instantiation of this utility class.
+   * This class provides only static helper methods for example formatting and should not be instantiated.
+   */
   private ExampleUtils() {}
 }

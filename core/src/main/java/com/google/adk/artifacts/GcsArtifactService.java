@@ -53,12 +53,28 @@ public final class GcsArtifactService implements BaseArtifactService {
     this.storageClient = storageClient;
   }
 
+  /**
+   * Checks if the filename indicates a user namespace.
+   * User namespace files are prefixed with "user:".
+   *
+   * @param filename The filename to check.
+   * @return true if the file is in the user namespace, false otherwise.
+   */
   private boolean fileHasUserNamespace(String filename) {
     return filename != null && filename.startsWith("user:");
   }
 
+  /**
+   * Constructs the blob prefix for a given artifact.
+   * The prefix is the path through the filename but without the version.
+   *
+   * @param appName The application name.
+   * @param userId The user ID.
+   * @param sessionId The session ID.
+   * @param filename The filename of the artifact.
+   * @return The blob prefix as a string, i.e. the path through the filename but without the version.
+   */
   private String getBlobPrefix(String appName, String userId, String sessionId, String filename) {
-    // Returns the blob "prefix", i.e. the path through the filename but without the version.
     if (fileHasUserNamespace(filename)) {
       return String.format("%s/%s/user/%s/", appName, userId, filename);
     } else {
@@ -66,12 +82,31 @@ public final class GcsArtifactService implements BaseArtifactService {
     }
   }
 
+  /**
+   * Constructs the full blob name for a given artifact, including the version.
+   *
+   * @param appName The application name.
+   * @param userId The user ID.
+   * @param sessionId The session ID.
+   * @param filename The filename of the artifact.
+   * @param version The version number of the artifact.
+   * @return The full blob name as a string.
+   */
   private String getBlobName(
       String appName, String userId, String sessionId, String filename, int version) {
-    // Constructs the full blob name including the version.
     return getBlobPrefix(appName, userId, sessionId, filename) + version;
   }
 
+  /**
+   * Saves an artifact to GCS, assigning it a version based on existing versions.
+   *
+   * @param appName The application name.
+   * @param userId The user ID.
+   * @param sessionId The session ID.
+   * @param filename The filename of the artifact.
+   * @param artifact The Part representing the artifact to save.
+   * @return A Single containing the version number assigned to the saved artifact.
+   */
   @Override
   public Single<Integer> saveArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact) {
@@ -102,6 +137,17 @@ public final class GcsArtifactService implements BaseArtifactService {
     }
   }
 
+  /**
+   * Loads an artifact from GCS, optionally specifying a version.
+   * If no version is specified, the latest version is loaded.
+   *
+   * @param appName The application name.
+   * @param userId The user ID.
+   * @param sessionId The session ID.
+   * @param filename The filename of the artifact.
+   * @param version Optional version number of the artifact to load.
+   * @return A Maybe containing the Part representing the loaded artifact, or empty if not found.
+   */
   @Override
   public Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, Optional<Integer> version) {
@@ -133,6 +179,15 @@ public final class GcsArtifactService implements BaseArtifactService {
     }
   }
 
+  /**
+   * Lists all artifact keys for a given app, user, and session.
+   * This includes both session-specific files and user-namespace files.
+   *
+   * @param appName The application name.
+   * @param userId The user ID.
+   * @param sessionId The session ID.
+   * @return A Single containing a ListArtifactsResponse with sorted filenames.
+   */
   @Override
   public Single<ListArtifactsResponse> listArtifactKeys(
       String appName, String userId, String sessionId) {
@@ -166,6 +221,15 @@ public final class GcsArtifactService implements BaseArtifactService {
         ListArtifactsResponse.builder().filenames(ImmutableList.sortedCopyOf(filenames)).build());
   }
 
+  /**
+   * Deletes all versions of a specified artifact from GCS.
+   *
+   * @param appName The application name.
+   * @param userId The user ID.
+   * @param sessionId The session ID.
+   * @param filename The filename of the artifact to delete.
+   * @return A Completable indicating the completion of the delete operation.
+   */
   @Override
   public Completable deleteArtifact(
       String appName, String userId, String sessionId, String filename) {
@@ -187,6 +251,16 @@ public final class GcsArtifactService implements BaseArtifactService {
     return Completable.complete();
   }
 
+  /**
+   * Lists all versions of a specified artifact.
+   * This method retrieves all versions of the artifact based on the filename and returns them as a sorted list.
+   *
+   * @param appName The application name.
+   * @param userId The user ID.
+   * @param sessionId The session ID.
+   * @param filename The filename of the artifact.
+   * @return A Single containing a sorted list of version numbers for the specified artifact.
+   */
   @Override
   public Single<ImmutableList<Integer>> listVersions(
       String appName, String userId, String sessionId, String filename) {

@@ -30,9 +30,28 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * A utility class for processing and converting different types of callback interfaces.
+ * This class provides static methods to normalize various callback implementations (synchronous or asynchronous)
+ * into a consistent asynchronous {@link Maybe}-based format, suitable for integration into agent workflows.
+ * It also handles cases where callback inputs are null or empty.
+ */
 public final class CallbackUtil {
   private static final Logger logger = LoggerFactory.getLogger(CallbackUtil.class);
 
+  /**
+   * Converts a list of {@link BeforeAgentCallbackBase} into an {@link ImmutableList} of
+   * {@link BeforeAgentCallback}.
+   * This method handles both {@link BeforeAgentCallback} (asynchronous) and
+   * {@link BeforeAgentCallbackSync} (synchronous) instances,
+   * wrapping synchronous callbacks into an asynchronous {@link Maybe} for unified processing.
+   * Invalid callback types will be logged as warnings and ignored.
+   *
+   * @param beforeAgentCallback A list of {@link BeforeAgentCallbackBase} instances, which may
+   * contain either asynchronous or synchronous callback implementations.
+   * @return An {@link ImmutableList} of {@link BeforeAgentCallback}, or {@code null} if the input list is {@code null}.
+   * Returns an empty list if the input list is empty or if no valid callbacks are found.
+   */
   @CanIgnoreReturnValue
   public static @Nullable ImmutableList<BeforeAgentCallback> getBeforeAgentCallbacks(
       List<BeforeAgentCallbackBase> beforeAgentCallback) {
@@ -60,6 +79,19 @@ public final class CallbackUtil {
     }
   }
 
+  /**
+   * Converts a list of {@link AfterAgentCallbackBase} into an {@link ImmutableList} of
+   * {@link AfterAgentCallback}.
+   * This method handles both {@link AfterAgentCallback} (asynchronous) and
+   * {@link AfterAgentCallbackSync} (synchronous) instances,
+   * wrapping synchronous callbacks into an asynchronous {@link Maybe} for unified processing.
+   * Invalid callback types will be logged as warnings and ignored.
+   *
+   * @param afterAgentCallback A list of {@link AfterAgentCallbackBase} instances, which may
+   * contain either asynchronous or synchronous callback implementations.
+   * @return An {@link ImmutableList} of {@link AfterAgentCallback}, or {@code null} if the input list is {@code null}.
+   * Returns an empty list if the input list is empty or if no valid callbacks are found.
+   */
   @CanIgnoreReturnValue
   public static @Nullable ImmutableList<AfterAgentCallback> getAfterAgentCallbacks(
       List<AfterAgentCallbackBase> afterAgentCallback) {
@@ -87,5 +119,9 @@ public final class CallbackUtil {
     }
   }
 
+  /**
+   * Private constructor to prevent instantiation of this utility class.
+   * This class provides only static helper methods and should not be instantiated.
+   */
   private CallbackUtil() {}
 }

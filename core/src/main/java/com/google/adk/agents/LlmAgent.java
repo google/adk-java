@@ -761,14 +761,21 @@ public class LlmAgent extends BaseAgent {
     return resolvedModel;
   }
 
+  /**
+   * Resolves the model for this agent, checking first if it is defined locally, then searching
+   * through ancestors.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   *
+   * @return The resolved {@link Model} for this agent.
+   * @throws IllegalStateException if no model is found for this agent or its ancestors.
+   */
   private Model resolveModelInternal() {
-    // 1. Check if the model is defined locally for this agent.
     if (this.model.isPresent()) {
       if (this.model().isPresent()) {
         return this.model.get();
       }
     }
-    // 2. If not defined locally, search ancestors.
     BaseAgent current = this.parentAgent();
     while (current != null) {
       if (current instanceof LlmAgent) {

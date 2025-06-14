@@ -69,16 +69,34 @@ public final class VertexAiSessionService implements BaseSessionService {
 
   /**
    * Creates a new instance of the Vertex AI Session Service with a custom ApiClient for testing.
+   * 
+   * @param project The Google Cloud project ID.
+   * @param location The Google Cloud location (e.g., "us-central1").
+   * @param apiClient A custom {@link HttpApiClient} to use for API interactions.
    */
   public VertexAiSessionService(String project, String location, HttpApiClient apiClient) {
     this.apiClient = apiClient;
   }
 
+  /**
+   * Creates a new instance of the Vertex AI Session Service with default client configuration.
+   * This constructor uses an {@link HttpApiClient} with no predefined project, location,
+   * credentials, or HTTP options, typically relying on default environment configurations.
+   */
   public VertexAiSessionService() {
     this.apiClient =
         new HttpApiClient(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
   }
 
+  /**
+   * Creates a new instance of the Vertex AI Session Service with specified project, location,
+   * credentials, and HTTP options.
+   *
+   * @param project The Google Cloud project ID.
+   * @param location The Google Cloud location (e.g., "us-central1").
+   * @param credentials Optional Google Cloud credentials for authentication.
+   * @param httpOptions Optional HTTP client configuration options.
+   */
   public VertexAiSessionService(
       String project,
       String location,
@@ -88,6 +106,13 @@ public final class VertexAiSessionService implements BaseSessionService {
         new HttpApiClient(Optional.of(project), Optional.of(location), credentials, httpOptions);
   }
 
+   /**
+   * Extracts and parses the JSON response body from an {@link ApiResponse}.
+   *
+   * @param apiResponse The API response object containing the response body.
+   * @return A {@link JsonNode} representing the parsed JSON response.
+   * @throws UncheckedIOException if an {@link IOException} occurs during reading the response body.
+   */
   private static JsonNode getJsonResponse(ApiResponse apiResponse) {
     try {
       ResponseBody responseBody = apiResponse.getResponseBody();
@@ -344,6 +369,32 @@ public final class VertexAiSessionService implements BaseSessionService {
     return Single.just(event);
   }
 
+  /**
+   * Converts an {@link Event} object into its JSON string representation suitable for the API.
+   * <p>
+   * This method comprehensively serializes various properties of the {@link Event} object
+   * into a structured JSON format. Key fields included in the serialization are:
+   * <ul>
+   * <li>Core event identifiers: {@code author}, {@code invocationId}.</li>
+   * <li>Timestamp: formatted into {@code seconds} and {@code nanos} for API compatibility.</li>
+   * <li>Content: The main textual or rich content of the event, which is encoded using
+   * {@link SessionUtils#encodeContent} to ensure proper transmission.</li>
+   * <li>Metadata: A nested object {@code eventMetadata} containing flags like
+   * {@code partial}, {@code turnComplete}, {@code interrupted}, {@code branch},
+   * {@code long_running_tool_ids}, and {@code grounding_metadata}.</li>
+   * <li>Actions: A nested object {@code actions} detailing event-specific actions such as
+   * {@code skipSummarization}, {@code stateDelta}, {@code artifactDelta},
+   * {@code transferAgent}, {@code escalate}, and {@code requestedAuthConfigs}.</li>
+   * <li>Error details: {@code errorCode} and {@code errorMessage}, if present.</li>
+   * </ul>
+   *
+   * @param event The {@link Event} object to convert into a JSON string.
+   * @return A JSON string representing the full {@link Event}, meticulously structured
+   * for consumption by the API.
+   * @throws UncheckedIOException if a {@link JsonProcessingException} occurs during the
+   * JSON serialization process (e.g., due to issues with {@link com.fasterxml.jackson.databind.ObjectMapper}),
+   * this checked exception is wrapped and re-thrown as an unchecked exception.
+   */
   static String convertEventToJson(Event event) {
     Map<String, Object> metadataJson = new HashMap<>();
     metadataJson.put("partial", event.partial());
@@ -402,6 +453,13 @@ public final class VertexAiSessionService implements BaseSessionService {
     }
   }
 
+  /**
+   * Converts a raw object value, typically a {@link Map}, into a {@link Content} object.
+   * This method is used for deserializing content from API responses.
+   *
+   * @param rawContentValue The raw object value representing the content.
+   * @return An optional {@link Content} object, or {@code null} if conversion fails or input is null.
+   */
   @Nullable
   @SuppressWarnings("unchecked")
   private static Content convertMapToContent(Object rawContentValue) {
@@ -424,6 +482,15 @@ public final class VertexAiSessionService implements BaseSessionService {
     }
   }
 
+  /**
+   * Parses the reasoning engine ID from a given application name string.
+   * The application name can either be the full resource name of the ReasoningEngine
+   * or just the reasoning engine ID (a number).
+   *
+   * @param appName The application name string.
+   * @return The parsed reasoning engine ID.
+   * @throws IllegalArgumentException if the app name format is invalid.
+   */
   static String parseReasoningEngineId(String appName) {
     if (appName.matches("\\d+")) {
       return appName;
@@ -442,6 +509,14 @@ public final class VertexAiSessionService implements BaseSessionService {
     return matcher.group(matcher.groupCount());
   }
 
+  /**
+   * Converts a raw API event map into an {@link Event} object.
+   * This method handles the deserialization of event properties, including actions,
+   * content (which is Base64 decoded), timestamps, and metadata.
+   *
+   * @param apiEvent A {@link Map} representing the raw event data received from the API.
+   * @return An {@link Event} object constructed from the API event data.
+   */
   @SuppressWarnings("unchecked")
   static Event fromApiEvent(Map<String, Object> apiEvent) {
     EventActions eventActions = new EventActions();
@@ -516,6 +591,14 @@ public final class VertexAiSessionService implements BaseSessionService {
     return event;
   }
 
+  /**
+   * Converts a timestamp object (either a Map or String) into an {@link Instant}.
+   * This handles timestamp formats used in API responses.
+   *
+   * @param timestampObj The object representing the timestamp, which can be a Map with "seconds" and "nanos" or a String.
+   * @return An {@link Instant} representation of the timestamp.
+   * @throws IllegalArgumentException if the timestamp is not found or in an unsupported format.
+   */
   private static Instant convertToInstant(Object timestampObj) {
     if (timestampObj instanceof Map<?, ?> timestampMap) {
       return Instant.ofEpochSecond(
@@ -528,6 +611,15 @@ public final class VertexAiSessionService implements BaseSessionService {
     }
   }
 
+  /**
+   * Casts and converts a given object into a {@link ConcurrentMap} where values are also
+   * {@link ConcurrentMap}s. This is typically used for deserializing nested map structures
+   * from API responses, ensuring thread-safe map implementations.
+   *
+   * @param value The object to convert, expected to be a {@code Map<String, Map<String, Object>>}.
+   * @return A {@link ConcurrentMap} of {@link ConcurrentMap}s.
+   * @throws ClassCastException if the input value is not compatible with the expected map structure.
+   */
   @SuppressWarnings("unchecked")
   private static ConcurrentMap<String, ConcurrentMap<String, Object>>
       asConcurrentMapOfConcurrentMaps(Object value) {
@@ -539,6 +631,11 @@ public final class VertexAiSessionService implements BaseSessionService {
                 ConcurrentHashMap::putAll);
   }
 
+  /**
+   * Regex pattern for validating and parsing the application name.
+   * It matches a full ReasoningEngine resource name in the format
+   * "projects/{project_id}/locations/{location}/reasoningEngines/{reasoning_engine_id}".
+   */
   private static final Pattern APP_NAME_PATTERN =
       Pattern.compile(
           "^projects/([a-zA-Z0-9-_]+)/locations/([a-zA-Z0-9-_]+)/reasoningEngines/(\\d+)$");

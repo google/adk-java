@@ -120,6 +120,15 @@ public class ParallelAgent extends BaseAgent {
     return new Builder();
   }
 
+  /**
+   * Sets the branch for the current agent in the invocation context.
+   *
+   * <p>This method appends the current agent's name to the existing branch, or sets it as the
+   * branch if none exists.
+   *
+   * @param currentAgent The current agent whose name will be used to set the branch.
+   * @param invocationContext The context of the invocation where the branch will be set.
+   */
   private static void setBranchForCurrentAgent(
       BaseAgent currentAgent, InvocationContext invocationContext) {
     String branch = invocationContext.branch().orElse(null);
@@ -130,6 +139,15 @@ public class ParallelAgent extends BaseAgent {
     }
   }
 
+  /**
+   * Runs the sub-agents in parallel and returns a Flowable of events.
+   *
+   * <p>This method sets the branch for the current agent in the invocation context and then
+   * collects events from all sub-agents running in parallel.
+   *
+   * @param invocationContext The context of the invocation.
+   * @return A Flowable that emits events from all sub-agents.
+   */
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
     setBranchForCurrentAgent(this, invocationContext);
@@ -146,6 +164,14 @@ public class ParallelAgent extends BaseAgent {
     return Flowable.merge(agentFlowables);
   }
 
+  /**
+   * Runs the sub-agents in parallel and returns a Flowable of events in live mode.
+   *
+   * <p>This method is not defined for ParallelAgent, as it does not support live execution.
+   *
+   * @param invocationContext The context of the invocation.
+   * @return A Flowable that emits events, but throws an UnsupportedOperationException.
+   */
   @Override
   protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
     return Flowable.error(

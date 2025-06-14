@@ -29,6 +29,12 @@ public class CallbackContext extends ReadonlyContext {
   protected EventActions eventActions;
   private final State state;
 
+  /**
+   * Constructs a new CallbackContext with the given invocation context and event actions.
+   *
+   * @param invocationContext The context of the current invocation, containing session and user information.
+   * @param eventActions The actions to be performed during the callback, can be null.
+   */
   public CallbackContext(InvocationContext invocationContext, EventActions eventActions) {
     super(invocationContext);
     this.eventActions = eventActions != null ? eventActions : EventActions.builder().build();
@@ -51,7 +57,14 @@ public class CallbackContext extends ReadonlyContext {
     return eventActions;
   }
 
-  /** Loads an artifact from the artifact service associated with the current session. */
+  /** 
+   * Loads an artifact from the artifact service associated with the current session.
+   * 
+   * @param filename The name of the artifact file to load.
+   * @param version Optional version of the artifact to load. If not provided, the latest version is loaded.
+   * @return A {@link Maybe} containing the loaded {@link Part} if successful, or empty if the artifact does not exist.
+   * @throws IllegalStateException if the artifact service is not initialized.
+   */
   public Maybe<Part> loadArtifact(String filename, Optional<Integer> version) {
     if (invocationContext.artifactService() == null) {
       throw new IllegalStateException("Artifact service is not initialized.");
@@ -66,7 +79,13 @@ public class CallbackContext extends ReadonlyContext {
             version);
   }
 
-  /** Saves an artifact and records it as a delta for the current session. */
+  /**
+   * Saves an artifact and records it as a delta for the current session.
+   * 
+   * @param filename The name of the file to save.
+   * @param artifact The {@link Part} representing the artifact to save.
+   * @throws IllegalStateException if the artifact service is not initialized.
+   */
   public void saveArtifact(String filename, Part artifact) {
     if (invocationContext.artifactService() == null) {
       throw new IllegalStateException("Artifact service is not initialized.");

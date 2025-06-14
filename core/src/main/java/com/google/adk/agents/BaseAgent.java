@@ -58,6 +58,15 @@ public abstract class BaseAgent {
   private final Optional<List<BeforeAgentCallback>> beforeAgentCallback;
   private final Optional<List<AfterAgentCallback>> afterAgentCallback;
 
+  /**
+   * Constructs a new BaseAgent with the specified name, description, and optional sub-agents.
+   *
+   * @param name The unique name of the agent.
+   * @param description A one-line description of the agent's capability.
+   * @param subAgents Optional list of sub-agents that this agent manages.
+   * @param beforeAgentCallback Optional list of callbacks to execute before the agent runs.
+   * @param afterAgentCallback Optional list of callbacks to execute after the agent runs.
+   */
   public BaseAgent(
       String name,
       String description,
@@ -164,6 +173,14 @@ public abstract class BaseAgent {
     return afterAgentCallback;
   }
 
+  /**
+   * Creates a new {@link InvocationContext} based on the provided parent context.
+   * The new context will inherit properties from the parent and update the branch name if
+   * applicable.
+   *
+   * @param parentContext The parent invocation context to copy from.
+   * @return A new {@link InvocationContext} with updated properties.
+   */
   private InvocationContext createInvocationContext(InvocationContext parentContext) {
     InvocationContext invocationContext = InvocationContext.copyOf(parentContext);
     invocationContext.agent(this);
@@ -174,6 +191,13 @@ public abstract class BaseAgent {
     return invocationContext;
   }
 
+  /**
+   * Runs the agent asynchronously, executing any before and after callbacks.
+   * The agent's main logic is implemented in {@link #runAsyncImpl(InvocationContext)}.
+   *
+   * @param parentContext The parent invocation context to inherit properties from.
+   * @return A {@link Flowable<Event>} that emits events produced by the agent.
+   */
   public Flowable<Event> runAsync(InvocationContext parentContext) {
     Tracer tracer = Telemetry.getTracer();
     return Flowable.defer(
@@ -216,6 +240,13 @@ public abstract class BaseAgent {
         });
   }
 
+  /**
+   * Converts a list of {@link BeforeAgentCallback} to a list of functions that can be applied
+   * to a {@link CallbackContext}. This is used to prepare the callbacks for execution.
+   *
+   * @param callbacks The list of before agent callbacks.
+   * @return An immutable list of functions that can be applied to a {@link CallbackContext}.
+   */
   private ImmutableList<Function<CallbackContext, Maybe<Content>>> beforeCallbacksToFunctions(
       List<BeforeAgentCallback> callbacks) {
     return callbacks.stream()
@@ -223,6 +254,13 @@ public abstract class BaseAgent {
         .collect(toImmutableList());
   }
 
+  /**
+   * Converts a list of {@link AfterAgentCallback} to a list of functions that can be applied
+   * to a {@link CallbackContext}. This is used to prepare the callbacks for execution.
+   *
+   * @param callbacks The list of after agent callbacks.
+   * @return An immutable list of functions that can be applied to a {@link CallbackContext}.
+   */
   private ImmutableList<Function<CallbackContext, Maybe<Content>>> afterCallbacksToFunctions(
       List<AfterAgentCallback> callbacks) {
     return callbacks.stream()
@@ -230,6 +268,14 @@ public abstract class BaseAgent {
         .collect(toImmutableList());
   }
 
+  /**
+   * Calls the provided agent callbacks and returns the first non-empty event produced by any of
+   * the callbacks. If no callbacks produce an event, it returns an empty Optional.
+   *
+   * @param agentCallbacks The list of agent callbacks to call.
+   * @param invocationContext The context for the current invocation.
+   * @return A Single that emits an Optional containing the first produced event, or empty if none.
+   */
   private Single<Optional<Event>> callCallback(
       List<Function<CallbackContext, Maybe<Content>>> agentCallbacks,
       InvocationContext invocationContext) {
@@ -284,6 +330,13 @@ public abstract class BaseAgent {
                 }));
   }
 
+  /**
+   * Runs the agent synchronously, executing any before and after callbacks.
+   * The agent's main logic is implemented in {@link #runLiveImpl(InvocationContext)}.
+   *
+   * @param parentContext The parent invocation context to inherit properties from.
+   * @return A {@link Flowable<Event>} that emits events produced by the agent.
+   */
   public Flowable<Event> runLive(InvocationContext parentContext) {
     Tracer tracer = Telemetry.getTracer();
     return Flowable.defer(
@@ -297,7 +350,21 @@ public abstract class BaseAgent {
         });
   }
 
+  /**
+   * The main implementation of the agent's asynchronous logic.
+   * This method should be overridden by subclasses to provide the agent's specific behavior.
+   *
+   * @param invocationContext The context for the current invocation.
+   * @return A {@link Flowable<Event>} that emits events produced by the agent.
+   */
   protected abstract Flowable<Event> runAsyncImpl(InvocationContext invocationContext);
 
+  /**
+   * The main implementation of the agent's synchronous logic.
+   * This method should be overridden by subclasses to provide the agent's specific behavior.
+   *
+   * @param invocationContext The context for the current invocation.
+   * @return A {@link Flowable<Event>} that emits events produced by the agent.
+   */
   protected abstract Flowable<Event> runLiveImpl(InvocationContext invocationContext);
 }
