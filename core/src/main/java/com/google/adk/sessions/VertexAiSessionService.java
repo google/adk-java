@@ -223,15 +223,20 @@ public final class VertexAiSessionService implements BaseSessionService {
     }
 
     JsonNode sessionEventsNode = getJsonResponse(apiResponse).get("sessionEvents");
-    List<Event> events =
-        objectMapper
-            .convertValue(
-                sessionEventsNode, new TypeReference<List<ConcurrentMap<String, Object>>>() {})
-            .stream()
-            .map(event -> fromApiEvent(event))
-            .collect(toCollection(ArrayList::new));
-
-    return Single.just(ListEventsResponse.builder().events(events).build());
+    if (sessionEventsNode == null || sessionEventsNode.isEmpty()) {
+      return Single.just(ListEventsResponse.builder().events(new ArrayList<>()).build());
+    }
+    return Single.just(
+        ListEventsResponse.builder()
+            .events(
+                objectMapper
+                    .convertValue(
+                        sessionEventsNode,
+                        new TypeReference<List<ConcurrentMap<String, Object>>>() {})
+                    .stream()
+                    .map(event -> fromApiEvent(event))
+                    .collect(toCollection(ArrayList::new)))
+            .build());
   }
 
   @Override
@@ -275,7 +280,7 @@ public final class VertexAiSessionService implements BaseSessionService {
                       .state(sessionState);
               List<Event> events = response.events();
               if (events.isEmpty()) {
-                return sessionBuilder.events(events).build();
+                return sessionBuilder.build();
               }
               events =
                   events.stream()
