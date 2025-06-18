@@ -68,7 +68,7 @@
         <java-websocket.version>1.6.0</java-websocket.version>
         <jackson.version>2.19.0</jackson.version>
         <okhttp.version>4.12.0</okhttp.version>
-        <langchain4j.version>1.0.1</langchain4j.version>
+        <langchain4j.version>1.1.0</langchain4j.version>
     </properties>
     <dependencyManagement>
         <dependencies>
