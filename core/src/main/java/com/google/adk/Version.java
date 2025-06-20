@@ -24,12 +24,13 @@ import org.slf4j.LoggerFactory;
 
 public final class Version {
   private static final Logger logger = LoggerFactory.getLogger(Version.class);
-  
+
   public static final String JAVA_ADK_VERSION;
-  
+
   static {
     String version = "unknown";
-    try (InputStream input = Version.class.getClassLoader().getResourceAsStream("version.properties")) {
+    try (InputStream input =
+        Version.class.getClassLoader().getResourceAsStream("version.properties")) {
       if (input != null) {
         Properties properties = new Properties();
         properties.load(input);

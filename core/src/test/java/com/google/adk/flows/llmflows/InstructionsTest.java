@@ -185,10 +185,7 @@ public final class InstructionsTest {
   public void
       processRequest_agentInstructionString_withInvalidPlaceholderSyntax_appendsInstructionWithLiteral() {
     LlmAgent agent =
-        LlmAgent.builder()
-            .name("agent")
-            .instruction("Value: { invalid name } and {var.}")
-            .build();
+        LlmAgent.builder().name("agent").instruction("Value: { invalid name } and {var.}").build();
     InvocationContext context = createContext(agent, createSession());
 
     RequestProcessor.RequestProcessingResult result =

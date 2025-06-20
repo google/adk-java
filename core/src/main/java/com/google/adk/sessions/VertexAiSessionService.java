@@ -152,13 +152,13 @@ public final class VertexAiSessionService implements BaseSessionService {
     JsonNode getSessionResponseMap = getJsonResponse(getSessionApiResponse);
     Instant updateTimestamp = Instant.parse(getSessionResponseMap.get("updateTime").asText());
     ConcurrentMap<String, Object> sessionState = null;
-      if (getSessionResponseMap != null && getSessionResponseMap.has("sessionState")) {
-        JsonNode sessionStateNode = getSessionResponseMap.get("sessionState");
-        if (sessionStateNode != null) {
+    if (getSessionResponseMap != null && getSessionResponseMap.has("sessionState")) {
+      JsonNode sessionStateNode = getSessionResponseMap.get("sessionState");
+      if (sessionStateNode != null) {
         sessionState =
             objectMapper.convertValue(
                 sessionStateNode, new TypeReference<ConcurrentMap<String, Object>>() {});
-        }
+      }
     }
     return Single.just(
         Session.builder(sessId)
