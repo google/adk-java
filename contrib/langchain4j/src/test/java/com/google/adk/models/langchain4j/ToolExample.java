@@ -16,19 +16,17 @@
 package com.google.adk.models.langchain4j;
 
 import com.google.adk.tools.Annotations;
-
 import java.util.Map;
 
 public class ToolExample {
-    @Annotations.Schema(description = "Function to get the weather forecast for a given city")
-    public static Map<String, Object> getWeather(
-        @Annotations.Schema(name = "city", description = "The city to get the weather forecast for")
-        String city) {
+  @Annotations.Schema(description = "Function to get the weather forecast for a given city")
+  public static Map<String, Object> getWeather(
+      @Annotations.Schema(name = "city", description = "The city to get the weather forecast for")
+          String city) {
 
-        return Map.of(
-            "city", city,
-            "forecast", "a beautiful and sunny weather",
-            "temperature", "from 10°C in the morning up to 24°C in the afternoon"
-        );
-    }
+    return Map.of(
+        "city", city,
+        "forecast", "a beautiful and sunny weather",
+        "temperature", "from 10°C in the morning up to 24°C in the afternoon");
+  }
 }
