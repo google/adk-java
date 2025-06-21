@@ -112,12 +112,24 @@ public class SequentialAgent extends BaseAgent {
     return new Builder();
   }
 
+  /**
+   * Runs sub-agents sequentially.
+   *
+   * @param invocationContext Invocation context.
+   * @return Flowable emitting events from sub-agents.
+   */
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
     return Flowable.fromIterable(subAgents())
         .concatMap(subAgent -> subAgent.runAsync(invocationContext));
   }
 
+  /**
+   * Runs sub-agents sequentially in live mode.
+   *
+   * @param invocationContext Invocation context.
+   * @return Flowable emitting events from sub-agents in live mode.
+   */
   @Override
   protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
     return Flowable.fromIterable(subAgents())

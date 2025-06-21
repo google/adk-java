@@ -51,6 +51,12 @@ public final class ExampleUtils {
 
   private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
+  /**
+   * Converts a list of examples into a formatted few-shot prompt string.
+   *
+   * @param examples List of examples.
+   * @return string representation of the examples block.
+   */
   private static String convertExamplesToText(List<Example> examples) {
     StringBuilder examplesStr = new StringBuilder();
     for (int exampleNum = 0; exampleNum < examples.size(); exampleNum++) {
@@ -112,6 +118,13 @@ public final class ExampleUtils {
     return EXAMPLES_INTRO + examplesStr + EXAMPLES_END;
   }
 
+  /**
+   * Builds a formatted few-shot example string for the given query.
+   *
+   * @param exampleProvider Source of examples.
+   * @param query User query.
+   * @return formatted string with few-shot examples.
+   */
   public static String buildExampleSi(BaseExampleProvider exampleProvider, String query) {
     return convertExamplesToText(exampleProvider.getExamples(query));
   }

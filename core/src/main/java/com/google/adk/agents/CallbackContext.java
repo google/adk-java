@@ -29,6 +29,12 @@ public class CallbackContext extends ReadonlyContext {
   protected EventActions eventActions;
   private final State state;
 
+  /**
+   * Initializes callback context.
+   *
+   * @param invocationContext Current invocation context.
+   * @param eventActions Callback event actions.
+   */
   public CallbackContext(InvocationContext invocationContext, EventActions eventActions) {
     super(invocationContext);
     this.eventActions = eventActions != null ? eventActions : EventActions.builder().build();
@@ -51,7 +57,14 @@ public class CallbackContext extends ReadonlyContext {
     return eventActions;
   }
 
-  /** Loads an artifact from the artifact service associated with the current session. */
+  /** 
+   * Loads an artifact from the artifact service associated with the current session.
+   * 
+   * @param filename Artifact file name.
+   * @param version Artifact version (optional).
+   * @return loaded part, or empty if not found.
+   * @throws IllegalStateException if the artifact service is not initialized.
+   */
   public Maybe<Part> loadArtifact(String filename, Optional<Integer> version) {
     if (invocationContext.artifactService() == null) {
       throw new IllegalStateException("Artifact service is not initialized.");
@@ -66,7 +79,13 @@ public class CallbackContext extends ReadonlyContext {
             version);
   }
 
-  /** Saves an artifact and records it as a delta for the current session. */
+  /**
+   * Saves an artifact and records it as a delta for the current session.
+   * 
+   * @param filename Artifact file name.
+   * @param artifact Artifact content to save.
+   * @throws IllegalStateException if the artifact service is not initialized.
+   */
   public void saveArtifact(String filename, Part artifact) {
     if (invocationContext.artifactService() == null) {
       throw new IllegalStateException("Artifact service is not initialized.");

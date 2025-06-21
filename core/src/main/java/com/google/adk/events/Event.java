@@ -183,6 +183,13 @@ public class Event extends JsonBaseModel {
     return branch;
   }
 
+  /**
+   * Sets the branch for this event.
+   *
+   * <p>Format: agentA.agentB.agentC — shows hierarchy of nested agents.
+   *
+   * @param branch Branch identifier.
+   */
   public void branch(@Nullable String branch) {
     this.branch = Optional.ofNullable(branch);
   }
@@ -211,6 +218,7 @@ public class Event extends JsonBaseModel {
     this.timestamp = timestamp;
   }
 
+  /** Returns all function calls from this event. */
   @JsonIgnore
   public final ImmutableList<FunctionCall> functionCalls() {
     return content().flatMap(Content::parts).orElse(ImmutableList.of()).stream()
@@ -219,6 +227,7 @@ public class Event extends JsonBaseModel {
         .collect(toImmutableList());
   }
 
+  /** Returns all function responses from this event. */
   @JsonIgnore
   public final ImmutableList<FunctionResponse> functionResponses() {
     return content().flatMap(Content::parts).orElse(ImmutableList.of()).stream()
@@ -227,6 +236,7 @@ public class Event extends JsonBaseModel {
         .collect(toImmutableList());
   }
 
+  /** Returns true if this is a final response. */
   @JsonIgnore
   public final boolean finalResponse() {
     if (actions().skipSummarization().orElse(false)
@@ -236,6 +246,13 @@ public class Event extends JsonBaseModel {
     return functionCalls().isEmpty() && functionResponses().isEmpty() && !partial().orElse(false);
   }
 
+  /**
+   * Converts the event content into a readable string.
+   *
+   * <p>Includes text, function calls, and responses.
+   *
+   * @return Stringified content.
+   */
   public final String stringifyContent() {
     StringBuilder sb = new StringBuilder();
     content()
@@ -484,10 +501,12 @@ public class Event extends JsonBaseModel {
     return new Builder();
   }
 
+  /** Parses an event from a JSON string. */
   public static Event fromJson(String json) {
     return fromJsonString(json, Event.class);
   }
 
+  /** Creates a builder pre-filled with this event's values. */
   public Builder toBuilder() {
     Builder builder =
         new Builder()

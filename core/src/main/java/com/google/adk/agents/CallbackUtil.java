@@ -30,9 +30,16 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/** Utility methods for normalizing agent callbacks. */
 public final class CallbackUtil {
   private static final Logger logger = LoggerFactory.getLogger(CallbackUtil.class);
 
+  /**
+   * Normalizes before-agent callbacks.
+   *
+   * @param beforeAgentCallback Callback list (sync or async).
+   * @return normalized async callbacks, or null if input is null.
+   */
   @CanIgnoreReturnValue
   public static @Nullable ImmutableList<BeforeAgentCallback> getBeforeAgentCallbacks(
       List<BeforeAgentCallbackBase> beforeAgentCallback) {
@@ -60,6 +67,12 @@ public final class CallbackUtil {
     }
   }
 
+  /**
+   * Normalizes after-agent callbacks.
+   *
+   * @param afterAgentCallback Callback list (sync or async).
+   * @return normalized async callbacks, or null if input is null.
+   */
   @CanIgnoreReturnValue
   public static @Nullable ImmutableList<AfterAgentCallback> getAfterAgentCallbacks(
       List<AfterAgentCallbackBase> afterAgentCallback) {

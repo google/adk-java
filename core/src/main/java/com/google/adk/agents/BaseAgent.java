@@ -58,6 +58,15 @@ public abstract class BaseAgent {
   private final Optional<List<BeforeAgentCallback>> beforeAgentCallback;
   private final Optional<List<AfterAgentCallback>> afterAgentCallback;
 
+  /**
+   * Creates a new BaseAgent.
+   *
+   * @param name Unique agent name.
+   * @param description Agent purpose.
+   * @param subAgents Agents managed by this agent.
+   * @param beforeAgentCallback Callbacks before agent execution.
+   * @param afterAgentCallback Callbacks after agent execution.
+   */
   public BaseAgent(
       String name,
       String description,
@@ -164,6 +173,12 @@ public abstract class BaseAgent {
     return afterAgentCallback;
   }
 
+  /**
+   * Creates a context based on the parent.
+   *
+   * @param parentContext Parent context to copy.
+   * @return new context with updated branch name.
+   */
   private InvocationContext createInvocationContext(InvocationContext parentContext) {
     InvocationContext invocationContext = InvocationContext.copyOf(parentContext);
     invocationContext.agent(this);
@@ -174,6 +189,12 @@ public abstract class BaseAgent {
     return invocationContext;
   }
 
+  /**
+   * Runs the agent asynchronously.
+   *
+   * @param parentContext Parent context to inherit.
+   * @return stream of agent-generated events.
+   */
   public Flowable<Event> runAsync(InvocationContext parentContext) {
     Tracer tracer = Telemetry.getTracer();
     return Flowable.defer(
@@ -216,6 +237,12 @@ public abstract class BaseAgent {
         });
   }
 
+  /**
+   * Converts before-agent callbacks to functions.
+   *
+   * @param callbacks Before-agent callbacks.
+   * @return callback functions.
+   */
   private ImmutableList<Function<CallbackContext, Maybe<Content>>> beforeCallbacksToFunctions(
       List<BeforeAgentCallback> callbacks) {
     return callbacks.stream()
@@ -223,6 +250,12 @@ public abstract class BaseAgent {
         .collect(toImmutableList());
   }
 
+  /**
+   * Converts after-agent callbacks to functions.
+   *
+   * @param callbacks After-agent callbacks.
+   * @return callback functions.
+   */
   private ImmutableList<Function<CallbackContext, Maybe<Content>>> afterCallbacksToFunctions(
       List<AfterAgentCallback> callbacks) {
     return callbacks.stream()
@@ -230,6 +263,13 @@ public abstract class BaseAgent {
         .collect(toImmutableList());
   }
 
+  /**
+   * Calls agent callbacks and returns the first produced event, if any.
+   *
+   * @param agentCallbacks Callback functions.
+   * @param invocationContext Current invocation context.
+   * @return single emitting first event, or empty if none.
+   */
   private Single<Optional<Event>> callCallback(
       List<Function<CallbackContext, Maybe<Content>>> agentCallbacks,
       InvocationContext invocationContext) {
@@ -282,6 +322,12 @@ public abstract class BaseAgent {
                 }));
   }
 
+  /**
+   * Runs the agent synchronously.
+   *
+   * @param parentContext Parent context to inherit.
+   * @return stream of agent-generated events.
+   */
   public Flowable<Event> runLive(InvocationContext parentContext) {
     Tracer tracer = Telemetry.getTracer();
     return Flowable.defer(
@@ -295,7 +341,19 @@ public abstract class BaseAgent {
         });
   }
 
+  /**
+   * Agent-specific asynchronous logic.
+   *
+   * @param invocationContext Current invocation context.
+   * @return stream of agent-generated events.
+   */
   protected abstract Flowable<Event> runAsyncImpl(InvocationContext invocationContext);
 
+  /**
+   * Agent-specific synchronous logic.
+   *
+   * @param invocationContext Current invocation context.
+   * @return stream of agent-generated events.
+   */
   protected abstract Flowable<Event> runLiveImpl(InvocationContext invocationContext);
 }

@@ -66,11 +66,13 @@ public final class AgentTransfer implements RequestProcessor {
         RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
   }
 
+  /** Builds a string with the target agent’s name and description. */
   private String buildTargetAgentsInfo(BaseAgent targetAgent) {
     return String.format(
         "Agent name: %s\nAgent description: %s", targetAgent.name(), targetAgent.description());
   }
 
+  /** Builds LLM instructions about when and how to transfer to another agent. */
   private String buildTargetAgentsInstructions(LlmAgent agent, List<BaseAgent> transferTargets) {
     StringBuilder sb = new StringBuilder();
     sb.append("You have a list of other agents to transfer to:\n");
@@ -96,6 +98,7 @@ public final class AgentTransfer implements RequestProcessor {
     return sb.toString();
   }
 
+  /** Returns valid transfer targets: sub-agents, parent, and peers (if allowed). */
   private List<BaseAgent> getTransferTargets(LlmAgent agent) {
     List<BaseAgent> transferTargets = new ArrayList<>();
     transferTargets.addAll(agent.subAgents()); // Add all sub-agents
@@ -121,6 +124,7 @@ public final class AgentTransfer implements RequestProcessor {
     return transferTargets;
   }
 
+  /** Marks the target agent for transfer using the tool context. */
   public static void transferToAgent(String agentName, ToolContext toolContext) {
     EventActions eventActions = toolContext.eventActions();
     toolContext.setActions(eventActions.toBuilder().transferToAgent(agentName).build());
