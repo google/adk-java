@@ -22,6 +22,7 @@
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-parent</artifactId>
         <version>0.1.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>google-adk-contrib-langchain4j</artifactId>
