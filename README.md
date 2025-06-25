@@ -52,9 +52,9 @@ If you're using Maven, add the following to your dependencies:
 </dependency>
 <!-- Dev UI -->
 <dependency>
-    <groupId>com.google.adk</groupId>
-    <artifactId>google-adk-dev</artifactId>
-    <version>0.1.0</version>
+  <groupId>com.google.adk</groupId>
+  <artifactId>google-adk-dev</artifactId>
+  <version>0.1.0</version>
 </dependency>
 ```
 
