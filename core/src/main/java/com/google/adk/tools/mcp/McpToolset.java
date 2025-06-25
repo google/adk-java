@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
+import io.modelcontextprotocol.spec.McpClientTransport;
 import io.modelcontextprotocol.spec.McpSchema.ListToolsResult;
 import java.util.List;
 import java.util.Objects;
@@ -50,14 +51,37 @@ public class McpToolset implements AutoCloseable {
   private final ObjectMapper objectMapper;
 
   /**
+   * Initializes the McpToolset with a custom McpClientTransport.
+   *
+   * @param transport The custom MCP client transport to use.
+   * @param objectMapper An ObjectMapper instance for parsing schemas.
+   */
+  public McpToolset(McpClientTransport transport, ObjectMapper objectMapper) {
+    Objects.requireNonNull(transport, "transport cannot be null");
+    Objects.requireNonNull(objectMapper, "objectMapper cannot be null");
+    this.objectMapper = objectMapper;
+    this.mcpSessionManager = new McpSessionManager(transport); // Use the new constructor
+  }
+
+  /**
+   * Initializes the McpToolset with a custom McpClientTransport, using the default ADK
+   * ObjectMapper.
+   *
+   * @param transport The custom MCP client transport to use.
+   */
+  public McpToolset(McpClientTransport transport) {
+    this(transport, JsonBaseModel.getMapper());
+  }
+
+  /**
    * Initializes the McpToolset with SSE server parameters.
    *
    * @param connectionParams The SSE connection parameters to the MCP server.
    * @param objectMapper An ObjectMapper instance for parsing schemas.
    */
   public McpToolset(SseServerParameters connectionParams, ObjectMapper objectMapper) {
-    Objects.requireNonNull(connectionParams);
-    Objects.requireNonNull(objectMapper);
+    Objects.requireNonNull(connectionParams, "connectionParams cannot be null");
+    Objects.requireNonNull(objectMapper, "objectMapper cannot be null");
     this.objectMapper = objectMapper;
     this.mcpSessionManager = new McpSessionManager(connectionParams);
   }
@@ -69,7 +93,7 @@ public class McpToolset implements AutoCloseable {
    * @param objectMapper An ObjectMapper instance for parsing schemas.
    */
   public McpToolset(ServerParameters connectionParams, ObjectMapper objectMapper) {
-    Objects.requireNonNull(connectionParams);
+    Objects.requireNonNull(connectionParams, "connectionParams cannot be null");
     this.objectMapper = objectMapper;
     this.mcpSessionManager = new McpSessionManager(connectionParams);
   }
