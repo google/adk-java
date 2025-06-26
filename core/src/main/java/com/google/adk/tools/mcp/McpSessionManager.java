@@ -37,29 +37,27 @@ import org.slf4j.LoggerFactory;
 // TODO(b/413489523): Implement this class.
 public class McpSessionManager {
 
-  private final Object connectionParams; // ServerParameters or SseServerParameters
   private static final Logger logger = LoggerFactory.getLogger(McpSessionManager.class);
+  private final McpClientTransport transport;
 
   public McpSessionManager(Object connectionParams) {
-    this.connectionParams = connectionParams;
+    this.transport = createTransport(connectionParams);
+  }
+
+  public McpSessionManager(McpClientTransport transport) {
+    this.transport = transport;
   }
 
   public McpSyncClient createSession() {
-    return initializeSession(this.connectionParams);
+    return initializeSession(this.transport);
   }
 
   public static McpSyncClient initializeSession(Object connectionParams) {
-    McpClientTransport transport;
-    if (connectionParams instanceof ServerParameters serverParameters) {
-      transport = new StdioClientTransport(serverParameters);
-    } else if (connectionParams instanceof SseServerParameters sseServerParams) {
-      transport =
-          HttpClientSseClientTransport.builder(sseServerParams.url()).sseEndpoint("sse").build();
-    } else {
-      throw new IllegalArgumentException(
-          "Connection parameters must be either ServerParameters or SseServerParameters, but got "
-              + connectionParams.getClass().getName());
-    }
+    McpClientTransport transport = createTransport(connectionParams);
+    return initializeSession(transport);
+  }
+
+  public static McpSyncClient initializeSession(McpClientTransport transport) {
     McpSyncClient client =
         McpClient.sync(transport)
             .requestTimeout(Duration.ofSeconds(10))
@@ -69,5 +67,17 @@ public class McpSessionManager {
     logger.debug("Initialize Client Result: {}", initResult);
 
     return client;
+  }
+
+  private static McpClientTransport createTransport(Object connectionParams) {
+    if (connectionParams instanceof ServerParameters serverParameters) {
+      return new StdioClientTransport(serverParameters);
+    } else if (connectionParams instanceof SseServerParameters sseServerParams) {
+      return HttpClientSseClientTransport.builder(sseServerParams.url()).sseEndpoint("sse").build();
+    } else {
+      throw new IllegalArgumentException(
+          "Connection parameters must be either ServerParameters or SseServerParameters, but got "
+              + connectionParams.getClass().getName());
+    }
   }
 }
