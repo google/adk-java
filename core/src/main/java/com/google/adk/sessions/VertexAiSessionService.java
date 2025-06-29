@@ -67,18 +67,18 @@ public final class VertexAiSessionService implements BaseSessionService {
 
   private final HttpApiClient apiClient;
 
-  /**
-   * Creates a new instance of the Vertex AI Session Service with a custom ApiClient for testing.
-   */
+  /** Creates a new instance of the Vertex AI Session Service with a custom ApiClient for testing. */
   public VertexAiSessionService(String project, String location, HttpApiClient apiClient) {
     this.apiClient = apiClient;
   }
 
+  /** Creates a session service with default configuration. */
   public VertexAiSessionService() {
     this.apiClient =
         new HttpApiClient(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
   }
 
+  /** Creates a session service with specified project, location, credentials, and HTTP options. */
   public VertexAiSessionService(
       String project,
       String location,
@@ -88,6 +88,11 @@ public final class VertexAiSessionService implements BaseSessionService {
         new HttpApiClient(Optional.of(project), Optional.of(location), credentials, httpOptions);
   }
 
+  /**
+   * Parses the JSON response body from the given API response.
+   *
+   * @throws UncheckedIOException if parsing fails.
+   */
   private static JsonNode getJsonResponse(ApiResponse apiResponse) {
     try {
       ResponseBody responseBody = apiResponse.getResponseBody();
@@ -349,6 +354,12 @@ public final class VertexAiSessionService implements BaseSessionService {
     return Single.just(event);
   }
 
+  /**
+   * Converts an {@link Event} to its JSON string representation for API transmission.
+   *
+   * @return JSON string of the event.
+   * @throws UncheckedIOException if serialization fails.
+   */
   static String convertEventToJson(Event event) {
     Map<String, Object> metadataJson = new HashMap<>();
     metadataJson.put("partial", event.partial());
@@ -407,6 +418,11 @@ public final class VertexAiSessionService implements BaseSessionService {
     }
   }
 
+  /**
+   * Converts a raw value to a {@link Content} object.
+   *
+   * @return parsed {@link Content}, or {@code null} if conversion fails.
+   */
   @Nullable
   @SuppressWarnings("unchecked")
   private static Content convertMapToContent(Object rawContentValue) {
@@ -429,6 +445,12 @@ public final class VertexAiSessionService implements BaseSessionService {
     }
   }
 
+  /**
+   * Extracts the reasoning engine ID from the given app name or full resource name.
+   *
+   * @return reasoning engine ID.
+   * @throws IllegalArgumentException if format is invalid.
+   */
   static String parseReasoningEngineId(String appName) {
     if (appName.matches("\\d+")) {
       return appName;
@@ -447,6 +469,11 @@ public final class VertexAiSessionService implements BaseSessionService {
     return matcher.group(matcher.groupCount());
   }
 
+  /**
+   * Converts raw API event data into an {@link Event} object.
+   *
+   * @return parsed {@link Event}.
+   */
   @SuppressWarnings("unchecked")
   static Event fromApiEvent(Map<String, Object> apiEvent) {
     EventActions eventActions = new EventActions();
@@ -521,6 +548,12 @@ public final class VertexAiSessionService implements BaseSessionService {
     return event;
   }
 
+  /**
+   * Converts a timestamp from a Map or String into an {@link Instant}.
+   *
+   * @param timestampObj map with "seconds"/"nanos" or an ISO string.
+   * @return parsed {@link Instant}.
+   */
   private static Instant convertToInstant(Object timestampObj) {
     if (timestampObj instanceof Map<?, ?> timestampMap) {
       return Instant.ofEpochSecond(
@@ -533,6 +566,11 @@ public final class VertexAiSessionService implements BaseSessionService {
     }
   }
 
+  /**
+   * Converts a nested map into a {@link ConcurrentMap} of {@link ConcurrentMap}s.
+   *
+   * @return thread-safe nested map.
+   */
   @SuppressWarnings("unchecked")
   private static ConcurrentMap<String, ConcurrentMap<String, Object>>
       asConcurrentMapOfConcurrentMaps(Object value) {
@@ -544,6 +582,7 @@ public final class VertexAiSessionService implements BaseSessionService {
                 ConcurrentHashMap::putAll);
   }
 
+  /** Regex for parsing full ReasoningEngine resource names. */
   private static final Pattern APP_NAME_PATTERN =
       Pattern.compile(
           "^projects/([a-zA-Z0-9-_]+)/locations/([a-zA-Z0-9-_]+)/reasoningEngines/(\\d+)$");

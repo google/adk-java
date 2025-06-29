@@ -39,6 +39,11 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     this.artifacts = new HashMap<>();
   }
 
+  /**
+   * Saves an artifact in memory and assigns a new version.
+   *
+   * @return Single with assigned version number.
+   */
   @Override
   public Single<Integer> saveArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact) {
@@ -52,6 +57,11 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     return Single.just(versions.size() - 1);
   }
 
+  /**
+   * Loads an artifact by version or latest.
+   *
+   * @return Maybe with the artifact, or empty if not found.
+   */
   @Override
   public Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, Optional<Integer> version) {
@@ -77,6 +87,11 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     }
   }
 
+  /**
+   * Lists filenames of stored artifacts for the session.
+   *
+   * @return Single with list of artifact filenames.
+   */
   @Override
   public Single<ListArtifactsResponse> listArtifactKeys(
       String appName, String userId, String sessionId) {
@@ -92,6 +107,11 @@ public final class InMemoryArtifactService implements BaseArtifactService {
             .build());
   }
 
+  /**
+   * Deletes all versions of the given artifact.
+   *
+   * @return Completable indicating completion.
+   */
   @Override
   public Completable deleteArtifact(
       String appName, String userId, String sessionId, String filename) {
@@ -103,6 +123,11 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     return Completable.complete();
   }
 
+  /**
+   * Lists all versions of the specified artifact.
+   *
+   * @return Single with list of version numbers.
+   */
   @Override
   public Single<ImmutableList<Integer>> listVersions(
       String appName, String userId, String sessionId, String filename) {

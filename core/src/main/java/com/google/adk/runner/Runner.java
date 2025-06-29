@@ -50,6 +50,7 @@ public class Runner {
   private final BaseArtifactService artifactService;
   private final BaseSessionService sessionService;
 
+  /** Creates a new {@code Runner}. */
   public Runner(
       BaseAgent agent,
       String appName,
@@ -77,6 +78,11 @@ public class Runner {
     return this.sessionService;
   }
 
+  /**
+   * Appends a new user message to the session history.
+   *
+   * @throws IllegalArgumentException if message has no parts.
+   */
   private void appendNewMessageToSession(
       Session session,
       Content newMessage,
@@ -207,6 +213,11 @@ public class Runner {
     }
   }
 
+  /**
+   * Creates an {@link InvocationContext} for a live (streaming) run.
+   *
+   * @return invocation context configured for a live run.
+   */
   private InvocationContext newInvocationContextForLive(
       Session session, Optional<LiveRequestQueue> liveRequestQueue, RunConfig runConfig) {
     RunConfig.Builder runConfigBuilder = RunConfig.builder(runConfig);
@@ -228,6 +239,11 @@ public class Runner {
     return newInvocationContext(session, liveRequestQueue, runConfigBuilder.build());
   }
 
+  /**
+   * Creates an {@link InvocationContext} for the given session, request queue, and config.
+   *
+   * @return a new {@link InvocationContext}.
+   */
   private InvocationContext newInvocationContext(
       Session session, Optional<LiveRequestQueue> liveRequestQueue, RunConfig runConfig) {
     BaseAgent rootAgent = this.agent;
@@ -243,6 +259,11 @@ public class Runner {
     return invocationContext;
   }
 
+  /**
+   * Runs the agent in live mode, appending generated events to the session.
+   *
+   * @return stream of events from the agent.
+   */
   public Flowable<Event> runLive(
       Session session, LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
     Span span = Telemetry.getTracer().spanBuilder("invocation").startSpan();
@@ -267,6 +288,12 @@ public class Runner {
     }
   }
 
+  /**
+   * Retrieves the session and runs the agent in live mode.
+   *
+   * @return stream of events from the agent.
+   * @throws IllegalArgumentException if the session is not found.
+   */
   public Flowable<Event> runLive(
       String userId, String sessionId, LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
     return this.sessionService
@@ -282,12 +309,22 @@ public class Runner {
             });
   }
 
+  /**
+   * Runs the agent asynchronously with a default user ID.
+   *
+   * @return stream of generated events.
+   */
   public Flowable<Event> runWithSessionId(
       String sessionId, Content newMessage, RunConfig runConfig) {
     // TODO(b/410859954): Add user_id to getter or method signature. Assuming "tmp-user" for now.
     return this.runAsync("tmp-user", sessionId, newMessage, runConfig);
   }
 
+  /**
+   * Checks if the agent and its parent chain allow transfer up the tree.
+   *
+   * @return true if transferable, false otherwise.
+   */
   private boolean isTransferableAcrossAgentTree(BaseAgent agentToRun) {
     BaseAgent current = agentToRun;
     while (current != null) {
@@ -305,6 +342,11 @@ public class Runner {
     return true;
   }
 
+  /**
+   * Returns the agent that should handle the next request based on session history.
+   *
+   * @return agent to run.
+   */
   private BaseAgent findAgentToRun(Session session, BaseAgent rootAgent) {
     List<Event> events = new ArrayList<>(session.events());
     Collections.reverse(events);

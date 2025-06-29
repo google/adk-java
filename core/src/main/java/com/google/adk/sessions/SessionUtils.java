@@ -30,6 +30,7 @@ public final class SessionUtils {
 
   public SessionUtils() {}
 
+  /** Base64-encodes inline blobs in content. */
   public static Content encodeContent(Content content) {
     List<Part> encodedParts = new ArrayList<>();
     for (Part part : content.parts().orElse(ImmutableList.of())) {
@@ -55,6 +56,7 @@ public final class SessionUtils {
     return toContent(encodedParts, content.role());
   }
 
+  /** Decodes Base64-encoded inline blobs in content. */
   public static Content decodeContent(Content content) {
     List<Part> decodedParts = new ArrayList<>();
     for (Part part : content.parts().orElse(ImmutableList.of())) {
@@ -80,6 +82,7 @@ public final class SessionUtils {
     return toContent(decodedParts, content.role());
   }
 
+  /** Builds content from parts and optional role. */
   private static Content toContent(List<Part> parts, Optional<String> role) {
     Content.Builder contentBuilder = Content.builder().parts(parts);
     role.ifPresent(contentBuilder::role);
