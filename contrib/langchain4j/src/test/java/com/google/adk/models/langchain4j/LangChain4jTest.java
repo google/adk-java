@@ -163,6 +163,108 @@ class LangChain4jTest {
   }
 
   @Test
+  @DisplayName("Should handle multiple function calls in LLM responses")
+  void testGenerateContentWithMultipleFunctionCall() {
+    // Given
+    // Create mock FunctionTools
+    final FunctionTool weatherTool = mock(FunctionTool.class);
+    when(weatherTool.name()).thenReturn("getWeather");
+    when(weatherTool.description()).thenReturn("Get weather for a city");
+
+    final FunctionTool timeTool = mock(FunctionTool.class);
+    when(timeTool.name()).thenReturn("getCurrentTime");
+    when(timeTool.description()).thenReturn("Get current time for a city");
+
+    // Create mock FunctionDeclarations
+    final FunctionDeclaration weatherDeclaration = mock(FunctionDeclaration.class);
+    final FunctionDeclaration timeDeclaration = mock(FunctionDeclaration.class);
+    when(weatherTool.declaration()).thenReturn(Optional.of(weatherDeclaration));
+    when(timeTool.declaration()).thenReturn(Optional.of(timeDeclaration));
+
+    // Create mock Schemas
+    final Schema weatherSchema = mock(Schema.class);
+    final Schema timeSchema = mock(Schema.class);
+    when(weatherDeclaration.parameters()).thenReturn(Optional.of(weatherSchema));
+    when(timeDeclaration.parameters()).thenReturn(Optional.of(timeSchema));
+
+    // Create mock Types
+    final Type weatherType = mock(Type.class);
+    final Type timeType = mock(Type.class);
+    when(weatherSchema.type()).thenReturn(Optional.of(weatherType));
+    when(timeSchema.type()).thenReturn(Optional.of(timeType));
+    when(weatherType.knownEnum()).thenReturn(Type.Known.OBJECT);
+    when(timeType.knownEnum()).thenReturn(Type.Known.OBJECT);
+
+    // Create mock schema properties
+    when(weatherSchema.properties()).thenReturn(Optional.of(Map.of("city", weatherSchema)));
+    when(timeSchema.properties()).thenReturn(Optional.of(Map.of("city", timeSchema)));
+    when(weatherSchema.required()).thenReturn(Optional.of(List.of("city")));
+    when(timeSchema.required()).thenReturn(Optional.of(List.of("city")));
+
+    // Create LlmRequest
+    final LlmRequest llmRequest =
+        LlmRequest.builder()
+            .contents(
+                List.of(
+                    Content.fromParts(
+                        Part.fromText("What's the weather in Paris and the current time?"))))
+            .build();
+
+    // Mock multiple tool execution requests in the AI response
+    final ToolExecutionRequest weatherRequest =
+        ToolExecutionRequest.builder()
+            .id("123")
+            .name("getWeather")
+            .arguments("{\"city\":\"Paris\"}")
+            .build();
+
+    final ToolExecutionRequest timeRequest =
+        ToolExecutionRequest.builder()
+            .id("456")
+            .name("getCurrentTime")
+            .arguments("{\"city\":\"Paris\"}")
+            .build();
+
+    final AiMessage aiMessage =
+        AiMessage.builder()
+            .text("")
+            .toolExecutionRequests(List.of(weatherRequest, timeRequest))
+            .build();
+
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    when(chatResponse.aiMessage()).thenReturn(aiMessage);
+    when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+
+    // When
+    final LlmResponse response = langChain4j.generateContent(llmRequest, false).blockingFirst();
+
+    // Then
+    assertThat(response).isNotNull();
+    assertThat(response.content()).isPresent();
+    assertThat(response.content().get().parts()).isPresent();
+
+    final List<Part> parts = response.content().get().parts().orElseThrow();
+    assertThat(parts).hasSize(2);
+
+    // Verify first function call (getWeather)
+    assertThat(parts.get(0).functionCall()).isPresent();
+    final FunctionCall weatherCall = parts.get(0).functionCall().orElseThrow();
+    assertThat(weatherCall.name()).isEqualTo(Optional.of("getWeather"));
+    assertThat(weatherCall.args()).isPresent();
+    assertThat(weatherCall.args().get()).containsEntry("city", "Paris");
+
+    // Verify second function call (getCurrentTime)
+    assertThat(parts.get(1).functionCall()).isPresent();
+    final FunctionCall timeCall = parts.get(1).functionCall().orElseThrow();
+    assertThat(timeCall.name()).isEqualTo(Optional.of("getCurrentTime"));
+    assertThat(timeCall.args()).isPresent();
+    assertThat(timeCall.args().get()).containsEntry("city", "Paris");
+
+    // Verify the ChatModel was called
+    verify(chatModel).chat(any(ChatRequest.class));
+  }
+
+  @Test
   @DisplayName("Should handle streaming responses correctly")
   void testGenerateContentWithStreamingChatModel() {
     // Given
