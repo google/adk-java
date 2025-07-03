@@ -272,7 +272,7 @@ public final class InMemorySessionService implements BaseSessionService {
   // TODO: have Event.timestamp() return Instant directly
   private Instant getInstantFromEvent(Event event) {
     double epochSeconds = getEventTimestampEpochSeconds(event);
-    long seconds = (long) epochSeconds;
+    long seconds = (long) epochSeconds / 1000;
     long nanos = (long) ((epochSeconds % 1.0) * 1_000_000_000L);
     return Instant.ofEpochSecond(seconds, nanos);
   }
