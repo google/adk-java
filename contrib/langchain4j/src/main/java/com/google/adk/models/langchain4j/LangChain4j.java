@@ -266,24 +266,25 @@ public class LangChain4j extends BaseLlm {
   }
 
   private List<ChatMessage> toMessages(LlmRequest llmRequest) {
-    List<ChatMessage> messages = new ArrayList<>();
-    messages.addAll(llmRequest.getSystemInstructions().stream().map(SystemMessage::from).toList());
-    messages.addAll(llmRequest.contents().stream().map(this::toChatMessage).toList());
+    List<ChatMessage> messages =
+        new ArrayList<>(
+            llmRequest.getSystemInstructions().stream().map(SystemMessage::from).toList());
+    llmRequest.contents().forEach(content -> messages.addAll(toChatMessage(content)));
     return messages;
   }
 
-  private ChatMessage toChatMessage(Content content) {
+  private List<ChatMessage> toChatMessage(Content content) {
     String role = content.role().orElseThrow().toLowerCase();
     return switch (role) {
       case "user" -> toUserOrToolResultMessage(content);
-      case "model", "assistant" -> toAiMessage(content);
+      case "model", "assistant" -> List.of(toAiMessage(content));
       default -> throw new IllegalStateException("Unexpected role: " + role);
     };
   }
 
-  private ChatMessage toUserOrToolResultMessage(Content content) {
-    ToolExecutionResultMessage toolExecutionResultMessage = null;
-    ToolExecutionRequest toolExecutionRequest = null;
+  private List<ChatMessage> toUserOrToolResultMessage(Content content) {
+    List<ToolExecutionResultMessage> toolExecutionResultMessages = new ArrayList<>();
+    List<ToolExecutionRequest> toolExecutionRequests = new ArrayList<>();
 
     List<dev.langchain4j.data.message.Content> lc4jContents = new ArrayList<>();
 
@@ -292,19 +293,19 @@ public class LangChain4j extends BaseLlm {
         lc4jContents.add(TextContent.from(part.text().get()));
       } else if (part.functionResponse().isPresent()) {
         FunctionResponse functionResponse = part.functionResponse().get();
-        toolExecutionResultMessage =
+        toolExecutionResultMessages.add(
             ToolExecutionResultMessage.from(
                 functionResponse.id().orElseThrow(),
                 functionResponse.name().orElseThrow(),
-                toJson(functionResponse.response().orElseThrow()));
+                toJson(functionResponse.response().orElseThrow())));
       } else if (part.functionCall().isPresent()) {
         FunctionCall functionCall = part.functionCall().get();
-        toolExecutionRequest =
+        toolExecutionRequests.add(
             ToolExecutionRequest.builder()
                 .id(functionCall.id().orElseThrow())
                 .name(functionCall.name().orElseThrow())
                 .arguments(toJson(functionCall.args().orElse(Map.of())))
-                .build();
+                .build());
       } else if (part.inlineData().isPresent()) {
         Blob blob = part.inlineData().get();
 
@@ -368,12 +369,15 @@ public class LangChain4j extends BaseLlm {
       }
     }
 
-    if (toolExecutionResultMessage != null) {
-      return toolExecutionResultMessage;
-    } else if (toolExecutionRequest != null) {
-      return AiMessage.aiMessage(toolExecutionRequest);
+    if (!toolExecutionResultMessages.isEmpty()) {
+      return new ArrayList<ChatMessage>(toolExecutionResultMessages);
+    } else if (!toolExecutionRequests.isEmpty()) {
+      return toolExecutionRequests.stream()
+          .map(AiMessage::aiMessage)
+          .map(msg -> (ChatMessage) msg)
+          .toList();
     } else {
-      return UserMessage.from(lc4jContents);
+      return List.of(UserMessage.from(lc4jContents));
     }
   }
 
