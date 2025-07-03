@@ -221,7 +221,9 @@
               <goal>prepare-agent</goal>
             </goals>
             <configuration>
+              <propertyName>jacoco.agent.argLine</propertyName>
               <excludes>
+                <exclude>java/net/http/**</exclude>
                 <exclude>*MockitoMock*</exclude>
                 <exclude>*$$EnhancerByMockitoWithCGLIB$$*</exclude>
                 <exclude>*$$FastClassByMockitoWithCGLIB$$*</exclude>
