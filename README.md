@@ -50,7 +50,7 @@ If you're using Maven, add the following to your dependencies:
   <artifactId>google-adk</artifactId>
   <version>0.1.0</version>
 </dependency>
-<!-- Dev UI -->
+<!-- (Optional) Dev UI -->
 <dependency>
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk-dev</artifactId>
