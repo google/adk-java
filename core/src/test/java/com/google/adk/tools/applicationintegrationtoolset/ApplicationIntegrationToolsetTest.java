@@ -4,17 +4,16 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.core.JsonParseException;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.applicationintegrationtoolset.ApplicationIntegrationTool.HttpExecutor;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -27,103 +26,126 @@ import org.mockito.junit.MockitoRule;
 public final class ApplicationIntegrationToolsetTest {
 
   @Rule public final MockitoRule mockito = MockitoJUnit.rule();
-  @Mock private HttpExecutor mockHttpExecutor; // Mock our own interface
-  @Mock private HttpResponse<String> mockHttpResponse; // Mock the response
+  @Mock private HttpExecutor mockHttpExecutor;
+  @Mock private HttpResponse<String> mockHttpResponse;
 
   private static final String LOCATION = "us-central1";
   private static final String PROJECT = "test-project";
-  private static final String INTEGRATION = "test-integration";
-  private static final ImmutableList<String> TRIGGERS = ImmutableList.of("trigger-1");
   private static final String MOCK_ACCESS_TOKEN = "test-token";
-  private ApplicationIntegrationToolset toolset;
+  private static final String CONNECTION =
+      "projects/test-project/locations/us-central1/connections/test-conn";
 
-  @Before
-  public void setUp() {
-    toolset =
+  @Test
+  @SuppressWarnings("MockitoDoSetup")
+  public void getTools_forIntegration_success() throws Exception {
+    ApplicationIntegrationToolset toolset =
         new ApplicationIntegrationToolset(
-            PROJECT, LOCATION, INTEGRATION, TRIGGERS, mockHttpExecutor);
-  }
+            PROJECT,
+            LOCATION,
+            "test-integration",
+            ImmutableList.of("api_trigger/trigger-1"),
+            null,
+            null,
+            null,
+            null,
+            null,
+            mockHttpExecutor);
 
-  @Test
-  @SuppressWarnings("MockitoDoSetup")
-  public void generateOpenApiSpec_success() throws Exception {
-    String mockResponseJson = "{\"openApiSpec\": \"{\\\"paths\\\":{}}\"}";
-
+    String mockOpenApiSpecJson =
+        "{\"openApiSpec\":"
+            + "\"{\\\"paths\\\":{\\\"/p1?triggerId=api_trigger/trigger-1\\\":{\\\"post\\\":{\\\"operationId\\\":\\\"trigger-1\\\"}}},"
+            + "\\\"components\\\":{\\\"schemas\\\":{}}}\"}";
+    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
     when(mockHttpResponse.statusCode()).thenReturn(200);
-    when(mockHttpResponse.body()).thenReturn(mockResponseJson);
+    when(mockHttpResponse.body()).thenReturn(mockOpenApiSpecJson);
     doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
 
-    ApplicationIntegrationToolset spyToolset = spy(toolset);
-    doReturn(MOCK_ACCESS_TOKEN).when(spyToolset).getAccessToken();
+    List<BaseTool> tools = toolset.getTools();
 
-    String result = spyToolset.generateOpenApiSpec();
-
-    assertThat(result).isEqualTo(mockResponseJson);
+    assertThat(tools).hasSize(1);
+    assertThat(tools.get(0).name()).isEqualTo("trigger-1");
   }
 
   @Test
   @SuppressWarnings("MockitoDoSetup")
-  public void generateOpenApiSpec_error() throws Exception {
-    when(mockHttpResponse.statusCode()).thenReturn(404);
+  public void getTools_forConnection_success() throws Exception {
+    ApplicationIntegrationToolset toolset =
+        new ApplicationIntegrationToolset(
+            PROJECT,
+            LOCATION,
+            null,
+            null,
+            CONNECTION,
+            ImmutableMap.of("Issue", ImmutableList.of("GET")),
+            null,
+            "Jira",
+            "Tools for Jira",
+            mockHttpExecutor);
+
+    String mockConnectionDetailsJson =
+        "{\"name\":\""
+            + CONNECTION
+            + "\", \"serviceName\":\"jira.example.com\", \"host\":\"1.2.3.4\"}";
+    String mockEntitySchemaJson =
+        "{\"name\": \"op1\", \"done\": true, \"response\": {\"jsonSchema\": {}, \"operations\":"
+            + " [\"GET\"]}}";
+    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
+    when(mockHttpResponse.statusCode()).thenReturn(200);
+    when(mockHttpResponse.body())
+        .thenReturn(mockConnectionDetailsJson)
+        .thenReturn(mockEntitySchemaJson);
     doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
 
-    ApplicationIntegrationToolset spyToolset = spy(toolset);
-    doReturn(MOCK_ACCESS_TOKEN).when(spyToolset).getAccessToken();
+    List<BaseTool> tools = toolset.getTools();
 
-    Exception exception = assertThrows(Exception.class, spyToolset::generateOpenApiSpec);
-    assertThat(exception).hasMessageThat().isEqualTo("Error fetching OpenAPI spec. Status: " + 404);
+    assertThat(tools).hasSize(1);
+    assertThat(tools.get(0).name()).isEqualTo("Jira_get_issue");
   }
 
   @Test
-  public void extractTriggerIdFromPath_success() {
-    String path =
-        "/v1/projects/test-project/locations/us-central1/integrations/test-integration/trigger/triggerId=api_trigger/trigger-id";
+  public void getTools_invalidArguments_throwsException() {
+    ApplicationIntegrationToolset toolset =
+        new ApplicationIntegrationToolset(
+            PROJECT, LOCATION, null, null, CONNECTION, null, null, null, null, mockHttpExecutor);
 
-    String triggerId = toolset.extractTriggerIdFromPath(path);
-
-    assertThat(triggerId).isEqualTo("trigger-id");
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, toolset::getTools);
+    assertThat(e)
+        .hasMessageThat()
+        .contains(
+            "Invalid request, Either integration or (connection and"
+                + " (entityOperations or actions)) should be provided.");
   }
 
   @Test
-  public void extractTriggerIdFromPath_noTriggerId() {
-    String path = "/v1/projects/test-project/locations/us-central1/integrations/test-integration";
+  public void getTools_forConnection_noEntityOperationsOrActions_throwsException()
+      throws Exception {
+    ApplicationIntegrationToolset toolset =
+        new ApplicationIntegrationToolset(
+            PROJECT, LOCATION, null, null, null, null, null, null, null, mockHttpExecutor);
 
-    String triggerId = toolset.extractTriggerIdFromPath(path);
-
-    assertThat(triggerId).isNull();
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, toolset::getTools);
+    assertThat(e)
+        .hasMessageThat()
+        .contains(
+            "Invalid request, Either integration or (connection and"
+                + " (entityOperations or actions)) should be provided.");
   }
 
   @Test
   public void getPathUrl_success() throws Exception {
     String openApiSpec =
         "{\"openApiSpec\": \"{\\\"paths\\\":{\\\"/path1\\\":{},\\\"/path2\\\":{}}}\"}";
-
+    ApplicationIntegrationToolset toolset =
+        new ApplicationIntegrationToolset(null, null, null, null, null, null, null, null, null);
     List<String> paths = toolset.getPathUrl(openApiSpec);
-
-    assertThat(paths).containsExactly("/path1", "/path2");
+    assertThat(paths).containsExactly("/path1", "/path2").inOrder();
   }
 
   @Test
-  public void getPathUrl_invalidJson() throws Exception {
+  public void getPathUrl_invalidJson_throwsException() {
     String openApiSpec = "{\"openApiSpec\": \"invalid json\"}";
-
+    ApplicationIntegrationToolset toolset =
+        new ApplicationIntegrationToolset(null, null, null, null, null, null, null, null, null);
     assertThrows(JsonParseException.class, () -> toolset.getPathUrl(openApiSpec));
-  }
-
-  @Test
-  public void getTools_success() throws Exception {
-    String mockOpenApiSpec =
-        "{\"openApiSpec\":"
-            + "\"{\\\"paths\\\":{\\\"/p1/triggerId=api_trigger/trigger-1\\\":{},\\\"/p2/triggerId=api_trigger/trigger-2\\\":{}}}\"}";
-
-    ApplicationIntegrationToolset spyToolset = spy(toolset);
-
-    doReturn(mockOpenApiSpec).when(spyToolset).generateOpenApiSpec();
-
-    List<BaseTool> tools = spyToolset.getTools();
-
-    assertThat(tools).hasSize(2);
-    assertThat(tools.get(0).name()).isEqualTo("trigger-1");
-    assertThat(tools.get(1).name()).isEqualTo("trigger-2");
   }
 }

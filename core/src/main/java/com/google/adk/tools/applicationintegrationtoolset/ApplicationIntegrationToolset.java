@@ -2,22 +2,14 @@ package com.google.adk.tools.applicationintegrationtoolset;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.applicationintegrationtoolset.ApplicationIntegrationTool.DefaultHttpExecutor;
 import com.google.adk.tools.applicationintegrationtoolset.ApplicationIntegrationTool.HttpExecutor;
-import com.google.auth.oauth2.GoogleCredentials;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import org.jspecify.annotations.Nullable;
 
 /** Application Integration Toolset */
 public class ApplicationIntegrationToolset {
@@ -25,8 +17,13 @@ public class ApplicationIntegrationToolset {
   String location;
   String integration;
   List<String> triggers;
-  private final HttpExecutor httpExecutor;
+  String connection;
+  Map<String, List<String>> entityOperations;
+  List<String> actions;
+  String toolNamePrefix;
+  String toolInstructions;
   public static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+  HttpExecutor httpExecutor;
 
   /**
    * ApplicationIntegrationToolset generates tools from a given Application Integration resource.
@@ -37,14 +34,44 @@ public class ApplicationIntegrationToolset {
    * location="us-central1", integration="test-integration",
    * triggers=ImmutableList.of("api_trigger/test_trigger", "api_trigger/test_trigger_2"));
    *
+   * <p>connectionTool = new ApplicationIntegrationToolset( project="test-project",
+   * location="us-central1", connection="test-connection",
+   * entityOperations=ImmutableMap.of("Entity1", ImmutableList.of("LIST", "GET", "UPDATE")),
+   * "Entity2", ImmutableList.of()), actions=ImmutableList.of("ExecuteCustomQuery"),
+   * toolNamePrefix="test-tool", toolInstructions="This tool is used to list, get and update issues
+   * in Jira.");
+   *
    * @param project The GCP project ID.
    * @param location The GCP location of integration.
    * @param integration The integration name.
    * @param triggers(Optional) The list of trigger ids in the integration.
+   * @param connection(Optional) The connection name.
+   * @param entityOperations(Optional) The entity operations.
+   * @param actions(Optional) The actions.
+   * @param toolNamePrefix(Optional) The tool name prefix.
+   * @param toolInstructions(Optional) The tool instructions.
    */
   public ApplicationIntegrationToolset(
-      String project, String location, String integration, List<String> triggers) {
-    this(project, location, integration, triggers, new DefaultHttpExecutor());
+      String project,
+      String location,
+      String integration,
+      List<String> triggers,
+      String connection,
+      Map<String, List<String>> entityOperations,
+      List<String> actions,
+      String toolNamePrefix,
+      String toolInstructions) {
+    this(
+        project,
+        location,
+        integration,
+        triggers,
+        connection,
+        entityOperations,
+        actions,
+        toolNamePrefix,
+        toolInstructions,
+        new DefaultHttpExecutor());
   }
 
   ApplicationIntegrationToolset(
@@ -52,54 +79,22 @@ public class ApplicationIntegrationToolset {
       String location,
       String integration,
       List<String> triggers,
+      String connection,
+      Map<String, List<String>> entityOperations,
+      List<String> actions,
+      String toolNamePrefix,
+      String toolInstructions,
       HttpExecutor httpExecutor) {
     this.project = project;
     this.location = location;
     this.integration = integration;
     this.triggers = triggers;
+    this.connection = connection;
+    this.entityOperations = entityOperations;
+    this.actions = actions;
+    this.toolNamePrefix = toolNamePrefix;
+    this.toolInstructions = toolInstructions;
     this.httpExecutor = httpExecutor;
-  }
-
-  String generateOpenApiSpec() throws Exception {
-    String url =
-        String.format(
-            "https://%s-integrations.googleapis.com/v1/projects/%s/locations/%s:generateOpenApiSpec",
-            this.location, this.project, this.location);
-
-    String jsonRequestBody =
-        OBJECT_MAPPER.writeValueAsString(
-            ImmutableMap.of(
-                "apiTriggerResources",
-                ImmutableList.of(
-                    ImmutableMap.of(
-                        "integrationResource",
-                        this.integration,
-                        "triggerId",
-                        Arrays.asList(this.triggers))),
-                "fileFormat",
-                "JSON"));
-    HttpRequest request =
-        HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .header("Authorization", "Bearer " + getAccessToken())
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(jsonRequestBody))
-            .build();
-    HttpResponse<String> response =
-        httpExecutor.send(request, HttpResponse.BodyHandlers.ofString());
-
-    if (response.statusCode() < 200 || response.statusCode() >= 300) {
-      throw new Exception("Error fetching OpenAPI spec. Status: " + response.statusCode());
-    }
-    return response.body();
-  }
-
-  String getAccessToken() throws IOException {
-    GoogleCredentials credentials =
-        GoogleCredentials.getApplicationDefault()
-            .createScoped(ImmutableList.of("https://www.googleapis.com/auth/cloud-platform"));
-    credentials.refreshIfExpired();
-    return credentials.getAccessToken().getTokenValue();
   }
 
   List<String> getPathUrl(String openApiSchemaString) throws Exception {
@@ -108,7 +103,7 @@ public class ApplicationIntegrationToolset {
     JsonNode specNode = topLevelNode.path("openApiSpec");
     if (specNode.isMissingNode() || !specNode.isTextual()) {
       throw new IllegalArgumentException(
-          "API response must contain an 'openApiSpec' key with a string value.");
+          "Failed to get OpenApiSpec, please check the project and region for the integration.");
     }
     JsonNode rootNode = OBJECT_MAPPER.readTree(specNode.asText());
     JsonNode pathsNode = rootNode.path("paths");
@@ -121,29 +116,73 @@ public class ApplicationIntegrationToolset {
     return pathUrls;
   }
 
-  @Nullable String extractTriggerIdFromPath(String path) {
-    String prefix = "triggerId=api_trigger/";
-    int startIndex = path.indexOf(prefix);
-    if (startIndex == -1) {
-      return null;
-    }
-    return path.substring(startIndex + prefix.length());
-  }
-
   public List<BaseTool> getTools() throws Exception {
-    String openApiSchemaString = generateOpenApiSpec();
-    List<String> pathUrls = getPathUrl(openApiSchemaString);
-
+    String openApiSchemaString = null;
     List<BaseTool> tools = new ArrayList<>();
-    for (String pathUrl : pathUrls) {
-      String toolName = extractTriggerIdFromPath(pathUrl);
-      if (toolName != null) {
-        tools.add(new ApplicationIntegrationTool(openApiSchemaString, pathUrl, toolName, ""));
-      } else {
-        System.err.println(
-            "Failed  to get tool name , Please check the integration name , trigger id and location"
-                + " and project id.");
+    if (this.integration != null) {
+      IntegrationClient integrationClient =
+          new IntegrationClient(
+              this.project,
+              this.location,
+              this.integration,
+              this.triggers,
+              null,
+              null,
+              null,
+              this.httpExecutor);
+      openApiSchemaString = integrationClient.generateOpenApiSpec();
+      List<String> pathUrls = getPathUrl(openApiSchemaString);
+      for (String pathUrl : pathUrls) {
+        String toolName = integrationClient.getOperationIdFromPathUrl(openApiSchemaString, pathUrl);
+        if (toolName != null) {
+          tools.add(
+              new ApplicationIntegrationTool(
+                  openApiSchemaString, pathUrl, toolName, "", null, null, null, this.httpExecutor));
+        }
       }
+    } else if (this.connection != null && (this.entityOperations != null || this.actions != null)) {
+      IntegrationClient integrationClient =
+          new IntegrationClient(
+              this.project,
+              this.location,
+              null,
+              null,
+              this.connection,
+              this.entityOperations,
+              this.actions,
+              this.httpExecutor);
+      ObjectNode parentOpenApiSpec = OBJECT_MAPPER.createObjectNode();
+      ObjectNode openApiSpec =
+          integrationClient.getOpenApiSpecForConnection(toolNamePrefix, toolInstructions);
+      String openApiSpecString = OBJECT_MAPPER.writeValueAsString(openApiSpec);
+      parentOpenApiSpec.put("openApiSpec", openApiSpecString);
+      openApiSchemaString = OBJECT_MAPPER.writeValueAsString(parentOpenApiSpec);
+      List<String> pathUrls = getPathUrl(openApiSchemaString);
+      for (String pathUrl : pathUrls) {
+        String toolName = integrationClient.getOperationIdFromPathUrl(openApiSchemaString, pathUrl);
+        if (toolName != null) {
+          ConnectionsClient connectionsClient =
+              new ConnectionsClient(
+                  this.project, this.location, this.connection, this.httpExecutor, OBJECT_MAPPER);
+          ConnectionsClient.ConnectionDetails connectionDetails =
+              connectionsClient.getConnectionDetails();
+
+          tools.add(
+              new ApplicationIntegrationTool(
+                  openApiSchemaString,
+                  pathUrl,
+                  toolName,
+                  "",
+                  connectionDetails.name,
+                  connectionDetails.serviceName,
+                  connectionDetails.host,
+                  this.httpExecutor));
+        }
+      }
+    } else {
+      throw new IllegalArgumentException(
+          "Invalid request, Either integration or (connection and"
+              + " (entityOperations or actions)) should be provided.");
     }
 
     return tools;
