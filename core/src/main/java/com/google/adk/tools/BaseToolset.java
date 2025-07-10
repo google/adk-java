@@ -1,7 +1,7 @@
 package com.google.adk.tools;
 
 import com.google.adk.agents.ReadonlyContext;
-import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import java.util.Optional;
 
@@ -12,9 +12,9 @@ public interface BaseToolset extends AutoCloseable {
    * Return all tools in the toolset based on the provided context.
    *
    * @param readonlyContext Context used to filter tools available to the agent.
-   * @return A Single emitting a list of tools available under the specified context.
+   * @return A Flowable emitting a list of tools available under the specified context.
    */
-  Single<List<BaseTool>> getTools(ReadonlyContext readonlyContext);
+  Flowable<List<BaseTool>> getTools(ReadonlyContext readonlyContext);
 
   /**
    * Performs cleanup and releases resources held by the toolset.

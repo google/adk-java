@@ -16,7 +16,6 @@
 
 package com.google.adk.agents;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.stream.Collectors.joining;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -698,31 +697,29 @@ public class LlmAgent extends BaseAgent {
    * @param context The context to retrieve the session state.
    * @return The resolved list of tools as a {@link Single} wrapped list of {@link BaseTool}.
    */
-  public Single<List<BaseTool>> canonicalTools(Optional<ReadonlyContext> context) {
-    List<Single<List<BaseTool>>> toolSingles = new ArrayList<>();
+  public Flowable<List<BaseTool>> canonicalTools(Optional<ReadonlyContext> context) {
+    List<Flowable<List<BaseTool>>> toolFlowables = new ArrayList<>();
     for (Object toolOrToolset : toolsUnion) {
       if (toolOrToolset instanceof BaseTool baseTool) {
-        toolSingles.add(Single.just(ImmutableList.of(baseTool)));
+        toolFlowables.add(Flowable.just(ImmutableList.of(baseTool)));
       } else if (toolOrToolset instanceof BaseToolset baseToolset) {
-        toolSingles.add(baseToolset.getTools(context.orElse(null)));
+        toolFlowables.add(baseToolset.getTools(context.orElse(null)));
       } else {
         throw new IllegalArgumentException(
             "Object in tools list is not of a supported type: "
                 + toolOrToolset.getClass().getName());
       }
     }
-    return Single.concat(toolSingles)
-        .toList()
-        .map(listOfLists -> listOfLists.stream().flatMap(List::stream).collect(toImmutableList()));
+    return Flowable.concat(toolFlowables).flatMap(Flowable::fromIterable).toList().toFlowable();
   }
 
   /** Overload of canonicalTools that defaults to an empty context. */
-  public Single<List<BaseTool>> canonicalTools() {
+  public Flowable<List<BaseTool>> canonicalTools() {
     return canonicalTools(Optional.empty());
   }
 
   /** Convenience overload of canonicalTools that accepts a non-optional ReadonlyContext. */
-  public Single<List<BaseTool>> canonicalTools(ReadonlyContext context) {
+  public Flowable<List<BaseTool>> canonicalTools(ReadonlyContext context) {
     return canonicalTools(Optional.ofNullable(context));
   }
 

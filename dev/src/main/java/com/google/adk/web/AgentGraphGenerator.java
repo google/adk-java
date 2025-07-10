@@ -105,7 +105,7 @@ public class AgentGraphGenerator {
 
     if (agent instanceof LlmAgent) {
       LlmAgent llmAgent = (LlmAgent) agent;
-      List<BaseTool> tools = llmAgent.canonicalTools().blockingGet();
+      List<BaseTool> tools = llmAgent.canonicalTools().blockingFirst();
       if (tools != null) {
         for (BaseTool tool : tools) {
           if (tool != null) {

@@ -5,7 +5,7 @@ import static org.mockito.Mockito.mock;
 
 import com.google.adk.agents.ReadonlyContext;
 import com.google.common.collect.ImmutableList;
-import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -23,15 +23,15 @@ public final class BaseToolsetTest {
     BaseToolset toolset =
         new BaseToolset() {
           @Override
-          public Single<List<BaseTool>> getTools(ReadonlyContext readonlyContext) {
-            return Single.just(ImmutableList.of(mockTool1, mockTool2));
+          public Flowable<List<BaseTool>> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.just(ImmutableList.of(mockTool1, mockTool2));
           }
 
           @Override
           public void close() throws Exception {}
         };
 
-    List<BaseTool> tools = toolset.getTools(mockContext).blockingGet();
+    List<BaseTool> tools = toolset.getTools(mockContext).blockingFirst();
     assertThat(tools).containsExactly(mockTool1, mockTool2);
   }
 }

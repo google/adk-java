@@ -26,7 +26,7 @@ import com.google.adk.tools.BaseToolset;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.spec.McpSchema.ListToolsResult;
-import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -151,8 +151,8 @@ public class McpToolset implements BaseToolset {
   }
 
   @Override
-  public Single<List<BaseTool>> getTools(ReadonlyContext readonlyContext) {
-    return Single.fromCallable(
+  public Flowable<List<BaseTool>> getTools(ReadonlyContext readonlyContext) {
+    return Flowable.fromCallable(
         () -> {
           for (int i = 0; i < MAX_RETRIES; i++) {
             try {
