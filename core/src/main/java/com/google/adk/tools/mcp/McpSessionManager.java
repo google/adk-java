@@ -16,17 +16,21 @@
 
 package com.google.adk.tools.mcp;
 
+import com.google.common.collect.ImmutableMap;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
-import io.modelcontextprotocol.client.transport.ServerParameters; // Server Parameters for stdio.
+import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.client.transport.StdioClientTransport;
 import io.modelcontextprotocol.spec.McpClientTransport;
 import io.modelcontextprotocol.spec.McpSchema.ClientCapabilities;
 import io.modelcontextprotocol.spec.McpSchema.InitializeResult;
-import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.time.Duration;
+import java.util.Collection;
+import java.util.Optional;
 
 /**
  * Manages MCP client sessions.
@@ -53,8 +57,22 @@ public class McpSessionManager {
     if (connectionParams instanceof ServerParameters serverParameters) {
       transport = new StdioClientTransport(serverParameters);
     } else if (connectionParams instanceof SseServerParameters sseServerParams) {
-      transport =
-          HttpClientSseClientTransport.builder(sseServerParams.url()).sseEndpoint("sse").build();
+        transport = HttpClientSseClientTransport.builder(sseServerParams.url())
+                .sseEndpoint("sse")
+                .customizeRequest(builder ->
+                        Optional.ofNullable(sseServerParams.headers())
+                                .map(ImmutableMap::entrySet)
+                                .stream().flatMap(Collection::stream)
+                                .forEach(entry ->
+                                        builder.header(
+                                                entry.getKey(),
+                                                Optional.ofNullable(entry.getValue())
+                                                        .map(Object::toString)
+                                                        .orElse("")
+                                        )
+                                )
+                )
+                .build();
     } else {
       throw new IllegalArgumentException(
           "Connection parameters must be either ServerParameters or SseServerParameters, but got "
