@@ -41,7 +41,15 @@ public final class IntegrationConnectorToolTest {
   private IntegrationConnectorTool integrationTool;
   private IntegrationConnectorTool connectorTool;
   private IntegrationConnectorTool connectorToolWithAction;
+  private IntegrationConnectorTool connectorToolWithServiceAccount;
   private static final String MOCK_ACCESS_TOKEN = "test-token";
+  private static final String MOCK_ACCESS_TOKEN_2 = "test-token-2";
+  private static final String MOCK_SERVICE_ACCOUNT_JSON =
+      "{\"type\": \"service_account\",\"project_id\": \"test-project\",\"private_key_data\":"
+          + " \"test-private-key-data\",\"client_email\": \"test-client-email\",\"client_id\":"
+          + " \"test-client-id\",\"auth_uri\":"
+          + " \"https://accounts.google.com/o/oauth2/auth\",\"token_uri\":"
+          + " \"https://oauth2.googleapis.com/token\",\"refresh_token\": \"1/1234567890\"}";
   private static final String FAKE_PATH_URL =
       "/v2/projects/test-project/locations/test-region/integrations/test:execute?triggerId=api_trigger/Trigger1";
   private static final String FAKE_TOOL_NAME = "Trigger1";
@@ -72,7 +80,8 @@ public final class IntegrationConnectorToolTest {
           + " for Executing"
           + " Action\\\"},\\\"paths\\\":{\\\"/v2/projects/test-project/locations/test-region/integrations/ExecuteConnection:execute\\\":{\\\"post\\\":{\\\"summary\\\":\\\"Execute"
           + " a custom"
-          + " action\\\",\\\"operationId\\\":\\\"execute_custom_action\\\",\\\"x-action\\\":\\\"CUSTOM_ACTION\\\",\\\"x-operation\\\":\\\"EXECUTE_ACTION\\\",\\\"requestBody\\\":{\\\"required\\\":true,\\\"content\\\":{\\\"application/json\\\":{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/ActionRequest\\\"}}}}}}},\\\"components\\\":{\\\"schemas\\\":{\\\"ActionRequest\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"connectionName\\\",\\\"action\\\",\\\"operation\\\"],\\\"properties\\\":{\\\"connectionName\\\":{\\\"type\\\":\\\"string\\\"},\\\"serviceName\\\":{\\\"type\\\":\\\"string\\\"},\\\"host\\\":{\\\"type\\\":\\\"string\\\"},\\\"action\\\":{\\\"type\\\":\\\"string\\\"},\\\"operation\\\":{\\\"type\\\":\\\"string\\\"}}}}}}\"}";
+          + " action\\\",\\\"operationId\\\":\\\"execute_custom_action\\\",\\\"x-action\\\":\\\"CUSTOM_ACTION\\\""
+          + " ,\\\"x-operation\\\":\\\"EXECUTE_ACTION\\\",\\\"requestBody\\\":{\\\"required\\\":true,\\\"content\\\":{\\\"application/json\\\":{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/ActionRequest\\\"}}}}}}},\\\"components\\\":{\\\"schemas\\\":{\\\"ActionRequest\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"connectionName\\\",\\\"action\\\",\\\"operation\\\"],\\\"properties\\\":{\\\"connectionName\\\":{\\\"type\\\":\\\"string\\\"},\\\"serviceName\\\":{\\\"type\\\":\\\"string\\\"},\\\"host\\\":{\\\"type\\\":\\\"string\\\"},\\\"action\\\":{\\\"type\\\":\\\"string\\\"},\\\"operation\\\":{\\\"type\\\":\\\"string\\\"}}}}}}\"}";
 
   @Before
   public void setUp() {
@@ -82,6 +91,7 @@ public final class IntegrationConnectorToolTest {
             FAKE_PATH_URL,
             FAKE_TOOL_NAME,
             "A test tool",
+            null,
             null,
             null,
             null,
@@ -96,6 +106,7 @@ public final class IntegrationConnectorToolTest {
             "test-connection",
             "test-service",
             "test-host",
+            null,
             mockHttpExecutor);
 
     connectorToolWithAction =
@@ -107,6 +118,19 @@ public final class IntegrationConnectorToolTest {
             "test-connection-action",
             "test-service-action",
             "test-host-action",
+            null,
+            mockHttpExecutor);
+
+    connectorToolWithServiceAccount =
+        new IntegrationConnectorTool(
+            EXECUTE_ACTION_SPEC,
+            "/v2/projects/test-project/locations/test-region/integrations/ExecuteConnection:execute",
+            "execute_custom_action",
+            "A test tool for executing an action",
+            "test-connection-action",
+            "test-service-action",
+            "test-host-action",
+            MOCK_SERVICE_ACCOUNT_JSON,
             mockHttpExecutor);
   }
 
@@ -165,6 +189,7 @@ public final class IntegrationConnectorToolTest {
             "/bad/path/triggerId=api_trigger/not-found",
             "not-found",
             "",
+            null,
             null,
             null,
             null,
@@ -242,6 +267,56 @@ public final class IntegrationConnectorToolTest {
     assertThat(inputArgs).containsEntry("serviceName", "test-service-action");
     assertThat(inputArgs).containsEntry("host", "test-host-action");
     assertThat(inputArgs).containsEntry("action", "CUSTOM_ACTION");
+    assertThat(inputArgs).containsEntry("operation", "EXECUTE_ACTION");
+    assertThat(inputArgs).doesNotContainKey("entity");
+  }
+
+  @Test
+  @SuppressWarnings("MockitoDoSetup")
+  public void runAsync_serviceAccountJson_throwsPermissionDenied() throws Exception {
+    String errorResponse = "{\"error\":{\"message\":\"Permission denied.\"}}";
+    Map<String, Object> inputArgs = new HashMap<>(ImmutableMap.of("username", "testuser"));
+    IntegrationConnectorTool spyTool = spy(connectorToolWithServiceAccount);
+    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
+
+    when(mockHttpResponse.statusCode()).thenReturn(403);
+    when(mockHttpResponse.body()).thenReturn(errorResponse);
+
+    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+
+    String expectedErrorMessage =
+        "Error executing integration. Status: 403 , Response: " + errorResponse;
+    spyTool
+        .runAsync(inputArgs, mockToolContext)
+        .test()
+        .assertNoErrors()
+        .assertValue(ImmutableMap.of("error", expectedErrorMessage));
+  }
+
+  @Test
+  @SuppressWarnings("MockitoDoSetup")
+  public void connectorToolWithServiceAccount_runAsync_success() throws Exception {
+    String expectedResponse = "{\"action_result\":\"success\"}";
+    IntegrationConnectorTool spyTool = spy(connectorToolWithServiceAccount);
+    var unused = spyTool.declaration();
+
+    Map<String, Object> inputArgs = new HashMap<>();
+    inputArgs.put("payload", "data");
+
+    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN_2);
+    when(mockHttpResponse.statusCode()).thenReturn(200);
+    when(mockHttpResponse.body()).thenReturn(expectedResponse);
+    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(), any());
+
+    TestObserver<Map<String, Object>> testObserver =
+        spyTool.runAsync(inputArgs, mockToolContext).test();
+    testObserver.assertNoErrors().assertValue(ImmutableMap.of("result", expectedResponse));
+
+    assertThat(inputArgs).containsEntry("connectionName", "test-connection-action");
+    assertThat(inputArgs).containsEntry("serviceName", "test-service-action");
+    assertThat(inputArgs).containsEntry("host", "test-host-action");
+    assertThat(inputArgs).containsEntry("action", "CUSTOM_ACTION");
+    assertThat(inputArgs).containsEntry("payload", "data");
     assertThat(inputArgs).containsEntry("operation", "EXECUTE_ACTION");
     assertThat(inputArgs).doesNotContainKey("entity");
   }

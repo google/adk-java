@@ -1,6 +1,7 @@
 package com.google.adk.tools.applicationintegrationtoolset;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -15,7 +16,9 @@ import com.google.common.collect.Streams;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Single;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -45,10 +48,27 @@ public class IntegrationConnectorTool extends BaseTool {
         throws IOException, InterruptedException;
 
     String getToken() throws IOException;
+
+    public HttpExecutor createExecutor(String serviceAccountJson);
   }
 
   static class DefaultHttpExecutor implements HttpExecutor {
     private final HttpClient client = HttpClient.newHttpClient();
+    private final String serviceAccountJson;
+
+    /** Default constructor for when no service account is specified. */
+    DefaultHttpExecutor() {
+      this(null);
+    }
+
+    /**
+     * Constructor that accepts an optional service account JSON string.
+     *
+     * @param serviceAccountJson The service account key as a JSON string, or null.
+     */
+    DefaultHttpExecutor(@Nullable String serviceAccountJson) {
+      this.serviceAccountJson = serviceAccountJson;
+    }
 
     @Override
     public <T> HttpResponse<T> send(
@@ -59,11 +79,41 @@ public class IntegrationConnectorTool extends BaseTool {
 
     @Override
     public String getToken() throws IOException {
-      GoogleCredentials credentials =
-          GoogleCredentials.getApplicationDefault()
-              .createScoped("https://www.googleapis.com/auth/cloud-platform");
+      GoogleCredentials credentials;
+
+      if (this.serviceAccountJson != null && !this.serviceAccountJson.trim().isEmpty()) {
+        try (InputStream is = new ByteArrayInputStream(this.serviceAccountJson.getBytes(UTF_8))) {
+          credentials =
+              GoogleCredentials.fromStream(is)
+                  .createScoped("https://www.googleapis.com/auth/cloud-platform");
+        } catch (IOException e) {
+          throw new IOException("Failed to load credentials from service_account_json.", e);
+        }
+      } else {
+        try {
+          credentials =
+              GoogleCredentials.getApplicationDefault()
+                  .createScoped("https://www.googleapis.com/auth/cloud-platform");
+        } catch (IOException e) {
+          throw new IOException(
+              "Please provide a service account or configure Application Default Credentials. To"
+                  + " set up ADC, see"
+                  + " https://cloud.google.com/docs/authentication/external/set-up-adc.",
+              e);
+        }
+      }
+
       credentials.refreshIfExpired();
       return credentials.getAccessToken().getTokenValue();
+    }
+
+    @Override
+    public HttpExecutor createExecutor(String serviceAccountJson) {
+      if (isNullOrEmpty(serviceAccountJson)) {
+        return new DefaultHttpExecutor();
+      } else {
+        return new DefaultHttpExecutor(serviceAccountJson);
+      }
     }
   }
 
@@ -75,7 +125,11 @@ public class IntegrationConnectorTool extends BaseTool {
 
   /** Constructor for Application Integration Tool for integration */
   IntegrationConnectorTool(
-      String openApiSpec, String pathUrl, String toolName, String toolDescription) {
+      String openApiSpec,
+      String pathUrl,
+      String toolName,
+      String toolDescription,
+      String serviceAccountJson) {
     this(
         openApiSpec,
         pathUrl,
@@ -84,7 +138,8 @@ public class IntegrationConnectorTool extends BaseTool {
         null,
         null,
         null,
-        new DefaultHttpExecutor());
+        serviceAccountJson,
+        new DefaultHttpExecutor().createExecutor(serviceAccountJson));
   }
 
   /**
@@ -98,7 +153,8 @@ public class IntegrationConnectorTool extends BaseTool {
       String toolDescription,
       String connectionName,
       String serviceName,
-      String host) {
+      String host,
+      String serviceAccountJson) {
     this(
         openApiSpec,
         pathUrl,
@@ -107,7 +163,8 @@ public class IntegrationConnectorTool extends BaseTool {
         connectionName,
         serviceName,
         host,
-        new DefaultHttpExecutor());
+        serviceAccountJson,
+        new DefaultHttpExecutor().createExecutor(serviceAccountJson));
   }
 
   IntegrationConnectorTool(
@@ -118,6 +175,7 @@ public class IntegrationConnectorTool extends BaseTool {
       @Nullable String connectionName,
       @Nullable String serviceName,
       @Nullable String host,
+      @Nullable String serviceAccountJson,
       HttpExecutor httpExecutor) {
     super(toolName, toolDescription);
     this.openApiSpec = openApiSpec;
@@ -182,7 +240,7 @@ public class IntegrationConnectorTool extends BaseTool {
   }
 
   private String executeIntegration(Map<String, Object> args) throws Exception {
-    String url = String.format("https://integrations.googleapis.com%s", pathUrl);
+    String url = String.format("https://integrations.googleapis.com%s", this.pathUrl);
     String jsonRequestBody;
     try {
       jsonRequestBody = OBJECT_MAPPER.writeValueAsString(args);

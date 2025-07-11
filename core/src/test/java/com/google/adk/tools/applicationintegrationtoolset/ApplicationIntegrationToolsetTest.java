@@ -4,6 +4,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.core.JsonParseException;
@@ -14,6 +15,7 @@ import com.google.common.collect.ImmutableMap;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
+import java.util.Objects;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -27,7 +29,6 @@ public final class ApplicationIntegrationToolsetTest {
 
   @Rule public final MockitoRule mockito = MockitoJUnit.rule();
   @Mock private HttpExecutor mockHttpExecutor;
-  @Mock private HttpResponse<String> mockHttpResponse;
 
   private static final String LOCATION = "us-central1";
   private static final String PROJECT = "test-project";
@@ -36,7 +37,6 @@ public final class ApplicationIntegrationToolsetTest {
       "projects/test-project/locations/us-central1/connections/test-conn";
 
   @Test
-  @SuppressWarnings("MockitoDoSetup")
   public void getTools_forIntegration_success() throws Exception {
     ApplicationIntegrationToolset toolset =
         new ApplicationIntegrationToolset(
@@ -49,25 +49,28 @@ public final class ApplicationIntegrationToolsetTest {
             null,
             null,
             null,
+            null,
             mockHttpExecutor);
 
     String mockOpenApiSpecJson =
         "{\"openApiSpec\":"
             + "\"{\\\"paths\\\":{\\\"/p1?triggerId=api_trigger/trigger-1\\\":{\\\"post\\\":{\\\"operationId\\\":\\\"trigger-1\\\"}}},"
             + "\\\"components\\\":{\\\"schemas\\\":{}}}\"}";
+
+    @SuppressWarnings("unchecked")
+    HttpResponse<String> mockHttpResponse = mock(HttpResponse.class);
     when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn(mockOpenApiSpecJson);
     doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
 
-    List<BaseTool> tools = toolset.getTools();
+    List<BaseTool> tools = toolset.getTools(null).toList().blockingGet();
 
     assertThat(tools).hasSize(1);
     assertThat(tools.get(0).name()).isEqualTo("trigger-1");
   }
 
   @Test
-  @SuppressWarnings("MockitoDoSetup")
   public void getTools_forConnection_success() throws Exception {
     ApplicationIntegrationToolset toolset =
         new ApplicationIntegrationToolset(
@@ -77,6 +80,7 @@ public final class ApplicationIntegrationToolsetTest {
             null,
             CONNECTION,
             ImmutableMap.of("Issue", ImmutableList.of("GET")),
+            null,
             null,
             "Jira",
             "Tools for Jira",
@@ -89,6 +93,10 @@ public final class ApplicationIntegrationToolsetTest {
     String mockEntitySchemaJson =
         "{\"name\": \"op1\", \"done\": true, \"response\": {\"jsonSchema\": {}, \"operations\":"
             + " [\"GET\"]}}";
+
+    @SuppressWarnings("unchecked")
+    HttpResponse<String> mockHttpResponse = mock(HttpResponse.class);
+
     when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body())
@@ -96,39 +104,56 @@ public final class ApplicationIntegrationToolsetTest {
         .thenReturn(mockEntitySchemaJson);
     doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
 
-    List<BaseTool> tools = toolset.getTools();
+    List<BaseTool> tools = toolset.getTools(null).toList().blockingGet();
 
     assertThat(tools).hasSize(1);
     assertThat(tools.get(0).name()).isEqualTo("Jira_get_issue");
   }
 
   @Test
-  public void getTools_invalidArguments_throwsException() {
+  public void getTools_invalidArguments_emitsError() {
     ApplicationIntegrationToolset toolset =
         new ApplicationIntegrationToolset(
-            PROJECT, LOCATION, null, null, CONNECTION, null, null, null, null, mockHttpExecutor);
+            PROJECT,
+            LOCATION,
+            null,
+            null,
+            CONNECTION,
+            null,
+            null,
+            null,
+            null,
+            null,
+            mockHttpExecutor);
 
-    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, toolset::getTools);
-    assertThat(e)
-        .hasMessageThat()
-        .contains(
-            "Invalid request, Either integration or (connection and"
-                + " (entityOperations or actions)) should be provided.");
+    toolset
+        .getTools(null)
+        .test()
+        .assertError(
+            throwable ->
+                throwable instanceof IllegalArgumentException
+                    && Objects.equals(
+                        throwable.getMessage(),
+                        "Invalid request, Either integration or (connection and"
+                            + " (entityOperations or actions)) should be provided."));
   }
 
   @Test
-  public void getTools_forConnection_noEntityOperationsOrActions_throwsException()
-      throws Exception {
+  public void getTools_forConnection_noEntityOperationsOrActions_emitsError() {
     ApplicationIntegrationToolset toolset =
         new ApplicationIntegrationToolset(
-            PROJECT, LOCATION, null, null, null, null, null, null, null, mockHttpExecutor);
+            PROJECT, LOCATION, null, null, null, null, null, null, null, null, mockHttpExecutor);
 
-    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, toolset::getTools);
-    assertThat(e)
-        .hasMessageThat()
-        .contains(
-            "Invalid request, Either integration or (connection and"
-                + " (entityOperations or actions)) should be provided.");
+    toolset
+        .getTools(null)
+        .test()
+        .assertError(
+            throwable ->
+                throwable instanceof IllegalArgumentException
+                    && Objects.equals(
+                        throwable.getMessage(),
+                        "Invalid request, Either integration or (connection and"
+                            + " (entityOperations or actions)) should be provided."));
   }
 
   @Test
@@ -136,7 +161,8 @@ public final class ApplicationIntegrationToolsetTest {
     String openApiSpec =
         "{\"openApiSpec\": \"{\\\"paths\\\":{\\\"/path1\\\":{},\\\"/path2\\\":{}}}\"}";
     ApplicationIntegrationToolset toolset =
-        new ApplicationIntegrationToolset(null, null, null, null, null, null, null, null, null);
+        new ApplicationIntegrationToolset(
+            null, null, null, null, null, null, null, null, null, null);
     List<String> paths = toolset.getPathUrl(openApiSpec);
     assertThat(paths).containsExactly("/path1", "/path2").inOrder();
   }
@@ -145,7 +171,8 @@ public final class ApplicationIntegrationToolsetTest {
   public void getPathUrl_invalidJson_throwsException() {
     String openApiSpec = "{\"openApiSpec\": \"invalid json\"}";
     ApplicationIntegrationToolset toolset =
-        new ApplicationIntegrationToolset(null, null, null, null, null, null, null, null, null);
+        new ApplicationIntegrationToolset(
+            null, null, null, null, null, null, null, null, null, null);
     assertThrows(JsonParseException.class, () -> toolset.getPathUrl(openApiSpec));
   }
 }
