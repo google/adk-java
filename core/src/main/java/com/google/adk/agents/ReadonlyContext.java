@@ -17,9 +17,8 @@
 package com.google.adk.agents;
 
 import com.google.adk.events.Event;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -28,6 +27,8 @@ import java.util.Optional;
 public class ReadonlyContext {
 
   protected final InvocationContext invocationContext;
+  private List<Event> eventsView;
+  private Map<String, Object> stateView;
 
   public ReadonlyContext(InvocationContext invocationContext) {
     this.invocationContext = invocationContext;
@@ -59,22 +60,26 @@ public class ReadonlyContext {
   }
 
   /**
-   * Returns a read-only view of the events of the current session.
+   * Returns an unmodifiable view of the events of the session.
    *
-   * <p>This is a shallow copy and if the underlying values of the list are modified, the read-only
-   * view will also be modified.
+   * <p><b>Warning:</b> This is a live view, not a snapshot.
    */
-  public ImmutableList<Event> events() {
-    return ImmutableList.copyOf(invocationContext.session().events());
+  public List<Event> events() {
+    if (eventsView == null) {
+      eventsView = Collections.unmodifiableList(invocationContext.session().events());
+    }
+    return eventsView;
   }
 
   /**
-   * Returns a read-only view of the state of the current session.
+   * Returns an unmodifiable view of the state of the session.
    *
-   * <p>This is a shallow copy and if the underlying values of the map are modified, the read-only
-   * view will also be modified.
+   * <p><b>Warning:</b> This is a live view, not a snapshot.
    */
   public Map<String, Object> state() {
-    return ImmutableMap.copyOf(invocationContext.session().state());
+    if (stateView == null) {
+      stateView = Collections.unmodifiableMap(invocationContext.session().state());
+    }
+    return stateView;
   }
 }
