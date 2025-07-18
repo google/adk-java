@@ -39,3 +39,6 @@ jobs:
 
       - name: Compile and test (all) modules with Java ${{ matrix.java-version }}
         run: ./mvnw clean test
+
+      - name: Detected wrongly formatted files
+        run: git status && git diff --exit-code
