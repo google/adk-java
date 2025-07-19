@@ -294,7 +294,7 @@
   <developers>
     <developer>
       <organization>Google Inc.</organization>
-      <organizationUrl>http://www.google.com</organizationUrl>
+      <organizationUrl>https://www.google.com</organizationUrl>
     </developer>
   </developers>
   <distributionManagement>
