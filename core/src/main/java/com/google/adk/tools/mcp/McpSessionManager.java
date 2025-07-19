@@ -51,16 +51,21 @@ public class McpSessionManager {
 
   public static McpSyncClient initializeSession(
       Object connectionParams, McpTransportBuilder transportBuilder) {
+    Duration initializationTimeout = null;
+    Duration requestTimeout = null;
     McpClientTransport transport = transportBuilder.build(connectionParams);
-
+    if (connectionParams instanceof SseServerParameters sseServerParams) {
+      initializationTimeout = sseServerParams.timeout();
+      requestTimeout = sseServerParams.sseReadTimeout();
+    }
     McpSyncClient client =
         McpClient.sync(transport)
-            .requestTimeout(Duration.ofSeconds(10))
+            .initializationTimeout(initializationTimeout == null ? Duration.ofSeconds(10) : initializationTimeout)
+            .requestTimeout(requestTimeout == null ? Duration.ofSeconds(10) : requestTimeout)
             .capabilities(ClientCapabilities.builder().build())
             .build();
     InitializeResult initResult = client.initialize();
     logger.debug("Initialize Client Result: {}", initResult);
-
     return client;
   }
 }
