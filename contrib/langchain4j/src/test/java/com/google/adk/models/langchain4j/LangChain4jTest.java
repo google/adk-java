@@ -202,24 +202,31 @@ class LangChain4jTest {
     when(timeSchema.required()).thenReturn(Optional.of(List.of("city")));
 
     // Create LlmRequest
-    final LlmRequest llmRequest = LlmRequest.builder()
-            .contents(List.of(Content.fromParts(Part.fromText("What's the weather in Paris and the current time?"))))
+    final LlmRequest llmRequest =
+        LlmRequest.builder()
+            .contents(
+                List.of(
+                    Content.fromParts(
+                        Part.fromText("What's the weather in Paris and the current time?"))))
             .build();
 
     // Mock multiple tool execution requests in the AI response
-    final ToolExecutionRequest weatherRequest = ToolExecutionRequest.builder()
+    final ToolExecutionRequest weatherRequest =
+        ToolExecutionRequest.builder()
             .id("123")
             .name("getWeather")
             .arguments("{\"city\":\"Paris\"}")
             .build();
 
-    final ToolExecutionRequest timeRequest = ToolExecutionRequest.builder()
+    final ToolExecutionRequest timeRequest =
+        ToolExecutionRequest.builder()
             .id("456")
             .name("getCurrentTime")
             .arguments("{\"city\":\"Paris\"}")
             .build();
 
-    final AiMessage aiMessage = AiMessage.builder()
+    final AiMessage aiMessage =
+        AiMessage.builder()
             .text("")
             .toolExecutionRequests(List.of(weatherRequest, timeRequest))
             .build();
@@ -256,7 +263,6 @@ class LangChain4jTest {
     // Verify the ChatModel was called
     verify(chatModel).chat(any(ChatRequest.class));
   }
-
 
   @Test
   @DisplayName("Should handle streaming responses correctly")
