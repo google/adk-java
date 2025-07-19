@@ -23,7 +23,6 @@ import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
-import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.spec.McpSchema.ListToolsResult;
 import io.reactivex.rxjava3.core.Flowable;
@@ -46,7 +45,7 @@ import org.slf4j.LoggerFactory;
 public class McpToolset implements BaseToolset {
   private static final Logger logger = LoggerFactory.getLogger(McpToolset.class);
   private final McpSessionManager mcpSessionManager;
-  private McpSyncClient mcpSession;
+  private McpSession mcpSession;
   private final ObjectMapper objectMapper;
   private final Optional<Object> toolFilter;
 
@@ -160,7 +159,7 @@ public class McpToolset implements BaseToolset {
                     this.mcpSession = this.mcpSessionManager.createSession();
                   }
 
-                  ListToolsResult toolsResponse = this.mcpSession.listTools();
+                  ListToolsResult toolsResponse = this.mcpSession.client().listTools();
                   return toolsResponse.tools().stream()
                       .map(
                           tool ->
@@ -224,7 +223,7 @@ public class McpToolset implements BaseToolset {
   public void close() {
     if (this.mcpSession != null) {
       try {
-        this.mcpSession.close();
+        this.mcpSession.client().close();
         logger.debug("MCP session closed successfully.");
       } catch (RuntimeException e) {
         logger.error("Failed to close MCP session", e);
