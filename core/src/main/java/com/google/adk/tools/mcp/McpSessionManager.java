@@ -36,13 +36,19 @@ public class McpSessionManager {
 
   private final Object connectionParams; // ServerParameters or SseServerParameters
   private static final Logger logger = LoggerFactory.getLogger(McpSessionManager.class);
+  private final McpTransportBuilder transportBuilder;
 
   public McpSessionManager(Object connectionParams) {
+    this(connectionParams, new DefaultMcpTransportBuilder());
+  }
+
+  public McpSessionManager(Object connectionParams, McpTransportBuilder transportBuilder) {
     this.connectionParams = connectionParams;
+    this.transportBuilder = transportBuilder;
   }
 
   public McpSyncClient createSession() {
-    return initializeSession(this.connectionParams);
+    return initializeSession(this.connectionParams, this.transportBuilder);
   }
 
   public static McpSyncClient initializeSession(Object connectionParams) {
