@@ -16,6 +16,7 @@
 
 package com.google.adk.tools.mcp;
 
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpClientTransport;
@@ -69,5 +70,30 @@ public class McpSessionManager {
     InitializeResult initResult = client.initialize();
     logger.debug("Initialize Client Result: {}", initResult);
     return client;
+  }
+
+  public McpAsyncClient createAsyncSession() {
+    return initializeAsyncSession(this.connectionParams);
+  }
+
+  public static McpAsyncClient initializeAsyncSession(Object connectionParams) {
+    return initializeAsyncSession(connectionParams, new DefaultMcpTransportBuilder());
+  }
+
+  public static McpAsyncClient initializeAsyncSession(
+      Object connectionParams, McpTransportBuilder transportBuilder) {
+    Duration initializationTimeout = null;
+    Duration requestTimeout = null;
+    McpClientTransport transport = transportBuilder.build(connectionParams);
+    if (connectionParams instanceof SseServerParameters sseServerParams) {
+      initializationTimeout = sseServerParams.timeout();
+      requestTimeout = sseServerParams.sseReadTimeout();
+    }
+    return McpClient.async(transport)
+        .initializationTimeout(
+            initializationTimeout == null ? Duration.ofSeconds(10) : initializationTimeout)
+        .requestTimeout(requestTimeout == null ? Duration.ofSeconds(10) : requestTimeout)
+        .capabilities(ClientCapabilities.builder().build())
+        .build();
   }
 }
