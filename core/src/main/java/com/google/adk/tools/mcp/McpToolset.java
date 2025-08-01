@@ -191,7 +191,7 @@ public class McpToolset implements BaseToolset {
                   // This could happen if parameters for tool loading are somehow invalid.
                   // This is likely a fatal error and should not be retried.
                   logger.error("Invalid argument encountered during tool loading.", e);
-                  throw new McpToolLoadingException(
+                  throw new McpToolsetException.McpToolLoadingException(
                       "Invalid argument encountered during tool loading.", e);
                 } catch (RuntimeException e) { // Catch any other unexpected runtime exceptions
                   logger.error("Unexpected error during tool loading, retry attempt " + (i + 1), e);
@@ -210,13 +210,13 @@ public class McpToolset implements BaseToolset {
                       Thread.currentThread().interrupt();
                       logger.error(
                           "Interrupted during retry delay for loadTools (unexpected error).", ie);
-                      throw new McpToolLoadingException(
+                      throw new McpToolsetException.McpToolLoadingException(
                           "Interrupted during retry delay (unexpected error)", ie);
                     } catch (RuntimeException reinitE) {
                       logger.error(
                           "Failed to reinitialize session during retry (unexpected error).",
                           reinitE);
-                      throw new McpInitializationException(
+                      throw new McpToolsetException.McpInitializationException(
                           "Failed to reinitialize session during tool loading retry (unexpected"
                               + " error).",
                           reinitE);
@@ -224,7 +224,7 @@ public class McpToolset implements BaseToolset {
                   } else {
                     logger.error(
                         "Failed to load tools after multiple retries due to unexpected error.", e);
-                    throw new McpToolLoadingException(
+                    throw new McpToolsetException.McpToolLoadingException(
                         "Failed to load tools after multiple retries due to unexpected error.", e);
                   }
                 }
@@ -250,27 +250,6 @@ public class McpToolset implements BaseToolset {
       } finally {
         this.mcpSession = null;
       }
-    }
-  }
-
-  /** Base exception for all errors originating from {@code McpToolset}. */
-  public static class McpToolsetException extends RuntimeException {
-    public McpToolsetException(String message, Throwable cause) {
-      super(message, cause);
-    }
-  }
-
-  /** Exception thrown when there's an error during MCP session initialization. */
-  public static class McpInitializationException extends McpToolsetException {
-    public McpInitializationException(String message, Throwable cause) {
-      super(message, cause);
-    }
-  }
-
-  /** Exception thrown when there's an error during loading tools from the MCP server. */
-  public static class McpToolLoadingException extends McpToolsetException {
-    public McpToolLoadingException(String message, Throwable cause) {
-      super(message, cause);
     }
   }
 }
