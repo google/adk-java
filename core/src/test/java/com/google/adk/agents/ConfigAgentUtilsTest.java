@@ -220,6 +220,30 @@ public final class ConfigAgentUtilsTest {
   }
 
   @Test
+  public void fromConfig_withBuiltInTool_loadsTool() throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("with_tool.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: search_agent
+        model: gemini-1.5-flash
+        description: 'an agent whose job it is to perform Google search queries and answer questions about the results.'
+        instruction: You are an agent whose job is to perform Google search queries and answer questions about the results.
+        agent_class: LlmAgent
+        tools:
+          - name: GoogleSearchTool
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.tools()).hasSize(1);
+    assertThat(llmAgent.tools().get(0).name()).isEqualTo("google_search");
+  }
+
+  @Test
   public void fromConfig_withInvalidModel_throwsExceptionOnModelResolution()
       throws IOException, ConfigurationException {
     File configFile = tempFolder.newFile("invalid_model.yaml");
@@ -242,5 +266,10 @@ public final class ConfigAgentUtilsTest {
     IllegalArgumentException exception =
         assertThrows(IllegalArgumentException.class, llmAgent::resolvedModel);
     assertThat(exception).hasMessageThat().contains("invalid-model-name");
+  }
+
+  @Test
+  public void convertToPascalCase_convertsSnakeCase() {
+    assertThat(ConfigAgentUtils.convertToPascalCase("my_tool_name")).isEqualTo("MyToolName");
   }
 }
