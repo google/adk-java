@@ -5,7 +5,9 @@ package com.google.adk.tools.mcp;
  */
 public class McpToolException extends RuntimeException {
 
-    public McpToolException(String message, Throwable cause) {super(message, cause);}
+    public McpToolException(String message, Throwable cause) {
+        super(message, cause);
+    }
 
     /** Exception thrown when there's an error during MCP tool schema convert(serialize or deserialize). */
     public static class McpToolSchemaException extends McpToolException {
