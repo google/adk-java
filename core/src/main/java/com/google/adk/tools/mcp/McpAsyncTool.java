@@ -110,7 +110,7 @@ public final class McpAsyncTool extends BaseTool {
     String jsonString = objectMapper.valueToTree(openApiSchema).toString();
     try {
       return Schema.fromJson(jsonString);
-    } catch (Throwable e) {
+    } catch (Exception e) {
       throw new McpToolSchemaException(String.format("MCP async tool:%s, schema:%s failed to convert openApiSchema to GeminiSchema.", this.name(), jsonString), e);
     }
   }
