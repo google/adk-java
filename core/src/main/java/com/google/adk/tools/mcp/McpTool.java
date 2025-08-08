@@ -24,6 +24,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
+import com.google.adk.tools.mcp.McpToolException.McpToolSchemaException;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
@@ -104,7 +105,12 @@ public final class McpTool extends BaseTool {
   }
 
   public Schema toGeminiSchema(JsonSchema openApiSchema) {
-    return Schema.fromJson(objectMapper.valueToTree(openApiSchema).toString());
+    String jsonString = objectMapper.valueToTree(openApiSchema).toString();
+    try {
+      return Schema.fromJson(jsonString);
+    } catch (Throwable e) {
+      throw new McpToolSchemaException(String.format("MCP tool:%s, schema:%s failed to convert openApiSchema to GeminiSchema.", this.name(), jsonString), e);
+    }
   }
 
   private void reintializeSession() {
