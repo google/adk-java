@@ -21,6 +21,8 @@ import com.google.adk.exceptions.LlmCallsLimitExceededException;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.genai.types.Content;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -32,6 +34,7 @@ public class InvocationContext {
   private final BaseSessionService sessionService;
   private final BaseArtifactService artifactService;
   private final Optional<LiveRequestQueue> liveRequestQueue;
+  private final Map<String, ActiveStreamingTool> activeStreamingTools = new HashMap<>();
 
   private Optional<String> branch;
   private final String invocationId;
@@ -108,17 +111,20 @@ public class InvocationContext {
   }
 
   public static InvocationContext copyOf(InvocationContext other) {
-    return new InvocationContext(
-        other.sessionService,
-        other.artifactService,
-        other.liveRequestQueue,
-        other.branch,
-        other.invocationId,
-        other.agent,
-        other.session,
-        other.userContent,
-        other.runConfig,
-        other.endInvocation);
+    InvocationContext newContext =
+        new InvocationContext(
+            other.sessionService,
+            other.artifactService,
+            other.liveRequestQueue,
+            other.branch,
+            other.invocationId,
+            other.agent,
+            other.session,
+            other.userContent,
+            other.runConfig,
+            other.endInvocation);
+    newContext.activeStreamingTools.putAll(other.activeStreamingTools);
+    return newContext;
   }
 
   public BaseSessionService sessionService() {
@@ -127,6 +133,10 @@ public class InvocationContext {
 
   public BaseArtifactService artifactService() {
     return artifactService;
+  }
+
+  public Map<String, ActiveStreamingTool> activeStreamingTools() {
+    return activeStreamingTools;
   }
 
   public Optional<LiveRequestQueue> liveRequestQueue() {
@@ -217,6 +227,7 @@ public class InvocationContext {
         && Objects.equals(sessionService, that.sessionService)
         && Objects.equals(artifactService, that.artifactService)
         && Objects.equals(liveRequestQueue, that.liveRequestQueue)
+        && Objects.equals(activeStreamingTools, that.activeStreamingTools)
         && Objects.equals(branch, that.branch)
         && Objects.equals(invocationId, that.invocationId)
         && Objects.equals(agent, that.agent)
@@ -231,6 +242,7 @@ public class InvocationContext {
         sessionService,
         artifactService,
         liveRequestQueue,
+        activeStreamingTools,
         branch,
         invocationId,
         agent,

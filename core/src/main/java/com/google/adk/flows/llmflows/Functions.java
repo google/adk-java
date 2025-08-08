@@ -3,6 +3,7 @@
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
+ * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
@@ -17,6 +18,7 @@
 package com.google.adk.flows.llmflows;
 
 import com.google.adk.Telemetry;
+import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.Callbacks.AfterToolCallback;
 import com.google.adk.agents.Callbacks.BeforeToolCallback;
 import com.google.adk.agents.InvocationContext;
@@ -24,9 +26,11 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -36,6 +40,7 @@ import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.disposables.Disposable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -46,11 +51,14 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Utility class for handling function calls. */
 public final class Functions {
 
   private static final String AF_FUNCTION_CALL_ID_PREFIX = "adk-";
+  private static final Logger logger = LoggerFactory.getLogger(Functions.class);
 
   /** Generates a unique ID for a function call. */
   public static String generateClientFunctionCallId() {
@@ -109,6 +117,7 @@ public final class Functions {
 
   // TODO - b/413761119 add the remaining methods for function call id.
 
+  /** Handles standard, non-streaming function calls. */
   public static Maybe<Event> handleFunctionCalls(
       InvocationContext invocationContext, Event functionCallEvent, Map<String, BaseTool> tools) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
@@ -190,6 +199,160 @@ public final class Functions {
               }
               return Maybe.just(mergedEvent);
             });
+  }
+
+  /**
+   * Handles function calls in a live/streaming context, supporting background execution and stream
+   * termination.
+   */
+  public static Maybe<Event> handleFunctionCallsLive(
+      InvocationContext invocationContext, Event functionCallEvent, Map<String, BaseTool> tools) {
+    ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
+    List<Maybe<Event>> responseEvents = new ArrayList<>();
+
+    for (FunctionCall functionCall : functionCalls) {
+      if (!tools.containsKey(functionCall.name().get())) {
+        throw new VerifyException("Tool not found: " + functionCall.name().get());
+      }
+      BaseTool tool = tools.get(functionCall.name().get());
+      ToolContext toolContext =
+          ToolContext.builder(invocationContext)
+              .functionCallId(functionCall.id().orElse(""))
+              .build();
+      Map<String, Object> functionArgs = functionCall.args().orElse(new HashMap<>());
+
+      Maybe<Map<String, Object>> maybeFunctionResult =
+          maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
+              .switchIfEmpty(
+                  Maybe.defer(
+                      () ->
+                          processFunctionLive(
+                              invocationContext, tool, toolContext, functionCall, functionArgs)));
+
+      Maybe<Event> maybeFunctionResponseEvent =
+          maybeFunctionResult
+              .map(Optional::of)
+              .defaultIfEmpty(Optional.empty())
+              .flatMapMaybe(
+                  optionalInitialResult -> {
+                    Map<String, Object> initialFunctionResult = optionalInitialResult.orElse(null);
+
+                    Maybe<Map<String, Object>> afterToolResultMaybe =
+                        maybeInvokeAfterToolCall(
+                            invocationContext,
+                            tool,
+                            functionArgs,
+                            toolContext,
+                            initialFunctionResult);
+
+                    return afterToolResultMaybe
+                        .map(Optional::of)
+                        .defaultIfEmpty(Optional.ofNullable(initialFunctionResult))
+                        .flatMapMaybe(
+                            finalOptionalResult -> {
+                              Map<String, Object> finalFunctionResult =
+                                  finalOptionalResult.orElse(null);
+                              if (tool.longRunning() && finalFunctionResult == null) {
+                                return Maybe.empty();
+                              }
+                              Event functionResponseEvent =
+                                  buildResponseEvent(
+                                      tool, finalFunctionResult, toolContext, invocationContext);
+                              return Maybe.just(functionResponseEvent);
+                            });
+                  });
+      responseEvents.add(maybeFunctionResponseEvent);
+    }
+
+    return Maybe.merge(responseEvents)
+        .toList()
+        .flatMapMaybe(
+            events -> {
+              if (events.isEmpty()) {
+                return Maybe.empty();
+              }
+              return Maybe.just(Functions.mergeParallelFunctionResponseEvents(events));
+            });
+  }
+
+  /**
+   * Processes a single function call in a live context. Manages starting, stopping, and running
+   * tools.
+   */
+  private static Maybe<Map<String, Object>> processFunctionLive(
+      InvocationContext invocationContext,
+      BaseTool tool,
+      ToolContext toolContext,
+      FunctionCall functionCall,
+      Map<String, Object> args) {
+    // Case 1: Handle a call to stopStreaming
+    if (functionCall.name().get().equals("stopStreaming") && args.containsKey("functionName")) {
+      String functionNameToStop = (String) args.get("functionName");
+      ActiveStreamingTool activeTool =
+          invocationContext.activeStreamingTools().get(functionNameToStop);
+      if (activeTool != null) {
+        // Dispose the running task if it exists and is not disposed
+        if (activeTool.task() != null && !activeTool.task().isDisposed()) {
+          activeTool.task().dispose();
+        }
+        // Close the associated output stream if it exists
+        if (activeTool.stream() != null) {
+          activeTool.stream().close();
+        }
+        invocationContext.activeStreamingTools().remove(functionNameToStop);
+        logger.info("Successfully stopped streaming function {}", functionNameToStop);
+        return Maybe.just(
+            ImmutableMap.of(
+                "status", "Successfully stopped streaming function " + functionNameToStop));
+      } else {
+        logger.warn("No active streaming function named {} found to stop", functionNameToStop);
+        return Maybe.just(
+            ImmutableMap.of("status", "No active streaming function named " + functionNameToStop));
+      }
+    }
+
+    // Case 2: Handle a streaming-capable tool (FunctionTool with Flowable return type)
+    if (tool instanceof FunctionTool functionTool) {
+      if (functionTool.isStreaming()) {
+        try {
+          Flowable<Map<String, Object>> toolOutputStream =
+              functionTool.callLive(args, toolContext, invocationContext);
+
+          // Subscribe to the tool's output to process results in the background.
+          Disposable subscription =
+              toolOutputStream.subscribe(
+                  result -> {
+                    String resultText = "Function " + tool.name() + " returned: " + result;
+                    Content updateContent =
+                        Content.builder().role("user").parts(Part.fromText(resultText)).build();
+                    invocationContext.liveRequestQueue().get().content(updateContent);
+                  },
+                  error -> logger.error("Error in streaming tool " + tool.name(), error.getCause()),
+                  () -> {
+                    logger.info("Streaming tool {} completed.", tool.name());
+                    invocationContext.activeStreamingTools().remove(tool.name());
+                  });
+
+          ActiveStreamingTool activeTool =
+              invocationContext
+                  .activeStreamingTools()
+                  .getOrDefault(tool.name(), new ActiveStreamingTool(subscription));
+          activeTool.task(subscription);
+          invocationContext.activeStreamingTools().put(tool.name(), activeTool);
+
+          return Maybe.just(
+              ImmutableMap.of(
+                  "status", "The function is running asynchronously and the results are pending."));
+
+        } catch (Exception e) {
+          logger.error("Failed to start streaming tool: " + tool.name(), e);
+          return Maybe.error(e);
+        }
+      }
+    }
+
+    // Case 3: Fallback for regular, non-streaming tools
+    return callTool(tool, args, toolContext);
   }
 
   public static Set<String> getLongRunningFunctionCalls(

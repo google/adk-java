@@ -17,6 +17,7 @@
 package com.google.adk.flows.llmflows;
 
 import com.google.adk.Telemetry;
+import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.Callbacks.AfterModelCallback;
@@ -497,7 +498,22 @@ public abstract class BaseLlmFlow implements BaseFlow {
                             }
                           });
 
-              Flowable<LiveRequest> liveRequests = invocationContext.liveRequestQueue().get().get();
+              Flowable<LiveRequest> liveRequests =
+                  invocationContext
+                      .liveRequestQueue()
+                      .get()
+                      .get()
+                      .doOnNext(
+                          request -> {
+                            if (!invocationContext.activeStreamingTools().isEmpty()) {
+                              for (ActiveStreamingTool activeStreamingTool :
+                                  invocationContext.activeStreamingTools().values()) {
+                                if (activeStreamingTool.stream() != null) {
+                                  activeStreamingTool.stream().send(request);
+                                }
+                              }
+                            }
+                          });
               Disposable sendTask =
                   historySent
                       .observeOn(agent.executor().map(Schedulers::from).orElse(Schedulers.io()))

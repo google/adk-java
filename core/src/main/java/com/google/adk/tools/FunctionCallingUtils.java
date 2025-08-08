@@ -115,7 +115,8 @@ public final class FunctionCallingUtils {
       if (returnType instanceof ParameterizedType parameterizedReturnType) {
         String rawTypeName = ((Class<?>) parameterizedReturnType.getRawType()).getName();
         if (rawTypeName.equals("io.reactivex.rxjava3.core.Maybe")
-            || rawTypeName.equals("io.reactivex.rxjava3.core.Single")) {
+            || rawTypeName.equals("io.reactivex.rxjava3.core.Single")
+            || rawTypeName.equals("io.reactivex.rxjava3.core.Flowable")) {
           actualReturnType = parameterizedReturnType.getActualTypeArguments()[0];
         }
       }

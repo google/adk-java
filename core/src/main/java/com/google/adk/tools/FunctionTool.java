@@ -18,9 +18,11 @@ package com.google.adk.tools;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.agents.InvocationContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.InvocationTargetException;
@@ -138,12 +140,24 @@ public class FunctionTool extends BaseTool {
     this.instance = instance;
     this.func = func;
     this.funcDeclaration =
-        FunctionCallingUtils.buildFunctionDeclaration(this.func, ImmutableList.of("toolContext"));
+        FunctionCallingUtils.buildFunctionDeclaration(
+            this.func, ImmutableList.of("toolContext", "inputStream"));
   }
 
   @Override
   public Optional<FunctionDeclaration> declaration() {
     return Optional.of(this.funcDeclaration);
+  }
+
+  /** Returns true if the wrapped function returns a Flowable and can be used for streaming. */
+  public boolean isStreaming() {
+    Type returnType = func.getGenericReturnType();
+    if (returnType instanceof ParameterizedType parameterizedType) {
+      if (parameterizedType.getRawType() instanceof Class<?> rawType) {
+        return Flowable.class.isAssignableFrom(rawType);
+      }
+    }
+    return false;
   }
 
   @Override
@@ -169,6 +183,10 @@ public class FunctionTool extends BaseTool {
               : parameters[i].getName();
       if (paramName.equals("toolContext")) {
         arguments[i] = toolContext;
+        continue;
+      }
+      if (paramName.equals("inputStream")) {
+        arguments[i] = null;
         continue;
       }
       if (!args.containsKey(paramName)) {
@@ -209,6 +227,62 @@ public class FunctionTool extends BaseTool {
     } else {
       return Maybe.just(
           OBJECT_MAPPER.convertValue(result, new TypeReference<Map<String, Object>>() {}));
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  public Flowable<Map<String, Object>> callLive(
+      Map<String, Object> args, ToolContext toolContext, InvocationContext invocationContext)
+      throws IllegalAccessException, InvocationTargetException {
+    Parameter[] parameters = func.getParameters();
+    Object[] arguments = new Object[parameters.length];
+    for (int i = 0; i < parameters.length; i++) {
+      String paramName =
+          parameters[i].isAnnotationPresent(Annotations.Schema.class)
+                  && !parameters[i].getAnnotation(Annotations.Schema.class).name().isEmpty()
+              ? parameters[i].getAnnotation(Annotations.Schema.class).name()
+              : parameters[i].getName();
+      if (paramName.equals("toolContext")) {
+        arguments[i] = toolContext;
+        continue;
+      }
+      if (paramName.equals("inputStream")) {
+        if (invocationContext.activeStreamingTools().containsKey(this.name())
+            && invocationContext.activeStreamingTools().get(this.name()).stream() != null) {
+          arguments[i] = invocationContext.activeStreamingTools().get(this.name()).stream();
+        } else {
+          arguments[i] = null;
+        }
+        continue;
+      }
+      if (!args.containsKey(paramName)) {
+        throw new IllegalArgumentException(
+            String.format(
+                "The parameter '%s' was not found in the arguments provided by the model.",
+                paramName));
+      }
+      Class<?> paramType = parameters[i].getType();
+      Object argValue = args.get(paramName);
+      if (paramType.equals(List.class)) {
+        if (argValue instanceof List) {
+          Type type =
+              ((ParameterizedType) parameters[i].getParameterizedType())
+                  .getActualTypeArguments()[0];
+          arguments[i] = createList((List<Object>) argValue, (Class) type);
+          continue;
+        }
+      } else if (argValue instanceof Map) {
+        arguments[i] = OBJECT_MAPPER.convertValue(argValue, paramType);
+        continue;
+      }
+      arguments[i] = castValue(argValue, paramType);
+    }
+    Object result = func.invoke(instance, arguments);
+    if (result instanceof Flowable) {
+      return (Flowable<Map<String, Object>>) result;
+    } else {
+      logger.warn("callLive was called but the underlying function does not return a Flowable.");
+      return Flowable.empty();
     }
   }
 
