@@ -17,6 +17,8 @@
 package com.google.adk.agents;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.adk.tools.BaseTool.ToolConfig;
+import java.util.List;
 
 /**
  * Configuration for LlmAgent.
@@ -29,6 +31,7 @@ public class LlmAgentConfig extends BaseAgentConfig {
   private Boolean disallowTransferToParent;
   private Boolean disallowTransferToPeers;
   private String outputKey;
+  private List<ToolConfig> tools;
 
   public LlmAgentConfig() {
     super();
@@ -79,5 +82,14 @@ public class LlmAgentConfig extends BaseAgentConfig {
 
   public void setOutputKey(String outputKey) {
     this.outputKey = outputKey;
+  }
+
+  @JsonProperty("tools")
+  public List<ToolConfig> tools() {
+    return tools;
+  }
+
+  public void setTools(List<ToolConfig> tools) {
+    this.tools = tools;
   }
 }

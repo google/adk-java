@@ -18,14 +18,19 @@ package com.google.adk.tools;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.errorprone.annotations.DoNotCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Tool;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import javax.annotation.Nonnull;
@@ -150,5 +155,67 @@ public abstract class BaseTool {
                     .filter(t -> t.functionDeclarations().isEmpty())
                     .collect(toImmutableList()))
         .orElse(ImmutableList.of());
+  }
+
+  /**
+   * Creates a tool instance from a config.
+   *
+   * <p>Subclasses should override and implement this method to do custom initialization from a
+   * config.
+   *
+   * @param config The config for the tool.
+   * @param configAbsPath The absolute path to the config file that contains the tool config.
+   * @return The tool instance.
+   * @throws ConfigurationException if the tool cannot be created from the config.
+   */
+  @DoNotCall("Always throws com.google.adk.agents.ConfigAgentUtils.ConfigurationException")
+  public static BaseTool fromConfig(ToolConfig config, String configAbsPath)
+      throws ConfigurationException {
+    throw new ConfigurationException(
+        "fromConfig not implemented for " + BaseTool.class.getSimpleName());
+  }
+
+  /** Configuration class for tool arguments that allows arbitrary key-value pairs. */
+  // TODO implement this class
+  public static class ToolArgsConfig extends JsonBaseModel {
+
+    @JsonIgnore private final Map<String, Object> additionalProperties = new HashMap<>();
+
+    public boolean isEmpty() {
+      return additionalProperties.isEmpty();
+    }
+
+    public int size() {
+      return additionalProperties.size();
+    }
+  }
+
+  /** Configuration class for a tool definition in YAML/JSON. */
+  public static class ToolConfig extends JsonBaseModel {
+    private String name;
+    private ToolArgsConfig args;
+
+    public ToolConfig() {}
+
+    public ToolConfig(String name, ToolArgsConfig args) {
+      this.name = name;
+      this.args = args;
+    }
+
+    public String name() {
+      return name;
+    }
+
+    public void setName(String name) {
+      this.name = name;
+    }
+
+    public ToolArgsConfig args() {
+      return args;
+    }
+
+    public void setArgs(ToolArgsConfig args) {
+      this.args = args;
+    }
   }
 }

@@ -40,6 +40,35 @@ public final class ConfigAgentUtils {
   private ConfigAgentUtils() {}
 
   /**
+   * Convert snake_case or kebab-case tool names to PascalCase Java class names.
+   *
+   * @param toolName the tool name to convert
+   * @return the converted tool name in PascalCase
+   */
+  public static String convertToPascalCase(String toolName) {
+    if (isNullOrEmpty(toolName)) {
+      return toolName;
+    }
+
+    StringBuilder result = new StringBuilder();
+    boolean capitalizeNext = true;
+
+    for (int i = 0; i < toolName.length(); i++) {
+      char c = toolName.charAt(i);
+      if (c == '_' || c == '-') {
+        capitalizeNext = true;
+      } else if (capitalizeNext) {
+        result.append(Character.toUpperCase(c));
+        capitalizeNext = false;
+      } else {
+        result.append(Character.toLowerCase(c));
+      }
+    }
+
+    return result.toString();
+  }
+
+  /**
    * Load agent from a YAML config file path.
    *
    * @param configPath the path to a YAML config file
