@@ -64,6 +64,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -782,6 +783,13 @@ public class LlmAgent extends BaseAgent {
     return canonicalTools().toList().blockingGet();
   }
 
+  public List<BaseToolset> toolsets() {
+    return toolsUnion.stream()
+        .filter(t -> t instanceof BaseToolset)
+        .map(t -> (BaseToolset) t)
+        .collect(ImmutableList.toImmutableList());
+  }
+
   public List<Object> toolsUnion() {
     return toolsUnion;
   }
@@ -939,14 +947,14 @@ public class LlmAgent extends BaseAgent {
     return agent;
   }
 
-  private static ImmutableList<BaseTool> resolveTools(
+  private static ImmutableList<Object> resolveTools(
       List<ToolConfig> toolConfigs, String configAbsPath) throws ConfigurationException {
 
     if (toolConfigs == null || toolConfigs.isEmpty()) {
       return ImmutableList.of();
     }
 
-    List<BaseTool> resolvedTools = new ArrayList<>();
+    List<Object> resolvedTools = new ArrayList<>();
 
     for (ToolConfig toolConfig : toolConfigs) {
       try {
@@ -956,20 +964,20 @@ public class LlmAgent extends BaseAgent {
         }
 
         toolName = toolName.trim();
-        BaseTool tool;
+        Object toolOrToolset;
 
         if (!toolName.contains(".")) {
-          tool = resolveBuiltInTool(toolName, toolConfig);
+          toolOrToolset = resolveBuiltInTool(toolName, toolConfig, configAbsPath);
         } else {
           // TODO: Support user-defined tools
           logger.debug("configAbsPath is: {}", configAbsPath);
           throw new ConfigurationException("User-defined tools are not yet supported");
         }
 
-        resolvedTools.add(tool);
-        logger.debug("Successfully resolved tool: {}", toolConfig.name());
+        resolvedTools.add(toolOrToolset);
+        logger.debug("Successfully resolved tool/toolset: {}", toolConfig.name());
       } catch (Exception e) {
-        String errorMsg = "Failed to resolve tool: " + toolConfig.name();
+        String errorMsg = "Failed to resolve tool/toolset: " + toolConfig.name();
         logger.error(errorMsg, e);
         throw new ConfigurationException(errorMsg, e);
       }
@@ -978,25 +986,29 @@ public class LlmAgent extends BaseAgent {
     return ImmutableList.copyOf(resolvedTools);
   }
 
-  private static BaseTool resolveBuiltInTool(String toolName, ToolConfig toolConfig)
-      throws ConfigurationException {
+  private static Object resolveBuiltInTool(
+      String toolName, ToolConfig toolConfig, String configAbsPath) throws ConfigurationException {
     try {
-      logger.debug("Resolving built-in tool: {}", toolName);
+      logger.debug("Resolving built-in tool/toolset: {}", toolName);
       // TODO: Handle built-in tool name end with Tool while config yaml file does not.
       // e.g.google_search in config yaml file and GoogleSearchTool in tool class name.
       String pascalCaseToolName = CaseFormat.LOWER_UNDERSCORE.to(CaseFormat.UPPER_CAMEL, toolName);
       String className = "com.google.adk.tools." + pascalCaseToolName;
+      // TODO: use tool registry to handle this instead of hardcoding.
+      if (toolName.equals("McpToolset")) {
+        className = "com.google.adk.tools.mcp.McpToolset";
+      }
       Class<?> toolClass;
       try {
         toolClass = Class.forName(className);
-        logger.debug("Successfully loaded tool class: {}", className);
+        logger.debug("Successfully loaded tool/toolset class: {}", className);
       } catch (ClassNotFoundException e) {
         String fallbackClassName = "com.google.adk.tools." + toolName;
         try {
           toolClass = Class.forName(fallbackClassName);
         } catch (ClassNotFoundException e2) {
           throw new ConfigurationException(
-              "Built-in tool not found: "
+              "Built-in tool/toolset not found: "
                   + toolName
                   + ". Expected class: "
                   + className
@@ -1006,48 +1018,87 @@ public class LlmAgent extends BaseAgent {
         }
       }
 
-      if (!BaseTool.class.isAssignableFrom(toolClass)) {
+      if (BaseTool.class.isAssignableFrom(toolClass)) {
+        logger.debug("Tool {} is a sub-class of BaseTool.", toolConfig.name());
+        @SuppressWarnings("unchecked")
+        Class<? extends BaseTool> baseToolClass = (Class<? extends BaseTool>) toolClass;
+        BaseTool tool = createToolInstance(baseToolClass, toolConfig, configAbsPath);
+        logger.info(
+            "Successfully created built-in tool: {} (class: {})", toolName, toolClass.getName());
+        return tool;
+      } else if (BaseToolset.class.isAssignableFrom(toolClass)) {
+        logger.debug("Tool {} is a sub-class of BaseToolset.", toolConfig.name());
+        @SuppressWarnings("unchecked")
+        Class<? extends BaseToolset> baseToolsetClass = (Class<? extends BaseToolset>) toolClass;
+        BaseToolset toolset = createToolsetInstance(baseToolsetClass, toolConfig, configAbsPath);
+        logger.info(
+            "Successfully created built-in toolset: {} (class: {})", toolName, toolClass.getName());
+        return toolset;
+      } else {
+        logger.info("configAbsPath is: {}", configAbsPath);
         throw new ConfigurationException(
-            "Built-in tool class " + toolClass.getName() + " does not extend BaseTool");
+            "Built-in tool class "
+                + toolClass.getName()
+                + " does not extend BaseTool or BaseToolset");
       }
 
-      @SuppressWarnings("unchecked")
-      Class<? extends BaseTool> baseToolClass = (Class<? extends BaseTool>) toolClass;
-
-      BaseTool tool = createToolInstance(baseToolClass, toolConfig);
-      logger.info(
-          "Successfully created built-in tool: {} (class: {})", toolName, toolClass.getName());
-
-      return tool;
-
     } catch (Exception e) {
-      logger.error("Failed to create built-in tool: {}", toolName, e);
-      throw new ConfigurationException("Failed to create built-in tool: " + toolName, e);
+      logger.error("Failed to create built-in tool/toolset: {}", toolName, e);
+      throw new ConfigurationException("Failed to create built-in tool/toolset: " + toolName, e);
     }
   }
 
   private static BaseTool createToolInstance(
-      Class<? extends BaseTool> toolClass, ToolConfig toolConfig)
+      Class<? extends BaseTool> toolClass, ToolConfig toolConfig, String configAbsPath)
       throws ConfigAgentUtils.ConfigurationException {
 
     try {
-      // TODO:implement constructor with ToolArgsConfig
-      logger.debug("ToolConfig is: {}", toolConfig);
-
-      // Try default constructor
+      // First, try to use the fromConfig static method
       try {
-        Constructor<? extends BaseTool> constructor = toolClass.getConstructor();
-        return constructor.newInstance();
+        Method fromConfigMethod = toolClass.getMethod("fromConfig", ToolConfig.class, String.class);
+        return (BaseTool) fromConfigMethod.invoke(null, toolConfig, configAbsPath);
+      } catch (ReflectiveOperationException e) {
+        // Continue
+      }
+
+      // Second, try default constructor
+      try {
+        Constructor<? extends BaseTool> defaultConstructor = toolClass.getConstructor();
+        return defaultConstructor.newInstance();
       } catch (NoSuchMethodException e) {
         // Continue
       }
 
-      throw new ConfigAgentUtils.ConfigurationException(
-          "No suitable constructor found for tool class: " + toolClass.getName());
+      // Third, try constructor with ToolArgsConfig
+      // TODO: implement constructor with ToolArgsConfig
 
+      logger.debug("ToolConfig is: {}", toolConfig);
+      logger.debug("configAbsPath is: {}", configAbsPath);
+      throw new ConfigAgentUtils.ConfigurationException(
+          "No suitable constructor or fromConfig method found for tool class: "
+              + toolClass.getName());
+
+    } catch (ConfigAgentUtils.ConfigurationException e) {
+      throw e;
     } catch (Exception e) {
       throw new ConfigAgentUtils.ConfigurationException(
           "Failed to instantiate tool class: " + toolClass.getName(), e);
+    }
+  }
+
+  private static BaseToolset createToolsetInstance(
+      Class<? extends BaseToolset> toolsetClass, ToolConfig toolConfig, String configAbsPath)
+      throws ConfigAgentUtils.ConfigurationException {
+    try {
+      Method fromConfigMethod =
+          toolsetClass.getMethod("fromConfig", ToolConfig.class, String.class);
+      return (BaseToolset) fromConfigMethod.invoke(null, toolConfig, configAbsPath);
+    } catch (ReflectiveOperationException e) {
+      throw new ConfigAgentUtils.ConfigurationException(
+          "No suitable fromConfig method found for toolset class: " + toolsetClass.getName(), e);
+    } catch (RuntimeException e) {
+      throw new ConfigAgentUtils.ConfigurationException(
+          "Failed to instantiate toolset class: " + toolsetClass.getName(), e);
     }
   }
 }

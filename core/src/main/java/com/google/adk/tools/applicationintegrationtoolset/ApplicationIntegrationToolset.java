@@ -18,7 +18,7 @@ import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 /** Application Integration Toolset */
-public class ApplicationIntegrationToolset implements BaseToolset {
+public class ApplicationIntegrationToolset extends BaseToolset {
   String project;
   String location;
   @Nullable String integration;

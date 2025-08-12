@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
+import com.google.adk.tools.mcp.McpToolset;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -291,5 +292,36 @@ public final class ConfigAgentUtilsTest {
     IllegalArgumentException exception =
         assertThrows(IllegalArgumentException.class, llmAgent::resolvedModel);
     assertThat(exception).hasMessageThat().contains("invalid-model-name");
+  }
+
+  @Test
+  public void fromConfig_withMcpToolset_loadsToolset() throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("with_mcp_toolset.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: mcp_agent
+        model: gemini-1.5-flash
+        instruction: You are an agent that uses an MCP toolset.
+        agent_class: LlmAgent
+        tools:
+          - name: McpToolset
+            args:
+              stdio_server_params:
+                command: "npx"
+                args:
+                  - "-y"
+                  - "@notionhq/notion-mcp-server"
+                env:
+                  OPENAPI_MCP_HEADERS: '{"Authorization": "Bearer fake-key"}'
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.toolsets()).hasSize(1);
+    assertThat(llmAgent.toolsets().get(0)).isInstanceOf(McpToolset.class);
   }
 }
