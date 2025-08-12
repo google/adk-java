@@ -21,7 +21,8 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
       return new StdioClientTransport(serverParameters);
     } else if (connectionParams instanceof SseServerParameters sseServerParams) {
       return HttpClientSseClientTransport.builder(sseServerParams.url())
-          .sseEndpoint("sse")
+          .sseEndpoint(
+              sseServerParams.sseEndpoint() == null ? "sse" : sseServerParams.sseEndpoint())
           .customizeRequest(
               builder ->
                   Optional.ofNullable(sseServerParams.headers())
