@@ -87,7 +87,7 @@ public class Runner {
    *
    * @throws IllegalArgumentException if message has no parts.
    */
-  private void appendNewMessageToSession(
+  private Single<Event> appendNewMessageToSession(
       Session session,
       Content newMessage,
       InvocationContext invocationContext,
@@ -127,7 +127,7 @@ public class Runner {
             .author("user")
             .content(Optional.of(newMessage))
             .build();
-    this.sessionService.appendEvent(session, event);
+    return this.sessionService.appendEvent(session, event);
   }
 
   /**
@@ -194,14 +194,21 @@ public class Runner {
                         newMessage,
                         runConfig);
 
-                if (newMessage != null) {
-                  appendNewMessageToSession(
-                      sess, newMessage, invocationContext, runConfig.saveInputBlobsAsArtifacts());
-                }
-
-                invocationContext.agent(this.findAgentToRun(sess, rootAgent));
-                Flowable<Event> events = invocationContext.agent().runAsync(invocationContext);
-                return events.doOnNext(event -> this.sessionService.appendEvent(sess, event));
+                Single<Event> singleEvent =
+                    (newMessage != null)
+                        ? appendNewMessageToSession(
+                            sess,
+                            newMessage,
+                            invocationContext,
+                            runConfig.saveInputBlobsAsArtifacts())
+                        : Single.just(null);
+                return singleEvent
+                    .flatMapPublisher(
+                        ignored -> {
+                          invocationContext.agent(this.findAgentToRun(sess, rootAgent));
+                          return invocationContext.agent().runAsync(invocationContext);
+                        })
+                    .doOnNext(nextEvent -> this.sessionService.appendEvent(sess, nextEvent));
               })
           .doOnError(
               throwable -> {
