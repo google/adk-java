@@ -18,8 +18,10 @@ package com.google.adk.tools.mcp;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
@@ -27,6 +29,11 @@ import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.spec.McpSchema.ListToolsResult;
 import io.reactivex.rxjava3.core.Flowable;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -43,7 +50,7 @@ import org.slf4j.LoggerFactory;
  *   <li>{@code session}: The MCP session being initialized with the connection.
  * </ul>
  */
-public class McpToolset implements BaseToolset {
+public class McpToolset extends BaseToolset {
   private static final Logger logger = LoggerFactory.getLogger(McpToolset.class);
   private final McpSessionManager mcpSessionManager;
   private McpSyncClient mcpSession;
@@ -52,6 +59,8 @@ public class McpToolset implements BaseToolset {
 
   private static final int MAX_RETRIES = 3;
   private static final long RETRY_DELAY_MILLIS = 100;
+
+  protected static final Class<? extends McpToolsetConfig> CONFIG_TYPE = McpToolsetConfig.class;
 
   /**
    * Initializes the McpToolset with SSE server parameters.
@@ -253,7 +262,7 @@ public class McpToolset implements BaseToolset {
     }
   }
 
-  /** Base exception for all errors originating from {@code McpToolset}. */
+  /** Base exception for errors occurring within the {@link McpToolset}. */
   public static class McpToolsetException extends RuntimeException {
     public McpToolsetException(String message, Throwable cause) {
       super(message, cause);
@@ -271,6 +280,222 @@ public class McpToolset implements BaseToolset {
   public static class McpToolLoadingException extends McpToolsetException {
     public McpToolLoadingException(String message, Throwable cause) {
       super(message, cause);
+    }
+  }
+
+  /** Configuration class for MCPToolset. */
+  public static class McpToolsetConfig extends JsonBaseModel {
+
+    @JsonProperty("stdio_server_params")
+    private Map<String, Object> stdioServerParams;
+
+    @JsonProperty("sse_server_params")
+    private Map<String, Object> sseServerParams;
+
+    @JsonProperty("tool_filter")
+    private List<String> toolFilter;
+
+    public Map<String, Object> stdioServerParams() {
+      return stdioServerParams;
+    }
+
+    public void setStdioServerParams(Map<String, Object> stdioServerParams) {
+      this.stdioServerParams = stdioServerParams;
+    }
+
+    public Map<String, Object> sseServerParams() {
+      return sseServerParams;
+    }
+
+    public void setSseServerParams(Map<String, Object> sseServerParams) {
+      this.sseServerParams = sseServerParams;
+    }
+
+    public List<String> toolFilter() {
+      return toolFilter;
+    }
+
+    public void setToolFilter(List<String> toolFilter) {
+      this.toolFilter = toolFilter;
+    }
+
+    /**
+     * Validates the configuration and creates connection parameters. Returns either
+     * ServerParameters for stdio or SseServerParameters for SSE.
+     */
+    public Object createConnectionParameters() throws ConfigurationException {
+      int paramCount = 0;
+      if (stdioServerParams != null) {
+        paramCount++;
+      }
+      if (sseServerParams != null) {
+        paramCount++;
+      }
+
+      if (paramCount != 1) {
+        throw new ConfigurationException(
+            "Exactly one of stdio_server_params or sse_server_params must be set for McpToolset");
+      }
+
+      if (stdioServerParams != null) {
+        return createServerParameters();
+      } else {
+        return createSseServerParameters();
+      }
+    }
+
+    /** Creates ServerParameters from stdio_server_params. */
+    private ServerParameters createServerParameters() throws ConfigurationException {
+      String command = (String) stdioServerParams.get("command");
+      if (command == null || command.trim().isEmpty()) {
+        throw new ConfigurationException("stdio_server_params.command is required");
+      }
+      ServerParameters.Builder serverBuilder = ServerParameters.builder(command);
+
+      Object argsObj = stdioServerParams.get("args");
+      if (argsObj instanceof List) {
+        List<?> argsList = (List<?>) argsObj;
+        List<String> args = new ArrayList<>();
+        for (Object arg : argsList) {
+          if (!(arg instanceof String string)) {
+            throw new ConfigurationException("stdio_server_params.args must contain only strings");
+          }
+          args.add(string);
+        }
+        if (!args.isEmpty()) {
+          serverBuilder.args(args);
+        }
+      } else if (argsObj != null) {
+        throw new ConfigurationException("stdio_server_params.args must be a List of Strings");
+      }
+
+      Object envObj = stdioServerParams.get("env");
+      if (envObj instanceof Map) {
+        Map<?, ?> envMap = (Map<?, ?>) envObj;
+        Map<String, String> env = new HashMap<>();
+        for (Map.Entry<?, ?> entry : envMap.entrySet()) {
+          if (!(entry.getKey() instanceof String) || !(entry.getValue() instanceof String)) {
+            throw new ConfigurationException(
+                "stdio_server_params.env must contain only string keys and values");
+          }
+          env.put((String) entry.getKey(), (String) entry.getValue());
+        }
+        if (!env.isEmpty()) {
+          serverBuilder.env(env);
+        }
+      } else if (envObj != null) {
+        throw new ConfigurationException(
+            "stdio_server_params.env must be a Map of Strings to Strings");
+      }
+
+      return serverBuilder.build();
+    }
+
+    private SseServerParameters createSseServerParameters() throws ConfigurationException {
+      String url = (String) sseServerParams.get("url");
+      if (url == null || url.trim().isEmpty()) {
+        throw new ConfigurationException("sse_server_params.url is required");
+      }
+      SseServerParameters.Builder sseBuilder = SseServerParameters.builder().url(url);
+
+      Object headersObj = sseServerParams.get("headers");
+      if (headersObj instanceof Map) {
+        Map<?, ?> headersMap = (Map<?, ?>) headersObj;
+        Map<String, Object> headers = new HashMap<>();
+        for (Map.Entry<?, ?> entry : headersMap.entrySet()) {
+          if (!(entry.getKey() instanceof String)) {
+            throw new ConfigurationException("sse_server_params.headers must have string keys");
+          }
+          headers.put((String) entry.getKey(), entry.getValue());
+        }
+        if (!headers.isEmpty()) {
+          sseBuilder.headers(headers);
+        }
+      } else if (headersObj != null) {
+        throw new ConfigurationException("sse_server_params.headers must be a Map");
+      }
+
+      Object timeoutObj = sseServerParams.get("timeout");
+      if (timeoutObj != null) {
+        try {
+          if (timeoutObj instanceof Number number) {
+            long timeoutSeconds = number.longValue();
+            sseBuilder.timeout(Duration.ofSeconds(timeoutSeconds));
+          } else if (timeoutObj instanceof String string) {
+            long timeoutSeconds = Long.parseLong(string);
+            sseBuilder.timeout(Duration.ofSeconds(timeoutSeconds));
+          } else {
+            throw new ConfigurationException(
+                "sse_server_params.timeout must be a number (seconds)");
+          }
+        } catch (NumberFormatException e) {
+          throw new ConfigurationException("sse_server_params.timeout must be a valid number", e);
+        }
+      }
+
+      Object sseReadTimeoutObj = sseServerParams.get("sse_read_timeout");
+      if (sseReadTimeoutObj != null) {
+        try {
+          if (sseReadTimeoutObj instanceof Number number) {
+            long sseReadTimeoutSeconds = number.longValue();
+            sseBuilder.sseReadTimeout(Duration.ofSeconds(sseReadTimeoutSeconds));
+          } else if (sseReadTimeoutObj instanceof String string) {
+            long sseReadTimeoutSeconds = Long.parseLong(string);
+            sseBuilder.sseReadTimeout(Duration.ofSeconds(sseReadTimeoutSeconds));
+          } else {
+            throw new ConfigurationException(
+                "sse_server_params.sse_read_timeout must be a number (seconds)");
+          }
+        } catch (NumberFormatException e) {
+          throw new ConfigurationException(
+              "sse_server_params.sse_read_timeout must be a valid number", e);
+        }
+      }
+
+      return sseBuilder.build();
+    }
+  }
+
+  /**
+   * Creates a McpToolset instance from a config.
+   *
+   * @param config The config for the McpToolset.
+   * @param configAbsPath The absolute path to the config file that contains the McpToolset config.
+   * @return The McpToolset instance.
+   * @throws ConfigurationException if the McpToolset cannot be created from the config.
+   */
+  public static McpToolset fromConfig(BaseTool.ToolConfig config, String configAbsPath)
+      throws ConfigurationException {
+    if (config.args() == null) {
+      throw new ConfigurationException("Tool args is null for McpToolset");
+    }
+
+    ObjectMapper mapper = JsonBaseModel.getMapper();
+
+    try {
+      // Convert ToolArgsConfig to the appropriate MCPToolsetConfig subclass
+      McpToolsetConfig mcpToolsetConfig =
+          mapper.convertValue(config.args(), McpToolset.CONFIG_TYPE);
+
+      // Create connection parameters from the config
+      Object connectionParams = mcpToolsetConfig.createConnectionParameters();
+
+      // Convert tool filter to Optional<Object>
+      Optional<Object> toolFilter =
+          Optional.ofNullable(mcpToolsetConfig.toolFilter()).map(filter -> filter);
+
+      // Create McpToolset with appropriate connection parameters
+      if (connectionParams instanceof ServerParameters serverParameters) {
+        return new McpToolset(serverParameters, mapper, toolFilter);
+      } else if (connectionParams instanceof SseServerParameters sseServerParameters) {
+        return new McpToolset(sseServerParameters, mapper, toolFilter);
+      } else {
+        throw new ConfigurationException(
+            "Unsupported connection parameter type: " + connectionParams.getClass().getName());
+      }
+
+    } catch (IllegalArgumentException e) {
+      throw new ConfigurationException("Failed to parse MCPToolsetConfig from ToolArgsConfig", e);
     }
   }
 }

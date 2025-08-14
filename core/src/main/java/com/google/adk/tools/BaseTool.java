@@ -18,6 +18,8 @@ package com.google.adk.tools;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.fasterxml.jackson.annotation.JsonAnyGetter;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
@@ -180,8 +182,12 @@ public abstract class BaseTool {
         "fromConfig not implemented for " + BaseTool.class.getSimpleName());
   }
 
-  /** Configuration class for tool arguments that allows arbitrary key-value pairs. */
-  // TODO implement this class
+  /**
+   * Configuration class for tool arguments that allows arbitrary key-value pairs.
+   *
+   * <p>This class is used to parse tool arguments from a YAML configuration file. It supports
+   * arbitrary key-value pairs, which can be accessed using the {@link #get(String)} method.
+   */
   public static class ToolArgsConfig extends JsonBaseModel {
 
     @JsonIgnore private final Map<String, Object> additionalProperties = new HashMap<>();
@@ -192,6 +198,40 @@ public abstract class BaseTool {
 
     public int size() {
       return additionalProperties.size();
+    }
+
+    @JsonAnyGetter
+    public Map<String, Object> getAdditionalProperties() {
+      return additionalProperties;
+    }
+
+    @JsonAnySetter
+    public void setAdditionalProperty(String name, Object value) {
+      additionalProperties.put(name, value);
+    }
+
+    public @Nullable Object get(String key) {
+      return additionalProperties.get(key);
+    }
+
+    public <T> @Nullable T get(String key, Class<T> type) {
+      Object value = additionalProperties.get(key);
+      if (value == null) {
+        return null;
+      }
+      return type.cast(value);
+    }
+
+    public void put(String key, Object value) {
+      additionalProperties.put(key, value);
+    }
+
+    public Object remove(String key) {
+      return additionalProperties.remove(key);
+    }
+
+    public boolean containsKey(String key) {
+      return additionalProperties.containsKey(key);
     }
   }
 
