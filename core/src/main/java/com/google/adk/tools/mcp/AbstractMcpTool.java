@@ -20,6 +20,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.mcp.McpToolException.McpToolDeclarationException;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
@@ -77,14 +78,20 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
   @Override
   public Optional<FunctionDeclaration> declaration() {
     JsonSchema schema = this.mcpTool.inputSchema();
-    return Optional.ofNullable(schema)
-        .map(
-            value ->
-                FunctionDeclaration.builder()
-                    .name(this.name())
-                    .description(this.description())
-                    .parametersJsonSchema(value)
-                    .build());
+    try {
+      return Optional.ofNullable(schema)
+          .map(
+              value ->
+                  FunctionDeclaration.builder()
+                      .name(this.name())
+                      .description(this.description())
+                      .parametersJsonSchema(value)
+                      .build());
+    } catch (Exception e) {
+      throw new McpToolDeclarationException(
+          String.format("MCP tool:%s failed to get declaration, schema:%s.", this.name(), schema),
+          e);
+    }
   }
 
   @SuppressWarnings("PreferredInterfaceType") // BaseTool.runAsync() returns Map<String, Object>
@@ -141,4 +148,5 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
     }
     return ImmutableMap.of("text_output", resultMaps);
   }
+
 }
