@@ -29,6 +29,10 @@ public abstract class SseServerParameters {
   /** The URL of the SSE server. */
   public abstract String url();
 
+  /** The endpoint to connect to on the SSE server. */
+  @Nullable
+  public abstract String sseEndpoint();
+
   /** Optional headers to include in the SSE connection request. */
   @Nullable
   public abstract ImmutableMap<String, Object> headers();
@@ -51,6 +55,9 @@ public abstract class SseServerParameters {
   public abstract static class Builder {
     /** Sets the URL of the SSE server. */
     public abstract Builder url(String url);
+
+    /** Sets the endpoint to connect to on the SSE server. */
+    public abstract Builder sseEndpoint(String sseEndpoint);
 
     /** Sets the headers for the SSE connection request. */
     public abstract Builder headers(@Nullable Map<String, Object> headers);
