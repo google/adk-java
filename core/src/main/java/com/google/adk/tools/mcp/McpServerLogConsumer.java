@@ -24,10 +24,11 @@ import org.slf4j.event.Level;
 
 class McpServerLogConsumer implements Consumer<LoggingMessageNotification> {
 
+  private static final Logger LOG = LoggerFactory.getLogger(McpServerLogConsumer.class);
+
   @Override
   public void accept(LoggingMessageNotification notif) {
-    Logger log = LoggerFactory.getLogger(notif.logger());
-    log.atLevel(convert(notif.level())).log("{}", notif.data());
+    LOG.atLevel(convert(notif.level())).log("{}", notif.data());
   }
 
   private Level convert(McpSchema.LoggingLevel level) {
