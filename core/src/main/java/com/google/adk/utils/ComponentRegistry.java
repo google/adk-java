@@ -28,8 +28,10 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ExitLoopTool;
 import com.google.adk.tools.GoogleSearchTool;
 import com.google.adk.tools.LoadArtifactsTool;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.Nonnull;
 import org.slf4j.Logger;
@@ -324,5 +326,14 @@ public class ComponentRegistry {
     }
 
     return Optional.empty();
+  }
+
+  /**
+   * Returns all registered tool names. This is used to find tools that match a class pattern.
+   *
+   * @return Set of all registered tool names
+   */
+  public Set<String> getAllToolNames() {
+    return new HashSet<>(registry.keySet());
   }
 }

@@ -68,6 +68,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import javax.annotation.Nullable;
 import org.slf4j.Logger;
@@ -946,7 +947,7 @@ public class LlmAgent extends BaseAgent {
       return ImmutableList.of();
     }
 
-    List<BaseTool> resolvedTools = new ArrayList<>();
+    ImmutableList.Builder<BaseTool> resolvedTools = ImmutableList.builder();
 
     for (ToolConfig toolConfig : toolConfigs) {
       try {
@@ -955,17 +956,27 @@ public class LlmAgent extends BaseAgent {
         }
 
         String toolName = toolConfig.name().trim();
+
+        // First try to resolve as a single tool
         Optional<BaseTool> toolOpt = ComponentRegistry.resolveToolInstance(toolName);
         if (toolOpt.isPresent()) {
           resolvedTools.add(toolOpt.get());
+          logger.debug("Successfully resolved single tool: {}", toolConfig.name());
         } else {
-          // TODO: Support user-defined tools
-          // TODO: Support using tool class via ComponentRegistry.resolveToolClass
-          logger.debug("configAbsPath is: {}", configAbsPath);
-          throw new ConfigurationException("Tool not found: " + toolName);
+          // NEW: Try to resolve as a class with multiple methods
+          List<BaseTool> classTools = resolveClassTools(toolName);
+          if (!classTools.isEmpty()) {
+            resolvedTools.addAll(classTools);
+            logger.debug(
+                "Successfully resolved class tools: {} ({} methods)",
+                toolConfig.name(),
+                classTools.size());
+          } else {
+            logger.debug("configAbsPath is: {}", configAbsPath);
+            throw new ConfigurationException("Tool not found: " + toolName);
+          }
         }
 
-        logger.debug("Successfully resolved tool: {}", toolConfig.name());
       } catch (Exception e) {
         String errorMsg = "Failed to resolve tool: " + toolConfig.name();
         logger.error(errorMsg, e);
@@ -973,6 +984,34 @@ public class LlmAgent extends BaseAgent {
       }
     }
 
-    return ImmutableList.copyOf(resolvedTools);
+    return resolvedTools.build();
+  }
+
+  /**
+   * Attempts to resolve a class name to multiple tools (one for each @Schema method). For example,
+   * "com.example.CustomDieClassTool" would resolve to: - com.example.CustomDieClassTool.rollDie -
+   * com.example.CustomDieClassTool.checkPrime - com.example.CustomDieClassTool.rollMultiple
+   */
+  static ImmutableList<BaseTool> resolveClassTools(String className) {
+    ImmutableList.Builder<BaseTool> tools = ImmutableList.builder();
+
+    // Look for tools registered with the pattern className.methodName
+    ComponentRegistry registry = ComponentRegistry.getInstance();
+
+    // Get all registered tool names that start with the class name
+    Set<String> allToolNames = registry.getAllToolNames();
+    String classPrefix = className + ".";
+
+    for (String toolName : allToolNames) {
+      if (toolName.startsWith(classPrefix)) {
+        Optional<BaseTool> tool = ComponentRegistry.resolveToolInstance(toolName);
+        if (tool.isPresent()) {
+          tools.add(tool.get());
+          logger.debug("Found class method tool: {}", toolName);
+        }
+      }
+    }
+
+    return tools.build();
   }
 }
