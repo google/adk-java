@@ -32,7 +32,10 @@ import com.google.adk.models.LlmResponse;
 import com.google.adk.models.Model;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils.EchoTool;
+import com.google.adk.tools.Annotations;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.FunctionTool;
+import com.google.adk.utils.ComponentRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -49,6 +52,122 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link LlmAgent}. */
 @RunWith(JUnit4.class)
 public final class LlmAgentTest {
+
+  /** A test tool with multiple methods annotated with @Schema. */
+  public static class TestToolWithMethods {
+    @Annotations.Schema(name = "method1", description = "This is the first test method.")
+    public static String method1(
+        @Annotations.Schema(name = "param1", description = "A test parameter") String param1) {
+      return "method1 response: " + param1;
+    }
+
+    @Annotations.Schema(name = "method2", description = "This is the second test method.")
+    public static int method2(
+        @Annotations.Schema(name = "param2", description = "Another test parameter") int param2) {
+      return param2 * 2;
+    }
+
+    // This method is not annotated and should not be picked up
+    public void nonToolMethod() {
+      // No-op
+    }
+  }
+
+  /** A public subclass of ComponentRegistry to allow instantiation in the test. */
+  public static class TestComponentRegistry extends ComponentRegistry {
+    public TestComponentRegistry() {
+      super();
+    }
+  }
+
+  @Test
+  public void testResolveClassTools() throws Exception {
+    ComponentRegistry originalRegistry = ComponentRegistry.getInstance();
+    try {
+      ComponentRegistry testRegistry = new TestComponentRegistry();
+      ComponentRegistry.setInstance(testRegistry);
+
+      String className = TestToolWithMethods.class.getName();
+
+      // Create and register tools from the test class
+      FunctionTool tool1 = FunctionTool.create(TestToolWithMethods.class, "method1");
+      FunctionTool tool2 = FunctionTool.create(TestToolWithMethods.class, "method2");
+      String tool1Name = className + ".method1";
+      String tool2Name = className + ".method2";
+      testRegistry.register(tool1Name, tool1);
+      testRegistry.register(tool2Name, tool2);
+
+      // Call the method under test
+      List<BaseTool> resolvedTools = LlmAgent.resolveClassTools(className);
+
+      // Verify the results
+      assertThat(resolvedTools).hasSize(2);
+      assertThat(resolvedTools).containsExactly(tool1, tool2);
+    } finally {
+      // Clean up the registry to avoid side effects on other tests
+      ComponentRegistry.setInstance(originalRegistry);
+    }
+  }
+
+  @Test
+  public void testResolveClassTools_withEmptyClassPrefix() throws Exception {
+    ComponentRegistry originalRegistry = ComponentRegistry.getInstance();
+    try {
+      ComponentRegistry testRegistry = new LlmAgentTest.TestComponentRegistry();
+      ComponentRegistry.setInstance(testRegistry);
+
+      String className = "com.example.NonExistentClass";
+
+      // Register some unrelated tools to verify they aren't picked up
+      FunctionTool unrelatedTool = FunctionTool.create(TestToolWithMethods.class, "method1");
+      testRegistry.register("com.other.SomeClass.method", unrelatedTool);
+      testRegistry.register("different.package.Tool.function", unrelatedTool);
+
+      // Call the method under test with a class that has no registered tools
+      List<BaseTool> resolvedTools = LlmAgent.resolveClassTools(className);
+
+      // Verify no tools are returned
+      assertThat(resolvedTools).isEmpty();
+    } finally {
+      // Clean up the registry to avoid side effects on other tests
+      ComponentRegistry.setInstance(originalRegistry);
+    }
+  }
+
+  @Test
+  public void testResolveClassTools_withPartialMatches() throws Exception {
+    ComponentRegistry originalRegistry = ComponentRegistry.getInstance();
+    try {
+      ComponentRegistry testRegistry = new LlmAgentTest.TestComponentRegistry();
+      ComponentRegistry.setInstance(testRegistry);
+
+      String className = "com.example.TestClass";
+
+      // Create tools for testing
+      FunctionTool correctTool1 = FunctionTool.create(TestToolWithMethods.class, "method1");
+      FunctionTool correctTool2 = FunctionTool.create(TestToolWithMethods.class, "method2");
+      FunctionTool similarButDifferent = FunctionTool.create(TestToolWithMethods.class, "method1");
+
+      // Register tools with exact matches and partial matches
+      testRegistry.register("com.example.TestClass.method1", correctTool1);
+      testRegistry.register("com.example.TestClass.method2", correctTool2);
+      testRegistry.register(
+          "com.example.TestClassExtended.method3", similarButDifferent); // Should not match
+      testRegistry.register("com.other.TestClass.method4", similarButDifferent); // Should not match
+      testRegistry.register(
+          "com.example.TestClass", similarButDifferent); // Exact class name, should not match
+
+      // Call the method under test
+      List<BaseTool> resolvedTools = LlmAgent.resolveClassTools(className);
+
+      // Verify only exact prefix matches are returned
+      assertThat(resolvedTools).hasSize(2);
+      assertThat(resolvedTools).containsExactly(correctTool1, correctTool2);
+    } finally {
+      // Clean up the registry to avoid side effects on other tests
+      ComponentRegistry.setInstance(originalRegistry);
+    }
+  }
 
   @Test
   public void testRun_withNoCallbacks() {

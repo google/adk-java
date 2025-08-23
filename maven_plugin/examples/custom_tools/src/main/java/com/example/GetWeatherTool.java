@@ -30,9 +30,6 @@ import java.util.Map;
  */
 public class GetWeatherTool {
 
-  public static final FunctionTool INSTANCE =
-      FunctionTool.create(GetWeatherTool.class, "getWeather");
-
   @Schema(name = "get_weather", description = "Get current weather information for a city")
   public static Map<String, Object> getWeather(
       @Schema(name = "city", description = "The city to fetch weather for.") String city) {

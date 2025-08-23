@@ -9,4 +9,4 @@ instruction: |
   - Always provide clear and informative responses about weather conditions.
   - If a user doesn't ask about weather, steer the topic back to weather.
 tools:
-  - name: "tools.get_weather"
+  - name: "com.example.GetWeatherTool"
