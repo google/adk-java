@@ -28,7 +28,7 @@
   <artifactId>google-adk-tutorials-city-time-weather</artifactId>
 
   <properties>
-    <exec.mainClass>com.google.adk.web.AdkWebServer</exec.mainClass>
+    <exec.mainClass>com.google.adk.tutorials.CityTimeWeather</exec.mainClass>
   </properties>
 
   <dependencies>
