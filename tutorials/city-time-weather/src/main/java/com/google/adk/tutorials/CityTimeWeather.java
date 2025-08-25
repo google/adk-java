@@ -19,6 +19,7 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.FunctionTool;
+import com.google.adk.web.AdkWebServer;
 import java.text.Normalizer;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -91,5 +92,9 @@ public class CityTimeWeather {
       return Map.of(
           "status", "error", "report", "Weather information for " + city + " is not available.");
     }
+  }
+
+  public static void main(String[] args) {
+    AdkWebServer.start(ROOT_AGENT);
   }
 }
