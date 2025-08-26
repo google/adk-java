@@ -56,6 +56,7 @@ import com.google.adk.tools.BaseTool.ToolArgsConfig;
 import com.google.adk.tools.BaseTool.ToolConfig;
 import com.google.adk.tools.BaseToolset;
 import com.google.adk.utils.ComponentRegistry;
+import com.google.adk.tools.internal.ToolConstraints;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -614,7 +615,10 @@ public class LlmAgent extends BaseAgent {
 
     public LlmAgent build() {
       validate();
-      return new LlmAgent(this);
+      LlmAgent built = new LlmAgent(this);
+      // Newly added built-in tool verification
+      ToolConstraints.validateAgentTree(built);
+      return built;
     }
   }
 
