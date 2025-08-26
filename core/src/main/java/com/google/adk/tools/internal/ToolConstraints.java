@@ -94,7 +94,7 @@ public final class ToolConstraints {
   /** Return the declared tools list using best-effort method discovery. */
   @SuppressWarnings("unchecked")
   private static List<Object> declaredToolsCompat(LlmAgent agent) {
-    // Priority：tools() → declaredTools() → getTools()
+    // Priority: tools() → declaredTools() → getTools()
     for (String m : new String[] {"tools", "declaredTools", "getTools"}) {
       try {
         var mh =
