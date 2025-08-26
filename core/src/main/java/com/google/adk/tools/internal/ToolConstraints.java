@@ -38,7 +38,7 @@ public final class ToolConstraints {
   public static void validateAgentTree(BaseAgent agent) {
     Objects.requireNonNull(agent, "agent");
     if (!(agent instanceof LlmAgent llm)) {
-      // 仅针对 LlmAgent 的工具组合做校验
+      // Only validate tool combinations for LlmAgent
       return;
     }
     validateSingleAgent(llm);
