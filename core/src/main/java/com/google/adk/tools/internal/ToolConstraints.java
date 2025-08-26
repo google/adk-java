@@ -123,9 +123,7 @@ public final class ToolConstraints {
         Object result = mh.invoke(agent);
         if (result instanceof List<?>) {
           List<?> raw = (List<?>) result;
-          List<BaseAgent> safe =
-              raw.stream().filter(e -> e instanceof BaseAgent).map(e -> (BaseAgent) e).toList();
-          return new ArrayList<>(safe);
+          return raw.stream().filter(e -> e instanceof BaseAgent).map(e -> (BaseAgent) e).toList();
         }
       } catch (Throwable ignore) {
         // try next
