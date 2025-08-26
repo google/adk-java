@@ -49,7 +49,7 @@ public final class ToolConstraints {
 
   /** Validate constraints on a single LlmAgent. */
   private static void validateSingleAgent(LlmAgent agent) {
-    List<Object> tools = new ArrayList<>(declaredToolsCompat(agent));
+    List<Object> tools = declaredToolsCompat(agent);
 
     long builtinCount = tools.stream().filter(t -> t instanceof BuiltInTool).count();
     boolean hasBuiltin = builtinCount > 0;
