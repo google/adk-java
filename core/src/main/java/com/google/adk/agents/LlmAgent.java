@@ -53,7 +53,6 @@ import com.google.adk.models.Model;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseTool.ToolArgsConfig;
 import com.google.adk.tools.BaseTool.ToolConfig;
-import com.google.adk.tools.BaseTool.ToolConfig;
 import com.google.adk.tools.BaseToolset;
 import com.google.adk.utils.ComponentRegistry;
 import com.google.adk.tools.internal.ToolConstraints;
