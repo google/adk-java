@@ -151,7 +151,7 @@ public class NLPlanning {
             }
 
             for (Part part : content.parts().get()) {
-//                part.thought(); TODO remove thought
+                part.toBuilder().thought(false).build();
             }
         }
     }
