@@ -105,7 +105,7 @@
             <dependency>
               <groupId>me.fabriciorby</groupId>
               <artifactId>maven-surefire-junit5-tree-reporter</artifactId>
-              <version>1.4.0</version>
+              <version>0.1.0</version>
             </dependency>
           </dependencies>
           <configuration>
@@ -200,7 +200,7 @@
           <dependency>
             <groupId>com.google.googlejavaformat</groupId>
             <artifactId>google-java-format</artifactId>
-            <version>1.28.0</version>
+            <version>1.27.0</version>
           </dependency>
         </dependencies>
         <executions>
