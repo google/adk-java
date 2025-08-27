@@ -33,6 +33,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
+import java.util.Random;
 import java.util.Scanner;
 
 public class CityTimeWeather {
@@ -47,7 +48,8 @@ public class CityTimeWeather {
               "You are a helpful agent who can answer user questions about the time and weather in a city.")
           .tools(
               FunctionTool.create(CityTimeWeather.class, "getCurrentTime"),
-              FunctionTool.create(CityTimeWeather.class, "getWeather"))
+              FunctionTool.create(CityTimeWeather.class, "getWeather"),
+              FunctionTool.create(CityTimeWeather.class, "randomInt"))
           .build();
 
   public static Map<String, String> getCurrentTime(
@@ -109,6 +111,15 @@ public class CityTimeWeather {
       return Map.of(
           "status", "error", "report", "Weather information for " + city + " is not available.");
     }
+  }
+
+  public static Map<String, String> randomInt(
+      @Schema(
+          description = "generate a random integer")
+      String city) {
+    Random random = new Random();
+    return Map.of(
+        "status", "success", "integer", "" + random.nextInt(100));
   }
 
   private static String USER_ID = "student";
