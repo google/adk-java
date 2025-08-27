@@ -57,7 +57,7 @@ public class PlanReActPlanner implements BasePlanner {
     }
 
     // Process remaining function calls if any
-    if (firstFunctionCallIndex > 0) {
+    if (firstFunctionCallIndex != -1) {
       int j = firstFunctionCallIndex + 1;
       while (j < responseParts.size()) {
         Part part = responseParts.get(j);
