@@ -38,15 +38,16 @@ public class BuiltInPlanner implements BasePlanner {
      *
      * @param request the LLM request to configure
      */
-    public void applyThinkingConfig(LlmRequest request) {
+    public LlmRequest applyThinkingConfig(LlmRequest request) {
         if (this.cognitiveConfig != null) {
             // Ensure config exists
             if (request.config().isEmpty()) {
-                request.toBuilder().config(GenerateContentConfig.builder().build());
+                request = request.toBuilder().config(GenerateContentConfig.builder().build()).build();
             }
 
             // Apply thinking configuration
-            request.toBuilder().config(GenerateContentConfig.builder().thinkingConfig(this.cognitiveConfig).build());
+            request = request.toBuilder().config(GenerateContentConfig.builder().thinkingConfig(this.cognitiveConfig).build()).build();
         }
+        return request;
     }
 }
