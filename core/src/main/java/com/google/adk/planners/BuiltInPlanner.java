@@ -16,11 +16,13 @@ public class BuiltInPlanner implements BasePlanner {
     private BuiltInPlanner() {
     }
 
-    public BuiltInPlanner buildPlanner(ThinkingConfig cognitiveConfig) {
+    private BuiltInPlanner(ThinkingConfig cognitiveConfig) {
         this.cognitiveConfig = cognitiveConfig;
-        return new BuiltInPlanner();
     }
 
+    public BuiltInPlanner buildPlanner(ThinkingConfig cognitiveConfig) {
+        return new BuiltInPlanner(cognitiveConfig);
+    }
     @Override
     public Optional<String> generatePlanningInstruction(ReadonlyContext context, LlmRequest request) {
         return Optional.empty();
