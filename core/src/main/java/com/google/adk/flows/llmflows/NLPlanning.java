@@ -13,8 +13,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Single;
+
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 public class NLPlanning {
 
@@ -29,12 +31,9 @@ public class NLPlanning {
             "Agent in InvocationContext is not an instance of LlmAgent.");
       }
 
-      LlmRequest.Builder builder = llmRequest.toBuilder();
-
       Optional<BasePlanner> plannerOpt = getPlanner(context);
       if (plannerOpt.isEmpty()) {
-        return Single.just(
-            RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
+        return Single.just(RequestProcessor.RequestProcessingResult.create(llmRequest, ImmutableList.of()));
       }
 
       BasePlanner planner = plannerOpt.get();
@@ -48,13 +47,14 @@ public class NLPlanning {
       Optional<String> planningInstruction =
           planner.generatePlanningInstruction(new ReadonlyContext(context), llmRequest);
 
-      planningInstruction.ifPresent(s -> builder.appendInstructions(ImmutableList.of(s)));
+      LlmRequest.Builder b = llmRequest.toBuilder();
+      planningInstruction.ifPresent(s -> b.appendInstructions(ImmutableList.of(s)));
+      llmRequest = b.build();
 
       // Remove thought annotations from request
-      removeThoughtFromRequest(llmRequest);
+      llmRequest = removeThoughtFromRequest(llmRequest);
 
-      return Single.just(
-          RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
+      return Single.just(RequestProcessor.RequestProcessingResult.create(llmRequest, ImmutableList.of()));
     }
   }
 
@@ -141,24 +141,30 @@ public class NLPlanning {
   /**
    * Removes thought annotations from all parts in the LLM request.
    *
-   * <p>This method iterates through all content parts and sets the thought field to null,
+   * <p>This method iterates through all content parts and sets the thought field to false,
    * effectively removing thought markings from the request.
    *
    * @param llmRequest the LLM request to process
    */
-  private static void removeThoughtFromRequest(LlmRequest llmRequest) {
-    if (llmRequest.contents() == null) {
-      return;
+  private static LlmRequest removeThoughtFromRequest(LlmRequest llmRequest) {
+    if (llmRequest.contents() == null || llmRequest.contents().isEmpty()) {
+      return llmRequest;
     }
 
-    for (Content content : llmRequest.contents()) {
+    // Process each content and update its parts
+    List<Content> updatedContents = llmRequest.contents().stream().map(content -> {
       if (content.parts().isEmpty()) {
-        continue;
+        return content;
       }
 
-      for (Part part : content.parts().get()) {
-        part.toBuilder().thought(false).build();
-      }
-    }
+      // Update all parts to set thought to false
+      List<Part> updatedParts = content.parts().get().stream().map(part -> part.toBuilder().thought(false).build()).collect(Collectors.toList());
+
+      // Return updated content with modified parts
+      return content.toBuilder().parts(updatedParts).build();
+    }).collect(Collectors.toList());
+
+    // Return updated LlmRequest with modified contents
+    return llmRequest.toBuilder().contents(updatedContents).build();
   }
 }

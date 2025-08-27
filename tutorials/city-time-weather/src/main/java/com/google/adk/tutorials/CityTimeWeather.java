@@ -17,13 +17,23 @@ package com.google.adk.tutorials;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.events.Event;
+import com.google.adk.planners.PlanReActPlanner;
+import com.google.adk.runner.InMemoryRunner;
+import com.google.adk.sessions.Session;
 import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.FunctionTool;
+import com.google.genai.types.Content;
+import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Flowable;
+
+import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
+import java.util.Scanner;
 
 public class CityTimeWeather {
 
@@ -32,6 +42,7 @@ public class CityTimeWeather {
           .name("multi_tool_agent")
           .model("gemini-2.0-flash-lite")
           .description("Agent to answer questions about the time and weather in a city.")
+          .planner(new PlanReActPlanner())
           .instruction(
               "You are a helpful agent who can answer user questions about the time and weather in a city.")
           .tools(
@@ -87,9 +98,46 @@ public class CityTimeWeather {
           "The weather in New York is sunny with a temperature of 25 degrees Celsius (77 degrees"
               + " Fahrenheit).");
 
+    } else if(city.equalsIgnoreCase("shanghai")) {
+      return Map.of(
+          "status",
+          "success",
+          "report",
+          "The weather in shang hai is sunny with a temperature of 25 degrees Celsius (77 degrees"
+              + " Fahrenheit).");
     } else {
       return Map.of(
           "status", "error", "report", "Weather information for " + city + " is not available.");
+    }
+  }
+
+  private static String USER_ID = "student";
+  private static String NAME = "multi_tool_agent";
+
+  public static void main(String[] args) throws Exception {
+    InMemoryRunner runner = new InMemoryRunner(ROOT_AGENT);
+
+    Session session =
+        runner
+            .sessionService()
+            .createSession(NAME, USER_ID)
+            .blockingGet();
+
+    try (Scanner scanner = new Scanner(System.in, StandardCharsets.UTF_8)) {
+      while (true) {
+        System.out.print("\nYou > ");
+        String userInput = scanner.nextLine();
+
+        if ("quit".equalsIgnoreCase(userInput)) {
+          break;
+        }
+
+        Content userMsg = Content.fromParts(Part.fromText(userInput));
+        Flowable<Event> events = runner.runAsync(USER_ID, session.id(), userMsg);
+
+        System.out.print("\nAgent > ");
+        events.blockingForEach(event -> System.out.println(event.stringifyContent()));
+      }
     }
   }
 }
