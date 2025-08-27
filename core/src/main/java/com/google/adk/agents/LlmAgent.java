@@ -16,10 +16,6 @@
 
 package com.google.adk.agents;
 
-import static com.google.common.base.Strings.isNullOrEmpty;
-import static com.google.common.base.Strings.nullToEmpty;
-import static java.util.stream.Collectors.joining;
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
@@ -51,6 +47,7 @@ import com.google.adk.flows.llmflows.SingleFlow;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.Model;
+import com.google.adk.planners.BasePlanner;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseTool.ToolArgsConfig;
 import com.google.adk.tools.BaseTool.ToolConfig;
@@ -65,6 +62,10 @@ import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -74,9 +75,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Executor;
-import javax.annotation.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.base.Strings.nullToEmpty;
+import static java.util.stream.Collectors.joining;
 
 /** The LLM-based agent. */
 public class LlmAgent extends BaseAgent {
@@ -101,6 +103,7 @@ public class LlmAgent extends BaseAgent {
   private final IncludeContents includeContents;
 
   private final boolean planning;
+  private final Optional<BasePlanner> planner;
   private final Optional<Integer> maxSteps;
   private final boolean disallowTransferToParent;
   private final boolean disallowTransferToPeers;
@@ -134,6 +137,7 @@ public class LlmAgent extends BaseAgent {
     this.includeContents =
         builder.includeContents != null ? builder.includeContents : IncludeContents.DEFAULT;
     this.planning = builder.planning != null && builder.planning;
+    this.planner = Optional.ofNullable(builder.planner);
     this.maxSteps = Optional.ofNullable(builder.maxSteps);
     this.disallowTransferToParent = builder.disallowTransferToParent;
     this.disallowTransferToPeers = builder.disallowTransferToPeers;
@@ -174,6 +178,7 @@ public class LlmAgent extends BaseAgent {
     private BaseExampleProvider exampleProvider;
     private IncludeContents includeContents;
     private Boolean planning;
+    private BasePlanner planner;
     private Integer maxSteps;
     private Boolean disallowTransferToParent;
     private Boolean disallowTransferToPeers;
@@ -307,6 +312,12 @@ public class LlmAgent extends BaseAgent {
     @CanIgnoreReturnValue
     public Builder planning(boolean planning) {
       this.planning = planning;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder planner(BasePlanner planner) {
+      this.planner = planner;
       return this;
     }
 
@@ -765,6 +776,10 @@ public class LlmAgent extends BaseAgent {
 
   public boolean planning() {
     return planning;
+  }
+
+  public Optional<BasePlanner> planner() {
+    return planner;
   }
 
   public Optional<Integer> maxSteps() {

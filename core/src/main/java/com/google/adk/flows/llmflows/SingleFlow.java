@@ -17,6 +17,7 @@
 package com.google.adk.flows.llmflows;
 
 import com.google.common.collect.ImmutableList;
+
 import java.util.List;
 import java.util.Optional;
 
@@ -31,10 +32,14 @@ public class SingleFlow extends BaseLlmFlow {
           new Identity(),
           new Contents(),
           new Examples(),
+          new NLPlanning.NlPlanningRequestProcessor(),
           CodeExecution.requestProcessor);
 
   protected static final ImmutableList<ResponseProcessor> RESPONSE_PROCESSORS =
-      ImmutableList.of(CodeExecution.responseProcessor);
+      ImmutableList.of(
+          CodeExecution.responseProcessor,
+          new NLPlanning.NlPlanningResponseProcessor()
+      );
 
   public SingleFlow() {
     this(/* maxSteps= */ Optional.empty());
