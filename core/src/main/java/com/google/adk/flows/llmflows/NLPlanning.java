@@ -131,10 +131,6 @@ public class NLPlanning {
       return Optional.empty();
     }
 
-    if (agent.planner().isEmpty()) {
-      return Optional.empty();
-    }
-
     return agent.planner();
   }
 
