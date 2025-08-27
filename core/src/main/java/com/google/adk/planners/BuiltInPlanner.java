@@ -18,7 +18,7 @@ public class BuiltInPlanner implements BasePlanner {
     this.cognitiveConfig = cognitiveConfig;
   }
 
-  public BuiltInPlanner buildPlanner(ThinkingConfig cognitiveConfig) {
+  public static BuiltInPlanner buildPlanner(ThinkingConfig cognitiveConfig) {
     return new BuiltInPlanner(cognitiveConfig);
   }
 
