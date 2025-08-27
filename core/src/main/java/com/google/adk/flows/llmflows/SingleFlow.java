@@ -36,7 +36,7 @@ public class SingleFlow extends BaseLlmFlow {
 
   protected static final ImmutableList<ResponseProcessor> RESPONSE_PROCESSORS =
       ImmutableList.of(
-          CodeExecution.responseProcessor, new NLPlanning.NlPlanningResponseProcessor());
+          new NLPlanning.NlPlanningResponseProcessor(), CodeExecution.responseProcessor);
 
   public SingleFlow() {
     this(/* maxSteps= */ Optional.empty());
