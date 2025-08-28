@@ -40,7 +40,7 @@ public class NLPlanning {
 
       // Apply thinking configuration for built-in planners
       if (planner instanceof BuiltInPlanner) {
-        ((BuiltInPlanner) planner).applyThinkingConfig(llmRequest);
+        llmRequest = ((BuiltInPlanner) planner).applyThinkingConfig(llmRequest);
       }
 
       // Build and append planning instruction
