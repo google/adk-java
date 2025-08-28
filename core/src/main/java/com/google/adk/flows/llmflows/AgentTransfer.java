@@ -87,7 +87,7 @@ public final class AgentTransfer implements RequestProcessor {
         "If another agent is better for answering the question according to its description, call"
             + " `transferToAgent` function to transfer the question to that agent. When"
             + " transferring, do not generate any text other than the function call.\n");
-    if (agent.parentAgent() != null) {
+    if (agent.parentAgent() != null && !agent.disallowTransferToParent()) {
       sb.append("Your parent agent is ");
       sb.append(agent.parentAgent().name());
       sb.append(
