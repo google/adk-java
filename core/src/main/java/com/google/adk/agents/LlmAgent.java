@@ -51,6 +51,7 @@ import com.google.adk.flows.llmflows.SingleFlow;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.Model;
+import com.google.adk.planners.BasePlanner;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseTool.ToolArgsConfig;
 import com.google.adk.tools.BaseTool.ToolConfig;
@@ -101,6 +102,7 @@ public class LlmAgent extends BaseAgent {
   private final IncludeContents includeContents;
 
   private final boolean planning;
+  private final Optional<BasePlanner> planner;
   private final Optional<Integer> maxSteps;
   private final boolean disallowTransferToParent;
   private final boolean disallowTransferToPeers;
@@ -134,6 +136,7 @@ public class LlmAgent extends BaseAgent {
     this.includeContents =
         builder.includeContents != null ? builder.includeContents : IncludeContents.DEFAULT;
     this.planning = builder.planning != null && builder.planning;
+    this.planner = Optional.ofNullable(builder.planner);
     this.maxSteps = Optional.ofNullable(builder.maxSteps);
     this.disallowTransferToParent = builder.disallowTransferToParent;
     this.disallowTransferToPeers = builder.disallowTransferToPeers;
@@ -174,6 +177,7 @@ public class LlmAgent extends BaseAgent {
     private BaseExampleProvider exampleProvider;
     private IncludeContents includeContents;
     private Boolean planning;
+    private BasePlanner planner;
     private Integer maxSteps;
     private Boolean disallowTransferToParent;
     private Boolean disallowTransferToPeers;
@@ -307,6 +311,12 @@ public class LlmAgent extends BaseAgent {
     @CanIgnoreReturnValue
     public Builder planning(boolean planning) {
       this.planning = planning;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder planner(BasePlanner planner) {
+      this.planner = planner;
       return this;
     }
 
@@ -765,6 +775,10 @@ public class LlmAgent extends BaseAgent {
 
   public boolean planning() {
     return planning;
+  }
+
+  public Optional<BasePlanner> planner() {
+    return planner;
   }
 
   public Optional<Integer> maxSteps() {
