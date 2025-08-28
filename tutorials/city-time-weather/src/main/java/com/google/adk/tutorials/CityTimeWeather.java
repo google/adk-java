@@ -19,6 +19,7 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.FunctionTool;
+import com.google.adk.web.AdkWebServer;
 import java.text.Normalizer;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -33,7 +34,8 @@ public class CityTimeWeather {
           .model("gemini-2.0-flash-lite")
           .description("Agent to answer questions about the time and weather in a city.")
           .instruction(
-              "You are a helpful agent who can answer user questions about the time and weather in a city.")
+              "You are a helpful agent who can answer user questions about the time and weather in"
+                  + " a city.")
           .tools(
               FunctionTool.create(CityTimeWeather.class, "getCurrentTime"),
               FunctionTool.create(CityTimeWeather.class, "getWeather"))
@@ -91,5 +93,9 @@ public class CityTimeWeather {
       return Map.of(
           "status", "error", "report", "Weather information for " + city + " is not available.");
     }
+  }
+
+  public static void main(String[] args) {
+    AdkWebServer.start(ROOT_AGENT);
   }
 }

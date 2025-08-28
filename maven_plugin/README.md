@@ -1,5 +1,7 @@
 # Google ADK Maven Plugin
 
+[![Maven Central](https://img.shields.io/maven-central/v/com.google.adk/google-adk-maven-plugin)](https://search.maven.org/artifact/com.google.adk/google-adk-maven-plugin)
+
 This Maven plugin provides a convenient way to start the ADK Web Server with your custom agents for development and testing.
 
 ## Usage
@@ -31,14 +33,14 @@ mvn google-adk:web \
 
 ### 1. Implement the AgentLoader Interface
 
-Create a class that implements `com.google.adk.maven.AgentLoader`:
+Create a class that implements `com.google.adk.web.AgentLoader`:
 
 ```java
 package com.example;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.maven.AgentLoader;
+import com.google.adk.web.AgentLoader;
 import com.google.common.collect.ImmutableList;
 import java.util.NoSuchElementException;
 
@@ -84,17 +86,19 @@ public class MyAgentLoader implements AgentLoader {
 
 Add the plugin to your `pom.xml`:
 
+<!-- {x-version-start:google-adk:released} -->
 ```xml
 <build>
     <plugins>
         <plugin>
             <groupId>com.google.adk</groupId>
             <artifactId>google-adk-maven-plugin</artifactId>
-            <version>0.2.1-SNAPSHOT</version>
+            <version>0.2.0</version>
         </plugin>
     </plugins>
 </build>
 ```
+<!-- {x-version-end} -->
 
 ### 3. Run the Web Server
 
@@ -266,23 +270,25 @@ The web UI provides:
 
 Make sure your project has the necessary ADK dependencies:
 
+<!-- {x-version-start:google-adk:released} -->
 ```xml
 <dependencies>
     <dependency>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk</artifactId>
-        <version>0.2.1-SNAPSHOT</version>
+        <version>0.2.0</version>
     </dependency>
 
-    <!-- Maven plugin dependency for AgentLoader interface -->
+    <!-- Dev module dependency for AgentLoader interface -->
     <dependency>
         <groupId>com.google.adk</groupId>
-        <artifactId>google-adk-maven-plugin</artifactId>
-        <version>0.2.1-SNAPSHOT</version>
+        <artifactId>google-adk-dev</artifactId>
+        <version>0.2.0</version>
         <scope>compile</scope>
     </dependency>
 </dependencies>
 ```
+<!-- {x-version-end} -->
 
 ### Plugin Usage Options
 
@@ -290,17 +296,19 @@ Make sure your project has the necessary ADK dependencies:
 
 Add the plugin to your `pom.xml` for convenience:
 
+<!-- {x-version-start:google-adk:released} -->
 ```xml
 <build>
     <plugins>
         <plugin>
             <groupId>com.google.adk</groupId>
             <artifactId>google-adk-maven-plugin</artifactId>
-            <version>0.2.1-SNAPSHOT</version>
+            <version>0.2.0</version>
         </plugin>
     </plugins>
 </build>
 ```
+<!-- {x-version-end} -->
 
 Then use the short command:
 
@@ -319,3 +327,7 @@ mvn com.google.adk:google-adk-maven-plugin:web -Dagents=com.example.MyAgentLoade
 ## Stopping the Server
 
 Press `Ctrl+C` in the terminal to stop the server.
+
+## Version Notes
+
+Replace version numbers with the latest version available on [Maven Central](https://search.maven.org/artifact/com.google.adk/google-adk-maven-plugin).

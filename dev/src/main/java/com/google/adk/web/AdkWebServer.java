@@ -16,6 +16,8 @@
 
 package com.google.adk.web;
 
+import static java.util.stream.Collectors.toList;
+
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -37,7 +39,6 @@ import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.ListSessionsResponse;
 import com.google.adk.sessions.Session;
-import com.google.adk.web.config.AgentLoadingProperties;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.genai.types.Blob;
@@ -77,7 +78,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -87,9 +87,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -122,18 +120,25 @@ import org.springframework.web.util.UriComponentsBuilder;
  */
 @SpringBootApplication
 @ConfigurationPropertiesScan
-@ComponentScan(basePackages = {"com.google.adk.web", "com.google.adk.web.config"})
 public class AdkWebServer implements WebMvcConfigurer {
-
-  private static AgentLoader AGENT_LOADER;
 
   private static final Logger log = LoggerFactory.getLogger(AdkWebServer.class);
 
+  // Static agent loader for programmatic startup
+  private static AgentLoader AGENT_LOADER;
+
+  // WebSocket constants
+  private static final String LIVE_REQUEST_QUEUE_ATTR = "liveRequestQueue";
+  private static final String LIVE_SUBSCRIPTION_ATTR = "liveSubscription";
+  private static final int WEBSOCKET_MAX_BYTES_FOR_REASON = 123;
+  private static final int WEBSOCKET_PROTOCOL_ERROR = 1002;
+  private static final int WEBSOCKET_INTERNAL_SERVER_ERROR = 1011;
+
+  // Session constants
+  private static final String EVAL_SESSION_ID_PREFIX = "ADK_EVAL_";
+
   @Value("${adk.web.ui.dir:#{null}}")
   private String webUiDir;
-
-  @Value("${adk.agent.hotReloadingEnabled:true}")
-  private boolean hotReloadingEnabled;
 
   @Bean
   public BaseSessionService sessionService() {
@@ -155,8 +160,8 @@ public class AdkWebServer implements WebMvcConfigurer {
   }
 
   /**
-   * Provides the singleton instance of the MemoryService (InMemory). Will be configurable once the
-   * Vertex MemoryService is available.
+   * Provides the singleton instance of the MemoryService (InMemory). Will be made configurable once
+   * we have the Vertex MemoryService.
    *
    * @return An instance of BaseMemoryService (currently InMemoryMemoryService).
    */
@@ -166,53 +171,12 @@ public class AdkWebServer implements WebMvcConfigurer {
     return new InMemoryMemoryService();
   }
 
-  @Bean("loadedAgentRegistry")
-  public Map<String, BaseAgent> loadedAgentRegistry(
-      AgentLoadingProperties props, RunnerService runnerService) {
-    Map<String, BaseAgent> agents = new ConcurrentHashMap<>();
-
-    if (props.getSourceDir() == null || props.getSourceDir().isEmpty()) {
-      log.info("adk.agents.source-dir not set. Initializing with an empty agent registry.");
-      return agents;
-    }
-
-    try {
-      // If AGENT_LOADER is set (by start()), use it
-      if (AGENT_LOADER != null) {
-        var staticAgents = AGENT_LOADER.loadAgents();
-        agents.putAll(staticAgents);
-        log.info("Loaded {} static agents: {}", staticAgents.size(), staticAgents.keySet());
-      }
-
-      // Create and use compiler loader
-      AgentCompilerLoader compilerLoader = new AgentCompilerLoader(props);
-      Map<String, BaseAgent> compiledAgents = compilerLoader.loadAgents();
-      agents.putAll(compiledAgents);
-      if (!compiledAgents.isEmpty())
-        log.info("Loaded {} compiled agents: {}", compiledAgents.size(), compiledAgents.keySet());
-
-      // Create and use YAML hot loader
-      AgentYamlHotLoader yamlLoader =
-          new AgentYamlHotLoader(props, agents, runnerService, hotReloadingEnabled);
-      Map<String, BaseAgent> yamlAgents = yamlLoader.loadAgents();
-      agents.putAll(yamlAgents);
-      if (!yamlAgents.isEmpty()) {
-        log.info("Loaded {} YAML agents: {}", yamlAgents.size(), yamlAgents.keySet());
-
-        // Start hot-reloading
-        if (yamlLoader.supportsHotReloading()) {
-          yamlLoader.start();
-          log.info("Started hot-reloading for YAML agents");
-        }
-      }
-
-      return agents;
-    } catch (IOException e) {
-      log.error("Failed to load agents", e);
-      return agents;
-    }
-  }
-
+  /**
+   * Configures the Jackson ObjectMapper for JSON serialization. Uses the ADK standard mapper
+   * configuration.
+   *
+   * @return Configured ObjectMapper instance
+   */
   @Bean
   public ObjectMapper objectMapper() {
     return JsonBaseModel.getMapper();
@@ -223,7 +187,7 @@ public class AdkWebServer implements WebMvcConfigurer {
   public static class RunnerService {
     private static final Logger log = LoggerFactory.getLogger(RunnerService.class);
 
-    private final Map<String, BaseAgent> agentRegistry;
+    private final AgentLoader agentProvider;
     private final BaseArtifactService artifactService;
     private final BaseSessionService sessionService;
     private final BaseMemoryService memoryService;
@@ -231,11 +195,11 @@ public class AdkWebServer implements WebMvcConfigurer {
 
     @Autowired
     public RunnerService(
-        @Lazy @Qualifier("loadedAgentRegistry") Map<String, BaseAgent> agentRegistry,
+        @Qualifier("agentLoader") AgentLoader agentProvider,
         BaseArtifactService artifactService,
         BaseSessionService sessionService,
         BaseMemoryService memoryService) {
-      this.agentRegistry = agentRegistry;
+      this.agentProvider = agentProvider;
       this.artifactService = artifactService;
       this.sessionService = sessionService;
       this.memoryService = memoryService;
@@ -252,21 +216,26 @@ public class AdkWebServer implements WebMvcConfigurer {
       return runnerCache.computeIfAbsent(
           appName,
           key -> {
-            BaseAgent agent = agentRegistry.get(key);
-            if (agent == null) {
+            try {
+              BaseAgent agent = agentProvider.loadAgent(key);
+              log.info(
+                  "RunnerService: Creating Runner for appName: {}, using agent definition: {}",
+                  appName,
+                  agent.name());
+              return new Runner(
+                  agent, appName, this.artifactService, this.sessionService, this.memoryService);
+            } catch (java.util.NoSuchElementException e) {
               log.error(
                   "Agent/App named '{}' not found in registry. Available apps: {}",
                   key,
-                  agentRegistry.keySet());
+                  agentProvider.listAgents());
               throw new ResponseStatusException(
                   HttpStatus.NOT_FOUND, "Agent/App not found: " + key);
+            } catch (IllegalStateException e) {
+              log.error("Agent '{}' exists but failed to load: {}", key, e.getMessage());
+              throw new ResponseStatusException(
+                  HttpStatus.INTERNAL_SERVER_ERROR, "Agent failed to load: " + key, e);
             }
-            log.info(
-                "RunnerService: Creating Runner for appName: {}, using agent" + " definition: {}",
-                appName,
-                agent.name());
-            return new Runner(
-                agent, appName, this.artifactService, this.sessionService, this.memoryService);
           });
     }
 
@@ -634,11 +603,9 @@ public class AdkWebServer implements WebMvcConfigurer {
 
     private static final Logger log = LoggerFactory.getLogger(AgentController.class);
 
-    private static final String EVAL_SESSION_ID_PREFIX = "ADK_EVAL_";
-
     private final BaseSessionService sessionService;
     private final BaseArtifactService artifactService;
-    private final Map<String, BaseAgent> agentRegistry;
+    private final AgentLoader agentProvider;
     private final ApiServerSpanExporter apiServerSpanExporter;
     private final RunnerService runnerService;
     private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
@@ -648,7 +615,7 @@ public class AdkWebServer implements WebMvcConfigurer {
      *
      * @param sessionService The service for managing sessions.
      * @param artifactService The service for managing artifacts.
-     * @param agentRegistry The registry of loaded agents.
+     * @param agentProvider The provider for loading agents.
      * @param apiServerSpanExporter The exporter holding all trace data.
      * @param runnerService The service for obtaining Runner instances.
      */
@@ -656,19 +623,18 @@ public class AdkWebServer implements WebMvcConfigurer {
     public AgentController(
         BaseSessionService sessionService,
         BaseArtifactService artifactService,
-        @Qualifier("loadedAgentRegistry") Map<String, BaseAgent> agentRegistry,
+        @Qualifier("agentLoader") AgentLoader agentProvider,
         ApiServerSpanExporter apiServerSpanExporter,
         RunnerService runnerService) {
       this.sessionService = sessionService;
       this.artifactService = artifactService;
-      this.agentRegistry = agentRegistry;
+      this.agentProvider = agentProvider;
       this.apiServerSpanExporter = apiServerSpanExporter;
       this.runnerService = runnerService;
+      ImmutableList<String> agentNames = agentProvider.listAgents();
       log.info(
-          "AgentController initialized with {} agents: {}",
-          agentRegistry.size(),
-          agentRegistry.keySet());
-      if (agentRegistry.isEmpty()) {
+          "AgentController initialized with {} dynamic agents: {}", agentNames.size(), agentNames);
+      if (agentNames.isEmpty()) {
         log.warn(
             "Agent registry is empty. Check 'adk.agents.source-dir' property and compilation"
                 + " logs.");
@@ -730,10 +696,9 @@ public class AdkWebServer implements WebMvcConfigurer {
      */
     @GetMapping("/list-apps")
     public List<String> listApps() {
-      log.info("Listing apps from registry. Found: {}", agentRegistry.keySet());
-      List<String> appNames = new ArrayList<>(agentRegistry.keySet());
-      Collections.sort(appNames);
-      return appNames;
+      ImmutableList<String> agentNames = agentProvider.listAgents();
+      log.info("Listing apps from dynamic registry. Found: {}", agentNames);
+      return agentNames.stream().sorted().collect(toList());
     }
 
     /**
@@ -858,7 +823,7 @@ public class AdkWebServer implements WebMvcConfigurer {
       List<Session> filteredSessions =
           response.sessions().stream()
               .filter(s -> !s.id().startsWith(EVAL_SESSION_ID_PREFIX))
-              .collect(Collectors.toList());
+              .collect(toList());
       log.info(
           "Found {} non-evaluation sessions for app={}, user={}",
           filteredSessions.size(),
@@ -1405,11 +1370,17 @@ public class AdkWebServer implements WebMvcConfigurer {
           sessionId,
           eventId);
 
-      BaseAgent currentAppAgent = agentRegistry.get(appName);
-      if (currentAppAgent == null) {
+      BaseAgent currentAppAgent;
+      try {
+        currentAppAgent = agentProvider.loadAgent(appName);
+      } catch (java.util.NoSuchElementException e) {
         log.warn("Agent app '{}' not found for graph generation.", appName);
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
             .body(new GraphResponse("Agent app not found: " + appName));
+      } catch (IllegalStateException e) {
+        log.warn("Agent app '{}' failed to load for graph generation: {}", appName, e.getMessage());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(new GraphResponse("Agent app failed to load: " + appName));
       }
 
       Session session = findSessionOrThrow(appName, userId, sessionId);
@@ -1583,9 +1554,6 @@ public class AdkWebServer implements WebMvcConfigurer {
   @Component
   public static class LiveWebSocketHandler extends TextWebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(LiveWebSocketHandler.class);
-    private static final String LIVE_REQUEST_QUEUE_ATTR = "liveRequestQueue";
-    private static final String LIVE_SUBSCRIPTION_ATTR = "liveSubscription";
-    private static final int WEBSOCKET_MAX_BYTES_FOR_REASON = 123;
 
     private final ObjectMapper objectMapper;
     private final BaseSessionService sessionService;
@@ -1662,7 +1630,7 @@ public class AdkWebServer implements WebMvcConfigurer {
               appName,
               userId,
               sessionId);
-          wsSession.close(new CloseStatus(1002, "Session not found")); // 1002: Protocol Error
+          wsSession.close(new CloseStatus(WEBSOCKET_PROTOCOL_ERROR, "Session not found"));
           return;
         }
       } catch (Exception e) {
@@ -1723,7 +1691,10 @@ public class AdkWebServer implements WebMvcConfigurer {
                       try {
                         wsSession.close(
                             CloseStatus.SERVER_ERROR.withReason("Error sending message"));
-                      } catch (IOException ignored) {
+                      } catch (IOException closeException) {
+                        log.warn(
+                            "Failed to close WebSocket connection after send error: {}",
+                            closeException.getMessage());
                       }
                     }
                   },
@@ -1738,10 +1709,13 @@ public class AdkWebServer implements WebMvcConfigurer {
                     try {
                       wsSession.close(
                           new CloseStatus(
-                              1011, // Internal Server Error for WebSocket
+                              WEBSOCKET_INTERNAL_SERVER_ERROR,
                               reason.substring(
                                   0, Math.min(reason.length(), WEBSOCKET_MAX_BYTES_FOR_REASON))));
-                    } catch (IOException ignored) {
+                    } catch (IOException closeException) {
+                      log.warn(
+                          "Failed to close WebSocket connection after stream error: {}",
+                          closeException.getMessage());
                     }
                   },
                   () -> {
@@ -1749,7 +1723,10 @@ public class AdkWebServer implements WebMvcConfigurer {
                         "run_live stream completed for WebSocket session {}", wsSession.getId());
                     try {
                       wsSession.close(CloseStatus.NORMAL);
-                    } catch (IOException ignored) {
+                    } catch (IOException closeException) {
+                      log.warn(
+                          "Failed to close WebSocket connection normally: {}",
+                          closeException.getMessage());
                     }
                   });
       wsSession.getAttributes().put(LIVE_SUBSCRIPTION_ATTR, disposable);

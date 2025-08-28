@@ -23,12 +23,13 @@
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-parent</artifactId>
     <version>0.2.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <relativePath>../../pom.xml</relativePath>
   </parent>
 
   <artifactId>google-adk-tutorials-city-time-weather</artifactId>
 
   <properties>
-    <exec.mainClass>com.google.adk.web.AdkWebServer</exec.mainClass>
+    <exec.mainClass>com.google.adk.tutorials.CityTimeWeather</exec.mainClass>
   </properties>
 
   <dependencies>
@@ -36,6 +37,12 @@
       <groupId>com.google.adk</groupId>
       <artifactId>google-adk-dev</artifactId>
       <version>${project.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>ch.qos.logback</groupId>
+          <artifactId>logback-classic</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
   </dependencies>
 </project>

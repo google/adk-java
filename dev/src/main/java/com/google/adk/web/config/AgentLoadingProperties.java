@@ -25,6 +25,7 @@ import org.springframework.stereotype.Component;
 public class AgentLoadingProperties {
   private String sourceDir = "src/main/java";
   private String compileClasspath;
+  private String[] buildOutputDirs = {"target/classes", "build/classes/java/main", "build/classes"};
 
   public String getSourceDir() {
     return sourceDir;
@@ -40,5 +41,13 @@ public class AgentLoadingProperties {
 
   public void setCompileClasspath(String compileClasspath) {
     this.compileClasspath = compileClasspath;
+  }
+
+  public String[] getBuildOutputDirs() {
+    return buildOutputDirs;
+  }
+
+  public void setBuildOutputDirs(String[] buildOutputDirs) {
+    this.buildOutputDirs = buildOutputDirs;
   }
 }

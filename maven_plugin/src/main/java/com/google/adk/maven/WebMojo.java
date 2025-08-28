@@ -16,8 +16,8 @@
 
 package com.google.adk.maven;
 
-import com.google.adk.maven.web.AdkWebServer;
 import com.google.adk.utils.ComponentRegistry;
+import com.google.adk.web.AdkWebServer;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.MalformedURLException;
@@ -206,7 +206,7 @@ public class WebMojo extends AbstractMojo {
 
       // Load and instantiate the AgentLoader
       getLog().info("Loading agent loader: " + agents);
-      AgentLoader provider = loadAgentProvider();
+      com.google.adk.web.AgentLoader provider = loadAgentProvider();
 
       // Set up system properties for Spring Boot
       setupSystemProperties();
@@ -268,14 +268,16 @@ public class WebMojo extends AbstractMojo {
     getLog().info("  Agent Provider: " + agents);
     getLog().info("  Server Host: " + host);
     getLog().info("  Server Port: " + port);
-    getLog().info("  Hot Reloading: " + hotReloading);
     getLog().info("  Registry: " + (registry != null ? registry : "default"));
   }
 
   private void setupSystemProperties() {
     System.setProperty("server.address", host);
     System.setProperty("server.port", String.valueOf(port));
-    System.setProperty("adk.agent.hotReloadingEnabled", String.valueOf(hotReloading));
+
+    // Use custom loader instead of compiled loader
+    System.setProperty("adk.agents.loader", "custom");
+    getLog().debug("Set adk.agents.loader=custom");
   }
 
   /**
@@ -400,7 +402,7 @@ public class WebMojo extends AbstractMojo {
     }
   }
 
-  private AgentLoader loadAgentProvider() throws MojoExecutionException {
+  private com.google.adk.web.AgentLoader loadAgentProvider() throws MojoExecutionException {
     // First, check if agents parameter is a directory path
     Path agentsPath = Paths.get(agents);
     if (Files.isDirectory(agentsPath)) {
@@ -410,14 +412,15 @@ public class WebMojo extends AbstractMojo {
 
     // Next, try to interpret as class.field syntax
     if (agents.contains(".")) {
-      AgentLoader provider = tryLoadFromStaticField(agents, AgentLoader.class);
+      com.google.adk.web.AgentLoader provider =
+          tryLoadFromStaticField(agents, com.google.adk.web.AgentLoader.class);
       if (provider != null) {
         return provider;
       }
     }
 
     // Fallback to trying the entire string as a class name
-    return tryLoadFromConstructor(agents, AgentLoader.class);
+    return tryLoadFromConstructor(agents, com.google.adk.web.AgentLoader.class);
   }
 
   /** Cleans up all resources including application context, classloader. */
@@ -455,7 +458,6 @@ public class WebMojo extends AbstractMojo {
     try {
       System.clearProperty("server.address");
       System.clearProperty("server.port");
-      System.clearProperty("adk.agent.hotReloadingEnabled");
       System.clearProperty("adk.agents.source-dir");
       System.clearProperty("spring.autoconfigure.exclude");
       getLog().debug("System properties cleared");

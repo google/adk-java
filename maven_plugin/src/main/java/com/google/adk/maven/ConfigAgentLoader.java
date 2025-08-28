@@ -20,6 +20,7 @@ import static java.util.stream.Collectors.toList;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.ConfigAgentUtils;
+import com.google.adk.web.AgentLoader;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;

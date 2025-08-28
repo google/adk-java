@@ -26,6 +26,13 @@
             <version>${google-adk.version}</version>
         </dependency>
 
+        <!-- Dev dependency for AgentLoader interface -->
+        <dependency>
+            <groupId>com.google.adk</groupId>
+            <artifactId>google-adk-dev</artifactId>
+            <version>${google-adk.version}</version>
+        </dependency>
+
         <!-- Maven plugin dependency for AgentProvider interface -->
         <dependency>
             <groupId>com.google.adk</groupId>
