@@ -140,6 +140,25 @@ class ConfigAgentLoader implements AgentLoader {
 
     logger.info("Initial scan for YAML agents in: {}", sourcePath);
 
+    // First, check if the current directory itself contains a root_agent.yaml
+    Path currentDirYamlPath = sourcePath.resolve(YAML_CONFIG_FILENAME);
+    if (Files.exists(currentDirYamlPath) && Files.isRegularFile(currentDirYamlPath)) {
+      String agentName = sourcePath.getFileName().toString();
+      logger.debug("Discovering YAML agent config in current directory: {}", currentDirYamlPath);
+
+      // Create a memoized supplier that will load the agent only when requested
+      agentSuppliers.put(agentName, Suppliers.memoize(() -> loadAgentFromPath(currentDirYamlPath)));
+
+      // Register with watcher if hot-reloading is enabled
+      if (hotReloadingEnabled && watcher != null) {
+        watcher.watch(sourcePath, agentDirPath -> updateAgentSupplier(agentDirPath));
+      }
+
+      logger.info("Discovered YAML agent '{}' from: {}", agentName, currentDirYamlPath);
+      return;
+    }
+
+    // Otherwise, scan subdirectories for agents
     try (Stream<Path> entries = Files.list(sourcePath)) {
       for (Path agentDir : entries.collect(toList())) {
         if (Files.isDirectory(agentDir)) {
