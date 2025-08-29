@@ -23,6 +23,7 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.NamedToolPredicate;
 import com.google.adk.tools.ToolPredicate;
+import com.google.common.collect.ImmutableList;
 import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.reactivex.rxjava3.core.Flowable;
@@ -54,7 +55,7 @@ public class McpAsyncToolset implements BaseToolset {
   private static final Logger logger = LoggerFactory.getLogger(McpAsyncToolset.class);
 
   private static final int MAX_RETRIES = 3;
-  private static final long RETRY_DELAY_MILLIS = 100;
+  private static final Duration RETRY_DELAY = Duration.ofMillis(100);
 
   private final McpSessionManager mcpSessionManager;
   private final ObjectMapper objectMapper;
@@ -147,7 +148,7 @@ public class McpAsyncToolset implements BaseToolset {
   @Override
   public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
     return Maybe.defer(() -> Maybe.fromCompletionStage(this.initAndGetTools().toFuture()))
-        .defaultIfEmpty(List.of())
+        .defaultIfEmpty(ImmutableList.of())
         .map(
             tools ->
                 tools.stream()
@@ -155,7 +156,7 @@ public class McpAsyncToolset implements BaseToolset {
                         tool ->
                             isToolSelected(
                                 tool,
-                                Optional.of(toolFilter),
+                                Optional.ofNullable(toolFilter),
                                 Optional.ofNullable(readonlyContext)))
                     .toList())
         .onErrorResumeNext(
@@ -232,16 +233,18 @@ public class McpAsyncToolset implements BaseToolset {
                               err);
                           if (totalRetries < MAX_RETRIES) {
                             logger.info(
-                                "Reinitializing MCP session before next retry for unexpected error.");
-                            return Mono.just(err)
-                                .delayElement(Duration.ofMillis(RETRY_DELAY_MILLIS));
+                                "Reinitializing MCP session before next retry for unexpected"
+                                    + " error.");
+                            return Mono.just(err).delayElement(RETRY_DELAY);
                           } else {
                             logger.error(
-                                "Failed to load tools after multiple retries due to unexpected error.",
+                                "Failed to load tools after multiple retries due to unexpected"
+                                    + " error.",
                                 err);
                             return Mono.error(
                                 new McpToolsetException.McpToolLoadingException(
-                                    "Failed to load tools after multiple retries due to unexpected error.",
+                                    "Failed to load tools after multiple retries due to unexpected"
+                                        + " error.",
                                     err));
                           }
                         })));

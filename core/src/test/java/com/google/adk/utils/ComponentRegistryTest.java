@@ -24,7 +24,10 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.SequentialAgent;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.GoogleSearchTool;
+import com.google.adk.tools.mcp.McpToolset;
 import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -206,5 +209,73 @@ public final class ComponentRegistryTest {
             IllegalArgumentException.class,
             () -> ComponentRegistry.resolveAgentClass("UnsupportedAgent"));
     assertThat(thrown.getMessage()).contains("not in registry or not a subclass of BaseAgent");
+  }
+
+  @Test
+  public void testResolveToolClass_withSimpleName() {
+    ComponentRegistry.getInstance().register("GoogleSearchTool", GoogleSearchTool.class);
+
+    Optional<Class<? extends BaseTool>> googleSearchClass =
+        ComponentRegistry.resolveToolClass("GoogleSearchTool");
+    assertThat(googleSearchClass).isPresent();
+    assertThat(googleSearchClass.get()).isEqualTo(GoogleSearchTool.class);
+  }
+
+  @Test
+  public void testResolveToolClass_withGoogleAdkToolsPrefix() {
+    Optional<Class<? extends BaseTool>> googleSearchClass =
+        ComponentRegistry.resolveToolClass("google_search");
+    assertThat(googleSearchClass).isEmpty();
+
+    ComponentRegistry.getInstance().register("google.adk.tools.TestTool", GoogleSearchTool.class);
+
+    Optional<Class<? extends BaseTool>> testToolClass =
+        ComponentRegistry.resolveToolClass("TestTool");
+    assertThat(testToolClass).isPresent();
+    assertThat(testToolClass.get()).isEqualTo(GoogleSearchTool.class);
+  }
+
+  @Test
+  public void testResolveToolsetClass_withSimpleName() {
+    Optional<Class<? extends BaseToolset>> mcpToolsetClass =
+        ComponentRegistry.resolveToolsetClass("McpToolset");
+    assertThat(mcpToolsetClass).isPresent();
+    assertThat(mcpToolsetClass.get()).isEqualTo(McpToolset.class);
+  }
+
+  @Test
+  public void testResolveToolsetClass_withGoogleAdkToolsPrefix() {
+    ComponentRegistry.getInstance().register("google.adk.tools.TestToolset", McpToolset.class);
+
+    Optional<Class<? extends BaseToolset>> testToolsetClass =
+        ComponentRegistry.resolveToolsetClass("TestToolset");
+    assertThat(testToolsetClass).isPresent();
+    assertThat(testToolsetClass.get()).isEqualTo(McpToolset.class);
+  }
+
+  @Test
+  public void testResolveToolClass_withFullyQualifiedName() {
+    Optional<Class<? extends BaseTool>> googleSearchClass =
+        ComponentRegistry.resolveToolClass("com.google.adk.tools.GoogleSearchTool");
+    assertThat(googleSearchClass).isEmpty();
+
+    ComponentRegistry.getInstance()
+        .register("com.google.adk.tools.GoogleSearchTool", GoogleSearchTool.class);
+
+    Optional<Class<? extends BaseTool>> testToolClass =
+        ComponentRegistry.resolveToolClass("com.google.adk.tools.GoogleSearchTool");
+    assertThat(testToolClass).isPresent();
+    assertThat(testToolClass.get()).isEqualTo(GoogleSearchTool.class);
+  }
+
+  @Test
+  public void testResolveToolsetClass_withFullyQualifiedName() {
+    ComponentRegistry.getInstance()
+        .register("com.google.adk.tools.mcp.McpToolset", McpToolset.class);
+
+    Optional<Class<? extends BaseToolset>> mcpToolsetClass =
+        ComponentRegistry.resolveToolsetClass("com.google.adk.tools.mcp.McpToolset");
+    assertThat(mcpToolsetClass).isPresent();
+    assertThat(mcpToolsetClass.get()).isEqualTo(McpToolset.class);
   }
 }
