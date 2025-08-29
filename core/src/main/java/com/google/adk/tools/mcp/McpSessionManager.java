@@ -20,12 +20,15 @@ import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpClientTransport;
+import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.ClientCapabilities;
 import io.modelcontextprotocol.spec.McpSchema.InitializeResult;
 import java.time.Duration;
 import java.util.Optional;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.publisher.Mono;
 
 /**
  * Manages MCP client sessions.
@@ -71,8 +74,8 @@ public class McpSessionManager {
             .initializationTimeout(
                 Optional.ofNullable(initializationTimeout).orElse(Duration.ofSeconds(10)))
             .requestTimeout(Optional.ofNullable(requestTimeout).orElse(Duration.ofSeconds(10)))
-            .loggingConsumer(new McpServerLogConsumer())
             .capabilities(ClientCapabilities.builder().build())
+            .loggingConsumer(new McpServerLogConsumer())
             .build();
     InitializeResult initResult = client.initialize();
     logger.debug("Initialize Client Result: {}", initResult);
@@ -101,6 +104,16 @@ public class McpSessionManager {
             initializationTimeout == null ? Duration.ofSeconds(10) : initializationTimeout)
         .requestTimeout(requestTimeout == null ? Duration.ofSeconds(10) : requestTimeout)
         .capabilities(ClientCapabilities.builder().build())
+        .loggingConsumer(asyncMcpServerLogConsumer())
         .build();
+  }
+
+  private static Function<McpSchema.LoggingMessageNotification, Mono<Void>>
+      asyncMcpServerLogConsumer() {
+    var syncConsumer = new McpServerLogConsumer();
+    return message -> {
+      syncConsumer.accept(message);
+      return Mono.empty();
+    };
   }
 }
