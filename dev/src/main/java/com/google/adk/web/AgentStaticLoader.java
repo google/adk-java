@@ -26,8 +26,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.util.NoSuchElementException;
 import javax.annotation.Nonnull;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Service;
 
 /**
  * Static Agent Loader for programmatically provided agents.
@@ -36,23 +34,10 @@ import org.springframework.stereotype.Service;
  * through the AgentLoader interface. Perfect for cases where you already have agent instances and
  * just need a convenient way to wrap them in an AgentLoader.
  *
- * <p>Example usage:
- *
- * <pre>
- * List&lt;BaseAgent&gt; agents = Arrays.asList(new MyAgent(), new CodeAssistant());
- * AgentLoader loader = new AgentStaticLoader(agents.toArray(new BaseAgent[0]));
- * app.beanFactory().setAgentLoader(loader);
- * </pre>
- *
- * <p>Configuration:
- *
- * <ul>
- *   <li>To enable this loader: {@code adk.agents.loader=static}
- * </ul>
+ * <p>This class is not a Spring component by itself - instances are created programmatically and
+ * then registered as beans via factory methods.
  */
-@Service("staticAgentLoader")
-@ConditionalOnProperty(name = "adk.agents.loader", havingValue = "static", matchIfMissing = false)
-public class AgentStaticLoader implements AgentLoader {
+class AgentStaticLoader implements AgentLoader {
 
   private final ImmutableMap<String, BaseAgent> agents;
 
