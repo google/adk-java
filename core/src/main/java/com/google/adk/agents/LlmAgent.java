@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.google.adk.agents;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
@@ -55,6 +54,7 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseTool.ToolArgsConfig;
 import com.google.adk.tools.BaseTool.ToolConfig;
 import com.google.adk.tools.BaseToolset;
+import com.google.adk.tools.internal.ToolConstraints;
 import com.google.adk.utils.ComponentRegistry;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
@@ -614,7 +614,9 @@ public class LlmAgent extends BaseAgent {
 
     public LlmAgent build() {
       validate();
-      return new LlmAgent(this);
+      LlmAgent built = new LlmAgent(this);
+      ToolConstraints.validateAgentTree(built);
+      return built;
     }
   }
 
