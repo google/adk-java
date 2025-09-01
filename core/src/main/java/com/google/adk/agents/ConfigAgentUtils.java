@@ -20,10 +20,16 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.google.adk.utils.ComponentRegistry;
+import com.google.common.collect.ImmutableList;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,6 +81,99 @@ public final class ConfigAgentUtils {
       throw e;
     } catch (Exception e) {
       throw new ConfigurationException("Failed to create agent from config: " + configPath, e);
+    }
+  }
+
+  /**
+   * Resolves subagent configurations into actual BaseAgent instances. This method is used by
+   * concrete agent implementations to resolve their subagents.
+   *
+   * @param subAgentConfigs The list of subagent configurations
+   * @param configAbsPath The absolute path to the parent config file for resolving relative paths
+   * @return A list of resolved BaseAgent instances
+   * @throws ConfigurationException if any subagent fails to resolve
+   */
+  public static ImmutableList<BaseAgent> resolveSubAgents(
+      List<BaseAgentConfig.AgentRefConfig> subAgentConfigs, String configAbsPath)
+      throws ConfigurationException {
+
+    if (subAgentConfigs == null || subAgentConfigs.isEmpty()) {
+      return ImmutableList.of();
+    }
+
+    List<BaseAgent> resolvedSubAgents = new ArrayList<>();
+    Path configDir = Paths.get(configAbsPath).getParent();
+
+    for (BaseAgentConfig.AgentRefConfig subAgentConfig : subAgentConfigs) {
+      try {
+        BaseAgent subAgent = resolveSubAgent(subAgentConfig, configDir);
+        resolvedSubAgents.add(subAgent);
+        logger.debug("Successfully resolved subagent: {}", subAgent.name());
+      } catch (Exception e) {
+        String errorMsg =
+            "Failed to resolve subagent: "
+                + (subAgentConfig.name() != null ? subAgentConfig.name() : "unnamed");
+        logger.error(errorMsg, e);
+        throw new ConfigurationException(errorMsg, e);
+      }
+    }
+
+    return ImmutableList.copyOf(resolvedSubAgents);
+  }
+
+  /**
+   * Resolves a single subagent configuration into a BaseAgent instance.
+   *
+   * @param subAgentConfig The subagent configuration
+   * @param configDir The directory containing the parent config file
+   * @return The resolved BaseAgent instance
+   * @throws ConfigurationException if the subagent cannot be resolved
+   */
+  private static BaseAgent resolveSubAgent(
+      BaseAgentConfig.AgentRefConfig subAgentConfig, Path configDir) throws ConfigurationException {
+
+    if (subAgentConfig.configPath() != null && !subAgentConfig.configPath().trim().isEmpty()) {
+      return resolveSubAgentFromConfigPath(subAgentConfig, configDir);
+    }
+
+    // TODO: Add support for programmatic subagent resolution (className/staticField).
+    if (subAgentConfig.className() != null || subAgentConfig.staticField() != null) {
+      throw new ConfigurationException(
+          "Programmatic subagent resolution (className/staticField) is not yet supported for"
+              + " subagent: "
+              + subAgentConfig.name());
+    }
+
+    throw new ConfigurationException(
+        "Subagent configuration for '"
+            + subAgentConfig.name()
+            + "' must specify 'configPath'."
+            + " Programmatic references (className/staticField) are not yet supported.");
+  }
+
+  /** Resolves a subagent from a configuration file path. */
+  private static BaseAgent resolveSubAgentFromConfigPath(
+      BaseAgentConfig.AgentRefConfig subAgentConfig, Path configDir) throws ConfigurationException {
+
+    String configPath = subAgentConfig.configPath().trim();
+    Path subAgentConfigPath;
+
+    if (Path.of(configPath).isAbsolute()) {
+      subAgentConfigPath = Path.of(configPath);
+    } else {
+      subAgentConfigPath = configDir.resolve(configPath);
+    }
+
+    if (!Files.exists(subAgentConfigPath)) {
+      throw new ConfigurationException("Subagent config file not found: " + subAgentConfigPath);
+    }
+
+    try {
+      // Recursive call to load the subagent from its config file
+      return fromConfig(subAgentConfigPath.toString());
+    } catch (Exception e) {
+      throw new ConfigurationException(
+          "Failed to load subagent from config: " + subAgentConfigPath, e);
     }
   }
 

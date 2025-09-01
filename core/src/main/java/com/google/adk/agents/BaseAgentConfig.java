@@ -17,9 +17,10 @@
 package com.google.adk.agents;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
 
 /**
- * Base configuration for all agents.
+ * Base configuration for all agents with subagent support.
  *
  * <p>TODO: Config agent features are not yet ready for public use.
  */
@@ -27,6 +28,110 @@ public class BaseAgentConfig {
   private String name;
   private String description = "";
   private String agentClass;
+  private List<AgentRefConfig> subAgents;
+
+  /**
+   * Configuration for referencing other agents (subagents). Supports both config-based references
+   * (YAML files) and programmatic references (Java classes).
+   */
+  public static class AgentRefConfig {
+    private String name;
+    private String configPath;
+    private String className;
+    private String staticField;
+
+    public AgentRefConfig() {}
+
+    /**
+     * Constructor for config-based agent reference.
+     *
+     * @param name The name of the subagent
+     * @param configPath The path to the subagent's config file
+     */
+    public AgentRefConfig(String name, String configPath) {
+      this.name = name;
+      this.configPath = configPath;
+    }
+
+    /**
+     * Constructor for programmatic agent reference.
+     *
+     * @param name The name of the subagent
+     * @param className The Java class name
+     * @param staticField Optional static field name
+     */
+    public AgentRefConfig(String name, String className, String staticField) {
+      this.name = name;
+      this.className = className;
+      this.staticField = staticField;
+    }
+
+    @JsonProperty("name")
+    public String name() {
+      return name;
+    }
+
+    public void setName(String name) {
+      this.name = name;
+    }
+
+    @JsonProperty("config_path")
+    public String configPath() {
+      return configPath;
+    }
+
+    public void setConfigPath(String configPath) {
+      this.configPath = configPath;
+    }
+
+    @JsonProperty("class_name")
+    public String className() {
+      return className;
+    }
+
+    public void setClassName(String className) {
+      this.className = className;
+    }
+
+    @JsonProperty("static_field")
+    public String staticField() {
+      return staticField;
+    }
+
+    public void setStaticField(String staticField) {
+      this.staticField = staticField;
+    }
+
+    @Override
+    public String toString() {
+      if (configPath != null) {
+        return "AgentRefConfig{name='" + name + "', configPath='" + configPath + "'}";
+      } else {
+        return "AgentRefConfig{name='"
+            + name
+            + "', className='"
+            + className
+            + "', staticField='"
+            + staticField
+            + "'}";
+      }
+    }
+  }
+
+  public BaseAgentConfig() {}
+
+  /**
+   * Constructor with basic fields.
+   *
+   * @param name The agent name
+   * @param description The agent description
+   * @param agentClass The agent class name
+   */
+  public BaseAgentConfig(String name, String description, String agentClass) {
+    this.name = name;
+    this.description = description;
+    this.agentClass = agentClass;
+  }
 
   @JsonProperty(value = "name", required = true)
   public String name() {
@@ -53,5 +158,14 @@ public class BaseAgentConfig {
 
   public void setAgentClass(String agentClass) {
     this.agentClass = agentClass;
+  }
+
+  @JsonProperty("sub_agents")
+  public List<AgentRefConfig> subAgents() {
+    return subAgents;
+  }
+
+  public void setSubAgents(List<AgentRefConfig> subAgents) {
+    this.subAgents = subAgents;
   }
 }
