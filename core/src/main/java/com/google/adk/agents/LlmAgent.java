@@ -896,14 +896,13 @@ public class LlmAgent extends BaseAgent {
   }
 
   /**
-   * Creates an LlmAgent from configuration.
+   * Creates an LlmAgent from configuration with full subagent support.
    *
    * @param config the agent configuration
    * @param configAbsPath The absolute path to the agent config file. This is needed for resolving
-   *     relative paths for e.g. tools.
+   *     relative paths for e.g. tools and subagents.
    * @return the configured LlmAgent
    * @throws ConfigurationException if the configuration is invalid
-   *     <p>TODO: Config agent features are not yet ready for public use.
    */
   public static LlmAgent fromConfig(LlmAgentConfig config, String configAbsPath)
       throws ConfigurationException {
@@ -936,6 +935,12 @@ public class LlmAgent extends BaseAgent {
     } catch (ConfigurationException e) {
       throw new ConfigurationException("Error resolving tools for agent " + config.name(), e);
     }
+    // Resolve and add subagents using the utility class
+    if (config.subAgents() != null && !config.subAgents().isEmpty()) {
+      ImmutableList<BaseAgent> subAgents =
+          ConfigAgentUtils.resolveSubAgents(config.subAgents(), configAbsPath);
+      builder.subAgents(subAgents);
+    }
 
     // Set optional transfer configuration
     if (config.disallowTransferToParent() != null) {
@@ -953,7 +958,10 @@ public class LlmAgent extends BaseAgent {
 
     // Build and return the agent
     LlmAgent agent = builder.build();
-    logger.info("Successfully created LlmAgent: {}", agent.name());
+    logger.info(
+        "Successfully created LlmAgent: {} with {} subagents",
+        agent.name(),
+        agent.subAgents() != null ? agent.subAgents().size() : 0);
 
     return agent;
   }

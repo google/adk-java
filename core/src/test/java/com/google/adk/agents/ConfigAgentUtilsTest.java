@@ -271,4 +271,118 @@ public final class ConfigAgentUtilsTest {
         assertThrows(IllegalArgumentException.class, llmAgent::resolvedModel);
     assertThat(exception).hasMessageThat().contains("invalid-model-name");
   }
+
+  @Test
+  public void fromConfig_withSubAgents_createsHierarchy()
+      throws IOException, ConfigurationException {
+    // Create subagent config file
+    File subAgentFile = tempFolder.newFile("sub_agent.yaml");
+    Files.writeString(
+        subAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: sub_agent
+        description: A test subagent
+        instruction: You are a helpful subagent
+        """);
+
+    // Create main agent config file with subagent reference
+    File mainAgentFile = tempFolder.newFile("main_agent.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: main_agent
+        description: Main agent with subagent
+        instruction: You are a main agent that delegates to subagents
+        sub_agents:
+          - name: sub_agent
+            config_path: sub_agent.yaml
+        """);
+
+    BaseAgent mainAgent = ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath());
+
+    assertThat(mainAgent.name()).isEqualTo("main_agent");
+    assertThat(mainAgent.description()).isEqualTo("Main agent with subagent");
+    assertThat(mainAgent).isInstanceOf(LlmAgent.class);
+
+    assertThat(mainAgent.subAgents()).hasSize(1);
+    BaseAgent subAgent = mainAgent.subAgents().get(0);
+    assertThat(subAgent.name()).isEqualTo("sub_agent");
+    assertThat(subAgent.description()).isEqualTo("A test subagent");
+    assertThat(subAgent).isInstanceOf(LlmAgent.class);
+
+    assertThat(subAgent.parentAgent()).isEqualTo(mainAgent);
+
+    LlmAgent llmSubAgent = (LlmAgent) subAgent;
+    assertThat(llmSubAgent.instruction().toString()).contains("helpful subagent");
+  }
+
+  @Test
+  public void resolveSubAgents_missingConfigPath_throwsConfigurationException() throws IOException {
+    File mainAgentFile = tempFolder.newFile("main_agent.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: main_agent
+        description: Main agent with invalid subagent
+        instruction: You are a main agent
+        sub_agents:
+          - name: invalid_subagent
+        """);
+
+    ConfigurationException exception =
+        assertThrows(
+            ConfigurationException.class,
+            () -> ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath()));
+
+    assertThat(exception).hasMessageThat().contains("Failed to create agent from config");
+  }
+
+  @Test
+  public void resolveSubAgents_withClassName_throwsUnsupportedException() throws IOException {
+    File mainAgentFile = tempFolder.newFile("main_agent.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: main_agent
+        description: Main agent with programmatic subagent
+        instruction: You are a main agent
+        sub_agents:
+          - name: programmatic_subagent
+            class_name: com.example.TestAgent
+        """);
+
+    ConfigurationException exception =
+        assertThrows(
+            ConfigurationException.class,
+            () -> ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath()));
+
+    assertThat(exception).hasMessageThat().contains("Failed to create agent from config");
+  }
+
+  @Test
+  public void resolveSubAgents_withStaticField_throwsUnsupportedException() throws IOException {
+    File mainAgentFile = tempFolder.newFile("main_agent.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: main_agent
+        description: Main agent with static field subagent
+        instruction: You are a main agent
+        sub_agents:
+          - name: static_field_subagent
+            static_field: TestAgent.INSTANCE
+        """);
+
+    ConfigurationException exception =
+        assertThrows(
+            ConfigurationException.class,
+            () -> ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath()));
+
+    assertThat(exception).hasMessageThat().contains("Failed to create agent from config");
+  }
 }

@@ -39,6 +39,16 @@ public final class BaseAgentTest {
   private static final String TEST_AGENT_DESCRIPTION = "A test agent";
 
   @Test
+  public void constructor_setsNameAndDescription() {
+    String name = "testName";
+    String description = "testDescription";
+    TestBaseAgent agent = new TestBaseAgent(name, description, ImmutableList.of(), null, null);
+
+    assertThat(agent.name()).isEqualTo(name);
+    assertThat(agent.description()).isEqualTo(description);
+  }
+
+  @Test
   public void
       runAsync_beforeAgentCallbackReturnsContent_endsInvocationAndSkipsRunAsyncImplAndAfterCallback() {
     AtomicBoolean runAsyncImplCalled = new AtomicBoolean(false);

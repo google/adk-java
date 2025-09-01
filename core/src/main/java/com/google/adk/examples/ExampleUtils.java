@@ -62,11 +62,15 @@ public final class ExampleUtils {
     for (int exampleNum = 0; exampleNum < examples.size(); exampleNum++) {
       Example example = examples.get(exampleNum);
       StringBuilder output = new StringBuilder();
-      output
-          .append(String.format(EXAMPLE_START, exampleNum + 1))
-          .append(USER_PREFIX)
-          .append(example.input().parts().get().get(0).text().get())
-          .append("\n\n");
+      if (example.input().parts().isPresent()
+          && !example.input().parts().get().isEmpty()
+          && example.input().parts().get().get(0).text().isPresent()) {
+        output
+            .append(String.format(EXAMPLE_START, exampleNum + 1))
+            .append(USER_PREFIX)
+            .append(example.input().parts().get().get(0).text().get())
+            .append("\n\n");
+      }
 
       for (Content content : example.output()) {
         String rolePrefix = content.role().orElse("").equals("model") ? MODEL_PREFIX : USER_PREFIX;
