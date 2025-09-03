@@ -30,7 +30,7 @@
   <description>Agent Development Kit: an open-source, code-first toolkit designed to simplify building, evaluating, and deploying advanced AI agents anywhere.</description>
 
   <properties>
-    <mcp.version>0.10.0</mcp.version>
+    <mcp.version>0.11.3</mcp.version>
     <errorprone.version>2.38.0</errorprone.version>
     <google.auth.version>1.33.1</google.auth.version>
     <google.cloud.storage.version>2.28.0</google.cloud.storage.version>

@@ -35,6 +35,7 @@ import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.tools.Annotations;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.utils.ComponentRegistry;
 import com.google.common.collect.ImmutableList;
@@ -43,6 +44,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 import java.util.Optional;
@@ -99,6 +101,131 @@ public final class LlmAgentTest {
     Optional<BaseTool> resolvedAgain = ComponentRegistry.resolveToolInstance(toolName);
     assertThat(resolvedAgain).isPresent();
     assertThat(resolvedAgain.get()).isSameInstanceAs(resolved);
+  }
+
+  @Test
+  public void testResolveToolsetInstanceViaReflection_extractsFullClassName() throws Exception {
+    // This test ensures that the full class name is extracted correctly
+    // and will fail if substring(1, lastDotIndex) is used instead of substring(0, lastDotIndex)
+    String toolsetName = TestToolsetWithStaticField.class.getName() + ".TEST_TOOLSET";
+
+    BaseToolset resolved = LlmAgent.resolveToolsetInstanceViaReflection(toolsetName);
+
+    assertThat(resolved).isNotNull();
+    assertThat(resolved).isSameInstanceAs(TestToolsetWithStaticField.TEST_TOOLSET);
+  }
+
+  @Test
+  public void testResolveInstanceViaReflection_extractsCorrectFieldName() throws Exception {
+    // This test ensures that the field name is extracted correctly
+    // and will fail if substring(lastDotIndex) or substring(lastDotIndex + 1 - 1) is used
+    String toolName = TestToolWithDifferentFieldName.class.getName() + ".SPECIAL_INSTANCE";
+
+    BaseTool resolved = LlmAgent.resolveInstanceViaReflection(toolName);
+
+    assertThat(resolved).isNotNull();
+    assertThat(resolved).isSameInstanceAs(TestToolWithDifferentFieldName.SPECIAL_INSTANCE);
+    assertThat(resolved.name()).isEqualTo("special_tool");
+  }
+
+  @Test
+  public void testResolveToolsetInstanceViaReflection_noDotInName_returnsNull() throws Exception {
+    String toolsetName = "NoDotsHere";
+
+    BaseToolset resolved = LlmAgent.resolveToolsetInstanceViaReflection(toolsetName);
+
+    assertThat(resolved).isNull();
+  }
+
+  @Test
+  public void testResolveToolsetInstanceViaReflection_nonStaticField_returnsNull()
+      throws Exception {
+    String toolsetName = TestToolsetWithNonStaticField.class.getName() + ".instanceField";
+
+    BaseToolset resolved = LlmAgent.resolveToolsetInstanceViaReflection(toolsetName);
+
+    assertThat(resolved).isNull();
+  }
+
+  @Test
+  public void testResolveToolsetInstanceViaReflection_nonBaseToolsetField_returnsNull()
+      throws Exception {
+    String toolsetName = TestClassWithNonToolsetField.class.getName() + ".NOT_A_TOOLSET";
+
+    BaseToolset resolved = LlmAgent.resolveToolsetInstanceViaReflection(toolsetName);
+
+    assertThat(resolved).isNull();
+  }
+
+  @Test
+  public void testResolveToolsetInstanceViaReflection_fieldNotFound_returnsNull() throws Exception {
+    String toolsetName = TestToolsetWithStaticField.class.getName() + ".NONEXISTENT_FIELD";
+
+    BaseToolset resolved = LlmAgent.resolveToolsetInstanceViaReflection(toolsetName);
+
+    assertThat(resolved).isNull();
+  }
+
+  @Test
+  public void testResolveToolsetInstanceViaReflection_classNotFound_throwsException() {
+    String toolsetName = "com.nonexistent.package.NonExistentClass.FIELD";
+
+    assertThrows(
+        ClassNotFoundException.class,
+        () -> LlmAgent.resolveToolsetInstanceViaReflection(toolsetName));
+  }
+
+  @Test
+  public void testResolveInstanceViaReflection_noDotInName_returnsNull() throws Exception {
+    String toolName = "NoDotsHere";
+
+    BaseTool resolved = LlmAgent.resolveInstanceViaReflection(toolName);
+
+    assertThat(resolved).isNull();
+  }
+
+  @Test
+  public void testResolveInstanceViaReflection_nonStaticField_returnsNull() throws Exception {
+    String toolName = TestToolWithNonStaticField.class.getName() + ".instanceField";
+
+    BaseTool resolved = LlmAgent.resolveInstanceViaReflection(toolName);
+
+    assertThat(resolved).isNull();
+  }
+
+  @Test
+  public void testResolveInstanceViaReflection_nonBaseToolField_returnsNull() throws Exception {
+    String toolName = TestClassWithNonToolField.class.getName() + ".NOT_A_TOOL";
+
+    BaseTool resolved = LlmAgent.resolveInstanceViaReflection(toolName);
+
+    assertThat(resolved).isNull();
+  }
+
+  @Test
+  public void testResolveInstanceViaReflection_fieldNotFound_returnsNull() throws Exception {
+    String toolName = TestToolWithStaticField.class.getName() + ".NONEXISTENT_FIELD";
+
+    BaseTool resolved = LlmAgent.resolveInstanceViaReflection(toolName);
+
+    assertThat(resolved).isNull();
+  }
+
+  @Test
+  public void testResolveInstanceViaReflection_classNotFound_throwsException() {
+    String toolName = "com.nonexistent.package.NonExistentClass.FIELD";
+
+    assertThrows(
+        ClassNotFoundException.class, () -> LlmAgent.resolveInstanceViaReflection(toolName));
+  }
+
+  @Test
+  public void testResolveToolInstance_withInvalidReflectionPath_returnsNull() {
+    String toolName = "com.invalid.Class.FIELD";
+
+    BaseTool resolved = LlmAgent.resolveToolInstance(toolName);
+
+    assertThat(resolved).isNull();
   }
 
   @Test
@@ -478,6 +605,34 @@ public final class LlmAgentTest {
     }
   }
 
+  public static class TestToolsetWithStaticField implements BaseToolset {
+    public static final TestToolsetWithStaticField TEST_TOOLSET = new TestToolsetWithStaticField();
+
+    @Override
+    public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+      return Flowable.empty();
+    }
+
+    @Override
+    public void close() throws Exception {
+      // No resources to clean up
+    }
+  }
+
+  public static class TestToolWithDifferentFieldName extends BaseTool {
+    public static final TestToolWithDifferentFieldName SPECIAL_INSTANCE =
+        new TestToolWithDifferentFieldName();
+
+    private TestToolWithDifferentFieldName() {
+      super("special_tool", "Test tool with different field name");
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.empty();
+    }
+  }
+
   public static class TestToolWithFromConfig extends BaseTool {
     private TestToolWithFromConfig(String param) {
       super("test_tool_from_config", "Test tool from config: " + param);
@@ -524,6 +679,45 @@ public final class LlmAgentTest {
     public Optional<FunctionDeclaration> declaration() {
       return Optional.empty();
     }
+  }
+
+  public static class TestToolsetWithNonStaticField implements BaseToolset {
+    public final BaseToolset instanceField = new TestToolsetWithStaticField();
+
+    @Override
+    public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+      return Flowable.empty();
+    }
+
+    @Override
+    public void close() throws Exception {
+      // No resources to clean up
+    }
+  }
+
+  public static final class TestClassWithNonToolsetField {
+    public static final String NOT_A_TOOLSET = "This is not a BaseToolset";
+
+    private TestClassWithNonToolsetField() {}
+  }
+
+  public static class TestToolWithNonStaticField extends BaseTool {
+    public final BaseTool instanceField = new TestToolWithStaticField();
+
+    public TestToolWithNonStaticField() {
+      super("test_tool_non_static", "Test tool with non-static field");
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.empty();
+    }
+  }
+
+  public static final class TestClassWithNonToolField {
+    public static final String NOT_A_TOOL = "This is not a BaseTool";
+
+    private TestClassWithNonToolField() {}
   }
 
   private BaseTool.ToolConfig createToolConfig(String name, BaseTool.ToolArgsConfig args) {

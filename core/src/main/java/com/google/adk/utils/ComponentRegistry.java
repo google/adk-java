@@ -26,9 +26,11 @@ import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.tools.AgentTool;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.ExitLoopTool;
 import com.google.adk.tools.GoogleSearchTool;
 import com.google.adk.tools.LoadArtifactsTool;
+import com.google.adk.tools.mcp.McpToolset;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -103,6 +105,8 @@ public class ComponentRegistry {
     registerAdkToolInstance("exit_loop", ExitLoopTool.INSTANCE);
 
     registerAdkToolClass(AgentTool.class);
+
+    registerAdkToolsetClass(McpToolset.class);
     // TODO: add all python tools that also exist in Java.
 
     logger.debug("Initialized base pre-wired entries in ComponentRegistry");
@@ -124,6 +128,19 @@ public class ComponentRegistry {
     registry.put(toolClass.getName(), toolClass);
     // For python compatibility, also register the name used in ADK Python.
     registry.put("google.adk.tools." + toolClass.getSimpleName(), toolClass);
+  }
+
+  private void registerAdkToolsetClass(@Nonnull Class<? extends BaseToolset> toolsetClass) {
+    registry.put(toolsetClass.getName(), toolsetClass);
+    // For python compatibility, also register the name used in ADK Python.
+    registry.put("google.adk.tools." + toolsetClass.getSimpleName(), toolsetClass);
+    // Also register by simple class name
+    registry.put(toolsetClass.getSimpleName(), toolsetClass);
+    // Special support for toolsets with various naming conventions
+    String simpleName = toolsetClass.getSimpleName();
+    if (simpleName.equals("McpToolset")) {
+      registry.put("mcp.McpToolset", toolsetClass);
+    }
   }
 
   /**
@@ -172,7 +189,7 @@ public class ComponentRegistry {
               if (type.isInstance(value)) {
                 return true;
               } else {
-                logger.warn(
+                logger.info(
                     "Object with name '{}' is of type {} but expected type {}",
                     name,
                     value.getClass().getSimpleName(),
@@ -269,6 +286,31 @@ public class ComponentRegistry {
    * @param name the name of the tool from the config
    * @return an Optional containing the tool instance if found, empty otherwise
    */
+  /**
+   * Resolves a toolset instance by name from the registry.
+   *
+   * @param name The name of the toolset instance to resolve.
+   * @return An Optional containing the toolset instance if found, empty otherwise.
+   */
+  public static Optional<BaseToolset> resolveToolsetInstance(String name) {
+    if (isNullOrEmpty(name)) {
+      return Optional.empty();
+    }
+
+    ComponentRegistry registry = getInstance();
+
+    if (name.contains(".")) {
+      // If name contains '.', use it directly
+      return registry.get(name, BaseToolset.class);
+    } else {
+      // Try various prefixes for simple names
+      return registry
+          .get(name, BaseToolset.class)
+          .or(() -> registry.get("com.google.adk.tools." + name, BaseToolset.class))
+          .or(() -> registry.get("google.adk.tools." + name, BaseToolset.class));
+    }
+  }
+
   public static Optional<BaseTool> resolveToolInstance(String name) {
     if (isNullOrEmpty(name)) {
       return Optional.empty();
@@ -322,6 +364,57 @@ public class ComponentRegistry {
       toolClass = registry.get("google.adk.tools." + toolClassName, Class.class);
       if (toolClass.isPresent() && BaseTool.class.isAssignableFrom(toolClass.get())) {
         return Optional.of((Class<? extends BaseTool>) toolClass.get());
+      }
+    }
+
+    return Optional.empty();
+  }
+
+  /**
+   * Resolves a toolset class by name from the registry or by attempting to load it.
+   *
+   * <p>This method follows the same pattern as {@code resolveToolClass} but for BaseToolset
+   * implementations. It first checks the registry, then attempts direct class loading if the name
+   * contains a dot (indicating a fully qualified class name).
+   *
+   * @param toolsetClassName the name of the toolset class from the config
+   * @return an Optional containing the toolset class if found, empty otherwise
+   */
+  @SuppressWarnings({"unchecked", "rawtypes"}) // For type casting.
+  public static Optional<Class<? extends BaseToolset>> resolveToolsetClass(
+      String toolsetClassName) {
+    if (isNullOrEmpty(toolsetClassName)) {
+      return Optional.empty();
+    }
+
+    ComponentRegistry registry = getInstance();
+
+    if (toolsetClassName.contains(".")) {
+      // If toolsetClassName contains '.', use it directly
+      Optional<Class> toolsetClass = registry.get(toolsetClassName, Class.class);
+      if (toolsetClass.isPresent() && BaseToolset.class.isAssignableFrom(toolsetClass.get())) {
+        return Optional.of((Class<? extends BaseToolset>) toolsetClass.get());
+      }
+      // If not in registry, try to load directly
+      try {
+        Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(toolsetClassName);
+        if (BaseToolset.class.isAssignableFrom(clazz)) {
+          return Optional.of(clazz.asSubclass(BaseToolset.class));
+        }
+      } catch (ClassNotFoundException e) {
+        // Class not found, return empty
+      }
+    } else {
+      // First try the simple name
+      Optional<Class> toolsetClass = registry.get(toolsetClassName, Class.class);
+      if (toolsetClass.isPresent() && BaseToolset.class.isAssignableFrom(toolsetClass.get())) {
+        return Optional.of((Class<? extends BaseToolset>) toolsetClass.get());
+      }
+
+      // If not found, try with google.adk.tools prefix (consistent with resolveToolClass)
+      toolsetClass = registry.get("google.adk.tools." + toolsetClassName, Class.class);
+      if (toolsetClass.isPresent() && BaseToolset.class.isAssignableFrom(toolsetClass.get())) {
+        return Optional.of((Class<? extends BaseToolset>) toolsetClass.get());
       }
     }
 

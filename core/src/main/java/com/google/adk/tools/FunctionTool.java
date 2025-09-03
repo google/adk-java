@@ -209,7 +209,18 @@ public class FunctionTool extends BaseTool {
           Type type =
               ((ParameterizedType) parameters[i].getParameterizedType())
                   .getActualTypeArguments()[0];
-          arguments[i] = createList((List<Object>) argValue, (Class) type);
+          Class<?> typeArgClass;
+          if (type instanceof Class) {
+            // Case 1: The argument is a simple class like String, Integer, etc.
+            typeArgClass = (Class<?>) type;
+          } else if (type instanceof ParameterizedType pType) {
+            // Case 2: The argument is another parameterized type like Map<String, Integer>
+            typeArgClass = (Class<?>) pType.getRawType(); // Get the raw class (e.g., Map)
+          } else {
+            throw new IllegalArgumentException(
+                String.format("Unsupported parameterized type %s for '%s'", type, paramName));
+          }
+          arguments[i] = createList((List<Object>) argValue, typeArgClass);
           continue;
         }
       } else if (argValue instanceof Map) {

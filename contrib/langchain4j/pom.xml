@@ -30,7 +30,7 @@
     <description>LangChain4j integration for the Agent Development Kit.</description>
 
     <properties>
-        <mcp.version>0.10.0</mcp.version>
+        <mcp.version>0.11.3</mcp.version>
         <google.genai.version>1.8.0</google.genai.version>
         <junit.version>5.11.4</junit.version>
         <mockito.version>5.17.0</mockito.version>

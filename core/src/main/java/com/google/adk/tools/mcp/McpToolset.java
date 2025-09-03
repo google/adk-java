@@ -18,8 +18,10 @@ package com.google.adk.tools.mcp;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
@@ -27,6 +29,7 @@ import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.spec.McpSchema.ListToolsResult;
 import io.reactivex.rxjava3.core.Flowable;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -52,6 +55,7 @@ public class McpToolset implements BaseToolset {
 
   private static final int MAX_RETRIES = 3;
   private static final long RETRY_DELAY_MILLIS = 100;
+  protected static final Class<? extends McpToolsetConfig> CONFIG_TYPE = McpToolsetConfig.class;
 
   /**
    * Initializes the McpToolset with SSE server parameters.
@@ -165,6 +169,34 @@ public class McpToolset implements BaseToolset {
     this.toolFilter = toolFilter;
   }
 
+  /**
+   * Initializes the McpToolset with Steamable HTTP server parameters.
+   *
+   * @param connectionParams The Streamable HTTP connection parameters to the MCP server.
+   * @param objectMapper An ObjectMapper instance for parsing schemas.
+   * @param toolFilter An Optional containing either a ToolPredicate or a List of tool names.
+   */
+  public McpToolset(
+      StreamableHttpServerParameters connectionParams,
+      ObjectMapper objectMapper,
+      Optional<Object> toolFilter) {
+    Objects.requireNonNull(connectionParams);
+    Objects.requireNonNull(objectMapper);
+    this.objectMapper = objectMapper;
+    this.mcpSessionManager = new McpSessionManager(connectionParams);
+    this.toolFilter = toolFilter;
+  }
+
+  /**
+   * Initializes the McpToolset with Streamable HTTP server parameters, using the ObjectMapper used
+   * across the ADK and no tool filter.
+   *
+   * @param connectionParams The Streamable HTTP connection parameters to the MCP server.
+   */
+  public McpToolset(StreamableHttpServerParameters connectionParams) {
+    this(connectionParams, JsonBaseModel.getMapper(), Optional.empty());
+  }
+
   @Override
   public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
     return Flowable.fromCallable(
@@ -250,6 +282,85 @@ public class McpToolset implements BaseToolset {
       } finally {
         this.mcpSession = null;
       }
+    }
+  }
+
+  /** Configuration class for MCPToolset. */
+  public static class McpToolsetConfig extends JsonBaseModel {
+    @JsonProperty("stdio_server_params")
+    private StdioServerParameters stdioServerParams;
+
+    @JsonProperty("sse_server_params")
+    private SseServerParameters sseServerParams;
+
+    @JsonProperty("tool_filter")
+    private List<String> toolFilter;
+
+    public StdioServerParameters stdioServerParams() {
+      return stdioServerParams;
+    }
+
+    public void setStdioServerParams(StdioServerParameters stdioServerParams) {
+      this.stdioServerParams = stdioServerParams;
+    }
+
+    public SseServerParameters sseServerParams() {
+      return sseServerParams;
+    }
+
+    public void setSseServerParams(SseServerParameters sseServerParams) {
+      this.sseServerParams = sseServerParams;
+    }
+
+    public List<String> toolFilter() {
+      return toolFilter;
+    }
+
+    public void setToolFilter(List<String> toolFilter) {
+      this.toolFilter = toolFilter;
+    }
+  }
+
+  /**
+   * Creates a McpToolset instance from a config.
+   *
+   * @param config The config for the McpToolset.
+   * @param configAbsPath The absolute path to the config file that contains the McpToolset config.
+   * @return The McpToolset instance.
+   * @throws ConfigurationException if the McpToolset cannot be created from the config.
+   */
+  public static McpToolset fromConfig(BaseTool.ToolConfig config, String configAbsPath)
+      throws ConfigurationException {
+    if (config.args() == null) {
+      throw new ConfigurationException("Tool args is null for McpToolset");
+    }
+
+    ObjectMapper mapper = JsonBaseModel.getMapper();
+    try {
+      // Convert ToolArgsConfig to McpToolsetConfig
+      McpToolsetConfig mcpToolsetConfig =
+          mapper.convertValue(config.args(), McpToolsetConfig.class);
+
+      // Validate that exactly one parameter type is set
+      if ((mcpToolsetConfig.stdioServerParams() != null)
+          == (mcpToolsetConfig.sseServerParams() != null)) {
+        throw new ConfigurationException(
+            "Exactly one of stdio_server_params or sse_server_params must be set for McpToolset");
+      }
+
+      // Convert tool filter to Optional<Object>
+      Optional<Object> toolFilter =
+          Optional.ofNullable(mcpToolsetConfig.toolFilter()).map(filter -> filter);
+
+      // Create McpToolset with appropriate connection parameters
+      if (mcpToolsetConfig.stdioServerParams() != null) {
+        return new McpToolset(
+            mcpToolsetConfig.stdioServerParams().toServerParameters(), mapper, toolFilter);
+      } else {
+        return new McpToolset(mcpToolsetConfig.sseServerParams(), mapper, toolFilter);
+      }
+    } catch (IllegalArgumentException e) {
+      throw new ConfigurationException("Failed to parse McpToolsetConfig from ToolArgsConfig", e);
     }
   }
 }
