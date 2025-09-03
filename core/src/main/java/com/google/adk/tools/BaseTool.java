@@ -18,6 +18,8 @@ package com.google.adk.tools;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.fasterxml.jackson.annotation.JsonAnyGetter;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
@@ -202,6 +204,16 @@ public abstract class BaseTool {
 
     public Object get(String key) {
       return additionalProperties.get(key);
+    }
+
+    @JsonAnyGetter
+    public Map<String, Object> getAdditionalProperties() {
+      return additionalProperties;
+    }
+
+    @JsonAnySetter
+    public void setAdditionalProperty(String key, Object value) {
+      additionalProperties.put(key, value);
     }
   }
 
