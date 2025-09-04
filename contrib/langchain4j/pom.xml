@@ -29,13 +29,7 @@
     <name>Agent Development Kit - LangChain4j</name>
     <description>LangChain4j integration for the Agent Development Kit.</description>
 
-    <properties>
-        <mcp.version>0.11.3</mcp.version>
-        <google.genai.version>1.8.0</google.genai.version>
-        <junit.version>5.11.4</junit.version>
-        <mockito.version>5.17.0</mockito.version>
-        <langchain4j.version>1.1.0</langchain4j.version>
-    </properties>
+
     <dependencyManagement>
         <dependencies>
             <dependency>
@@ -73,12 +67,10 @@
         <dependency>
             <groupId>com.google.genai</groupId>
             <artifactId>google-genai</artifactId>
-            <version>${google.genai.version}</version>
         </dependency>
         <dependency>
             <groupId>io.modelcontextprotocol.sdk</groupId>
             <artifactId>mcp</artifactId>
-            <version>${mcp.version}</version>
         </dependency>
 
         <!-- Test dependencies -->
@@ -120,19 +112,16 @@
         <dependency>
             <groupId>com.google.truth</groupId>
             <artifactId>truth</artifactId>
-            <version>1.4.4</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
-            <version>3.27.3</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
-            <version>${mockito.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
