@@ -190,6 +190,7 @@ public final class ConfigAgentUtils {
     try (InputStream inputStream = new FileInputStream(configPath)) {
       ObjectMapper mapper = new ObjectMapper(new YAMLFactory());
       mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+      mapper.enable(com.fasterxml.jackson.databind.MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS);
       return mapper.readValue(inputStream, configClass);
     } catch (IOException e) {
       throw new ConfigurationException("Failed to load or parse config file: " + configPath, e);
