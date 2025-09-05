@@ -92,7 +92,7 @@ public class LlmAgent extends BaseAgent {
    */
   public enum IncludeContents {
     DEFAULT,
-    NONE
+    NONE;
   }
 
   private final Optional<Model> model;
@@ -972,6 +972,11 @@ public class LlmAgent extends BaseAgent {
     // Set optional output key
     if (config.outputKey() != null && !config.outputKey().trim().isEmpty()) {
       builder.outputKey(config.outputKey());
+    }
+
+    // Set optional include_contents
+    if (config.includeContents() != null) {
+      builder.includeContents(config.includeContents());
     }
 
     // Build and return the agent

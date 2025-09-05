@@ -17,6 +17,7 @@
 package com.google.adk.agents;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.adk.agents.LlmAgent.IncludeContents;
 import com.google.adk.tools.BaseTool.ToolConfig;
 import java.util.List;
 
@@ -32,6 +33,7 @@ public class LlmAgentConfig extends BaseAgentConfig {
   private Boolean disallowTransferToPeers;
   private String outputKey;
   private List<ToolConfig> tools;
+  private IncludeContents includeContents;
 
   public LlmAgentConfig() {
     super();
@@ -91,5 +93,14 @@ public class LlmAgentConfig extends BaseAgentConfig {
 
   public void setTools(List<ToolConfig> tools) {
     this.tools = tools;
+  }
+
+  @JsonProperty("include_contents")
+  public IncludeContents includeContents() {
+    return includeContents;
+  }
+
+  public void setIncludeContents(IncludeContents includeContents) {
+    this.includeContents = includeContents;
   }
 }

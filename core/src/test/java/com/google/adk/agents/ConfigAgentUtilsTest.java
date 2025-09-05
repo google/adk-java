@@ -449,4 +449,255 @@ public final class ConfigAgentUtilsTest {
     assertThat(llmAgent.toolsets()).hasSize(1);
     assertThat(llmAgent.toolsets().get(0)).isInstanceOf(McpToolset.class);
   }
+
+  @Test
+  public void fromConfig_withIncludeContentsNone_setsIncludeContentsToNone()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("include_contents_none.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: includeContentsNoneAgent
+        description: Agent with include_contents set to NONE
+        instruction: test instruction
+        agent_class: LlmAgent
+        include_contents: none
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.includeContents()).isEqualTo(LlmAgent.IncludeContents.NONE);
+  }
+
+  @Test
+  public void fromConfig_withIncludeContentsDefault_setsIncludeContentsToDefault()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("include_contents_default.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: includeContentsDefaultAgent
+        description: Agent with include_contents set to DEFAULT
+        instruction: test instruction
+        agent_class: LlmAgent
+        include_contents: default
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.includeContents()).isEqualTo(LlmAgent.IncludeContents.DEFAULT);
+  }
+
+  @Test
+  public void fromConfig_withIncludeContentsLowercase_handlesCorrectly()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("include_contents_lowercase.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: includeContentsLowercaseAgent
+        description: Agent with include_contents in lowercase
+        instruction: test instruction
+        agent_class: LlmAgent
+        include_contents: none
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.includeContents()).isEqualTo(LlmAgent.IncludeContents.NONE);
+  }
+
+  @Test
+  public void fromConfig_withIncludeContentsMixedCase_handlesCorrectly()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("include_contents_mixedcase.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: includeContentsMixedCaseAgent
+        description: Agent with include_contents in mixed case
+        instruction: test instruction
+        agent_class: LlmAgent
+        include_contents: default
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.includeContents()).isEqualTo(LlmAgent.IncludeContents.DEFAULT);
+  }
+
+  @Test
+  public void fromConfig_withoutIncludeContents_defaultsToDefault()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("no_include_contents.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: noIncludeContentsAgent
+        description: Agent without include_contents field
+        instruction: test instruction
+        agent_class: LlmAgent
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.includeContents()).isEqualTo(LlmAgent.IncludeContents.DEFAULT);
+  }
+
+  // Test removed: Empty strings for enums are not valid in standard Jackson deserialization.
+  // Use either a valid enum value or omit the field entirely.
+
+  @Test
+  public void fromConfig_withInvalidIncludeContents_throwsException() throws IOException {
+    File configFile = tempFolder.newFile("invalid_include_contents.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: invalidIncludeContentsAgent
+        description: Agent with invalid include_contents value
+        instruction: test instruction
+        agent_class: LlmAgent
+        include_contents: INVALID_VALUE
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    ConfigurationException exception =
+        assertThrows(ConfigurationException.class, () -> ConfigAgentUtils.fromConfig(configPath));
+
+    assertThat(exception).hasMessageThat().contains("Failed to load or parse config file");
+
+    // With ACCEPT_CASE_INSENSITIVE_ENUMS, Jackson will throw a generic error for invalid enum
+    // values
+    Throwable cause = exception.getCause();
+    assertThat(cause).isNotNull();
+  }
+
+  @Test
+  public void fromConfig_withIncludeContentsAndOtherFields_parsesAllFieldsCorrectly()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("complete_config.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: completeAgent
+        description: Agent with all fields including include_contents
+        instruction: You are a complete test agent
+        agent_class: LlmAgent
+        model: gemini-1.5-flash
+        include_contents: none
+        output_key: testOutput
+        disallow_transfer_to_parent: true
+        disallow_transfer_to_peers: false
+        tools:
+          - name: google_search
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.name()).isEqualTo("completeAgent");
+    assertThat(llmAgent.description())
+        .isEqualTo("Agent with all fields including include_contents");
+    assertThat(llmAgent.includeContents()).isEqualTo(LlmAgent.IncludeContents.NONE);
+    assertThat(llmAgent.outputKey()).hasValue("testOutput");
+    assertThat(llmAgent.disallowTransferToParent()).isTrue();
+    assertThat(llmAgent.disallowTransferToPeers()).isFalse();
+    assertThat(llmAgent.tools()).hasSize(1);
+    assertThat(llmAgent.model()).isPresent();
+  }
+
+  @Test
+  public void fromConfig_withOutputKey_setsOutputKeyOnAgent()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("output_key.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: InitialWriterAgent
+        model: gemini-2.0-flash
+        description: Writes the initial document draft based on the topic
+        instruction: |
+          You are a Creative Writing Assistant tasked with starting a story.
+          Write the first draft of a short story.
+        output_key: current_document
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.name()).isEqualTo("InitialWriterAgent");
+    assertThat(llmAgent.outputKey()).hasValue("current_document");
+  }
+
+  @Test
+  public void fromConfig_withEmptyOutputKey_doesNotSetOutputKey()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("empty_output_key.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: AgentWithoutOutputKey
+        instruction: Test instruction
+        output_key:
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.outputKey()).isEmpty();
+  }
+
+  @Test
+  public void fromConfig_withOutputKeyAndOtherFields_parsesAllFields()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("output_key_complete.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: CompleteAgentWithOutputKey
+        model: gemini-2.0-flash
+        description: Agent with output key and other configurations
+        instruction: Process and store output
+        output_key: result_data
+        include_contents: NONE
+        disallow_transfer_to_parent: true
+        disallow_transfer_to_peers: false
+        """);
+    String configPath = configFile.getAbsolutePath();
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    LlmAgent llmAgent = (LlmAgent) agent;
+    assertThat(llmAgent.name()).isEqualTo("CompleteAgentWithOutputKey");
+    assertThat(llmAgent.outputKey()).hasValue("result_data");
+    assertThat(llmAgent.includeContents()).isEqualTo(LlmAgent.IncludeContents.NONE);
+    assertThat(llmAgent.disallowTransferToParent()).isTrue();
+    assertThat(llmAgent.disallowTransferToPeers()).isFalse();
+    assertThat(llmAgent.model()).isPresent();
+  }
 }

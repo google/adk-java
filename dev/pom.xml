@@ -28,10 +28,7 @@
   <name>Agent Development Kit - Dev Tools</name>
   <description>Development tools and server for Agent Development Kit.</description>
 
-  <properties>
-    <graphviz.version>0.18.1</graphviz.version>
-    <ecj.version>3.41.0</ecj.version>
-  </properties>
+
   <dependencyManagement>
     <dependencies>
       <dependency>
@@ -76,12 +73,10 @@
     <dependency>
       <groupId>guru.nidi</groupId>
       <artifactId>graphviz-java</artifactId>
-      <version>${graphviz.version}</version>
     </dependency>
     <dependency>
       <groupId>org.eclipse.jdt</groupId>
       <artifactId>ecj</artifactId>
-      <version>${ecj.version}</version>
     </dependency>
     <dependency>
       <groupId>io.opentelemetry</groupId>
