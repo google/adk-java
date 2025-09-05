@@ -19,6 +19,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FileData;
@@ -26,11 +27,36 @@ import com.google.genai.types.Part;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 /** Request / Response utilities for {@link Gemini}. */
 public final class GeminiUtil {
 
+  public static final String CONTINUE_OUTPUT_MESSAGE =
+      "Continue output. DO NOT look at this line. ONLY look at the content before this line and"
+          + " system instruction.";
+
   private GeminiUtil() {}
+
+  /**
+   * Prepares an {@link LlmRequest} for the GenerateContent API.
+   *
+   * <p>This method can optionally sanitize the request and ensures that the last content part is
+   * from the user to prompt a model response. It also strips out any parts marked as "thoughts".
+   *
+   * @param llmRequest The original {@link LlmRequest}.
+   * @param sanitize Whether to sanitize the request to be compatible with the Gemini API backend.
+   * @return The prepared {@link LlmRequest}.
+   */
+  public static LlmRequest prepareGenenerateContentRequest(
+      LlmRequest llmRequest, boolean sanitize) {
+    if (sanitize) {
+      llmRequest = sanitizeRequest(llmRequest);
+    }
+    List<Content> contents = ensureModelResponse(llmRequest.contents());
+    List<Content> finalContents = stripThoughts(contents);
+    return llmRequest.toBuilder().contents(finalContents).build();
+  }
 
   /**
    * Sanitizes the request to ensure it is compatible with the Gemini API backend. Required as there
@@ -40,7 +66,7 @@ public final class GeminiUtil {
    * @param llmRequest The request to sanitize.
    * @return The sanitized request.
    */
-  public static LlmRequest sanitizeRequestForGeminiApi(LlmRequest llmRequest) {
+  public static LlmRequest sanitizeRequest(LlmRequest llmRequest) {
     LlmRequest.Builder requestBuilder = llmRequest.toBuilder();
     llmRequest
         .config()
@@ -92,6 +118,29 @@ public final class GeminiUtil {
                 })
             .collect(toImmutableList());
     return requestBuilder.contents(updatedContents).build();
+  }
+
+  /**
+   * Ensures that the message is conducive to prompting a model response.
+   *
+   * <p>If the list is empty or the last message is not from the user, a new "user" content part
+   * with a {@link #CONTINUE_OUTPUT_MESSAGE} is appended to the list. This is necessary to prompt
+   * the model to generate a response.
+   *
+   * @param contents The original list of {@link Content}.
+   * @return A list of {@link Content} where the last element is guaranteed to be from the "user".
+   */
+  static List<Content> ensureModelResponse(List<Content> contents) {
+    // Last content must be from the user, otherwise the model won't respond.
+    if (contents.isEmpty() || !Iterables.getLast(contents).role().orElse("").equals("user")) {
+      Content userContent =
+          Content.builder()
+              .parts(ImmutableList.of(Part.fromText(CONTINUE_OUTPUT_MESSAGE)))
+              .role("user")
+              .build();
+      return Stream.concat(contents.stream(), Stream.of(userContent)).collect(toImmutableList());
+    }
+    return contents;
   }
 
   /**

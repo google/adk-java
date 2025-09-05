@@ -17,11 +17,9 @@
 package com.google.adk.models;
 
 import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.adk.Version;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.Client;
 import com.google.genai.ResponseStream;
@@ -39,7 +37,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,9 +64,6 @@ public class Gemini extends BaseLlm {
 
   private final Client apiClient;
 
-  private static final String CONTINUE_OUTPUT_MESSAGE =
-      "Continue output. DO NOT look at this line. ONLY look at the content before this line and"
-          + " system instruction.";
 
   /**
    * Constructs a new Gemini instance.
@@ -212,45 +206,20 @@ public class Gemini extends BaseLlm {
     }
   }
 
-  /**
-   * Sanitizes the request to ensure it is compatible with the configured API backend. Required as
-   * there are some parameters that if included in the request will raise a runtime error if sent to
-   * the wrong backend (e.g. image names when the backend isn't Vertex AI).
-   *
-   * @param llmRequest The request to sanitize.
-   * @return The sanitized request.
-   */
-  private LlmRequest sanitizeRequest(LlmRequest llmRequest) {
-    if (apiClient.vertexAI()) {
-      return llmRequest;
-    } else {
-      // Using API key from Google AI Studio to call model doesn't support labels.
-      return GeminiUtil.sanitizeRequestForGeminiApi(llmRequest);
-    }
-  }
-
   @Override
   public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-    llmRequest = sanitizeRequest(llmRequest);
-    List<Content> contents = llmRequest.contents();
-    // Last content must be from the user, otherwise the model won't respond.
-    if (contents.isEmpty() || !Iterables.getLast(contents).role().orElse("").equals("user")) {
-      Content userContent = Content.fromParts(Part.fromText(CONTINUE_OUTPUT_MESSAGE));
-      contents =
-          Stream.concat(contents.stream(), Stream.of(userContent)).collect(toImmutableList());
-    }
-
-    List<Content> finalContents = GeminiUtil.stripThoughts(contents);
+    llmRequest = GeminiUtil.prepareGenenerateContentRequest(llmRequest, !apiClient.vertexAI());
     GenerateContentConfig config = llmRequest.config().orElse(null);
     String effectiveModelName = llmRequest.model().orElse(model());
 
-    logger.trace("Request Contents: {}", finalContents);
+    logger.trace("Request Contents: {}", llmRequest.contents());
     logger.trace("Request Config: {}", config);
 
     if (stream) {
       logger.debug("Sending streaming generateContent request to model {}", effectiveModelName);
       CompletableFuture<ResponseStream<GenerateContentResponse>> streamFuture =
-          apiClient.async.models.generateContentStream(effectiveModelName, finalContents, config);
+          apiClient.async.models.generateContentStream(
+              effectiveModelName, llmRequest.contents(), config);
 
       return Flowable.defer(
           () -> {
@@ -335,14 +304,16 @@ public class Gemini extends BaseLlm {
           apiClient
               .async
               .models
-              .generateContent(effectiveModelName, finalContents, config)
+              .generateContent(effectiveModelName, llmRequest.contents(), config)
               .thenApplyAsync(LlmResponse::create));
     }
   }
 
   @Override
   public BaseLlmConnection connect(LlmRequest llmRequest) {
-    llmRequest = sanitizeRequest(llmRequest);
+    if (!apiClient.vertexAI()) {
+      llmRequest = GeminiUtil.sanitizeRequest(llmRequest);
+    }
     logger.debug("Establishing Gemini connection.");
     LiveConnectConfig liveConnectConfig = llmRequest.liveConnectConfig();
     String effectiveModelName = llmRequest.model().orElse(model());
