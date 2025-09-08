@@ -17,7 +17,6 @@
 package com.google.adk.tools.mcp;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.google.auto.value.AutoValue;
@@ -32,26 +31,21 @@ import javax.annotation.Nullable;
 public abstract class SseServerParameters {
 
   /** The URL of the SSE server. */
-  @JsonProperty("url")
   public abstract String url();
 
   /** The endpoint to connect to on the SSE server. */
   @Nullable
-  @JsonProperty("sse_endpoint")
   public abstract String sseEndpoint();
 
   /** Optional headers to include in the SSE connection request. */
   @Nullable
-  @JsonProperty("headers")
   public abstract ImmutableMap<String, Object> headers();
 
   /** The timeout for the initial connection attempt. */
-  @JsonProperty("timeout")
   @Nullable
   public abstract Duration timeout();
 
   /** The timeout for reading data from the SSE stream. */
-  @JsonProperty("sse_read_timeout")
   @Nullable
   public abstract Duration sseReadTimeout();
 
@@ -73,23 +67,18 @@ public abstract class SseServerParameters {
     }
 
     /** Sets the URL of the SSE server. */
-    @JsonProperty("url")
     public abstract Builder url(String url);
 
     /** Sets the endpoint to connect to on the SSE server. */
-    @JsonProperty("sse_endpoint")
     public abstract Builder sseEndpoint(String sseEndpoint);
 
     /** Sets the headers for the SSE connection request. */
-    @JsonProperty("headers")
     public abstract Builder headers(@Nullable Map<String, Object> headers);
 
     /** Sets the timeout for the initial connection attempt. */
-    @JsonProperty("timeout")
     public abstract Builder timeout(@Nullable Duration timeout);
 
     /** Sets the timeout for reading data from the SSE stream. */
-    @JsonProperty("sse_read_timeout")
     public abstract Builder sseReadTimeout(@Nullable Duration sseReadTimeout);
 
     /** Builds a new {@link SseServerParameters} instance. */

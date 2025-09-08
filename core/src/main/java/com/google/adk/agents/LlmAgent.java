@@ -967,6 +967,11 @@ public class LlmAgent extends BaseAgent {
       builder.includeContents(config.includeContents());
     }
 
+    // Set optional generateContentConfig
+    if (config.generateContentConfig() != null) {
+      builder.generateContentConfig(config.generateContentConfig());
+    }
+
     // Build and return the agent
     LlmAgent agent = builder.build();
     logger.info(

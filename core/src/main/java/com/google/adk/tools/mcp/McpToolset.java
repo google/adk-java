@@ -18,7 +18,6 @@ package com.google.adk.tools.mcp;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
@@ -287,13 +286,10 @@ public class McpToolset implements BaseToolset {
 
   /** Configuration class for MCPToolset. */
   public static class McpToolsetConfig extends JsonBaseModel {
-    @JsonProperty("stdio_server_params")
     private StdioServerParameters stdioServerParams;
 
-    @JsonProperty("sse_server_params")
     private SseServerParameters sseServerParams;
 
-    @JsonProperty("tool_filter")
     private List<String> toolFilter;
 
     public StdioServerParameters stdioServerParams() {
@@ -345,7 +341,7 @@ public class McpToolset implements BaseToolset {
       if ((mcpToolsetConfig.stdioServerParams() != null)
           == (mcpToolsetConfig.sseServerParams() != null)) {
         throw new ConfigurationException(
-            "Exactly one of stdio_server_params or sse_server_params must be set for McpToolset");
+            "Exactly one of stdioServerParams or sseServerParams must be set for McpToolset");
       }
 
       // Convert tool filter to Optional<Object>

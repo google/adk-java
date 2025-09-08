@@ -16,7 +16,6 @@
 
 package com.google.adk.agents;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
 /**
@@ -66,7 +65,6 @@ public class BaseAgentConfig {
       this.staticField = staticField;
     }
 
-    @JsonProperty("name")
     public String name() {
       return name;
     }
@@ -75,7 +73,6 @@ public class BaseAgentConfig {
       this.name = name;
     }
 
-    @JsonProperty("config_path")
     public String configPath() {
       return configPath;
     }
@@ -84,7 +81,6 @@ public class BaseAgentConfig {
       this.configPath = configPath;
     }
 
-    @JsonProperty("class_name")
     public String className() {
       return className;
     }
@@ -93,7 +89,6 @@ public class BaseAgentConfig {
       this.className = className;
     }
 
-    @JsonProperty("static_field")
     public String staticField() {
       return staticField;
     }
@@ -133,7 +128,6 @@ public class BaseAgentConfig {
     this.agentClass = agentClass;
   }
 
-  @JsonProperty(value = "name", required = true)
   public String name() {
     return name;
   }
@@ -142,7 +136,6 @@ public class BaseAgentConfig {
     this.name = name;
   }
 
-  @JsonProperty("description")
   public String description() {
     return description;
   }
@@ -151,7 +144,6 @@ public class BaseAgentConfig {
     this.description = description;
   }
 
-  @JsonProperty("agent_class")
   public String agentClass() {
     return agentClass;
   }
@@ -160,7 +152,6 @@ public class BaseAgentConfig {
     this.agentClass = agentClass;
   }
 
-  @JsonProperty("sub_agents")
   public List<AgentRefConfig> subAgents() {
     return subAgents;
   }

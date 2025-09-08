@@ -17,14 +17,15 @@
 package com.google.adk.agents;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.google.adk.utils.ComponentRegistry;
 import com.google.common.collect.ImmutableList;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -187,11 +188,18 @@ public final class ConfigAgentUtils {
    */
   private static <T extends BaseAgentConfig> T loadConfigAsType(
       String configPath, Class<T> configClass) throws ConfigurationException {
-    try (InputStream inputStream = new FileInputStream(configPath)) {
-      ObjectMapper mapper = new ObjectMapper(new YAMLFactory());
-      mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-      mapper.enable(com.fasterxml.jackson.databind.MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS);
-      return mapper.readValue(inputStream, configClass);
+    try {
+      String yamlContent = Files.readString(Paths.get(configPath), StandardCharsets.UTF_8);
+
+      // Preprocess YAML to convert snake_case to camelCase
+      String processedYaml = YamlPreprocessor.preprocessYaml(yamlContent);
+
+      ObjectMapper mapper =
+          JsonMapper.builder(new YAMLFactory())
+              .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+              .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
+              .build();
+      return mapper.readValue(processedYaml, configClass);
     } catch (IOException e) {
       throw new ConfigurationException("Failed to load or parse config file: " + configPath, e);
     }

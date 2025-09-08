@@ -89,9 +89,9 @@ public class McpToolsetTest {
   public void testFromConfig_bothStdioAndSseParams_throwsConfigurationException() {
     BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
     args.put(
-        "stdio_server_params",
+        "stdioServerParams",
         ImmutableMap.of("command", "test-command", "args", ImmutableList.of("arg1", "arg2")));
-    args.put("sse_server_params", ImmutableMap.of("url", "http://localhost:8080"));
+    args.put("sseServerParams", ImmutableMap.of("url", "http://localhost:8080"));
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
 
@@ -100,13 +100,13 @@ public class McpToolsetTest {
 
     assertThat(exception)
         .hasMessageThat()
-        .contains("Exactly one of stdio_server_params or sse_server_params must be set");
+        .contains("Exactly one of stdioServerParams or sseServerParams must be set");
   }
 
   @Test
   public void testFromConfig_neitherStdioNorSseParams_throwsConfigurationException() {
     BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
-    args.put("tool_filter", ImmutableList.of("tool1", "tool2"));
+    args.put("toolFilter", ImmutableList.of("tool1", "tool2"));
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
 
@@ -115,19 +115,19 @@ public class McpToolsetTest {
 
     assertThat(exception)
         .hasMessageThat()
-        .contains("Exactly one of stdio_server_params or sse_server_params must be set");
+        .contains("Exactly one of stdioServerParams or sseServerParams must be set");
   }
 
   @Test
   public void testFromConfig_validStdioParams_createsToolset() throws ConfigurationException {
     BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
     args.put(
-        "stdio_server_params",
+        "stdioServerParams",
         ImmutableMap.of(
             "command", "test-command",
             "args", ImmutableList.of("arg1", "arg2"),
             "env", ImmutableMap.of("KEY1", "value1")));
-    args.put("tool_filter", ImmutableList.of("tool1", "tool2"));
+    args.put("toolFilter", ImmutableList.of("tool1", "tool2"));
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
@@ -142,7 +142,7 @@ public class McpToolsetTest {
   public void testFromConfig_validSseParams_createsToolset() throws ConfigurationException {
     BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
     args.put(
-        "sse_server_params",
+        "sseServerParams",
         ImmutableMap.of(
             "url",
             "http://localhost:8080",
@@ -164,7 +164,7 @@ public class McpToolsetTest {
     // If line 328 is mutated to if(true), this test should fail because it would try to
     // call stdioServerParams().toServerParameters() on null, causing a NullPointerException
     BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
-    args.put("sse_server_params", ImmutableMap.of("url", "http://localhost:8080"));
+    args.put("sseServerParams", ImmutableMap.of("url", "http://localhost:8080"));
     // Explicitly NOT setting stdio_server_params
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
@@ -184,7 +184,7 @@ public class McpToolsetTest {
     // This test ensures that when only stdio params are provided, the stdio branch is taken
     // It protects against mutations that might force the else branch
     BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
-    args.put("stdio_server_params", ImmutableMap.of("command", "test-command"));
+    args.put("stdioServerParams", ImmutableMap.of("command", "test-command"));
     // Explicitly NOT setting sse_server_params
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
@@ -202,7 +202,7 @@ public class McpToolsetTest {
   public void testFromConfig_invalidArgsFormat_throwsConfigurationException() {
     BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
     // Put invalid data that can't be converted to McpToolsetConfig
-    args.put("stdio_server_params", "invalid_string_instead_of_map");
+    args.put("stdioServerParams", "invalid_string_instead_of_map");
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
@@ -218,7 +218,7 @@ public class McpToolsetTest {
   public void testFromConfig_stdioParamsNoToolFilter_createsToolset()
       throws ConfigurationException {
     BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
-    args.put("stdio_server_params", ImmutableMap.of("command", "test-command"));
+    args.put("stdioServerParams", ImmutableMap.of("command", "test-command"));
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
@@ -232,8 +232,8 @@ public class McpToolsetTest {
   @Test
   public void testFromConfig_emptyToolFilter_createsToolset() throws ConfigurationException {
     BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
-    args.put("stdio_server_params", ImmutableMap.of("command", "test-command"));
-    args.put("tool_filter", ImmutableList.of());
+    args.put("stdioServerParams", ImmutableMap.of("command", "test-command"));
+    args.put("toolFilter", ImmutableList.of());
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
