@@ -209,7 +209,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
       InvocationContext context, LlmRequest llmRequest, Event eventForCallbackUsage) {
     LlmAgent agent = (LlmAgent) context.agent();
 
-    return handleBeforeModelCallback(context, llmRequest, eventForCallbackUsage)
+    LlmRequest.Builder llmRequestBuilder = llmRequest.toBuilder();
+
+    return handleBeforeModelCallback(context, llmRequestBuilder, eventForCallbackUsage)
         .flatMapPublisher(
             beforeResponse -> {
               if (beforeResponse.isPresent()) {
@@ -226,7 +228,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
                         try (Scope scope = llmCallSpan.makeCurrent()) {
                           return llm.generateContent(
-                                  llmRequest,
+                                  llmRequestBuilder.build(),
                                   context.runConfig().streamingMode() == StreamingMode.SSE)
                               .doOnNext(
                                   llmResp -> {
@@ -257,7 +259,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
    * @return A {@link Single} with the callback result or {@link Optional#empty()}.
    */
   private Single<Optional<LlmResponse>> handleBeforeModelCallback(
-      InvocationContext context, LlmRequest llmRequest, Event modelResponseEvent) {
+      InvocationContext context, LlmRequest.Builder llmRequestBuilder, Event modelResponseEvent) {
     LlmAgent agent = (LlmAgent) context.agent();
 
     Optional<List<BeforeModelCallback>> callbacksOpt = agent.beforeModelCallback();
@@ -274,7 +276,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
               CallbackContext callbackContext =
                   new CallbackContext(context, callbackEvent.actions());
               return callback
-                  .call(callbackContext, llmRequest)
+                  .call(callbackContext, llmRequestBuilder)
                   .map(Optional::of)
                   .defaultIfEmpty(Optional.empty());
             })

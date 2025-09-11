@@ -18,6 +18,7 @@ package com.google.adk.agents;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.base.Strings.nullToEmpty;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.stream.Collectors.joining;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -67,6 +68,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
@@ -89,14 +91,16 @@ public class LlmAgent extends BaseAgent {
    */
   public enum IncludeContents {
     DEFAULT,
-    NONE
+    NONE;
   }
 
   private final Optional<Model> model;
   private final Instruction instruction;
   private final Instruction globalInstruction;
   private final List<Object> toolsUnion;
+  private final ImmutableList<BaseToolset> toolsets;
   private final Optional<GenerateContentConfig> generateContentConfig;
+  // TODO: Remove exampleProvider field - examples should only be provided via ExampleTool
   private final Optional<BaseExampleProvider> exampleProvider;
   private final IncludeContents includeContents;
 
@@ -146,6 +150,7 @@ public class LlmAgent extends BaseAgent {
     this.executor = Optional.ofNullable(builder.executor);
     this.outputKey = Optional.ofNullable(builder.outputKey);
     this.toolsUnion = builder.toolsUnion != null ? builder.toolsUnion : ImmutableList.of();
+    this.toolsets = extractToolsets(this.toolsUnion);
     this.codeExecutor = Optional.ofNullable(builder.codeExecutor);
 
     this.llmFlow = determineLlmFlow();
@@ -157,6 +162,14 @@ public class LlmAgent extends BaseAgent {
   /** Returns a {@link Builder} for {@link LlmAgent}. */
   public static Builder builder() {
     return new Builder();
+  }
+
+  /** Extracts BaseToolset instances from the toolsUnion list. */
+  private static ImmutableList<BaseToolset> extractToolsets(List<Object> toolsUnion) {
+    return toolsUnion.stream()
+        .filter(obj -> obj instanceof BaseToolset)
+        .map(obj -> (BaseToolset) obj)
+        .collect(toImmutableList());
   }
 
   /** Builder for {@link LlmAgent}. */
@@ -268,6 +281,8 @@ public class LlmAgent extends BaseAgent {
       return this;
     }
 
+    // TODO: Remove these example provider methods and only use ExampleTool for providing examples.
+    // Direct example methods should be deprecated in favor of using ExampleTool consistently.
     @CanIgnoreReturnValue
     public Builder exampleProvider(BaseExampleProvider exampleProvider) {
       this.exampleProvider = exampleProvider;
@@ -348,9 +363,10 @@ public class LlmAgent extends BaseAgent {
           } else if (callback instanceof BeforeModelCallbackSync beforeModelCallbackSyncInstance) {
             builder.add(
                 (BeforeModelCallback)
-                    (callbackContext, llmRequest) ->
+                    (callbackContext, llmRequestBuilder) ->
                         Maybe.fromOptional(
-                            beforeModelCallbackSyncInstance.call(callbackContext, llmRequest)));
+                            beforeModelCallbackSyncInstance.call(
+                                callbackContext, llmRequestBuilder)));
           } else {
             logger.warn(
                 "Invalid beforeModelCallback callback type: %s. Ignoring this callback.",
@@ -367,8 +383,9 @@ public class LlmAgent extends BaseAgent {
     public Builder beforeModelCallbackSync(BeforeModelCallbackSync beforeModelCallbackSync) {
       this.beforeModelCallback =
           ImmutableList.of(
-              (callbackContext, llmRequest) ->
-                  Maybe.fromOptional(beforeModelCallbackSync.call(callbackContext, llmRequest)));
+              (callbackContext, llmRequestBuilder) ->
+                  Maybe.fromOptional(
+                      beforeModelCallbackSync.call(callbackContext, llmRequestBuilder)));
       return this;
     }
 
@@ -775,6 +792,7 @@ public class LlmAgent extends BaseAgent {
     return generateContentConfig;
   }
 
+  // TODO: Remove this getter - examples should only be provided via ExampleTool
   public Optional<BaseExampleProvider> exampleProvider() {
     return exampleProvider;
   }
@@ -789,6 +807,10 @@ public class LlmAgent extends BaseAgent {
 
   public List<Object> toolsUnion() {
     return toolsUnion;
+  }
+
+  public ImmutableList<BaseToolset> toolsets() {
+    return toolsets;
   }
 
   public boolean disallowTransferToParent() {
@@ -916,7 +938,9 @@ public class LlmAgent extends BaseAgent {
 
     try {
       if (config.tools() != null) {
-        builder.tools(resolveTools(config.tools(), configAbsPath));
+        ImmutableList<Object> resolvedToolsAndToolsets =
+            resolveToolsAndToolsets(config.tools(), configAbsPath);
+        builder.tools(resolvedToolsAndToolsets);
       }
     } catch (ConfigurationException e) {
       throw new ConfigurationException("Error resolving tools for agent " + config.name(), e);
@@ -942,6 +966,19 @@ public class LlmAgent extends BaseAgent {
       builder.outputKey(config.outputKey());
     }
 
+    // Set optional include_contents
+    if (config.includeContents() != null) {
+      builder.includeContents(config.includeContents());
+    }
+
+    // Set optional generateContentConfig
+    if (config.generateContentConfig() != null) {
+      builder.generateContentConfig(config.generateContentConfig());
+    }
+
+    // Resolve callbacks if configured
+    setCallbacksFromConfig(config, builder);
+
     // Build and return the agent
     LlmAgent agent = builder.build();
     logger.info(
@@ -950,6 +987,159 @@ public class LlmAgent extends BaseAgent {
         agent.subAgents() != null ? agent.subAgents().size() : 0);
 
     return agent;
+  }
+
+  private static void setCallbacksFromConfig(LlmAgentConfig config, Builder builder)
+      throws ConfigurationException {
+    var beforeAgentCallbacks = config.beforeAgentCallbacks();
+    if (beforeAgentCallbacks != null) {
+      ImmutableList.Builder<Callbacks.BeforeAgentCallbackBase> list = ImmutableList.builder();
+      for (LlmAgentConfig.CallbackRef ref : beforeAgentCallbacks) {
+        var callback = ComponentRegistry.resolveBeforeAgentCallback(ref.name());
+        if (callback.isPresent()) {
+          list.add(callback.get());
+          continue;
+        }
+        throw new ConfigurationException("Invalid before_agent_callback: " + ref.name());
+      }
+      builder.beforeAgentCallback(list.build());
+    }
+
+    var afterAgentCallbacks = config.afterAgentCallbacks();
+    if (afterAgentCallbacks != null) {
+      ImmutableList.Builder<Callbacks.AfterAgentCallbackBase> list = ImmutableList.builder();
+      for (LlmAgentConfig.CallbackRef ref : afterAgentCallbacks) {
+        var callback = ComponentRegistry.resolveAfterAgentCallback(ref.name());
+        if (callback.isPresent()) {
+          list.add(callback.get());
+          continue;
+        }
+        throw new ConfigurationException("Invalid after_agent_callback: " + ref.name());
+      }
+      builder.afterAgentCallback(list.build());
+    }
+
+    var beforeModelCallbacks = config.beforeModelCallbacks();
+    if (beforeModelCallbacks != null) {
+      ImmutableList.Builder<Callbacks.BeforeModelCallbackBase> list = ImmutableList.builder();
+      for (LlmAgentConfig.CallbackRef ref : beforeModelCallbacks) {
+        var callback = ComponentRegistry.resolveBeforeModelCallback(ref.name());
+        if (callback.isPresent()) {
+          list.add(callback.get());
+          continue;
+        }
+        throw new ConfigurationException("Invalid before_model_callback: " + ref.name());
+      }
+      builder.beforeModelCallback(list.build());
+    }
+
+    var afterModelCallbacks = config.afterModelCallbacks();
+    if (afterModelCallbacks != null) {
+      ImmutableList.Builder<Callbacks.AfterModelCallbackBase> list = ImmutableList.builder();
+      for (LlmAgentConfig.CallbackRef ref : afterModelCallbacks) {
+        var callback = ComponentRegistry.resolveAfterModelCallback(ref.name());
+        if (callback.isPresent()) {
+          list.add(callback.get());
+          continue;
+        }
+        throw new ConfigurationException("Invalid after_model_callback: " + ref.name());
+      }
+      builder.afterModelCallback(list.build());
+    }
+
+    var beforeToolCallbacks = config.beforeToolCallbacks();
+    if (beforeToolCallbacks != null) {
+      ImmutableList.Builder<Callbacks.BeforeToolCallbackBase> list = ImmutableList.builder();
+      for (LlmAgentConfig.CallbackRef ref : beforeToolCallbacks) {
+        var callback = ComponentRegistry.resolveBeforeToolCallback(ref.name());
+        if (callback.isPresent()) {
+          list.add(callback.get());
+          continue;
+        }
+        throw new ConfigurationException("Invalid before_tool_callback: " + ref.name());
+      }
+      builder.beforeToolCallback(list.build());
+    }
+
+    var afterToolCallbacks = config.afterToolCallbacks();
+    if (afterToolCallbacks != null) {
+      ImmutableList.Builder<Callbacks.AfterToolCallbackBase> list = ImmutableList.builder();
+      for (LlmAgentConfig.CallbackRef ref : afterToolCallbacks) {
+        var callback = ComponentRegistry.resolveAfterToolCallback(ref.name());
+        if (callback.isPresent()) {
+          list.add(callback.get());
+          continue;
+        }
+        throw new ConfigurationException("Invalid after_tool_callback: " + ref.name());
+      }
+      builder.afterToolCallback(list.build());
+    }
+  }
+
+  /**
+   * Resolves a list of tool configurations into both {@link BaseTool} and {@link BaseToolset}
+   * instances.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   *
+   * @param toolConfigs The list of tool configurations to resolve.
+   * @param configAbsPath The absolute path to the agent config file currently being processed. This
+   *     path can be used to resolve relative paths for tool configurations, if necessary.
+   * @return An immutable list of resolved {@link BaseTool} and {@link BaseToolset} instances.
+   * @throws ConfigurationException if any tool configuration is invalid (e.g., missing name), if a
+   *     tool cannot be found by its name or class, or if tool instantiation fails.
+   */
+  static ImmutableList<Object> resolveToolsAndToolsets(
+      List<ToolConfig> toolConfigs, String configAbsPath) throws ConfigurationException {
+
+    if (toolConfigs == null || toolConfigs.isEmpty()) {
+      return ImmutableList.of();
+    }
+
+    ImmutableList.Builder<Object> resolvedItems = ImmutableList.builder();
+
+    for (ToolConfig toolConfig : toolConfigs) {
+      try {
+        if (isNullOrEmpty(toolConfig.name())) {
+          throw new ConfigurationException("Tool name cannot be empty");
+        }
+
+        String toolName = toolConfig.name().trim();
+
+        // First try to resolve as a toolset
+        BaseToolset toolset = resolveToolsetFromClass(toolName, toolConfig.args());
+        if (toolset != null) {
+          resolvedItems.add(toolset);
+          logger.debug("Successfully resolved toolset from class: {}", toolName);
+          continue;
+        }
+
+        // Option 1: Try to resolve as a tool instance
+        BaseTool tool = resolveToolInstance(toolName);
+        if (tool != null) {
+          resolvedItems.add(tool);
+          logger.debug("Successfully resolved tool instance: {}", toolName);
+          continue;
+        }
+
+        // Option 2: Try to resolve as a tool class (with or without args)
+        BaseTool toolFromClass = resolveToolFromClass(toolName, toolConfig.args());
+        if (toolFromClass != null) {
+          resolvedItems.add(toolFromClass);
+          logger.debug("Successfully resolved tool from class: {}", toolName);
+          continue;
+        }
+
+        throw new ConfigurationException("Tool or toolset not found: " + toolName);
+
+      } catch (Exception e) {
+        String errorMsg = "Failed to resolve tool or toolset: " + toolConfig.name();
+        logger.error(errorMsg, e);
+        throw new ConfigurationException(errorMsg, e);
+      }
+    }
+
+    return resolvedItems.build();
   }
 
   /**
@@ -1047,6 +1237,165 @@ public class LlmAgent extends BaseAgent {
     }
     logger.debug("Could not resolve tool instance: {}", toolName);
     return null;
+  }
+
+  /**
+   * Resolves a toolset instance by its unique name or its static field reference.
+   *
+   * <p>It first checks the {@link ComponentRegistry} for a registered toolset instance. If not
+   * found, it attempts to resolve the toolset via reflection if the name looks like a Java
+   * qualified name (e.g., "com.google.mytools.MyToolsetClass.INSTANCE").
+   *
+   * @param toolsetName The name of the toolset to resolve (could be simple name or full qualified
+   *     "com.google.mytools.MyToolsetClass.INSTANCE").
+   * @return The resolved toolset instance, or {@code null} if the toolset is not found in the
+   *     registry and cannot be resolved via reflection.
+   */
+  @Nullable
+  static BaseToolset resolveToolsetInstance(String toolsetName) {
+    ComponentRegistry registry = ComponentRegistry.getInstance();
+
+    // First try registry
+    Optional<BaseToolset> toolsetOpt = ComponentRegistry.resolveToolsetInstance(toolsetName);
+    if (toolsetOpt.isPresent()) {
+      return toolsetOpt.get();
+    }
+
+    // If not in registry and looks like Java qualified name, try reflection
+    if (isJavaQualifiedName(toolsetName)) {
+      try {
+        BaseToolset toolset = resolveToolsetInstanceViaReflection(toolsetName);
+        if (toolset != null) {
+          registry.register(toolsetName, toolset);
+          logger.debug("Resolved and registered toolset instance via reflection: {}", toolsetName);
+          return toolset;
+        }
+      } catch (Exception e) {
+        logger.debug("Failed to resolve toolset instance via reflection: {}", toolsetName, e);
+      }
+    }
+    logger.debug("Could not resolve toolset instance: {}", toolsetName);
+    return null;
+  }
+
+  /**
+   * Resolves a toolset from a class name and configuration arguments.
+   *
+   * <p>It attempts to resolve the toolset class using the ComponentRegistry, then instantiates it
+   * using the fromConfig method if available.
+   *
+   * @param className The name of the toolset class to instantiate.
+   * @param args Configuration arguments for toolset creation.
+   * @return The instantiated toolset instance, or {@code null} if the class cannot be found or is
+   *     not a toolset.
+   * @throws ConfigurationException if toolset instantiation fails.
+   */
+  @Nullable
+  static BaseToolset resolveToolsetFromClass(String className, ToolArgsConfig args)
+      throws ConfigurationException {
+    ComponentRegistry registry = ComponentRegistry.getInstance();
+
+    // First try registry for class
+    Optional<Class<? extends BaseToolset>> toolsetClassOpt =
+        ComponentRegistry.resolveToolsetClass(className);
+    Class<? extends BaseToolset> toolsetClass = null;
+
+    if (toolsetClassOpt.isPresent()) {
+      toolsetClass = toolsetClassOpt.get();
+    } else if (isJavaQualifiedName(className)) {
+      // Try reflection to get class
+      try {
+        Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
+        if (BaseToolset.class.isAssignableFrom(clazz)) {
+          toolsetClass = clazz.asSubclass(BaseToolset.class);
+          // Optimization: register for reuse
+          registry.register(className, toolsetClass);
+          logger.debug("Resolved and registered toolset class via reflection: {}", className);
+        }
+      } catch (ClassNotFoundException e) {
+        logger.debug("Failed to resolve toolset class via reflection: {}", className, e);
+        return null;
+      }
+    }
+
+    if (toolsetClass == null) {
+      logger.debug("Could not resolve toolset class: {}", className);
+      return null;
+    }
+
+    // First try to resolve as a toolset instance
+    BaseToolset toolsetInstance = resolveToolsetInstance(className);
+    if (toolsetInstance != null) {
+      logger.debug("Successfully resolved toolset instance: {}", className);
+      return toolsetInstance;
+    }
+
+    // Look for fromConfig method
+    try {
+      Method fromConfigMethod =
+          toolsetClass.getMethod("fromConfig", ToolConfig.class, String.class);
+      ToolConfig toolConfig = new ToolConfig(className, args);
+      Object instance = fromConfigMethod.invoke(null, toolConfig, "");
+      if (instance instanceof BaseToolset baseToolset) {
+        return baseToolset;
+      }
+    } catch (NoSuchMethodException e) {
+      logger.debug("Class {} does not have fromConfig method", className);
+      return null;
+    } catch (IllegalAccessException e) {
+      logger.error("Cannot access fromConfig method on toolset class {}", className, e);
+      throw new ConfigurationException(
+          "Access denied to fromConfig method on class " + className, e);
+    } catch (InvocationTargetException e) {
+      logger.error(
+          "Error during fromConfig method invocation on toolset class {}", className, e.getCause());
+      throw new ConfigurationException(
+          "Error during toolset creation from class " + className, e.getCause());
+    } catch (RuntimeException e) {
+      logger.error("Unexpected error calling fromConfig on toolset class {}", className, e);
+      throw new ConfigurationException(
+          "Unexpected error creating toolset from class " + className, e);
+    }
+
+    return null;
+  }
+
+  /**
+   * Resolves a toolset instance via reflection from a static field reference.
+   *
+   * @param toolsetName The toolset name in format "com.example.MyToolsetClass.INSTANCE".
+   * @return The resolved toolset instance, or {@code null} if not found or not a BaseToolset.
+   * @throws Exception if the class cannot be loaded or field access fails.
+   */
+  @Nullable
+  static BaseToolset resolveToolsetInstanceViaReflection(String toolsetName) throws Exception {
+    int lastDotIndex = toolsetName.lastIndexOf('.');
+    if (lastDotIndex == -1) {
+      return null;
+    }
+
+    String className = toolsetName.substring(0, lastDotIndex);
+    String fieldName = toolsetName.substring(lastDotIndex + 1);
+
+    Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
+
+    try {
+      Field field = clazz.getField(fieldName);
+      if (!Modifier.isStatic(field.getModifiers())) {
+        logger.debug("Field {} in class {} is not static", fieldName, className);
+        return null;
+      }
+      Object instance = field.get(null);
+      if (instance instanceof BaseToolset baseToolset) {
+        return baseToolset;
+      } else {
+        logger.debug("Field {} in class {} is not a BaseToolset instance", fieldName, className);
+        return null;
+      }
+    } catch (NoSuchFieldException e) {
+      logger.debug("Field {} not found in class {}", fieldName, className);
+      return null;
+    }
   }
 
   /**

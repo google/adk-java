@@ -30,6 +30,7 @@ import com.google.protobuf.Timestamp;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -206,6 +207,28 @@ public final class FunctionToolTest {
   }
 
   @Test
+  public void create_withParameterizedList() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "returnsParameterizedList");
+
+    assertThat(tool).isNotNull();
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.<String, Schema>builder()
+                        .put(
+                            "listParam",
+                            Schema.builder()
+                                .type("ARRAY")
+                                .items(Schema.builder().type("OBJECT").build())
+                                .build())
+                        .buildOrThrow())
+                .required(ImmutableList.of("listParam"))
+                .build());
+  }
+
+  @Test
   public void call_withAllSupportedParameterTypes() throws Exception {
     FunctionTool tool = FunctionTool.create(Functions.class, "returnAllSupportedParametersAsMap");
     ToolContext toolContext =
@@ -312,6 +335,19 @@ public final class FunctionToolTest {
     Map<String, Object> result = tool.runAsync(ImmutableMap.of("pojo", pojo), null).blockingGet();
 
     assertThat(result).containsExactly("field1", "abc", "field2", 123);
+  }
+
+  @Test
+  public void call_withParameterizedListParam() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "returnsParameterizedList");
+    ArrayList<Map<String, String>> listParam = new ArrayList<>();
+    listParam.add(ImmutableMap.of("key1", "value1"));
+    listParam.add(ImmutableMap.of("key2", "value2"));
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("listParam", listParam), null).blockingGet();
+
+    assertThat(result).containsExactly("listParam", listParam);
   }
 
   @Test
@@ -608,6 +644,11 @@ public final class FunctionToolTest {
           .put("mapParam", mapParam)
           .put("toolContext", toolContext.toString())
           .buildOrThrow();
+    }
+
+    public static ImmutableMap<String, Object> returnsParameterizedList(
+        List<Map<String, String>> listParam, ToolContext toolContext) {
+      return ImmutableMap.<String, Object>builder().put("listParam", listParam).buildOrThrow();
     }
 
     public static ImmutableMap<String, Object> pojoParamWithFields(PojoWithFields pojo) {
