@@ -48,13 +48,13 @@ import org.springframework.context.ConfigurableApplicationContext;
  * through ADK Web UI. The plugin dynamically loads user-defined agents and makes them available
  * through a browser interface.
  *
- * <h3>Basic Usage</h3>
+ * <h2>Basic Usage</h2>
  *
  * <pre>{@code
  * mvn google-adk:web -Dagents=com.example.MyAgentLoader
  * }</pre>
  *
- * <h3>Configuration Parameters</h3>
+ * <h2>Configuration Parameters</h2>
  *
  * <ul>
  *   <li><strong>agents</strong> (required) - Full class path to AgentLoader implementation
@@ -66,7 +66,7 @@ import org.springframework.context.ConfigurableApplicationContext;
  *       for injecting customized tools and agents
  * </ul>
  *
- * <h3>AgentLoader Implementation</h3>
+ * <h2>AgentLoader Implementation</h2>
  *
  * <p>The agents parameter should point to a class that implements {@link AgentLoader}. It can
  * reference either:
@@ -76,7 +76,7 @@ import org.springframework.context.ConfigurableApplicationContext;
  *   <li>A class with default constructor: {@code com.example.MyProvider}
  * </ul>
  *
- * <h3>Web Interface</h3>
+ * <h2>Web Interface</h2>
  *
  * <p>Once started, ADK Web UI is available at {@code http://host:port} where users can interact
  * with available agents.

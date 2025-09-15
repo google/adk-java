@@ -238,6 +238,27 @@ public final class ComponentRegistryTest {
   }
 
   @Test
+  public void testResolveToolClass_withComGoogleAdkToolsPrefix() {
+    // Register only with com.google.adk.tools prefix and ensure simple name resolves
+    ComponentRegistry.getInstance()
+        .register("com.google.adk.tools.TestTool", GoogleSearchTool.class);
+
+    Optional<Class<? extends BaseTool>> testToolClass =
+        ComponentRegistry.resolveToolClass("TestTool");
+    assertThat(testToolClass).isPresent();
+    assertThat(testToolClass.get()).isEqualTo(GoogleSearchTool.class);
+  }
+
+  @Test
+  public void testResolveAgentClass_withGoogleAdkAgentsPrefixForSimpleName() {
+    // Register only with google.adk.agents prefix and ensure simple name resolves
+    ComponentRegistry.getInstance().register("google.adk.agents.CustomAgent", LlmAgent.class);
+
+    Class<? extends BaseAgent> resolved = ComponentRegistry.resolveAgentClass("CustomAgent");
+    assertThat(resolved).isEqualTo(LlmAgent.class);
+  }
+
+  @Test
   public void testResolveToolsetClass_withGoogleAdkToolsPrefix() {
     ComponentRegistry registry = ComponentRegistry.getInstance();
     registry.register("google.adk.tools.TestToolset", McpToolset.class);
@@ -443,7 +464,6 @@ public final class ComponentRegistryTest {
 
     Optional<BaseTool> exitLoopTool = ComponentRegistry.resolveToolInstance("exit_loop");
     assertThat(exitLoopTool).isPresent();
-    BaseTool unused = exitLoopTool.get();
 
     Optional<BaseTool> nonExistentTool = ComponentRegistry.resolveToolInstance("non_existent_tool");
     assertThat(nonExistentTool).isEmpty();
@@ -465,5 +485,48 @@ public final class ComponentRegistryTest {
   @Test
   public void testSetInstance_nullThrowsException() {
     assertThrows(IllegalArgumentException.class, () -> ComponentRegistry.setInstance(null));
+  }
+
+  @Test
+  public void testResolveToolClass_comGooglePrefixFallback_requiredForSimpleName() {
+
+    ComponentRegistry testRegistry = new ComponentRegistry();
+    ComponentRegistry originalRegistry = ComponentRegistry.getInstance();
+    try {
+      ComponentRegistry.setInstance(testRegistry);
+
+      testRegistry.register("com.google.adk.tools.MutationCatcherTool", GoogleSearchTool.class);
+
+      assertThat(testRegistry.get("MutationCatcherTool", Class.class)).isEmpty();
+
+      Optional<Class<? extends BaseTool>> resolved =
+          ComponentRegistry.resolveToolClass("MutationCatcherTool");
+      assertThat(resolved).isPresent(); // Will fail if mutation removes the prefix check
+      assertThat(resolved.get()).isEqualTo(GoogleSearchTool.class);
+    } finally {
+      ComponentRegistry.setInstance(originalRegistry);
+    }
+  }
+
+  @Test
+  public void testResolveAgentClass_rejectsNonAgentClassAndRequiresPrefixFallback() {
+
+    ComponentRegistry testRegistry = new ComponentRegistry();
+    ComponentRegistry originalRegistry = ComponentRegistry.getInstance();
+    try {
+      ComponentRegistry.setInstance(testRegistry);
+
+      testRegistry.register("NotAnAgent", String.class);
+      assertThrows(
+          IllegalArgumentException.class, () -> ComponentRegistry.resolveAgentClass("NotAnAgent"));
+
+      testRegistry.register("com.google.adk.agents.PrefixOnlyAgent", LlmAgent.class);
+      assertThat(testRegistry.get("PrefixOnlyAgent", Class.class)).isEmpty();
+
+      Class<? extends BaseAgent> resolved = ComponentRegistry.resolveAgentClass("PrefixOnlyAgent");
+      assertThat(resolved).isEqualTo(LlmAgent.class);
+    } finally {
+      ComponentRegistry.setInstance(originalRegistry);
+    }
   }
 }

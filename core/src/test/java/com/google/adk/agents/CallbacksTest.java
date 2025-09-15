@@ -397,6 +397,27 @@ public final class CallbacksTest {
   }
 
   @Test
+  public void testRun_withBeforeModelCallback_usesModifiedRequestFromCallback() {
+    TestLlm testLlm = createTestLlm(createLlmResponse(Content.builder().build()));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .beforeModelCallback(
+                (context, requestBuilder) -> {
+                  requestBuilder.contents(
+                      ImmutableList.of(Content.fromParts(Part.fromText("Modified request"))));
+                  return Maybe.empty();
+                })
+            .build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> unused = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(testLlm.getRequests()).hasSize(1);
+    assertThat(testLlm.getRequests().get(0).contents())
+        .containsExactly(Content.fromParts(Part.fromText("Modified request")));
+  }
+
+  @Test
   public void testRun_withAfterModelCallback_returnsResponseFromCallback() {
     Part textPartFromModel = Part.fromText("Real LLM response");
     Part textPartFromCallback = Part.fromText("Callback response");

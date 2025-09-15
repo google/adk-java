@@ -16,9 +16,8 @@
 
 package com.google.adk.tools.mcp;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
@@ -199,17 +198,18 @@ public class McpToolset implements BaseToolset {
 
   @Override
   public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
-    return Flowable.fromCallable(
+    return Flowable.defer(
             () -> {
-              for (int i = 0; i < MAX_RETRIES; i++) {
-                try {
-                  if (this.mcpSession == null) {
-                    logger.info("MCP session is null or closed, initializing (attempt {}).", i + 1);
-                    this.mcpSession = this.mcpSessionManager.createSession();
-                  }
+              if (this.mcpSession == null) {
+                logger.info("MCP session is null, initializing.");
+                this.mcpSession = this.mcpSessionManager.createSession();
+              }
 
-                  ListToolsResult toolsResponse = this.mcpSession.listTools();
-                  return toolsResponse.tools().stream()
+              // Retrieve tools from the MCP session, wrap them in McpTool, filter them, and return
+              // as a Flowable.
+              ListToolsResult toolsResponse = this.mcpSession.listTools();
+              return Flowable.fromStream(
+                  toolsResponse.tools().stream()
                       .map(
                           tool ->
                               new McpTool(
@@ -217,55 +217,53 @@ public class McpToolset implements BaseToolset {
                       .filter(
                           tool ->
                               isToolSelected(
-                                  tool, toolFilter, Optional.ofNullable(readonlyContext)))
-                      .collect(toImmutableList());
-                } catch (IllegalArgumentException e) {
-                  // This could happen if parameters for tool loading are somehow invalid.
-                  // This is likely a fatal error and should not be retried.
-                  logger.error("Invalid argument encountered during tool loading.", e);
-                  throw new McpToolsetException.McpToolLoadingException(
-                      "Invalid argument encountered during tool loading.", e);
-                } catch (RuntimeException e) { // Catch any other unexpected runtime exceptions
-                  logger.error("Unexpected error during tool loading, retry attempt " + (i + 1), e);
-                  if (i < MAX_RETRIES - 1) {
-                    // For other general exceptions, we might still want to retry if they are
-                    // potentially transient, or if we don't have more specific handling. But it's
-                    // better to be specific. For now, we'll treat them as potentially retryable but
-                    // log
-                    // them at a higher level.
-                    try {
-                      logger.info(
-                          "Reinitializing MCP session before next retry for unexpected error.");
-                      this.mcpSession = this.mcpSessionManager.createSession();
-                      Thread.sleep(RETRY_DELAY_MILLIS);
-                    } catch (InterruptedException ie) {
-                      Thread.currentThread().interrupt();
-                      logger.error(
-                          "Interrupted during retry delay for loadTools (unexpected error).", ie);
-                      throw new McpToolsetException.McpToolLoadingException(
-                          "Interrupted during retry delay (unexpected error)", ie);
-                    } catch (RuntimeException reinitE) {
-                      logger.error(
-                          "Failed to reinitialize session during retry (unexpected error).",
-                          reinitE);
-                      throw new McpToolsetException.McpInitializationException(
-                          "Failed to reinitialize session during tool loading retry (unexpected"
-                              + " error).",
-                          reinitE);
-                    }
-                  } else {
-                    logger.error(
-                        "Failed to load tools after multiple retries due to unexpected error.", e);
-                    throw new McpToolsetException.McpToolLoadingException(
-                        "Failed to load tools after multiple retries due to unexpected error.", e);
-                  }
-                }
-              }
-              // This line should ideally not be reached if retries are handled correctly or an
-              // exception is always thrown.
-              throw new IllegalStateException("Unexpected state in getTools retry loop");
+                                  tool, toolFilter, Optional.ofNullable(readonlyContext))));
             })
-        .flatMapIterable(tools -> tools);
+        .retryWhen(
+            errorObservable ->
+                errorObservable.zipWith(
+                    Flowable.range(1, MAX_RETRIES),
+                    (error, retryCount) -> {
+                      if (error instanceof IllegalArgumentException) {
+                        // This could happen if parameters for tool loading are somehow invalid.
+                        // This is likely a fatal error and should not be retried.
+                        logger.error("Invalid argument encountered during tool loading.", error);
+                        throw new McpToolsetException.McpToolLoadingException(
+                            "Invalid argument encountered during tool loading.", error);
+                      } else if (error instanceof RuntimeException) {
+                        // Catch any other unexpected runtime exceptions
+                        logger.error(
+                            "Unexpected error during tool loading, retry attempt " + retryCount,
+                            error);
+                        logger.info(
+                            "Reinitializing MCP session before next retry for unexpected error.");
+                        this.mcpSession = null;
+
+                        if (retryCount < MAX_RETRIES) {
+                          // For other general exceptions, we might still want to retry if they are
+                          // potentially transient, or if we don't have more specific handling. But
+                          // it's better to be specific. For now, we'll treat them as potentially
+                          // retryable but log them at a higher level.
+
+                          // Delay before retrying
+                          return Flowable.timer(RETRY_DELAY_MILLIS, MILLISECONDS);
+                        } else {
+                          logger.error(
+                              "Failed to load tools after multiple retries due to unexpected"
+                                  + " error.",
+                              error);
+                          throw new McpToolsetException.McpToolLoadingException(
+                              "Failed to load tools after multiple retries due to unexpected"
+                                  + " error.",
+                              error);
+                        }
+                      }
+                      // This line should ideally not be reached if retries are handled correctly or
+                      // an exception is always thrown.
+                      // If an unhandled error type occurs, propagate it.
+                      return Flowable.error(error);
+                    }))
+        .map(tools -> tools);
   }
 
   @Override
@@ -287,13 +285,10 @@ public class McpToolset implements BaseToolset {
 
   /** Configuration class for MCPToolset. */
   public static class McpToolsetConfig extends JsonBaseModel {
-    @JsonProperty("stdio_server_params")
     private StdioServerParameters stdioServerParams;
 
-    @JsonProperty("sse_server_params")
     private SseServerParameters sseServerParams;
 
-    @JsonProperty("tool_filter")
     private List<String> toolFilter;
 
     public StdioServerParameters stdioServerParams() {
@@ -345,7 +340,7 @@ public class McpToolset implements BaseToolset {
       if ((mcpToolsetConfig.stdioServerParams() != null)
           == (mcpToolsetConfig.sseServerParams() != null)) {
         throw new ConfigurationException(
-            "Exactly one of stdio_server_params or sse_server_params must be set for McpToolset");
+            "Exactly one of stdioServerParams or sseServerParams must be set for McpToolset");
       }
 
       // Convert tool filter to Optional<Object>

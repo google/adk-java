@@ -20,6 +20,7 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.ParallelAgent;
@@ -153,7 +154,7 @@ public class ComponentRegistry {
    * @throws IllegalArgumentException if name is null or empty, or if value is null
    */
   public void register(String name, Object value) {
-    if (name == null || name.trim().isEmpty()) {
+    if (isNullOrEmpty(name) || name.trim().isEmpty()) {
       throw new IllegalArgumentException("Name cannot be null or empty");
     }
     if (value == null) {
@@ -241,6 +242,33 @@ public class ComponentRegistry {
   }
 
   /**
+   * Resolves an agent instance from the registry.
+   *
+   * <p>This method looks up an agent in the ComponentRegistry by the given key. The registry should
+   * have been pre-populated with all available agents during initialization.
+   *
+   * <p>The key can be any string that was used to register the agent, such as:
+   *
+   * <ul>
+   *   <li>A class name: "com.example.LifeAgent"
+   *   <li>A static field reference: "com.example.LifeAgent.INSTANCE"
+   *   <li>A simple name: "life_agent"
+   *   <li>Any custom key: "sub_agents_config.life_agent.agent"
+   * </ul>
+   *
+   * @param name the registry key to look up
+   * @return an Optional containing the BaseAgent if found, or empty if not found
+   */
+  public static Optional<BaseAgent> resolveAgentInstance(String name) {
+    if (isNullOrEmpty(name)) {
+      return Optional.empty();
+    }
+
+    ComponentRegistry registry = getInstance();
+    return registry.get(name, BaseAgent.class);
+  }
+
+  /**
    * Resolves the agent class based on the agent class name from the configuration.
    *
    * @param agentClassName the name of the agent class from the config
@@ -271,6 +299,12 @@ public class ComponentRegistry {
 
       // If not found, try with com.google.adk.agents prefix
       agentClass = registry.get("com.google.adk.agents." + agentClassName, Class.class);
+      if (agentClass.isPresent() && BaseAgent.class.isAssignableFrom(agentClass.get())) {
+        return (Class<? extends BaseAgent>) agentClass.get();
+      }
+
+      // For Python compatibility, also try with google.adk.agents prefix
+      agentClass = registry.get("google.adk.agents." + agentClassName, Class.class);
       if (agentClass.isPresent() && BaseAgent.class.isAssignableFrom(agentClass.get())) {
         return (Class<? extends BaseAgent>) agentClass.get();
       }
@@ -322,14 +356,11 @@ public class ComponentRegistry {
       // If name contains '.', use it directly
       return registry.get(name, BaseTool.class);
     } else {
-      // First try the simple name
-      Optional<BaseTool> toolInstance = registry.get(name, BaseTool.class);
-      if (toolInstance.isPresent()) {
-        return toolInstance;
-      }
-
-      // If not found, try with google.adk.tools prefix
-      return registry.get("google.adk.tools." + name, BaseTool.class);
+      // Try simple name, then common prefixes (com/google)
+      return registry
+          .get(name, BaseTool.class)
+          .or(() -> registry.get("com.google.adk.tools." + name, BaseTool.class))
+          .or(() -> registry.get("google.adk.tools." + name, BaseTool.class));
     }
   }
 
@@ -360,7 +391,12 @@ public class ComponentRegistry {
         return Optional.of((Class<? extends BaseTool>) toolClass.get());
       }
 
-      // If not found, try with google.adk.tools prefix
+      // If not found, try with common prefixes (com/google)
+      toolClass = registry.get("com.google.adk.tools." + toolClassName, Class.class);
+      if (toolClass.isPresent() && BaseTool.class.isAssignableFrom(toolClass.get())) {
+        return Optional.of((Class<? extends BaseTool>) toolClass.get());
+      }
+
       toolClass = registry.get("google.adk.tools." + toolClassName, Class.class);
       if (toolClass.isPresent() && BaseTool.class.isAssignableFrom(toolClass.get())) {
         return Optional.of((Class<? extends BaseTool>) toolClass.get());
@@ -425,5 +461,37 @@ public class ComponentRegistry {
     return registry.keySet().stream()
         .filter(name -> name.startsWith(prefix))
         .collect(toImmutableSet());
+  }
+
+  public static Optional<Callbacks.BeforeAgentCallback> resolveBeforeAgentCallback(String name) {
+    return resolveCallback(name, Callbacks.BeforeAgentCallback.class);
+  }
+
+  public static Optional<Callbacks.AfterAgentCallback> resolveAfterAgentCallback(String name) {
+    return resolveCallback(name, Callbacks.AfterAgentCallback.class);
+  }
+
+  public static Optional<Callbacks.BeforeModelCallback> resolveBeforeModelCallback(String name) {
+    return resolveCallback(name, Callbacks.BeforeModelCallback.class);
+  }
+
+  public static Optional<Callbacks.AfterModelCallback> resolveAfterModelCallback(String name) {
+    return resolveCallback(name, Callbacks.AfterModelCallback.class);
+  }
+
+  public static Optional<Callbacks.BeforeToolCallback> resolveBeforeToolCallback(String name) {
+    return resolveCallback(name, Callbacks.BeforeToolCallback.class);
+  }
+
+  public static Optional<Callbacks.AfterToolCallback> resolveAfterToolCallback(String name) {
+    return resolveCallback(name, Callbacks.AfterToolCallback.class);
+  }
+
+  private static <T> Optional<T> resolveCallback(String name, Class<T> type) {
+    if (isNullOrEmpty(name)) {
+      return Optional.empty();
+    }
+    ComponentRegistry registry = getInstance();
+    return registry.get(name, type);
   }
 }

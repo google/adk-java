@@ -17,7 +17,6 @@
 package com.google.adk.tools.mcp;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.google.auto.value.AutoValue;
@@ -34,17 +33,14 @@ import javax.annotation.Nullable;
 public abstract class StdioServerParameters {
 
   /** The command to execute for the stdio server. */
-  @JsonProperty("command")
   public abstract String command();
 
   /** Optional arguments for the command. */
   @Nullable
-  @JsonProperty("args")
   public abstract ImmutableList<String> args();
 
   /** Optional environment variables. */
   @Nullable
-  @JsonProperty("env")
   public abstract ImmutableMap<String, String> env();
 
   /** Creates a new builder for {@link StdioServerParameters}. */

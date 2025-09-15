@@ -36,10 +36,10 @@ public final class Callbacks {
      * Async callback before LLM invocation.
      *
      * @param callbackContext Callback context.
-     * @param llmRequest LLM request.
+     * @param llmRequestBuilder LLM request builder.
      * @return response override, or empty to continue.
      */
-    Maybe<LlmResponse> call(CallbackContext callbackContext, LlmRequest llmRequest);
+    Maybe<LlmResponse> call(CallbackContext callbackContext, LlmRequest.Builder llmRequestBuilder);
   }
 
   /**
@@ -48,7 +48,8 @@ public final class Callbacks {
    */
   @FunctionalInterface
   public interface BeforeModelCallbackSync extends BeforeModelCallbackBase {
-    Optional<LlmResponse> call(CallbackContext callbackContext, LlmRequest llmRequest);
+    Optional<LlmResponse> call(
+        CallbackContext callbackContext, LlmRequest.Builder llmRequestBuilder);
   }
 
   interface AfterModelCallbackBase {}

@@ -17,19 +17,14 @@
 package com.google.adk.models;
 
 import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.adk.Version;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.Client;
 import com.google.genai.ResponseStream;
-import com.google.genai.types.Blob;
 import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
-import com.google.genai.types.FileData;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GenerateContentResponse;
@@ -42,7 +37,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,10 +63,6 @@ public class Gemini extends BaseLlm {
   }
 
   private final Client apiClient;
-
-  private static final String CONTINUE_OUTPUT_MESSAGE =
-      "Continue output. DO NOT look at this line. ONLY look at the content before this line and"
-          + " system instruction.";
 
   /**
    * Constructs a new Gemini instance.
@@ -215,95 +205,20 @@ public class Gemini extends BaseLlm {
     }
   }
 
-  /**
-   * Sanitizes the request to ensure it is compatible with the configured API backend. Required as
-   * there are some parameters that if included in the request will raise a runtime error if sent to
-   * the wrong backend (e.g. image names when the backend isn't Vertex AI).
-   *
-   * @param llmRequest The request to sanitize.
-   * @return The sanitized request.
-   */
-  private LlmRequest sanitizeRequest(LlmRequest llmRequest) {
-    if (apiClient.vertexAI()) {
-      return llmRequest;
-    }
-    LlmRequest.Builder requestBuilder = llmRequest.toBuilder();
-
-    // Using API key from Google AI Studio to call model doesn't support labels.
-    llmRequest
-        .config()
-        .ifPresent(
-            config -> {
-              if (config.labels().isPresent()) {
-                requestBuilder.config(config.toBuilder().labels(null).build());
-              }
-            });
-
-    if (llmRequest.contents().isEmpty()) {
-      return requestBuilder.build();
-    }
-
-    // This backend does not support the display_name parameter for file uploads,
-    // so it must be removed to prevent request failures.
-    ImmutableList<Content> updatedContents =
-        llmRequest.contents().stream()
-            .map(
-                content -> {
-                  if (content.parts().isEmpty() || content.parts().get().isEmpty()) {
-                    return content;
-                  }
-
-                  ImmutableList<Part> updatedParts =
-                      content.parts().get().stream()
-                          .map(
-                              part -> {
-                                Part.Builder partBuilder = part.toBuilder();
-                                if (part.inlineData().flatMap(Blob::displayName).isPresent()) {
-                                  Blob blob = part.inlineData().get();
-                                  Blob.Builder newBlobBuilder = Blob.builder();
-                                  blob.data().ifPresent(newBlobBuilder::data);
-                                  blob.mimeType().ifPresent(newBlobBuilder::mimeType);
-                                  partBuilder.inlineData(newBlobBuilder.build());
-                                }
-                                if (part.fileData().flatMap(FileData::displayName).isPresent()) {
-                                  FileData fileData = part.fileData().get();
-                                  FileData.Builder newFileDataBuilder = FileData.builder();
-                                  fileData.fileUri().ifPresent(newFileDataBuilder::fileUri);
-                                  fileData.mimeType().ifPresent(newFileDataBuilder::mimeType);
-                                  partBuilder.fileData(newFileDataBuilder.build());
-                                }
-                                return partBuilder.build();
-                              })
-                          .collect(toImmutableList());
-
-                  return content.toBuilder().parts(updatedParts).build();
-                })
-            .collect(toImmutableList());
-    return requestBuilder.contents(updatedContents).build();
-  }
-
   @Override
   public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-    llmRequest = sanitizeRequest(llmRequest);
-    List<Content> contents = llmRequest.contents();
-    // Last content must be from the user, otherwise the model won't respond.
-    if (contents.isEmpty() || !Iterables.getLast(contents).role().orElse("").equals("user")) {
-      Content userContent = Content.fromParts(Part.fromText(CONTINUE_OUTPUT_MESSAGE));
-      contents =
-          Stream.concat(contents.stream(), Stream.of(userContent)).collect(toImmutableList());
-    }
-
-    List<Content> finalContents = stripThoughts(contents);
+    llmRequest = GeminiUtil.prepareGenenerateContentRequest(llmRequest, !apiClient.vertexAI());
     GenerateContentConfig config = llmRequest.config().orElse(null);
     String effectiveModelName = llmRequest.model().orElse(model());
 
-    logger.trace("Request Contents: {}", finalContents);
+    logger.trace("Request Contents: {}", llmRequest.contents());
     logger.trace("Request Config: {}", config);
 
     if (stream) {
       logger.debug("Sending streaming generateContent request to model {}", effectiveModelName);
       CompletableFuture<ResponseStream<GenerateContentResponse>> streamFuture =
-          apiClient.async.models.generateContentStream(effectiveModelName, finalContents, config);
+          apiClient.async.models.generateContentStream(
+              effectiveModelName, llmRequest.contents(), config);
 
       return Flowable.defer(
           () -> {
@@ -320,7 +235,8 @@ public class Gemini extends BaseLlm {
 
                       List<LlmResponse> responsesToEmit = new ArrayList<>();
                       LlmResponse currentProcessedLlmResponse = LlmResponse.create(rawResponse);
-                      String currentTextChunk = getTextFromLlmResponse(currentProcessedLlmResponse);
+                      String currentTextChunk =
+                          GeminiUtil.getTextFromLlmResponse(currentProcessedLlmResponse);
 
                       if (!currentTextChunk.isEmpty()) {
                         accumulatedText.append(currentTextChunk);
@@ -329,17 +245,13 @@ public class Gemini extends BaseLlm {
                         responsesToEmit.add(partialResponse);
                       } else {
                         if (accumulatedText.length() > 0
-                            && shouldEmitAccumulatedText(currentProcessedLlmResponse)) {
+                            && GeminiUtil.shouldEmitAccumulatedText(currentProcessedLlmResponse)) {
                           LlmResponse aggregatedTextResponse =
                               LlmResponse.builder()
                                   .content(
                                       Content.builder()
                                           .role("model")
-                                          .parts(
-                                              ImmutableList.of(
-                                                  Part.builder()
-                                                      .text(accumulatedText.toString())
-                                                      .build()))
+                                          .parts(Part.fromText(accumulatedText.toString()))
                                           .build())
                                   .build();
                           responsesToEmit.add(aggregatedTextResponse);
@@ -376,11 +288,7 @@ public class Gemini extends BaseLlm {
                                       .content(
                                           Content.builder()
                                               .role("model")
-                                              .parts(
-                                                  ImmutableList.of(
-                                                      Part.builder()
-                                                          .text(accumulatedText.toString())
-                                                          .build()))
+                                              .parts(Part.fromText(accumulatedText.toString()))
                                               .build())
                                       .build();
                               return Flowable.just(finalAggregatedTextResponse);
@@ -395,60 +303,16 @@ public class Gemini extends BaseLlm {
           apiClient
               .async
               .models
-              .generateContent(effectiveModelName, finalContents, config)
+              .generateContent(effectiveModelName, llmRequest.contents(), config)
               .thenApplyAsync(LlmResponse::create));
     }
   }
 
-  /**
-   * Extracts text content from the first part of an LlmResponse, if available.
-   *
-   * @param llmResponse The LlmResponse to extract text from.
-   * @return The text content, or an empty string if not found.
-   */
-  private String getTextFromLlmResponse(LlmResponse llmResponse) {
-    return llmResponse
-        .content()
-        .flatMap(Content::parts)
-        .filter(parts -> !parts.isEmpty())
-        .map(parts -> parts.get(0))
-        .flatMap(Part::text)
-        .orElse("");
-  }
-
-  /**
-   * Determines if accumulated text should be emitted based on the current LlmResponse. We flush if
-   * current response is not a text continuation (e.g., no content, no parts, or the first part is
-   * not inline_data, meaning it's something else or just empty, thereby warranting a flush of
-   * preceding text).
-   *
-   * @param currentLlmResponse The current LlmResponse being processed.
-   * @return True if accumulated text should be emitted, false otherwise.
-   */
-  private boolean shouldEmitAccumulatedText(LlmResponse currentLlmResponse) {
-    Optional<Content> contentOpt = currentLlmResponse.content();
-    if (contentOpt.isEmpty()) {
-      return true;
-    }
-
-    Optional<List<Part>> partsOpt = contentOpt.get().parts();
-    if (partsOpt.isEmpty() || partsOpt.get().isEmpty()) {
-      return true;
-    }
-
-    // If content and parts are present, and parts list is not empty, we want to yield accumulated
-    // text only if `text` is present AND (`not llm_response.content` OR `not
-    // llm_response.content.parts` OR `not llm_response.content.parts[0].inline_data`)
-    // This means we flush if the first part does NOT have inline_data.
-    // If it *has* inline_data, the condition below is false,
-    // and we would not flush based on this specific sub-condition.
-    Part firstPart = partsOpt.get().get(0);
-    return firstPart.inlineData().isEmpty();
-  }
-
   @Override
   public BaseLlmConnection connect(LlmRequest llmRequest) {
-    llmRequest = sanitizeRequest(llmRequest);
+    if (!apiClient.vertexAI()) {
+      llmRequest = GeminiUtil.sanitizeRequestForGeminiApi(llmRequest);
+    }
     logger.debug("Establishing Gemini connection.");
     LiveConnectConfig liveConnectConfig = llmRequest.liveConnectConfig();
     String effectiveModelName = llmRequest.model().orElse(model());
@@ -457,19 +321,5 @@ public class Gemini extends BaseLlm {
     logger.trace("Connection Config: {}", liveConnectConfig);
 
     return new GeminiLlmConnection(apiClient, effectiveModelName, liveConnectConfig);
-  }
-
-  /** Removes any `Part` that contains only a `thought` from the content list. */
-  private List<Content> stripThoughts(List<Content> originalContents) {
-    List<Content> updatedContents = new ArrayList<>();
-    for (Content content : originalContents) {
-      ImmutableList<Part> nonThoughtParts =
-          content.parts().orElse(ImmutableList.of()).stream()
-              // Keep if thought is not present OR if thought is present but false
-              .filter(part -> part.thought().map(isThought -> !isThought).orElse(true))
-              .collect(toImmutableList());
-      updatedContents.add(content.toBuilder().parts(nonThoughtParts).build());
-    }
-    return updatedContents;
   }
 }
