@@ -45,7 +45,7 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
           // HttpClientStreamableHttpTransport uses connectTimeout for general HTTP ops
           // and sseReadTimeout for the SSE stream part.
           .asyncHttpRequestCustomizer(
-              (builder, method, uri, body, context) -> {
+              (builder, method, uri, body) -> {
                 streamableParams.headers().forEach((key, value) -> builder.header(key, value));
                 return Mono.just(builder);
               })
