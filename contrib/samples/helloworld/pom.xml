@@ -19,7 +19,7 @@
 
     <groupId>com.google.adk.samples</groupId>
     <artifactId>google-adk-sample-helloworld</artifactId>
-    <version>0.2.1-SNAPSHOT</version>
+    <version>0.3.0</version>
     <name>Google ADK - Sample - Hello World</name>
     <description>
         A sample "Hello World" application demonstrating basic agent and tool usage with the Google ADK,
