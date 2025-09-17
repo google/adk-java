@@ -12,14 +12,12 @@
  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  See the License for the specific language governing permissions and
  limitations under the License. -->
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk-parent</artifactId>
-  <version>0.2.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+  <version>0.3.0</version><!-- {x-version-update:google-adk:current} -->
   <packaging>pom</packaging>
 
   <name>Google Agent Development Kit Maven Parent POM</name>
@@ -313,8 +311,7 @@
           </dependencies>
           <configuration>
             <reportFormat>plain</reportFormat>
-            <statelessTestsetInfoReporter
-              implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter" />
+            <statelessTestsetInfoReporter implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter"/>
             <includes>
               <include>**/*Test.java</include>
             </includes>
