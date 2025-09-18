@@ -82,7 +82,6 @@ import org.springframework.context.ConfigurableApplicationContext;
  * with available agents.
  *
  * @author Google ADK Team
- * @since 0.2.1
  */
 @Mojo(name = "web", requiresDependencyResolution = ResolutionScope.RUNTIME)
 @Execute(phase = LifecyclePhase.COMPILE)

@@ -26,6 +26,8 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.memory.BaseMemoryService;
+import com.google.adk.plugins.BasePlugin;
+import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.tools.BaseTool;
@@ -40,6 +42,7 @@ import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.context.Scope;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
@@ -57,6 +60,7 @@ public class Runner {
   private final BaseArtifactService artifactService;
   private final BaseSessionService sessionService;
   private final @Nullable BaseMemoryService memoryService;
+  private final PluginManager pluginManager;
 
   /** Creates a new {@code Runner}. */
   public Runner(
@@ -65,11 +69,23 @@ public class Runner {
       BaseArtifactService artifactService,
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService) {
+    this(agent, appName, artifactService, sessionService, memoryService, ImmutableList.of());
+  }
+
+  /** Creates a new {@code Runner} with a list of plugins. */
+  public Runner(
+      BaseAgent agent,
+      String appName,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService,
+      @Nullable BaseMemoryService memoryService,
+      List<BasePlugin> plugins) {
     this.agent = agent;
     this.appName = appName;
     this.artifactService = artifactService;
     this.sessionService = sessionService;
     this.memoryService = memoryService;
+    this.pluginManager = new PluginManager(plugins);
   }
 
   /**
@@ -106,6 +122,10 @@ public class Runner {
 
   public @Nullable BaseMemoryService memoryService() {
     return this.memoryService;
+  }
+
+  public PluginManager pluginManager() {
+    return this.pluginManager;
   }
 
   /**
@@ -206,36 +226,68 @@ public class Runner {
   public Flowable<Event> runAsync(Session session, Content newMessage, RunConfig runConfig) {
     Span span = Telemetry.getTracer().spanBuilder("invocation").startSpan();
     try (Scope scope = span.makeCurrent()) {
-      return Flowable.just(session)
-          .flatMap(
-              sess -> {
-                BaseAgent rootAgent = this.agent;
-                InvocationContext invocationContext =
-                    newInvocationContext(
-                        sess,
-                        Optional.of(newMessage),
-                        /* liveRequestQueue= */ Optional.empty(),
-                        runConfig);
+      BaseAgent rootAgent = this.agent;
+      InvocationContext context =
+          newInvocationContext(
+              session,
+              Optional.of(newMessage),
+              /* liveRequestQueue= */ Optional.empty(),
+              runConfig);
 
-                Single<Event> singleEvent =
-                    (newMessage != null)
-                        ? appendNewMessageToSession(
-                            sess,
-                            newMessage,
-                            invocationContext,
-                            runConfig.saveInputBlobsAsArtifacts())
-                        : Single.just(null);
-                return singleEvent.flatMapPublisher(
-                    ignored -> {
-                      invocationContext.agent(this.findAgentToRun(sess, rootAgent));
-                      return invocationContext
-                          .agent()
-                          .runAsync(invocationContext)
-                          .flatMap(
-                              agentEvent ->
-                                  this.sessionService.appendEvent(sess, agentEvent).toFlowable());
-                    });
-              })
+      Maybe<Event> beforeRunEvent =
+          this.pluginManager
+              .runBeforeRunCallback(context)
+              .map(
+                  content ->
+                      Event.builder()
+                          .id(Event.generateEventId())
+                          .invocationId(context.invocationId())
+                          .author("model")
+                          .content(Optional.of(content))
+                          .build());
+
+      Flowable<Event> agentEvents =
+          Flowable.defer(
+              () ->
+                  this.pluginManager
+                      .runOnUserMessageCallback(context, newMessage)
+                      .switchIfEmpty(Single.just(newMessage))
+                      .flatMap(
+                          content ->
+                              (content != null)
+                                  ? appendNewMessageToSession(
+                                      session,
+                                      content,
+                                      context,
+                                      runConfig.saveInputBlobsAsArtifacts())
+                                  : Single.just(null))
+                      .flatMapPublisher(
+                          event -> {
+                            InvocationContext contextWithNewMessage =
+                                newInvocationContext(
+                                    session, event.content(), Optional.empty(), runConfig);
+                            contextWithNewMessage.agent(this.findAgentToRun(session, rootAgent));
+                            return contextWithNewMessage
+                                .agent()
+                                .runAsync(contextWithNewMessage)
+                                .flatMap(
+                                    agentEvent ->
+                                        this.sessionService
+                                            .appendEvent(session, agentEvent)
+                                            .flatMap(
+                                                registeredEvent ->
+                                                    contextWithNewMessage
+                                                        .pluginManager()
+                                                        .runOnEventCallback(
+                                                            contextWithNewMessage, registeredEvent)
+                                                        .defaultIfEmpty(registeredEvent))
+                                            .toFlowable());
+                          }));
+
+      return beforeRunEvent
+          .toFlowable()
+          .switchIfEmpty(agentEvents)
+          .concatWith(Completable.defer(() -> pluginManager.runAfterRunCallback(context)))
           .doOnError(
               throwable -> {
                 span.setStatus(StatusCode.ERROR, "Error in runAsync Flowable execution");
@@ -293,6 +345,7 @@ public class Runner {
             this.sessionService,
             this.artifactService,
             this.memoryService,
+            this.pluginManager,
             liveRequestQueue,
             /* branch= */ Optional.empty(),
             InvocationContext.newInvocationContextId(),

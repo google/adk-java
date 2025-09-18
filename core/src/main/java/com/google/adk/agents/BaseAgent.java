@@ -22,6 +22,7 @@ import com.google.adk.Telemetry;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.events.Event;
+import com.google.adk.plugins.PluginManager;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.DoNotCall;
 import com.google.genai.types.Content;
@@ -34,6 +35,7 @@ import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 
 /** Base class for all agents. */
@@ -208,11 +210,11 @@ public abstract class BaseAgent {
             InvocationContext invocationContext = createInvocationContext(parentContext);
 
             Flowable<Event> executionFlowable =
-                beforeAgentCallback
-                    .map(
-                        callback ->
-                            callCallback(beforeCallbacksToFunctions(callback), invocationContext))
-                    .orElse(Single.just(Optional.empty()))
+                callCallback(
+                        beforeCallbacksToFunctions(
+                            invocationContext.pluginManager(),
+                            beforeAgentCallback.orElse(ImmutableList.of())),
+                        invocationContext)
                     .flatMapPublisher(
                         beforeEventOpt -> {
                           if (invocationContext.endInvocation()) {
@@ -223,16 +225,14 @@ public abstract class BaseAgent {
                           Flowable<Event> mainEvents =
                               Flowable.defer(() -> runAsyncImpl(invocationContext));
                           Flowable<Event> afterEvents =
-                              afterAgentCallback
-                                  .map(
-                                      callback ->
-                                          Flowable.defer(
-                                              () ->
-                                                  callCallback(
-                                                          afterCallbacksToFunctions(callback),
-                                                          invocationContext)
-                                                      .flatMapPublisher(Flowable::fromOptional)))
-                                  .orElse(Flowable.empty());
+                              Flowable.defer(
+                                  () ->
+                                      callCallback(
+                                              afterCallbacksToFunctions(
+                                                  invocationContext.pluginManager(),
+                                                  afterAgentCallback.orElse(ImmutableList.of())),
+                                              invocationContext)
+                                          .flatMapPublisher(Flowable::fromOptional));
 
                           return Flowable.concat(beforeEvents, mainEvents, afterEvents);
                         });
@@ -248,9 +248,11 @@ public abstract class BaseAgent {
    * @return callback functions.
    */
   private ImmutableList<Function<CallbackContext, Maybe<Content>>> beforeCallbacksToFunctions(
-      List<BeforeAgentCallback> callbacks) {
-    return callbacks.stream()
-        .map(callback -> (Function<CallbackContext, Maybe<Content>>) callback::call)
+      PluginManager pluginManager, List<BeforeAgentCallback> callbacks) {
+    return Stream.concat(
+            Stream.of(ctx -> pluginManager.runBeforeAgentCallback(this, ctx)),
+            callbacks.stream()
+                .map(callback -> (Function<CallbackContext, Maybe<Content>>) callback::call))
         .collect(toImmutableList());
   }
 
@@ -261,9 +263,11 @@ public abstract class BaseAgent {
    * @return callback functions.
    */
   private ImmutableList<Function<CallbackContext, Maybe<Content>>> afterCallbacksToFunctions(
-      List<AfterAgentCallback> callbacks) {
-    return callbacks.stream()
-        .map(callback -> (Function<CallbackContext, Maybe<Content>>) callback::call)
+      PluginManager pluginManager, List<AfterAgentCallback> callbacks) {
+    return Stream.concat(
+            Stream.of(ctx -> pluginManager.runAfterAgentCallback(this, ctx)),
+            callbacks.stream()
+                .map(callback -> (Function<CallbackContext, Maybe<Content>>) callback::call))
         .collect(toImmutableList());
   }
 

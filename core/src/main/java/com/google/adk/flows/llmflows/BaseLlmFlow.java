@@ -230,6 +230,17 @@ public abstract class BaseLlmFlow implements BaseFlow {
                           return llm.generateContent(
                                   llmRequestBuilder.build(),
                                   context.runConfig().streamingMode() == StreamingMode.SSE)
+                              .onErrorResumeNext(
+                                  exception ->
+                                      context
+                                          .pluginManager()
+                                          .runOnModelErrorCallback(
+                                              new CallbackContext(
+                                                  context, eventForCallbackUsage.actions()),
+                                              llmRequest,
+                                              exception)
+                                          .switchIfEmpty(Single.error(exception))
+                                          .toFlowable())
                               .doOnNext(
                                   llmResp -> {
                                     try (Scope innerScope = llmCallSpan.makeCurrent()) {
@@ -260,29 +271,32 @@ public abstract class BaseLlmFlow implements BaseFlow {
    */
   private Single<Optional<LlmResponse>> handleBeforeModelCallback(
       InvocationContext context, LlmRequest.Builder llmRequestBuilder, Event modelResponseEvent) {
+    Event callbackEvent = modelResponseEvent.toBuilder().build();
+    CallbackContext callbackContext = new CallbackContext(context, callbackEvent.actions());
+
+    Maybe<LlmResponse> pluginResult =
+        context.pluginManager().runBeforeModelCallback(callbackContext, llmRequestBuilder.build());
+
     LlmAgent agent = (LlmAgent) context.agent();
 
     Optional<List<BeforeModelCallback>> callbacksOpt = agent.beforeModelCallback();
     if (callbacksOpt.isEmpty() || callbacksOpt.get().isEmpty()) {
-      return Single.just(Optional.empty());
+      return pluginResult.map(Optional::of).defaultIfEmpty(Optional.empty());
     }
 
-    Event callbackEvent = modelResponseEvent.toBuilder().build();
     List<BeforeModelCallback> callbacks = callbacksOpt.get();
 
-    return Flowable.fromIterable(callbacks)
-        .concatMapSingle(
-            callback -> {
-              CallbackContext callbackContext =
-                  new CallbackContext(context, callbackEvent.actions());
-              return callback
-                  .call(callbackContext, llmRequestBuilder)
-                  .map(Optional::of)
-                  .defaultIfEmpty(Optional.empty());
-            })
-        .filter(Optional::isPresent)
-        .firstElement()
-        .switchIfEmpty(Single.just(Optional.empty()));
+    Maybe<LlmResponse> callbackResult =
+        Maybe.defer(
+            () ->
+                Flowable.fromIterable(callbacks)
+                    .concatMapMaybe(callback -> callback.call(callbackContext, llmRequestBuilder))
+                    .firstElement());
+
+    return pluginResult
+        .switchIfEmpty(callbackResult)
+        .map(Optional::of)
+        .defaultIfEmpty(Optional.empty());
   }
 
   /**
@@ -293,30 +307,27 @@ public abstract class BaseLlmFlow implements BaseFlow {
    */
   private Single<LlmResponse> handleAfterModelCallback(
       InvocationContext context, LlmResponse llmResponse, Event modelResponseEvent) {
+    Event callbackEvent = modelResponseEvent.toBuilder().build();
+    CallbackContext callbackContext = new CallbackContext(context, callbackEvent.actions());
+
+    Maybe<LlmResponse> pluginResult =
+        context.pluginManager().runAfterModelCallback(callbackContext, llmResponse);
+
     LlmAgent agent = (LlmAgent) context.agent();
     Optional<List<AfterModelCallback>> callbacksOpt = agent.afterModelCallback();
 
     if (callbacksOpt.isEmpty() || callbacksOpt.get().isEmpty()) {
-      return Single.just(llmResponse);
+      return pluginResult.defaultIfEmpty(llmResponse);
     }
 
-    Event callbackEvent = modelResponseEvent.toBuilder().content(llmResponse.content()).build();
-    List<AfterModelCallback> callbacks = callbacksOpt.get();
+    Maybe<LlmResponse> callbackResult =
+        Maybe.defer(
+            () ->
+                Flowable.fromIterable(callbacksOpt.get())
+                    .concatMapMaybe(callback -> callback.call(callbackContext, llmResponse))
+                    .firstElement());
 
-    return Flowable.fromIterable(callbacks)
-        .concatMapSingle(
-            callback -> {
-              CallbackContext callbackContext =
-                  new CallbackContext(context, callbackEvent.actions());
-              return callback
-                  .call(callbackContext, llmResponse)
-                  .map(Optional::of)
-                  .defaultIfEmpty(Optional.empty());
-            })
-        .filter(Optional::isPresent)
-        .firstElement()
-        .map(Optional::get)
-        .switchIfEmpty(Single.just(llmResponse));
+    return pluginResult.switchIfEmpty(callbackResult).defaultIfEmpty(llmResponse);
   }
 
   /**

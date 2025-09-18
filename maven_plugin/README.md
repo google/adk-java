@@ -93,7 +93,7 @@ Add the plugin to your `pom.xml`:
         <plugin>
             <groupId>com.google.adk</groupId>
             <artifactId>google-adk-maven-plugin</artifactId>
-            <version>0.2.0</version>
+            <version>0.3.0</version>
         </plugin>
     </plugins>
 </build>
@@ -276,14 +276,14 @@ Make sure your project has the necessary ADK dependencies:
     <dependency>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk</artifactId>
-        <version>0.2.0</version>
+        <version>0.3.0</version>
     </dependency>
 
     <!-- Dev module dependency for AgentLoader interface -->
     <dependency>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-dev</artifactId>
-        <version>0.2.0</version>
+        <version>0.3.0</version>
         <scope>compile</scope>
     </dependency>
 </dependencies>
@@ -303,7 +303,7 @@ Add the plugin to your `pom.xml` for convenience:
         <plugin>
             <groupId>com.google.adk</groupId>
             <artifactId>google-adk-maven-plugin</artifactId>
-            <version>0.2.0</version>
+            <version>0.3.0</version>
         </plugin>
     </plugins>
 </build>

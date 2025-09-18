@@ -40,6 +40,7 @@ import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -144,6 +145,13 @@ public final class Functions {
           maybeFunctionResult
               .map(Optional::of)
               .defaultIfEmpty(Optional.empty())
+              .onErrorResumeNext(
+                  t ->
+                      invocationContext
+                          .pluginManager()
+                          .runOnToolErrorCallback(tool, functionArgs, toolContext, t)
+                          .map(Optional::of)
+                          .switchIfEmpty(Single.error(t)))
               .flatMapMaybe(
                   optionalInitialResult -> {
                     Map<String, Object> initialFunctionResult = optionalInitialResult.orElse(null);
@@ -233,6 +241,13 @@ public final class Functions {
           maybeFunctionResult
               .map(Optional::of)
               .defaultIfEmpty(Optional.empty())
+              .onErrorResumeNext(
+                  t ->
+                      invocationContext
+                          .pluginManager()
+                          .runOnToolErrorCallback(tool, functionArgs, toolContext, t)
+                          .map(Optional::ofNullable)
+                          .switchIfEmpty(Single.error(t)))
               .flatMapMaybe(
                   optionalInitialResult -> {
                     Map<String, Object> initialFunctionResult = optionalInitialResult.orElse(null);
@@ -412,16 +427,25 @@ public final class Functions {
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
 
+      Maybe<Map<String, Object>> pluginResult =
+          invocationContext.pluginManager().runBeforeToolCallback(tool, functionArgs, toolContext);
+
       Optional<List<BeforeToolCallback>> callbacksOpt = agent.beforeToolCallback();
       if (callbacksOpt.isEmpty() || callbacksOpt.get().isEmpty()) {
-        return Maybe.empty();
+        return pluginResult;
       }
       List<BeforeToolCallback> callbacks = callbacksOpt.get();
 
-      return Flowable.fromIterable(callbacks)
-          .concatMapMaybe(
-              callback -> callback.call(invocationContext, tool, functionArgs, toolContext))
-          .firstElement();
+      Maybe<Map<String, Object>> callbackResult =
+          Maybe.defer(
+              () ->
+                  Flowable.fromIterable(callbacks)
+                      .concatMapMaybe(
+                          callback ->
+                              callback.call(invocationContext, tool, functionArgs, toolContext))
+                      .firstElement());
+
+      return pluginResult.switchIfEmpty(callbackResult);
     }
     return Maybe.empty();
   }
@@ -434,17 +458,33 @@ public final class Functions {
       Map<String, Object> functionResult) {
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
+
+      Maybe<Map<String, Object>> pluginResult =
+          invocationContext
+              .pluginManager()
+              .runAfterToolCallback(tool, functionArgs, toolContext, functionResult);
+
       Optional<List<AfterToolCallback>> callbacksOpt = agent.afterToolCallback();
       if (callbacksOpt.isEmpty() || callbacksOpt.get().isEmpty()) {
-        return Maybe.empty();
+        return pluginResult;
       }
       List<AfterToolCallback> callbacks = callbacksOpt.get();
 
-      return Flowable.fromIterable(callbacks)
-          .concatMapMaybe(
-              callback ->
-                  callback.call(invocationContext, tool, functionArgs, toolContext, functionResult))
-          .firstElement();
+      Maybe<Map<String, Object>> callbackResult =
+          Maybe.defer(
+              () ->
+                  Flowable.fromIterable(callbacks)
+                      .concatMapMaybe(
+                          callback ->
+                              callback.call(
+                                  invocationContext,
+                                  tool,
+                                  functionArgs,
+                                  toolContext,
+                                  functionResult))
+                      .firstElement());
+
+      return pluginResult.switchIfEmpty(callbackResult);
     }
     return Maybe.empty();
   }
