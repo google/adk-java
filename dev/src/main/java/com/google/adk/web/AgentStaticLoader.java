@@ -37,7 +37,7 @@ import javax.annotation.Nonnull;
  * <p>This class is not a Spring component by itself - instances are created programmatically and
  * then registered as beans via factory methods.
  */
-class AgentStaticLoader implements AgentLoader {
+public class AgentStaticLoader implements AgentLoader {
 
   private final ImmutableMap<String, BaseAgent> agents;
 
