@@ -18,7 +18,7 @@ package com.google.adk.tools;
 
 import com.google.adk.agents.ReadonlyContext;
 import io.reactivex.rxjava3.core.Flowable;
-import java.util.List;
+import java.util.Collection;
 import java.util.Optional;
 
 /** Base interface for toolsets. */
@@ -47,7 +47,7 @@ public interface BaseToolset extends AutoCloseable {
    * list of tools of if testing against the given ToolPredicate returns true (otherwise false).
    *
    * @param tool The tool to check.
-   * @param toolFilter An Optional containing either a ToolPredicate or a List of tool names.
+   * @param toolFilter An Optional containing either a ToolPredicate or a Collection of tool names.
    * @param readonlyContext The current context.
    * @return true if the tool is selected.
    */
@@ -60,9 +60,9 @@ public interface BaseToolset extends AutoCloseable {
     if (filter instanceof ToolPredicate toolPredicate) {
       return toolPredicate.test(tool, readonlyContext);
     }
-    if (filter instanceof List) {
+    if (filter instanceof Collection) {
       @SuppressWarnings("unchecked")
-      List<String> toolNames = (List<String>) filter;
+      Collection<String> toolNames = (Collection<String>) filter;
       return toolNames.contains(tool.name());
     }
     return false;
