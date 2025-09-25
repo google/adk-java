@@ -35,7 +35,6 @@ import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -221,82 +220,9 @@ public class Gemini extends BaseLlm {
               effectiveModelName, llmRequest.contents(), config);
 
       return Flowable.defer(
-          () -> {
-            final StringBuilder accumulatedText = new StringBuilder();
-            // Array to bypass final local variable reassignment in lambda.
-            final GenerateContentResponse[] lastRawResponseHolder = {null};
-
-            return Flowable.fromFuture(streamFuture)
-                .flatMapIterable(iterable -> iterable)
-                .concatMap(
-                    rawResponse -> {
-                      lastRawResponseHolder[0] = rawResponse;
-                      logger.trace("Raw streaming response: {}", rawResponse);
-
-                      List<LlmResponse> responsesToEmit = new ArrayList<>();
-                      LlmResponse currentProcessedLlmResponse = LlmResponse.create(rawResponse);
-                      String currentTextChunk =
-                          GeminiUtil.getTextFromLlmResponse(currentProcessedLlmResponse);
-
-                      if (!currentTextChunk.isEmpty()) {
-                        accumulatedText.append(currentTextChunk);
-                        LlmResponse partialResponse =
-                            currentProcessedLlmResponse.toBuilder().partial(true).build();
-                        responsesToEmit.add(partialResponse);
-                      } else {
-                        if (accumulatedText.length() > 0
-                            && GeminiUtil.shouldEmitAccumulatedText(currentProcessedLlmResponse)) {
-                          LlmResponse aggregatedTextResponse =
-                              LlmResponse.builder()
-                                  .content(
-                                      Content.builder()
-                                          .role("model")
-                                          .parts(Part.fromText(accumulatedText.toString()))
-                                          .build())
-                                  .build();
-                          responsesToEmit.add(aggregatedTextResponse);
-                          accumulatedText.setLength(0);
-                        }
-                        responsesToEmit.add(currentProcessedLlmResponse);
-                      }
-                      logger.debug("Responses to emit: {}", responsesToEmit);
-                      return Flowable.fromIterable(responsesToEmit);
-                    })
-                .concatWith(
-                    Flowable.defer(
-                        () -> {
-                          if (accumulatedText.length() > 0 && lastRawResponseHolder[0] != null) {
-                            GenerateContentResponse finalRawResp = lastRawResponseHolder[0];
-                            boolean isStop =
-                                finalRawResp
-                                    .candidates()
-                                    .flatMap(
-                                        candidates ->
-                                            candidates.isEmpty()
-                                                ? Optional.empty()
-                                                : Optional.of(candidates.get(0)))
-                                    .flatMap(Candidate::finishReason)
-                                    .map(
-                                        finishReason ->
-                                            finishReason.equals(
-                                                new FinishReason(FinishReason.Known.STOP)))
-                                    .orElse(false);
-
-                            if (isStop) {
-                              LlmResponse finalAggregatedTextResponse =
-                                  LlmResponse.builder()
-                                      .content(
-                                          Content.builder()
-                                              .role("model")
-                                              .parts(Part.fromText(accumulatedText.toString()))
-                                              .build())
-                                      .build();
-                              return Flowable.just(finalAggregatedTextResponse);
-                            }
-                          }
-                          return Flowable.empty();
-                        }));
-          });
+          () ->
+              processRawResponses(
+                  Flowable.fromFuture(streamFuture).flatMapIterable(iterable -> iterable)));
     } else {
       logger.debug("Sending generateContent request to model {}", effectiveModelName);
       return Flowable.fromFuture(
@@ -306,6 +232,68 @@ public class Gemini extends BaseLlm {
               .generateContent(effectiveModelName, llmRequest.contents(), config)
               .thenApplyAsync(LlmResponse::create));
     }
+  }
+
+  static Flowable<LlmResponse> processRawResponses(Flowable<GenerateContentResponse> rawResponses) {
+    final StringBuilder accumulatedText = new StringBuilder();
+    // Array to bypass final local variable reassignment in lambda.
+    final GenerateContentResponse[] lastRawResponseHolder = {null};
+    return rawResponses
+        .concatMap(
+            rawResponse -> {
+              lastRawResponseHolder[0] = rawResponse;
+              logger.trace("Raw streaming response: {}", rawResponse);
+
+              List<LlmResponse> responsesToEmit = new ArrayList<>();
+              LlmResponse currentProcessedLlmResponse = LlmResponse.create(rawResponse);
+              String currentTextChunk =
+                  GeminiUtil.getTextFromLlmResponse(currentProcessedLlmResponse);
+
+              if (!currentTextChunk.isEmpty()) {
+                accumulatedText.append(currentTextChunk);
+                LlmResponse partialResponse =
+                    currentProcessedLlmResponse.toBuilder().partial(true).build();
+                responsesToEmit.add(partialResponse);
+              } else {
+                if (accumulatedText.length() > 0
+                    && GeminiUtil.shouldEmitAccumulatedText(currentProcessedLlmResponse)) {
+                  LlmResponse aggregatedTextResponse = responseFromText(accumulatedText.toString());
+                  responsesToEmit.add(aggregatedTextResponse);
+                  accumulatedText.setLength(0);
+                }
+                responsesToEmit.add(currentProcessedLlmResponse);
+              }
+              logger.debug("Responses to emit: {}", responsesToEmit);
+              return Flowable.fromIterable(responsesToEmit);
+            })
+        .concatWith(
+            Flowable.defer(
+                () -> {
+                  if (accumulatedText.length() > 0 && lastRawResponseHolder[0] != null) {
+                    GenerateContentResponse finalRawResp = lastRawResponseHolder[0];
+                    boolean isStop =
+                        finalRawResp
+                            .candidates()
+                            .flatMap(candidates -> candidates.stream().findFirst())
+                            .flatMap(Candidate::finishReason)
+                            .map(
+                                finishReason -> finishReason.knownEnum() == FinishReason.Known.STOP)
+                            .orElse(false);
+
+                    if (isStop) {
+                      LlmResponse finalAggregatedTextResponse =
+                          responseFromText(accumulatedText.toString());
+                      return Flowable.just(finalAggregatedTextResponse);
+                    }
+                  }
+                  return Flowable.empty();
+                }));
+  }
+
+  private static LlmResponse responseFromText(String accumulatedText) {
+    return LlmResponse.builder()
+        .content(Content.builder().role("model").parts(Part.fromText(accumulatedText)).build())
+        .build();
   }
 
   @Override
