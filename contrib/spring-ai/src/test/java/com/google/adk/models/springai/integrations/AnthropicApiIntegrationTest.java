@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.google.adk.models.springai;
+package com.google.adk.models.springai.integrations;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -21,6 +21,8 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.models.springai.SpringAI;
+import com.google.adk.models.springai.TestUtils;
 import com.google.adk.tools.FunctionTool;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
