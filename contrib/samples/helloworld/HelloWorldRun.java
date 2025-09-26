@@ -1,4 +1,4 @@
-package internal.samples.helloworld;
+package com.example.helloworld;
 
 import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.InMemoryArtifactService;

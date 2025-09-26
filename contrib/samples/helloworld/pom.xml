@@ -23,7 +23,7 @@
     <name>Google ADK - Sample - Hello World</name>
     <description>
         A sample "Hello World" application demonstrating basic agent and tool usage with the Google ADK,
-        runnable via internal.samples.helloworld.HelloWorldRun.
+        runnable via com.example.helloworld.HelloWorldRun.
     </description>
     <packaging>jar</packaging>
 
@@ -32,7 +32,7 @@
         <java.version>17</java.version>
         <auto-value.version>1.11.0</auto-value.version>
         <!-- Main class for exec-maven-plugin -->
-        <exec.mainClass>internal.samples.helloworld.HelloWorldRun</exec.mainClass>
+        <exec.mainClass>com.example.helloworld.HelloWorldRun</exec.mainClass>
         <google-adk.version>0.3.0</google-adk.version>
     </properties>
 
