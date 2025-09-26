@@ -16,8 +16,6 @@
 
 package com.google.adk.sessions;
 
-import static com.google.common.base.Strings.nullToEmpty;
-import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.stream.Collectors.toCollection;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -32,8 +30,6 @@ import com.google.genai.types.HttpOptions;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -45,30 +41,24 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
-import okhttp3.ResponseBody;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /** Connects to the managed Vertex AI Session Service. */
 // TODO: Use the genai HttpApiClient and ApiResponse methods once they are public.
 public final class VertexAiSessionService implements BaseSessionService {
-  private static final int MAX_RETRY_ATTEMPTS = 5;
   private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
-  private static final Logger logger = LoggerFactory.getLogger(VertexAiSessionService.class);
 
-  private final HttpApiClient apiClient;
+  private final VertexAiClient client;
 
   /**
    * Creates a new instance of the Vertex AI Session Service with a custom ApiClient for testing.
    */
   public VertexAiSessionService(String project, String location, HttpApiClient apiClient) {
-    this.apiClient = apiClient;
+    this.client = new VertexAiClient(project, location, apiClient);
   }
 
   /** Creates a session service with default configuration. */
   public VertexAiSessionService() {
-    this.apiClient =
-        new HttpApiClient(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+    this.client = new VertexAiClient();
   }
 
   /** Creates a session service with specified project, location, credentials, and HTTP options. */
@@ -77,22 +67,7 @@ public final class VertexAiSessionService implements BaseSessionService {
       String location,
       Optional<GoogleCredentials> credentials,
       Optional<HttpOptions> httpOptions) {
-    this.apiClient =
-        new HttpApiClient(Optional.of(project), Optional.of(location), credentials, httpOptions);
-  }
-
-  /**
-   * Parses the JSON response body from the given API response.
-   *
-   * @throws UncheckedIOException if parsing fails.
-   */
-  private static JsonNode getJsonResponse(ApiResponse apiResponse) {
-    try {
-      ResponseBody responseBody = apiResponse.getResponseBody();
-      return objectMapper.readTree(responseBody.string());
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
+    this.client = new VertexAiClient(project, location, credentials, httpOptions);
   }
 
   @Override
@@ -103,51 +78,11 @@ public final class VertexAiSessionService implements BaseSessionService {
       @Nullable String sessionId) {
 
     String reasoningEngineId = parseReasoningEngineId(appName);
-    ConcurrentHashMap<String, Object> sessionJsonMap = new ConcurrentHashMap<>();
-    sessionJsonMap.put("userId", userId);
-    if (state != null) {
-      sessionJsonMap.put("sessionState", state);
-    }
-
-    ApiResponse apiResponse;
-    try {
-      apiResponse =
-          apiClient.request(
-              "POST",
-              "reasoningEngines/" + reasoningEngineId + "/sessions",
-              objectMapper.writeValueAsString(sessionJsonMap));
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
-
-    logger.debug("Create Session response {}", apiResponse.getResponseBody());
-    String sessionName = "";
-    String operationId = "";
-    String sessId = nullToEmpty(sessionId);
-    if (apiResponse != null && apiResponse.getResponseBody() != null) {
-      JsonNode jsonResponse = getJsonResponse(apiResponse);
-      sessionName = jsonResponse.get("name").asText();
-      List<String> parts = Splitter.on('/').splitToList(sessionName);
-      sessId = parts.get(parts.size() - 3);
-      operationId = Iterables.getLast(parts);
-    }
-    for (int i = 0; i < MAX_RETRY_ATTEMPTS; i++) {
-      ApiResponse lroResponse = apiClient.request("GET", "operations/" + operationId, "");
-      JsonNode jsonResponse = getJsonResponse(lroResponse);
-      if (jsonResponse.get("done") != null) {
-        break;
-      }
-      try {
-        SECONDS.sleep(1);
-      } catch (InterruptedException e) {
-        logger.warn("Error during sleep", e);
-      }
-    }
-
-    ApiResponse getSessionApiResponse =
-        apiClient.request(
-            "GET", "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessId, "");
-    JsonNode getSessionResponseMap = getJsonResponse(getSessionApiResponse);
+    JsonNode getSessionResponseMap = client.createSession(reasoningEngineId, userId, state);
+    String sessId =
+        Optional.ofNullable(getSessionResponseMap.get("name"))
+            .map(name -> Iterables.getLast(Splitter.on('/').splitToList(name.asText())))
+            .orElse(sessionId);
     Instant updateTimestamp = Instant.parse(getSessionResponseMap.get("updateTime").asText());
     ConcurrentMap<String, Object> sessionState = null;
     if (getSessionResponseMap != null && getSessionResponseMap.has("sessionState")) {
@@ -171,18 +106,12 @@ public final class VertexAiSessionService implements BaseSessionService {
   public Single<ListSessionsResponse> listSessions(String appName, String userId) {
     String reasoningEngineId = parseReasoningEngineId(appName);
 
-    ApiResponse apiResponse =
-        apiClient.request(
-            "GET",
-            "reasoningEngines/" + reasoningEngineId + "/sessions?filter=user_id=" + userId,
-            "");
+    JsonNode listSessionsResponseMap = client.listSessions(reasoningEngineId, userId);
 
     // Handles empty response case
-    if (apiResponse.getResponseBody() == null) {
+    if (listSessionsResponseMap == null) {
       return Single.just(ListSessionsResponse.builder().build());
     }
-
-    JsonNode listSessionsResponseMap = getJsonResponse(apiResponse);
     List<Map<String, Object>> apiSessions =
         objectMapper.convertValue(
             listSessionsResponseMap.get("sessions"),
@@ -208,19 +137,13 @@ public final class VertexAiSessionService implements BaseSessionService {
   @Override
   public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
     String reasoningEngineId = parseReasoningEngineId(appName);
-    ApiResponse apiResponse =
-        apiClient.request(
-            "GET",
-            "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId + "/events",
-            "");
+    JsonNode listEventsResponse = client.listEvents(reasoningEngineId, sessionId);
 
-    logger.debug("List events response {}", apiResponse);
-
-    if (apiResponse.getResponseBody() == null) {
+    if (listEventsResponse == null) {
       return Single.just(ListEventsResponse.builder().build());
     }
 
-    JsonNode sessionEventsNode = getJsonResponse(apiResponse).get("sessionEvents");
+    JsonNode sessionEventsNode = listEventsResponse.get("sessionEvents");
     if (sessionEventsNode == null || sessionEventsNode.isEmpty()) {
       return Single.just(ListEventsResponse.builder().events(new ArrayList<>()).build());
     }
@@ -241,10 +164,7 @@ public final class VertexAiSessionService implements BaseSessionService {
   public Maybe<Session> getSession(
       String appName, String userId, String sessionId, Optional<GetSessionConfig> config) {
     String reasoningEngineId = parseReasoningEngineId(appName);
-    ApiResponse apiResponse =
-        apiClient.request(
-            "GET", "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId, "");
-    JsonNode getSessionResponseMap = getJsonResponse(apiResponse);
+    JsonNode getSessionResponseMap = client.getSession(reasoningEngineId, sessionId);
 
     if (getSessionResponseMap == null) {
       return Maybe.empty();
@@ -318,9 +238,7 @@ public final class VertexAiSessionService implements BaseSessionService {
   @Override
   public Completable deleteSession(String appName, String userId, String sessionId) {
     String reasoningEngineId = parseReasoningEngineId(appName);
-    ApiResponse unused =
-        apiClient.request(
-            "DELETE", "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId, "");
+    client.deleteSession(reasoningEngineId, sessionId);
     return Completable.complete();
   }
 
@@ -329,21 +247,8 @@ public final class VertexAiSessionService implements BaseSessionService {
     BaseSessionService.super.appendEvent(session, event);
 
     String reasoningEngineId = parseReasoningEngineId(session.appName());
-    ApiResponse response =
-        apiClient.request(
-            "POST",
-            "reasoningEngines/" + reasoningEngineId + "/sessions/" + session.id() + ":appendEvent",
-            SessionJsonConverter.convertEventToJson(event));
-    // TODO(b/414263934)): Improve error handling for appendEvent.
-    try {
-      if (response.getResponseBody().string().contains("com.google.genai.errors.ClientException")) {
-        logger.warn("Failed to append event: ", event);
-      }
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
-
-    response.close();
+    client.appendEvent(
+        reasoningEngineId, session.id(), SessionJsonConverter.convertEventToJson(event));
     return Single.just(event);
   }
 
