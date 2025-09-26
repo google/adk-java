@@ -4,6 +4,331 @@
 
 The ADK Spring AI Integration Library provides a bridge between the Agent Development Kit (ADK) and Spring AI, enabling developers to use Spring AI models within the ADK framework. This library supports multiple AI providers, streaming responses, function calling, and comprehensive observability.
 
+## Getting Started
+
+### Maven Dependencies
+
+To use ADK Java with the Spring AI integration in your application, add the following dependencies to your `pom.xml`:
+
+#### Basic Setup
+
+```xml
+<dependencies>
+    <!-- ADK Core -->
+    <dependency>
+        <groupId>com.google.adk</groupId>
+        <artifactId>google-adk</artifactId>
+        <version>0.3.1-SNAPSHOT</version>
+    </dependency>
+
+    <!-- ADK Spring AI Integration -->
+    <dependency>
+        <groupId>com.google.adk</groupId>
+        <artifactId>google-adk-spring-ai</artifactId>
+        <version>0.3.1-SNAPSHOT</version>
+    </dependency>
+
+    <!-- Spring AI BOM for version management -->
+    <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-bom</artifactId>
+        <version>1.1.0-M2</version>
+        <type>pom</type>
+        <scope>import</scope>
+    </dependency>
+</dependencies>
+```
+
+#### Provider-Specific Dependencies
+
+Add the Spring AI provider dependencies for the AI services you want to use:
+
+**OpenAI:**
+```xml
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-openai</artifactId>
+</dependency>
+```
+
+**Anthropic (Claude):**
+```xml
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-anthropic</artifactId>
+</dependency>
+```
+
+**Google Gemini:**
+```xml
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-google-genai</artifactId>
+</dependency>
+```
+
+**Vertex AI:**
+```xml
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-vertex-ai-gemini</artifactId>
+</dependency>
+```
+
+**Azure OpenAI:**
+```xml
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-azure-openai</artifactId>
+</dependency>
+```
+
+**Ollama (Local models):**
+```xml
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-ollama</artifactId>
+</dependency>
+```
+
+#### Complete Example pom.xml
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>my-adk-spring-ai-app</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+        <relativePath/>
+    </parent>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-ai.version>1.1.0-M2</spring-ai.version>
+        <adk.version>0.3.1-SNAPSHOT</adk.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- Spring Boot Starters -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+
+        <!-- ADK Dependencies -->
+        <dependency>
+            <groupId>com.google.adk</groupId>
+            <artifactId>google-adk</artifactId>
+            <version>${adk.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.adk</groupId>
+            <artifactId>google-adk-spring-ai</artifactId>
+            <version>${adk.version}</version>
+        </dependency>
+
+        <!-- Spring AI Providers (choose the ones you need) -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-openai</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-anthropic</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-google-genai</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+### Quick Start Example
+
+Once you have the dependencies set up, you can create a simple ADK agent with Spring AI:
+
+#### Option 1: Using Auto-Configuration (Recommended)
+
+```java
+@SpringBootApplication
+public class MyAdkSpringAiApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(MyAdkSpringAiApplication.class, args);
+    }
+
+    @Bean
+    public LlmAgent scienceTeacher(SpringAI springAI) {
+        // SpringAI is auto-configured based on available ChatModel beans
+        return LlmAgent.builder()
+            .name("science-teacher")
+            .description("A helpful science teacher")
+            .model(springAI)
+            .instruction("You are a helpful science teacher. Explain concepts clearly.")
+            .build();
+    }
+}
+```
+
+#### Option 2: Manual Configuration
+
+```java
+@SpringBootApplication
+public class MyAdkSpringAiApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(MyAdkSpringAiApplication.class, args);
+    }
+
+    @Bean
+    public SpringAI springAI() {
+        // Configure OpenAI
+        OpenAiApi openAiApi = OpenAiApi.builder()
+            .apiKey(System.getenv("OPENAI_API_KEY"))
+            .build();
+        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+            .openAiApi(openAiApi)
+            .build();
+
+        return new SpringAI(chatModel, "gpt-4o-mini");
+    }
+
+    @Bean
+    public LlmAgent scienceTeacher(SpringAI springAI) {
+        return LlmAgent.builder()
+            .name("science-teacher")
+            .description("A helpful science teacher")
+            .model(springAI)
+            .instruction("You are a helpful science teacher. Explain concepts clearly.")
+            .build();
+    }
+}
+```
+
+#### Option 3: Multiple Providers
+
+```java
+@SpringBootApplication
+public class MyAdkSpringAiApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(MyAdkSpringAiApplication.class, args);
+    }
+
+    @Bean
+    @Primary
+    public SpringAI openAiSpringAI() {
+        OpenAiApi openAiApi = OpenAiApi.builder()
+            .apiKey(System.getenv("OPENAI_API_KEY"))
+            .build();
+        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+            .openAiApi(openAiApi)
+            .build();
+
+        return new SpringAI(chatModel, "gpt-4o-mini");
+    }
+
+    @Bean
+    @Qualifier("anthropic")
+    public SpringAI anthropicSpringAI() {
+        AnthropicApi anthropicApi = AnthropicApi.builder()
+            .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+            .build();
+        AnthropicChatModel chatModel = AnthropicChatModel.builder()
+            .anthropicApi(anthropicApi)
+            .build();
+
+        return new SpringAI(chatModel, "claude-3-5-sonnet-20241022");
+    }
+
+    @Bean
+    public LlmAgent openAiAgent(SpringAI springAI) {
+        return LlmAgent.builder()
+            .name("openai-teacher")
+            .model(springAI) // Uses @Primary SpringAI bean
+            .instruction("You are a helpful science teacher using OpenAI.")
+            .build();
+    }
+
+    @Bean
+    public LlmAgent anthropicAgent(@Qualifier("anthropic") SpringAI anthropicSpringAI) {
+        return LlmAgent.builder()
+            .name("anthropic-teacher")
+            .model(anthropicSpringAI) // Uses specific Anthropic SpringAI bean
+            .instruction("You are a helpful science teacher using Claude.")
+            .build();
+    }
+}
+```
+
+### Configuration
+
+Add these properties to your `application.yml` or `application.properties`:
+
+```yaml
+# Spring AI Provider Configuration
+spring:
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY}
+      chat:
+        options:
+          model: gpt-4o-mini
+          temperature: 0.7
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY}
+      chat:
+        options:
+          model: claude-3-5-sonnet-20241022
+          temperature: 0.7
+
+# ADK Spring AI Configuration
+adk:
+  spring-ai:
+    default-model: "gpt-4o-mini"
+    auto-configuration:
+      enabled: true
+    validation:
+      enabled: true
+      fail-fast: false
+    observability:
+      enabled: true
+      metrics-enabled: true
+```
+
 ## Architecture
 
 ### Core Components
