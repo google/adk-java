@@ -46,12 +46,14 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+
+import javax.annotation.Nullable;
+
 import java.lang.reflect.Parameter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import javax.annotation.Nullable;
 
 /** The main class for the GenAI Agents runner. */
 public class Runner {
@@ -310,8 +312,9 @@ public class Runner {
   private InvocationContext newInvocationContextForLive(
       Session session, Optional<LiveRequestQueue> liveRequestQueue, RunConfig runConfig) {
     RunConfig.Builder runConfigBuilder = RunConfig.builder(runConfig);
-    if (!CollectionUtils.isNullOrEmpty(runConfig.responseModalities())
-        && liveRequestQueue.isPresent()) {
+    if (liveRequestQueue.isPresent() && !this.agent.subAgents().isEmpty()) {
+      // Parity with Python: apply modality defaults and transcription settings
+      // only for multi-agent live scenarios.
       // Default to AUDIO modality if not specified.
       if (CollectionUtils.isNullOrEmpty(runConfig.responseModalities())) {
         runConfigBuilder.setResponseModalities(
@@ -323,6 +326,10 @@ public class Runner {
         if (runConfig.outputAudioTranscription() == null) {
           runConfigBuilder.setOutputAudioTranscription(AudioTranscriptionConfig.builder().build());
         }
+      }
+      // Need input transcription for agent transferring in live mode.
+      if (runConfig.inputAudioTranscription() == null) {
+        runConfigBuilder.setInputAudioTranscription(AudioTranscriptionConfig.builder().build());
       }
     }
     return newInvocationContext(
