@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.models.springai.integrations.tools.WeatherTool;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;

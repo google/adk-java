@@ -45,7 +45,7 @@ import org.springframework.ai.anthropic.api.AnthropicApi;
 @EnabledIfEnvironmentVariable(named = "ANTHROPIC_API_KEY", matches = "\\S+")
 class AnthropicApiIntegrationTest {
 
-  private static final String CLAUDE_MODEL = "claude-sonnet-4-20250514";
+  private static final String CLAUDE_MODEL = "claude-sonnet-4-5";
 
   @Test
   void testSimpleAgentWithRealAnthropicApi() throws InterruptedException {

@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.google.adk.models.springai;
+package com.google.adk.models.springai.integrations.tools;
 
 import com.google.adk.tools.Annotations;
 import java.util.Map;
