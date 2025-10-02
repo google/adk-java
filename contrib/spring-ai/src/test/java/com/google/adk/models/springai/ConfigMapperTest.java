@@ -76,14 +76,15 @@ class ConfigMapperTest {
   }
 
   @Test
-  void testToSpringAiChatOptionsWithTopK() {
-    GenerateContentConfig config = GenerateContentConfig.builder().topK(40f).build();
+  void testToSpringAiChatOptionsWithInvalidTopK() {
+    GenerateContentConfig config = GenerateContentConfig.builder().topK(100f).build();
 
     ChatOptions chatOptions = configMapper.toSpringAiChatOptions(Optional.of(config));
 
+    boolean isValid = configMapper.isConfigurationValid(Optional.of(config));
+
     assertThat(chatOptions).isNotNull();
-    // topK is not directly supported by Spring AI ChatOptions
-    // The implementation should handle this gracefully
+    assertThat(isValid).isFalse();
   }
 
   @Test
@@ -117,6 +118,7 @@ class ConfigMapperTest {
     assertThat(chatOptions.getTemperature()).isCloseTo(0.7, within(0.001));
     assertThat(chatOptions.getMaxTokens()).isEqualTo(2000);
     assertThat(chatOptions.getTopP()).isCloseTo(0.95, within(0.001));
+    assertThat(chatOptions.getTopK()).isCloseTo(50, within(1));
     assertThat(chatOptions.getStopSequences()).containsExactly("STOP");
   }
 

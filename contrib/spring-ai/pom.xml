@@ -30,7 +30,7 @@
 
     <properties>
         <spring-ai.version>1.1.0-M2</spring-ai.version>
-        <testcontainers.version>1.20.4</testcontainers.version>
+        <testcontainers.version>1.21.3</testcontainers.version>
     </properties>
 
     <dependencyManagement>

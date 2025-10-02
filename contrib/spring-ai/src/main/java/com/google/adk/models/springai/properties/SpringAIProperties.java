@@ -15,10 +15,10 @@
  */
 package com.google.adk.models.springai.properties;
 
+import jakarta.annotation.Nullable;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotBlank;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -31,7 +31,6 @@ import org.springframework.validation.annotation.Validated;
  * <p>Example configuration:
  *
  * <pre>
- * adk.spring-ai.default-model=gpt-4o-mini
  * adk.spring-ai.temperature=0.7
  * adk.spring-ai.max-tokens=2048
  * adk.spring-ai.top-p=0.9
@@ -42,8 +41,7 @@ import org.springframework.validation.annotation.Validated;
 @Validated
 public class SpringAIProperties {
 
-  /** Default model name to use when no model is specified explicitly. */
-  @NotBlank private String defaultModel = "gpt-4o-mini";
+  @Nullable private String model;
 
   /** Default temperature for controlling randomness in responses. Must be between 0.0 and 2.0. */
   @DecimalMin(value = "0.0", message = "Temperature must be at least 0.0")
@@ -69,12 +67,12 @@ public class SpringAIProperties {
   /** Observability settings. */
   private Observability observability = new Observability();
 
-  public String getDefaultModel() {
-    return defaultModel;
+  public String getModel() {
+    return model;
   }
 
-  public void setDefaultModel(String defaultModel) {
-    this.defaultModel = defaultModel;
+  public void setModel(String model) {
+    this.model = model;
   }
 
   public Double getTemperature() {

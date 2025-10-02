@@ -166,10 +166,12 @@ public class SpringAIAutoConfiguration {
       return extractedName;
     }
 
-    // Fall back to configured default
-    String defaultModel = properties.getDefaultModel();
-    logger.debug("Using default model name: {}", defaultModel);
-    return defaultModel;
+    // Check if model name is configured in properties
+    if (properties.getModel() != null && !properties.getModel().trim().isEmpty()) {
+      return properties.getModel();
+    }
+
+    return "Unknown Model Name";
   }
 
   /**
@@ -187,14 +189,7 @@ public class SpringAIAutoConfiguration {
       return extractedName;
     }
 
-    // Fall back to configured default (or a generic embedding model name)
-    String defaultModel = properties.getDefaultModel();
-    if (defaultModel != null && !defaultModel.trim().isEmpty()) {
-      return defaultModel + "-embedding";
-    }
-
-    logger.debug("Using generic embedding model name");
-    return "text-embedding-model";
+    return "Unknown Embedding Model Name";
   }
 
   /**

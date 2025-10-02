@@ -42,7 +42,7 @@ class SpringAIAutoConfigurationBasicTest {
     contextRunner
         .withUserConfiguration(TestConfigurationWithChatModel.class)
         .withPropertyValues(
-            "adk.spring-ai.default-model=test-model",
+            "adk.spring-ai.model=test-model",
             "adk.spring-ai.validation.enabled=false") // Disable validation for simplicity
         .run(
             context -> {
@@ -71,7 +71,6 @@ class SpringAIAutoConfigurationBasicTest {
               assertThat(context).hasSingleBean(SpringAIProperties.class);
 
               SpringAIProperties properties = context.getBean(SpringAIProperties.class);
-              assertThat(properties.getDefaultModel()).isEqualTo("gpt-4o-mini");
               assertThat(properties.getTemperature()).isEqualTo(0.7);
               assertThat(properties.getMaxTokens()).isEqualTo(2048);
               assertThat(properties.getTopP()).isEqualTo(0.9);

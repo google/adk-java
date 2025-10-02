@@ -30,3 +30,7 @@ out/
 # OS-specific junk
 .DS_Store
 Thumbs.db
+
+# Local documentation and plans
+docs/
+plans/

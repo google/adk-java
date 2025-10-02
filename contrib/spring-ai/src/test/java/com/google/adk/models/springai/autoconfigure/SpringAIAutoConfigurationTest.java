@@ -41,7 +41,7 @@ class SpringAIAutoConfigurationTest {
   void testAutoConfigurationWithBothModels() {
     contextRunner
         .withUserConfiguration(TestConfigurationWithBothModels.class)
-        .withPropertyValues("adk.spring-ai.default-model=test-model")
+        .withPropertyValues("adk.spring-ai.model=test-model")
         .run(
             context -> {
               assertThat(context).hasSingleBean(SpringAI.class);
@@ -54,7 +54,7 @@ class SpringAIAutoConfigurationTest {
   void testAutoConfigurationWithChatModelOnly() {
     contextRunner
         .withUserConfiguration(TestConfigurationWithChatModel.class)
-        .withPropertyValues("adk.spring-ai.default-model=chat-only-model")
+        .withPropertyValues("adk.spring-ai.model=chat-only-model")
         .run(
             context -> {
               assertThat(context).hasSingleBean(SpringAI.class);
@@ -67,7 +67,7 @@ class SpringAIAutoConfigurationTest {
   void testAutoConfigurationWithStreamingModelOnly() {
     contextRunner
         .withUserConfiguration(TestConfigurationWithStreamingModel.class)
-        .withPropertyValues("adk.spring-ai.default-model=streaming-only-model")
+        .withPropertyValues("adk.spring-ai.model=streaming-only-model")
         .run(
             context -> {
               assertThat(context).hasSingleBean(SpringAI.class);
@@ -153,7 +153,6 @@ class SpringAIAutoConfigurationTest {
               assertThat(context).hasSingleBean(SpringAIProperties.class);
 
               SpringAIProperties properties = context.getBean(SpringAIProperties.class);
-              assertThat(properties.getDefaultModel()).isEqualTo("gpt-4o-mini");
               assertThat(properties.getTemperature()).isEqualTo(0.7);
               assertThat(properties.getMaxTokens()).isEqualTo(2048);
               assertThat(properties.getTopP()).isEqualTo(0.9);
@@ -163,30 +162,6 @@ class SpringAIAutoConfigurationTest {
               assertThat(properties.getObservability().isMetricsEnabled()).isTrue();
               assertThat(properties.getObservability().isIncludeContent()).isFalse();
             });
-  }
-
-  @Test
-  void testModelNameExtraction() {
-    SpringAIAutoConfiguration config = new SpringAIAutoConfiguration();
-    SpringAIProperties properties = new SpringAIProperties();
-
-    // Test with mock ChatModel
-    ChatModel mockChatModel =
-        prompt -> new ChatResponse(java.util.List.of(new Generation(new AssistantMessage("test"))));
-
-    // Use reflection to test the private method (for testing purposes)
-    try {
-      java.lang.reflect.Method method =
-          SpringAIAutoConfiguration.class.getDeclaredMethod(
-              "determineModelName", Object.class, SpringAIProperties.class);
-      method.setAccessible(true);
-
-      String result = (String) method.invoke(config, mockChatModel, properties);
-      assertThat(result).isEqualTo("gpt-4o-mini"); // Should fall back to default
-    } catch (Exception e) {
-      // If reflection fails, just verify the basic functionality
-      assertThat(properties.getDefaultModel()).isEqualTo("gpt-4o-mini");
-    }
   }
 
   @Configuration

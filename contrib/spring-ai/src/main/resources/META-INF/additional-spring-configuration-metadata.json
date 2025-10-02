@@ -1,12 +1,6 @@
 {
   "properties": [
     {
-      "name": "adk.spring-ai.default-model",
-      "type": "java.lang.String",
-      "description": "Default model name to use when no model is specified explicitly.",
-      "defaultValue": "gpt-4o-mini"
-    },
-    {
       "name": "adk.spring-ai.temperature",
       "type": "java.lang.Double",
       "description": "Default temperature for controlling randomness in responses. Must be between 0.0 and 2.0.",

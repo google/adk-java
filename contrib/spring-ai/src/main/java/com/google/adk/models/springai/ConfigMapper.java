@@ -53,14 +53,8 @@ public class ConfigMapper {
     // Map top P (convert Float to Double)
     contentConfig.topP().ifPresent(topP -> optionsBuilder.topP(topP.doubleValue()));
 
-    // Map top K (Spring AI may not support this directly)
-    contentConfig
-        .topK()
-        .ifPresent(
-            topK -> {
-              // Spring AI doesn't have a direct topK equivalent
-              // This could be added as a model-specific option in provider adapters
-            });
+    // Map top K (convert Float to Integer)
+    contentConfig.topK().ifPresent(topK -> optionsBuilder.topK(topK.intValue()));
 
     // Map stop sequences
     if (contentConfig.stopSequences().isPresent()) {
@@ -138,6 +132,13 @@ public class ConfigMapper {
       float topP = contentConfig.topP().get();
       if (topP < 0.0f || topP > 1.0f) {
         return false; // topP out of valid range
+      }
+    }
+
+    if (contentConfig.topK().isPresent()) {
+      float topK = contentConfig.topK().get();
+      if (topK < 1 || topK > 64) {
+        return false; // topK out of valid range
       }
     }
 
