@@ -189,6 +189,11 @@ public class SpringAIAutoConfiguration {
       return extractedName;
     }
 
+    // Check if model name is configured in properties
+    if (properties.getModel() != null && !properties.getModel().trim().isEmpty()) {
+      return properties.getModel();
+    }
+
     return "Unknown Embedding Model Name";
   }
 
@@ -199,19 +204,28 @@ public class SpringAIAutoConfiguration {
    * @return the extracted model name, or null if not extractable
    */
   private String extractEmbeddingModelNameFromInstance(EmbeddingModel embeddingModel) {
-    String className = embeddingModel.getClass().getSimpleName();
-    logger.debug("Extracting embedding model name from class: {}", className);
+    try {
+      // Try to get the default options from the model using reflection
+      java.lang.reflect.Method getDefaultOptions =
+          embeddingModel.getClass().getMethod("getDefaultOptions");
+      Object options = getDefaultOptions.invoke(embeddingModel);
 
-    // Simple heuristic based on class name
-    if (className.contains("OpenAi")) {
-      return "text-embedding-3-small"; // Default OpenAI embedding model
-    } else if (className.contains("Anthropic")) {
-      return "claude-embedding"; // Hypothetical Anthropic embedding model
-    } else if (className.contains("Vertex")) {
-      return "text-embedding-004"; // Google Vertex AI embedding model
+      if (options != null) {
+        // Try to get the model name from the options
+        java.lang.reflect.Method getModel = options.getClass().getMethod("getModel");
+        Object modelName = getModel.invoke(options);
+
+        if (modelName instanceof String && !((String) modelName).trim().isEmpty()) {
+          logger.debug("Extracted embedding model name from options: {}", modelName);
+          return (String) modelName;
+        }
+      }
+    } catch (Exception e) {
+      logger.debug(
+          "Could not extract embedding model name via getDefaultOptions(): {}", e.getMessage());
     }
 
-    return null; // Let the properties default be used
+    return null;
   }
 
   /**
@@ -221,22 +235,26 @@ public class SpringAIAutoConfiguration {
    * @return the extracted model name, or null if not extractable
    */
   private String extractModelNameFromInstance(Object model) {
-    // This is a simplified implementation
-    // In practice, you might want to use reflection or model-specific methods
-    // to extract the actual model name being used
-    String className = model.getClass().getSimpleName();
-    logger.debug("Extracting model name from class: {}", className);
+    try {
+      // Try to get the default options from the model using reflection
+      java.lang.reflect.Method getDefaultOptions = model.getClass().getMethod("getDefaultOptions");
+      Object options = getDefaultOptions.invoke(model);
 
-    // Simple heuristic based on class name
-    if (className.contains("OpenAi")) {
-      return "gpt-4o-mini"; // Default OpenAI model
-    } else if (className.contains("Anthropic")) {
-      return "claude-3-5-sonnet-20241022"; // Default Anthropic model
-    } else if (className.contains("Ollama")) {
-      return "llama3.2"; // Default Ollama model
+      if (options != null) {
+        // Try to get the model name from the options
+        java.lang.reflect.Method getModel = options.getClass().getMethod("getModel");
+        Object modelName = getModel.invoke(options);
+
+        if (modelName instanceof String && !((String) modelName).trim().isEmpty()) {
+          logger.debug("Extracted model name from options: {}", modelName);
+          return (String) modelName;
+        }
+      }
+    } catch (Exception e) {
+      logger.debug("Could not extract model name via getDefaultOptions(): {}", e.getMessage());
     }
 
-    return null; // Let the properties default be used
+    return null;
   }
 
   /**
