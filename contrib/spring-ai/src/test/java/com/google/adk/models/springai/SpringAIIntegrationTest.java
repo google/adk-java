@@ -42,7 +42,7 @@ import reactor.core.publisher.Flux;
  */
 class SpringAIIntegrationTest {
 
-  public static final String GPT_4_O_MINI = "gpt-4o-mini";
+  public static final String GEMINI_2_5_FLASH = "gemini-2.0-flash";
 
   @Test
   void testSimpleAgentWithDummyChatModel() {
@@ -63,7 +63,7 @@ class SpringAIIntegrationTest {
         LlmAgent.builder()
             .name("science-app")
             .description("Science teacher agent")
-            .model(new SpringAI(dummyChatModel, GPT_4_O_MINI))
+            .model(new SpringAI(dummyChatModel, GEMINI_2_5_FLASH))
             .instruction(
                 """
                 You are a helpful science teacher that explains science concepts
@@ -135,7 +135,7 @@ class SpringAIIntegrationTest {
         LlmAgent.builder()
             .name("friendly-weather-app")
             .description("Friend agent that knows about the weather")
-            .model(new SpringAI(dummyChatModel, GPT_4_O_MINI))
+            .model(new SpringAI(dummyChatModel, GEMINI_2_5_FLASH))
             .instruction(
                 """
                 You are a friendly assistant.
@@ -206,7 +206,7 @@ class SpringAIIntegrationTest {
         LlmAgent.builder()
             .name("streaming-science-app")
             .description("Science teacher agent with streaming")
-            .model(new SpringAI(dummyStreamingChatModel, GPT_4_O_MINI))
+            .model(new SpringAI(dummyStreamingChatModel, GEMINI_2_5_FLASH))
             .instruction(
                 """
                 You are a helpful science teacher. Keep your answers concise

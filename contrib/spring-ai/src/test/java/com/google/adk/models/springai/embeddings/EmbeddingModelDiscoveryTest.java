@@ -15,6 +15,8 @@
  */
 package com.google.adk.models.springai;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.embedding.EmbeddingRequest;
@@ -33,22 +35,13 @@ class EmbeddingModelDiscoveryTest {
     Class<?> embeddingRequestClass = EmbeddingRequest.class;
     Class<?> embeddingResponseClass = EmbeddingResponse.class;
 
-    System.out.println("EmbeddingModel available: " + embeddingModelClass.getName());
-    System.out.println("EmbeddingRequest available: " + embeddingRequestClass.getName());
-    System.out.println("EmbeddingResponse available: " + embeddingResponseClass.getName());
+    assertThat(embeddingModelClass).isNotNull();
+    assertThat(embeddingRequestClass).isNotNull();
+    assertThat(embeddingResponseClass).isNotNull();
 
-    // Print methods to understand the API
-    System.out.println("\nEmbeddingModel methods:");
-    for (var method : embeddingModelClass.getMethods()) {
-      if (method.getDeclaringClass() == embeddingModelClass) {
-        System.out.println(
-            "  "
-                + method.getName()
-                + "("
-                + java.util.Arrays.toString(method.getParameterTypes())
-                + "): "
-                + method.getReturnType().getSimpleName());
-      }
-    }
+    // Verify EmbeddingModel has expected methods
+    assertThat(embeddingModelClass.getMethods())
+        .extracting("name")
+        .contains("call", "embed", "dimensions");
   }
 }

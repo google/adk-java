@@ -85,30 +85,24 @@ class SpringAIConfigurationTest {
     // Users can configure their preferred provider through Spring AI's configuration
     // without needing provider-specific ADK adapters
 
-    // Example: User could configure OpenAI like:
-    // @Bean
-    // public ChatModel openAiChatModel() {
-    //   return new OpenAiChatModel(new OpenAiApi(apiKey));
-    // }
-    //
-    // @Bean
-    // public SpringAI springAI(ChatModel chatModel) {
-    //   return new SpringAI(chatModel, "gpt-4");
-    // }
-
-    // Example: User could configure Anthropic like:
-    // @Bean
-    // public ChatModel anthropicChatModel() {
-    //   return new AnthropicChatModel(new AnthropicApi(apiKey));
-    // }
-    //
-    // @Bean
-    // public SpringAI springAI(ChatModel chatModel) {
-    //   return new SpringAI(chatModel, "claude-3-5-sonnet");
-    // }
-
     // The SpringAI wrapper remains the same regardless of provider
     assertThat(springAI).isNotNull();
     assertThat(springAI.model()).isEqualTo("test-model");
+
+    // Simulate different provider configurations
+    ChatModel mockOpenAiModel = mock(ChatModel.class);
+    SpringAI openAiSpringAI = new SpringAI(mockOpenAiModel, "gpt-4o-mini");
+    assertThat(openAiSpringAI).isNotNull();
+    assertThat(openAiSpringAI.model()).isEqualTo("gpt-4o-mini");
+
+    ChatModel mockAnthropicModel = mock(ChatModel.class);
+    SpringAI anthropicSpringAI = new SpringAI(mockAnthropicModel, "claude-4-5-sonnet-20250929");
+    assertThat(anthropicSpringAI).isNotNull();
+    assertThat(anthropicSpringAI.model()).isEqualTo("claude-4-5-sonnet-20250929");
+
+    ChatModel mockOllamaModel = mock(ChatModel.class);
+    SpringAI ollamaSpringAI = new SpringAI(mockOllamaModel, "llama3.2");
+    assertThat(ollamaSpringAI).isNotNull();
+    assertThat(ollamaSpringAI.model()).isEqualTo("llama3.2");
   }
 }

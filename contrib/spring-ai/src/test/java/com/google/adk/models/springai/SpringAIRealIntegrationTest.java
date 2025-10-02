@@ -32,9 +32,9 @@ import org.springframework.ai.chat.model.ChatModel;
 /**
  * Real-world integration tests for SpringAI that use actual API keys and model providers.
  *
- * <p><strong>Note on Spring AI vs LangChain4j Integration Testing Approach:</strong>
+ * <p><strong>Note on the Spring AI Integration Testing Approach:</strong>
  *
- * <p>Unlike LangChain4j which favors programmatic model instantiation, Spring AI is designed around
+ * <p>Spring AI is designed around
  * configuration-driven dependency injection and auto-configuration. The manual instantiation of
  * Spring AI models (AnthropicChatModel, OpenAiChatModel, etc.) requires complex constructor
  * parameters including: - API client instances with multiple configuration parameters -

@@ -13,8 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.google.adk.models.springai;
+package com.google.adk.models.springai.embeddings;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -45,12 +46,14 @@ class EmbeddingApiTest {
     List<float[]> result2 = mockModel.embed(List.of("test1", "test2"));
     int dims = mockModel.dimensions();
 
-    System.out.println("Single embed result length: " + result1.length);
-    System.out.println("Batch embed result size: " + result2.size());
-    System.out.println("Dimensions: " + dims);
+    assertThat(result1).hasSize(3);
+    assertThat(result1).containsExactly(0.1f, 0.2f, 0.3f);
+    assertThat(result2).hasSize(1);
+    assertThat(dims).isEqualTo(384);
 
     // Test request creation
     EmbeddingRequest request = new EmbeddingRequest(List.of("test"), null);
-    System.out.println("Request created: " + request);
+    assertThat(request).isNotNull();
+    assertThat(request.getInstructions()).containsExactly("test");
   }
 }
