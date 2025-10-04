@@ -78,11 +78,20 @@ public final class VertexAiSessionService implements BaseSessionService {
       @Nullable String sessionId) {
 
     String reasoningEngineId = parseReasoningEngineId(appName);
-    JsonNode getSessionResponseMap = client.createSession(reasoningEngineId, userId, state);
+    return client
+        .createSession(reasoningEngineId, userId, state)
+        .map(
+            getSessionResponseMap ->
+                parseSession(getSessionResponseMap, appName, userId, sessionId))
+        .toSingle();
+  }
+
+  private static Session parseSession(
+      JsonNode getSessionResponseMap, String appName, String userId, String fallbackSessionId) {
     String sessId =
         Optional.ofNullable(getSessionResponseMap.get("name"))
             .map(name -> Iterables.getLast(Splitter.on('/').splitToList(name.asText())))
-            .orElse(sessionId);
+            .orElse(fallbackSessionId);
     Instant updateTimestamp = Instant.parse(getSessionResponseMap.get("updateTime").asText());
     ConcurrentMap<String, Object> sessionState = null;
     if (getSessionResponseMap != null && getSessionResponseMap.has("sessionState")) {
@@ -93,25 +102,28 @@ public final class VertexAiSessionService implements BaseSessionService {
                 sessionStateNode, new TypeReference<ConcurrentMap<String, Object>>() {});
       }
     }
-    return Single.just(
-        Session.builder(sessId)
-            .appName(appName)
-            .userId(userId)
-            .lastUpdateTime(updateTimestamp)
-            .state(sessionState == null ? new ConcurrentHashMap<>() : sessionState)
-            .build());
+    return Session.builder(sessId)
+        .appName(appName)
+        .userId(userId)
+        .lastUpdateTime(updateTimestamp)
+        .state(sessionState == null ? new ConcurrentHashMap<>() : sessionState)
+        .build();
   }
 
   @Override
   public Single<ListSessionsResponse> listSessions(String appName, String userId) {
     String reasoningEngineId = parseReasoningEngineId(appName);
 
-    JsonNode listSessionsResponseMap = client.listSessions(reasoningEngineId, userId);
+    return client
+        .listSessions(reasoningEngineId, userId)
+        .map(
+            listSessionsResponseMap ->
+                parseListSessionsResponse(listSessionsResponseMap, appName, userId))
+        .defaultIfEmpty(ListSessionsResponse.builder().build());
+  }
 
-    // Handles empty response case
-    if (listSessionsResponseMap == null) {
-      return Single.just(ListSessionsResponse.builder().build());
-    }
+  private ListSessionsResponse parseListSessionsResponse(
+      JsonNode listSessionsResponseMap, String appName, String userId) {
     List<Map<String, Object>> apiSessions =
         objectMapper.convertValue(
             listSessionsResponseMap.get("sessions"),
@@ -131,125 +143,132 @@ public final class VertexAiSessionService implements BaseSessionService {
               .build();
       sessions.add(session);
     }
-    return Single.just(ListSessionsResponse.builder().sessions(sessions).build());
+    return ListSessionsResponse.builder().sessions(sessions).build();
   }
 
   @Override
   public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
     String reasoningEngineId = parseReasoningEngineId(appName);
-    JsonNode listEventsResponse = client.listEvents(reasoningEngineId, sessionId);
+    return client
+        .listEvents(reasoningEngineId, sessionId)
+        .map(this::parseListEventsResponse)
+        .defaultIfEmpty(ListEventsResponse.builder().build());
+  }
 
-    if (listEventsResponse == null) {
-      return Single.just(ListEventsResponse.builder().build());
-    }
-
+  private ListEventsResponse parseListEventsResponse(JsonNode listEventsResponse) {
     JsonNode sessionEventsNode = listEventsResponse.get("sessionEvents");
     if (sessionEventsNode == null || sessionEventsNode.isEmpty()) {
-      return Single.just(ListEventsResponse.builder().events(new ArrayList<>()).build());
+      return ListEventsResponse.builder().events(new ArrayList<>()).build();
     }
-    return Single.just(
-        ListEventsResponse.builder()
-            .events(
-                objectMapper
-                    .convertValue(
-                        sessionEventsNode,
-                        new TypeReference<List<ConcurrentMap<String, Object>>>() {})
-                    .stream()
-                    .map(SessionJsonConverter::fromApiEvent)
-                    .collect(toCollection(ArrayList::new)))
-            .build());
+    return ListEventsResponse.builder()
+        .events(
+            objectMapper
+                .convertValue(
+                    sessionEventsNode, new TypeReference<List<ConcurrentMap<String, Object>>>() {})
+                .stream()
+                .map(SessionJsonConverter::fromApiEvent)
+                .collect(toCollection(ArrayList::new)))
+        .build();
   }
 
   @Override
   public Maybe<Session> getSession(
       String appName, String userId, String sessionId, Optional<GetSessionConfig> config) {
     String reasoningEngineId = parseReasoningEngineId(appName);
-    JsonNode getSessionResponseMap = client.getSession(reasoningEngineId, sessionId);
+    return client
+        .getSession(reasoningEngineId, sessionId)
+        .flatMap(
+            getSessionResponseMap -> {
+              String sessId =
+                  Optional.ofNullable(getSessionResponseMap.get("name"))
+                      .map(name -> Iterables.getLast(Splitter.on('/').splitToList(name.asText())))
+                      .orElse(sessionId);
+              Instant updateTimestamp =
+                  Optional.ofNullable(getSessionResponseMap.get("updateTime"))
+                      .map(updateTime -> Instant.parse(updateTime.asText()))
+                      .orElse(null);
 
-    if (getSessionResponseMap == null) {
-      return Maybe.empty();
-    }
-
-    String sessId =
-        Optional.ofNullable(getSessionResponseMap.get("name"))
-            .map(name -> Iterables.getLast(Splitter.on('/').splitToList(name.asText())))
-            .orElse(sessionId);
-    Instant updateTimestamp =
-        Optional.ofNullable(getSessionResponseMap.get("updateTime"))
-            .map(updateTime -> Instant.parse(updateTime.asText()))
-            .orElse(null);
-
-    ConcurrentMap<String, Object> sessionState = new ConcurrentHashMap<>();
-    if (getSessionResponseMap != null && getSessionResponseMap.has("sessionState")) {
-      sessionState.putAll(
-          objectMapper.convertValue(
-              getSessionResponseMap.get("sessionState"),
-              new TypeReference<ConcurrentMap<String, Object>>() {}));
-    }
-
-    return listEvents(appName, userId, sessionId)
-        .map(
-            response -> {
-              Session.Builder sessionBuilder =
-                  Session.builder(sessId)
-                      .appName(appName)
-                      .userId(userId)
-                      .lastUpdateTime(updateTimestamp)
-                      .state(sessionState);
-              List<Event> events = response.events();
-              if (events.isEmpty()) {
-                return sessionBuilder.build();
+              ConcurrentMap<String, Object> sessionState = new ConcurrentHashMap<>();
+              if (getSessionResponseMap != null && getSessionResponseMap.has("sessionState")) {
+                sessionState.putAll(
+                    objectMapper.convertValue(
+                        getSessionResponseMap.get("sessionState"),
+                        new TypeReference<ConcurrentMap<String, Object>>() {}));
               }
-              events =
-                  events.stream()
-                      .filter(
-                          event ->
-                              updateTimestamp == null
-                                  || Instant.ofEpochMilli(event.timestamp())
-                                      .isBefore(updateTimestamp))
-                      .sorted(Comparator.comparing(Event::timestamp))
-                      .collect(toCollection(ArrayList::new));
 
-              if (config.isPresent()) {
-                if (config.get().numRecentEvents().isPresent()) {
-                  int numRecentEvents = config.get().numRecentEvents().get();
-                  if (events.size() > numRecentEvents) {
-                    events = events.subList(events.size() - numRecentEvents, events.size());
-                  }
-                } else if (config.get().afterTimestamp().isPresent()) {
-                  Instant afterTimestamp = config.get().afterTimestamp().get();
-                  int i = events.size() - 1;
-                  while (i >= 0) {
-                    if (Instant.ofEpochMilli(events.get(i).timestamp()).isBefore(afterTimestamp)) {
-                      break;
-                    }
-                    i -= 1;
-                  }
-                  if (i >= 0) {
-                    events = events.subList(i, events.size());
-                  }
-                }
-              }
-              return sessionBuilder.events(events).build();
-            })
-        .toMaybe();
+              return listEvents(appName, userId, sessionId)
+                  .map(
+                      response -> {
+                        Session.Builder sessionBuilder =
+                            Session.builder(sessId)
+                                .appName(appName)
+                                .userId(userId)
+                                .lastUpdateTime(updateTimestamp)
+                                .state(sessionState);
+                        List<Event> events = response.events();
+                        if (events.isEmpty()) {
+                          return sessionBuilder.build();
+                        }
+                        events = filterEvents(events, updateTimestamp, config);
+                        return sessionBuilder.events(events).build();
+                      })
+                  .toMaybe();
+            });
+  }
+
+  private static List<Event> filterEvents(
+      List<Event> originalEvents,
+      @Nullable Instant updateTimestamp,
+      Optional<GetSessionConfig> config) {
+    List<Event> events =
+        originalEvents.stream()
+            .filter(
+                event ->
+                    updateTimestamp == null
+                        || Instant.ofEpochMilli(event.timestamp()).isBefore(updateTimestamp))
+            .sorted(Comparator.comparing(Event::timestamp))
+            .collect(toCollection(ArrayList::new));
+
+    if (config.isPresent()) {
+      if (config.get().numRecentEvents().isPresent()) {
+        int numRecentEvents = config.get().numRecentEvents().get();
+        if (events.size() > numRecentEvents) {
+          events = events.subList(events.size() - numRecentEvents, events.size());
+        }
+      } else if (config.get().afterTimestamp().isPresent()) {
+        Instant afterTimestamp = config.get().afterTimestamp().get();
+        int i = events.size() - 1;
+        while (i >= 0) {
+          if (Instant.ofEpochMilli(events.get(i).timestamp()).isBefore(afterTimestamp)) {
+            break;
+          }
+          i -= 1;
+        }
+        if (i >= 0) {
+          events = events.subList(i, events.size());
+        }
+      }
+    }
+    return events;
   }
 
   @Override
   public Completable deleteSession(String appName, String userId, String sessionId) {
     String reasoningEngineId = parseReasoningEngineId(appName);
-    client.deleteSession(reasoningEngineId, sessionId);
-    return Completable.complete();
+    return client.deleteSession(reasoningEngineId, sessionId);
   }
 
   @Override
   public Single<Event> appendEvent(Session session, Event event) {
-    BaseSessionService.super.appendEvent(session, event);
-
     String reasoningEngineId = parseReasoningEngineId(session.appName());
-    client.appendEvent(
-        reasoningEngineId, session.id(), SessionJsonConverter.convertEventToJson(event));
-    return Single.just(event);
+    return BaseSessionService.super
+        .appendEvent(session, event)
+        .flatMap(
+            e ->
+                client
+                    .appendEvent(
+                        reasoningEngineId, session.id(), SessionJsonConverter.convertEventToJson(e))
+                    .toSingleDefault(e));
   }
 
   /**
