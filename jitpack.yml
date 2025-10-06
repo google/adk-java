@@ -1,0 +1,2 @@
+install:
+  - mvn -Pa2a clean install -DskipTests
