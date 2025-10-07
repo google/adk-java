@@ -29,6 +29,7 @@
     <module>dev</module>
     <module>maven_plugin</module>
     <module>contrib/langchain4j</module>
+    <module>contrib/spring-boot-starter-adk</module>
     <module>tutorials/city-time-weather</module>
     <module>a2a</module>
     <module>a2a/webservice</module>
