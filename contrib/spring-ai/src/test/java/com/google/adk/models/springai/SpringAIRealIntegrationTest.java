@@ -34,12 +34,11 @@ import org.springframework.ai.chat.model.ChatModel;
  *
  * <p><strong>Note on the Spring AI Integration Testing Approach:</strong>
  *
- * <p>Spring AI is designed around
- * configuration-driven dependency injection and auto-configuration. The manual instantiation of
- * Spring AI models (AnthropicChatModel, OpenAiChatModel, etc.) requires complex constructor
- * parameters including: - API client instances with multiple configuration parameters -
- * RetryTemplate, ObservationRegistry, ToolCallingManager - WebClient/RestClient builders and error
- * handlers
+ * <p>Spring AI is designed around configuration-driven dependency injection and auto-configuration.
+ * The manual instantiation of Spring AI models (AnthropicChatModel, OpenAiChatModel, etc.) requires
+ * complex constructor parameters including: - API client instances with multiple configuration
+ * parameters - RetryTemplate, ObservationRegistry, ToolCallingManager - WebClient/RestClient
+ * builders and error handlers
  *
  * <p>This complexity demonstrates why Spring AI is typically used with Spring Boot
  * auto-configuration via application properties:

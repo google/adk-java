@@ -32,7 +32,7 @@ To use ADK Java with the Spring AI integration in your application, add the foll
     <dependency>
         <groupId>org.springframework.ai</groupId>
         <artifactId>spring-ai-bom</artifactId>
-        <version>1.1.0-M2</version>
+        <version>1.1.0-M3</version>
         <type>pom</type>
         <scope>import</scope>
     </dependency>
