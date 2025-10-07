@@ -23,9 +23,6 @@ target/
 *.iws
 out/
 
-# VS Code files
-.vscode/settings.json
-
 # OS-specific junk
 .DS_Store
 Thumbs.db
