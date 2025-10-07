@@ -44,12 +44,13 @@ import org.slf4j.LoggerFactory;
 public class FunctionTool extends BaseTool {
 
   private static final Logger logger = LoggerFactory.getLogger(FunctionTool.class);
-  private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
+  private static final ObjectMapper defaultObjectMapper = JsonBaseModel.getMapper();
 
   private final @Nullable Object instance;
   private final Method func;
   private final FunctionDeclaration funcDeclaration;
   private final boolean requireConfirmation;
+  private final ObjectMapper objectMapper;
 
   public static FunctionTool create(Object instance, Method func) {
     return create(instance, func, /* requireConfirmation= */ false);
@@ -166,11 +167,25 @@ public class FunctionTool extends BaseTool {
   }
 
   protected FunctionTool(@Nullable Object instance, Method func, boolean isLongRunning) {
-    this(instance, func, isLongRunning, /* requireConfirmation= */ false);
+    this(instance, func, isLongRunning, /* requireConfirmation= */ false, defaultObjectMapper);
   }
 
   protected FunctionTool(
       @Nullable Object instance, Method func, boolean isLongRunning, boolean requireConfirmation) {
+    this(instance, func, isLongRunning, requireConfirmation, defaultObjectMapper);
+  }
+
+  protected FunctionTool(
+      @Nullable Object instance, Method func, boolean isLongRunning, ObjectMapper objectMapper) {
+    this(instance, func, isLongRunning, /* requireConfirmation= */ false, objectMapper);
+  }
+
+  protected FunctionTool(
+      @Nullable Object instance,
+      Method func,
+      boolean isLongRunning,
+      boolean requireConfirmation,
+      ObjectMapper objectMapper) {
     super(
         func.isAnnotationPresent(Annotations.Schema.class)
                 && !func.getAnnotation(Annotations.Schema.class).name().isEmpty()
@@ -193,6 +208,7 @@ public class FunctionTool extends BaseTool {
         FunctionCallingUtils.buildFunctionDeclaration(
             this.func, ImmutableList.of("toolContext", "inputStream"));
     this.requireConfirmation = requireConfirmation;
+    this.objectMapper = objectMapper;
   }
 
   @Override
@@ -365,7 +381,7 @@ public class FunctionTool extends BaseTool {
     }
   }
 
-  private static List<Object> createList(List<Object> values, Class<?> type) {
+  private List<Object> createList(List<Object> values, Class<?> type) {
     List<Object> list = new ArrayList<>();
     // List of parameterized type is not supported.
     if (type == null) {
@@ -387,7 +403,7 @@ public class FunctionTool extends BaseTool {
     return list;
   }
 
-  private static Object castValue(Object value, Class<?> type) {
+  private Object castValue(Object value, Class<?> type) {
     if (type.equals(Integer.class) || type.equals(int.class)) {
       if (value instanceof Integer) {
         return value;
