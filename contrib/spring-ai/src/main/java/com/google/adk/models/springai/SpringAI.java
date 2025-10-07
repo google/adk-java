@@ -161,11 +161,11 @@ public class SpringAI extends BaseLlm {
         return Flowable.error(new IllegalStateException("ChatModel is not configured"));
       }
 
-      return generateNonStreamingContent(llmRequest);
+      return generateContent(llmRequest);
     }
   }
 
-  private Flowable<LlmResponse> generateNonStreamingContent(LlmRequest llmRequest) {
+  private Flowable<LlmResponse> generateContent(LlmRequest llmRequest) {
     SpringAIObservabilityHandler.RequestContext context =
         observabilityHandler.startRequest(model(), "chat");
 
@@ -206,10 +206,6 @@ public class SpringAI extends BaseLlm {
             Flux<ChatResponse> responseFlux = streamingChatModel.stream(prompt);
 
             responseFlux
-                .doOnSubscribe(
-                    subscription -> {
-                      // Handle subscription for backpressure
-                    })
                 .doOnError(
                     error -> {
                       observabilityHandler.recordError(context, error);
