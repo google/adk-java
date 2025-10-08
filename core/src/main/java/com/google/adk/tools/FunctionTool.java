@@ -46,16 +46,18 @@ public class FunctionTool extends BaseTool {
   private static final Logger logger = LoggerFactory.getLogger(FunctionTool.class);
   private static final ObjectMapper OBJECT_MAPPER = JsonBaseModel.getMapper();
 
-  @Nullable private final Object instance;
+  private final @Nullable Object instance;
   private final Method func;
   private final FunctionDeclaration funcDeclaration;
 
   public static FunctionTool create(Object instance, Method func) {
     if (!areParametersAnnotatedWithSchema(func) && wasCompiledWithDefaultParameterNames(func)) {
       logger.error(
-          "Functions used in tools must have their parameters annotated with @Schema or at least"
-              + " the code must be compiled with the -parameters flag as a fallback. Your function"
-              + " tool will likely not work as expected and exit at runtime.");
+          """
+          Functions used in tools must have their parameters annotated with @Schema or at least
+           the code must be compiled with the -parameters flag as a fallback. Your function
+           tool will likely not work as expected and exit at runtime.
+          """);
     }
     if (!Modifier.isStatic(func.getModifiers()) && !func.getDeclaringClass().isInstance(instance)) {
       throw new IllegalArgumentException(
@@ -70,9 +72,11 @@ public class FunctionTool extends BaseTool {
   public static FunctionTool create(Method func) {
     if (!areParametersAnnotatedWithSchema(func) && wasCompiledWithDefaultParameterNames(func)) {
       logger.error(
-          "Functions used in tools must have their parameters annotated with @Schema or at least"
-              + " the code must be compiled with the -parameters flag as a fallback. Your function"
-              + " tool will likely not work as expected and exit at runtime.");
+          """
+          Functions used in tools must have their parameters annotated with @Schema or at least
+           the code must be compiled with the -parameters flag as a fallback. Your function
+           tool will likely not work as expected and exit at runtime.
+          """);
     }
     if (!Modifier.isStatic(func.getModifiers())) {
       throw new IllegalArgumentException("The method provided must be static.");
@@ -189,11 +193,11 @@ public class FunctionTool extends BaseTool {
                   && !parameters[i].getAnnotation(Annotations.Schema.class).name().isEmpty()
               ? parameters[i].getAnnotation(Annotations.Schema.class).name()
               : parameters[i].getName();
-      if (paramName.equals("toolContext")) {
+      if ("toolContext".equals(paramName)) {
         arguments[i] = toolContext;
         continue;
       }
-      if (paramName.equals("inputStream")) {
+      if ("inputStream".equals(paramName)) {
         arguments[i] = null;
         continue;
       }
@@ -261,11 +265,11 @@ public class FunctionTool extends BaseTool {
                   && !parameters[i].getAnnotation(Annotations.Schema.class).name().isEmpty()
               ? parameters[i].getAnnotation(Annotations.Schema.class).name()
               : parameters[i].getName();
-      if (paramName.equals("toolContext")) {
+      if ("toolContext".equals(paramName)) {
         arguments[i] = toolContext;
         continue;
       }
-      if (paramName.equals("inputStream")) {
+      if ("inputStream".equals(paramName)) {
         if (invocationContext.activeStreamingTools().containsKey(this.name())
             && invocationContext.activeStreamingTools().get(this.name()).stream() != null) {
           arguments[i] = invocationContext.activeStreamingTools().get(this.name()).stream();
