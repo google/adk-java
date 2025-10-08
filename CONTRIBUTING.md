@@ -76,3 +76,15 @@ adk-python for validation.
 ### Javadocs
 
 We want our Javadocs to be concise and meaningful.
+
+## IDEs
+
+### VS Code
+
+This project includes recommended VS Code [extensions](.vscode/extensions.json) and minimal required [settings](.vscode/settings.json).
+
+Those minimal settings are required, and not just a recommendation or preference.
+More specifically, they make sure that working with this code in VS Code matches the [code format](#format) expectations of the Maven build.
+
+You may also have other VS Code settings which are your "personal preferences" instead of "project requirements".
+We recommend that you keep personal settings in your VS Code User Settings instead. The location of this file varies by platform (e.g., `~/.config/Code/User/settings.json` on Linux).
