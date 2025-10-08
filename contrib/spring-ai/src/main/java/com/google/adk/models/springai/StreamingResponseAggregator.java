@@ -20,18 +20,26 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Aggregates streaming responses from Spring AI models.
  *
  * <p>This class helps manage the accumulation of partial responses in streaming mode, ensuring that
  * text content is properly concatenated and tool calls are correctly handled.
+ *
+ * <p><b>Thread Safety:</b> This class is thread-safe. All public methods are synchronized to ensure
+ * safe concurrent access. The internal state is protected using a combination of thread-safe data
+ * structures and synchronization locks.
  */
 public class StreamingResponseAggregator {
 
-  private final StringBuilder textAccumulator = new StringBuilder();
-  private final List<Part> toolCallParts = new ArrayList<>();
-  private boolean isFirstResponse = true;
+  private final StringBuffer textAccumulator = new StringBuffer();
+  private final List<Part> toolCallParts = new CopyOnWriteArrayList<>();
+  private final ReadWriteLock lock = new ReentrantReadWriteLock();
+  private volatile boolean isFirstResponse = true;
 
   /**
    * Processes a streaming LlmResponse and returns the current aggregated state.
@@ -49,38 +57,43 @@ public class StreamingResponseAggregator {
       return response;
     }
 
-    // Process each part in the response
-    for (Part part : content.parts().get()) {
-      if (part.text().isPresent()) {
-        textAccumulator.append(part.text().get());
-      } else if (part.functionCall().isPresent()) {
-        // Tool calls are typically complete in each response
-        toolCallParts.add(part);
+    lock.writeLock().lock();
+    try {
+      // Process each part in the response
+      for (Part part : content.parts().get()) {
+        if (part.text().isPresent()) {
+          textAccumulator.append(part.text().get());
+        } else if (part.functionCall().isPresent()) {
+          // Tool calls are typically complete in each response
+          toolCallParts.add(part);
+        }
       }
+
+      // Create aggregated content
+      List<Part> aggregatedParts = new ArrayList<>();
+      if (textAccumulator.length() > 0) {
+        aggregatedParts.add(Part.fromText(textAccumulator.toString()));
+      }
+      aggregatedParts.addAll(toolCallParts);
+
+      Content aggregatedContent = Content.builder().role("model").parts(aggregatedParts).build();
+
+      // Determine if this is still partial
+      boolean isPartial = response.partial().orElse(false);
+      boolean isTurnComplete = response.turnComplete().orElse(true);
+
+      LlmResponse aggregatedResponse =
+          LlmResponse.builder()
+              .content(aggregatedContent)
+              .partial(isPartial)
+              .turnComplete(isTurnComplete)
+              .build();
+
+      isFirstResponse = false;
+      return aggregatedResponse;
+    } finally {
+      lock.writeLock().unlock();
     }
-
-    // Create aggregated content
-    List<Part> aggregatedParts = new ArrayList<>();
-    if (textAccumulator.length() > 0) {
-      aggregatedParts.add(Part.fromText(textAccumulator.toString()));
-    }
-    aggregatedParts.addAll(toolCallParts);
-
-    Content aggregatedContent = Content.builder().role("model").parts(aggregatedParts).build();
-
-    // Determine if this is still partial
-    boolean isPartial = response.partial().orElse(false);
-    boolean isTurnComplete = response.turnComplete().orElse(true);
-
-    LlmResponse aggregatedResponse =
-        LlmResponse.builder()
-            .content(aggregatedContent)
-            .partial(isPartial)
-            .turnComplete(isTurnComplete)
-            .build();
-
-    isFirstResponse = false;
-    return aggregatedResponse;
   }
 
   /**
@@ -89,36 +102,59 @@ public class StreamingResponseAggregator {
    * @return The final complete response
    */
   public LlmResponse getFinalResponse() {
-    List<Part> finalParts = new ArrayList<>();
-    if (textAccumulator.length() > 0) {
-      finalParts.add(Part.fromText(textAccumulator.toString()));
+    lock.writeLock().lock();
+    try {
+      List<Part> finalParts = new ArrayList<>();
+      if (textAccumulator.length() > 0) {
+        finalParts.add(Part.fromText(textAccumulator.toString()));
+      }
+      finalParts.addAll(toolCallParts);
+
+      Content finalContent = Content.builder().role("model").parts(finalParts).build();
+
+      LlmResponse finalResponse =
+          LlmResponse.builder().content(finalContent).partial(false).turnComplete(true).build();
+
+      // Reset internal state without calling reset() to avoid nested locking
+      textAccumulator.setLength(0);
+      toolCallParts.clear();
+      isFirstResponse = true;
+
+      return finalResponse;
+    } finally {
+      lock.writeLock().unlock();
     }
-    finalParts.addAll(toolCallParts);
-
-    Content finalContent = Content.builder().role("model").parts(finalParts).build();
-
-    LlmResponse finalResponse =
-        LlmResponse.builder().content(finalContent).partial(false).turnComplete(true).build();
-
-    // Reset for next use
-    reset();
-    return finalResponse;
   }
 
   /** Resets the aggregator for reuse. */
   public void reset() {
-    textAccumulator.setLength(0);
-    toolCallParts.clear();
-    isFirstResponse = true;
+    lock.writeLock().lock();
+    try {
+      textAccumulator.setLength(0);
+      toolCallParts.clear();
+      isFirstResponse = true;
+    } finally {
+      lock.writeLock().unlock();
+    }
   }
 
   /** Returns true if no content has been processed yet. */
   public boolean isEmpty() {
-    return textAccumulator.length() == 0 && toolCallParts.isEmpty();
+    lock.readLock().lock();
+    try {
+      return textAccumulator.length() == 0 && toolCallParts.isEmpty();
+    } finally {
+      lock.readLock().unlock();
+    }
   }
 
   /** Returns the current accumulated text length. */
   public int getAccumulatedTextLength() {
-    return textAccumulator.length();
+    lock.readLock().lock();
+    try {
+      return textAccumulator.length();
+    } finally {
+      lock.readLock().unlock();
+    }
   }
 }

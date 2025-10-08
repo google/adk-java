@@ -311,7 +311,7 @@ public class MessageConverter {
               objectMapper.readValue(toolCall.arguments(), MAP_TYPE_REFERENCE);
           parts.add(Part.fromFunctionCall(toolCall.name(), args));
         } catch (JsonProcessingException e) {
-          throw new RuntimeException("Failed to parse tool call arguments", e);
+          throw MessageConversionException.jsonParsingFailed("tool call arguments", e);
         }
       }
     }
@@ -323,7 +323,7 @@ public class MessageConverter {
     try {
       return objectMapper.writeValueAsString(object);
     } catch (JsonProcessingException e) {
-      throw new RuntimeException("Failed to convert object to JSON", e);
+      throw MessageConversionException.jsonParsingFailed("object serialization", e);
     }
   }
 }
