@@ -25,6 +25,7 @@ public final class RunConfigTest {
             .setSaveInputBlobsAsArtifacts(true)
             .setStreamingMode(RunConfig.StreamingMode.SSE)
             .setOutputAudioTranscription(audioTranscriptionConfig)
+            .setInputAudioTranscription(audioTranscriptionConfig)
             .setMaxLlmCalls(10)
             .build();
 
@@ -33,6 +34,7 @@ public final class RunConfigTest {
     assertThat(runConfig.saveInputBlobsAsArtifacts()).isTrue();
     assertThat(runConfig.streamingMode()).isEqualTo(RunConfig.StreamingMode.SSE);
     assertThat(runConfig.outputAudioTranscription()).isEqualTo(audioTranscriptionConfig);
+    assertThat(runConfig.inputAudioTranscription()).isEqualTo(audioTranscriptionConfig);
     assertThat(runConfig.maxLlmCalls()).isEqualTo(10);
   }
 
@@ -45,6 +47,7 @@ public final class RunConfigTest {
     assertThat(runConfig.saveInputBlobsAsArtifacts()).isFalse();
     assertThat(runConfig.streamingMode()).isEqualTo(RunConfig.StreamingMode.NONE);
     assertThat(runConfig.outputAudioTranscription()).isNull();
+    assertThat(runConfig.inputAudioTranscription()).isNull();
     assertThat(runConfig.maxLlmCalls()).isEqualTo(500);
   }
 
@@ -66,6 +69,7 @@ public final class RunConfigTest {
             .setSaveInputBlobsAsArtifacts(true)
             .setStreamingMode(RunConfig.StreamingMode.BIDI)
             .setOutputAudioTranscription(audioTranscriptionConfig)
+            .setInputAudioTranscription(audioTranscriptionConfig)
             .setMaxLlmCalls(20)
             .build();
 
@@ -74,6 +78,24 @@ public final class RunConfigTest {
     assertThat(runConfig.saveInputBlobsAsArtifacts()).isTrue();
     assertThat(runConfig.streamingMode()).isEqualTo(RunConfig.StreamingMode.BIDI);
     assertThat(runConfig.outputAudioTranscription()).isEqualTo(audioTranscriptionConfig);
+    assertThat(runConfig.inputAudioTranscription()).isEqualTo(audioTranscriptionConfig);
     assertThat(runConfig.maxLlmCalls()).isEqualTo(20);
+  }
+
+  @Test
+  public void testInputAudioTranscriptionOnly() {
+    AudioTranscriptionConfig inputTranscriptionConfig = AudioTranscriptionConfig.builder().build();
+
+    RunConfig runConfig =
+        RunConfig.builder()
+            .setStreamingMode(RunConfig.StreamingMode.BIDI)
+            .setResponseModalities(ImmutableList.of(new Modality(Modality.Known.AUDIO)))
+            .setInputAudioTranscription(inputTranscriptionConfig)
+            .build();
+
+    assertThat(runConfig.inputAudioTranscription()).isEqualTo(inputTranscriptionConfig);
+    assertThat(runConfig.outputAudioTranscription()).isNull();
+    assertThat(runConfig.streamingMode()).isEqualTo(RunConfig.StreamingMode.BIDI);
+    assertThat(runConfig.responseModalities()).containsExactly(new Modality(Modality.Known.AUDIO));
   }
 }
