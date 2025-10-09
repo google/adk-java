@@ -18,7 +18,10 @@ package com.google.adk.models.springai.observability;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.google.adk.models.springai.properties.SpringAIProperties;
-import java.util.Map;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +29,7 @@ class SpringAIObservabilityHandlerTest {
 
   private SpringAIObservabilityHandler handler;
   private SpringAIProperties.Observability config;
+  private MeterRegistry meterRegistry;
 
   @BeforeEach
   void setUp() {
@@ -33,7 +37,8 @@ class SpringAIObservabilityHandlerTest {
     config.setEnabled(true);
     config.setMetricsEnabled(true);
     config.setIncludeContent(true);
-    handler = new SpringAIObservabilityHandler(config);
+    meterRegistry = new SimpleMeterRegistry();
+    handler = new SpringAIObservabilityHandler(config, meterRegistry);
   }
 
   @Test
@@ -50,7 +55,7 @@ class SpringAIObservabilityHandlerTest {
   @Test
   void testRequestContextWhenDisabled() {
     config.setEnabled(false);
-    handler = new SpringAIObservabilityHandler(config);
+    handler = new SpringAIObservabilityHandler(config, meterRegistry);
 
     SpringAIObservabilityHandler.RequestContext context =
         handler.startRequest("gpt-4o-mini", "chat");
@@ -65,11 +70,21 @@ class SpringAIObservabilityHandlerTest {
 
     handler.recordSuccess(context, 100, 50, 50);
 
-    Map<String, Number> metrics = handler.getMetrics();
-    assertThat(metrics).isNotEmpty();
-    assertThat(metrics.get("spring_ai_requests_total_gpt_4o_mini_chat")).isEqualTo(1L);
-    assertThat(metrics.get("spring_ai_requests_success_gpt_4o_mini_chat")).isEqualTo(1L);
-    assertThat(metrics.get("spring_ai_tokens_total_gpt_4o_mini")).isEqualTo(100.0);
+    // Verify metrics using Micrometer API
+    Counter totalCounter =
+        meterRegistry.find("spring.ai.requests.total").tag("model", "gpt-4o-mini").counter();
+    assertThat(totalCounter).isNotNull();
+    assertThat(totalCounter.count()).isEqualTo(1.0);
+
+    Counter successCounter =
+        meterRegistry.find("spring.ai.requests.success").tag("model", "gpt-4o-mini").counter();
+    assertThat(successCounter).isNotNull();
+    assertThat(successCounter.count()).isEqualTo(1.0);
+
+    Gauge tokenGauge =
+        meterRegistry.find("spring.ai.tokens.total").tag("model", "gpt-4o-mini").gauge();
+    assertThat(tokenGauge).isNotNull();
+    assertThat(tokenGauge.value()).isEqualTo(100.0);
   }
 
   @Test
@@ -80,11 +95,24 @@ class SpringAIObservabilityHandlerTest {
     RuntimeException error = new RuntimeException("Test error");
     handler.recordError(context, error);
 
-    Map<String, Number> metrics = handler.getMetrics();
-    assertThat(metrics).isNotEmpty();
-    assertThat(metrics.get("spring_ai_requests_total_gpt_4o_mini_chat")).isEqualTo(1L);
-    assertThat(metrics.get("spring_ai_requests_error_gpt_4o_mini_chat")).isEqualTo(1L);
-    assertThat(metrics.get("spring_ai_errors_by_type_RuntimeException")).isEqualTo(1L);
+    // Verify error metrics using Micrometer API
+    Counter totalCounter =
+        meterRegistry.find("spring.ai.requests.total").tag("model", "gpt-4o-mini").counter();
+    assertThat(totalCounter).isNotNull();
+    assertThat(totalCounter.count()).isEqualTo(1.0);
+
+    Counter errorCounter =
+        meterRegistry.find("spring.ai.requests.error").tag("model", "gpt-4o-mini").counter();
+    assertThat(errorCounter).isNotNull();
+    assertThat(errorCounter.count()).isEqualTo(1.0);
+
+    Counter errorTypeCounter =
+        meterRegistry
+            .find("spring.ai.errors.by.type")
+            .tag("error.type", "RuntimeException")
+            .counter();
+    assertThat(errorTypeCounter).isNotNull();
+    assertThat(errorTypeCounter.count()).isEqualTo(1.0);
   }
 
   @Test
@@ -98,28 +126,31 @@ class SpringAIObservabilityHandlerTest {
   @Test
   void testMetricsDisabled() {
     config.setMetricsEnabled(false);
-    handler = new SpringAIObservabilityHandler(config);
+    MeterRegistry disabledMeterRegistry = new SimpleMeterRegistry();
+    handler = new SpringAIObservabilityHandler(config, disabledMeterRegistry);
 
     SpringAIObservabilityHandler.RequestContext context =
         handler.startRequest("gpt-4o-mini", "chat");
     handler.recordSuccess(context, 100, 50, 50);
 
-    Map<String, Number> metrics = handler.getMetrics();
-    assertThat(metrics).isEmpty();
+    // Verify no metrics were recorded
+    assertThat(disabledMeterRegistry.find("spring.ai.requests.success").counter()).isNull();
+    assertThat(disabledMeterRegistry.find("spring.ai.tokens.total").gauge()).isNull();
   }
 
   @Test
   void testObservabilityDisabled() {
     config.setEnabled(false);
-    handler = new SpringAIObservabilityHandler(config);
+    MeterRegistry disabledMeterRegistry = new SimpleMeterRegistry();
+    handler = new SpringAIObservabilityHandler(config, disabledMeterRegistry);
 
     SpringAIObservabilityHandler.RequestContext context =
         handler.startRequest("gpt-4o-mini", "chat");
     handler.recordSuccess(context, 100, 50, 50);
 
-    // Should not record metrics when disabled
-    Map<String, Number> metrics = handler.getMetrics();
-    assertThat(metrics).isEmpty();
+    // Should not record metrics when observability is disabled
+    assertThat(disabledMeterRegistry.find("spring.ai.requests.total").counter()).isNull();
+    assertThat(disabledMeterRegistry.find("spring.ai.requests.success").counter()).isNull();
   }
 
   @Test
@@ -132,10 +163,33 @@ class SpringAIObservabilityHandlerTest {
     handler.recordSuccess(context1, 100, 50, 50);
     handler.recordSuccess(context2, 150, 80, 70);
 
-    Map<String, Number> metrics = handler.getMetrics();
-    assertThat(metrics.get("spring_ai_requests_total_gpt_4o_mini_chat")).isEqualTo(1L);
-    assertThat(metrics.get("spring_ai_requests_total_claude_3_5_sonnet_streaming")).isEqualTo(1L);
-    assertThat(metrics.get("spring_ai_tokens_total_gpt_4o_mini")).isEqualTo(100.0);
-    assertThat(metrics.get("spring_ai_tokens_total_claude_3_5_sonnet")).isEqualTo(150.0);
+    // Verify metrics for first model
+    Counter totalCounter1 =
+        meterRegistry.find("spring.ai.requests.total").tag("model", "gpt-4o-mini").counter();
+    assertThat(totalCounter1).isNotNull();
+    assertThat(totalCounter1.count()).isEqualTo(1.0);
+
+    Gauge tokenGauge1 =
+        meterRegistry.find("spring.ai.tokens.total").tag("model", "gpt-4o-mini").gauge();
+    assertThat(tokenGauge1).isNotNull();
+    assertThat(tokenGauge1.value()).isEqualTo(100.0);
+
+    // Verify metrics for second model
+    Counter totalCounter2 =
+        meterRegistry.find("spring.ai.requests.total").tag("model", "claude-3-5-sonnet").counter();
+    assertThat(totalCounter2).isNotNull();
+    assertThat(totalCounter2.count()).isEqualTo(1.0);
+
+    Gauge tokenGauge2 =
+        meterRegistry.find("spring.ai.tokens.total").tag("model", "claude-3-5-sonnet").gauge();
+    assertThat(tokenGauge2).isNotNull();
+    assertThat(tokenGauge2.value()).isEqualTo(150.0);
+  }
+
+  @Test
+  void testMeterRegistryAccess() {
+    // Verify we can access the MeterRegistry directly
+    assertThat(handler.getMeterRegistry()).isNotNull();
+    assertThat(handler.getMeterRegistry()).isEqualTo(meterRegistry);
   }
 }

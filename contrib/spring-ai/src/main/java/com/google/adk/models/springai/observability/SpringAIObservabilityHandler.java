@@ -16,23 +16,26 @@
 package com.google.adk.models.springai.observability;
 
 import com.google.adk.models.springai.properties.SpringAIProperties;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Handles observability features for Spring AI integration.
+ * Handles observability features for Spring AI integration using Micrometer.
  *
  * <p>This class provides:
  *
  * <ul>
- *   <li>Metrics collection for request latency, token counts, and error rates
+ *   <li>Metrics collection for request latency, token counts, and error rates via Micrometer
  *   <li>Request/response logging with configurable content inclusion
  *   <li>Performance monitoring for streaming and non-streaming requests
+ *   <li>Integration with any Micrometer-compatible metrics backend (Prometheus, Datadog, etc.)
  * </ul>
  */
 public class SpringAIObservabilityHandler {
@@ -40,11 +43,27 @@ public class SpringAIObservabilityHandler {
   private static final Logger logger = LoggerFactory.getLogger(SpringAIObservabilityHandler.class);
 
   private final SpringAIProperties.Observability config;
-  private final Map<String, AtomicLong> counters = new ConcurrentHashMap<>();
-  private final Map<String, Double> timers = new ConcurrentHashMap<>();
+  private final MeterRegistry meterRegistry;
 
+  /**
+   * Creates an observability handler with a default SimpleMeterRegistry.
+   *
+   * @param config the observability configuration
+   */
   public SpringAIObservabilityHandler(SpringAIProperties.Observability config) {
+    this(config, new SimpleMeterRegistry());
+  }
+
+  /**
+   * Creates an observability handler with a custom MeterRegistry.
+   *
+   * @param config the observability configuration
+   * @param meterRegistry the Micrometer meter registry to use for metrics
+   */
+  public SpringAIObservabilityHandler(
+      SpringAIProperties.Observability config, MeterRegistry meterRegistry) {
     this.config = config;
+    this.meterRegistry = meterRegistry;
   }
 
   /**
@@ -56,13 +75,20 @@ public class SpringAIObservabilityHandler {
    */
   public RequestContext startRequest(String modelName, String requestType) {
     if (!config.isEnabled()) {
-      return new RequestContext(modelName, requestType, Instant.now(), false);
+      return new RequestContext(modelName, requestType, Instant.now(), false, null);
     }
 
-    RequestContext context = new RequestContext(modelName, requestType, Instant.now(), true);
+    Timer.Sample timerSample = config.isMetricsEnabled() ? Timer.start(meterRegistry) : null;
+    RequestContext context =
+        new RequestContext(modelName, requestType, Instant.now(), true, timerSample);
 
     if (config.isMetricsEnabled()) {
-      incrementCounter("spring_ai_requests_total", modelName, requestType);
+      Counter.builder("spring.ai.requests.total")
+          .tag("model", modelName)
+          .tag("type", requestType)
+          .description("Total number of Spring AI requests")
+          .register(meterRegistry)
+          .increment();
       logger.debug("Started {} request for model: {}", requestType, modelName);
     }
 
@@ -86,13 +112,42 @@ public class SpringAIObservabilityHandler {
     Duration duration = Duration.between(context.getStartTime(), Instant.now());
 
     if (config.isMetricsEnabled()) {
-      recordTimer(
-          "spring_ai_request_duration", duration, context.getModelName(), context.getRequestType());
-      incrementCounter(
-          "spring_ai_requests_success", context.getModelName(), context.getRequestType());
-      recordGauge("spring_ai_tokens_total", tokenCount, context.getModelName());
-      recordGauge("spring_ai_tokens_input", inputTokens, context.getModelName());
-      recordGauge("spring_ai_tokens_output", outputTokens, context.getModelName());
+      // Record timer using Micrometer's Timer.Sample
+      if (context.getTimerSample() != null) {
+        context
+            .getTimerSample()
+            .stop(
+                Timer.builder("spring.ai.request.duration")
+                    .tag("model", context.getModelName())
+                    .tag("type", context.getRequestType())
+                    .tag("outcome", "success")
+                    .description("Duration of Spring AI requests")
+                    .register(meterRegistry));
+      }
+
+      // Increment success counter
+      Counter.builder("spring.ai.requests.success")
+          .tag("model", context.getModelName())
+          .tag("type", context.getRequestType())
+          .description("Number of successful Spring AI requests")
+          .register(meterRegistry)
+          .increment();
+
+      // Record token gauges
+      Gauge.builder("spring.ai.tokens.total", () -> tokenCount)
+          .tag("model", context.getModelName())
+          .description("Total tokens processed")
+          .register(meterRegistry);
+
+      Gauge.builder("spring.ai.tokens.input", () -> inputTokens)
+          .tag("model", context.getModelName())
+          .description("Input tokens processed")
+          .register(meterRegistry);
+
+      Gauge.builder("spring.ai.tokens.output", () -> outputTokens)
+          .tag("model", context.getModelName())
+          .description("Output tokens generated")
+          .register(meterRegistry);
     }
 
     logger.info(
@@ -117,11 +172,33 @@ public class SpringAIObservabilityHandler {
     Duration duration = Duration.between(context.getStartTime(), Instant.now());
 
     if (config.isMetricsEnabled()) {
-      recordTimer(
-          "spring_ai_request_duration", duration, context.getModelName(), context.getRequestType());
-      incrementCounter(
-          "spring_ai_requests_error", context.getModelName(), context.getRequestType());
-      incrementCounter("spring_ai_errors_by_type", error.getClass().getSimpleName());
+      // Record timer with error outcome
+      if (context.getTimerSample() != null) {
+        context
+            .getTimerSample()
+            .stop(
+                Timer.builder("spring.ai.request.duration")
+                    .tag("model", context.getModelName())
+                    .tag("type", context.getRequestType())
+                    .tag("outcome", "error")
+                    .description("Duration of Spring AI requests")
+                    .register(meterRegistry));
+      }
+
+      // Increment error counter
+      Counter.builder("spring.ai.requests.error")
+          .tag("model", context.getModelName())
+          .tag("type", context.getRequestType())
+          .description("Number of failed Spring AI requests")
+          .register(meterRegistry)
+          .increment();
+
+      // Track errors by type
+      Counter.builder("spring.ai.errors.by.type")
+          .tag("error.type", error.getClass().getSimpleName())
+          .description("Number of errors by exception type")
+          .register(meterRegistry)
+          .increment();
     }
 
     logger.error(
@@ -157,45 +234,15 @@ public class SpringAIObservabilityHandler {
   }
 
   /**
-   * Gets current metrics as a map for external monitoring systems.
+   * Gets the Micrometer MeterRegistry for direct access to metrics.
    *
-   * @return map of metric names to values
+   * <p>This allows users to export metrics to any Micrometer-compatible backend (Prometheus,
+   * Datadog, CloudWatch, etc.) or query metrics programmatically.
+   *
+   * @return the MeterRegistry instance
    */
-  public Map<String, Number> getMetrics() {
-    if (!config.isMetricsEnabled()) {
-      return Map.of();
-    }
-
-    Map<String, Number> metrics = new ConcurrentHashMap<>();
-    counters.forEach((key, value) -> metrics.put(key, value.get()));
-    timers.forEach(metrics::put);
-    return metrics;
-  }
-
-  private void incrementCounter(String name, String... tags) {
-    String key = buildMetricKey(name, tags);
-    counters.computeIfAbsent(key, k -> new AtomicLong(0)).incrementAndGet();
-  }
-
-  private void recordTimer(String name, Duration duration, String... tags) {
-    String key = buildMetricKey(name, tags);
-    timers.put(key, (double) duration.toMillis());
-  }
-
-  private void recordGauge(String name, double value, String... tags) {
-    String key = buildMetricKey(name, tags);
-    timers.put(key, value);
-  }
-
-  private String buildMetricKey(String name, String... tags) {
-    if (tags.length == 0) {
-      return name;
-    }
-    StringBuilder sb = new StringBuilder(name);
-    for (String tag : tags) {
-      sb.append("_").append(tag.replaceAll("[^a-zA-Z0-9_]", "_"));
-    }
-    return sb.toString();
+  public MeterRegistry getMeterRegistry() {
+    return meterRegistry;
   }
 
   private String truncateContent(String content) {
@@ -205,19 +252,25 @@ public class SpringAIObservabilityHandler {
     return content.length() > 500 ? content.substring(0, 500) + "..." : content;
   }
 
-  /** Context for tracking a single request. */
+  /** Context for tracking a single request with Micrometer timer. */
   public static class RequestContext {
     private final String modelName;
     private final String requestType;
     private final Instant startTime;
     private final boolean observable;
+    private final Timer.Sample timerSample;
 
     public RequestContext(
-        String modelName, String requestType, Instant startTime, boolean observable) {
+        String modelName,
+        String requestType,
+        Instant startTime,
+        boolean observable,
+        Timer.Sample timerSample) {
       this.modelName = modelName;
       this.requestType = requestType;
       this.startTime = startTime;
       this.observable = observable;
+      this.timerSample = timerSample;
     }
 
     public String getModelName() {
@@ -234,6 +287,10 @@ public class SpringAIObservabilityHandler {
 
     public boolean isObservable() {
       return observable;
+    }
+
+    public Timer.Sample getTimerSample() {
+      return timerSample;
     }
   }
 }

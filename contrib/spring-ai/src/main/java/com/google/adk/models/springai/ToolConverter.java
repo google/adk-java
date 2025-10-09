@@ -23,6 +23,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.function.FunctionToolCallback;
 
@@ -34,6 +36,8 @@ import org.springframework.ai.tool.function.FunctionToolCallback;
  * conversion and tool metadata handling.
  */
 public class ToolConverter {
+
+  private static final Logger logger = LoggerFactory.getLogger(ToolConverter.class);
 
   /**
    * Creates a tool registry from ADK tools for internal tracking.
@@ -120,24 +124,21 @@ public class ToolConverter {
         java.util.function.Function<Map<String, Object>, String> toolFunction =
             args -> {
               try {
-                System.out.println("=== DEBUG: Spring AI calling tool '" + tool.name() + "' ===");
-                System.out.println("Raw args from Spring AI: " + args);
-                System.out.println("Args type: " + args.getClass().getName());
-                System.out.println("Args keys: " + args.keySet());
+                logger.debug("Spring AI calling tool '{}'", tool.name());
+                logger.debug("Raw args from Spring AI: {}", args);
+                logger.debug("Args type: {}", args.getClass().getName());
+                logger.debug("Args keys: {}", args.keySet());
                 for (Map.Entry<String, Object> entry : args.entrySet()) {
-                  System.out.println(
-                      "  "
-                          + entry.getKey()
-                          + " -> "
-                          + entry.getValue()
-                          + " ("
-                          + entry.getValue().getClass().getName()
-                          + ")");
+                  logger.debug(
+                      "  {} -> {} ({})",
+                      entry.getKey(),
+                      entry.getValue(),
+                      entry.getValue().getClass().getName());
                 }
 
                 // Handle different argument formats that Spring AI might pass
                 Map<String, Object> processedArgs = processArguments(args, declaration);
-                System.out.println("Processed args for ADK: " + processedArgs);
+                logger.debug("Processed args for ADK: {}", processedArgs);
 
                 // Call the ADK tool and wait for the result
                 Map<String, Object> result = tool.runAsync(processedArgs, null).blockingGet();
@@ -159,8 +160,7 @@ public class ToolConverter {
           // Convert ADK schema to Spring AI JSON schema format
           Map<String, Object> springAiSchema =
               convertSchemaToSpringAi(declaration.parameters().get());
-          System.out.println("=== DEBUG: Generated Spring AI schema for " + tool.name() + " ===");
-          System.out.println("Schema: " + springAiSchema);
+          logger.debug("Generated Spring AI schema for {}: {}", tool.name(), springAiSchema);
 
           // Provide the schema as JSON string using inputSchema method
           try {
@@ -168,9 +168,9 @@ public class ToolConverter {
                 new com.fasterxml.jackson.databind.ObjectMapper()
                     .writeValueAsString(springAiSchema);
             callbackBuilder.inputSchema(schemaJson);
-            System.out.println("=== DEBUG: Set input schema JSON: " + schemaJson + " ===");
+            logger.debug("Set input schema JSON: {}", schemaJson);
           } catch (Exception e) {
-            System.err.println("Error serializing schema to JSON: " + e.getMessage());
+            logger.error("Error serializing schema to JSON: {}", e.getMessage(), e);
           }
         }
 

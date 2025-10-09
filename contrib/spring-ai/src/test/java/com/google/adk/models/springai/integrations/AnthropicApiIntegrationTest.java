@@ -197,6 +197,27 @@ class AnthropicApiIntegrationTest {
     nonStreamingSubscriber.assertComplete();
     nonStreamingSubscriber.assertNoErrors();
 
+    // Add assertions for non-streaming response
+    List<LlmResponse> nonStreamingResponses = nonStreamingSubscriber.values();
+    assertThat(nonStreamingResponses).isNotEmpty();
+
+    LlmResponse nonStreamingResponse = nonStreamingResponses.get(0);
+    assertThat(nonStreamingResponse).isNotNull();
+    assertThat(nonStreamingResponse.content()).isPresent();
+
+    Content content = nonStreamingResponse.content().get();
+    assertThat(content.parts()).isPresent();
+    assertThat(content.parts().get()).isNotEmpty();
+
+    Part firstPart = content.parts().get().get(0);
+    assertThat(firstPart.text()).isPresent();
+
+    String nonStreamingText = firstPart.text().get();
+    assertThat(nonStreamingText).isNotEmpty();
+    assertThat(nonStreamingResponse.turnComplete().get()).isEqualTo(true);
+
+    System.out.println("Non-streaming response: " + nonStreamingText);
+
     // Wait a bit before streaming test
     Thread.sleep(3000);
 
@@ -206,6 +227,45 @@ class AnthropicApiIntegrationTest {
     streamingSubscriber.awaitDone(30, TimeUnit.SECONDS);
     streamingSubscriber.assertComplete();
     streamingSubscriber.assertNoErrors();
+
+    // Add assertions for streaming responses
+    List<LlmResponse> streamingResponses = streamingSubscriber.values();
+    assertThat(streamingResponses).isNotEmpty();
+
+    // Verify streaming responses contain content
+    StringBuilder streamingTextBuilder = new StringBuilder();
+    for (LlmResponse response : streamingResponses) {
+      if (response.content().isPresent()) {
+        Content responseContent = response.content().get();
+        if (responseContent.parts().isPresent() && !responseContent.parts().get().isEmpty()) {
+          for (Part part : responseContent.parts().get()) {
+            if (part.text().isPresent()) {
+              streamingTextBuilder.append(part.text().get());
+            }
+          }
+        }
+      }
+    }
+
+    String streamingText = streamingTextBuilder.toString();
+    assertThat(streamingText).isNotEmpty();
+
+    // Verify final streaming response turnComplete status
+    LlmResponse lastStreamingResponse = streamingResponses.get(streamingResponses.size() - 1);
+    // For streaming, turnComplete may be empty or false for intermediate chunks
+    // Check if present and verify the value
+    if (lastStreamingResponse.turnComplete().isPresent()) {
+      // If present, it should indicate completion status
+      assertThat(lastStreamingResponse.turnComplete().get()).isInstanceOf(Boolean.class);
+    }
+
+    System.out.println("Streaming response: " + streamingText);
+
+    // Verify both responses contain relevant information about speed of light
+    assertThat(nonStreamingText.toLowerCase())
+        .containsAnyOf("light", "speed", "299", "300", "kilometer", "meter");
+    assertThat(streamingText.toLowerCase())
+        .containsAnyOf("light", "speed", "299", "300", "kilometer", "meter");
   }
 
   @Test

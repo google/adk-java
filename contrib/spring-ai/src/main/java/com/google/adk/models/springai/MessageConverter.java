@@ -115,14 +115,39 @@ public class MessageConverter {
         // Create new ChatOptions with tools included
         ToolCallingChatOptions.Builder optionsBuilder = ToolCallingChatOptions.builder();
 
-        // Copy existing chat options if present
+        // Always set tool callbacks
+        optionsBuilder.toolCallbacks(toolCallbacks);
+
+        // Copy existing chat options properties if present
         if (chatOptions != null) {
-          // Copy relevant properties from existing ChatOptions
-          // Note: We can't directly pass ChatOptions to builder, so we need to copy manually
-          optionsBuilder.toolCallbacks(toolCallbacks);
-          // TODO: Add other properties as needed when they're available in the API
-        } else {
-          optionsBuilder.toolCallbacks(toolCallbacks);
+          // Copy all relevant properties from existing ChatOptions
+          if (chatOptions.getTemperature() != null) {
+            optionsBuilder.temperature(chatOptions.getTemperature());
+          }
+          if (chatOptions.getMaxTokens() != null) {
+            optionsBuilder.maxTokens(chatOptions.getMaxTokens());
+          }
+          if (chatOptions.getTopP() != null) {
+            optionsBuilder.topP(chatOptions.getTopP());
+          }
+          if (chatOptions.getTopK() != null) {
+            optionsBuilder.topK(chatOptions.getTopK());
+          }
+          if (chatOptions.getStopSequences() != null) {
+            optionsBuilder.stopSequences(chatOptions.getStopSequences());
+          }
+          // Copy model name if present
+          if (chatOptions.getModel() != null) {
+            optionsBuilder.model(chatOptions.getModel());
+          }
+          // Copy frequency penalty if present
+          if (chatOptions.getFrequencyPenalty() != null) {
+            optionsBuilder.frequencyPenalty(chatOptions.getFrequencyPenalty());
+          }
+          // Copy presence penalty if present
+          if (chatOptions.getPresencePenalty() != null) {
+            optionsBuilder.presencePenalty(chatOptions.getPresencePenalty());
+          }
         }
 
         chatOptions = optionsBuilder.build();
