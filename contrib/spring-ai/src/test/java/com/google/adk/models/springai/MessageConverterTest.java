@@ -115,13 +115,13 @@ class MessageConverterTest {
             .id("call_123")
             .build();
 
+    // Create Part with FunctionCall inside using Part.builder
+    Part functionCallPart = Part.builder().functionCall(functionCall).build();
+
     Content assistantContent =
         Content.builder()
             .role("model")
-            .parts(
-                Part.fromText("Let me check the weather for you."),
-                Part.fromFunctionCall(
-                    functionCall.name().orElse(""), functionCall.args().orElse(Map.of())))
+            .parts(Part.fromText("Let me check the weather for you."), functionCallPart)
             .build();
 
     LlmRequest request = LlmRequest.builder().contents(List.of(assistantContent)).build();
@@ -137,7 +137,7 @@ class MessageConverterTest {
     assertThat(assistantMessage.getToolCalls()).hasSize(1);
 
     AssistantMessage.ToolCall toolCall = assistantMessage.getToolCalls().get(0);
-    assertThat(toolCall.id()).isEmpty(); // ID is not preserved through Part.fromFunctionCall
+    assertThat(toolCall.id()).isEqualTo("call_123"); // ID should be preserved now
     assertThat(toolCall.name()).isEqualTo("get_weather");
     assertThat(toolCall.type()).isEqualTo("function");
   }

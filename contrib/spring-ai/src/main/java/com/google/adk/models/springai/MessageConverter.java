@@ -223,9 +223,13 @@ public class MessageConverter {
         FunctionCall functionCall = part.functionCall().get();
         toolCalls.add(
             new AssistantMessage.ToolCall(
-                functionCall.id().orElse(""),
+                functionCall
+                    .id()
+                    .orElseThrow(() -> new IllegalStateException("Function call ID is missing")),
                 "function",
-                functionCall.name().orElse(""),
+                functionCall
+                    .name()
+                    .orElseThrow(() -> new IllegalStateException("Function call name is missing")),
                 toJson(functionCall.args().orElse(Map.of()))));
       }
     }

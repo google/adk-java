@@ -16,8 +16,6 @@
 package com.google.adk.models.springai;
 
 import com.google.genai.types.GenerateContentConfig;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Optional;
 import org.springframework.ai.chat.prompt.ChatOptions;
 
@@ -57,13 +55,10 @@ public class ConfigMapper {
     contentConfig.topK().ifPresent(topK -> optionsBuilder.topK(topK.intValue()));
 
     // Map stop sequences
-    if (contentConfig.stopSequences().isPresent()) {
-      List<String> stopSequences = new ArrayList<>(contentConfig.stopSequences().get());
-      if (!stopSequences.isEmpty()) {
-        // Spring AI ChatOptions uses stop strings array, not a list
-        optionsBuilder.stopSequences(stopSequences);
-      }
-    }
+    contentConfig
+        .stopSequences()
+        .filter(sequences -> !sequences.isEmpty())
+        .ifPresent(optionsBuilder::stopSequences);
 
     // Map presence penalty (if supported by Spring AI)
     contentConfig

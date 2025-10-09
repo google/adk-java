@@ -115,7 +115,7 @@ Add the Spring AI provider dependencies for the AI services you want to use:
 
     <properties>
         <java.version>17</java.version>
-        <spring-ai.version>1.1.0-M2</spring-ai.version>
+        <spring-ai.version>1.1.0-M3</spring-ai.version>
         <adk.version>0.3.1-SNAPSHOT</adk.version>
     </properties>
 
@@ -740,7 +740,7 @@ The library provides comprehensive error handling through `SpringAIErrorMapper`:
 4. Update dependency management to include ADK Spring AI
 
 ### Version Compatibility
-- Spring AI: 1.1.0-M2+
+- Spring AI: 1.1.0-M3+
 - Spring Boot: 3.0+
 - Java: 17+
 - ADK: 0.3.1+
