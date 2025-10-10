@@ -338,7 +338,13 @@ public class MessageConverter {
         try {
           Map<String, Object> args =
               objectMapper.readValue(toolCall.arguments(), MAP_TYPE_REFERENCE);
-          parts.add(Part.fromFunctionCall(toolCall.name(), args));
+
+          // Create FunctionCall with ID, name, and args to preserve tool call ID
+          FunctionCall functionCall =
+              FunctionCall.builder().id(toolCall.id()).name(toolCall.name()).args(args).build();
+
+          // Create Part with the FunctionCall (preserves ID)
+          parts.add(Part.builder().functionCall(functionCall).build());
         } catch (JsonProcessingException e) {
           throw MessageConversionException.jsonParsingFailed("tool call arguments", e);
         }

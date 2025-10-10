@@ -223,6 +223,46 @@ class MessageConverterTest {
     Part functionCallPart = content.parts().get().get(1);
     assertThat(functionCallPart.functionCall()).isPresent();
     assertThat(functionCallPart.functionCall().get().name()).contains("get_weather");
+    // Verify ID is preserved
+    assertThat(functionCallPart.functionCall().get().id()).contains("call_123");
+  }
+
+  @Test
+  void testToolCallIdPreservedInConversion() {
+    // Create AssistantMessage with tool call including ID
+    AssistantMessage.ToolCall toolCall =
+        new AssistantMessage.ToolCall(
+            "call_abc123", // ID must be preserved
+            "function",
+            "get_weather",
+            "{\"location\":\"San Francisco\"}");
+
+    AssistantMessage assistantMessage =
+        new AssistantMessage("Let me check the weather.", Map.of(), List.of(toolCall));
+
+    Generation generation = new Generation(assistantMessage);
+    ChatResponse chatResponse = new ChatResponse(List.of(generation));
+
+    // Convert to LlmResponse
+    LlmResponse llmResponse = messageConverter.toLlmResponse(chatResponse);
+
+    // Verify the converted content preserves the tool call ID
+    assertThat(llmResponse.content()).isPresent();
+    Content content = llmResponse.content().get();
+    assertThat(content.parts()).isPresent();
+
+    List<Part> parts = content.parts().get();
+    Part functionCallPart =
+        parts.stream()
+            .filter(p -> p.functionCall().isPresent())
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("Expected function call part"));
+
+    FunctionCall convertedCall = functionCallPart.functionCall().get();
+    assertThat(convertedCall.id()).contains("call_abc123"); // ✅ ID MUST BE PRESERVED
+    assertThat(convertedCall.name()).contains("get_weather");
+    assertThat(convertedCall.args()).isPresent();
+    assertThat(convertedCall.args().get()).containsEntry("location", "San Francisco");
   }
 
   @Test
