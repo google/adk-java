@@ -105,15 +105,16 @@ public class CallbackContext extends ReadonlyContext {
     if (invocationContext.artifactService() == null) {
       throw new IllegalStateException("Artifact service is not initialized.");
     }
-    var unused =
-        invocationContext
-            .artifactService()
-            .saveArtifact(
-                invocationContext.appName(),
-                invocationContext.userId(),
-                invocationContext.session().id(),
-                filename,
-                artifact);
-    this.eventActions.artifactDelta().put(filename, artifact);
+    invocationContext
+        .artifactService()
+        .saveArtifact(
+            invocationContext.appName(),
+            invocationContext.userId(),
+            invocationContext.session().id(),
+            filename,
+            artifact)
+        .doOnSuccess(unusedVersion -> this.eventActions.artifactDelta().put(filename, artifact))
+        .ignoreElement()
+        .blockingAwait();
   }
 }
