@@ -25,6 +25,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FileData;
 import com.google.genai.types.Part;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 /** Request / Response utilities for {@link Gemini}. */
@@ -40,7 +41,7 @@ public final class GeminiUtil {
    * Prepares an {@link LlmRequest} for the GenerateContent API.
    *
    * <p>This method can optionally sanitize the request and ensures that the last content part is
-   * from the user to prompt a model response. It also strips out any parts marked as "thoughts".
+   * from the user to prompt a model response.
    *
    * @param llmRequest The original {@link LlmRequest}.
    * @param sanitize Whether to sanitize the request to be compatible with the Gemini API backend.
@@ -52,8 +53,7 @@ public final class GeminiUtil {
       llmRequest = sanitizeRequestForGeminiApi(llmRequest);
     }
     List<Content> contents = ensureModelResponse(llmRequest.contents());
-    List<Content> finalContents = stripThoughts(contents);
-    return llmRequest.toBuilder().contents(finalContents).build();
+    return llmRequest.toBuilder().contents(contents).build();
   }
 
   /**
@@ -140,19 +140,17 @@ public final class GeminiUtil {
   }
 
   /**
-   * Extracts text content from the first part of an LlmResponse, if available.
+   * Extracts the first part of an LlmResponse, if available.
    *
-   * @param llmResponse The LlmResponse to extract text from.
-   * @return The text content, or an empty string if not found.
+   * @param llmResponse The LlmResponse to extract the first part from.
+   * @return The first part, or an empty optional if not found.
    */
-  public static String getTextFromLlmResponse(LlmResponse llmResponse) {
+  public static Optional<Part> getPart0FromLlmResponse(LlmResponse llmResponse) {
     return llmResponse
         .content()
         .flatMap(Content::parts)
         .filter(parts -> !parts.isEmpty())
-        .map(parts -> parts.get(0))
-        .flatMap(Part::text)
-        .orElse("");
+        .map(parts -> parts.get(0));
   }
 
   /**
@@ -174,20 +172,5 @@ public final class GeminiUtil {
         .map(parts -> parts.get(0))
         .flatMap(Part::inlineData)
         .isEmpty();
-  }
-
-  /** Removes any `Part` that contains only a `thought` from the content list. */
-  public static List<Content> stripThoughts(List<Content> originalContents) {
-    return originalContents.stream()
-        .map(
-            content -> {
-              ImmutableList<Part> nonThoughtParts =
-                  content.parts().orElse(ImmutableList.of()).stream()
-                      // Keep if thought is not present OR if thought is present but false
-                      .filter(part -> part.thought().map(isThought -> !isThought).orElse(true))
-                      .collect(toImmutableList());
-              return content.toBuilder().parts(nonThoughtParts).build();
-            })
-        .collect(toImmutableList());
   }
 }
