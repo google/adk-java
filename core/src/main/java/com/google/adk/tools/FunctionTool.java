@@ -49,6 +49,7 @@ public class FunctionTool extends BaseTool {
   private final @Nullable Object instance;
   private final Method func;
   private final FunctionDeclaration funcDeclaration;
+  private final boolean requireConfirmation;
 
   public static FunctionTool create(Object instance, Method func) {
     if (!areParametersAnnotatedWithSchema(func) && wasCompiledWithDefaultParameterNames(func)) {
@@ -66,7 +67,8 @@ public class FunctionTool extends BaseTool {
                   + " Expected: %s, Actual: %s",
               func.getDeclaringClass().getName(), instance.getClass().getName()));
     }
-    return new FunctionTool(instance, func, /* isLongRunning= */ false);
+    return new FunctionTool(
+        instance, func, /* isLongRunning= */ false, /* requireConfirmation= */ false);
   }
 
   public static FunctionTool create(Method func) {
@@ -81,7 +83,8 @@ public class FunctionTool extends BaseTool {
     if (!Modifier.isStatic(func.getModifiers())) {
       throw new IllegalArgumentException("The method provided must be static.");
     }
-    return new FunctionTool(null, func, /* isLongRunning= */ false);
+    return new FunctionTool(
+        null, func, /* isLongRunning= */ false, /* requireConfirmation= */ false);
   }
 
   public static FunctionTool create(Class<?> cls, String methodName) {
@@ -126,7 +129,8 @@ public class FunctionTool extends BaseTool {
     return true;
   }
 
-  protected FunctionTool(@Nullable Object instance, Method func, boolean isLongRunning) {
+  protected FunctionTool(
+      @Nullable Object instance, Method func, boolean isLongRunning, boolean requireConfirmation) {
     super(
         func.isAnnotationPresent(Annotations.Schema.class)
                 && !func.getAnnotation(Annotations.Schema.class).name().isEmpty()
@@ -148,6 +152,7 @@ public class FunctionTool extends BaseTool {
     this.funcDeclaration =
         FunctionCallingUtils.buildFunctionDeclaration(
             this.func, ImmutableList.of("toolContext", "inputStream"));
+    this.requireConfirmation = requireConfirmation;
   }
 
   @Override
@@ -174,6 +179,20 @@ public class FunctionTool extends BaseTool {
   @Override
   public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
     try {
+      if (requireConfirmation) {
+        if (toolContext.toolConfirmation().isEmpty()) {
+          toolContext.requestConfirmation(
+              String.format(
+                  "Please approve or reject the tool call %s() by responding with a"
+                      + " FunctionResponse with an expected ToolConfirmation payload.",
+                  name()));
+          return Single.just(
+              ImmutableMap.of(
+                  "error", "This tool call requires confirmation, please approve or reject."));
+        } else if (!toolContext.toolConfirmation().get().confirmed()) {
+          return Single.just(ImmutableMap.of("error", "This tool call is rejected."));
+        }
+      }
       return this.call(args, toolContext).defaultIfEmpty(ImmutableMap.of());
     } catch (Exception e) {
       logger.error("Exception occurred while calling function tool: " + func.getName(), e);

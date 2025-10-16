@@ -22,7 +22,11 @@ public class LoadMemoryTool extends FunctionTool {
   }
 
   public LoadMemoryTool() {
-    super(null, getLoadMemoryMethod(), false);
+    super(
+        /* instance= */ null,
+        getLoadMemoryMethod(),
+        /* isLongRunning= */ false,
+        /* requireConfirmation= */ false);
   }
 
   /**
