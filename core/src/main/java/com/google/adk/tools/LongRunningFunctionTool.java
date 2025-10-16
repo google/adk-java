@@ -47,10 +47,10 @@ public class LongRunningFunctionTool extends FunctionTool {
   }
 
   private LongRunningFunctionTool(Method func) {
-    super(null, func, /* isLongRunning= */ true);
+    super(null, func, /* isLongRunning= */ true, /* requireConfirmation= */ false);
   }
 
   private LongRunningFunctionTool(Object instance, Method func) {
-    super(instance, func, /* isLongRunning= */ true);
+    super(instance, func, /* isLongRunning= */ true, /* requireConfirmation= */ false);
   }
 }
