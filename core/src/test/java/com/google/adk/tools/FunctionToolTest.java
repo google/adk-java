@@ -473,6 +473,50 @@ public final class FunctionToolTest {
   }
 
   @Test
+  public void create_withOptionalParameter_excludesFromRequired() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalParam");
+
+    assertThat(tool).isNotNull();
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.of(
+                        "requiredParam",
+                        Schema.builder().type("STRING").description("A required parameter").build(),
+                        "optionalParam",
+                        Schema.builder()
+                            .type("INTEGER")
+                            .description("An optional parameter")
+                            .build()))
+                .required(ImmutableList.of("requiredParam"))
+                .build());
+  }
+
+  @Test
+  public void call_withOptionalParameter_missingValue() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalParam");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("requiredParam", "test"), null).blockingGet();
+
+    assertThat(result)
+        .containsExactly(
+            "requiredParam", "test", "optionalParam", "null_value", "wasOptionalProvided", false);
+  }
+
+  @Test
+  public void call_withOptionalParameter_missingRequired_returnsError() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalParam");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("optionalParam", "test"), null).blockingGet();
+
+    assertThat(result).containsExactly("status", "error", "message", "An internal error occurred.");
+  }
+
+  @Test
   public void create_withMaybeMapReturnType() {
     FunctionTool tool = FunctionTool.create(Functions.class, "returnsMaybeMap");
 
@@ -717,6 +761,25 @@ public final class FunctionToolTest {
 
     public static ImmutableMap<String, Object> recursiveParam(Node param) {
       return ImmutableMap.of("param", param);
+    }
+
+    public static ImmutableMap<String, Object> functionWithOptionalParam(
+        @Annotations.Schema(name = "requiredParam", description = "A required parameter")
+            String requiredParam,
+        @Annotations.Schema(
+                name = "optionalParam",
+                description = "An optional parameter",
+                optional = true)
+            Integer optionalParam) {
+      ImmutableMap.Builder<String, Object> builder = ImmutableMap.builder();
+      builder.put("requiredParam", requiredParam);
+      if (optionalParam != null) {
+        builder.put("optionalParam", optionalParam);
+      } else {
+        builder.put("optionalParam", "null_value");
+      }
+      builder.put("wasOptionalProvided", optionalParam != null);
+      return builder.buildOrThrow();
     }
 
     public ImmutableMap<String, Object> nonStaticReturnAllSupportedParametersAsMap(

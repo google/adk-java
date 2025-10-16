@@ -104,7 +104,10 @@ public final class FunctionCallingUtils {
       if (ignoreParams.contains(paramName)) {
         continue;
       }
-      required.add(paramName);
+      Annotations.Schema schema = param.getAnnotation(Annotations.Schema.class);
+      if (schema == null || !schema.optional()) {
+        required.add(paramName);
+      }
       properties.put(paramName, buildSchemaFromParameter(param));
     }
     builder.parameters(
