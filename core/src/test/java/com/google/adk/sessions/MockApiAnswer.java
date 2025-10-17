@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -32,6 +33,7 @@ class MockApiAnswer implements Answer<ApiResponse> {
       Pattern.compile("^reasoningEngines/([^/]+)/sessions/([^/]+)/events$");
   private static final MediaType JSON_MEDIA_TYPE =
       MediaType.parse("application/json; charset=utf-8");
+  private static final Random random = new Random();
 
   private final Map<String, String> sessionMap;
   private final Map<String, String> eventMap;
@@ -193,15 +195,18 @@ class MockApiAnswer implements Answer<ApiResponse> {
   }
 
   private ApiResponse handleGetLro(String path) {
+    // Simulate LRO being done 50% of the time.
+    boolean done = random.nextBoolean();
+    String doneStr = done ? ", \"done\": true" : "";
     return responseWithBody(
         String.format(
             """
             {
-              "name": "%s",
-              "done": true
+              "name": "%s"
+              %s
             }
             """,
-            path.replace("/operations/111", ""))); // Simulate LRO done
+            path.replace("/operations/111", ""), doneStr));
   }
 
   private ApiResponse handleDeleteSession(String path) {
