@@ -49,6 +49,7 @@ public class FunctionTool extends BaseTool {
   @Nullable private final Object instance;
   private final Method func;
   private final FunctionDeclaration funcDeclaration;
+  private final ObjectMapper objectMapper;
 
   public static FunctionTool create(Object instance, Method func) {
     if (!areParametersAnnotatedWithSchema(func) && wasCompiledWithDefaultParameterNames(func)) {
@@ -123,6 +124,11 @@ public class FunctionTool extends BaseTool {
   }
 
   protected FunctionTool(@Nullable Object instance, Method func, boolean isLongRunning) {
+    this(instance, func, isLongRunning, JsonBaseModel.getMapper());
+  }
+
+  protected FunctionTool(
+      @Nullable Object instance, Method func, boolean isLongRunning, ObjectMapper objectMapper) {
     super(
         func.isAnnotationPresent(Annotations.Schema.class)
                 && !func.getAnnotation(Annotations.Schema.class).name().isEmpty()
@@ -144,6 +150,7 @@ public class FunctionTool extends BaseTool {
     this.funcDeclaration =
         FunctionCallingUtils.buildFunctionDeclaration(
             this.func, ImmutableList.of("toolContext", "inputStream"));
+    this.objectMapper = objectMapper;
   }
 
   @Override
@@ -225,7 +232,7 @@ public class FunctionTool extends BaseTool {
           continue;
         }
       } else if (argValue instanceof Map) {
-        arguments[i] = OBJECT_MAPPER.convertValue(argValue, paramType);
+        arguments[i] = objectMapper.convertValue(argValue, paramType);
         continue;
       }
       arguments[i] = castValue(argValue, paramType);
@@ -236,16 +243,14 @@ public class FunctionTool extends BaseTool {
     } else if (result instanceof Maybe) {
       return ((Maybe<?>) result)
           .map(
-              data ->
-                  OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}));
+              data -> objectMapper.convertValue(data, new TypeReference<Map<String, Object>>() {}));
     } else if (result instanceof Single) {
       return ((Single<?>) result)
-          .map(
-              data -> OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}))
+          .map(data -> objectMapper.convertValue(data, new TypeReference<Map<String, Object>>() {}))
           .toMaybe();
     } else {
       return Maybe.just(
-          OBJECT_MAPPER.convertValue(result, new TypeReference<Map<String, Object>>() {}));
+          objectMapper.convertValue(result, new TypeReference<Map<String, Object>>() {}));
     }
   }
 
@@ -291,7 +296,7 @@ public class FunctionTool extends BaseTool {
           continue;
         }
       } else if (argValue instanceof Map) {
-        arguments[i] = OBJECT_MAPPER.convertValue(argValue, paramType);
+        arguments[i] = objectMapper.convertValue(argValue, paramType);
         continue;
       }
       arguments[i] = castValue(argValue, paramType);
@@ -305,7 +310,7 @@ public class FunctionTool extends BaseTool {
     }
   }
 
-  private static List<Object> createList(List<Object> values, Class<?> type) {
+  private List<Object> createList(List<Object> values, Class<?> type) {
     List<Object> list = new ArrayList<>();
     // List of parameterized type is not supported.
     if (type == null) {
@@ -321,13 +326,13 @@ public class FunctionTool extends BaseTool {
           || cls == String.class) {
         list.add(castValue(value, cls));
       } else {
-        list.add(OBJECT_MAPPER.convertValue(value, type));
+        list.add(objectMapper.convertValue(value, type));
       }
     }
     return list;
   }
 
-  private static Object castValue(Object value, Class<?> type) {
+  private Object castValue(Object value, Class<?> type) {
     if (type.equals(Integer.class) || type.equals(int.class)) {
       if (value instanceof Integer) {
         return value;
@@ -372,6 +377,6 @@ public class FunctionTool extends BaseTool {
         return value;
       }
     }
-    return OBJECT_MAPPER.convertValue(value, type);
+    return objectMapper.convertValue(value, type);
   }
 }
