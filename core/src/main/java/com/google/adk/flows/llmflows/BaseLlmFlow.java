@@ -460,45 +460,16 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
               String eventIdForSendData = Event.generateEventId();
               LlmAgent agent = (LlmAgent) invocationContext.agent();
-              BaseLlm llm =
-                  agent.resolvedModel().model().isPresent()
-                      ? agent.resolvedModel().model().get()
-                      : LlmRegistry.getLlm(agent.resolvedModel().modelName().get());
+              BaseLlm llm = agent.resolvedModel().model()
+                      .orElseGet(() -> LlmRegistry.getLlm(agent.resolvedModel().modelName()
+                              .orElseThrow()));
+
               BaseLlmConnection connection = llm.connect(llmRequestAfterPreprocess);
               Completable historySent =
                   llmRequestAfterPreprocess.contents().isEmpty()
                       ? Completable.complete()
                       : Completable.defer(
-                          () -> {
-                            Span sendDataSpan =
-                                Telemetry.getTracer().spanBuilder("send_data").startSpan();
-                            try (Scope scope = sendDataSpan.makeCurrent()) {
-                              return connection
-                                  .sendHistory(llmRequestAfterPreprocess.contents())
-                                  .doOnComplete(
-                                      () -> {
-                                        try (Scope innerScope = sendDataSpan.makeCurrent()) {
-                                          Telemetry.traceSendData(
-                                              invocationContext,
-                                              eventIdForSendData,
-                                              llmRequestAfterPreprocess.contents());
-                                        }
-                                      })
-                                  .doOnError(
-                                      error -> {
-                                        sendDataSpan.setStatus(
-                                            StatusCode.ERROR, error.getMessage());
-                                        sendDataSpan.recordException(error);
-                                        try (Scope innerScope = sendDataSpan.makeCurrent()) {
-                                          Telemetry.traceSendData(
-                                              invocationContext,
-                                              eventIdForSendData,
-                                              llmRequestAfterPreprocess.contents());
-                                        }
-                                      })
-                                  .doFinally(sendDataSpan::end);
-                            }
-                          });
+                          () -> sendHistory(invocationContext, connection, llmRequestAfterPreprocess, eventIdForSendData));
 
               Flowable<LiveRequest> liveRequests =
                   invocationContext
@@ -609,7 +580,33 @@ public abstract class BaseLlmFlow implements BaseFlow {
             });
   }
 
-  /**
+  private static Completable sendHistory(
+            final InvocationContext invocationContext,
+            final BaseLlmConnection connection,
+            final LlmRequest llmRequestAfterPreprocess,
+            final String eventIdForSendData) {
+        Span sendDataSpan = Telemetry.getTracer().spanBuilder("send_data").startSpan();
+        try (Scope scope = sendDataSpan.makeCurrent()) {
+            return connection
+                    .sendHistory(llmRequestAfterPreprocess.contents())
+                    .doOnEvent(
+                            error -> {
+                                if (error != null) {
+                                    sendDataSpan.setStatus(StatusCode.ERROR, error.getMessage());
+                                    sendDataSpan.recordException(error);
+                                }
+                                try (Scope innerScope = sendDataSpan.makeCurrent()) {
+                                    Telemetry.traceSendData(
+                                            invocationContext,
+                                            eventIdForSendData,
+                                            llmRequestAfterPreprocess.contents());
+                                }
+                            })
+                    .doFinally(sendDataSpan::end);
+        }
+  }
+
+    /**
    * Builds an {@link Event} from LLM response, request, and base event data.
    *
    * <p>Populates the event with LLM output and tool function call metadata.
