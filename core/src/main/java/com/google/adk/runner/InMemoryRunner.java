@@ -16,12 +16,14 @@
 
 package com.google.adk.runner;
 
+import com.google.adk.Telemetry;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.common.collect.ImmutableList;
+import io.opentelemetry.api.trace.Tracer;
 import java.util.List;
 
 /** The class for the in-memory GenAi runner, using in-memory artifact and session services. */
@@ -30,20 +32,25 @@ public class InMemoryRunner extends Runner {
   public InMemoryRunner(BaseAgent agent) {
     // TODO: Change the default appName to InMemoryRunner to align with adk python.
     // Check the dev UI in case we break something there.
-    this(agent, /* appName= */ agent.name(), ImmutableList.of());
+    this(agent, /* appName= */ agent.name(), ImmutableList.of(), Telemetry.getTracer());
   }
 
   public InMemoryRunner(BaseAgent agent, String appName) {
-    this(agent, appName, ImmutableList.of());
+    this(agent, appName, ImmutableList.of(), Telemetry.getTracer());
   }
 
   public InMemoryRunner(BaseAgent agent, String appName, List<BasePlugin> plugins) {
+    this(agent, appName, plugins, Telemetry.getTracer());
+  }
+
+  public InMemoryRunner(BaseAgent agent, String appName, List<BasePlugin> plugins, Tracer tracer) {
     super(
         agent,
         appName,
         new InMemoryArtifactService(),
         new InMemorySessionService(),
         new InMemoryMemoryService(),
-        plugins);
+        plugins,
+        tracer);
   }
 }

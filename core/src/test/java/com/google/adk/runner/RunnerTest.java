@@ -29,6 +29,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
@@ -44,27 +45,40 @@ import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Part;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanBuilder;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 @RunWith(JUnit4.class)
 public final class RunnerTest {
+  @Rule public final MockitoRule mocks = MockitoJUnit.rule();
+
+  @Mock private Tracer mockTracer;
+  @Mock private SpanBuilder mockSpanBuilder;
+  @Mock private Span mockSpan;
 
   private final BasePlugin plugin = mockPlugin("test");
   private final Content pluginContent = createContent("from plugin");
   private final TestLlm testLlm = createTestLlm(createLlmResponse(createContent("from llm")));
   private final LlmAgent agent = createTestAgentBuilder(testLlm).build();
-  private final Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of(plugin));
-  private final Session session =
-      runner.sessionService().createSession("test", "user").blockingGet();
+  private Runner runner;
+  private Session session;
 
   private final FailingEchoTool failingEchoTool = new FailingEchoTool();
   private final EchoTool echoTool = new EchoTool();
@@ -92,6 +106,15 @@ public final class RunnerTest {
     BasePlugin plugin = mock(BasePlugin.class, CALLS_REAL_METHODS);
     when(plugin.getName()).thenReturn(name);
     return plugin;
+  }
+
+  @Before
+  public void setUp() {
+    when(mockTracer.spanBuilder(any())).thenReturn(mockSpanBuilder);
+    when(mockSpanBuilder.startSpan()).thenReturn(mockSpan);
+    when(mockSpan.makeCurrent()).thenReturn(mock(io.opentelemetry.context.Scope.class));
+    runner = new InMemoryRunner(agent, "test", ImmutableList.of(plugin), mockTracer);
+    session = runner.sessionService().createSession("test", "user").blockingGet();
   }
 
   @Test
@@ -601,6 +624,67 @@ public final class RunnerTest {
     // Verify state delta was merged before beforeRunCallback was invoked
     assertThat(sessionInCallback.state()).containsEntry("callback_key", "callback_value");
     assertThat(sessionInCallback.state()).containsEntry("number", 123);
+  }
+
+  @Test
+  public void runAsync_tracesSuccess() {
+    var unused =
+        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
+
+    verify(mockTracer).spanBuilder("invocation");
+    verify(mockSpanBuilder).startSpan();
+    verify(mockSpan).end();
+    verify(mockSpan, never()).setStatus(any(), any());
+    verify(mockSpan, never()).recordException(any());
+  }
+
+  @Test
+  public void runAsync_tracesError() {
+    Exception exception = new Exception("test error");
+    // Cause an error in runAsync by making the plugin throw an error
+    when(plugin.beforeRunCallback(any())).thenReturn(Maybe.error(exception));
+
+    runner.runAsync("user", session.id(), createContent("from user")).test().assertError(exception);
+
+    verify(mockTracer).spanBuilder("invocation");
+    verify(mockSpanBuilder).startSpan();
+    verify(mockSpan).setStatus(StatusCode.ERROR, "Error in runAsync Flowable execution");
+    verify(mockSpan).recordException(exception);
+    verify(mockSpan).end();
+  }
+
+  @Test
+  public void runLive_tracesSuccess() {
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    var unused = runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+    unused.assertComplete();
+
+    verify(mockTracer).spanBuilder("invocation");
+    verify(mockSpanBuilder).startSpan();
+    verify(mockSpan).end();
+    verify(mockSpan, never()).setStatus(any(), any());
+    verify(mockSpan, never()).recordException(any());
+  }
+
+  @Test
+  public void runLive_tracesError() {
+    Exception exception = new Exception("live error");
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    // Cause an error in runLive by making the agent throw an error
+    LlmAgent failingAgent =
+        createTestAgentBuilder(createTestLlm(Flowable.error(exception))).build();
+    Runner liveRunner = new InMemoryRunner(failingAgent, "test", ImmutableList.of(), mockTracer);
+
+    liveRunner
+        .runLive(session, liveRequestQueue, RunConfig.builder().build())
+        .test()
+        .assertError(exception);
+
+    verify(mockTracer).spanBuilder("invocation");
+    verify(mockSpanBuilder).startSpan();
+    verify(mockSpan).setStatus(StatusCode.ERROR, "Error in runLive Flowable execution");
+    verify(mockSpan).recordException(exception);
+    verify(mockSpan).end();
   }
 
   private Content createContent(String text) {
