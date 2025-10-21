@@ -42,6 +42,7 @@ import com.google.genai.types.Modality;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
@@ -251,7 +252,8 @@ public class Runner {
       Content newMessage,
       RunConfig runConfig,
       @Nullable Map<String, Object> stateDelta) {
-    Span span = Telemetry.getTracer().spanBuilder("invocation").startSpan();
+    Span span =
+        Telemetry.getTracer().spanBuilder("invocation").setParent(Context.current()).startSpan();
     try (Scope unusedScope = span.makeCurrent()) {
       BaseAgent rootAgent = this.agent;
       String invocationId = InvocationContext.newInvocationContextId();
@@ -472,7 +474,8 @@ public class Runner {
    */
   public Flowable<Event> runLive(
       Session session, LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
-    Span span = Telemetry.getTracer().spanBuilder("invocation").startSpan();
+    Span span =
+        Telemetry.getTracer().spanBuilder("invocation").setParent(Context.current()).startSpan();
     try (Scope scope = span.makeCurrent()) {
       InvocationContext invocationContext =
           newInvocationContextForLive(session, Optional.of(liveRequestQueue), runConfig);

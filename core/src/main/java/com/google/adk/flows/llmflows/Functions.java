@@ -37,6 +37,7 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -198,7 +199,8 @@ public final class Functions {
 
               if (events.size() > 1) {
                 Tracer tracer = Telemetry.getTracer();
-                Span mergedSpan = tracer.spanBuilder("tool_response").startSpan();
+                Span mergedSpan =
+                    tracer.spanBuilder("tool_response").setParent(Context.current()).startSpan();
                 try (Scope scope = mergedSpan.makeCurrent()) {
                   Telemetry.traceToolResponse(invocationContext, mergedEvent.id(), mergedEvent);
                 } finally {
@@ -494,7 +496,11 @@ public final class Functions {
     Tracer tracer = Telemetry.getTracer();
     return Maybe.defer(
         () -> {
-          Span span = tracer.spanBuilder("tool_call [" + tool.name() + "]").startSpan();
+          Span span =
+              tracer
+                  .spanBuilder("tool_call [" + tool.name() + "]")
+                  .setParent(Context.current())
+                  .startSpan();
           try (Scope scope = span.makeCurrent()) {
             Telemetry.traceToolCall(args);
             return tool.runAsync(args, toolContext)
@@ -515,7 +521,11 @@ public final class Functions {
       ToolContext toolContext,
       InvocationContext invocationContext) {
     Tracer tracer = Telemetry.getTracer();
-    Span span = tracer.spanBuilder("tool_response [" + tool.name() + "]").startSpan();
+    Span span =
+        tracer
+            .spanBuilder("tool_response [" + tool.name() + "]")
+            .setParent(Context.current())
+            .startSpan();
     try (Scope scope = span.makeCurrent()) {
       // use a empty placeholder response if tool response is null.
       if (response == null) {

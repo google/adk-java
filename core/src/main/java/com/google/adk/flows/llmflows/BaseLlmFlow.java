@@ -43,6 +43,7 @@ import com.google.common.collect.Iterables;
 import com.google.genai.types.FunctionResponse;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
@@ -214,7 +215,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
               return Flowable.defer(
                       () -> {
                         Span llmCallSpan =
-                            Telemetry.getTracer().spanBuilder("call_llm").startSpan();
+                            Telemetry.getTracer()
+                                .spanBuilder("call_llm")
+                                .setParent(Context.current())
+                                .startSpan();
 
                         try (Scope scope = llmCallSpan.makeCurrent()) {
                           return llm.generateContent(
@@ -471,7 +475,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                       : Completable.defer(
                           () -> {
                             Span sendDataSpan =
-                                Telemetry.getTracer().spanBuilder("send_data").startSpan();
+                                Telemetry.getTracer()
+                                    .spanBuilder("send_data")
+                                    .setParent(Context.current())
+                                    .startSpan();
                             try (Scope scope = sendDataSpan.makeCurrent()) {
                               return connection
                                   .sendHistory(llmRequestAfterPreprocess.contents())

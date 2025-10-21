@@ -28,6 +28,7 @@ import com.google.errorprone.annotations.DoNotCall;
 import com.google.genai.types.Content;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -205,7 +206,11 @@ public abstract class BaseAgent {
     Tracer tracer = Telemetry.getTracer();
     return Flowable.defer(
         () -> {
-          Span span = tracer.spanBuilder("agent_run [" + name() + "]").startSpan();
+          Span span =
+              tracer
+                  .spanBuilder("agent_run [" + name() + "]")
+                  .setParent(Context.current())
+                  .startSpan();
           try (Scope scope = span.makeCurrent()) {
             InvocationContext invocationContext = createInvocationContext(parentContext);
 
@@ -340,7 +345,11 @@ public abstract class BaseAgent {
     Tracer tracer = Telemetry.getTracer();
     return Flowable.defer(
         () -> {
-          Span span = tracer.spanBuilder("agent_run [" + name() + "]").startSpan();
+          Span span =
+              tracer
+                  .spanBuilder("agent_run [" + name() + "]")
+                  .setParent(Context.current())
+                  .startSpan();
           try (Scope scope = span.makeCurrent()) {
             InvocationContext invocationContext = createInvocationContext(parentContext);
             Flowable<Event> executionFlowable = runLiveImpl(invocationContext);
