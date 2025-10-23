@@ -161,6 +161,6 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
         resultMaps.add(ImmutableMap.of("text", textOutput));
       }
     }
-    return ImmutableMap.of("text_output", resultMaps);
+    return ImmutableMap.of("result", resultMaps);
   }
 }
