@@ -52,6 +52,7 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -642,6 +643,89 @@ public final class RunnerTest {
 
     assertThat(invocationSpan).isPresent();
     assertThat(invocationSpan.get().hasEnded()).isTrue();
+  }
+
+  @Test
+  public void runLive_success() throws Exception {
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void runLive_withToolExecution() throws Exception {
+    LlmAgent agentWithTool =
+        createTestAgentBuilder(testLlmWithFunctionCall).tools(ImmutableList.of(echoTool)).build();
+    Runner runnerWithTool = new InMemoryRunner(agentWithTool, "test", ImmutableList.of());
+    Session sessionWithTool =
+        runnerWithTool.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runnerWithTool
+            .runLive(sessionWithTool, liveRequestQueue, RunConfig.builder().build())
+            .test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values()))
+        .containsExactly(
+            "test agent: FunctionCall(name=echo_tool, args={args_name=args_value})",
+            "test agent: FunctionResponse(name=echo_tool,"
+                + " response={result={args_name=args_value}})",
+            "test agent: done");
+  }
+
+  @Test
+  public void runLive_llmError() throws Exception {
+    Exception exception = new Exception("LLM test error");
+    TestLlm failingTestLlm = createTestLlm(Flowable.error(exception));
+    LlmAgent agent = createTestAgentBuilder(failingTestLlm).build();
+    Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of());
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    // No liveRequestQueue.close() here as the LLM throws an error
+
+    testSubscriber.await();
+    testSubscriber.assertError(exception);
+  }
+
+  @Test
+  public void runLive_toolError() throws Exception {
+    LlmAgent agentWithFailingTool =
+        createTestAgentBuilder(testLlmWithFunctionCall)
+            .tools(ImmutableList.of(failingEchoTool))
+            .build();
+    Runner runnerWithFailingTool =
+        new InMemoryRunner(agentWithFailingTool, "test", ImmutableList.of());
+    Session sessionWithFailingTool =
+        runnerWithFailingTool.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runnerWithFailingTool
+            .runLive(sessionWithFailingTool, liveRequestQueue, RunConfig.builder().build())
+            .test();
+
+    liveRequestQueue.content(createContent("from user"));
+    // No liveRequestQueue.close() here as the tool throws an error
+
+    testSubscriber.await();
+    testSubscriber.assertError(RuntimeException.class);
+    assertThat(simplifyEvents(testSubscriber.values()))
+        .containsExactly("test agent: FunctionCall(name=echo_tool, args={args_name=args_value})");
   }
 
   @Test
