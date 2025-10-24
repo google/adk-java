@@ -139,7 +139,8 @@ public final class GeminiTest {
   private static Predicate<LlmResponse> isPartialTextResponse(String expectedText) {
     return response -> {
       assertThat(response.partial()).hasValue(true);
-      assertThat(GeminiUtil.getTextFromLlmResponse(response)).isEqualTo(expectedText);
+      assertThat(GeminiUtil.getPart0FromLlmResponse(response).flatMap(Part::text).orElse(""))
+          .isEqualTo(expectedText);
       return true;
     };
   }
@@ -147,7 +148,8 @@ public final class GeminiTest {
   private static Predicate<LlmResponse> isFinalTextResponse(String expectedText) {
     return response -> {
       assertThat(response.partial()).isEmpty();
-      assertThat(GeminiUtil.getTextFromLlmResponse(response)).isEqualTo(expectedText);
+      assertThat(GeminiUtil.getPart0FromLlmResponse(response).flatMap(Part::text).orElse(""))
+          .isEqualTo(expectedText);
       return true;
     };
   }
@@ -162,7 +164,8 @@ public final class GeminiTest {
   private static Predicate<LlmResponse> isEmptyResponse() {
     return response -> {
       assertThat(response.partial()).isEmpty();
-      assertThat(GeminiUtil.getTextFromLlmResponse(response)).isEmpty();
+      assertThat(GeminiUtil.getPart0FromLlmResponse(response).flatMap(Part::text).orElse(""))
+          .isEmpty();
       return true;
     };
   }
