@@ -636,6 +636,50 @@ public final class FunctionToolTest {
                 .buildOrThrow());
   }
 
+  @Test
+  public void runAsync_withRequireConfirmation() throws Exception {
+    Method method = Functions.class.getMethod("returnsMap");
+    FunctionTool tool =
+        new FunctionTool(null, method, /* isLongRunning= */ false, /* requireConfirmation= */ true);
+    ToolContext toolContext =
+        ToolContext.builder(
+                new InvocationContext(
+                    /* sessionService= */ null,
+                    /* artifactService= */ null,
+                    /* memoryService= */ null,
+                    /* liveRequestQueue= */ Optional.empty(),
+                    /* branch= */ Optional.empty(),
+                    /* invocationId= */ null,
+                    /* agent= */ null,
+                    /* session= */ Session.builder("123").build(),
+                    /* userContent= */ Optional.empty(),
+                    /* runConfig= */ null,
+                    /* endInvocation= */ false))
+            .functionCallId("functionCallId")
+            .build();
+
+    // First call, should request confirmation
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+    assertThat(result)
+        .containsExactly(
+            "error", "This tool call requires confirmation, please approve or reject.");
+    assertThat(toolContext.actions().requestedToolConfirmations()).containsKey("functionCallId");
+    assertThat(toolContext.actions().requestedToolConfirmations().get("functionCallId").hint())
+        .isEqualTo(
+            "Please approve or reject the tool call returnsMap() by responding with a"
+                + " FunctionResponse with an expected ToolConfirmation payload.");
+
+    // Second call, user rejects
+    toolContext.toolConfirmation(ToolConfirmation.builder().confirmed(false).build());
+    result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+    assertThat(result).containsExactly("error", "This tool call is rejected.");
+
+    // Third call, user approves
+    toolContext.toolConfirmation(ToolConfirmation.builder().confirmed(true).build());
+    result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+    assertThat(result).containsExactly("key", "value");
+  }
+
   static class Functions {
 
     @Annotations.Schema(
