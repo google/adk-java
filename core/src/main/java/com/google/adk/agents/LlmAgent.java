@@ -875,8 +875,8 @@ public class LlmAgent extends BaseAgent {
     }
     BaseAgent current = this.parentAgent();
     while (current != null) {
-      if (current instanceof LlmAgent) {
-        return ((LlmAgent) current).resolvedModel();
+      if (current instanceof LlmAgent agent) {
+        return agent.resolvedModel();
       }
       current = current.parentAgent();
     }

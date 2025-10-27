@@ -208,10 +208,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
               if (beforeResponse.isPresent()) {
                 return Flowable.just(beforeResponse.get());
               }
-              BaseLlm llm =
-                  agent.resolvedModel().model().isPresent()
-                      ? agent.resolvedModel().model().get()
-                      : LlmRegistry.getLlm(agent.resolvedModel().modelName().get());
+              BaseLlm llm = agent.resolvedModel().model().get();
               return Flowable.defer(
                       () -> {
                         Span llmCallSpan =
@@ -464,10 +461,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
               String eventIdForSendData = Event.generateEventId();
               LlmAgent agent = (LlmAgent) invocationContext.agent();
-              BaseLlm llm =
-                  agent.resolvedModel().model().isPresent()
-                      ? agent.resolvedModel().model().get()
-                      : LlmRegistry.getLlm(agent.resolvedModel().modelName().get());
+              BaseLlm llm = agent.resolvedModel().model().get();
               BaseLlmConnection connection = llm.connect(llmRequestAfterPreprocess);
               Completable historySent =
                   llmRequestAfterPreprocess.contents().isEmpty()
