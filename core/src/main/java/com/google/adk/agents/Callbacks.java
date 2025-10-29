@@ -66,6 +66,33 @@ public final class Callbacks {
     Maybe<LlmResponse> call(CallbackContext callbackContext, LlmResponse llmResponse);
   }
 
+  /** An extended callback interface for streaming LLM responses. */
+  public interface StreamingAfterModelCallback extends AfterModelCallback {
+    /**
+     * Invoked repeatedly for each significant chunk during a live stream.
+     *
+     * @param callbackContext Callback context.
+     * @param llmResponse LLM response chunk.
+     * @return modified response chunk, or empty to keep original.
+     */
+    Maybe<LlmResponse> callInStream(CallbackContext callbackContext, LlmResponse llmResponse);
+
+    /**
+     * Invoked once at turn completion.
+     *
+     * @param callbackContext Callback context.
+     * @param finalResponse The final, aggregated LLM response.
+     * @return modified final response, or empty to keep original.
+     */
+    Maybe<LlmResponse> callAtStreamEnd(CallbackContext callbackContext, LlmResponse finalResponse);
+
+    /** Defaults to the end-of-stream behavior. */
+    @Override
+    default Maybe<LlmResponse> call(CallbackContext callbackContext, LlmResponse llmResponse) {
+      return callAtStreamEnd(callbackContext, llmResponse);
+    }
+  }
+
   /**
    * Helper interface to allow for sync afterModelCallback. The function is wrapped into an async
    * one before being processed further.
