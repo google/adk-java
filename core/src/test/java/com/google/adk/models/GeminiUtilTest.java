@@ -39,125 +39,49 @@ public final class GeminiUtilTest {
       Content.fromParts(Part.fromText(GeminiUtil.CONTINUE_OUTPUT_MESSAGE));
 
   @Test
-  public void stripThoughts_emptyList_returnsEmptyList() {
-    assertThat(GeminiUtil.stripThoughts(ImmutableList.of())).isEmpty();
-  }
-
-  @Test
-  public void stripThoughts_contentWithNoParts_returnsContentWithNoParts() {
-    Content content = Content.builder().build();
-    Content expected = toContent();
-
-    List<Content> result = GeminiUtil.stripThoughts(ImmutableList.of(content));
-
-    assertThat(result).containsExactly(expected);
-  }
-
-  @Test
-  public void stripThoughts_partsWithoutThought_returnsAllParts() {
-    Part part1 = createTextPart("Hello");
-    Part part2 = createTextPart("World");
-    Content content = toContent(part1, part2);
-
-    List<Content> result = GeminiUtil.stripThoughts(ImmutableList.of(content));
-
-    assertThat(result.get(0).parts().get()).containsExactly(part1, part2).inOrder();
-  }
-
-  @Test
-  public void stripThoughts_partsWithThoughtFalse_returnsAllParts() {
-    Part part1 = createThoughtPart("Regular text", false);
-    Part part2 = createTextPart("Another text");
-    Content content = toContent(part1, part2);
-
-    List<Content> result = GeminiUtil.stripThoughts(ImmutableList.of(content));
-
-    assertThat(result.get(0).parts().get()).containsExactly(part1, part2).inOrder();
-  }
-
-  @Test
-  public void stripThoughts_partsWithThoughtTrue_stripsThoughtParts() {
-    Part part1 = createTextPart("Visible text");
-    Part part2 = createThoughtPart("Internal thought", true);
-    Part part3 = createTextPart("More visible text");
-    Content content = toContent(part1, part2, part3);
-
-    List<Content> result = GeminiUtil.stripThoughts(ImmutableList.of(content));
-
-    assertThat(result.get(0).parts().get()).containsExactly(part1, part3).inOrder();
-  }
-
-  @Test
-  public void stripThoughts_mixedParts_stripsOnlyThoughtTrue() {
-    Part part1 = createTextPart("Text 1");
-    Part part2 = createThoughtPart("Thought 1", true);
-    Part part3 = createTextPart("Text 2");
-    Part part4 = createThoughtPart("Not a thought", false);
-    Part part5 = createThoughtPart("Thought 2", true);
-    Content content = toContent(part1, part2, part3, part4, part5);
-
-    List<Content> result = GeminiUtil.stripThoughts(ImmutableList.of(content));
-
-    assertThat(result.get(0).parts().get()).containsExactly(part1, part3, part4).inOrder();
-  }
-
-  @Test
-  public void stripThoughts_multipleContents_stripsThoughtsFromEach() {
-    Part partA1 = createTextPart("A1");
-    Part partA2 = createThoughtPart("A2 Thought", true);
-    Content contentA = toContent(partA1, partA2);
-
-    Part partB1 = createThoughtPart("B1 Thought", true);
-    Part partB2 = createTextPart("B2");
-    Part partB3 = createThoughtPart("B3 Not Thought", false);
-    Content contentB = toContent(partB1, partB2, partB3);
-
-    List<Content> result = GeminiUtil.stripThoughts(ImmutableList.of(contentA, contentB));
-
-    assertThat(result).hasSize(2);
-    assertThat(result.get(0).parts().get()).containsExactly(partA1);
-    assertThat(result.get(1).parts().get()).containsExactly(partB2, partB3).inOrder();
-  }
-
-  @Test
-  public void getTextFromLlmResponse_noContent_returnsEmptyString() {
+  public void getPart0FromLlmResponse_noContent_returnsEmpty() {
     LlmResponse llmResponse = LlmResponse.builder().build();
 
-    assertThat(GeminiUtil.getTextFromLlmResponse(llmResponse)).isEmpty();
+    assertThat(GeminiUtil.getPart0FromLlmResponse(llmResponse)).isEmpty();
   }
 
   @Test
-  public void getTextFromLlmResponse_contentWithNoParts_returnsEmptyString() {
+  public void getPart0FromLlmResponse_contentWithNoParts_returnsEmpty() {
     LlmResponse llmResponse = toResponse(Content.builder().build());
 
-    assertThat(GeminiUtil.getTextFromLlmResponse(llmResponse)).isEmpty();
+    assertThat(GeminiUtil.getPart0FromLlmResponse(llmResponse)).isEmpty();
   }
 
   @Test
-  public void getTextFromLlmResponse_firstPartHasNoText_returnsEmptyString() {
-    Part part1 = Part.builder().inlineData(Blob.builder().mimeType("image/png").build()).build();
-    LlmResponse llmResponse = toResponse(part1);
+  public void getPart0FromLlmResponse_contentWithEmptyPartsList_returnsEmpty() {
+    LlmResponse llmResponse = toResponse(toContent());
 
-    assertThat(GeminiUtil.getTextFromLlmResponse(llmResponse)).isEmpty();
+    assertThat(GeminiUtil.getPart0FromLlmResponse(llmResponse)).isEmpty();
   }
 
   @Test
-  public void getTextFromLlmResponse_firstPartHasText_returnsText() {
-    String expectedText = "The quick brown fox.";
-    Part part1 = createTextPart(expectedText);
-    LlmResponse llmResponse = toResponse(part1);
+  public void getPart0FromLlmResponse_contentWithSinglePart_returnsFirstPart() {
+    Part expectedPart = createTextPart("Hello world");
+    LlmResponse llmResponse = toResponse(expectedPart);
 
-    assertThat(GeminiUtil.getTextFromLlmResponse(llmResponse)).isEqualTo(expectedText);
+    assertThat(GeminiUtil.getPart0FromLlmResponse(llmResponse)).hasValue(expectedPart);
   }
 
   @Test
-  public void getTextFromLlmResponse_multipleParts_returnsTextFromFirstPartOnly() {
-    String expectedText = "First part text.";
-    Part part1 = createTextPart(expectedText);
-    Part part2 = createTextPart("Second part text.");
-    LlmResponse llmResponse = toResponse(part1, part2);
+  public void getPart0FromLlmResponse_contentWithMultipleParts_returnsFirstPart() {
+    Part firstPart = createTextPart("First part");
+    Part secondPart = createTextPart("Second part");
+    LlmResponse llmResponse = toResponse(firstPart, secondPart);
 
-    assertThat(GeminiUtil.getTextFromLlmResponse(llmResponse)).isEqualTo(expectedText);
+    assertThat(GeminiUtil.getPart0FromLlmResponse(llmResponse)).hasValue(firstPart);
+  }
+
+  @Test
+  public void getPart0FromLlmResponse_contentWithThoughtPart_returnsFirstPart() {
+    Part expectedPart = createThoughtPart("I need to think about this", true);
+    LlmResponse llmResponse = toResponse(expectedPart);
+
+    assertThat(GeminiUtil.getPart0FromLlmResponse(llmResponse)).hasValue(expectedPart);
   }
 
   @Test
