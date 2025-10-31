@@ -17,6 +17,7 @@ package com.google.adk.models;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -128,7 +129,8 @@ public final class GeminiUtil {
    */
   static List<Content> ensureModelResponse(List<Content> contents) {
     // Last content must be from the user, otherwise the model won't respond.
-    if (contents.isEmpty() || !Iterables.getLast(contents).role().orElse("").equals("user")) {
+    if (contents.isEmpty()
+        || !Ascii.equalsIgnoreCase(Iterables.getLast(contents).role().orElse(""), "user")) {
       Content userContent =
           Content.builder()
               .parts(ImmutableList.of(Part.fromText(CONTINUE_OUTPUT_MESSAGE)))
