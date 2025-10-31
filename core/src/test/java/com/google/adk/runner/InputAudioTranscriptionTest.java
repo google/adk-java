@@ -57,8 +57,7 @@ public final class InputAudioTranscriptionTest {
   }
 
   @Test
-  public void newInvocationContextForLive_multiAgent_autoConfiguresInputAudioTranscription()
-      throws Exception {
+  public void newInvocationContextForLive_autoConfiguresInputAudioTranscription() throws Exception {
     TestLlm testLlm = createTestLlm(createLlmResponse(createContent("response")));
     LlmAgent subAgent = createTestAgentBuilder(testLlm).name("sub_agent").build();
     LlmAgent rootAgent =
@@ -86,7 +85,7 @@ public final class InputAudioTranscriptionTest {
   }
 
   @Test
-  public void newInvocationContextForLive_explicitConfig_preservesUserInputAudioTranscription()
+  public void newInvocationContextForLive_multiAgent_preservesUserInputAudioTranscription()
       throws Exception {
     TestLlm testLlm = createTestLlm(createLlmResponse(createContent("response")));
     LlmAgent subAgent = createTestAgentBuilder(testLlm).name("sub_agent").build();
@@ -97,6 +96,56 @@ public final class InputAudioTranscriptionTest {
             .build();
 
     Runner runner = new InMemoryRunner(rootAgent, "test", ImmutableList.of());
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    AudioTranscriptionConfig userConfig = AudioTranscriptionConfig.builder().build();
+    RunConfig configWithUserSetting =
+        RunConfig.builder()
+            .setResponseModalities(ImmutableList.of(new Modality(Modality.Known.AUDIO)))
+            .setStreamingMode(RunConfig.StreamingMode.BIDI)
+            .setInputAudioTranscription(userConfig)
+            .build();
+
+    LiveRequestQueue liveQueue = new LiveRequestQueue();
+    InvocationContext context =
+        invokeNewInvocationContextForLive(runner, session, liveQueue, configWithUserSetting);
+
+    assertThat(context.runConfig().inputAudioTranscription()).isSameInstanceAs(userConfig);
+  }
+
+  @Test
+  public void newInvocationContextForLive_singleAgent_autoConfiguresInputAudioTranscription()
+      throws Exception {
+    TestLlm testLlm = createTestLlm(createLlmResponse(createContent("response")));
+    // Single agent with NO sub-agents
+    LlmAgent singleAgent = createTestAgentBuilder(testLlm).name("weather_agent").build();
+
+    Runner runner = new InMemoryRunner(singleAgent, "test", ImmutableList.of());
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    RunConfig initialConfig =
+        RunConfig.builder()
+            .setResponseModalities(ImmutableList.of(new Modality(Modality.Known.AUDIO)))
+            .setStreamingMode(RunConfig.StreamingMode.BIDI)
+            .build();
+
+    assertThat(initialConfig.inputAudioTranscription()).isNull();
+
+    LiveRequestQueue liveQueue = new LiveRequestQueue();
+    InvocationContext context =
+        invokeNewInvocationContextForLive(runner, session, liveQueue, initialConfig);
+
+    assertThat(context.runConfig().inputAudioTranscription()).isNotNull();
+  }
+
+  @Test
+  public void newInvocationContextForLive_singleAgent_preservesUserInputAudioTranscription()
+      throws Exception {
+    TestLlm testLlm = createTestLlm(createLlmResponse(createContent("response")));
+    // Single agent with NO sub-agents
+    LlmAgent singleAgent = createTestAgentBuilder(testLlm).name("weather_agent").build();
+
+    Runner runner = new InMemoryRunner(singleAgent, "test", ImmutableList.of());
     Session session = runner.sessionService().createSession("test", "user").blockingGet();
 
     AudioTranscriptionConfig userConfig = AudioTranscriptionConfig.builder().build();

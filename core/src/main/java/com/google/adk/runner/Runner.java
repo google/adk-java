@@ -397,9 +397,7 @@ public class Runner {
   private InvocationContext newInvocationContextForLive(
       Session session, Optional<LiveRequestQueue> liveRequestQueue, RunConfig runConfig) {
     RunConfig.Builder runConfigBuilder = RunConfig.builder(runConfig);
-    if (liveRequestQueue.isPresent() && !this.agent.subAgents().isEmpty()) {
-      // Parity with Python: apply modality defaults and transcription settings
-      // only for multi-agent live scenarios.
+    if (liveRequestQueue.isPresent()) {
       // Default to AUDIO modality if not specified.
       if (CollectionUtils.isNullOrEmpty(runConfig.responseModalities())) {
         runConfigBuilder.setResponseModalities(
