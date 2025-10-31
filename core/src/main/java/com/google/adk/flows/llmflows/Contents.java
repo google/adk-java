@@ -109,6 +109,9 @@ public final class Contents implements RequestProcessor {
       if (!isEventBelongsToBranch(currentBranch, event)) {
         continue;
       }
+      if (isRequestConfirmationEvent(event)) {
+        continue;
+      }
 
       // TODO: Skip auth events.
 
@@ -510,5 +513,22 @@ public final class Contents implements RequestProcessor {
         .flatMap(Content::parts) // Optional<List<Part>>
         .map(list -> !list.isEmpty()) // Optional<Boolean>
         .orElse(false);
+  }
+
+  /** Checks if the event is a request confirmation event. */
+  private static boolean isRequestConfirmationEvent(Event event) {
+    return event.content().flatMap(Content::parts).stream()
+        .flatMap(List::stream)
+        // return event.content().flatMap(Content::parts).orElse(ImmutableList.of()).stream()
+        .anyMatch(
+            part ->
+                part.functionCall()
+                        .flatMap(FunctionCall::name)
+                        .map(Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME::equals)
+                        .orElse(false)
+                    || part.functionResponse()
+                        .flatMap(FunctionResponse::name)
+                        .map(Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME::equals)
+                        .orElse(false));
   }
 }
