@@ -28,12 +28,14 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 
+@Disabled("To avoid making the assumption that Ollama is available in the CI pipeline")
 @EnabledIfEnvironmentVariable(named = "ADK_RUN_INTEGRATION_TESTS", matches = "true")
 class LocalModelIntegrationTest {
 
