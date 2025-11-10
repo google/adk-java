@@ -37,7 +37,9 @@ import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionDeclaration;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
@@ -63,7 +65,44 @@ public final class BaseLlmFlowTest {
     List<Event> events = baseLlmFlow.run(invocationContext).toList().blockingGet();
 
     assertThat(events).hasSize(1);
-    assertThat(getOnlyElement(events).content()).hasValue(content);
+    Event event = getOnlyElement(events);
+    assertThat(event.content()).hasValue(content);
+    assertThat(event.avgLogprobs()).isEmpty();
+    assertThat(event.finishReason()).isEmpty();
+    assertThat(event.usageMetadata()).isEmpty();
+  }
+
+  @Test
+  public void run_singleTextResponse_withMetadata_returnsSingleEventWithMetadata() {
+    Content content = Content.fromParts(Part.fromText("LLM response"));
+    LlmResponse llmResponse =
+        LlmResponse.builder()
+            .content(content)
+            .avgLogprobs(-0.123)
+            .finishReason(new FinishReason(FinishReason.Known.STOP))
+            .usageMetadata(
+                GenerateContentResponseUsageMetadata.builder()
+                    .promptTokenCount(10)
+                    .candidatesTokenCount(20)
+                    .build())
+            .build();
+    TestLlm testLlm = createTestLlm(llmResponse);
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> events = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    Event event = getOnlyElement(events);
+    assertThat(event.content()).hasValue(content);
+    assertThat(event.avgLogprobs()).hasValue(-0.123);
+    assertThat(event.finishReason()).hasValue(new FinishReason(FinishReason.Known.STOP));
+    assertThat(event.usageMetadata())
+        .hasValue(
+            GenerateContentResponseUsageMetadata.builder()
+                .promptTokenCount(10)
+                .candidatesTokenCount(20)
+                .build());
   }
 
   @Test

@@ -633,7 +633,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
             .errorMessage(llmResponse.errorMessage())
             .interrupted(llmResponse.interrupted())
             .turnComplete(llmResponse.turnComplete())
-            .groundingMetadata(llmResponse.groundingMetadata());
+            .groundingMetadata(llmResponse.groundingMetadata())
+            .avgLogprobs(llmResponse.avgLogprobs())
+            .finishReason(llmResponse.finishReason())
+            .usageMetadata(llmResponse.usageMetadata());
 
     Event event = eventBuilder.build();
 

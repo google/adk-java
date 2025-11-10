@@ -16,6 +16,8 @@
 
 package com.google.adk.models;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 
@@ -170,14 +172,29 @@ public abstract class LlmRequest extends JsonBaseModel {
       return liveConnectConfig(liveCfg.toBuilder().systemInstruction(newLiveSi).build());
     }
 
-    private Content addInstructions(Optional<Content> currentSi, List<String> newInst) {
-      ImmutableList.Builder<Part> parts = ImmutableList.builder();
-      currentSi.flatMap(Content::parts).ifPresent(parts::addAll);
+    private Content addInstructions(
+        Optional<Content> currentSystemInstruction, List<String> additionalInstructions) {
+      checkArgument(
+          currentSystemInstruction.isEmpty()
+              || currentSystemInstruction.get().parts().map(parts -> parts.size()).orElse(0) <= 1,
+          "At most one instruction is supported.");
 
-      newInst.stream().map(Part::fromText).forEach(parts::add);
+      // Either append to the existing instruction, or create a new one.
+      String instructions = String.join("\n\n", additionalInstructions);
 
-      String role = currentSi.flatMap(Content::role).orElse("user");
-      return Content.builder().parts(parts.build()).role(role).build();
+      Optional<Part> part =
+          currentSystemInstruction
+              .flatMap(Content::parts)
+              .flatMap(parts -> parts.stream().findFirst());
+      if (part.isEmpty() || part.get().text().isEmpty()) {
+        part = Optional.of(Part.fromText(instructions));
+      } else {
+        part = Optional.of(Part.fromText(part.get().text().get() + "\n\n" + instructions));
+      }
+      checkState(part.isPresent(), "Failed to create instruction.");
+
+      String role = currentSystemInstruction.flatMap(Content::role).orElse("user");
+      return Content.builder().parts(part.get()).role(role).build();
     }
 
     @CanIgnoreReturnValue

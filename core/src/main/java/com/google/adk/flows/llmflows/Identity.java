@@ -35,10 +35,12 @@ public final class Identity implements RequestProcessor {
     StringBuilder builder =
         new StringBuilder()
             .append("You are an agent. Your internal name is ")
+            .append("\"")
             .append(agent.name())
+            .append("\"")
             .append(".");
     if (!Strings.isNullOrEmpty(agent.description())) {
-      builder.append(" The description about you is ").append(agent.description());
+      builder.append(" The description about you is \"").append(agent.description()).append("\".");
     }
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(

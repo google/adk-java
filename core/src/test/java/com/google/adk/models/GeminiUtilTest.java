@@ -428,6 +428,17 @@ public final class GeminiUtilTest {
   }
 
   @Test
+  public void ensureModelResponse_userRoleIsLastCaseInsensitive_returnsSameList() {
+    Content modelContent = Content.builder().role("model").build();
+    Content userContent = Content.builder().role("USER").build();
+    ImmutableList<Content> contents = ImmutableList.of(modelContent, userContent);
+
+    List<Content> result = GeminiUtil.ensureModelResponse(contents);
+
+    assertThat(result).containsExactly(modelContent, userContent).inOrder();
+  }
+
+  @Test
   public void ensureModelResponse_lastContentIsNotUser_appendsContinueMessage() {
     Content modelContent1 = Content.builder().role("model").build();
     Content modelContent2 = Content.builder().role("model").build();
