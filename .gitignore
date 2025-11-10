@@ -12,6 +12,8 @@
 *.zip
 *.tar.gz
 *.rar
+*.settings
+
 
 # Maven target directory
 target/
@@ -25,6 +27,8 @@ out/
 
 # VS Code files
 .vscode/settings.json
+*.prefs
+*.project
 
 # OS-specific junk
 .DS_Store
@@ -33,3 +37,4 @@ Thumbs.db
 # Local documentation and plans
 docs/
 plans/
+
