@@ -16,28 +16,34 @@ cd /google_adk/tutorials/city-time-weather
 
 ## Running the Agent
 
-This tutorial supports multiple ways to load and run the agent:
+This tutorial demonstrates two different agent loading approaches:
 
-### Option 1: Using CompiledAgentLoader (Recommended)
+### Option 1: Using CompiledAgentLoader (Automatic Discovery)
 
-The simplest approach - automatically discovers agents with `ROOT_AGENT` fields:
+Automatically discovers agents with `ROOT_AGENT` fields in compiled classes:
 
 ```shell
 mvn exec:java -Dadk.agents.source-dir=$PWD
 ```
 
-### Option 2: Using AgentStaticLoader Programmatically
+This approach:
+- Uses Spring Boot to start `AdkWebServer` directly
+- `CompiledAgentLoader` scans `target/classes` for `ROOT_AGENT` fields
+- Automatically loads the `CityTimeWeather.ROOT_AGENT`
 
-For programmatic control, use the `AdkWebServer.start()` method:
+### Option 2: Using AgentStaticLoader (Programmatic)
 
+Explicitly provides pre-created agent instances:
+
+With custom port:
 ```shell
-mvn exec:java -Dexec.mainClass="com.google.adk.tutorials.CityTimeWeather"
+mvn exec:java -Dexec.mainClass="com.google.adk.tutorials.CityTimeWeather" -Dserver.port=8081
 ```
 
-This uses the built-in `main` method that calls:
-```java
-AdkWebServer.start(ROOT_AGENT);
-```
+This approach:
+- Calls `CityTimeWeather.main()` which executes `AdkWebServer.start(ROOT_AGENT)`
+- Directly provides the agent instance programmatically
+- Uses `AgentStaticLoader` with the provided agent
 
 ## Usage
 
@@ -46,10 +52,13 @@ Once running, you can interact with the agent through:
 - API endpoints for city time and weather queries
 - Agent name: `multi_tool_agent`
 
-## Agent Loaders Explained
+## Agent Loading Approaches
 
-- **CompiledAgentLoader**: Scans directories for compiled classes with `ROOT_AGENT` fields
-- **AgentStaticLoader**: Takes pre-created agent instances programmatically
-- Choose based on whether you want automatic discovery or programmatic control
+This tutorial demonstrates both agent loading strategies:
+
+- **CompiledAgentLoader (Option 1)**: Automatically discovers agents in compiled classes. Good for development and when you have multiple agents.
+- **AgentStaticLoader (Option 2)**: Takes pre-created agent instances programmatically. Good for production and when you need precise control.
+
+Choose Option 1 for automatic discovery, Option 2 for programmatic control.
 
 See https://google.github.io/adk-docs/get-started/quickstart/#java for more information.

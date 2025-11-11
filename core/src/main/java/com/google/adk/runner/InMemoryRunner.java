@@ -19,7 +19,10 @@ package com.google.adk.runner;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.memory.InMemoryMemoryService;
+import com.google.adk.plugins.BasePlugin;
 import com.google.adk.sessions.InMemorySessionService;
+import com.google.common.collect.ImmutableList;
+import java.util.List;
 
 /** The class for the in-memory GenAi runner, using in-memory artifact and session services. */
 public class InMemoryRunner extends Runner {
@@ -27,15 +30,20 @@ public class InMemoryRunner extends Runner {
   public InMemoryRunner(BaseAgent agent) {
     // TODO: Change the default appName to InMemoryRunner to align with adk python.
     // Check the dev UI in case we break something there.
-    this(agent, /* appName= */ agent.name());
+    this(agent, /* appName= */ agent.name(), ImmutableList.of());
   }
 
   public InMemoryRunner(BaseAgent agent, String appName) {
+    this(agent, appName, ImmutableList.of());
+  }
+
+  public InMemoryRunner(BaseAgent agent, String appName, List<BasePlugin> plugins) {
     super(
         agent,
         appName,
         new InMemoryArtifactService(),
         new InMemorySessionService(),
-        new InMemoryMemoryService());
+        new InMemoryMemoryService(),
+        plugins);
   }
 }

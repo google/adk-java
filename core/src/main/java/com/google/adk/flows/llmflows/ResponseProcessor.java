@@ -23,16 +23,34 @@ import com.google.auto.value.AutoValue;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Optional;
 
+/** Interface for processing LLM responses. */
 public interface ResponseProcessor {
 
+  /** Result of response processing. */
   @AutoValue
   public abstract static class ResponseProcessingResult {
+    /**
+     * Updated LLM response.
+     *
+     * <p>This is the LLM response that will be returned to the client.
+     */
     public abstract LlmResponse updatedResponse();
 
+    /**
+     * Events generated during processing.
+     *
+     * <p>These events are not necessarily part of the LLM response.
+     */
     public abstract Iterable<Event> events();
 
+    /**
+     * The agent to transfer to.
+     *
+     * <p>If present, the invocation will be transferred to the specified agent.
+     */
     public abstract Optional<String> transferToAgent();
 
+    /** Creates a new {@link ResponseProcessingResult}. */
     public static ResponseProcessingResult create(
         LlmResponse updatedResponse, Iterable<Event> events, Optional<String> transferToAgent) {
       return new AutoValue_ResponseProcessor_ResponseProcessingResult(

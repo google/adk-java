@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.adk.agents;
 
 import static com.google.adk.testing.TestUtils.createEvent;
@@ -394,6 +410,27 @@ public final class CallbacksTest {
     assertThat(testLlm.getRequests()).isEmpty();
     assertThat(events).hasSize(1);
     assertThat(getOnlyElement(events).content()).hasValue(callbackContent);
+  }
+
+  @Test
+  public void testRun_withBeforeModelCallback_usesModifiedRequestFromCallback() {
+    TestLlm testLlm = createTestLlm(createLlmResponse(Content.builder().build()));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .beforeModelCallback(
+                (context, requestBuilder) -> {
+                  requestBuilder.contents(
+                      ImmutableList.of(Content.fromParts(Part.fromText("Modified request"))));
+                  return Maybe.empty();
+                })
+            .build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> unused = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(testLlm.getRequests()).hasSize(1);
+    assertThat(testLlm.getRequests().get(0).contents())
+        .containsExactly(Content.fromParts(Part.fromText("Modified request")));
   }
 
   @Test

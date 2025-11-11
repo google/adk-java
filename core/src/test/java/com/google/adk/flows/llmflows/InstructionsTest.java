@@ -257,7 +257,6 @@ public final class InstructionsTest {
         instructionsProcessor.processRequest(context, initialRequest).blockingGet();
 
     assertThat(result.updatedRequest().getSystemInstructions())
-        .containsExactly("Global instruction.", "Agent instruction.")
-        .inOrder();
+        .containsExactly("Global instruction.\n\nAgent instruction.");
   }
 }

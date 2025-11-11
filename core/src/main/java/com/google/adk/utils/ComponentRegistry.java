@@ -16,19 +16,23 @@
 
 package com.google.adk.utils;
 
+import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.tools.AgentTool;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.ExitLoopTool;
 import com.google.adk.tools.GoogleSearchTool;
 import com.google.adk.tools.LoadArtifactsTool;
+import com.google.adk.tools.mcp.McpToolset;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -103,6 +107,8 @@ public class ComponentRegistry {
     registerAdkToolInstance("exit_loop", ExitLoopTool.INSTANCE);
 
     registerAdkToolClass(AgentTool.class);
+
+    registerAdkToolsetClass(McpToolset.class);
     // TODO: add all python tools that also exist in Java.
 
     logger.debug("Initialized base pre-wired entries in ComponentRegistry");
@@ -126,6 +132,19 @@ public class ComponentRegistry {
     registry.put("google.adk.tools." + toolClass.getSimpleName(), toolClass);
   }
 
+  private void registerAdkToolsetClass(@Nonnull Class<? extends BaseToolset> toolsetClass) {
+    registry.put(toolsetClass.getName(), toolsetClass);
+    // For python compatibility, also register the name used in ADK Python.
+    registry.put("google.adk.tools." + toolsetClass.getSimpleName(), toolsetClass);
+    // Also register by simple class name
+    registry.put(toolsetClass.getSimpleName(), toolsetClass);
+    // Special support for toolsets with various naming conventions
+    String simpleName = toolsetClass.getSimpleName();
+    if (simpleName.equals("McpToolset")) {
+      registry.put("mcp.McpToolset", toolsetClass);
+    }
+  }
+
   /**
    * Registers an object with the given name. This can override pre-wired entries.
    *
@@ -136,7 +155,7 @@ public class ComponentRegistry {
    * @throws IllegalArgumentException if name is null or empty, or if value is null
    */
   public void register(String name, Object value) {
-    if (name == null || name.trim().isEmpty()) {
+    if (isNullOrEmpty(name) || name.trim().isEmpty()) {
       throw new IllegalArgumentException("Name cannot be null or empty");
     }
     if (value == null) {
@@ -172,7 +191,7 @@ public class ComponentRegistry {
               if (type.isInstance(value)) {
                 return true;
               } else {
-                logger.warn(
+                logger.info(
                     "Object with name '{}' is of type {} but expected type {}",
                     name,
                     value.getClass().getSimpleName(),
@@ -190,11 +209,9 @@ public class ComponentRegistry {
    * @return an Optional containing the object if found, or an empty Optional otherwise
    */
   public Optional<Object> get(String name) {
-    if (name == null || name.trim().isEmpty()) {
-      return Optional.empty();
-    }
-
-    return Optional.ofNullable(registry.get(name));
+    return Optional.ofNullable(emptyToNull(name))
+        .filter(n -> !n.trim().isEmpty())
+        .flatMap(n -> Optional.ofNullable(registry.get(n)));
   }
 
   /**
@@ -224,43 +241,61 @@ public class ComponentRegistry {
   }
 
   /**
+   * Resolves an agent instance from the registry.
+   *
+   * <p>This method looks up an agent in the ComponentRegistry by the given key. The registry should
+   * have been pre-populated with all available agents during initialization.
+   *
+   * <p>The key can be any string that was used to register the agent, such as:
+   *
+   * <ul>
+   *   <li>A class name: "com.example.LifeAgent"
+   *   <li>A static field reference: "com.example.LifeAgent.INSTANCE"
+   *   <li>A simple name: "life_agent"
+   *   <li>Any custom key: "sub_agents_config.life_agent.agent"
+   * </ul>
+   *
+   * @param name the registry key to look up
+   * @return an Optional containing the BaseAgent if found, or empty if not found
+   */
+  public static Optional<BaseAgent> resolveAgentInstance(String name) {
+    return getInstance().get(name, BaseAgent.class);
+  }
+
+  /**
    * Resolves the agent class based on the agent class name from the configuration.
    *
    * @param agentClassName the name of the agent class from the config
    * @return the corresponding agent class
    * @throws IllegalArgumentException if the agent class is not supported
    */
-  @SuppressWarnings({"unchecked", "rawtypes"}) // For type casting.
   public static Class<? extends BaseAgent> resolveAgentClass(String agentClassName) {
     // If no agent_class is specified, it will default to LlmAgent.
     if (isNullOrEmpty(agentClassName)) {
       return LlmAgent.class;
     }
 
-    ComponentRegistry registry = getInstance();
+    Optional<Class<? extends BaseAgent>> agentClass;
 
     if (agentClassName.contains(".")) {
       // If agentClassName contains '.', use it directly
-      Optional<Class> agentClass = registry.get(agentClassName, Class.class);
-      if (agentClass.isPresent() && BaseAgent.class.isAssignableFrom(agentClass.get())) {
-        return (Class<? extends BaseAgent>) agentClass.get();
-      }
+      agentClass = getType(agentClassName, BaseAgent.class);
     } else {
       // First try the simple name
-      Optional<Class> agentClass = registry.get(agentClassName, Class.class);
-      if (agentClass.isPresent() && BaseAgent.class.isAssignableFrom(agentClass.get())) {
-        return (Class<? extends BaseAgent>) agentClass.get();
-      }
-
-      // If not found, try with com.google.adk.agents prefix
-      agentClass = registry.get("com.google.adk.agents." + agentClassName, Class.class);
-      if (agentClass.isPresent() && BaseAgent.class.isAssignableFrom(agentClass.get())) {
-        return (Class<? extends BaseAgent>) agentClass.get();
-      }
+      agentClass =
+          getType(agentClassName, BaseAgent.class)
+              // If not found, try with com.google.adk.agents prefix
+              .or(() -> getType("com.google.adk.agents." + agentClassName, BaseAgent.class))
+              // For Python compatibility, also try with google.adk.agents prefix
+              .or(() -> getType("google.adk.agents." + agentClassName, BaseAgent.class));
     }
 
-    throw new IllegalArgumentException(
-        "agentClass '" + agentClassName + "' is not in registry or not a subclass of BaseAgent.");
+    return agentClass.orElseThrow(
+        () ->
+            new IllegalArgumentException(
+                "agentClass '"
+                    + agentClassName
+                    + "' is not in registry or not a subclass of BaseAgent."));
   }
 
   /**
@@ -269,25 +304,44 @@ public class ComponentRegistry {
    * @param name the name of the tool from the config
    * @return an Optional containing the tool instance if found, empty otherwise
    */
+  /**
+   * Resolves a toolset instance by name from the registry.
+   *
+   * @param name The name of the toolset instance to resolve.
+   * @return An Optional containing the toolset instance if found, empty otherwise.
+   */
+  public static Optional<BaseToolset> resolveToolsetInstance(String name) {
+    return resolveInstance(name, "tools", BaseToolset.class);
+  }
+
   public static Optional<BaseTool> resolveToolInstance(String name) {
+    return resolveInstance(name, "tools", BaseTool.class);
+  }
+
+  /**
+   * Resolves an instance from the registry by name, attempting various prefixes if the name is not
+   * fully qualified.
+   *
+   * @param name The name of the instance to resolve.
+   * @param type The expected type of the instance.
+   * @param <T> The type parameter.
+   * @return An Optional containing the instance if found and castable to the specified type, empty
+   *     otherwise.
+   */
+  private static <T> Optional<T> resolveInstance(String name, String adkPackage, Class<T> type) {
     if (isNullOrEmpty(name)) {
       return Optional.empty();
-    }
-
-    ComponentRegistry registry = getInstance();
-
-    if (name.contains(".")) {
+    } else if (name.contains(".")) {
       // If name contains '.', use it directly
-      return registry.get(name, BaseTool.class);
+      return getInstance().get(name, type);
     } else {
-      // First try the simple name
-      Optional<BaseTool> toolInstance = registry.get(name, BaseTool.class);
-      if (toolInstance.isPresent()) {
-        return toolInstance;
-      }
-
-      // If not found, try with google.adk.tools prefix
-      return registry.get("google.adk.tools." + name, BaseTool.class);
+      // Try simple name, then common prefixes (com/google)
+      return getInstance()
+          .get(name, type)
+          .or(
+              () ->
+                  getInstance().get(String.format("com.google.adk.%s.%s", adkPackage, name), type))
+          .or(() -> getInstance().get(String.format("google.adk.%s.%s", adkPackage, name), type));
     }
   }
 
@@ -297,40 +351,104 @@ public class ComponentRegistry {
    * @param toolClassName the name of the tool class from the config
    * @return an Optional containing the tool class if found, empty otherwise
    */
-  @SuppressWarnings({"unchecked", "rawtypes"}) // For type casting.
   public static Optional<Class<? extends BaseTool>> resolveToolClass(String toolClassName) {
     if (isNullOrEmpty(toolClassName)) {
       return Optional.empty();
-    }
-
-    ComponentRegistry registry = getInstance();
-
-    if (toolClassName.contains(".")) {
+    } else if (toolClassName.contains(".")) {
       // If toolClassName contains '.', use it directly
-      Optional<Class> toolClass = registry.get(toolClassName, Class.class);
-      if (toolClass.isPresent() && BaseTool.class.isAssignableFrom(toolClass.get())) {
-        return Optional.of((Class<? extends BaseTool>) toolClass.get());
-      }
+      return getType(toolClassName, BaseTool.class);
     } else {
       // First try the simple name
-      Optional<Class> toolClass = registry.get(toolClassName, Class.class);
-      if (toolClass.isPresent() && BaseTool.class.isAssignableFrom(toolClass.get())) {
-        return Optional.of((Class<? extends BaseTool>) toolClass.get());
-      }
-
-      // If not found, try with google.adk.tools prefix
-      toolClass = registry.get("google.adk.tools." + toolClassName, Class.class);
-      if (toolClass.isPresent() && BaseTool.class.isAssignableFrom(toolClass.get())) {
-        return Optional.of((Class<? extends BaseTool>) toolClass.get());
-      }
+      return getType(toolClassName, BaseTool.class)
+          // If not found, try with common prefixes (com/google)
+          .or(() -> getType("com.google.adk.tools." + toolClassName, BaseTool.class))
+          .or(() -> getType("google.adk.tools." + toolClassName, BaseTool.class));
     }
+  }
 
-    return Optional.empty();
+  /**
+   * Resolves a toolset class by name from the registry or by attempting to load it.
+   *
+   * <p>This method follows the same pattern as {@code resolveToolClass} but for BaseToolset
+   * implementations. It first checks the registry, then attempts direct class loading if the name
+   * contains a dot (indicating a fully qualified class name).
+   *
+   * @param toolsetClassName the name of the toolset class from the config
+   * @return an Optional containing the toolset class if found, empty otherwise
+   */
+  public static Optional<Class<? extends BaseToolset>> resolveToolsetClass(
+      String toolsetClassName) {
+    if (isNullOrEmpty(toolsetClassName)) {
+      return Optional.empty();
+    } else if (toolsetClassName.contains(".")) {
+      // If toolsetClassName contains '.', use it directly
+      return getType(toolsetClassName, BaseToolset.class)
+          .or(() -> loadToolsetClass(toolsetClassName));
+    } else {
+      // First try the simple name, then with google.adk.tools prefix (consistent with
+      // resolveToolClass)
+      return getType(toolsetClassName, BaseToolset.class)
+          .or(() -> getType("com.google.adk.tools." + toolsetClassName, BaseToolset.class))
+          .or(() -> getType("google.adk.tools." + toolsetClassName, BaseToolset.class));
+    }
   }
 
   public Set<String> getToolNamesWithPrefix(String prefix) {
     return registry.keySet().stream()
         .filter(name -> name.startsWith(prefix))
         .collect(toImmutableSet());
+  }
+
+  public static Optional<Callbacks.BeforeAgentCallback> resolveBeforeAgentCallback(String name) {
+    return getInstance().get(name, Callbacks.BeforeAgentCallback.class);
+  }
+
+  public static Optional<Callbacks.AfterAgentCallback> resolveAfterAgentCallback(String name) {
+    return getInstance().get(name, Callbacks.AfterAgentCallback.class);
+  }
+
+  public static Optional<Callbacks.BeforeModelCallback> resolveBeforeModelCallback(String name) {
+    return getInstance().get(name, Callbacks.BeforeModelCallback.class);
+  }
+
+  public static Optional<Callbacks.AfterModelCallback> resolveAfterModelCallback(String name) {
+    return getInstance().get(name, Callbacks.AfterModelCallback.class);
+  }
+
+  public static Optional<Callbacks.BeforeToolCallback> resolveBeforeToolCallback(String name) {
+    return getInstance().get(name, Callbacks.BeforeToolCallback.class);
+  }
+
+  public static Optional<Callbacks.AfterToolCallback> resolveAfterToolCallback(String name) {
+    return getInstance().get(name, Callbacks.AfterToolCallback.class);
+  }
+
+  /**
+   * Retrieves a Class object from the registry by name and casts it to a specific type.
+   *
+   * @param name The name of the class in the registry.
+   * @param type The expected superclass or interface of the class.
+   * @param <T> The type parameter extending Class.
+   * @return An Optional containing the Class if found and assignable to the specified type,
+   *     otherwise empty.
+   */
+  @SuppressWarnings("unchecked") // For type casting.
+  private static <T> Optional<Class<? extends T>> getType(String name, Class<T> type) {
+    return getInstance()
+        .get(name, Class.class)
+        .filter(type::isAssignableFrom)
+        .map(clazz -> clazz.asSubclass(type));
+  }
+
+  private static Optional<Class<? extends BaseToolset>> loadToolsetClass(String className) {
+    try {
+      Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
+      if (BaseToolset.class.isAssignableFrom(clazz)) {
+        return Optional.of(clazz.asSubclass(BaseToolset.class));
+      }
+    } catch (ClassNotFoundException e) {
+      // Class not found, return empty
+    }
+    return Optional.empty();
   }
 }

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.google.adk</groupId>
+    <artifactId>google-adk-samples</artifactId>
+    <version>0.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <relativePath>..</relativePath>
+  </parent>
+
+  <artifactId>google-adk-sample-a2a-basic</artifactId>
+  <packaging>jar</packaging>
+
+  <name>Google ADK - Sample - A2A Basic Client</name>
+  <description>Demonstrates sending A2A REST requests using the google-adk-a2a module.</description>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <java.version>17</java.version>
+    <google-adk.version>${project.version}</google-adk.version>
+    <google-adk-a2a.version>${project.version}</google-adk-a2a.version>
+    <slf4j.version>2.0.16</slf4j.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.google.adk</groupId>
+      <artifactId>google-adk</artifactId>
+      <version>${google-adk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.adk</groupId>
+      <artifactId>google-adk-a2a</artifactId>
+      <version>${google-adk-a2a.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>${slf4j.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>${java.version}</release>
+          <parameters>true</parameters>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <id>add-source</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>add-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>.</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>**/*.jar</exclude>
+            <exclude>target/**</exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.2.0</version>
+        <configuration>
+          <mainClass>com.example.a2a_basic.A2AAgentRun</mainClass>
+          <classpathScope>runtime</classpathScope>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

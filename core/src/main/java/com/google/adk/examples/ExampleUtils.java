@@ -16,16 +16,17 @@
 
 package com.google.adk.examples;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.util.stream.Collectors.joining;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import java.util.List;
-import java.util.Map;
 
 /** Utility class for examples. */
 public final class ExampleUtils {
@@ -59,63 +60,91 @@ public final class ExampleUtils {
    */
   private static String convertExamplesToText(List<Example> examples) {
     StringBuilder examplesStr = new StringBuilder();
-    for (int exampleNum = 0; exampleNum < examples.size(); exampleNum++) {
-      Example example = examples.get(exampleNum);
-      StringBuilder output = new StringBuilder();
-      output
-          .append(String.format(EXAMPLE_START, exampleNum + 1))
-          .append(USER_PREFIX)
-          .append(example.input().parts().get().get(0).text().get())
-          .append("\n\n");
 
+    // super header
+    examplesStr.append(EXAMPLES_INTRO);
+
+    for (int i = 0; i < examples.size(); i++) {
+      Example example = examples.get(i);
+
+      // header
+      examplesStr.append(String.format(EXAMPLE_START, i + 1));
+
+      // user content
+      appendInput(example, examplesStr);
+
+      // model content
       for (Content content : example.output()) {
-        String rolePrefix = content.role().orElse("").equals("model") ? MODEL_PREFIX : USER_PREFIX;
-        for (Part part : content.parts().orElse(ImmutableList.of())) {
-          if (part.functionCall().isPresent()) {
-            Map<String, Object> argsMap =
-                part.functionCall().get().args().orElse(ImmutableMap.of());
-            ImmutableList<String> args =
-                argsMap.entrySet().stream()
-                    .map(
-                        entry -> {
-                          String key = entry.getKey();
-                          Object value = entry.getValue();
-                          if (value instanceof String) {
-                            return String.format("%s='%s'", key, value);
-                          } else {
-                            return String.format("%s=%s", key, value);
-                          }
-                        })
-                    .collect(toImmutableList());
-            output
-                .append(rolePrefix)
-                .append(FUNCTION_CALL_PREFIX)
-                .append(part.functionCall().get().name().orElse(""))
-                .append("(")
-                .append(String.join(", ", args))
-                .append(")")
-                .append(FUNCTION_CALL_SUFFIX);
-          } else if (part.functionResponse().isPresent()) {
-            try {
-              output
-                  .append(FUNCTION_RESPONSE_PREFIX)
-                  .append(
-                      OBJECT_MAPPER.writeValueAsString(
-                          part.functionResponse().get().response().orElse(ImmutableMap.of())))
-                  .append(FUNCTION_RESPONSE_SUFFIX);
-            } catch (JsonProcessingException e) {
-              output.append(FUNCTION_RESPONSE_PREFIX).append(FUNCTION_RESPONSE_SUFFIX);
-            }
-          } else if (part.text().isPresent()) {
-            output.append(rolePrefix).append(part.text().orElse("")).append("\n");
-          }
-        }
+        appendOutput(content, examplesStr);
       }
-      output.append(EXAMPLE_END);
-      examplesStr.append(output);
+
+      // footer
+      examplesStr.append(EXAMPLE_END);
     }
 
-    return EXAMPLES_INTRO + examplesStr + EXAMPLES_END;
+    // super footer
+    examplesStr.append(EXAMPLES_END);
+
+    return examplesStr.toString();
+  }
+
+  private static void appendInput(Example example, StringBuilder builder) {
+    example
+        .input()
+        .parts()
+        .flatMap(parts -> parts.stream().findFirst().flatMap(Part::text))
+        .ifPresent(text -> builder.append(USER_PREFIX).append(text).append("\n\n"));
+  }
+
+  private static void appendOutput(Content output, StringBuilder builder) {
+    String rolePrefix = output.role().orElse("").equals("model") ? MODEL_PREFIX : USER_PREFIX;
+    for (Part part : output.parts().orElse(ImmutableList.of())) {
+      if (part.functionCall().isPresent()) {
+        appendFunctionCall(part.functionCall().get(), rolePrefix, builder);
+      } else if (part.functionResponse().isPresent()) {
+        appendFunctionResponse(part.functionResponse().get(), builder);
+      } else if (part.text().isPresent()) {
+        builder.append(rolePrefix).append(part.text().get()).append("\n");
+      }
+    }
+  }
+
+  private static void appendFunctionCall(
+      FunctionCall functionCall, String rolePrefix, StringBuilder builder) {
+    String argsString =
+        functionCall.args().stream()
+            .flatMap(argsMap -> argsMap.entrySet().stream())
+            .map(
+                entry -> {
+                  String key = entry.getKey();
+                  Object value = entry.getValue();
+                  if (value instanceof String) {
+                    return String.format("%s='%s'", key, value);
+                  } else {
+                    return String.format("%s=%s", key, value);
+                  }
+                })
+            .collect(joining(", "));
+    builder
+        .append(rolePrefix)
+        .append(FUNCTION_CALL_PREFIX)
+        .append(functionCall.name().orElse(""))
+        .append("(")
+        .append(argsString)
+        .append(")")
+        .append(FUNCTION_CALL_SUFFIX);
+  }
+
+  private static void appendFunctionResponse(FunctionResponse response, StringBuilder builder) {
+    try {
+      Object responseMap = response.response().orElse(ImmutableMap.of());
+      builder
+          .append(FUNCTION_RESPONSE_PREFIX)
+          .append(OBJECT_MAPPER.writeValueAsString(responseMap))
+          .append(FUNCTION_RESPONSE_SUFFIX);
+    } catch (JsonProcessingException e) {
+      builder.append(FUNCTION_RESPONSE_PREFIX).append(FUNCTION_RESPONSE_SUFFIX);
+    }
   }
 
   /**

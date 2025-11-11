@@ -30,10 +30,14 @@ import com.google.genai.types.Part;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
+import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,9 +50,16 @@ import org.slf4j.LoggerFactory;
 public class Telemetry {
 
   private static final Logger log = LoggerFactory.getLogger(Telemetry.class);
-  private static final Tracer tracer = GlobalOpenTelemetry.getTracer("gcp.vertex.agent");
+
+  @SuppressWarnings("NonFinalStaticField")
+  private static Tracer tracer = GlobalOpenTelemetry.getTracer("gcp.vertex.agent");
 
   private Telemetry() {}
+
+  /** Sets the OpenTelemetry instance to be used for tracing. This is for testing purposes only. */
+  public static void setTracerForTesting(Tracer tracer) {
+    Telemetry.tracer = tracer;
+  }
 
   /**
    * Traces tool call arguments.
@@ -218,5 +229,39 @@ public class Telemetry {
    */
   public static Tracer getTracer() {
     return tracer;
+  }
+
+  /**
+   * Executes a Flowable with an OpenTelemetry Scope active for its entire lifecycle.
+   *
+   * <p>This helper manages the OpenTelemetry Scope lifecycle for RxJava Flowables to ensure proper
+   * context propagation across async boundaries. The scope remains active from when the Flowable is
+   * returned through all operators until stream completion (onComplete, onError, or cancel).
+   *
+   * <p><b>Why not try-with-resources?</b> RxJava Flowables execute lazily - operators run at
+   * subscription time, not at chain construction time. Using try-with-resources would close the
+   * scope before the Flowable subscribes, causing Context.current() to return ROOT in nested
+   * operations and breaking parent-child span relationships (fragmenting traces).
+   *
+   * <p>The scope is properly closed via doFinally when the stream terminates, ensuring no resource
+   * leaks regardless of completion mode (success, error, or cancellation).
+   *
+   * @param spanContext The context containing the span to activate
+   * @param span The span to end when the stream completes
+   * @param flowableSupplier Supplier that creates the Flowable to execute with active scope
+   * @param <T> The type of items emitted by the Flowable
+   * @return Flowable with OpenTelemetry scope lifecycle management
+   */
+  @SuppressWarnings("MustBeClosedChecker") // Scope lifecycle managed by RxJava doFinally
+  public static <T> Flowable<T> traceFlowable(
+      Context spanContext, Span span, Supplier<Flowable<T>> flowableSupplier) {
+    Scope scope = spanContext.makeCurrent();
+    return flowableSupplier
+        .get()
+        .doFinally(
+            () -> {
+              scope.close();
+              span.end();
+            });
   }
 }

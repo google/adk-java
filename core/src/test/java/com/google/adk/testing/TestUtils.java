@@ -88,64 +88,43 @@ public final class TestUtils {
 
   public static ImmutableList<Object> simplifyEvents(List<Event> events) {
     return events.stream()
-        .map(
-            event -> {
-              if (event.content().isPresent() && event.content().get().parts().isPresent()) {
-                List<Part> parts = event.content().get().parts().get();
-                if (parts.size() == 1) {
-                  Part part = parts.get(0);
-                  if (part.text().isPresent()) {
-                    return event.author() + ": " + part.text().get();
-                  } else if (part.functionCall().isPresent()) {
-                    // Custom formatting for FunctionCall
-                    FunctionCall fc = part.functionCall().get();
-                    String argsString =
-                        fc.args().map(Object::toString).orElse("{}"); // Handle optional args
-                    return String.format(
-                        "%s: FunctionCall(name=%s, args=%s)",
-                        event.author(), fc.name().orElse(""), argsString);
-                  } else if (part.functionResponse().isPresent()) {
-                    // Custom formatting for FunctionResponse
-                    FunctionResponse fr = part.functionResponse().get();
-                    String responseString =
-                        fr.response()
-                            .map(Object::toString)
-                            .orElse("{}"); // Handle optional response
-                    return String.format(
-                        "%s: FunctionResponse(name=%s, response=%s)",
-                        event.author(), fr.name().orElse(""), responseString);
-                  }
-                } else { // Multiple parts, return the list of parts for simplicity
-                  // Apply custom formatting to parts within the list if needed
-                  String partsString =
-                      parts.stream()
-                          .map(
-                              part -> {
-                                if (part.text().isPresent()) {
-                                  return part.text().get();
-                                } else if (part.functionCall().isPresent()) {
-                                  FunctionCall fc = part.functionCall().get();
-                                  String argsString = fc.args().map(Object::toString).orElse("{}");
-                                  return String.format(
-                                      "FunctionCall(name=%s, args=%s)",
-                                      fc.name().orElse(""), argsString);
-                                } else if (part.functionResponse().isPresent()) {
-                                  FunctionResponse fr = part.functionResponse().get();
-                                  String responseString =
-                                      fr.response().map(Object::toString).orElse("{}");
-                                  return String.format(
-                                      "FunctionResponse(name=%s, response=%s)",
-                                      fr.name().orElse(""), responseString);
-                                }
-                                return part.toString(); // Fallback
-                              })
-                          .collect(joining(", "));
-                  return event.author() + ": [" + partsString + "]";
-                }
-              }
-              return event.author() + ": [NO_CONTENT]"; // Fallback if no content/parts
-            })
+        .map(event -> event.author() + ": " + formatEventContent(event))
         .collect(toImmutableList());
+  }
+
+  private static String formatEventContent(Event event) {
+    return event
+        .content()
+        .flatMap(content -> content.parts())
+        .map(
+            parts -> {
+              if (parts.size() == 1) {
+                return formatPart(parts.get(0));
+              } else {
+                String contentString =
+                    parts.stream().map(TestUtils::formatPart).collect(joining(", "));
+                return "[" + contentString + "]";
+              }
+            })
+        .orElse("[NO_CONTENT]");
+  }
+
+  private static String formatPart(Part part) {
+    if (part.text().isPresent()) {
+      return part.text().get();
+    }
+    if (part.functionCall().isPresent()) {
+      FunctionCall fc = part.functionCall().get();
+      String argsString = fc.args().map(Object::toString).orElse("{}");
+      return String.format("FunctionCall(name=%s, args=%s)", fc.name().orElse(""), argsString);
+    }
+    if (part.functionResponse().isPresent()) {
+      FunctionResponse fr = part.functionResponse().get();
+      String responseString = fr.response().map(Object::toString).orElse("{}");
+      return String.format(
+          "FunctionResponse(name=%s, response=%s)", fr.name().orElse(""), responseString);
+    }
+    return part.toString(); // Fallback
   }
 
   public static void assertEqualIgnoringFunctionIds(
@@ -174,10 +153,13 @@ public final class TestUtils {
           .build();
     }
     if (part.functionResponse().isPresent()) {
-      return part.toBuilder()
-          .functionResponse(
-              part.functionResponse().get().toBuilder().id("<overwritten by TestUtils>").build())
-          .build();
+      FunctionResponse functionResponse = part.functionResponse().get();
+      FunctionResponse.Builder functionResponseBuilder =
+          functionResponse.toBuilder().id("<overwritten by TestUtils>");
+      if (!functionResponse.parts().isPresent()) {
+        functionResponseBuilder.parts(ImmutableList.of());
+      }
+      return part.toBuilder().functionResponse(functionResponseBuilder.build()).build();
     }
     return part;
   }

@@ -16,6 +16,8 @@
 
 package com.google.adk.models;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 
@@ -158,53 +160,41 @@ public abstract class LlmRequest extends JsonBaseModel {
       if (instructions.isEmpty()) {
         return this;
       }
-      GenerateContentConfig config = config().orElse(GenerateContentConfig.builder().build());
-      ImmutableList.Builder<Part> parts = ImmutableList.builder();
-      if (config.systemInstruction().isPresent()) {
-        parts.addAll(config.systemInstruction().get().parts().orElse(ImmutableList.of()));
+
+      // Update GenerateContentConfig
+      GenerateContentConfig cfg = config().orElseGet(() -> GenerateContentConfig.builder().build());
+      Content newCfgSi = addInstructions(cfg.systemInstruction(), instructions);
+      config(cfg.toBuilder().systemInstruction(newCfgSi).build());
+
+      // Update LiveConnectConfig
+      LiveConnectConfig liveCfg = liveConnectConfig();
+      Content newLiveSi = addInstructions(liveCfg.systemInstruction(), instructions);
+      return liveConnectConfig(liveCfg.toBuilder().systemInstruction(newLiveSi).build());
+    }
+
+    private Content addInstructions(
+        Optional<Content> currentSystemInstruction, List<String> additionalInstructions) {
+      checkArgument(
+          currentSystemInstruction.isEmpty()
+              || currentSystemInstruction.get().parts().map(parts -> parts.size()).orElse(0) <= 1,
+          "At most one instruction is supported.");
+
+      // Either append to the existing instruction, or create a new one.
+      String instructions = String.join("\n\n", additionalInstructions);
+
+      Optional<Part> part =
+          currentSystemInstruction
+              .flatMap(Content::parts)
+              .flatMap(parts -> parts.stream().findFirst());
+      if (part.isEmpty() || part.get().text().isEmpty()) {
+        part = Optional.of(Part.fromText(instructions));
+      } else {
+        part = Optional.of(Part.fromText(part.get().text().get() + "\n\n" + instructions));
       }
-      parts.addAll(
-          instructions.stream()
-              .map(instruction -> Part.builder().text(instruction).build())
-              .collect(toImmutableList()));
-      config(
-          config.toBuilder()
-              .systemInstruction(
-                  Content.builder()
-                      .parts(parts.build())
-                      .role(
-                          config
-                              .systemInstruction()
-                              .map(c -> c.role().orElse("user"))
-                              .orElse("user"))
-                      .build())
-              .build());
+      checkState(part.isPresent(), "Failed to create instruction.");
 
-      LiveConnectConfig liveConfig = liveConnectConfig();
-      ImmutableList.Builder<Part> livePartsBuilder = ImmutableList.builder();
-
-      if (liveConfig.systemInstruction().isPresent()) {
-        livePartsBuilder.addAll(
-            liveConfig.systemInstruction().get().parts().orElse(ImmutableList.of()));
-      }
-
-      livePartsBuilder.addAll(
-          instructions.stream()
-              .map(instruction -> Part.builder().text(instruction).build())
-              .collect(toImmutableList()));
-
-      return liveConnectConfig(
-          liveConfig.toBuilder()
-              .systemInstruction(
-                  Content.builder()
-                      .parts(livePartsBuilder.build())
-                      .role(
-                          liveConfig
-                              .systemInstruction()
-                              .map(c -> c.role().orElse("user"))
-                              .orElse("user"))
-                      .build())
-              .build());
+      String role = currentSystemInstruction.flatMap(Content::role).orElse("user");
+      return Content.builder().parts(part.get()).role(role).build();
     }
 
     @CanIgnoreReturnValue

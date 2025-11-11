@@ -120,12 +120,7 @@ public class AgentTool extends BaseTool {
                 return ImmutableMap.of();
               }
               Event lastEvent = optionalLastEvent.get();
-              Optional<String> outputText =
-                  lastEvent
-                      .content()
-                      .flatMap(Content::parts)
-                      .filter(parts -> !parts.isEmpty())
-                      .flatMap(parts -> parts.get(0).text());
+              Optional<String> outputText = lastEvent.content().map(Content::text);
 
               if (outputText.isEmpty()) {
                 return ImmutableMap.of();

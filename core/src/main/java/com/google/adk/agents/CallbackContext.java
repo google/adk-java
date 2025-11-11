@@ -20,6 +20,7 @@ import com.google.adk.artifacts.ListArtifactsResponse;
 import com.google.adk.events.EventActions;
 import com.google.adk.sessions.State;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
@@ -99,21 +100,22 @@ public class CallbackContext extends ReadonlyContext {
    *
    * @param filename Artifact file name.
    * @param artifact Artifact content to save.
+   * @return a {@link Completable} that completes when the artifact is saved.
    * @throws IllegalStateException if the artifact service is not initialized.
    */
-  public void saveArtifact(String filename, Part artifact) {
+  public Completable saveArtifact(String filename, Part artifact) {
     if (invocationContext.artifactService() == null) {
       throw new IllegalStateException("Artifact service is not initialized.");
     }
-    var unused =
-        invocationContext
-            .artifactService()
-            .saveArtifact(
-                invocationContext.appName(),
-                invocationContext.userId(),
-                invocationContext.session().id(),
-                filename,
-                artifact);
-    this.eventActions.artifactDelta().put(filename, artifact);
+    return invocationContext
+        .artifactService()
+        .saveArtifact(
+            invocationContext.appName(),
+            invocationContext.userId(),
+            invocationContext.session().id(),
+            filename,
+            artifact)
+        .doOnSuccess(unusedVersion -> this.eventActions.artifactDelta().put(filename, artifact))
+        .ignoreElement();
   }
 }

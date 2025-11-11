@@ -6,7 +6,7 @@
 
     <groupId>com.example</groupId>
     <artifactId>custom-tools-example</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>0.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
     <packaging>jar</packaging>
 
     <name>ADK Custom Tools Example</name>
@@ -16,7 +16,7 @@
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <google-adk.version>0.2.1-SNAPSHOT</google-adk.version>
+        <google-adk.version>${project.version}</google-adk.version>
     </properties>
 
     <dependencies>

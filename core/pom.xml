@@ -14,46 +14,29 @@
  See the License for the specific language governing permissions and
  limitations under the License.
 -->
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-parent</artifactId>
-    <version>0.2.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <version>0.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   </parent>
 
   <artifactId>google-adk</artifactId>
   <name>Agent Development Kit</name>
   <description>Agent Development Kit: an open-source, code-first toolkit designed to simplify building, evaluating, and deploying advanced AI agents anywhere.</description>
 
-  <properties>
-    <mcp.version>0.10.0</mcp.version>
-    <errorprone.version>2.38.0</errorprone.version>
-    <google.auth.version>1.33.1</google.auth.version>
-    <google.cloud.storage.version>2.28.0</google.cloud.storage.version>
-    <google.genai.version>1.8.0</google.genai.version>
-    <protobuf.version>4.31.0-RC1</protobuf.version>
-    <junit.version>5.11.4</junit.version>
-    <mockito.version>5.17.0</mockito.version>
-    <java-websocket.version>1.6.0</java-websocket.version>
-    <jackson.version>2.19.0</jackson.version>
-    <okhttp.version>4.12.0</okhttp.version>
-    <docker-java.version>3.3.6</docker-java.version>
-  </properties>
+
 
   <dependencies>
     <dependency>
       <groupId>com.anthropic</groupId>
       <artifactId>anthropic-java</artifactId>
-      <version>1.4.0</version>
     </dependency>
     <dependency>
       <groupId>com.anthropic</groupId>
       <artifactId>anthropic-java-vertex</artifactId>
-      <version>1.4.0</version>
     </dependency>
     <dependency>
       <groupId>com.google.cloud</groupId>
@@ -66,17 +49,14 @@
     <dependency>
       <groupId>com.github.docker-java</groupId>
       <artifactId>docker-java</artifactId>
-      <version>${docker-java.version}</version>
     </dependency>
     <dependency>
       <groupId>com.github.docker-java</groupId>
       <artifactId>docker-java-transport-httpclient5</artifactId>
-      <version>${docker-java.version}</version>
     </dependency>
     <dependency>
       <groupId> io.modelcontextprotocol.sdk</groupId>
       <artifactId>mcp</artifactId>
-      <version>${mcp.version}</version>
     </dependency>
     <dependency>
       <groupId>com.google.auth</groupId>
@@ -89,115 +69,99 @@
     <dependency>
       <groupId>com.google.genai</groupId>
       <artifactId>google-genai</artifactId>
-      <version>${google.genai.version}</version>
     </dependency>
     <dependency>
       <groupId>com.squareup.okhttp3</groupId>
       <artifactId>okhttp</artifactId>
-      <version>${okhttp.version}</version>
     </dependency>
     <dependency>
       <groupId>com.google.auto.value</groupId>
       <artifactId>auto-value-annotations</artifactId>
-      <version>${auto-value.version}</version>
       <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>33.0.0-jre</version>
     </dependency>
     <dependency>
       <groupId>com.google.errorprone</groupId>
       <artifactId>error_prone_annotations</artifactId>
-      <version>${errorprone.version}</version>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
-      <version>${jackson.version}</version>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.datatype</groupId>
       <artifactId>jackson-datatype-jdk8</artifactId>
-      <version>${jackson.version}</version>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.datatype</groupId>
       <artifactId>jackson-datatype-jsr310</artifactId>
-      <version>${jackson.version}</version>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.dataformat</groupId>
       <artifactId>jackson-dataformat-yaml</artifactId>
-      <version>${jackson.version}</version>
     </dependency>
     <dependency>
       <groupId>com.google.protobuf</groupId>
       <artifactId>protobuf-java</artifactId>
-      <version>${protobuf.version}</version>
     </dependency>
     <dependency>
       <groupId>org.java-websocket</groupId>
       <artifactId>Java-WebSocket</artifactId>
-      <version>${java-websocket.version}</version>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>
-      <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-params</artifactId>
-      <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
-      <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.junit.vintage</groupId>
       <artifactId>junit-vintage-engine</artifactId>
-      <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-simple</artifactId>
-      <version>2.0.17</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>com.google.truth</groupId>
       <artifactId>truth</artifactId>
-      <version>1.4.4</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
-      <version>${mockito.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.jspecify</groupId>
       <artifactId>jspecify</artifactId>
-      <version>1.0.0</version>
     </dependency>
     <dependency>
       <groupId>io.reactivex.rxjava3</groupId>
       <artifactId>rxjava</artifactId>
-      <version>3.1.5</version>
     </dependency>
     <dependency>
       <groupId>io.projectreactor</groupId>
       <artifactId>reactor-core</artifactId>
-      <version>3.7.0</version>
     </dependency>
     <dependency>
       <groupId>com.github.tomakehurst</groupId>
       <artifactId>wiremock-jre8</artifactId>
-      <version>2.35.1</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -220,6 +184,11 @@
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-sdk-trace</artifactId>
     </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-testing</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <build>
     <resources>
@@ -228,5 +197,10 @@
         <filtering>true</filtering>
       </resource>
     </resources>
+    <plugins>
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>
+    </plugins>
   </build>
 </project>

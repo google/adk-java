@@ -12,26 +12,20 @@
  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  See the License for the specific language governing permissions and
  limitations under the License. -->
-<project
-  xmlns="http://maven.apache.org/POM/4.0.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-parent</artifactId>
-    <version>0.2.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <version>0.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   </parent>
 
   <artifactId>google-adk-dev</artifactId>
   <name>Agent Development Kit - Dev Tools</name>
   <description>Development tools and server for Agent Development Kit.</description>
 
-  <properties>
-    <graphviz.version>0.18.1</graphviz.version>
-    <ecj.version>3.41.0</ecj.version>
-  </properties>
+
   <dependencyManagement>
     <dependencies>
       <dependency>
@@ -70,18 +64,21 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>com.google.truth</groupId>
+      <artifactId>truth</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.apache.httpcomponents.client5</groupId>
       <artifactId>httpclient5</artifactId>
     </dependency>
     <dependency>
       <groupId>guru.nidi</groupId>
       <artifactId>graphviz-java</artifactId>
-      <version>${graphviz.version}</version>
     </dependency>
     <dependency>
       <groupId>org.eclipse.jdt</groupId>
       <artifactId>ecj</artifactId>
-      <version>${ecj.version}</version>
     </dependency>
     <dependency>
       <groupId>io.opentelemetry</groupId>
@@ -147,9 +144,34 @@
     </pluginManagement>
     <plugins>
       <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>
+      <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
       </plugin>
     </plugins>
   </build>
+  <profiles>
+    <profile>
+      <id>a2a</id>
+      <dependencies>
+        <dependency>
+          <groupId>com.google.adk</groupId>
+          <artifactId>google-adk-a2a</artifactId>
+          <version>${project.version}</version>
+        </dependency>
+        <dependency>
+          <groupId>com.google.adk</groupId>
+          <artifactId>google-adk-a2a-webservice</artifactId>
+          <version>${project.version}</version>
+        </dependency>
+        <dependency>
+          <groupId>com.google.adk</groupId>
+          <artifactId>google-adk-sample-a2a-remote</artifactId>
+          <version>${project.version}</version>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
 </project>

@@ -23,7 +23,6 @@ import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.introspect.AnnotatedMember;
 import com.fasterxml.jackson.databind.introspect.BeanPropertyDefinition;
-import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.google.adk.JsonBaseModel;
 import com.google.common.base.Strings;
 import com.google.genai.types.FunctionDeclaration;
@@ -45,9 +44,8 @@ import org.slf4j.LoggerFactory;
 /** Utility class for function calling. */
 public final class FunctionCallingUtils {
 
-  private static final ObjectMapper OBJECT_MAPPER =
-      new ObjectMapper().registerModule(new Jdk8Module());
   private static final Logger logger = LoggerFactory.getLogger(FunctionCallingUtils.class);
+  private static final ObjectMapper OBJECT_MAPPER = JsonBaseModel.getMapper();
 
   /** Holds the state during a single schema generation process to handle caching and recursion. */
   private static class SchemaGenerationContext {
@@ -106,7 +104,10 @@ public final class FunctionCallingUtils {
       if (ignoreParams.contains(paramName)) {
         continue;
       }
-      required.add(paramName);
+      Annotations.Schema schema = param.getAnnotation(Annotations.Schema.class);
+      if (schema == null || !schema.optional()) {
+        required.add(paramName);
+      }
       properties.put(paramName, buildSchemaFromParameter(param));
     }
     builder.parameters(

@@ -221,12 +221,32 @@ public final class BasicTest {
   }
 
   @Test
+  public void processRequest_buildsLiveConnectConfigFromRunConfig_inputAudioTranscription() {
+    RunConfig runConfig =
+        RunConfig.builder().setInputAudioTranscription(TEST_AUDIO_TRANSCRIPTION_CONFIG).build();
+    LlmAgent agentWithConfig = LlmAgent.builder().name("agentWithConfig").model(testLlm).build();
+    InvocationContext contextWithRunConfig = createInvocationContext(agentWithConfig, runConfig);
+
+    RequestProcessingResult result =
+        basicProcessor.processRequest(contextWithRunConfig, initialRequest).blockingGet();
+
+    LlmRequest updatedRequest = result.updatedRequest();
+    assertThat(updatedRequest.liveConnectConfig()).isNotNull();
+    assertThat(updatedRequest.liveConnectConfig().responseModalities().get()).isEmpty();
+    assertThat(updatedRequest.liveConnectConfig().speechConfig()).isEmpty();
+    assertThat(updatedRequest.liveConnectConfig().inputAudioTranscription())
+        .hasValue(TEST_AUDIO_TRANSCRIPTION_CONFIG);
+    assertThat(result.events()).isEmpty();
+  }
+
+  @Test
   public void processRequest_buildsLiveConnectConfigFromRunConfig_allFields() {
     RunConfig runConfig =
         RunConfig.builder()
             .setResponseModalities(ImmutableList.of(new Modality(Modality.Known.AUDIO)))
             .setSpeechConfig(TEST_SPEECH_CONFIG)
             .setOutputAudioTranscription(TEST_AUDIO_TRANSCRIPTION_CONFIG)
+            .setInputAudioTranscription(TEST_AUDIO_TRANSCRIPTION_CONFIG)
             .build();
     LlmAgent agentWithConfig = LlmAgent.builder().name("agentWithConfig").model(testLlm).build();
     InvocationContext contextWithRunConfig = createInvocationContext(agentWithConfig, runConfig);
@@ -240,6 +260,8 @@ public final class BasicTest {
         .containsExactly(new Modality(Modality.Known.AUDIO));
     assertThat(updatedRequest.liveConnectConfig().speechConfig()).hasValue(TEST_SPEECH_CONFIG);
     assertThat(updatedRequest.liveConnectConfig().outputAudioTranscription())
+        .hasValue(TEST_AUDIO_TRANSCRIPTION_CONFIG);
+    assertThat(updatedRequest.liveConnectConfig().inputAudioTranscription())
         .hasValue(TEST_AUDIO_TRANSCRIPTION_CONFIG);
     assertThat(result.events()).isEmpty();
   }

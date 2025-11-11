@@ -28,6 +28,7 @@ import io.modelcontextprotocol.spec.McpSchema.Content;
 import io.modelcontextprotocol.spec.McpSchema.JsonSchema;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
+import io.modelcontextprotocol.spec.McpSchema.ToolAnnotations;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -71,25 +72,39 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
     this.objectMapper = objectMapper;
   }
 
+  public ToolAnnotations annotations() {
+    return mcpTool.annotations();
+  }
+
+  public Map<String, Object> meta() {
+    return mcpTool.meta();
+  }
+
   public T getMcpSession() {
     return this.mcpSession;
   }
 
   @Override
   public Optional<FunctionDeclaration> declaration() {
-    JsonSchema schema = this.mcpTool.inputSchema();
+    JsonSchema inputSchema = this.mcpTool.inputSchema();
+    Map<String, Object> outputSchema = this.mcpTool.outputSchema();
     try {
-      return Optional.ofNullable(schema)
+      return Optional.ofNullable(inputSchema)
           .map(
-              value ->
-                  FunctionDeclaration.builder()
-                      .name(this.name())
-                      .description(this.description())
-                      .parametersJsonSchema(value)
-                      .build());
-    } catch (Exception e) {
+              value -> {
+                FunctionDeclaration.Builder builder =
+                    FunctionDeclaration.builder()
+                        .name(this.name())
+                        .description(this.description())
+                        .parametersJsonSchema(value);
+                Optional.ofNullable(outputSchema).ifPresent(builder::responseJsonSchema);
+                return builder.build();
+              });
+    } catch (RuntimeException e) {
       throw new McpToolDeclarationException(
-          String.format("MCP tool:%s failed to get declaration, schema:%s.", this.name(), schema),
+          String.format(
+              "MCP tool:%s failed to get declaration, inputSchema:%s. outputSchema:%s.",
+              this.name(), inputSchema, outputSchema),
           e);
     }
   }

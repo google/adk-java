@@ -251,6 +251,8 @@ public final class InMemorySessionService implements BaseSessionService {
                     .computeIfAbsent(appName, k -> new ConcurrentHashMap<>())
                     .computeIfAbsent(userId, k -> new ConcurrentHashMap<>())
                     .put(userStateKey, value);
+              } else {
+                session.state().put(key, value);
               }
             });
       }
@@ -264,6 +266,8 @@ public final class InMemorySessionService implements BaseSessionService {
         .getOrDefault(appName, new ConcurrentHashMap<>())
         .getOrDefault(userId, new ConcurrentHashMap<>())
         .put(sessionId, session);
+
+    mergeWithGlobalState(appName, userId, session);
 
     return Single.just(event);
   }

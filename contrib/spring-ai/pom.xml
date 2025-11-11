@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ Copyright 2025 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.google.adk</groupId>
+        <artifactId>google-adk-parent</artifactId>
+        <version>0.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>google-adk-spring-ai</artifactId>
+    <name>Agent Development Kit - Spring AI</name>
+    <description>Spring AI integration for the Agent Development Kit.</description>
+
+    <properties>
+        <spring-ai.version>1.1.0-M3</spring-ai.version>
+        <testcontainers.version>1.21.3</testcontainers.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- Main dependencies -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-model</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.adk</groupId>
+            <artifactId>google-adk</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.adk</groupId>
+            <artifactId>google-adk-dev</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.genai</groupId>
+            <artifactId>google-genai</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp</artifactId>
+        </dependency>
+
+        <!-- Spring Boot auto-configuration dependencies -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Micrometer for observability -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.hibernate.validator</groupId>
+            <artifactId>hibernate-validator</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Spring AI model providers for testing -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-openai</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-anthropic</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-vertex-ai-gemini</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-google-genai</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-azure-openai</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-ollama</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers for local testing -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Test dependencies -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.google.truth</groupId>
+            <artifactId>truth</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <!-- Environment variables for integration tests -->
+                        <OPENAI_API_KEY>${env.OPENAI_API_KEY}</OPENAI_API_KEY>
+                        <ANTHROPIC_API_KEY>${env.ANTHROPIC_API_KEY}</ANTHROPIC_API_KEY>
+                        <VERTEX_AI_PROJECT_ID>${env.VERTEX_AI_PROJECT_ID}</VERTEX_AI_PROJECT_ID>
+                        <AZURE_OPENAI_API_KEY>${env.AZURE_OPENAI_API_KEY}</AZURE_OPENAI_API_KEY>
+                        <AZURE_OPENAI_ENDPOINT>${env.AZURE_OPENAI_ENDPOINT}</AZURE_OPENAI_ENDPOINT>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <id>integration-tests</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <systemPropertyVariables>
+                                <OPENAI_API_KEY>${env.OPENAI_API_KEY}</OPENAI_API_KEY>
+                                <ANTHROPIC_API_KEY>${env.ANTHROPIC_API_KEY}</ANTHROPIC_API_KEY>
+                                <VERTEX_AI_PROJECT_ID>${env.VERTEX_AI_PROJECT_ID}</VERTEX_AI_PROJECT_ID>
+                                <AZURE_OPENAI_API_KEY>${env.AZURE_OPENAI_API_KEY}</AZURE_OPENAI_API_KEY>
+                                <AZURE_OPENAI_ENDPOINT>${env.AZURE_OPENAI_ENDPOINT}</AZURE_OPENAI_ENDPOINT>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

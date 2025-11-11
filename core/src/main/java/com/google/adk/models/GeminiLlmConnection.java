@@ -125,7 +125,7 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
   }
 
   /** Converts a server message into the standardized LlmResponse format. */
-  private Optional<LlmResponse> convertToServerResponse(LiveServerMessage message) {
+  static Optional<LlmResponse> convertToServerResponse(LiveServerMessage message) {
     LlmResponse.Builder builder = LlmResponse.builder();
 
     if (message.serverContent().isPresent()) {
@@ -133,7 +133,8 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
       serverContent.modelTurn().ifPresent(builder::content);
       builder
           .partial(serverContent.turnComplete().map(completed -> !completed).orElse(false))
-          .turnComplete(serverContent.turnComplete().orElse(false));
+          .turnComplete(serverContent.turnComplete().orElse(false))
+          .interrupted(serverContent.interrupted());
     } else if (message.toolCall().isPresent()) {
       LiveServerToolCall toolCall = message.toolCall().get();
       toolCall

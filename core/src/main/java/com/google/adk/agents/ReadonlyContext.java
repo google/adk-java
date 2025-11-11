@@ -54,6 +54,11 @@ public class ReadonlyContext {
     return invocationContext.agent().name();
   }
 
+  /** Returns the user ID. */
+  public String userId() {
+    return invocationContext.session().userId();
+  }
+
   /** Returns the session ID. */
   public String sessionId() {
     return invocationContext.session().id();

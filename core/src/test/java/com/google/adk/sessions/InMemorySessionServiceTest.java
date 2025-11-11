@@ -107,32 +107,36 @@ public final class InMemorySessionServiceTest {
   }
 
   @Test
-  public void appendEvent_withStateDelta_mutatesStateCorrectly() {
-    ConcurrentMap<String, Object> startingState1 = new ConcurrentHashMap<>();
-    startingState1.put("key_to_be_removed", "value_to_be_removed");
-    ConcurrentMap<String, Object> startingState2 = new ConcurrentHashMap<>();
-    startingState2.put("key_to_be_removed", "value_to_be_removed");
-
-    ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
-    State expectedFinalState = new State(startingState1, stateDelta);
-    expectedFinalState.remove("key_to_be_removed");
-    expectedFinalState.put("new_key", "new_value");
-
+  public void appendEvent_updatesSessionState() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session =
         sessionService
-            .createSession("app-name", "user-id", startingState2, /* sessionId= */ null)
+            .createSession("app", "user", new ConcurrentHashMap<>(), "session1")
             .blockingGet();
 
-    var unused =
+    ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
+    stateDelta.put("sessionKey", "sessionValue");
+    stateDelta.put("_app_appKey", "appValue");
+    stateDelta.put("_user_userKey", "userValue");
+
+    Event event =
+        Event.builder().actions(EventActions.builder().stateDelta(stateDelta).build()).build();
+
+    var unused = sessionService.appendEvent(session, event).blockingGet();
+
+    // After appendEvent, session state in memory should contain session-specific state from delta
+    // and merged global state.
+    assertThat(session.state()).containsEntry("sessionKey", "sessionValue");
+    assertThat(session.state()).containsEntry("_app_appKey", "appValue");
+    assertThat(session.state()).containsEntry("_user_userKey", "userValue");
+
+    // getSession should return session with merged state.
+    Session retrievedSession =
         sessionService
-            .appendEvent(
-                session,
-                Event.builder()
-                    .actions(EventActions.builder().stateDelta(stateDelta).build())
-                    .build())
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
             .blockingGet();
-
-    assertThat(session.state().entrySet()).containsExactlyElementsIn(expectedFinalState.entrySet());
+    assertThat(retrievedSession.state()).containsEntry("sessionKey", "sessionValue");
+    assertThat(retrievedSession.state()).containsEntry("_app_appKey", "appValue");
+    assertThat(retrievedSession.state()).containsEntry("_user_userKey", "userValue");
   }
 }

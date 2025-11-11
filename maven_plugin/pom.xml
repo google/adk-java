@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-parent</artifactId>
-        <version>0.2.1-SNAPSHOT</version>
+        <version>0.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -21,7 +19,6 @@
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <maven.version>3.9.0</maven.version>
     </properties>
 
     <dependencies>
@@ -29,21 +26,18 @@
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-plugin-api</artifactId>
-            <version>${maven.version}</version>
             <scope>provided</scope>
         </dependency>
 
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-core</artifactId>
-            <version>${maven.version}</version>
             <scope>provided</scope>
         </dependency>
 
         <dependency>
             <groupId>org.apache.maven.plugin-tools</groupId>
             <artifactId>maven-plugin-annotations</artifactId>
-            <version>3.9.0</version>
             <scope>provided</scope>
         </dependency>
 
@@ -64,7 +58,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
-            <version>3.4.0</version>
             <exclusions>
                 <exclusion>
                     <groupId>ch.qos.logback</groupId>
@@ -79,8 +72,13 @@
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-devtools</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-websocket</artifactId>
-            <version>3.4.0</version>
             <exclusions>
                 <exclusion>
                     <groupId>ch.qos.logback</groupId>
@@ -97,21 +95,18 @@
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
-            <version>2.0.16</version>
         </dependency>
 
         <!-- Apache HTTP Client for Spring Boot -->
         <dependency>
             <groupId>org.apache.httpcomponents.client5</groupId>
             <artifactId>httpclient5</artifactId>
-            <version>5.4.3</version>
         </dependency>
 
         <!-- Graphviz for graph generation -->
         <dependency>
             <groupId>guru.nidi</groupId>
             <artifactId>graphviz-java</artifactId>
-            <version>0.18.1</version>
         </dependency>
     </dependencies>
 

@@ -21,6 +21,7 @@ import static org.mockito.Mockito.mock;
 
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.memory.BaseMemoryService;
+import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.genai.types.Content;
@@ -40,6 +41,7 @@ public final class InvocationContextTest {
   @Mock private BaseSessionService mockSessionService;
   @Mock private BaseArtifactService mockArtifactService;
   @Mock private BaseMemoryService mockMemoryService;
+  private final PluginManager pluginManager = new PluginManager();
   @Mock private BaseAgent mockAgent;
   private Session session;
   private Content userContent;
@@ -67,6 +69,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -96,6 +99,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -116,6 +120,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             Optional.of(liveRequestQueue),
             /* branch= */ Optional.empty(),
             InvocationContext.newInvocationContextId(),
@@ -145,6 +150,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -181,6 +187,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -209,6 +216,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -243,6 +251,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -262,6 +271,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -281,6 +291,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -296,6 +307,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -316,6 +328,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -331,6 +344,7 @@ public final class InvocationContextTest {
             mock(BaseSessionService.class), // Different mock
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -345,6 +359,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             "another-id", // Different ID
@@ -359,6 +374,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -373,6 +389,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -387,6 +404,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             Optional.of(liveRequestQueue),
             /* branch= */ Optional.empty(),
             InvocationContext.newInvocationContextId(),
@@ -410,6 +428,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -425,6 +444,7 @@ public final class InvocationContextTest {
             mock(BaseSessionService.class), // Different mock
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             testInvocationId,
@@ -439,6 +459,7 @@ public final class InvocationContextTest {
             mockSessionService,
             mockArtifactService,
             mockMemoryService,
+            pluginManager,
             /* liveRequestQueue= */ Optional.empty(),
             /* branch= */ Optional.empty(),
             "another-id", // Different ID

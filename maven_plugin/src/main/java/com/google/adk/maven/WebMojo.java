@@ -16,8 +16,12 @@
 
 package com.google.adk.maven;
 
+import autovalue.shaded.com.google.common.collect.ImmutableList;
+import com.google.adk.plugins.BasePlugin;
 import com.google.adk.utils.ComponentRegistry;
 import com.google.adk.web.AdkWebServer;
+import com.google.adk.web.AgentLoader;
+import com.google.common.base.Strings;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.MalformedURLException;
@@ -48,13 +52,13 @@ import org.springframework.context.ConfigurableApplicationContext;
  * through ADK Web UI. The plugin dynamically loads user-defined agents and makes them available
  * through a browser interface.
  *
- * <h3>Basic Usage</h3>
+ * <h2>Basic Usage</h2>
  *
  * <pre>{@code
  * mvn google-adk:web -Dagents=com.example.MyAgentLoader
  * }</pre>
  *
- * <h3>Configuration Parameters</h3>
+ * <h2>Configuration Parameters</h2>
  *
  * <ul>
  *   <li><strong>agents</strong> (required) - Full class path to AgentLoader implementation
@@ -66,7 +70,7 @@ import org.springframework.context.ConfigurableApplicationContext;
  *       for injecting customized tools and agents
  * </ul>
  *
- * <h3>AgentLoader Implementation</h3>
+ * <h2>AgentLoader Implementation</h2>
  *
  * <p>The agents parameter should point to a class that implements {@link AgentLoader}. It can
  * reference either:
@@ -76,13 +80,12 @@ import org.springframework.context.ConfigurableApplicationContext;
  *   <li>A class with default constructor: {@code com.example.MyProvider}
  * </ul>
  *
- * <h3>Web Interface</h3>
+ * <h2>Web Interface</h2>
  *
  * <p>Once started, ADK Web UI is available at {@code http://host:port} where users can interact
  * with available agents.
  *
  * @author Google ADK Team
- * @since 0.2.1
  */
 @Mojo(name = "web", requiresDependencyResolution = ResolutionScope.RUNTIME)
 @Execute(phase = LifecyclePhase.COMPILE)
@@ -181,6 +184,30 @@ public class WebMojo extends AbstractMojo {
   @Parameter(property = "registry")
   private String registry;
 
+  /**
+   * Comma-separated list of additional plugin classes to load.
+   *
+   * <p>This parameter allows users to specify extra plugins that extend BasePlugin. Plugins provide
+   * global callbacks for logging, monitoring, replay, caching, or modifying agent behaviors. These
+   * are additional to any plugins configured by the user's code.
+   *
+   * <p>Each plugin reference can be either:
+   *
+   * <ul>
+   *   <li><strong>Static field reference:</strong> {@code com.example.MyPlugin.INSTANCE}
+   *   <li><strong>Class name:</strong> {@code com.example.MyPlugin} (requires default constructor)
+   * </ul>
+   *
+   * <p>Example:
+   *
+   * <pre>{@code
+   * mvn google-adk:web -Dagents=... -DextraPlugins=com.google.adk.plugins.ReplayPlugin
+   * mvn google-adk:web -Dagents=... -DextraPlugins=com.google.adk.plugins.ReplayPlugin,com.example.CustomPlugin
+   * }</pre>
+   */
+  @Parameter(property = "extraPlugins")
+  private String extraPlugins;
+
   private ConfigurableApplicationContext applicationContext;
   private URLClassLoader projectClassLoader;
 
@@ -206,7 +233,10 @@ public class WebMojo extends AbstractMojo {
 
       // Load and instantiate the AgentLoader
       getLog().info("Loading agent loader: " + agents);
-      com.google.adk.web.AgentLoader provider = loadAgentProvider();
+      AgentLoader provider = loadAgentProvider();
+
+      // Load extra plugins if specified
+      final List<BasePlugin> extraPluginInstances = loadExtraPlugins();
 
       // Set up system properties for Spring Boot
       setupSystemProperties();
@@ -214,10 +244,11 @@ public class WebMojo extends AbstractMojo {
       // Start the Spring Boot application with custom agent provider
       SpringApplication app = new SpringApplication(AdkWebServer.class);
 
-      // Add the agent provider as a bean
+      // Add the agent provider and extra plugins as beans
       app.addInitializers(
           ctx -> {
             ctx.getBeanFactory().registerSingleton("agentLoader", provider);
+            ctx.getBeanFactory().registerSingleton("extraPlugins", extraPluginInstances);
           });
 
       getLog().info("Starting Spring Boot application...");
@@ -269,6 +300,7 @@ public class WebMojo extends AbstractMojo {
     getLog().info("  Server Host: " + host);
     getLog().info("  Server Port: " + port);
     getLog().info("  Registry: " + (registry != null ? registry : "default"));
+    getLog().info("  Extra Plugins: " + (extraPlugins != null ? extraPlugins : "none"));
   }
 
   private void setupSystemProperties() {
@@ -402,7 +434,7 @@ public class WebMojo extends AbstractMojo {
     }
   }
 
-  private com.google.adk.web.AgentLoader loadAgentProvider() throws MojoExecutionException {
+  private AgentLoader loadAgentProvider() throws MojoExecutionException {
     // First, check if agents parameter is a directory path
     Path agentsPath = Paths.get(agents);
     if (Files.isDirectory(agentsPath)) {
@@ -412,15 +444,56 @@ public class WebMojo extends AbstractMojo {
 
     // Next, try to interpret as class.field syntax
     if (agents.contains(".")) {
-      com.google.adk.web.AgentLoader provider =
-          tryLoadFromStaticField(agents, com.google.adk.web.AgentLoader.class);
+      AgentLoader provider = tryLoadFromStaticField(agents, AgentLoader.class);
       if (provider != null) {
         return provider;
       }
     }
 
     // Fallback to trying the entire string as a class name
-    return tryLoadFromConstructor(agents, com.google.adk.web.AgentLoader.class);
+    return tryLoadFromConstructor(agents, AgentLoader.class);
+  }
+
+  /**
+   * Loads extra plugins from the comma-separated extraPlugins parameter.
+   *
+   * @return List of loaded plugin instances
+   * @throws MojoExecutionException if plugins cannot be loaded
+   */
+  private ImmutableList<BasePlugin> loadExtraPlugins() throws MojoExecutionException {
+    ImmutableList.Builder<BasePlugin> plugins = ImmutableList.builder();
+    String[] pluginNames = Strings.nullToEmpty(extraPlugins).split(",");
+
+    for (String name : pluginNames) {
+      name = name.trim();
+      if (name.isEmpty()) {
+        continue;
+      }
+
+      getLog().info("Loading plugin: " + name);
+
+      // Try to load as static field first
+      BasePlugin plugin = null;
+      if (name.contains(".")) {
+        plugin = tryLoadFromStaticField(name, BasePlugin.class);
+      }
+
+      // Fallback to constructor
+      if (plugin == null) {
+        plugin = tryLoadFromConstructor(name, BasePlugin.class);
+      }
+
+      if (plugin == null) {
+        throw new MojoExecutionException("Failed to load plugin: " + name);
+      }
+
+      plugins.add(plugin);
+      getLog()
+          .info(
+              String.format("Successfully loaded plugin: `%s` from `%s`", plugin.getName(), name));
+    }
+
+    return plugins.build();
   }
 
   /** Cleans up all resources including application context, classloader. */

@@ -19,6 +19,7 @@ package com.google.adk.agents;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
+import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.errorprone.annotations.InlineMe;
@@ -36,6 +37,7 @@ public class InvocationContext {
   private final BaseSessionService sessionService;
   private final BaseArtifactService artifactService;
   private final BaseMemoryService memoryService;
+  private final PluginManager pluginManager;
   private final Optional<LiveRequestQueue> liveRequestQueue;
   private final Map<String, ActiveStreamingTool> activeStreamingTools = new ConcurrentHashMap<>();
 
@@ -53,6 +55,7 @@ public class InvocationContext {
       BaseSessionService sessionService,
       BaseArtifactService artifactService,
       BaseMemoryService memoryService,
+      PluginManager pluginManager,
       Optional<LiveRequestQueue> liveRequestQueue,
       Optional<String> branch,
       String invocationId,
@@ -64,6 +67,7 @@ public class InvocationContext {
     this.sessionService = sessionService;
     this.artifactService = artifactService;
     this.memoryService = memoryService;
+    this.pluginManager = pluginManager;
     this.liveRequestQueue = liveRequestQueue;
     this.branch = branch;
     this.invocationId = invocationId;
@@ -75,14 +79,55 @@ public class InvocationContext {
   }
 
   /**
+   * @deprecated Use the {@link #InvocationContext} constructor with PluginManager directly instead
+   */
+  @InlineMe(
+      replacement =
+          "this(sessionService, artifactService, memoryService, new"
+              + " PluginManager(), liveRequestQueue, branch, invocationId, agent,"
+              + " session, userContent, runConfig, endInvocation)",
+      imports = "com.google.adk.plugins.PluginManager")
+  @Deprecated
+  public InvocationContext(
+      BaseSessionService sessionService,
+      BaseArtifactService artifactService,
+      BaseMemoryService memoryService,
+      Optional<LiveRequestQueue> liveRequestQueue,
+      Optional<String> branch,
+      String invocationId,
+      BaseAgent agent,
+      Session session,
+      Optional<Content> userContent,
+      RunConfig runConfig,
+      boolean endInvocation) {
+    this(
+        sessionService,
+        artifactService,
+        memoryService,
+        new PluginManager(),
+        liveRequestQueue,
+        branch,
+        invocationId,
+        agent,
+        session,
+        userContent,
+        runConfig,
+        endInvocation);
+  }
+
+  /**
    * @deprecated Use the {@link #InvocationContext} constructor directly instead
    */
   @InlineMe(
       replacement =
-          "new InvocationContext(sessionService, artifactService, null, Optional.empty(),"
-              + " Optional.empty(), invocationId, agent, session, Optional.ofNullable(userContent),"
-              + " runConfig, false)",
-      imports = {"com.google.adk.agents.InvocationContext", "java.util.Optional"})
+          "new InvocationContext(sessionService, artifactService, null, new PluginManager(),"
+              + " Optional.empty(), Optional.empty(), invocationId, agent, session,"
+              + " Optional.ofNullable(userContent), runConfig, false)",
+      imports = {
+        "com.google.adk.agents.InvocationContext",
+        "com.google.adk.plugins.PluginManager",
+        "java.util.Optional"
+      })
   @Deprecated
   public static InvocationContext create(
       BaseSessionService sessionService,
@@ -96,6 +141,7 @@ public class InvocationContext {
         sessionService,
         artifactService,
         /* memoryService= */ null,
+        new PluginManager(),
         /* liveRequestQueue= */ Optional.empty(),
         /* branch= */ Optional.empty(),
         invocationId,
@@ -111,11 +157,15 @@ public class InvocationContext {
    */
   @InlineMe(
       replacement =
-          "new InvocationContext(sessionService, artifactService, null,"
+          "new InvocationContext(sessionService, artifactService, null, new PluginManager(),"
               + " Optional.ofNullable(liveRequestQueue), Optional.empty(),"
               + " InvocationContext.newInvocationContextId(), agent, session, Optional.empty(),"
               + " runConfig, false)",
-      imports = {"com.google.adk.agents.InvocationContext", "java.util.Optional"})
+      imports = {
+        "com.google.adk.agents.InvocationContext",
+        "com.google.adk.plugins.PluginManager",
+        "java.util.Optional"
+      })
   @Deprecated
   public static InvocationContext create(
       BaseSessionService sessionService,
@@ -128,6 +178,7 @@ public class InvocationContext {
         sessionService,
         artifactService,
         /* memoryService= */ null,
+        new PluginManager(),
         Optional.ofNullable(liveRequestQueue),
         /* branch= */ Optional.empty(),
         InvocationContext.newInvocationContextId(),
@@ -144,6 +195,7 @@ public class InvocationContext {
             other.sessionService,
             other.artifactService,
             other.memoryService,
+            other.pluginManager,
             other.liveRequestQueue,
             other.branch,
             other.invocationId,
@@ -166,6 +218,10 @@ public class InvocationContext {
 
   public BaseMemoryService memoryService() {
     return memoryService;
+  }
+
+  public PluginManager pluginManager() {
+    return pluginManager;
   }
 
   public Map<String, ActiveStreamingTool> activeStreamingTools() {
@@ -260,6 +316,7 @@ public class InvocationContext {
         && Objects.equals(sessionService, that.sessionService)
         && Objects.equals(artifactService, that.artifactService)
         && Objects.equals(memoryService, that.memoryService)
+        && Objects.equals(pluginManager, that.pluginManager)
         && Objects.equals(liveRequestQueue, that.liveRequestQueue)
         && Objects.equals(activeStreamingTools, that.activeStreamingTools)
         && Objects.equals(branch, that.branch)
@@ -276,6 +333,7 @@ public class InvocationContext {
         sessionService,
         artifactService,
         memoryService,
+        pluginManager,
         liveRequestQueue,
         activeStreamingTools,
         branch,

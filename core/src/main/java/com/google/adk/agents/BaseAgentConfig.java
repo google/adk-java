@@ -16,10 +16,10 @@
 
 package com.google.adk.agents;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
 
 /**
- * Base configuration for all agents.
+ * Base configuration for all agents with subagent support.
  *
  * <p>TODO: Config agent features are not yet ready for public use.
  */
@@ -27,8 +27,59 @@ public class BaseAgentConfig {
   private String name;
   private String description = "";
   private String agentClass;
+  private List<AgentRefConfig> subAgents;
 
-  @JsonProperty(value = "name", required = true)
+  /**
+   * Configuration for referencing other agents (subagents). Supports both config-based references
+   * (YAML files) and programmatic references (via code registry).
+   */
+  public static class AgentRefConfig {
+    private String configPath;
+    private String code;
+
+    public AgentRefConfig() {}
+
+    /**
+     * Constructor for config-based agent reference.
+     *
+     * @param configPath The path to the subagent's config file
+     */
+    public AgentRefConfig(String configPath) {
+      this.configPath = configPath;
+    }
+
+    public String configPath() {
+      return configPath;
+    }
+
+    public void setConfigPath(String configPath) {
+      this.configPath = configPath;
+    }
+
+    public String code() {
+      return code;
+    }
+
+    public void setCode(String code) {
+      this.code = code;
+    }
+  }
+
+  public BaseAgentConfig() {}
+
+  /**
+   * Constructor with basic fields.
+   *
+   * @param name The agent name
+   * @param description The agent description
+   * @param agentClass The agent class name
+   */
+  public BaseAgentConfig(String name, String description, String agentClass) {
+    this.name = name;
+    this.description = description;
+    this.agentClass = agentClass;
+  }
+
   public String name() {
     return name;
   }
@@ -37,7 +88,6 @@ public class BaseAgentConfig {
     this.name = name;
   }
 
-  @JsonProperty("description")
   public String description() {
     return description;
   }
@@ -46,12 +96,19 @@ public class BaseAgentConfig {
     this.description = description;
   }
 
-  @JsonProperty("agent_class")
   public String agentClass() {
     return agentClass;
   }
 
   public void setAgentClass(String agentClass) {
     this.agentClass = agentClass;
+  }
+
+  public List<AgentRefConfig> subAgents() {
+    return subAgents;
+  }
+
+  public void setSubAgents(List<AgentRefConfig> subAgents) {
+    this.subAgents = subAgents;
   }
 }

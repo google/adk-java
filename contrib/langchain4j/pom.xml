@@ -14,14 +14,13 @@
  See the License for the specific language governing permissions and
  limitations under the License.
 -->
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-parent</artifactId>
-        <version>0.2.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <version>0.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -29,13 +28,7 @@
     <name>Agent Development Kit - LangChain4j</name>
     <description>LangChain4j integration for the Agent Development Kit.</description>
 
-    <properties>
-        <mcp.version>0.10.0</mcp.version>
-        <google.genai.version>1.8.0</google.genai.version>
-        <junit.version>5.11.4</junit.version>
-        <mockito.version>5.17.0</mockito.version>
-        <langchain4j.version>1.1.0</langchain4j.version>
-    </properties>
+
     <dependencyManagement>
         <dependencies>
             <dependency>
@@ -73,12 +66,10 @@
         <dependency>
             <groupId>com.google.genai</groupId>
             <artifactId>google-genai</artifactId>
-            <version>${google.genai.version}</version>
         </dependency>
         <dependency>
             <groupId>io.modelcontextprotocol.sdk</groupId>
             <artifactId>mcp</artifactId>
-            <version>${mcp.version}</version>
         </dependency>
 
         <!-- Test dependencies -->
@@ -120,19 +111,16 @@
         <dependency>
             <groupId>com.google.truth</groupId>
             <artifactId>truth</artifactId>
-            <version>1.4.4</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
-            <version>3.27.3</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
-            <version>${mockito.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

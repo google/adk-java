@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.adk.events;
 
 import static com.google.common.truth.Truth.assertThat;
@@ -8,6 +24,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
@@ -51,6 +68,14 @@ public final class EventTest {
           .turnComplete(true)
           .errorCode(new FinishReason("error_code"))
           .errorMessage("error_message")
+          .finishReason(new FinishReason("finish_reason"))
+          .usageMetadata(
+              GenerateContentResponseUsageMetadata.builder()
+                  .promptTokenCount(10)
+                  .candidatesTokenCount(20)
+                  .totalTokenCount(30)
+                  .build())
+          .avgLogprobs(0.5)
           .interrupted(true)
           .timestamp(123456789L)
           .build();
@@ -64,6 +89,15 @@ public final class EventTest {
     assertThat(EVENT.turnComplete().get()).isTrue();
     assertThat(EVENT.errorCode()).hasValue(new FinishReason("error_code"));
     assertThat(EVENT.errorMessage()).hasValue("error_message");
+    assertThat(EVENT.finishReason()).hasValue(new FinishReason("finish_reason"));
+    assertThat(EVENT.usageMetadata())
+        .hasValue(
+            GenerateContentResponseUsageMetadata.builder()
+                .promptTokenCount(10)
+                .candidatesTokenCount(20)
+                .totalTokenCount(30)
+                .build());
+    assertThat(EVENT.avgLogprobs()).hasValue(0.5);
     assertThat(EVENT.interrupted()).hasValue(true);
     assertThat(EVENT.timestamp()).isEqualTo(123456789L);
     assertThat(EVENT.actions()).isEqualTo(EVENT_ACTIONS);

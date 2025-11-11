@@ -1,0 +1,117 @@
+<?xml version='1.0' encoding='utf-8'?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.google.adk</groupId>
+    <artifactId>google-adk-parent</artifactId>
+    <version>0.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+  </parent>
+
+  <artifactId>google-adk-a2a</artifactId>
+  <packaging>jar</packaging>
+
+  <name>Google ADK A2A Integration</name>
+
+  <properties>
+    <java.version>17</java.version>
+    <maven.compiler.release>${java.version}</maven.compiler.release>
+    <a2a.sdk.version>0.3.0.Beta1</a2a.sdk.version>
+    <google.adk.version>${project.version}</google.adk.version>
+    <guava.version>33.0.0-jre</guava.version>
+    <jackson.version>2.19.0</jackson.version>
+    <rxjava.version>3.1.5</rxjava.version>
+    <jspecify.version>1.0.0</jspecify.version>
+    <slf4j.version>2.0.17</slf4j.version>
+    <errorprone.version>2.38.0</errorprone.version>
+    <truth.version>1.4.4</truth.version>
+    <junit4.version>4.13.2</junit4.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.google.adk</groupId>
+      <artifactId>google-adk</artifactId>
+      <version>${google.adk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>${guava.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.errorprone</groupId>
+      <artifactId>error_prone_annotations</artifactId>
+      <version>${errorprone.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-annotations</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.module</groupId>
+      <artifactId>jackson-module-parameter-names</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.reactivex.rxjava3</groupId>
+      <artifactId>rxjava</artifactId>
+      <version>${rxjava.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.jspecify</groupId>
+      <artifactId>jspecify</artifactId>
+      <version>${jspecify.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.a2asdk</groupId>
+      <artifactId>a2a-java-sdk-spec</artifactId>
+      <version>${a2a.sdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.a2asdk</groupId>
+      <artifactId>a2a-java-sdk-transport-rest</artifactId>
+      <version>${a2a.sdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.a2asdk</groupId>
+      <artifactId>a2a-java-sdk-http-client</artifactId>
+      <version>${a2a.sdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>${junit4.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.google.truth</groupId>
+      <artifactId>truth</artifactId>
+      <version>${truth.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>${java.version}</release>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

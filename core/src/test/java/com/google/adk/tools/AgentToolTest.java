@@ -227,7 +227,7 @@ public final class AgentToolTest {
   }
 
   @Test
-  public void call_withoutSchema_returnsFirstTextPartFromLastEvent() throws Exception {
+  public void call_withoutSchema_returnsConcatenatedTextFromLastEvent() throws Exception {
     LlmAgent testAgent =
         createTestAgentBuilder(
                 createTestLlm(
@@ -240,8 +240,8 @@ public final class AgentToolTest {
                         LlmResponse.builder()
                             .content(
                                 Content.fromParts(
-                                    Part.fromText("First text part is returned"),
-                                    Part.fromText("This should be ignored")))
+                                    Part.fromText("First text part. "),
+                                    Part.fromText("Second text part.")))
                             .build())))
             .name("agent name")
             .description("agent description")
@@ -252,7 +252,31 @@ public final class AgentToolTest {
     Map<String, Object> result =
         agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
 
-    assertThat(result).containsExactly("result", "First text part is returned");
+    assertThat(result).containsExactly("result", "First text part. Second text part.");
+  }
+
+  @Test
+  public void call_withThoughts_returnsOnlyNonThoughtText() throws Exception {
+    TestLlm testLlm =
+        createTestLlm(
+            LlmResponse.builder()
+                .content(
+                    Content.builder()
+                        .parts(
+                            Part.fromText("Non-thought text 1. "),
+                            Part.builder().text("This is a thought.").thought(true).build(),
+                            Part.fromText("Non-thought text 2."))
+                        .build())
+                .build());
+    LlmAgent testAgent =
+        createTestAgentBuilder(testLlm).name("agent name").description("agent description").build();
+    AgentTool agentTool = AgentTool.create(testAgent);
+    ToolContext toolContext = createToolContext(testAgent);
+
+    Map<String, Object> result =
+        agentTool.runAsync(ImmutableMap.of("request", "test"), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("result", "Non-thought text 1. Non-thought text 2.");
   }
 
   @Test

@@ -18,11 +18,14 @@ package com.google.adk.tools;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.fasterxml.jackson.annotation.JsonAnyGetter;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.DoNotCall;
 import com.google.genai.types.FunctionDeclaration;
@@ -42,6 +45,7 @@ public abstract class BaseTool {
   private final String name;
   private final String description;
   private final boolean isLongRunning;
+  private final HashMap<String, Object> customMetadata;
 
   protected BaseTool(@Nonnull String name, @Nonnull String description) {
     this(name, description, /* isLongRunning= */ false);
@@ -51,6 +55,7 @@ public abstract class BaseTool {
     this.name = name;
     this.description = description;
     this.isLongRunning = isLongRunning;
+    customMetadata = new HashMap<>();
   }
 
   public String name() {
@@ -68,6 +73,16 @@ public abstract class BaseTool {
   /** Gets the {@link FunctionDeclaration} representation of this tool. */
   public Optional<FunctionDeclaration> declaration() {
     return Optional.empty();
+  }
+
+  /** Returns a read-only view of the tool metadata. */
+  public ImmutableMap<String, Object> customMetadata() {
+    return ImmutableMap.copyOf(customMetadata);
+  }
+
+  /** Sets custom metadata to the tool associated with a key. */
+  public void setCustomMetadata(String key, Object value) {
+    customMetadata.put(key, value);
   }
 
   /** Calls a tool. */
@@ -202,6 +217,16 @@ public abstract class BaseTool {
 
     public Object get(String key) {
       return additionalProperties.get(key);
+    }
+
+    @JsonAnyGetter
+    public Map<String, Object> getAdditionalProperties() {
+      return additionalProperties;
+    }
+
+    @JsonAnySetter
+    public void setAdditionalProperty(String key, Object value) {
+      additionalProperties.put(key, value);
     }
   }
 

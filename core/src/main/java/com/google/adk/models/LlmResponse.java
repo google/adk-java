@@ -79,6 +79,14 @@ public abstract class LlmResponse extends JsonBaseModel {
   @JsonProperty("errorCode")
   public abstract Optional<FinishReason> errorCode();
 
+  /** Error code if the response is an error. Code varies by model. */
+  @JsonProperty("finishReason")
+  public abstract Optional<FinishReason> finishReason();
+
+  /** Error code if the response is an error. Code varies by model. */
+  @JsonProperty("avgLogprobs")
+  public abstract Optional<Double> avgLogprobs();
+
   /** Error message if the response is an error. */
   @JsonProperty("errorMessage")
   public abstract Optional<String> errorMessage();
@@ -135,6 +143,16 @@ public abstract class LlmResponse extends JsonBaseModel {
     public abstract Builder errorCode(@Nullable FinishReason errorCode);
 
     public abstract Builder errorCode(Optional<FinishReason> errorCode);
+
+    @JsonProperty("finishReason")
+    public abstract Builder finishReason(@Nullable FinishReason finishReason);
+
+    public abstract Builder finishReason(Optional<FinishReason> finishReason);
+
+    @JsonProperty("avgLogprobs")
+    public abstract Builder avgLogprobs(@Nullable Double avgLogprobs);
+
+    public abstract Builder avgLogprobs(Optional<Double> avgLogprobs);
 
     @JsonProperty("errorMessage")
     public abstract Builder errorMessage(@Nullable String errorMessage);

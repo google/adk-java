@@ -65,12 +65,15 @@ public class McpSessionManager {
     if (connectionParams instanceof SseServerParameters sseServerParams) {
       initializationTimeout = sseServerParams.timeout();
       requestTimeout = sseServerParams.sseReadTimeout();
+    } else if (connectionParams instanceof StreamableHttpServerParameters streamableParams) {
+      initializationTimeout = streamableParams.timeout();
+      requestTimeout = streamableParams.readTimeout();
     }
     McpSyncClient client =
         McpClient.sync(transport)
             .initializationTimeout(
-                Optional.ofNullable(initializationTimeout).orElse(Duration.ofSeconds(10)))
-            .requestTimeout(Optional.ofNullable(requestTimeout).orElse(Duration.ofSeconds(10)))
+                Optional.ofNullable(initializationTimeout).orElse(Duration.ofMinutes(5)))
+            .requestTimeout(Optional.ofNullable(requestTimeout).orElse(Duration.ofMinutes(5)))
             .loggingConsumer(new McpServerLogConsumer())
             .capabilities(ClientCapabilities.builder().build())
             .build();
@@ -95,11 +98,14 @@ public class McpSessionManager {
     if (connectionParams instanceof SseServerParameters sseServerParams) {
       initializationTimeout = sseServerParams.timeout();
       requestTimeout = sseServerParams.sseReadTimeout();
+    } else if (connectionParams instanceof StreamableHttpServerParameters streamableParams) {
+      initializationTimeout = streamableParams.timeout();
+      requestTimeout = streamableParams.readTimeout();
     }
     return McpClient.async(transport)
         .initializationTimeout(
-            initializationTimeout == null ? Duration.ofSeconds(10) : initializationTimeout)
-        .requestTimeout(requestTimeout == null ? Duration.ofSeconds(10) : requestTimeout)
+            initializationTimeout == null ? Duration.ofMinutes(5) : initializationTimeout)
+        .requestTimeout(requestTimeout == null ? Duration.ofMinutes(5) : requestTimeout)
         .capabilities(ClientCapabilities.builder().build())
         .build();
   }
