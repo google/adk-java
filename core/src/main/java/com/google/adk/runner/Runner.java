@@ -56,7 +56,18 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.Nullable;
 
-/** The main class for the GenAI Agents runner. */
+// copybara:strip_begin(Internal deprecation)
+/**
+ * The main class for the GenAI Agents runner.
+ *
+ * @deprecated Google internal users should use {@link
+ *     com.google.learning.agents.orcas.runners.SecureRunner} instead.
+ */
+// copybara:strip_end
+/* copybara:insert /** The main class for the GenAI Agents runner. */
+// copybara:strip_begin(Internal deprecation)
+@Deprecated
+// copybara:strip_end
 public class Runner {
   private final BaseAgent agent;
   private final String appName;
