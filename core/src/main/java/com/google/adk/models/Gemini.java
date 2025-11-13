@@ -207,7 +207,9 @@ public class Gemini extends BaseLlm {
 
   @Override
   public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-    llmRequest = GeminiUtil.prepareGenenerateContentRequest(llmRequest, !apiClient.vertexAI());
+    llmRequest =
+        GeminiUtil.prepareGenenerateContentRequest(
+            llmRequest, !apiClient.vertexAI(), /* stripThoughts= */ false);
     GenerateContentConfig config = llmRequest.config().orElse(null);
     String effectiveModelName = llmRequest.model().orElse(model());
 
