@@ -42,7 +42,7 @@ public final class GeminiUtil {
    * Prepares an {@link LlmRequest} for the GenerateContent API.
    *
    * <p>This method can optionally sanitize the request and ensures that the last content part is
-   * from the user to prompt a model response.
+   * from the user to prompt a model response. It also strips out any parts marked as "thoughts".
    *
    * @param llmRequest The original {@link LlmRequest}.
    * @param sanitize Whether to sanitize the request to be compatible with the Gemini API backend.
@@ -50,10 +50,28 @@ public final class GeminiUtil {
    */
   public static LlmRequest prepareGenenerateContentRequest(
       LlmRequest llmRequest, boolean sanitize) {
+    return prepareGenenerateContentRequest(llmRequest, sanitize, /* stripThoughts= */ true);
+  }
+
+  /**
+   * Prepares an {@link LlmRequest} for the GenerateContent API.
+   *
+   * <p>This method can optionally sanitize the request and ensures that the last content part is
+   * from the user to prompt a model response. It also strips out any parts marked as "thoughts".
+   *
+   * @param llmRequest The original {@link LlmRequest}.
+   * @param sanitize Whether to sanitize the request to be compatible with the Gemini API backend.
+   * @return The prepared {@link LlmRequest}.
+   */
+  public static LlmRequest prepareGenenerateContentRequest(
+      LlmRequest llmRequest, boolean sanitize, boolean stripThoughts) {
     if (sanitize) {
       llmRequest = sanitizeRequestForGeminiApi(llmRequest);
     }
     List<Content> contents = ensureModelResponse(llmRequest.contents());
+    if (stripThoughts) {
+      contents = stripThoughts(contents);
+    }
     return llmRequest.toBuilder().contents(contents).build();
   }
 
@@ -156,6 +174,22 @@ public final class GeminiUtil {
   }
 
   /**
+   * Extracts text content from the first part of an LlmResponse, if available.
+   *
+   * @param llmResponse The LlmResponse to extract text from.
+   * @return The text content, or an empty string if not found.
+   */
+  public static String getTextFromLlmResponse(LlmResponse llmResponse) {
+    return llmResponse
+        .content()
+        .flatMap(Content::parts)
+        .filter(parts -> !parts.isEmpty())
+        .map(parts -> parts.get(0))
+        .flatMap(Part::text)
+        .orElse("");
+  }
+
+  /**
    * Determines if accumulated text should be emitted based on the current LlmResponse. We flush if
    * current response is not a text continuation (e.g., no content, no parts, or the first part is
    * not inline_data, meaning it's something else or just empty, thereby warranting a flush of
@@ -174,5 +208,20 @@ public final class GeminiUtil {
         .map(parts -> parts.get(0))
         .flatMap(Part::inlineData)
         .isEmpty();
+  }
+
+  /** Removes any `Part` that contains only a `thought` from the content list. */
+  public static List<Content> stripThoughts(List<Content> originalContents) {
+    return originalContents.stream()
+        .map(
+            content -> {
+              ImmutableList<Part> nonThoughtParts =
+                  content.parts().orElse(ImmutableList.of()).stream()
+                      // Keep if thought is not present OR if thought is present but false
+                      .filter(part -> part.thought().map(isThought -> !isThought).orElse(true))
+                      .collect(toImmutableList());
+              return content.toBuilder().parts(nonThoughtParts).build();
+            })
+        .collect(toImmutableList());
   }
 }
