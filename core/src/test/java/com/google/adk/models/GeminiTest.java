@@ -114,6 +114,7 @@ public final class GeminiTest {
     Flowable<GenerateContentResponse> rawResponses =
         Flowable.just(toResponseWithText("Thinking..."), GenerateContentResponse.builder().build());
 
+    System.out.println("rawResponses: " + rawResponses);
     Flowable<LlmResponse> llmResponses = Gemini.processRawResponses(rawResponses);
 
     assertLlmResponses(
