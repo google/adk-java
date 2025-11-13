@@ -25,6 +25,7 @@ import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FileData;
 import com.google.genai.types.Part;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
@@ -55,6 +56,22 @@ public final class GeminiUtil {
     }
     List<Content> contents = ensureModelResponse(llmRequest.contents());
     return llmRequest.toBuilder().contents(contents).build();
+  }
+
+  /**
+   * Extracts text content from the first part of an LlmResponse, if available.
+   *
+   * @param llmResponse The LlmResponse to extract text from.
+   * @return The text content, or an empty string if not found.
+   */
+  public static String getTextFromLlmResponse(LlmResponse llmResponse) {
+    return llmResponse
+        .content()
+        .flatMap(Content::parts)
+        .map(Collection::stream)
+        .flatMap(Stream::findFirst)
+        .flatMap(Part::text)
+        .orElse("");
   }
 
   /**
