@@ -16,6 +16,8 @@
 
 package com.google.adk.runner;
 
+import com.google.adk.agents.ToolConstraints;
+import com.google.adk.agents.ToolConstraintViolationException;
 import com.google.adk.Telemetry;
 import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.BaseAgent;
@@ -76,19 +78,44 @@ public class Runner {
   }
 
   /** Creates a new {@code Runner} with a list of plugins. */
+//  public Runner(
+//      BaseAgent agent,
+//      String appName,
+//      BaseArtifactService artifactService,
+//      BaseSessionService sessionService,
+//      @Nullable BaseMemoryService memoryService,
+//      List<BasePlugin> plugins) {
+//    this.agent = agent;
+//    this.appName = appName;
+//    this.artifactService = artifactService;
+//    this.sessionService = sessionService;
+//    this.memoryService = memoryService;
+//    this.pluginManager = new PluginManager(plugins);
+//  }
   public Runner(
-      BaseAgent agent,
-      String appName,
-      BaseArtifactService artifactService,
-      BaseSessionService sessionService,
-      @Nullable BaseMemoryService memoryService,
-      List<BasePlugin> plugins) {
-    this.agent = agent;
-    this.appName = appName;
-    this.artifactService = artifactService;
-    this.sessionService = sessionService;
-    this.memoryService = memoryService;
-    this.pluginManager = new PluginManager(plugins);
+          BaseAgent agent,
+          String appName,
+          BaseArtifactService artifactService,
+          BaseSessionService sessionService,
+          @Nullable BaseMemoryService memoryService,
+          List<BasePlugin> plugins) {
+
+      // 【【新代码】】: 在 Runner 构建时，校验整个 Agent 树
+      try {
+          ToolConstraints.validate(agent);
+      } catch (ToolConstraintViolationException e) {
+          // 捕获我们的特定异常，包装后抛出，阻止 Runner 启动
+          throw new IllegalArgumentException(
+                  "Agent tree validation failed. Cannot create Runner.", e);
+      }
+
+      // --- 原有的构造函数逻辑 ---
+      this.agent = agent;
+      this.appName = appName;
+      this.artifactService = artifactService;
+      this.sessionService = sessionService;
+      this.memoryService = memoryService;
+      this.pluginManager = new PluginManager(plugins);
   }
 
   /**
