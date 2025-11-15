@@ -33,14 +33,10 @@ public final class Basic implements RequestProcessor {
   @Override
   public Single<RequestProcessor.RequestProcessingResult> processRequest(
       InvocationContext context, LlmRequest request) {
-    if (!(context.agent() instanceof LlmAgent)) {
+    if (!(context.agent() instanceof LlmAgent agent)) {
       throw new IllegalArgumentException("Agent in InvocationContext is not an instance of Agent.");
     }
-    LlmAgent agent = (LlmAgent) context.agent();
-    String modelName =
-        agent.resolvedModel().model().isPresent()
-            ? agent.resolvedModel().model().get().model()
-            : agent.resolvedModel().modelName().get();
+    String modelName = agent.resolvedModel().modelName().get();
 
     LiveConnectConfig.Builder liveConnectConfigBuilder =
         LiveConnectConfig.builder().responseModalities(context.runConfig().responseModalities());
