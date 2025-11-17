@@ -22,7 +22,7 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
 import com.google.genai.types.Modality;
 import com.google.genai.types.SpeechConfig;
-import org.jspecify.annotations.Nullable;
+import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -78,7 +78,7 @@ public abstract class RunConfig {
   public abstract static class Builder {
 
     @CanIgnoreReturnValue
-    public abstract Builder setSpeechConfig(SpeechConfig speechConfig);
+    public abstract Builder setSpeechConfig(@Nullable SpeechConfig speechConfig);
 
     @CanIgnoreReturnValue
     public abstract Builder setResponseModalities(Iterable<Modality> responseModalities);
@@ -91,11 +91,11 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder setOutputAudioTranscription(
-        AudioTranscriptionConfig outputAudioTranscription);
+        @Nullable AudioTranscriptionConfig outputAudioTranscription);
 
     @CanIgnoreReturnValue
     public abstract Builder setInputAudioTranscription(
-        AudioTranscriptionConfig inputAudioTranscription);
+        @Nullable AudioTranscriptionConfig inputAudioTranscription);
 
     @CanIgnoreReturnValue
     public abstract Builder setMaxLlmCalls(int maxLlmCalls);
