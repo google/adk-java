@@ -3,10 +3,13 @@ package com.google.adk.tools;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
+import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.runner.InMemoryRunner;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.common.collect.ImmutableList;
@@ -36,17 +39,23 @@ public final class LongRunningFunctionToolTest {
   private LlmAgent agent;
   private InMemoryRunner runner;
   private Session session;
+  private InMemorySessionService sessionService;
+  private InMemoryArtifactService artifactService;
+  private InMemoryMemoryService memoryService;
 
   @Before
   public void setUp() {
     TestFunctions.reset();
+    sessionService = new InMemorySessionService();
+    artifactService = new InMemoryArtifactService();
+    memoryService = new InMemoryMemoryService();
   }
 
   @Test
   public void asyncFunction_handlesPendingAndResults() throws Exception {
     FunctionTool longRunningTool =
         LongRunningFunctionTool.create(
-            TestFunctions.class.getMethod("increaseByOne", int.class, ToolContext.class));
+            null, TestFunctions.class.getMethod("increaseByOne", int.class, ToolContext.class));
 
     FunctionCall modelRequestForFunctionCall =
         FunctionCall.builder().name("increase_by_one").args(ImmutableMap.of("x", 1)).build();
@@ -126,7 +135,7 @@ public final class LongRunningFunctionToolTest {
             .tools(ImmutableList.of(tool))
             .description(description)
             .build();
-    runner = new InMemoryRunner(agent, "test-user");
+    runner = new InMemoryRunner(agent, "test_app");
     session =
         runner
             .sessionService()

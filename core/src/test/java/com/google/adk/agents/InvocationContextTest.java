@@ -20,11 +20,17 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.Mockito.mock;
 
 import com.google.adk.artifacts.BaseArtifactService;
+import com.google.adk.events.Event;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.plugins.PluginManager;
+import com.google.adk.runner.ResumabilityConfig;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.Part;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -65,19 +71,20 @@ public final class InvocationContextTest {
   @Test
   public void testCreateWithUserContent() {
     InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     assertThat(context).isNotNull();
     assertThat(context.sessionService()).isEqualTo(mockSessionService);
@@ -95,19 +102,20 @@ public final class InvocationContextTest {
   @Test
   public void testCreateWithNullUserContent() {
     InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            /* userContent= */ Optional.empty(),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.empty())
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     assertThat(context).isNotNull();
     assertThat(context.userContent()).isEmpty();
@@ -116,19 +124,19 @@ public final class InvocationContextTest {
   @Test
   public void testCreateWithLiveRequestQueue() {
     InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            Optional.of(liveRequestQueue),
-            /* branch= */ Optional.empty(),
-            InvocationContext.newInvocationContextId(),
-            mockAgent,
-            session,
-            /* userContent= */ Optional.empty(),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.of(liveRequestQueue))
+            .branch(Optional.empty())
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.empty())
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     assertThat(context).isNotNull();
     assertThat(context.sessionService()).isEqualTo(mockSessionService);
@@ -146,19 +154,20 @@ public final class InvocationContextTest {
   @Test
   public void testCopyOf() {
     InvocationContext originalContext =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
     originalContext.activeStreamingTools().putAll(activeStreamingTools);
 
     InvocationContext copiedContext = InvocationContext.copyOf(originalContext);
@@ -183,19 +192,20 @@ public final class InvocationContextTest {
   @Test
   public void testGetters() {
     InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     assertThat(context.sessionService()).isEqualTo(mockSessionService);
     assertThat(context.artifactService()).isEqualTo(mockArtifactService);
@@ -212,19 +222,20 @@ public final class InvocationContextTest {
   @Test
   public void testSetAgent() {
     InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     BaseAgent newMockAgent = mock(BaseAgent.class);
     context.agent(newMockAgent);
@@ -247,19 +258,20 @@ public final class InvocationContextTest {
   @Test
   public void testEquals_sameObject() {
     InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     assertThat(context.equals(context)).isTrue();
   }
@@ -267,19 +279,20 @@ public final class InvocationContextTest {
   @Test
   public void testEquals_null() {
     InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     assertThat(context.equals(null)).isFalse();
   }
@@ -287,35 +300,37 @@ public final class InvocationContextTest {
   @Test
   public void testEquals_sameValues() {
     InvocationContext context1 =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     // Create another context with the same parameters
     InvocationContext context2 =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     assertThat(context1.equals(context2)).isTrue();
     assertThat(context2.equals(context1)).isTrue(); // Check symmetry
@@ -324,95 +339,100 @@ public final class InvocationContextTest {
   @Test
   public void testEquals_differentValues() {
     InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     // Create contexts with one field different
     InvocationContext contextWithDiffSessionService =
-        new InvocationContext(
-            mock(BaseSessionService.class), // Different mock
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mock(BaseSessionService.class)) // Different mock
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     InvocationContext contextWithDiffInvocationId =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            "another-id", // Different ID
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId("another-id") // Different ID
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     InvocationContext contextWithDiffAgent =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mock(BaseAgent.class), // Different mock
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mock(BaseAgent.class)) // Different mock
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     InvocationContext contextWithUserContentEmpty =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            /* userContent= */ Optional.empty(),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.empty())
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     InvocationContext contextWithLiveQueuePresent =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            Optional.of(liveRequestQueue),
-            /* branch= */ Optional.empty(),
-            InvocationContext.newInvocationContextId(),
-            mockAgent,
-            session,
-            /* userContent= */ Optional.empty(),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.of(liveRequestQueue))
+            .branch(Optional.empty())
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.empty())
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     assertThat(context.equals(contextWithDiffSessionService)).isFalse();
     assertThat(context.equals(contextWithDiffInvocationId)).isFalse();
@@ -424,52 +444,219 @@ public final class InvocationContextTest {
   @Test
   public void testHashCode_differentValues() {
     InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     // Create contexts with one field different
     InvocationContext contextWithDiffSessionService =
-        new InvocationContext(
-            mock(BaseSessionService.class), // Different mock
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mock(BaseSessionService.class)) // Different mock
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     InvocationContext contextWithDiffInvocationId =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            "another-id", // Different ID
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .liveRequestQueue(Optional.empty())
+            .branch(Optional.empty())
+            .invocationId("another-id") // Different ID
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.of(userContent))
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .build();
 
     assertThat(context).isNotEqualTo(contextWithDiffSessionService);
     assertThat(context).isNotEqualTo(contextWithDiffInvocationId);
+  }
+
+  @Test
+  public void isResumable_whenResumabilityConfigIsNull_isFalse() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .session(session)
+            .resumabilityConfig(null)
+            .build();
+    assertThat(context.isResumable()).isFalse();
+  }
+
+  @Test
+  public void isResumable_whenResumabilityConfigIsNotResumable_isFalse() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .session(session)
+            .resumabilityConfig(new ResumabilityConfig(false))
+            .build();
+    assertThat(context.isResumable()).isFalse();
+  }
+
+  @Test
+  public void isResumable_whenResumabilityConfigIsResumable_isTrue() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .session(session)
+            .resumabilityConfig(new ResumabilityConfig(true))
+            .build();
+    assertThat(context.isResumable()).isTrue();
+  }
+
+  @Test
+  public void shouldPauseInvocation_whenNotResumable_isFalse() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .session(session)
+            .resumabilityConfig(new ResumabilityConfig(false))
+            .build();
+    Event event =
+        Event.builder()
+            .longRunningToolIds(Optional.of(ImmutableSet.of("fc1")))
+            .content(
+                Content.builder()
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder().name("tool1").id("fc1").build())
+                                .build()))
+                    .build())
+            .build();
+    assertThat(context.shouldPauseInvocation(event)).isFalse();
+  }
+
+  @Test
+  public void shouldPauseInvocation_whenResumableAndNoLongRunningToolIds_isFalse() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .session(session)
+            .resumabilityConfig(new ResumabilityConfig(true))
+            .build();
+    Event event =
+        Event.builder()
+            .content(
+                Content.builder()
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder().name("tool1").id("fc1").build())
+                                .build()))
+                    .build())
+            .build();
+    assertThat(context.shouldPauseInvocation(event)).isFalse();
+  }
+
+  @Test
+  public void shouldPauseInvocation_whenResumableAndNoFunctionCalls_isFalse() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .session(session)
+            .resumabilityConfig(new ResumabilityConfig(true))
+            .build();
+    Event event = Event.builder().longRunningToolIds(Optional.of(ImmutableSet.of("fc1"))).build();
+    assertThat(context.shouldPauseInvocation(event)).isFalse();
+  }
+
+  @Test
+  public void shouldPauseInvocation_whenResumableAndNoMatchingFunctionCallId_isFalse() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .session(session)
+            .resumabilityConfig(new ResumabilityConfig(true))
+            .build();
+    Event event =
+        Event.builder()
+            .longRunningToolIds(Optional.of(ImmutableSet.of("fc2")))
+            .content(
+                Content.builder()
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder().name("tool1").id("fc1").build())
+                                .build()))
+                    .build())
+            .build();
+    assertThat(context.shouldPauseInvocation(event)).isFalse();
+  }
+
+  @Test
+  public void shouldPauseInvocation_whenResumableAndMatchingFunctionCallId_isTrue() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .session(session)
+            .resumabilityConfig(new ResumabilityConfig(true))
+            .build();
+    Event event =
+        Event.builder()
+            .longRunningToolIds(Optional.of(ImmutableSet.of("fc1")))
+            .content(
+                Content.builder()
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder().name("tool1").id("fc1").build())
+                                .build()))
+                    .build())
+            .build();
+    assertThat(context.shouldPauseInvocation(event)).isTrue();
   }
 }
