@@ -220,6 +220,10 @@ public final class ConfigAgentUtils {
       return SequentialAgentConfig.class;
     }
 
+    if (agentClass == ParallelAgent.class) {
+      return ParallelAgentConfig.class;
+    }
+
     // TODO: Add more agent class to config class mappings as needed
     // Example:
     // if (agentClass == CustomAgent.class) {

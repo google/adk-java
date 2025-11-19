@@ -17,13 +17,20 @@
 package com.google.adk.agents;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.base.Strings.nullToEmpty;
 
+import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
+import com.google.adk.utils.ComponentRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
+import javax.annotation.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A shell agent that runs its sub-agents in parallel in isolated manner.
@@ -33,6 +40,8 @@ import java.util.List;
  * for review by a subsequent evaluation agent.
  */
 public class ParallelAgent extends BaseAgent {
+
+  private static final Logger logger = LoggerFactory.getLogger(ParallelAgent.class);
 
   /**
    * Constructor for ParallelAgent.
@@ -118,6 +127,82 @@ public class ParallelAgent extends BaseAgent {
 
   public static Builder builder() {
     return new Builder();
+  }
+
+  /**
+   * Creates a ParallelAgent from configuration.
+   *
+   * @param config the agent configuration
+   * @param configAbsPath The absolute path to the agent config file.
+   * @return the configured ParallelAgent
+   * @throws ConfigurationException if the configuration is invalid
+   */
+  public static ParallelAgent fromConfig(ParallelAgentConfig config, String configAbsPath)
+      throws ConfigurationException {
+    logger.debug("Creating ParallelAgent from config: {}", config.name());
+
+    // Validate required fields
+    if (config.name() == null || config.name().trim().isEmpty()) {
+      throw new ConfigurationException("Agent name is required");
+    }
+
+    // Create builder with required fields
+    Builder builder =
+        ParallelAgent.builder().name(config.name()).description(nullToEmpty(config.description()));
+
+    // Resolve and add subagents using the utility class
+    if (config.subAgents() != null && !config.subAgents().isEmpty()) {
+      ImmutableList<BaseAgent> subAgents =
+          ConfigAgentUtils.resolveSubAgents(config.subAgents(), configAbsPath);
+      builder.subAgents(subAgents);
+    }
+
+    // Resolve callbacks if configured
+    setCallbacksFromConfig(config, builder);
+
+    // Build and return the agent
+    ParallelAgent agent = builder.build();
+    logger.info(
+        "Successfully created ParallelAgent: {} with {} subagents",
+        agent.name(),
+        agent.subAgents() != null ? agent.subAgents().size() : 0);
+
+    return agent;
+  }
+
+  private static void setCallbacksFromConfig(ParallelAgentConfig config, Builder builder)
+      throws ConfigurationException {
+    setCallbackFromConfig(
+        config.beforeAgentCallbacks(),
+        Callbacks.BeforeAgentCallbackBase.class,
+        "before_agent_callback",
+        builder::beforeAgentCallback);
+    setCallbackFromConfig(
+        config.afterAgentCallbacks(),
+        Callbacks.AfterAgentCallbackBase.class,
+        "after_agent_callback",
+        builder::afterAgentCallback);
+  }
+
+  private static <T> void setCallbackFromConfig(
+      @Nullable List<ParallelAgentConfig.CallbackRef> refs,
+      Class<T> callbackBaseClass,
+      String callbackTypeName,
+      Consumer<ImmutableList<T>> builderSetter)
+      throws ConfigurationException {
+    if (refs != null) {
+      ImmutableList.Builder<T> list = ImmutableList.builder();
+      for (ParallelAgentConfig.CallbackRef ref : refs) {
+        list.add(
+            ComponentRegistry.getInstance()
+                .get(ref.name(), callbackBaseClass)
+                .orElseThrow(
+                    () ->
+                        new ConfigurationException(
+                            "Invalid " + callbackTypeName + ": " + ref.name())));
+      }
+      builderSetter.accept(list.build());
+    }
   }
 
   /**
