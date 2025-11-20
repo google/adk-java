@@ -62,8 +62,9 @@ public class Runner {
   private final String appName;
   private final BaseArtifactService artifactService;
   private final BaseSessionService sessionService;
-  private final @Nullable BaseMemoryService memoryService;
+  @Nullable private final BaseMemoryService memoryService;
   private final PluginManager pluginManager;
+  private final ResumabilityConfig resumabilityConfig;
 
   /** Creates a new {@code Runner}. */
   public Runner(
@@ -72,7 +73,14 @@ public class Runner {
       BaseArtifactService artifactService,
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService) {
-    this(agent, appName, artifactService, sessionService, memoryService, ImmutableList.of());
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        ImmutableList.of(),
+        new ResumabilityConfig());
   }
 
   /** Creates a new {@code Runner} with a list of plugins. */
@@ -83,12 +91,32 @@ public class Runner {
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService,
       List<BasePlugin> plugins) {
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        plugins,
+        new ResumabilityConfig());
+  }
+
+  /** Creates a new {@code Runner} with a list of plugins and resumability config. */
+  public Runner(
+      BaseAgent agent,
+      String appName,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService,
+      @Nullable BaseMemoryService memoryService,
+      List<BasePlugin> plugins,
+      ResumabilityConfig resumabilityConfig) {
     this.agent = agent;
     this.appName = appName;
     this.artifactService = artifactService;
     this.sessionService = sessionService;
     this.memoryService = memoryService;
     this.pluginManager = new PluginManager(plugins);
+    this.resumabilityConfig = resumabilityConfig;
   }
 
   /**
@@ -123,7 +151,8 @@ public class Runner {
     return this.sessionService;
   }
 
-  public @Nullable BaseMemoryService memoryService() {
+  @Nullable
+  public BaseMemoryService memoryService() {
     return this.memoryService;
   }
 
@@ -431,19 +460,18 @@ public class Runner {
       RunConfig runConfig) {
     BaseAgent rootAgent = this.agent;
     InvocationContext invocationContext =
-        new InvocationContext(
-            this.sessionService,
-            this.artifactService,
-            this.memoryService,
-            this.pluginManager,
-            liveRequestQueue,
-            /* branch= */ Optional.empty(),
-            InvocationContext.newInvocationContextId(),
-            rootAgent,
-            session,
-            newMessage,
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(this.sessionService)
+            .artifactService(this.artifactService)
+            .memoryService(this.memoryService)
+            .pluginManager(this.pluginManager)
+            .liveRequestQueue(liveRequestQueue)
+            .agent(rootAgent)
+            .session(session)
+            .userContent(newMessage)
+            .runConfig(runConfig)
+            .resumabilityConfig(this.resumabilityConfig)
+            .build();
     invocationContext.agent(this.findAgentToRun(session, rootAgent));
     return invocationContext;
   }
@@ -461,19 +489,19 @@ public class Runner {
       String invocationId) {
     BaseAgent rootAgent = this.agent;
     InvocationContext invocationContext =
-        new InvocationContext(
-            this.sessionService,
-            this.artifactService,
-            this.memoryService,
-            this.pluginManager,
-            liveRequestQueue,
-            /* branch= */ Optional.empty(),
-            invocationId,
-            rootAgent,
-            session,
-            newMessage,
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(this.sessionService)
+            .artifactService(this.artifactService)
+            .memoryService(this.memoryService)
+            .pluginManager(this.pluginManager)
+            .liveRequestQueue(liveRequestQueue)
+            .invocationId(invocationId)
+            .agent(rootAgent)
+            .session(session)
+            .userContent(newMessage)
+            .runConfig(runConfig)
+            .resumabilityConfig(this.resumabilityConfig)
+            .build();
     invocationContext.agent(this.findAgentToRun(session, rootAgent));
     return invocationContext;
   }

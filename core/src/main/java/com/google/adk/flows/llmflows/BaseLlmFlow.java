@@ -156,36 +156,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
     }
 
     return currentLlmResponse.flatMapPublisher(
-        updatedResponse -> {
-          Flowable<Event> processorEvents = Flowable.fromIterable(Iterables.concat(eventIterables));
-
-          if (updatedResponse.content().isEmpty()
-              && updatedResponse.errorCode().isEmpty()
-              && !updatedResponse.interrupted().orElse(false)
-              && !updatedResponse.turnComplete().orElse(false)) {
-            return processorEvents;
-          }
-
-          Event modelResponseEvent =
-              buildModelResponseEvent(baseEventForLlmResponse, llmRequest, updatedResponse);
-
-          Flowable<Event> modelEventStream = Flowable.just(modelResponseEvent);
-
-          if (modelResponseEvent.functionCalls().isEmpty()) {
-            return processorEvents.concatWith(modelEventStream);
-          }
-
-          Maybe<Event> maybeFunctionCallEvent;
-          if (context.runConfig().streamingMode() == StreamingMode.BIDI) {
-            maybeFunctionCallEvent =
-                Functions.handleFunctionCallsLive(context, modelResponseEvent, llmRequest.tools());
-          } else {
-            maybeFunctionCallEvent =
-                Functions.handleFunctionCalls(context, modelResponseEvent, llmRequest.tools());
-          }
-
-          return processorEvents.concatWith(modelEventStream).concatWith(maybeFunctionCallEvent);
-        });
+        updatedResponse ->
+            buildPostprocessingEvents(
+                updatedResponse, eventIterables, context, baseEventForLlmResponse, llmRequest));
   }
 
   /**
@@ -623,6 +596,51 @@ public abstract class BaseLlmFlow implements BaseFlow {
    *
    * @return A fully constructed {@link Event} representing the LLM response.
    */
+  private Flowable<Event> buildPostprocessingEvents(
+      LlmResponse updatedResponse,
+      List<Iterable<Event>> eventIterables,
+      InvocationContext context,
+      Event baseEventForLlmResponse,
+      LlmRequest llmRequest) {
+    Flowable<Event> processorEvents = Flowable.fromIterable(Iterables.concat(eventIterables));
+    if (updatedResponse.content().isEmpty()
+        && updatedResponse.errorCode().isEmpty()
+        && !updatedResponse.interrupted().orElse(false)
+        && !updatedResponse.turnComplete().orElse(false)) {
+      return processorEvents;
+    }
+
+    Event modelResponseEvent =
+        buildModelResponseEvent(baseEventForLlmResponse, llmRequest, updatedResponse);
+    if (modelResponseEvent.functionCalls().isEmpty()) {
+      return processorEvents.concatWith(Flowable.just(modelResponseEvent));
+    }
+
+    Maybe<Event> maybeFunctionResponseEvent;
+    if (context.runConfig().streamingMode() == StreamingMode.BIDI) {
+      maybeFunctionResponseEvent =
+          Functions.handleFunctionCallsLive(context, modelResponseEvent, llmRequest.tools());
+    } else {
+      maybeFunctionResponseEvent =
+          Functions.handleFunctionCalls(context, modelResponseEvent, llmRequest.tools());
+    }
+
+    Flowable<Event> functionEvents =
+        maybeFunctionResponseEvent.flatMapPublisher(
+            functionResponseEvent -> {
+              Optional<Event> toolConfirmationEvent =
+                  Functions.generateRequestConfirmationEvent(
+                      context, modelResponseEvent, functionResponseEvent);
+              if (toolConfirmationEvent.isPresent()) {
+                return Flowable.just(toolConfirmationEvent.get(), functionResponseEvent);
+              } else {
+                return Flowable.just(functionResponseEvent);
+              }
+            });
+
+    return processorEvents.concatWith(Flowable.just(modelResponseEvent)).concatWith(functionEvents);
+  }
+
   private Event buildModelResponseEvent(
       Event baseEventForLlmResponse, LlmRequest llmRequest, LlmResponse llmResponse) {
     Event.Builder eventBuilder =
