@@ -114,7 +114,9 @@ public final class FunctionCallingUtils {
         Schema.builder().required(required).properties(properties).type("OBJECT").build());
 
     Type returnType = func.getGenericReturnType();
-    if (returnType != Void.TYPE) {
+    if (returnType == Void.TYPE || returnType == Void.class) {
+      builder.response(Schema.builder().type("NULL").build());
+    } else {
       Type actualReturnType = returnType;
       if (returnType instanceof ParameterizedType parameterizedReturnType) {
         String rawTypeName = ((Class<?>) parameterizedReturnType.getRawType()).getName();

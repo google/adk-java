@@ -26,6 +26,10 @@ import com.google.genai.types.HttpOptions;
 import com.google.genai.types.LiveConnectConfig;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 /**
  * Compares LlmRequest objects for equality, excluding fields that can vary between runs.
@@ -39,6 +43,10 @@ import java.util.Optional;
  * </ul>
  */
 class LlmRequestComparator {
+  private static final Pattern TEXT_PATH_PATTERN =
+      Pattern.compile("/contents/\\d+/parts/\\d+/text");
+  private static final Pattern PARAMS_RESULT_PATTERN =
+      Pattern.compile("^(.*(?:parameters|result): )(\\{.*\\})(.*)$", Pattern.DOTALL);
   private final ObjectMapper objectMapper;
 
   LlmRequestComparator() {
@@ -58,9 +66,10 @@ class LlmRequestComparator {
    * @return true if the requests match (excluding runtime-variable fields)
    */
   boolean equals(LlmRequest recorded, LlmRequest current) {
-    JsonNode recordedNode = objectMapper.valueToTree(recorded);
-    JsonNode currentNode = objectMapper.valueToTree(current);
+    JsonNode recordedNode = toJsonNode(recorded);
+    JsonNode currentNode = toJsonNode(current);
     JsonNode patch = JsonDiff.asJson(recordedNode, currentNode);
+    patch = filterPatch(patch, recordedNode, currentNode);
     return patch.isEmpty();
   }
 
@@ -72,9 +81,10 @@ class LlmRequestComparator {
    * @return a string describing the differences, or empty string if they match
    */
   String diff(LlmRequest recorded, LlmRequest current) {
-    JsonNode recordedNode = objectMapper.valueToTree(recorded);
-    JsonNode currentNode = objectMapper.valueToTree(current);
+    JsonNode recordedNode = toJsonNode(recorded);
+    JsonNode currentNode = toJsonNode(current);
     JsonNode patch = JsonDiff.asJson(recordedNode, currentNode);
+    patch = filterPatch(patch, recordedNode, currentNode);
     if (patch.isEmpty()) {
       return "";
     }
@@ -104,6 +114,68 @@ class LlmRequestComparator {
       }
     }
     return sb.toString();
+  }
+
+  private JsonNode toJsonNode(LlmRequest request) {
+    try {
+      return objectMapper.readTree(objectMapper.writeValueAsString(request));
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to serialize request to JSON.", e);
+    }
+  }
+
+  private JsonNode filterPatch(JsonNode patch, JsonNode recordedNode, JsonNode currentNode) {
+    var filteredOps =
+        StreamSupport.stream(patch.spliterator(), false)
+            .filter(op -> !isEquivalentChange(op, recordedNode, currentNode))
+            .collect(Collectors.toList());
+    return objectMapper.valueToTree(filteredOps);
+  }
+
+  private boolean isEquivalentChange(JsonNode op, JsonNode recordedNode, JsonNode currentNode) {
+    if (!op.get("op").asText().equals("replace")) {
+      return false;
+    }
+    String path = op.get("path").asText();
+    if (TEXT_PATH_PATTERN.matcher(path).matches()) {
+      String recordedText = recordedNode.at(path).asText();
+      String currentText = currentNode.at(path).asText();
+      return areTextValuesEquivalent(recordedText, currentText);
+    }
+    return false;
+  }
+
+  private boolean areTextValuesEquivalent(String recorded, String current) {
+    Matcher recordedMatcher = PARAMS_RESULT_PATTERN.matcher(recorded);
+    Matcher currentMatcher = PARAMS_RESULT_PATTERN.matcher(current);
+
+    if (recordedMatcher.matches() && currentMatcher.matches()) {
+      if (!recordedMatcher.group(1).equals(currentMatcher.group(1))
+          || !recordedMatcher.group(3).equals(currentMatcher.group(3))) {
+        return false; // prefix or suffix differ
+      }
+      String recordedJson = recordedMatcher.group(2);
+      String currentJson = currentMatcher.group(2);
+      return compareJsonDictStrings(recordedJson, currentJson);
+    }
+    return recorded.equals(current);
+  }
+
+  private boolean compareJsonDictStrings(String recorded, String current) {
+    String rStr = recorded.replace('\'', '"').replace("None", "null");
+    String cStr = current.replace('\'', '"').replace("None", "null");
+    try {
+      JsonNode rNode = objectMapper.readTree(rStr);
+      JsonNode cNode = objectMapper.readTree(cStr);
+
+      if (rNode.equals(cNode)) {
+        return true;
+      }
+    } catch (Exception e) {
+      return false;
+    }
+
+    return false;
   }
 
   /** Mix-in to exclude GenerateContentConfig fields that vary between runs. */
