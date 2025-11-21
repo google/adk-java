@@ -177,7 +177,7 @@ curl -X POST http://localhost:8081/a2a/remote/v1/message:send \
             "kind": "message",
             "contextId": "cli-demo-context",
             "messageId": "cli-check-2",
-            "role": "USER",
+            "role": "user",
             "parts": [
               { "kind": "text", "text": "Is 2 prime?" }
             ]
