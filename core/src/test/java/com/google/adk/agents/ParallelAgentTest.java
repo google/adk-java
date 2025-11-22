@@ -110,4 +110,52 @@ public final class ParallelAgentTest {
 
     assertThat(events).isEmpty();
   }
+
+  static class BlockingAgent extends BaseAgent {
+    private final long sleepMillis;
+
+    private BlockingAgent(String name, long sleepMillis) {
+      super(name, "Blocking Agent", ImmutableList.of(), null, null);
+      this.sleepMillis = sleepMillis;
+    }
+
+    @Override
+    protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
+      return Flowable.fromCallable(
+          () -> {
+            Thread.sleep(sleepMillis);
+            return Event.builder()
+                .author(name())
+                .branch(invocationContext.branch().orElse(null))
+                .invocationId(invocationContext.invocationId())
+                .content(Content.fromParts(Part.fromText("Done")))
+                .build();
+          });
+    }
+
+    @Override
+    protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
+      throw new UnsupportedOperationException("Not implemented");
+    }
+  }
+
+  @Test
+  public void runAsync_blockingSubAgents_shouldExecuteInParallel() {
+    long sleepTime = 1000;
+    BlockingAgent agent1 = new BlockingAgent("agent1", sleepTime);
+    BlockingAgent agent2 = new BlockingAgent("agent2", sleepTime);
+
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder().name("parallel_agent").subAgents(agent1, agent2).build();
+
+    InvocationContext invocationContext = createInvocationContext(parallelAgent);
+
+    long startTime = System.currentTimeMillis();
+    List<Event> events = parallelAgent.runAsync(invocationContext).toList().blockingGet();
+    long duration = System.currentTimeMillis() - startTime;
+
+    assertThat(events).hasSize(2);
+    // If parallel, duration should be less than 2 * sleepTime (2000ms).
+    assertThat(duration).isLessThan((long) (2.0 * sleepTime));
+  }
 }
