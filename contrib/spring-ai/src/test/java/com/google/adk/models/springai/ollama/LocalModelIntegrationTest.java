@@ -34,6 +34,7 @@ import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 
+// @Disabled("To avoid making the assumption that Ollama is available in the CI pipeline")
 @EnabledIfEnvironmentVariable(named = "ADK_RUN_INTEGRATION_TESTS", matches = "true")
 class LocalModelIntegrationTest {
 
@@ -82,7 +83,7 @@ class LocalModelIntegrationTest {
 
     String responseText = response.content().get().parts().get().get(0).text().orElse("");
     assertThat(responseText).isNotEmpty();
-    assertThat(responseText.toLowerCase()).contains("4");
+    assertThat(responseText.toLowerCase()).containsAnyOf("four", "4");
   }
 
   @Test
