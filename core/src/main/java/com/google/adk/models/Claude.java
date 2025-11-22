@@ -60,6 +60,8 @@ import org.slf4j.LoggerFactory;
 public class Claude extends BaseLlm {
 
   private static final Logger logger = LoggerFactory.getLogger(Claude.class);
+  private static final ObjectMapper OBJECT_MAPPER =
+      new ObjectMapper().registerModule(new Jdk8Module());
   private int maxTokens = 8192;
   private final AnthropicClient anthropicClient;
 
@@ -170,9 +172,14 @@ public class Claude extends BaseLlm {
               .build());
     } else if (part.functionResponse().isPresent()) {
       String content = "";
-      if (part.functionResponse().get().response().isPresent()
-          && part.functionResponse().get().response().get().getOrDefault("result", null) != null) {
-        content = part.functionResponse().get().response().get().get("result").toString();
+      if (part.functionResponse().get().response().isPresent()) {
+        Map<String, Object> response = part.functionResponse().get().response().get();
+        try {
+          content = OBJECT_MAPPER.writeValueAsString(response);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+          logger.error("Failed to serialize tool response", e);
+          content = response.toString();
+        }
       }
       return ContentBlockParam.ofToolResult(
           ToolResultBlockParam.builder()
