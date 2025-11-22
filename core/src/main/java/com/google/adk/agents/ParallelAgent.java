@@ -20,6 +20,7 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -131,7 +132,7 @@ public class ParallelAgent extends BaseAgent {
 
     List<Flowable<Event>> agentFlowables = new ArrayList<>();
     for (BaseAgent subAgent : currentSubAgents) {
-      agentFlowables.add(subAgent.runAsync(invocationContext));
+      agentFlowables.add(subAgent.runAsync(invocationContext).subscribeOn(Schedulers.io()));
     }
     return Flowable.merge(agentFlowables);
   }
