@@ -19,7 +19,7 @@
 
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk-parent</artifactId>
-  <version>0.4.0-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+  <version>0.4.0</version><!-- {x-version-update:google-adk:current} -->
   <packaging>pom</packaging>
 
   <name>Google Agent Development Kit Maven Parent POM</name>
