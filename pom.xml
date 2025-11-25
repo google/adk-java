@@ -12,9 +12,7 @@
  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  See the License for the specific language governing permissions and
  limitations under the License. -->
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.google.adk</groupId>
@@ -33,7 +31,6 @@
     <module>contrib/langchain4j</module>
     <module>contrib/spring-ai</module>
     <module>contrib/samples</module>
-    <module>contrib/firestore-session-service</module>
     <module>tutorials/city-time-weather</module>
     <module>tutorials/live-audio-single-agent</module>
     <module>a2a</module>
@@ -319,8 +316,7 @@
           </dependencies>
           <configuration>
             <reportFormat>plain</reportFormat>
-            <statelessTestsetInfoReporter
-              implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter" />
+            <statelessTestsetInfoReporter implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter"/>
             <includes>
               <include>**/*Test.java</include>
             </includes>
@@ -399,7 +395,7 @@
           </configuration>
         </plugin>
       </plugins>
-    </pluginManagement>
+  </pluginManagement>
     <plugins>
       <plugin>
         <groupId>org.sonatype.central</groupId>
