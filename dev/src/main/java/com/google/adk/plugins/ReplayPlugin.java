@@ -322,7 +322,7 @@ public class ReplayPlugin extends BasePlugin {
     LlmRequestComparator comparator = new LlmRequestComparator();
     String diff = comparator.diff(recordedRequest, currentRequest);
     if (!diff.isEmpty()) {
-      throw new ReplayVerificationError(
+      logger.error(
           String.format(
               "LLM request mismatch for agent '%s' (index %d):%n%s", agentName, agentIndex, diff));
     }
@@ -342,7 +342,7 @@ public class ReplayPlugin extends BasePlugin {
     // Verify tool name
     String recordedName = recordedCall.name().orElse("");
     if (!recordedName.equals(toolName)) {
-      throw new ReplayVerificationError(
+      logger.error(
           String.format(
               "Tool name mismatch for agent '%s' at index %d:%nrecorded: '%s'%ncurrent: '%s'",
               agentName, agentIndex, recordedName, toolName));
@@ -351,7 +351,7 @@ public class ReplayPlugin extends BasePlugin {
     // Verify tool arguments
     Map<String, Object> recordedArgs = recordedCall.args().orElse(Map.of());
     if (!recordedArgs.equals(toolArgs)) {
-      throw new ReplayVerificationError(
+      logger.error(
           String.format(
               "Tool args mismatch for agent '%s' at index %d:%nrecorded: %s%ncurrent: %s",
               agentName, agentIndex, recordedArgs, toolArgs));

@@ -360,11 +360,12 @@ public final class Contents implements RequestProcessor {
     List<Event> resultEvents = new ArrayList<>();
     // Keep track of response events already added to avoid duplicates when merging
     Set<Integer> processedResponseIndices = new HashSet<>();
+    List<Event> responseEventsBuffer = new ArrayList<>();
 
     for (int i = 0; i < events.size(); i++) {
       Event event = events.get(i);
 
-      // Skip response events that have already been processed and added alongside their call event
+      // Skip response events that will be processed via responseEventsBuffer
       if (processedResponseIndices.contains(i)) {
         continue;
       }
@@ -399,25 +400,35 @@ public final class Contents implements RequestProcessor {
         resultEvents.add(event); // Add the function call event
 
         if (!responseEventIndices.isEmpty()) {
-          List<Event> responseEventsToAdd = new ArrayList<>();
           List<Integer> sortedIndices = new ArrayList<>(responseEventIndices);
           Collections.sort(sortedIndices); // Process in chronological order
 
           for (int index : sortedIndices) {
             if (processedResponseIndices.add(index)) { // Add index and check if it was newly added
-              responseEventsToAdd.add(events.get(index));
+              responseEventsBuffer.add(events.get(index));
             }
-          }
-
-          if (responseEventsToAdd.size() == 1) {
-            resultEvents.add(responseEventsToAdd.get(0));
-          } else if (responseEventsToAdd.size() > 1) {
-            resultEvents.add(mergeFunctionResponseEvents(responseEventsToAdd));
           }
         }
       } else {
+        if (!responseEventsBuffer.isEmpty()) {
+          if (responseEventsBuffer.size() == 1) {
+            resultEvents.add(responseEventsBuffer.get(0));
+          } else {
+            resultEvents.add(mergeFunctionResponseEvents(responseEventsBuffer));
+          }
+          responseEventsBuffer.clear();
+        }
         resultEvents.add(event);
       }
+    }
+
+    if (!responseEventsBuffer.isEmpty()) {
+      if (responseEventsBuffer.size() == 1) {
+        resultEvents.add(responseEventsBuffer.get(0));
+      } else {
+        resultEvents.add(mergeFunctionResponseEvents(responseEventsBuffer));
+      }
+      responseEventsBuffer.clear();
     }
 
     return resultEvents;

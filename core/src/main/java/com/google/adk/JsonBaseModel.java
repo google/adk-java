@@ -24,6 +24,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import java.util.Optional;
 
 /** The base class for the types that needs JSON serialization/deserialization capability. */
 public abstract class JsonBaseModel {
@@ -32,11 +33,15 @@ public abstract class JsonBaseModel {
 
   static {
     objectMapper
-        .setSerializationInclusion(JsonInclude.Include.NON_ABSENT)
+        .setSerializationInclusion(JsonInclude.Include.ALWAYS)
         .setPropertyNamingStrategy(PropertyNamingStrategies.LOWER_CAMEL_CASE)
         .registerModule(new Jdk8Module())
         .registerModule(new JavaTimeModule()) // TODO: echo sec module replace, locale
-        .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        .configOverride(Optional.class)
+        .setInclude(
+            JsonInclude.Value.construct(
+                JsonInclude.Include.NON_ABSENT, JsonInclude.Include.NON_ABSENT));
   }
 
   /** Serializes an object to a Json string. */

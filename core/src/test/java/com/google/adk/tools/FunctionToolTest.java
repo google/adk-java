@@ -68,6 +68,7 @@ public final class FunctionToolTest {
                         .properties(ImmutableMap.of())
                         .required(ImmutableList.of())
                         .build())
+                .response(Schema.builder().type("NULL").build())
                 .build());
   }
 
@@ -100,6 +101,7 @@ public final class FunctionToolTest {
                                     .build()))
                         .required(ImmutableList.of("first_param", "second_param"))
                         .build())
+                .response(Schema.builder().type("NULL").build())
                 .build());
   }
 
@@ -137,6 +139,7 @@ public final class FunctionToolTest {
                         .properties(ImmutableMap.of())
                         .required(ImmutableList.of())
                         .build())
+                .response(Schema.builder().type("NULL").build())
                 .build());
   }
 

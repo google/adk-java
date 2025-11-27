@@ -42,7 +42,7 @@ public final class GeminiUtil {
    * Prepares an {@link LlmRequest} for the GenerateContent API.
    *
    * <p>This method can optionally sanitize the request and ensures that the last content part is
-   * from the user to prompt a model response. It also strips out any parts marked as "thoughts".
+   * from the user to prompt a model response.
    *
    * @param llmRequest The original {@link LlmRequest}.
    * @param sanitize Whether to sanitize the request to be compatible with the Gemini API backend.

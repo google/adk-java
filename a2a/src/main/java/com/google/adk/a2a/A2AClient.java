@@ -22,7 +22,12 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** A thin HTTP client for interacting with an A2A-compliant agent endpoint. */
+/**
+ * A thin HTTP client for interacting with an A2A-compliant agent endpoint.
+ *
+ * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
+ *     not use in production code.
+ */
 public final class A2AClient {
 
   private static final Logger logger = LoggerFactory.getLogger(A2AClient.class);

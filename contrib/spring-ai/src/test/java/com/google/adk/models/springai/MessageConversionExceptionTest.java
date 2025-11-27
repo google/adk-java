@@ -80,7 +80,10 @@ class MessageConversionExceptionTest {
     AssistantMessage.ToolCall invalidToolCall =
         new AssistantMessage.ToolCall("id123", "function", "test_function", "invalid json{");
     AssistantMessage assistantMessage =
-        new AssistantMessage("Test", java.util.Map.of(), java.util.List.of(invalidToolCall));
+        AssistantMessage.builder()
+            .content("Test")
+            .toolCalls(java.util.List.of(invalidToolCall))
+            .build();
 
     // This should throw MessageConversionException due to invalid JSON
     Exception exception =

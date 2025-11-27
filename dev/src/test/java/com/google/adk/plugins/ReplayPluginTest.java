@@ -16,7 +16,6 @@
 package com.google.adk.plugins;
 
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -128,7 +127,7 @@ class ReplayPluginTest {
   }
 
   @Test
-  void beforeModelCallback_requestMismatch_throwsVerificationError() throws Exception {
+  void beforeModelCallback_requestMismatch_returnsEmpty() throws Exception {
     // Setup: Create recording with different model
     Path recordingsFile = tempDir.resolve("generated-recordings.yaml");
     Files.writeString(
@@ -174,10 +173,9 @@ class ReplayPluginTest {
                         .build()))
             .build();
 
-    // Step 4: Verify verification error is thrown
-    assertThrows(
-        ReplayVerificationError.class,
-        () -> plugin.beforeModelCallback(callbackContext, request).blockingGet());
+    // Step 4: Verify result is empty
+    var result = plugin.beforeModelCallback(callbackContext, request).blockingGet();
+    assertThat(result).isNull();
   }
 
   @Test
@@ -236,7 +234,7 @@ class ReplayPluginTest {
   }
 
   @Test
-  void beforeToolCallback_toolNameMismatch_throwsVerificationError() throws Exception {
+  void beforeToolCallback_toolNameMismatch_returnsEmpty() throws Exception {
     // Setup: Create recording
     Path recordingsFile = tempDir.resolve("generated-recordings.yaml");
     Files.writeString(
@@ -272,17 +270,16 @@ class ReplayPluginTest {
     when(toolContext.invocationId()).thenReturn("test-invocation");
     when(toolContext.agentName()).thenReturn("test_agent");
 
-    // Step 4: Verify verification error is thrown
-    assertThrows(
-        ReplayVerificationError.class,
-        () ->
-            plugin
-                .beforeToolCallback(mockTool, ImmutableMap.of("param", "value"), toolContext)
-                .blockingGet());
+    // Step 4: Verify result is empty
+    var result =
+        plugin
+            .beforeToolCallback(mockTool, ImmutableMap.of("param", "value"), toolContext)
+            .blockingGet();
+    assertThat(result).isNull();
   }
 
   @Test
-  void beforeToolCallback_toolArgsMismatch_throwsVerificationError() throws Exception {
+  void beforeToolCallback_toolArgsMismatch_returnsEmpty() throws Exception {
     // Setup: Create recording
     Path recordingsFile = tempDir.resolve("generated-recordings.yaml");
     Files.writeString(
@@ -318,13 +315,12 @@ class ReplayPluginTest {
     when(toolContext.invocationId()).thenReturn("test-invocation");
     when(toolContext.agentName()).thenReturn("test_agent");
 
-    // Step 4: Verify verification error is thrown
-    assertThrows(
-        ReplayVerificationError.class,
-        () ->
-            plugin
-                .beforeToolCallback(
-                    mockTool, ImmutableMap.of("param", "actual_value"), toolContext) // Wrong value
-                .blockingGet());
+    // Step 4: Verify result is empty
+    var result =
+        plugin
+            .beforeToolCallback(
+                mockTool, ImmutableMap.of("param", "actual_value"), toolContext) // Wrong value
+            .blockingGet();
+    assertThat(result).isNull();
   }
 }

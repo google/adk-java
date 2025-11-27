@@ -75,11 +75,22 @@ public class OllamaTestContainer {
 
   public boolean isHealthy() {
     try {
-      org.testcontainers.containers.Container.ExecResult result =
-          container.execInContainer(
-              "curl", "-f", "http://localhost:" + OLLAMA_PORT + "/api/version");
+      // Check if container is running and responsive
+      if (!container.isRunning()) {
+        return false;
+      }
 
-      return result.getExitCode() == 0;
+      // Make a simple HTTP request to the version endpoint from outside the container
+      java.net.URL url = new java.net.URL(getBaseUrl() + "/api/version");
+      java.net.HttpURLConnection connection = (java.net.HttpURLConnection) url.openConnection();
+      connection.setRequestMethod("GET");
+      connection.setConnectTimeout(5000);
+      connection.setReadTimeout(5000);
+
+      int responseCode = connection.getResponseCode();
+      connection.disconnect();
+
+      return responseCode == 200;
     } catch (Exception e) {
       return false;
     }

@@ -25,6 +25,7 @@ import com.google.adk.agents.Callbacks.AfterToolCallback;
 import com.google.adk.agents.Callbacks.BeforeToolCallback;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.tools.BaseTool;
@@ -46,6 +47,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.functions.Function;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -136,27 +138,28 @@ public final class Functions {
       Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
 
-    List<Maybe<Event>> functionResponseEvents = new ArrayList<>();
-
     for (FunctionCall functionCall : functionCalls) {
       if (!tools.containsKey(functionCall.name().get())) {
         throw new VerifyException("Tool not found: " + functionCall.name().get());
       }
-      BaseTool tool = tools.get(functionCall.name().get());
-      ToolContext toolContext =
-          ToolContext.builder(invocationContext)
-              .functionCallId(functionCall.id().orElse(""))
-              .toolConfirmation(toolConfirmations.get(functionCall.id().orElse(null)))
-              .build();
+    }
 
-      Map<String, Object> functionArgs = functionCall.args().orElse(ImmutableMap.of());
+    Function<FunctionCall, Maybe<Event>> functionCallMapper =
+        functionCall -> {
+          BaseTool tool = tools.get(functionCall.name().get());
+          ToolContext toolContext =
+              ToolContext.builder(invocationContext)
+                  .functionCallId(functionCall.id().orElse(""))
+                  .toolConfirmation(toolConfirmations.get(functionCall.id().orElse(null)))
+                  .build();
 
-      Maybe<Map<String, Object>> maybeFunctionResult =
-          maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
-              .switchIfEmpty(Maybe.defer(() -> callTool(tool, functionArgs, toolContext)));
+          Map<String, Object> functionArgs = functionCall.args().orElse(ImmutableMap.of());
 
-      Maybe<Event> maybeFunctionResponseEvent =
-          maybeFunctionResult
+          Maybe<Map<String, Object>> maybeFunctionResult =
+              maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
+                  .switchIfEmpty(Maybe.defer(() -> callTool(tool, functionArgs, toolContext)));
+
+          return maybeFunctionResult
               .map(Optional::of)
               .defaultIfEmpty(Optional.empty())
               .onErrorResumeNext(
@@ -194,11 +197,17 @@ public final class Functions {
                               return Maybe.just(functionResponseEvent);
                             });
                   });
+        };
 
-      functionResponseEvents.add(maybeFunctionResponseEvent);
+    Flowable<Event> functionResponseEventsFlowable;
+    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
+      functionResponseEventsFlowable =
+          Flowable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
+    } else {
+      functionResponseEventsFlowable =
+          Flowable.fromIterable(functionCalls).flatMapMaybe(functionCallMapper);
     }
-
-    return Maybe.merge(functionResponseEvents)
+    return functionResponseEventsFlowable
         .toList()
         .flatMapMaybe(
             events -> {
@@ -233,29 +242,35 @@ public final class Functions {
   public static Maybe<Event> handleFunctionCallsLive(
       InvocationContext invocationContext, Event functionCallEvent, Map<String, BaseTool> tools) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
-    List<Maybe<Event>> responseEvents = new ArrayList<>();
 
     for (FunctionCall functionCall : functionCalls) {
       if (!tools.containsKey(functionCall.name().get())) {
         throw new VerifyException("Tool not found: " + functionCall.name().get());
       }
-      BaseTool tool = tools.get(functionCall.name().get());
-      ToolContext toolContext =
-          ToolContext.builder(invocationContext)
-              .functionCallId(functionCall.id().orElse(""))
-              .build();
-      Map<String, Object> functionArgs = functionCall.args().orElse(new HashMap<>());
+    }
 
-      Maybe<Map<String, Object>> maybeFunctionResult =
-          maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
-              .switchIfEmpty(
-                  Maybe.defer(
-                      () ->
-                          processFunctionLive(
-                              invocationContext, tool, toolContext, functionCall, functionArgs)));
+    Function<FunctionCall, Maybe<Event>> functionCallMapper =
+        functionCall -> {
+          BaseTool tool = tools.get(functionCall.name().get());
+          ToolContext toolContext =
+              ToolContext.builder(invocationContext)
+                  .functionCallId(functionCall.id().orElse(""))
+                  .build();
+          Map<String, Object> functionArgs = functionCall.args().orElse(new HashMap<>());
 
-      Maybe<Event> maybeFunctionResponseEvent =
-          maybeFunctionResult
+          Maybe<Map<String, Object>> maybeFunctionResult =
+              maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
+                  .switchIfEmpty(
+                      Maybe.defer(
+                          () ->
+                              processFunctionLive(
+                                  invocationContext,
+                                  tool,
+                                  toolContext,
+                                  functionCall,
+                                  functionArgs)));
+
+          return maybeFunctionResult
               .map(Optional::of)
               .defaultIfEmpty(Optional.empty())
               .onErrorResumeNext(
@@ -293,10 +308,20 @@ public final class Functions {
                               return Maybe.just(functionResponseEvent);
                             });
                   });
-      responseEvents.add(maybeFunctionResponseEvent);
+        };
+
+    Flowable<Event> responseEventsFlowable;
+
+    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
+      responseEventsFlowable =
+          Flowable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
+
+    } else {
+      responseEventsFlowable =
+          Flowable.fromIterable(functionCalls).flatMapMaybe(functionCallMapper);
     }
 
-    return Maybe.merge(responseEvents)
+    return responseEventsFlowable
         .toList()
         .flatMapMaybe(
             events -> {

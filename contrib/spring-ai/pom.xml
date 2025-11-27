@@ -20,7 +20,7 @@
     <parent>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-parent</artifactId>
-        <version>0.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <version>0.4.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -29,7 +29,7 @@
     <description>Spring AI integration for the Agent Development Kit.</description>
 
     <properties>
-        <spring-ai.version>1.1.0-M3</spring-ai.version>
+        <spring-ai.version>1.1.0</spring-ai.version>
         <testcontainers.version>1.21.3</testcontainers.version>
     </properties>
 

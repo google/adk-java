@@ -9,7 +9,12 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** REST controller exposing an A2A-compliant JSON-RPC endpoint backed by a local ADK runner. */
+/**
+ * REST controller exposing an A2A-compliant JSON-RPC endpoint backed by a local ADK runner.
+ *
+ * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
+ *     not use in production code.
+ */
 @RestController
 @RequestMapping("/a2a/remote")
 public class A2ARemoteController {

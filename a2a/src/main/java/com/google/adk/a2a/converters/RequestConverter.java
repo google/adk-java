@@ -18,6 +18,9 @@ import org.slf4j.LoggerFactory;
 /**
  * rfe Converter for A2A Messages to ADK Events. This is used on the A2A service side to convert
  * incoming A2A requests to ADK Events.
+ *
+ * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
+ *     not use in production code.
  */
 public final class RequestConverter {
   private static final Logger logger = LoggerFactory.getLogger(RequestConverter.class);
