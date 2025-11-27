@@ -30,9 +30,9 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
+import com.google.adk.tools.MissingToolResolutionStrategy;
 import com.google.adk.tools.ToolConfirmation;
 import com.google.adk.tools.ToolContext;
-import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -137,10 +137,16 @@ public final class Functions {
       Map<String, BaseTool> tools,
       Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
-
+    MissingToolResolutionStrategy missingToolResolutionStrategy =
+        invocationContext.runConfig().missingToolResolutionStrategy();
+    ImmutableList.Builder<Maybe<Event>> missingTools = ImmutableList.builder();
+    ImmutableList.Builder<FunctionCall> validCalls = ImmutableList.builder();
     for (FunctionCall functionCall : functionCalls) {
       if (!tools.containsKey(functionCall.name().get())) {
-        throw new VerifyException("Tool not found: " + functionCall.name().get());
+        missingTools.add(
+            missingToolResolutionStrategy.onMissingTool(invocationContext, functionCall));
+      } else {
+        validCalls.add(functionCall);
       }
     }
 
@@ -202,12 +208,16 @@ public final class Functions {
     Flowable<Event> functionResponseEventsFlowable;
     if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
       functionResponseEventsFlowable =
-          Flowable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
+          Flowable.fromIterable(validCalls.build()).concatMapMaybe(functionCallMapper);
     } else {
       functionResponseEventsFlowable =
-          Flowable.fromIterable(functionCalls).flatMapMaybe(functionCallMapper);
+          Flowable.fromIterable(validCalls.build()).flatMapMaybe(functionCallMapper);
     }
-    return functionResponseEventsFlowable
+    Flowable<Event> missingToolsFlowable =
+        Flowable.fromIterable(missingTools.build()).concatMapMaybe(maybe -> maybe);
+    Flowable<Event> allEventsFlowable =
+        Flowable.concat(missingToolsFlowable, functionResponseEventsFlowable);
+    return allEventsFlowable
         .toList()
         .flatMapMaybe(
             events -> {
@@ -242,13 +252,19 @@ public final class Functions {
   public static Maybe<Event> handleFunctionCallsLive(
       InvocationContext invocationContext, Event functionCallEvent, Map<String, BaseTool> tools) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
+    MissingToolResolutionStrategy missingToolResolutionStrategy =
+        invocationContext.runConfig().missingToolResolutionStrategy();
 
+    ImmutableList.Builder<Maybe<Event>> missingTools = ImmutableList.builder();
+    ImmutableList.Builder<FunctionCall> validCalls = ImmutableList.builder();
     for (FunctionCall functionCall : functionCalls) {
       if (!tools.containsKey(functionCall.name().get())) {
-        throw new VerifyException("Tool not found: " + functionCall.name().get());
+        missingTools.add(
+            missingToolResolutionStrategy.onMissingTool(invocationContext, functionCall));
+      } else {
+        validCalls.add(functionCall);
       }
     }
-
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         functionCall -> {
           BaseTool tool = tools.get(functionCall.name().get());
@@ -311,17 +327,20 @@ public final class Functions {
         };
 
     Flowable<Event> responseEventsFlowable;
-
     if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
       responseEventsFlowable =
-          Flowable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
+          Flowable.fromIterable(validCalls.build()).concatMapMaybe(functionCallMapper);
 
     } else {
       responseEventsFlowable =
-          Flowable.fromIterable(functionCalls).flatMapMaybe(functionCallMapper);
+          Flowable.fromIterable(validCalls.build()).flatMapMaybe(functionCallMapper);
     }
+    Flowable<Event> missingToolsFlowable =
+        Flowable.fromIterable(missingTools.build()).concatMapMaybe(maybe -> maybe);
+    Flowable<Event> allEventsFlowable =
+        Flowable.concat(missingToolsFlowable, responseEventsFlowable);
 
-    return responseEventsFlowable
+    return allEventsFlowable
         .toList()
         .flatMapMaybe(
             events -> {
