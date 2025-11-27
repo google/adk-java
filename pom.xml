@@ -31,11 +31,9 @@
     <module>dev</module>
     <module>maven_plugin</module>
     <module>contrib/langchain4j</module>
-    <module>contrib/spring-ai</module>
     <module>contrib/samples</module>
     <module>contrib/firestore-session-service</module>
     <module>tutorials/city-time-weather</module>
-    <module>tutorials/live-audio-single-agent</module>
     <module>a2a</module>
     <module>a2a/webservice</module>
   </modules>
