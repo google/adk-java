@@ -23,8 +23,10 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.testing.TestUtils;
+import com.google.adk.tools.MissingToolResolutionStrategy;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -65,6 +67,37 @@ public final class FunctionsTest {
         () ->
             Functions.handleFunctionCalls(
                 invocationContext, event, /* tools= */ ImmutableMap.of()));
+  }
+
+  @Test
+  public void handleFunctionCalls_missingTool_recoveryStrategy() {
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createRootAgent(),
+            RunConfig.builder()
+                .setMissingToolResolutionStrategy(
+                    MissingToolResolutionStrategy.respondWithEventSync(
+                        (ctx, call) ->
+                            Event.builder()
+                                .content(
+                                    Content.fromParts(
+                                        Part.fromText("tool missing: " + call.name().get())))
+                                .build()))
+                .build());
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromText("..."), Part.fromFunctionCall("missing_tool", ImmutableMap.of())))
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(invocationContext, event, /* tools= */ ImmutableMap.of())
+            .blockingGet();
+
+    assertThat(functionResponseEvent).isNotNull();
+    assertThat(functionResponseEvent.content().get().parts().get())
+        .containsExactly(Part.fromText("tool missing: missing_tool"));
   }
 
   @Test

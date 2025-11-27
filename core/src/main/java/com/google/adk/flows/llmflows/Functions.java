@@ -30,9 +30,9 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
+import com.google.adk.tools.MissingToolResolutionStrategy;
 import com.google.adk.tools.ToolConfirmation;
 import com.google.adk.tools.ToolContext;
-import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -70,6 +70,84 @@ public final class Functions {
   /** Generates a unique ID for a function call. */
   public static String generateClientFunctionCallId() {
     return AF_FUNCTION_CALL_ID_PREFIX + UUID.randomUUID();
+  }
+
+  /** Container for separated valid and missing tool calls. */
+  private static class ToolCallSeparation {
+    private final ImmutableList<FunctionCall> validCalls;
+    private final Flowable<Event> missingToolsFlowable;
+
+    ToolCallSeparation(
+        ImmutableList<FunctionCall> validCalls, Flowable<Event> missingToolsFlowable) {
+      this.validCalls = validCalls;
+      this.missingToolsFlowable = missingToolsFlowable;
+    }
+
+    ImmutableList<FunctionCall> validCalls() {
+      return validCalls;
+    }
+
+    Flowable<Event> missingToolsFlowable() {
+      return missingToolsFlowable;
+    }
+  }
+
+  /**
+   * Separates function calls into valid calls and missing tool events.
+   *
+   * @param invocationContext The invocation context.
+   * @param functionCalls The list of function calls to separate.
+   * @param tools The available tools.
+   * @return A ToolCallSeparation containing valid calls and a flowable for missing tools.
+   */
+  private static ToolCallSeparation separateValidAndMissingToolCalls(
+      InvocationContext invocationContext,
+      ImmutableList<FunctionCall> functionCalls,
+      Map<String, BaseTool> tools) {
+    MissingToolResolutionStrategy missingToolResolutionStrategy =
+        invocationContext.runConfig().missingToolResolutionStrategy();
+    ImmutableList.Builder<Maybe<Event>> missingTools = ImmutableList.builder();
+    ImmutableList.Builder<FunctionCall> validCalls = ImmutableList.builder();
+
+    for (FunctionCall functionCall : functionCalls) {
+      if (!tools.containsKey(functionCall.name().get())) {
+        missingTools.add(
+            missingToolResolutionStrategy.onMissingTool(invocationContext, functionCall));
+      } else {
+        validCalls.add(functionCall);
+      }
+    }
+
+    Flowable<Event> missingToolsFlowable =
+        Flowable.fromIterable(missingTools.build()).concatMapMaybe(maybe -> maybe);
+
+    return new ToolCallSeparation(validCalls.build(), missingToolsFlowable);
+  }
+
+  /**
+   * Creates a combined flowable of function response events based on execution mode.
+   *
+   * @param invocationContext The invocation context.
+   * @param validCalls The list of valid function calls.
+   * @param missingToolsFlowable The flowable for missing tool events.
+   * @param functionCallMapper The mapper to convert function calls to events.
+   * @return A combined flowable of all events.
+   */
+  private static Flowable<Event> createCombinedFlowable(
+      InvocationContext invocationContext,
+      ImmutableList<FunctionCall> validCalls,
+      Flowable<Event> missingToolsFlowable,
+      Function<FunctionCall, Maybe<Event>> functionCallMapper) {
+    Flowable<Event> functionResponseEventsFlowable;
+    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
+      functionResponseEventsFlowable =
+          Flowable.fromIterable(validCalls).concatMapMaybe(functionCallMapper);
+    } else {
+      functionResponseEventsFlowable =
+          Flowable.fromIterable(validCalls).flatMapMaybe(functionCallMapper);
+    }
+
+    return Flowable.concat(missingToolsFlowable, functionResponseEventsFlowable);
   }
 
   /**
@@ -137,12 +215,8 @@ public final class Functions {
       Map<String, BaseTool> tools,
       Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
-
-    for (FunctionCall functionCall : functionCalls) {
-      if (!tools.containsKey(functionCall.name().get())) {
-        throw new VerifyException("Tool not found: " + functionCall.name().get());
-      }
-    }
+    ToolCallSeparation separation =
+        separateValidAndMissingToolCalls(invocationContext, functionCalls, tools);
 
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         functionCall -> {
@@ -199,15 +273,13 @@ public final class Functions {
                   });
         };
 
-    Flowable<Event> functionResponseEventsFlowable;
-    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
-      functionResponseEventsFlowable =
-          Flowable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
-    } else {
-      functionResponseEventsFlowable =
-          Flowable.fromIterable(functionCalls).flatMapMaybe(functionCallMapper);
-    }
-    return functionResponseEventsFlowable
+    Flowable<Event> allEventsFlowable =
+        createCombinedFlowable(
+            invocationContext,
+            separation.validCalls(),
+            separation.missingToolsFlowable(),
+            functionCallMapper);
+    return allEventsFlowable
         .toList()
         .flatMapMaybe(
             events -> {
@@ -242,12 +314,8 @@ public final class Functions {
   public static Maybe<Event> handleFunctionCallsLive(
       InvocationContext invocationContext, Event functionCallEvent, Map<String, BaseTool> tools) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
-
-    for (FunctionCall functionCall : functionCalls) {
-      if (!tools.containsKey(functionCall.name().get())) {
-        throw new VerifyException("Tool not found: " + functionCall.name().get());
-      }
-    }
+    ToolCallSeparation separation =
+        separateValidAndMissingToolCalls(invocationContext, functionCalls, tools);
 
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         functionCall -> {
@@ -310,18 +378,14 @@ public final class Functions {
                   });
         };
 
-    Flowable<Event> responseEventsFlowable;
+    Flowable<Event> allEventsFlowable =
+        createCombinedFlowable(
+            invocationContext,
+            separation.validCalls(),
+            separation.missingToolsFlowable(),
+            functionCallMapper);
 
-    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
-      responseEventsFlowable =
-          Flowable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
-
-    } else {
-      responseEventsFlowable =
-          Flowable.fromIterable(functionCalls).flatMapMaybe(functionCallMapper);
-    }
-
-    return responseEventsFlowable
+    return allEventsFlowable
         .toList()
         .flatMapMaybe(
             events -> {
