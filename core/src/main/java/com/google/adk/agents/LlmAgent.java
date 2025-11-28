@@ -604,7 +604,16 @@ public class LlmAgent extends BaseAgent {
 
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    return llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    return llmFlow
+        .run(invocationContext)
+        .concatMap(
+            event -> {
+              this.maybeSaveOutputToState(event);
+              if (invocationContext.shouldPauseInvocation(event)) {
+                return Flowable.just(event).concatWith(Flowable.empty());
+              }
+              return Flowable.just(event);
+            });
   }
 
   @Override
