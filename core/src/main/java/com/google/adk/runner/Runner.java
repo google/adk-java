@@ -431,19 +431,17 @@ public class Runner {
       RunConfig runConfig) {
     BaseAgent rootAgent = this.agent;
     InvocationContext invocationContext =
-        new InvocationContext(
-            this.sessionService,
-            this.artifactService,
-            this.memoryService,
-            this.pluginManager,
-            liveRequestQueue,
-            /* branch= */ Optional.empty(),
-            InvocationContext.newInvocationContextId(),
-            rootAgent,
-            session,
-            newMessage,
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(this.sessionService)
+            .artifactService(this.artifactService)
+            .memoryService(this.memoryService)
+            .pluginManager(this.pluginManager)
+            .liveRequestQueue(liveRequestQueue)
+            .agent(rootAgent)
+            .session(session)
+            .userContent(newMessage)
+            .runConfig(runConfig)
+            .build();
     invocationContext.agent(this.findAgentToRun(session, rootAgent));
     return invocationContext;
   }
@@ -461,19 +459,18 @@ public class Runner {
       String invocationId) {
     BaseAgent rootAgent = this.agent;
     InvocationContext invocationContext =
-        new InvocationContext(
-            this.sessionService,
-            this.artifactService,
-            this.memoryService,
-            this.pluginManager,
-            liveRequestQueue,
-            /* branch= */ Optional.empty(),
-            invocationId,
-            rootAgent,
-            session,
-            newMessage,
-            runConfig,
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(this.sessionService)
+            .artifactService(this.artifactService)
+            .memoryService(this.memoryService)
+            .pluginManager(this.pluginManager)
+            .liveRequestQueue(liveRequestQueue)
+            .invocationId(invocationId)
+            .agent(rootAgent)
+            .session(session)
+            .userContent(newMessage)
+            .runConfig(runConfig)
+            .build();
     invocationContext.agent(this.findAgentToRun(session, rootAgent));
     return invocationContext;
   }
