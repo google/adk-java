@@ -19,10 +19,11 @@ package com.google.adk.flows.llmflows;
 import static com.google.adk.flows.llmflows.Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
+import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
@@ -31,6 +32,7 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolConfirmation;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -38,7 +40,7 @@ import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Collection;
-import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -49,57 +51,121 @@ import org.slf4j.LoggerFactory;
 public class RequestConfirmationLlmRequestProcessor implements RequestProcessor {
   private static final Logger logger =
       LoggerFactory.getLogger(RequestConfirmationLlmRequestProcessor.class);
-  private final ObjectMapper objectMapper;
-
-  public RequestConfirmationLlmRequestProcessor() {
-    objectMapper = new ObjectMapper().registerModule(new Jdk8Module());
-  }
+  private static final ObjectMapper OBJECT_MAPPER = JsonBaseModel.getMapper();
 
   @Override
   public Single<RequestProcessor.RequestProcessingResult> processRequest(
       InvocationContext invocationContext, LlmRequest llmRequest) {
-    List<Event> events = invocationContext.session().events();
+    ImmutableList<Event> events = ImmutableList.copyOf(invocationContext.session().events());
     if (events.isEmpty()) {
       logger.info(
           "No events are present in the session. Skipping request confirmation processing.");
       return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
     }
 
-    ImmutableMap<String, ToolConfirmation> requestConfirmationFunctionResponses =
-        filterRequestConfirmationFunctionResponses(events);
+    ImmutableMap<String, ToolConfirmation> responses = ImmutableMap.of();
+    int confirmationEventIndex = -1;
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event event = events.get(i);
+      if (!Objects.equals(event.author(), "user")) {
+        continue;
+      }
+      if (event.functionResponses().isEmpty()) {
+        continue;
+      }
+      responses =
+          event.functionResponses().stream()
+              .filter(functionResponse -> functionResponse.id().isPresent())
+              .filter(
+                  functionResponse ->
+                      Objects.equals(
+                          functionResponse.name().orElse(null),
+                          REQUEST_CONFIRMATION_FUNCTION_CALL_NAME))
+              .map(this::maybeCreateToolConfirmationEntry)
+              .flatMap(Optional::stream)
+              .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
+      confirmationEventIndex = i;
+      break;
+    }
+
+    // Make it final to enable access from lambda expressions.
+    final ImmutableMap<String, ToolConfirmation> requestConfirmationFunctionResponses = responses;
+
     if (requestConfirmationFunctionResponses.isEmpty()) {
       logger.info("No request confirmation function responses found.");
       return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
     }
 
-    for (ImmutableList<FunctionCall> functionCalls :
-        events.stream()
-            .map(Event::functionCalls)
-            .filter(fc -> !fc.isEmpty())
-            .collect(toImmutableList())) {
+    for (int i = events.size() - 2; i >= 0; i--) {
+      Event event = events.get(i);
+      if (event.functionCalls().isEmpty()) {
+        continue;
+      }
 
-      ImmutableMap<String, FunctionCall> toolsToResumeWithArgs =
-          filterToolsToResumeWithArgs(functionCalls, requestConfirmationFunctionResponses);
-      ImmutableMap<String, ToolConfirmation> toolsToResumeWithConfirmation =
-          toolsToResumeWithArgs.keySet().stream()
-              .filter(
-                  id ->
-                      events.stream()
-                          .flatMap(e -> e.functionResponses().stream())
-                          .anyMatch(fr -> Objects.equals(fr.id().orElse(null), id)))
-              .collect(toImmutableMap(k -> k, requestConfirmationFunctionResponses::get));
+      Map<String, ToolConfirmation> toolsToResumeWithConfirmation = new HashMap<>();
+      Map<String, FunctionCall> toolsToResumeWithArgs = new HashMap<>();
+
+      event.functionCalls().stream()
+          .filter(
+              fc ->
+                  fc.id().isPresent()
+                      && requestConfirmationFunctionResponses.containsKey(fc.id().get()))
+          .forEach(
+              fc ->
+                  getOriginalFunctionCall(fc)
+                      .ifPresent(
+                          ofc -> {
+                            toolsToResumeWithConfirmation.put(
+                                ofc.id().get(),
+                                requestConfirmationFunctionResponses.get(fc.id().get()));
+                            toolsToResumeWithArgs.put(ofc.id().get(), ofc);
+                          }));
+
       if (toolsToResumeWithConfirmation.isEmpty()) {
-        logger.info("No tools to resume with confirmation.");
+        continue;
+      }
+
+      // Remove the tools that have already been confirmed.
+      ImmutableSet<String> alreadyConfirmedIds =
+          events.subList(confirmationEventIndex + 1, events.size()).stream()
+              .flatMap(e -> e.functionResponses().stream())
+              .map(FunctionResponse::id)
+              .flatMap(Optional::stream)
+              .collect(toImmutableSet());
+      toolsToResumeWithConfirmation.keySet().removeAll(alreadyConfirmedIds);
+      toolsToResumeWithArgs.keySet().removeAll(alreadyConfirmedIds);
+
+      if (toolsToResumeWithConfirmation.isEmpty()) {
         continue;
       }
 
       return assembleEvent(
-              invocationContext, toolsToResumeWithArgs.values(), toolsToResumeWithConfirmation)
-          .map(event -> RequestProcessingResult.create(llmRequest, ImmutableList.of(event)))
+              invocationContext,
+              toolsToResumeWithArgs.values(),
+              ImmutableMap.copyOf(toolsToResumeWithConfirmation))
+          .map(e -> RequestProcessingResult.create(llmRequest, ImmutableList.of(e)))
           .toSingle();
     }
 
     return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
+  }
+
+  private Optional<FunctionCall> getOriginalFunctionCall(FunctionCall functionCall) {
+    if (!functionCall.args().orElse(ImmutableMap.of()).containsKey("originalFunctionCall")) {
+      return Optional.empty();
+    }
+    try {
+      FunctionCall originalFunctionCall =
+          OBJECT_MAPPER.convertValue(
+              functionCall.args().get().get("originalFunctionCall"), FunctionCall.class);
+      if (originalFunctionCall.id().isEmpty()) {
+        return Optional.empty();
+      }
+      return Optional.of(originalFunctionCall);
+    } catch (IllegalArgumentException e) {
+      logger.warn("Failed to convert originalFunctionCall argument.", e);
+      return Optional.empty();
+    }
   }
 
   private Maybe<Event> assembleEvent(
@@ -128,21 +194,6 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
         invocationContext, functionCallEvent, toolsBuilder.buildOrThrow(), toolConfirmations);
   }
 
-  private ImmutableMap<String, ToolConfirmation> filterRequestConfirmationFunctionResponses(
-      List<Event> events) {
-    return events.stream()
-        .filter(event -> Objects.equals(event.author(), "user"))
-        .flatMap(event -> event.functionResponses().stream())
-        .filter(functionResponse -> functionResponse.id().isPresent())
-        .filter(
-            functionResponse ->
-                Objects.equals(
-                    functionResponse.name().orElse(null), REQUEST_CONFIRMATION_FUNCTION_CALL_NAME))
-        .map(this::maybeCreateToolConfirmationEntry)
-        .flatMap(Optional::stream)
-        .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
-  }
-
   private Optional<Map.Entry<String, ToolConfirmation>> maybeCreateToolConfirmationEntry(
       FunctionResponse functionResponse) {
     Map<String, Object> responseMap = functionResponse.response().orElse(ImmutableMap.of());
@@ -150,36 +201,19 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       return Optional.of(
           Map.entry(
               functionResponse.id().get(),
-              objectMapper.convertValue(responseMap, ToolConfirmation.class)));
+              OBJECT_MAPPER.convertValue(responseMap, ToolConfirmation.class)));
     }
 
     try {
       return Optional.of(
           Map.entry(
               functionResponse.id().get(),
-              objectMapper.readValue(
+              OBJECT_MAPPER.readValue(
                   (String) responseMap.get("response"), ToolConfirmation.class)));
     } catch (JsonProcessingException e) {
       logger.error("Failed to parse tool confirmation response", e);
     }
 
     return Optional.empty();
-  }
-
-  private ImmutableMap<String, FunctionCall> filterToolsToResumeWithArgs(
-      ImmutableList<FunctionCall> functionCalls,
-      Map<String, ToolConfirmation> requestConfirmationFunctionResponses) {
-    return functionCalls.stream()
-        .filter(fc -> fc.id().isPresent())
-        .filter(fc -> requestConfirmationFunctionResponses.containsKey(fc.id().get()))
-        .filter(
-            fc -> Objects.equals(fc.name().orElse(null), REQUEST_CONFIRMATION_FUNCTION_CALL_NAME))
-        .filter(fc -> fc.args().orElse(ImmutableMap.of()).containsKey("originalFunctionCall"))
-        .collect(
-            toImmutableMap(
-                fc -> fc.id().get(),
-                fc ->
-                    objectMapper.convertValue(
-                        fc.args().get().get("originalFunctionCall"), FunctionCall.class)));
   }
 }
