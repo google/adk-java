@@ -416,6 +416,17 @@ public final class Contents implements RequestProcessor {
           }
         }
       } else {
+        // Exclude events that contain function response parts;
+        // Each valid function response event will be added within the function call handling logic.
+        // Bad case: FC1,FR1,FR2,FC2 -> FC1,FR1,FR2,FC2,FR2; FR2 is added duplicate
+        boolean hasFunctionResponse =
+                partsOptional
+                        .map(parts -> parts.stream().anyMatch(p -> p.functionResponse().isPresent()))
+                        .orElse(false);
+
+        if (hasFunctionResponse) {
+          continue;
+        }
         resultEvents.add(event);
       }
     }
