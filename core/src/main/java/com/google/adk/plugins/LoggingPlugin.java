@@ -151,14 +151,15 @@ public class LoggingPlugin extends BasePlugin {
 
   @Override
   public Maybe<LlmResponse> beforeModelCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
     return Maybe.fromAction(
         () -> {
+          LlmRequest request = llmRequest.build();
           log("🧠 LLM REQUEST");
-          log("   Model: " + llmRequest.model().orElse("default"));
+          log("   Model: " + request.model().orElse("default"));
           log("   Agent: " + callbackContext.agentName());
 
-          llmRequest
+          request
               .getFirstSystemInstruction()
               .ifPresent(
                   sysInstruction -> {
@@ -170,8 +171,8 @@ public class LoggingPlugin extends BasePlugin {
                     log("   System Instruction: '" + truncatedInstruction + "'");
                   });
 
-          if (!llmRequest.tools().isEmpty()) {
-            String toolNames = String.join(", ", llmRequest.tools().keySet());
+          if (!request.tools().isEmpty()) {
+            String toolNames = String.join(", ", request.tools().keySet());
             log("   Available Tools: [" + toolNames + "]");
           }
         });
@@ -211,7 +212,7 @@ public class LoggingPlugin extends BasePlugin {
 
   @Override
   public Maybe<LlmResponse> onModelErrorCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest, Throwable error) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest, Throwable error) {
     return Maybe.fromAction(
         () -> {
           log("🧠 LLM ERROR");
@@ -223,13 +224,14 @@ public class LoggingPlugin extends BasePlugin {
 
   @Override
   public Maybe<Map<String, Object>> beforeToolCallback(
-      BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext) {
+      BaseTool tool, Map<String, Object> toolArgs, ToolContext.Builder toolContext) {
     return Maybe.fromAction(
         () -> {
+          ToolContext tc = toolContext.build();
           log("🔧 TOOL STARTING");
           log("   Tool Name: " + tool.name());
-          log("   Agent: " + toolContext.agentName());
-          toolContext.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
+          log("   Agent: " + tc.agentName());
+          tc.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
           log("   Arguments: " + formatArgs(toolArgs));
         });
   }
@@ -238,27 +240,32 @@ public class LoggingPlugin extends BasePlugin {
   public Maybe<Map<String, Object>> afterToolCallback(
       BaseTool tool,
       Map<String, Object> toolArgs,
-      ToolContext toolContext,
+      ToolContext.Builder toolContext,
       Map<String, Object> result) {
     return Maybe.fromAction(
         () -> {
+          ToolContext tc = toolContext.build();
           log("🔧 TOOL COMPLETED");
           log("   Tool Name: " + tool.name());
-          log("   Agent: " + toolContext.agentName());
-          toolContext.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
+          log("   Agent: " + tc.agentName());
+          tc.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
           log("   Result: " + formatArgs(result));
         });
   }
 
   @Override
   public Maybe<Map<String, Object>> onToolErrorCallback(
-      BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext, Throwable error) {
+      BaseTool tool,
+      Map<String, Object> toolArgs,
+      ToolContext.Builder toolContext,
+      Throwable error) {
     return Maybe.fromAction(
         () -> {
+          ToolContext tc = toolContext.build();
           log("🔧 TOOL ERROR");
           log("   Tool Name: " + tool.name());
-          log("   Agent: " + toolContext.agentName());
-          toolContext.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
+          log("   Agent: " + tc.agentName());
+          tc.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
           log("   Arguments: " + formatArgs(toolArgs));
           log("   Error: " + error.getMessage());
           logger.error("[{}] Tool Error", name, error);

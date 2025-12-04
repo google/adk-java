@@ -231,7 +231,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                           .runOnModelErrorCallback(
                                               new CallbackContext(
                                                   context, eventForCallbackUsage.actions()),
-                                              llmRequest,
+                                              llmRequestBuilder,
                                               exception)
                                           .switchIfEmpty(Single.error(exception))
                                           .toFlowable())
@@ -239,7 +239,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                   llmResp -> {
                                     try (Scope innerScope = llmCallSpan.makeCurrent()) {
                                       Telemetry.traceCallLlm(
-                                          context, eventForCallbackUsage.id(), llmRequest, llmResp);
+                                          context,
+                                          eventForCallbackUsage.id(),
+                                          llmRequestBuilder.build(),
+                                          llmResp);
                                     }
                                   })
                               .doOnError(
@@ -269,7 +272,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
     CallbackContext callbackContext = new CallbackContext(context, callbackEvent.actions());
 
     Maybe<LlmResponse> pluginResult =
-        context.pluginManager().runBeforeModelCallback(callbackContext, llmRequestBuilder.build());
+        context.pluginManager().runBeforeModelCallback(callbackContext, llmRequestBuilder);
 
     LlmAgent agent = (LlmAgent) context.agent();
 

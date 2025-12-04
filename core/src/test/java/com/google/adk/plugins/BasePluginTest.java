@@ -43,9 +43,9 @@ public final class BasePluginTest {
   private final CallbackContext callbackContext = Mockito.mock(CallbackContext.class);
   private final Content content = Content.builder().build();
   private final Event event = Mockito.mock(Event.class);
-  private final LlmRequest llmRequest = LlmRequest.builder().build();
+  private final LlmRequest.Builder llmRequestBuilder = LlmRequest.builder();
   private final LlmResponse llmResponse = LlmResponse.builder().build();
-  private final ToolContext toolContext = Mockito.mock(ToolContext.class);
+  private final ToolContext.Builder toolContextBuilder = ToolContext.builder(invocationContext);
 
   @Test
   public void onUserMessageCallback_returnsEmptyMaybe() {
@@ -79,7 +79,7 @@ public final class BasePluginTest {
 
   @Test
   public void beforeModelCallback_returnsEmptyMaybe() {
-    plugin.beforeModelCallback(callbackContext, llmRequest).test().assertResult();
+    plugin.beforeModelCallback(callbackContext, llmRequestBuilder).test().assertResult();
   }
 
   @Test
@@ -90,20 +90,20 @@ public final class BasePluginTest {
   @Test
   public void onModelErrorCallback_returnsEmptyMaybe() {
     plugin
-        .onModelErrorCallback(callbackContext, llmRequest, new RuntimeException())
+        .onModelErrorCallback(callbackContext, llmRequestBuilder, new RuntimeException())
         .test()
         .assertResult();
   }
 
   @Test
   public void beforeToolCallback_returnsEmptyMaybe() {
-    plugin.beforeToolCallback(null, new HashMap<>(), toolContext).test().assertResult();
+    plugin.beforeToolCallback(null, new HashMap<>(), toolContextBuilder).test().assertResult();
   }
 
   @Test
   public void afterToolCallback_returnsEmptyMaybe() {
     plugin
-        .afterToolCallback(null, new HashMap<>(), toolContext, new HashMap<>())
+        .afterToolCallback(null, new HashMap<>(), toolContextBuilder, new HashMap<>())
         .test()
         .assertResult();
   }
@@ -111,7 +111,7 @@ public final class BasePluginTest {
   @Test
   public void onToolErrorCallback_returnsEmptyMaybe() {
     plugin
-        .onToolErrorCallback(null, new HashMap<>(), toolContext, new RuntimeException())
+        .onToolErrorCallback(null, new HashMap<>(), toolContextBuilder, new RuntimeException())
         .test()
         .assertResult();
   }

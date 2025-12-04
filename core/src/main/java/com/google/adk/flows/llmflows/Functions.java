@@ -147,17 +147,17 @@ public final class Functions {
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         functionCall -> {
           BaseTool tool = tools.get(functionCall.name().get());
-          ToolContext toolContext =
+          ToolContext.Builder toolContextBuilder =
               ToolContext.builder(invocationContext)
                   .functionCallId(functionCall.id().orElse(""))
-                  .toolConfirmation(toolConfirmations.get(functionCall.id().orElse(null)))
-                  .build();
+                  .toolConfirmation(toolConfirmations.get(functionCall.id().orElse(null)));
 
           Map<String, Object> functionArgs = functionCall.args().orElse(ImmutableMap.of());
 
           Maybe<Map<String, Object>> maybeFunctionResult =
-              maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
-                  .switchIfEmpty(Maybe.defer(() -> callTool(tool, functionArgs, toolContext)));
+              maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContextBuilder)
+                  .switchIfEmpty(
+                      Maybe.defer(() -> callTool(tool, functionArgs, toolContextBuilder.build())));
 
           return maybeFunctionResult
               .map(Optional::of)
@@ -166,7 +166,7 @@ public final class Functions {
                   t ->
                       invocationContext
                           .pluginManager()
-                          .runOnToolErrorCallback(tool, functionArgs, toolContext, t)
+                          .runOnToolErrorCallback(tool, functionArgs, toolContextBuilder, t)
                           .map(Optional::of)
                           .switchIfEmpty(Single.error(t)))
               .flatMapMaybe(
@@ -178,7 +178,7 @@ public final class Functions {
                             invocationContext,
                             tool,
                             functionArgs,
-                            toolContext,
+                            toolContextBuilder,
                             initialFunctionResult);
 
                     return afterToolResultMaybe
@@ -193,7 +193,10 @@ public final class Functions {
                               }
                               Event functionResponseEvent =
                                   buildResponseEvent(
-                                      tool, finalFunctionResult, toolContext, invocationContext);
+                                      tool,
+                                      finalFunctionResult,
+                                      toolContextBuilder.build(),
+                                      invocationContext);
                               return Maybe.just(functionResponseEvent);
                             });
                   });
@@ -252,21 +255,19 @@ public final class Functions {
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         functionCall -> {
           BaseTool tool = tools.get(functionCall.name().get());
-          ToolContext toolContext =
-              ToolContext.builder(invocationContext)
-                  .functionCallId(functionCall.id().orElse(""))
-                  .build();
+          ToolContext.Builder toolContextBuilder =
+              ToolContext.builder(invocationContext).functionCallId(functionCall.id().orElse(""));
           Map<String, Object> functionArgs = functionCall.args().orElse(new HashMap<>());
 
           Maybe<Map<String, Object>> maybeFunctionResult =
-              maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
+              maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContextBuilder)
                   .switchIfEmpty(
                       Maybe.defer(
                           () ->
                               processFunctionLive(
                                   invocationContext,
                                   tool,
-                                  toolContext,
+                                  toolContextBuilder.build(),
                                   functionCall,
                                   functionArgs)));
 
@@ -277,7 +278,7 @@ public final class Functions {
                   t ->
                       invocationContext
                           .pluginManager()
-                          .runOnToolErrorCallback(tool, functionArgs, toolContext, t)
+                          .runOnToolErrorCallback(tool, functionArgs, toolContextBuilder, t)
                           .map(Optional::ofNullable)
                           .switchIfEmpty(Single.error(t)))
               .flatMapMaybe(
@@ -289,7 +290,7 @@ public final class Functions {
                             invocationContext,
                             tool,
                             functionArgs,
-                            toolContext,
+                            toolContextBuilder,
                             initialFunctionResult);
 
                     return afterToolResultMaybe
@@ -304,7 +305,10 @@ public final class Functions {
                               }
                               Event functionResponseEvent =
                                   buildResponseEvent(
-                                      tool, finalFunctionResult, toolContext, invocationContext);
+                                      tool,
+                                      finalFunctionResult,
+                                      toolContextBuilder.build(),
+                                      invocationContext);
                               return Maybe.just(functionResponseEvent);
                             });
                   });
@@ -466,7 +470,7 @@ public final class Functions {
       InvocationContext invocationContext,
       BaseTool tool,
       Map<String, Object> functionArgs,
-      ToolContext toolContext) {
+      ToolContext.Builder toolContext) {
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
 
@@ -497,7 +501,7 @@ public final class Functions {
       InvocationContext invocationContext,
       BaseTool tool,
       Map<String, Object> functionArgs,
-      ToolContext toolContext,
+      ToolContext.Builder toolContext,
       Map<String, Object> functionResult) {
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();

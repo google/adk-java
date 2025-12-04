@@ -37,6 +37,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Flowable;
 import java.util.Optional;
 import org.junit.Before;
 import org.junit.Rule;
@@ -57,7 +58,6 @@ public class LoggingPluginTest {
   @Mock private BaseAgent mockAgent;
   @Mock private CallbackContext mockCallbackContext;
   @Mock private BaseTool mockTool;
-  @Mock private ToolContext mockToolContext;
 
   private final Content content = Content.builder().build();
   private final Session session = Session.builder("session_id").build();
@@ -69,8 +69,30 @@ public class LoggingPluginTest {
           .actions(EventActions.builder().build())
           .longRunningToolIds(Optional.empty())
           .build();
-  private final LlmRequest llmRequest =
-      LlmRequest.builder().model("default").contents(ImmutableList.of()).build();
+  private final ToolContext.Builder toolContextBuilder =
+      ToolContext.builder(
+          InvocationContext.builder()
+              .agent(
+                  new BaseAgent(
+                      "agent_name",
+                      "description",
+                      ImmutableList.of(),
+                      ImmutableList.of(),
+                      ImmutableList.of()) {
+                    @Override
+                    protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
+                      return Flowable.empty();
+                    }
+
+                    @Override
+                    protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
+                      return Flowable.empty();
+                    }
+                  })
+              .session(session)
+              .build());
+  private final LlmRequest.Builder llmRequestBuilder =
+      LlmRequest.builder().model("default").contents(ImmutableList.of());
   private final LlmResponse llmResponse = LlmResponse.builder().build();
   private final ImmutableMap<String, Object> toolArgs = ImmutableMap.of();
   private final ImmutableMap<String, Object> toolResult = ImmutableMap.of();
@@ -90,8 +112,6 @@ public class LoggingPluginTest {
     when(mockCallbackContext.branch()).thenReturn(Optional.empty());
 
     when(mockTool.name()).thenReturn("tool_name");
-    when(mockToolContext.agentName()).thenReturn("agent_name");
-    when(mockToolContext.functionCallId()).thenReturn(Optional.empty());
   }
 
   @Test
@@ -175,7 +195,10 @@ public class LoggingPluginTest {
 
   @Test
   public void beforeModelCallback_runsWithoutError() {
-    loggingPlugin.beforeModelCallback(mockCallbackContext, llmRequest).test().assertComplete();
+    loggingPlugin
+        .beforeModelCallback(mockCallbackContext, llmRequestBuilder)
+        .test()
+        .assertComplete();
   }
 
   @Test
@@ -184,8 +207,7 @@ public class LoggingPluginTest {
         .beforeModelCallback(
             mockCallbackContext,
             LlmRequest.builder()
-                .appendInstructions(ImmutableList.of("all work and no play".repeat(1000)))
-                .build())
+                .appendInstructions(ImmutableList.of("all work and no play".repeat(1000))))
         .test()
         .assertComplete();
   }
@@ -194,8 +216,7 @@ public class LoggingPluginTest {
   public void beforeModelCallback_tools() {
     loggingPlugin
         .beforeModelCallback(
-            mockCallbackContext,
-            LlmRequest.builder().appendTools(ImmutableList.of(mockTool)).build())
+            mockCallbackContext, LlmRequest.builder().appendTools(ImmutableList.of(mockTool)))
         .test()
         .assertComplete();
   }
@@ -231,20 +252,23 @@ public class LoggingPluginTest {
   @Test
   public void onModelErrorCallback_runsWithoutError() {
     loggingPlugin
-        .onModelErrorCallback(mockCallbackContext, llmRequest, throwable)
+        .onModelErrorCallback(mockCallbackContext, llmRequestBuilder, throwable)
         .test()
         .assertComplete();
   }
 
   @Test
   public void beforeToolCallback_runsWithoutError() {
-    loggingPlugin.beforeToolCallback(mockTool, toolArgs, mockToolContext).test().assertComplete();
+    loggingPlugin
+        .beforeToolCallback(mockTool, toolArgs, toolContextBuilder)
+        .test()
+        .assertComplete();
   }
 
   @Test
   public void afterToolCallback_runsWithoutError() {
     loggingPlugin
-        .afterToolCallback(mockTool, toolArgs, mockToolContext, toolResult)
+        .afterToolCallback(mockTool, toolArgs, toolContextBuilder, toolResult)
         .test()
         .assertComplete();
   }
@@ -252,7 +276,7 @@ public class LoggingPluginTest {
   @Test
   public void onToolErrorCallback_runsWithoutError() {
     loggingPlugin
-        .onToolErrorCallback(mockTool, toolArgs, mockToolContext, throwable)
+        .onToolErrorCallback(mockTool, toolArgs, toolContextBuilder, throwable)
         .test()
         .assertComplete();
   }

@@ -987,7 +987,7 @@ public final class CallbacksTest {
 
     Callbacks.BeforeToolCallbackSync bc2 =
         (invCtx, toolName, args, currentToolCtx) -> {
-          currentToolCtx.state().putAll(stateAddedByBc2);
+          currentToolCtx.build().state().putAll(stateAddedByBc2);
           return Optional.empty();
         };
 
