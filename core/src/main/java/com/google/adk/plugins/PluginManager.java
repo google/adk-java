@@ -127,7 +127,7 @@ public class PluginManager {
   }
 
   public Maybe<LlmResponse> runBeforeModelCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
     return runMaybeCallbacks(
         plugin -> plugin.beforeModelCallback(callbackContext, llmRequest), "beforeModelCallback");
   }
@@ -139,14 +139,14 @@ public class PluginManager {
   }
 
   public Maybe<LlmResponse> runOnModelErrorCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest, Throwable error) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest, Throwable error) {
     return runMaybeCallbacks(
         plugin -> plugin.onModelErrorCallback(callbackContext, llmRequest, error),
         "onModelErrorCallback");
   }
 
   public Maybe<Map<String, Object>> runBeforeToolCallback(
-      BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext) {
+      BaseTool tool, Map<String, Object> toolArgs, ToolContext.Builder toolContext) {
     return runMaybeCallbacks(
         plugin -> plugin.beforeToolCallback(tool, toolArgs, toolContext), "beforeToolCallback");
   }
@@ -154,7 +154,7 @@ public class PluginManager {
   public Maybe<Map<String, Object>> runAfterToolCallback(
       BaseTool tool,
       Map<String, Object> toolArgs,
-      ToolContext toolContext,
+      ToolContext.Builder toolContext,
       Map<String, Object> result) {
     return runMaybeCallbacks(
         plugin -> plugin.afterToolCallback(tool, toolArgs, toolContext, result),
@@ -162,7 +162,10 @@ public class PluginManager {
   }
 
   public Maybe<Map<String, Object>> runOnToolErrorCallback(
-      BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext, Throwable error) {
+      BaseTool tool,
+      Map<String, Object> toolArgs,
+      ToolContext.Builder toolContext,
+      Throwable error) {
     return runMaybeCallbacks(
         plugin -> plugin.onToolErrorCallback(tool, toolArgs, toolContext, error),
         "onToolErrorCallback");
