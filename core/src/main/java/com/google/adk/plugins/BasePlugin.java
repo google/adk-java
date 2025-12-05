@@ -122,11 +122,12 @@ public abstract class BasePlugin {
    * Callback executed before a request is sent to the model.
    *
    * @param callbackContext The context for the current agent call.
-   * @param llmRequest The prepared request object to be sent to the model.
+   * @param llmRequest The mutable request builder, allowing modification of the request before it
+   *     is sent to the model.
    * @return An optional LlmResponse to trigger an early exit. Returning Empty to proceed normally.
    */
   public Maybe<LlmResponse> beforeModelCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
     return Maybe.empty();
   }
 
@@ -147,13 +148,13 @@ public abstract class BasePlugin {
    * Callback executed when a model call encounters an error.
    *
    * @param callbackContext The context for the current agent call.
-   * @param llmRequest The request that was sent to the model.
+   * @param llmRequest The mutable request builder for the request that failed.
    * @param error The exception that was raised.
    * @return An optional LlmResponse to use instead of propagating the error. Returning Empty to
    *     allow the original error to be raised.
    */
   public Maybe<LlmResponse> onModelErrorCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest, Throwable error) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest, Throwable error) {
     return Maybe.empty();
   }
 
