@@ -16,6 +16,7 @@
 
 package com.google.adk.agents;
 
+import com.google.adk.tools.MissingToolResolutionStrategy;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -70,6 +71,8 @@ public abstract class RunConfig {
 
   public abstract int maxLlmCalls();
 
+  public abstract MissingToolResolutionStrategy missingToolResolutionStrategy();
+
   public abstract Builder toBuilder();
 
   public static Builder builder() {
@@ -78,6 +81,7 @@ public abstract class RunConfig {
         .setResponseModalities(ImmutableList.of())
         .setStreamingMode(StreamingMode.NONE)
         .setToolExecutionMode(ToolExecutionMode.NONE)
+        .setMissingToolResolutionStrategy(MissingToolResolutionStrategy.THROW_EXCEPTION)
         .setMaxLlmCalls(500);
   }
 
@@ -90,7 +94,8 @@ public abstract class RunConfig {
         .setResponseModalities(runConfig.responseModalities())
         .setSpeechConfig(runConfig.speechConfig())
         .setOutputAudioTranscription(runConfig.outputAudioTranscription())
-        .setInputAudioTranscription(runConfig.inputAudioTranscription());
+        .setInputAudioTranscription(runConfig.inputAudioTranscription())
+        .setMissingToolResolutionStrategy(runConfig.missingToolResolutionStrategy());
   }
 
   /** Builder for {@link RunConfig}. */
@@ -122,6 +127,10 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder setMaxLlmCalls(int maxLlmCalls);
+
+    @CanIgnoreReturnValue
+    public abstract Builder setMissingToolResolutionStrategy(
+        MissingToolResolutionStrategy missingToolResolutionStrategy);
 
     abstract RunConfig autoBuild();
 
