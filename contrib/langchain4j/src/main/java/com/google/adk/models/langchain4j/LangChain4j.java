@@ -29,6 +29,7 @@ import com.google.genai.types.FunctionCallingConfigMode;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.ToolConfig;
@@ -51,6 +52,7 @@ import dev.langchain4j.data.message.VideoContent;
 import dev.langchain4j.data.pdf.PdfFile;
 import dev.langchain4j.data.video.Video;
 import dev.langchain4j.exception.UnsupportedFeatureException;
+import dev.langchain4j.model.TokenCountEstimator;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
@@ -64,6 +66,7 @@ import dev.langchain4j.model.chat.request.json.JsonSchemaElement;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.output.TokenUsage;
 import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
@@ -83,24 +86,109 @@ public class LangChain4j extends BaseLlm {
   private final ChatModel chatModel;
   private final StreamingChatModel streamingChatModel;
   private final ObjectMapper objectMapper;
+  private final TokenCountEstimator tokenCountEstimator;
+
+  public static Builder builder() {
+    return new Builder();
+  }
+
+  public static class Builder {
+    private ChatModel chatModel;
+    private StreamingChatModel streamingChatModel;
+    private String modelName;
+    private TokenCountEstimator tokenCountEstimator;
+
+    private Builder() {}
+
+    public Builder chatModel(ChatModel chatModel) {
+      this.chatModel = chatModel;
+      return this;
+    }
+
+    public Builder streamingChatModel(StreamingChatModel streamingChatModel) {
+      this.streamingChatModel = streamingChatModel;
+      return this;
+    }
+
+    public Builder modelName(String modelName) {
+      this.modelName = modelName;
+      return this;
+    }
+
+    public Builder tokenCountEstimator(TokenCountEstimator tokenCountEstimator) {
+      this.tokenCountEstimator = tokenCountEstimator;
+      return this;
+    }
+
+    public LangChain4j build() {
+      if (chatModel == null && streamingChatModel == null) {
+        throw new IllegalStateException(
+            "At least one of chatModel or streamingChatModel must be provided");
+      }
+
+      String effectiveModelName = modelName;
+      if (effectiveModelName == null) {
+        if (chatModel != null) {
+          effectiveModelName = chatModel.defaultRequestParameters().modelName();
+        } else {
+          effectiveModelName = streamingChatModel.defaultRequestParameters().modelName();
+        }
+      }
+
+      if (effectiveModelName == null) {
+        throw new IllegalStateException("Model name cannot be null");
+      }
+
+      return new LangChain4j(
+          chatModel, streamingChatModel, effectiveModelName, tokenCountEstimator);
+    }
+  }
+
+  private LangChain4j(
+      ChatModel chatModel,
+      StreamingChatModel streamingChatModel,
+      String modelName,
+      TokenCountEstimator tokenCountEstimator) {
+    super(Objects.requireNonNull(modelName, "model name cannot be null"));
+    this.chatModel = chatModel;
+    this.streamingChatModel = streamingChatModel;
+    this.objectMapper = new ObjectMapper();
+    this.tokenCountEstimator = tokenCountEstimator;
+  }
 
   public LangChain4j(ChatModel chatModel) {
+    this(chatModel, (TokenCountEstimator) null);
+  }
+
+  public LangChain4j(ChatModel chatModel, TokenCountEstimator tokenCountEstimator) {
     super(
         Objects.requireNonNull(
             chatModel.defaultRequestParameters().modelName(), "chat model name cannot be null"));
     this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
     this.streamingChatModel = null;
     this.objectMapper = new ObjectMapper();
+    this.tokenCountEstimator = tokenCountEstimator;
   }
 
   public LangChain4j(ChatModel chatModel, String modelName) {
+    this(chatModel, modelName, (TokenCountEstimator) null);
+  }
+
+  public LangChain4j(
+      ChatModel chatModel, String modelName, TokenCountEstimator tokenCountEstimator) {
     super(Objects.requireNonNull(modelName, "chat model name cannot be null"));
     this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
     this.streamingChatModel = null;
     this.objectMapper = new ObjectMapper();
+    this.tokenCountEstimator = tokenCountEstimator;
   }
 
   public LangChain4j(StreamingChatModel streamingChatModel) {
+    this(streamingChatModel, (TokenCountEstimator) null);
+  }
+
+  public LangChain4j(
+      StreamingChatModel streamingChatModel, TokenCountEstimator tokenCountEstimator) {
     super(
         Objects.requireNonNull(
             streamingChatModel.defaultRequestParameters().modelName(),
@@ -109,22 +197,23 @@ public class LangChain4j extends BaseLlm {
     this.streamingChatModel =
         Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
     this.objectMapper = new ObjectMapper();
+    this.tokenCountEstimator = tokenCountEstimator;
   }
 
   public LangChain4j(StreamingChatModel streamingChatModel, String modelName) {
+    this(streamingChatModel, modelName, (TokenCountEstimator) null);
+  }
+
+  public LangChain4j(
+      StreamingChatModel streamingChatModel,
+      String modelName,
+      TokenCountEstimator tokenCountEstimator) {
     super(Objects.requireNonNull(modelName, "streaming chat model name cannot be null"));
     this.chatModel = null;
     this.streamingChatModel =
         Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
     this.objectMapper = new ObjectMapper();
-  }
-
-  public LangChain4j(ChatModel chatModel, StreamingChatModel streamingChatModel, String modelName) {
-    super(Objects.requireNonNull(modelName, "model name cannot be null"));
-    this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
-    this.streamingChatModel =
-        Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
-    this.objectMapper = new ObjectMapper();
+    this.tokenCountEstimator = tokenCountEstimator;
   }
 
   @Override
@@ -185,7 +274,7 @@ public class LangChain4j extends BaseLlm {
 
       ChatRequest chatRequest = toChatRequest(llmRequest);
       ChatResponse chatResponse = chatModel.chat(chatRequest);
-      LlmResponse llmResponse = toLlmResponse(chatResponse);
+      LlmResponse llmResponse = toLlmResponse(chatResponse, chatRequest);
 
       return Flowable.just(llmResponse);
     }
@@ -496,11 +585,38 @@ public class LangChain4j extends BaseLlm {
     }
   }
 
-  private LlmResponse toLlmResponse(ChatResponse chatResponse) {
+  private LlmResponse toLlmResponse(ChatResponse chatResponse, ChatRequest chatRequest) {
     Content content =
         Content.builder().role("model").parts(toParts(chatResponse.aiMessage())).build();
 
-    return LlmResponse.builder().content(content).build();
+    LlmResponse.Builder builder = LlmResponse.builder().content(content);
+    TokenUsage tokenUsage = chatResponse.tokenUsage();
+    if (tokenCountEstimator != null) {
+      try {
+        int estimatedInput =
+            tokenCountEstimator.estimateTokenCountInMessages(chatRequest.messages());
+        int estimatedOutput =
+            tokenCountEstimator.estimateTokenCountInText(chatResponse.aiMessage().text());
+        int estimatedTotal = estimatedInput + estimatedOutput;
+        builder.usageMetadata(
+            GenerateContentResponseUsageMetadata.builder()
+                .promptTokenCount(estimatedInput)
+                .candidatesTokenCount(estimatedOutput)
+                .totalTokenCount(estimatedTotal)
+                .build());
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    } else if (tokenUsage != null) {
+      builder.usageMetadata(
+          GenerateContentResponseUsageMetadata.builder()
+              .promptTokenCount(tokenUsage.inputTokenCount())
+              .candidatesTokenCount(tokenUsage.outputTokenCount())
+              .totalTokenCount(tokenUsage.totalTokenCount())
+              .build());
+    }
+
+    return builder.build();
   }
 
   private List<Part> toParts(AiMessage aiMessage) {
