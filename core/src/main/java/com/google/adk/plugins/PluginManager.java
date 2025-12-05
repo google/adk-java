@@ -127,7 +127,7 @@ public class PluginManager {
   }
 
   public Maybe<LlmResponse> runBeforeModelCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
     return runMaybeCallbacks(
         plugin -> plugin.beforeModelCallback(callbackContext, llmRequest), "beforeModelCallback");
   }
@@ -139,7 +139,7 @@ public class PluginManager {
   }
 
   public Maybe<LlmResponse> runOnModelErrorCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest, Throwable error) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest, Throwable error) {
     return runMaybeCallbacks(
         plugin -> plugin.onModelErrorCallback(callbackContext, llmRequest, error),
         "onModelErrorCallback");

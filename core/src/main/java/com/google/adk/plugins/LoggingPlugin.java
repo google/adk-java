@@ -151,14 +151,15 @@ public class LoggingPlugin extends BasePlugin {
 
   @Override
   public Maybe<LlmResponse> beforeModelCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
     return Maybe.fromAction(
         () -> {
+          LlmRequest request = llmRequest.build();
           log("🧠 LLM REQUEST");
-          log("   Model: " + llmRequest.model().orElse("default"));
+          log("   Model: " + request.model().orElse("default"));
           log("   Agent: " + callbackContext.agentName());
 
-          llmRequest
+          request
               .getFirstSystemInstruction()
               .ifPresent(
                   sysInstruction -> {
@@ -170,8 +171,8 @@ public class LoggingPlugin extends BasePlugin {
                     log("   System Instruction: '" + truncatedInstruction + "'");
                   });
 
-          if (!llmRequest.tools().isEmpty()) {
-            String toolNames = String.join(", ", llmRequest.tools().keySet());
+          if (!request.tools().isEmpty()) {
+            String toolNames = String.join(", ", request.tools().keySet());
             log("   Available Tools: [" + toolNames + "]");
           }
         });
@@ -211,7 +212,7 @@ public class LoggingPlugin extends BasePlugin {
 
   @Override
   public Maybe<LlmResponse> onModelErrorCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest, Throwable error) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest, Throwable error) {
     return Maybe.fromAction(
         () -> {
           log("🧠 LLM ERROR");
