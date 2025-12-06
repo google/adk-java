@@ -1,0 +1,4 @@
+com.google.adk.autoconfigure.AdkArtifactsAutoConfiguration
+com.google.adk.autoconfigure.AdkSessionAutoConfiguration
+com.google.adk.autoconfigure.AdkMemoryAutoConfiguration
+com.google.adk.autoconfigure.AdkRunConfigAutoConfiguration
