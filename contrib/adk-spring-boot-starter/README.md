@@ -1,7 +1,7 @@
 # ADK Spring Boot Starter
 
 This starter integrates the Google Agent Development Kit (ADK) into Spring Boot applications. 
-It provides auto-configuration for Runners, and core services like Artifacts, Session, and Memory management.
+It provides auto-configuration for core services like Artifacts, Session, and Memory management.
 
 ## Installation
 
