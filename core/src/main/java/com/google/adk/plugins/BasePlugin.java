@@ -122,11 +122,12 @@ public abstract class BasePlugin {
    * Callback executed before a request is sent to the model.
    *
    * @param callbackContext The context for the current agent call.
-   * @param llmRequest The prepared request object to be sent to the model.
+   * @param llmRequest The mutable request builder, allowing modification of the request before it
+   *     is sent to the model.
    * @return An optional LlmResponse to trigger an early exit. Returning Empty to proceed normally.
    */
   public Maybe<LlmResponse> beforeModelCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
     return Maybe.empty();
   }
 
@@ -147,13 +148,13 @@ public abstract class BasePlugin {
    * Callback executed when a model call encounters an error.
    *
    * @param callbackContext The context for the current agent call.
-   * @param llmRequest The request that was sent to the model.
+   * @param llmRequest The mutable request builder for the request that failed.
    * @param error The exception that was raised.
    * @return An optional LlmResponse to use instead of propagating the error. Returning Empty to
    *     allow the original error to be raised.
    */
   public Maybe<LlmResponse> onModelErrorCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest, Throwable error) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest, Throwable error) {
     return Maybe.empty();
   }
 
@@ -162,12 +163,13 @@ public abstract class BasePlugin {
    *
    * @param tool The tool instance that is about to be executed.
    * @param toolArgs The dictionary of arguments to be used for invoking the tool.
-   * @param toolContext The context specific to the tool execution.
+   * @param toolContext The mutable tool context builder, allowing modification of the context
+   *     before tool execution.
    * @return An optional Map to stop the tool execution and return this response immediately.
    *     Returning Empty to proceed normally.
    */
   public Maybe<Map<String, Object>> beforeToolCallback(
-      BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext) {
+      BaseTool tool, Map<String, Object> toolArgs, ToolContext.Builder toolContext) {
     return Maybe.empty();
   }
 
@@ -176,7 +178,7 @@ public abstract class BasePlugin {
    *
    * @param tool The tool instance that has just been executed.
    * @param toolArgs The original arguments that were passed to the tool.
-   * @param toolContext The context specific to the tool execution.
+   * @param toolContext The mutable tool context builder used for tool execution.
    * @param result The dictionary returned by the tool invocation.
    * @return An optional Map to replace the original result from the tool. Returning Empty to use
    *     the original result.
@@ -184,7 +186,7 @@ public abstract class BasePlugin {
   public Maybe<Map<String, Object>> afterToolCallback(
       BaseTool tool,
       Map<String, Object> toolArgs,
-      ToolContext toolContext,
+      ToolContext.Builder toolContext,
       Map<String, Object> result) {
     return Maybe.empty();
   }
@@ -194,13 +196,16 @@ public abstract class BasePlugin {
    *
    * @param tool The tool instance that encountered an error.
    * @param toolArgs The arguments that were passed to the tool.
-   * @param toolContext The context specific to the tool execution.
+   * @param toolContext The mutable tool context builder for the tool call that failed.
    * @param error The exception that was raised during tool execution.
    * @return An optional Map to be used as the tool response instead of propagating the error.
    *     Returning Empty to allow the original error to be raised.
    */
   public Maybe<Map<String, Object>> onToolErrorCallback(
-      BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext, Throwable error) {
+      BaseTool tool,
+      Map<String, Object> toolArgs,
+      ToolContext.Builder toolContext,
+      Throwable error) {
     return Maybe.empty();
   }
 }

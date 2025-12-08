@@ -129,14 +129,14 @@ public final class Callbacks {
      * @param invocationContext Invocation context.
      * @param baseTool Tool instance.
      * @param input Tool input arguments.
-     * @param toolContext Tool context.
+     * @param toolContext Tool context builder.
      * @return override result, or empty to continue.
      */
     Maybe<Map<String, Object>> call(
         InvocationContext invocationContext,
         BaseTool baseTool,
         Map<String, Object> input,
-        ToolContext toolContext);
+        ToolContext.Builder toolContext);
   }
 
   /**
@@ -149,7 +149,7 @@ public final class Callbacks {
         InvocationContext invocationContext,
         BaseTool baseTool,
         Map<String, Object> input,
-        ToolContext toolContext);
+        ToolContext.Builder toolContext);
   }
 
   interface AfterToolCallbackBase {}
@@ -162,7 +162,7 @@ public final class Callbacks {
      * @param invocationContext Invocation context.
      * @param baseTool Tool instance.
      * @param input Tool input arguments.
-     * @param toolContext Tool context.
+     * @param toolContext Tool context builder.
      * @param response Raw tool response.
      * @return processed result, or empty to keep original.
      */
@@ -170,7 +170,7 @@ public final class Callbacks {
         InvocationContext invocationContext,
         BaseTool baseTool,
         Map<String, Object> input,
-        ToolContext toolContext,
+        ToolContext.Builder toolContext,
         Object response);
   }
 
@@ -184,7 +184,7 @@ public final class Callbacks {
         InvocationContext invocationContext,
         BaseTool baseTool,
         Map<String, Object> input,
-        ToolContext toolContext,
+        ToolContext.Builder toolContext,
         Object response);
   }
 
