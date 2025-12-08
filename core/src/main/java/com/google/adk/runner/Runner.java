@@ -56,9 +56,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** The main class for the GenAI Agents runner. */
 public class Runner {
+  private static final Logger logger = LoggerFactory.getLogger(Runner.class);
   private final BaseAgent agent;
   private final String appName;
   private final BaseArtifactService artifactService;
@@ -542,7 +545,16 @@ public class Runner {
               invocationContext
                   .agent()
                   .runLive(invocationContext)
-                  .doOnNext(event -> this.sessionService.appendEvent(session, event))
+                  .flatMap(
+                      event ->
+                          this.sessionService
+                              .appendEvent(session, event)
+                              .toFlowable()
+                              .onErrorResumeNext(
+                                  error -> {
+                                    logger.warn("Failed to append event to session", error);
+                                    return Flowable.just(event);
+                                  }))
                   .onErrorResumeNext(
                       throwable -> {
                         span.setStatus(StatusCode.ERROR, "Error in runLive Flowable execution");
