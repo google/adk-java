@@ -17,9 +17,13 @@
 package com.google.adk.tools;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.SchemaUtils;
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.BaseAgentConfig;
+import com.google.adk.agents.ConfigAgentUtils;
+import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.runner.InMemoryRunner;
@@ -39,6 +43,24 @@ public class AgentTool extends BaseTool {
 
   private final BaseAgent agent;
   private final boolean skipSummarization;
+
+  public static BaseTool fromConfig(ToolArgsConfig args, String configAbsPath)
+      throws ConfigurationException {
+    var agentRef = args.getOrEmpty("agent", new TypeReference<BaseAgentConfig.AgentRefConfig>() {});
+    if (agentRef.isEmpty()) {
+      throw new ConfigurationException("AgentTool config requires 'agent' argument.");
+    }
+
+    ImmutableList<BaseAgent> resolvedAgents =
+        ConfigAgentUtils.resolveSubAgents(ImmutableList.of(agentRef.get()), configAbsPath);
+
+    if (resolvedAgents.isEmpty()) {
+      throw new ConfigurationException("Failed to resolve agent.");
+    }
+
+    BaseAgent agent = resolvedAgents.get(0);
+    return AgentTool.create(agent, args.getOrDefault("skipSummarization", false).booleanValue());
+  }
 
   public static AgentTool create(BaseAgent agent, boolean skipSummarization) {
     return new AgentTool(agent, skipSummarization);
