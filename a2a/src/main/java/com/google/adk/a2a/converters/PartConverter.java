@@ -132,21 +132,23 @@ public final class PartConverter {
     if (data.containsKey("name") && data.containsKey("args")
         || A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL.equals(metadataType)) {
       String functionName = String.valueOf(data.getOrDefault("name", ""));
+      String functionId = String.valueOf(data.getOrDefault("id", ""));
       Map<String, Object> args = coerceToMap(data.get("args"));
       return Optional.of(
           com.google.genai.types.Part.builder()
-              .functionCall(FunctionCall.builder().name(functionName).args(args).build())
+              .functionCall(FunctionCall.builder().name(functionName).id(functionId).args(args).build())
               .build());
     }
 
     if (data.containsKey("name") && data.containsKey("response")
         || A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE.equals(metadataType)) {
       String functionName = String.valueOf(data.getOrDefault("name", ""));
+      String functionId = String.valueOf(data.getOrDefault("id", ""));
       Map<String, Object> response = coerceToMap(data.get("response"));
       return Optional.of(
           com.google.genai.types.Part.builder()
               .functionResponse(
-                  FunctionResponse.builder().name(functionName).response(response).build())
+                  FunctionResponse.builder().name(functionName).id(functionId).response(response).build())
               .build());
     }
 
@@ -167,6 +169,7 @@ public final class PartConverter {
   private static Optional<DataPart> createDataPartFromFunctionCall(FunctionCall functionCall) {
     Map<String, Object> data = new HashMap<>();
     data.put("name", functionCall.name().orElse(""));
+    data.put("id", functionCall.id().orElse(""));
     data.put("args", functionCall.args().orElse(Map.of()));
 
     Map<String, Object> metadata =
@@ -185,6 +188,7 @@ public final class PartConverter {
       FunctionResponse functionResponse) {
     Map<String, Object> data = new HashMap<>();
     data.put("name", functionResponse.name().orElse(""));
+    data.put("id", functionResponse.id().orElse(""));
     data.put("response", functionResponse.response().orElse(Map.of()));
 
     Map<String, Object> metadata =
