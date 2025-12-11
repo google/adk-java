@@ -137,7 +137,7 @@ public final class PartConverter {
       return Optional.of(
           com.google.genai.types.Part.builder()
               .functionCall(
-                FunctionCall.builder().name(functionName).id(functionId).args(args).build())
+                FunctionCall.builder().name(functionName).id(functionId).id(functionId).args(args).build())
               .build());
     }
 
@@ -150,7 +150,7 @@ public final class PartConverter {
           com.google.genai.types.Part.builder()
               .functionResponse(
                   FunctionResponse.builder()
-                      .name(functionName)
+                      .name(functionName).id(functionId)
                       .id(functionId)
                       .response(response)
                       .build())

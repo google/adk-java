@@ -45,7 +45,7 @@ public final class EventConverterTest {
         Part.builder()
             .functionCall(
                 FunctionCall.builder()
-                    .name("roll_die")
+                    .name("roll_die").id("adk-call-1")
                     .id("adk-call-1")
                     .args(Map.of("sides", 6))
                     .build())
@@ -65,7 +65,7 @@ public final class EventConverterTest {
         Part.builder()
             .functionResponse(
                 FunctionResponse.builder()
-                    .name("roll_die")
+                    .name("roll_die").id("adk-call-1")
                     .id("adk-call-1")
                     .response(Map.of("result", 3))
                     .build())
