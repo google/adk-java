@@ -43,7 +43,7 @@ public final class EventConverterTest {
 
     Part functionCallPart =
         Part.builder()
-            .functionCall(FunctionCall.builder().name("roll_die").args(Map.of("sides", 6)).build())
+            .functionCall(FunctionCall.builder().name("roll_die").id("call-1").args(Map.of("sides", 6)).build())
             .build();
     Event callEvent =
         Event.builder()
@@ -59,7 +59,7 @@ public final class EventConverterTest {
     Part functionResponsePart =
         Part.builder()
             .functionResponse(
-                FunctionResponse.builder().name("roll_die").response(Map.of("result", 3)).build())
+                FunctionResponse.builder().name("roll_die").id("adk-call-1").response(Map.of("result", 3)).build())
             .build();
     Event responseEvent =
         Event.builder()
@@ -106,11 +106,14 @@ public final class EventConverterTest {
     assertThat(callDataPart.getMetadata().get(PartConverter.A2A_DATA_PART_METADATA_TYPE_KEY))
         .isEqualTo(PartConverter.A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL);
     assertThat(callDataPart.getData()).containsEntry("name", "roll_die");
+    assertThat(callDataPart.getData()).containsEntry("id", "adk-call-1");
     assertThat(callDataPart.getData()).containsEntry("args", Map.of("sides", 6));
 
     DataPart responseDataPart = (DataPart) message.getParts().get(2);
     assertThat(responseDataPart.getMetadata().get(PartConverter.A2A_DATA_PART_METADATA_TYPE_KEY))
         .isEqualTo(PartConverter.A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE);
+    assertThat(responseDataPart.getData()).containsEntry("name", "roll_die");
+    assertThat(responseDataPart.getData()).containsEntry("id", "adk-call-1");
     assertThat(responseDataPart.getData()).containsEntry("response", Map.of("result", 3));
   }
 
