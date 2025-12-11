@@ -169,6 +169,7 @@ public final class PartConverter {
   private static Optional<DataPart> createDataPartFromFunctionCall(FunctionCall functionCall) {
     Map<String, Object> data = new HashMap<>();
     data.put("name", functionCall.name().orElse(""));
+    data.put("id", functionCall.id().orElse(""));
     data.put("args", functionCall.args().orElse(Map.of()));
 
     Map<String, Object> metadata =
@@ -187,6 +188,7 @@ public final class PartConverter {
       FunctionResponse functionResponse) {
     Map<String, Object> data = new HashMap<>();
     data.put("name", functionResponse.name().orElse(""));
+    data.put("id", functionResponse.id().orElse(""));
     data.put("response", functionResponse.response().orElse(Map.of()));
 
     Map<String, Object> metadata =
