@@ -43,7 +43,7 @@ public final class EventConverterTest {
 
     Part functionCallPart =
         Part.builder()
-            .functionCall(FunctionCall.builder().name("roll_die").id("call-1").args(Map.of("sides", 6)).build())
+            .functionCall(FunctionCall.builder().name("roll_die").id("adk-call-1").args(Map.of("sides", 6)).build())
             .build();
     Event callEvent =
         Event.builder()
