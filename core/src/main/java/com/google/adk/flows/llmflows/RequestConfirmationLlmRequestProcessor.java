@@ -106,11 +106,16 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       InvocationContext invocationContext,
       Collection<FunctionCall> functionCalls,
       Map<String, ToolConfirmation> toolConfirmations) {
-    ImmutableMap.Builder<String, BaseTool> toolsBuilder = ImmutableMap.builder();
+    Single<ImmutableMap<String, BaseTool>> toolsMapSingle;
     if (invocationContext.agent() instanceof LlmAgent llmAgent) {
-      for (BaseTool tool : llmAgent.tools()) {
-        toolsBuilder.put(tool.name(), tool);
-      }
+      toolsMapSingle =
+          llmAgent
+              .tools()
+              .map(
+                  toolList ->
+                      toolList.stream().collect(toImmutableMap(BaseTool::name, tool -> tool)));
+    } else {
+      toolsMapSingle = Single.just(ImmutableMap.of());
     }
 
     var functionCallEvent =
@@ -124,8 +129,10 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
                     .build())
             .build();
 
-    return Functions.handleFunctionCalls(
-        invocationContext, functionCallEvent, toolsBuilder.buildOrThrow(), toolConfirmations);
+    return toolsMapSingle.flatMapMaybe(
+        toolsMap ->
+            Functions.handleFunctionCalls(
+                invocationContext, functionCallEvent, toolsMap, toolConfirmations));
   }
 
   private ImmutableMap<String, ToolConfirmation> filterRequestConfirmationFunctionResponses(

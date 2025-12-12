@@ -736,8 +736,8 @@ public class LlmAgent extends BaseAgent {
     return includeContents;
   }
 
-  public List<BaseTool> tools() {
-    return canonicalTools().toList().blockingGet();
+  public Single<List<BaseTool>> tools() {
+    return canonicalTools().toList();
   }
 
   public List<Object> toolsUnion() {

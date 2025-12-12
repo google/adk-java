@@ -258,8 +258,8 @@ public final class ConfigAgentUtilsTest {
 
     assertThat(agent).isInstanceOf(LlmAgent.class);
     LlmAgent llmAgent = (LlmAgent) agent;
-    assertThat(llmAgent.tools()).hasSize(1);
-    assertThat(llmAgent.tools().get(0).name()).isEqualTo("google_search");
+    assertThat(llmAgent.tools().blockingGet()).hasSize(1);
+    assertThat(llmAgent.tools().blockingGet().get(0).name()).isEqualTo("google_search");
   }
 
   @Test
@@ -784,7 +784,7 @@ public final class ConfigAgentUtilsTest {
     assertThat(llmAgent.outputKey()).hasValue("testOutput");
     assertThat(llmAgent.disallowTransferToParent()).isTrue();
     assertThat(llmAgent.disallowTransferToPeers()).isFalse();
-    assertThat(llmAgent.tools()).hasSize(1);
+    assertThat(llmAgent.tools().blockingGet()).hasSize(1);
     assertThat(llmAgent.model()).isPresent();
   }
 

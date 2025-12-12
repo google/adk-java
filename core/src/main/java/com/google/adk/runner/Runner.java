@@ -521,35 +521,52 @@ public class Runner {
     try {
       InvocationContext invocationContext =
           newInvocationContextForLive(session, Optional.of(liveRequestQueue), runConfig);
+
+      Single<InvocationContext> invocationContextSingle;
       if (invocationContext.agent() instanceof LlmAgent) {
         LlmAgent agent = (LlmAgent) invocationContext.agent();
-        for (BaseTool tool : agent.tools()) {
-          if (tool instanceof FunctionTool functionTool) {
-            for (Parameter parameter : functionTool.func().getParameters()) {
-              if (parameter.getType().equals(LiveRequestQueue.class)) {
-                invocationContext
-                    .activeStreamingTools()
-                    .put(functionTool.name(), new ActiveStreamingTool(new LiveRequestQueue()));
-              }
-            }
-          }
-        }
+        invocationContextSingle =
+            agent
+                .tools()
+                .map(
+                    tools -> {
+                      for (BaseTool tool : tools) {
+                        if (tool instanceof FunctionTool functionTool) {
+                          for (Parameter parameter : functionTool.func().getParameters()) {
+                            if (parameter.getType().equals(LiveRequestQueue.class)) {
+                              invocationContext
+                                  .activeStreamingTools()
+                                  .put(
+                                      functionTool.name(),
+                                      new ActiveStreamingTool(new LiveRequestQueue()));
+                            }
+                          }
+                        }
+                      }
+                      return invocationContext;
+                    });
+      } else {
+        invocationContextSingle = Single.just(invocationContext);
       }
-      return Telemetry.traceFlowable(
-          spanContext,
-          span,
-          () ->
-              invocationContext
-                  .agent()
-                  .runLive(invocationContext)
-                  .doOnNext(event -> this.sessionService.appendEvent(session, event))
-                  .onErrorResumeNext(
-                      throwable -> {
-                        span.setStatus(StatusCode.ERROR, "Error in runLive Flowable execution");
-                        span.recordException(throwable);
-                        span.end();
-                        return Flowable.error(throwable);
-                      }));
+
+      return invocationContextSingle.flatMapPublisher(
+          updatedInvocationContext ->
+              Telemetry.traceFlowable(
+                  spanContext,
+                  span,
+                  () ->
+                      updatedInvocationContext
+                          .agent()
+                          .runLive(updatedInvocationContext)
+                          .doOnNext(event -> this.sessionService.appendEvent(session, event))
+                          .onErrorResumeNext(
+                              throwable -> {
+                                span.setStatus(
+                                    StatusCode.ERROR, "Error in runLive Flowable execution");
+                                span.recordException(throwable);
+                                span.end();
+                                return Flowable.error(throwable);
+                              })));
     } catch (Throwable t) {
       span.setStatus(StatusCode.ERROR, "Error during runLive synchronous setup");
       span.recordException(t);
