@@ -31,6 +31,7 @@ public class SingleFlow extends BaseLlmFlow {
           new Identity(),
           new Contents(),
           new Examples(),
+          new RequestConfirmationLlmRequestProcessor(),
           CodeExecution.requestProcessor);
 
   protected static final ImmutableList<ResponseProcessor> RESPONSE_PROCESSORS =

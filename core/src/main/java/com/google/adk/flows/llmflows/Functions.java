@@ -64,7 +64,7 @@ import org.slf4j.LoggerFactory;
 public final class Functions {
 
   private static final String AF_FUNCTION_CALL_ID_PREFIX = "adk-";
-  static final String REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = "adk_request_confirmation";
+  public static final String REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = "adk_request_confirmation";
   private static final Logger logger = LoggerFactory.getLogger(Functions.class);
 
   /** Generates a unique ID for a function call. */
@@ -147,11 +147,21 @@ public final class Functions {
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         functionCall -> {
           BaseTool tool = tools.get(functionCall.name().get());
+          ToolConfirmation toolConfirmation = toolConfirmations.get(functionCall.id().orElse(null));
           ToolContext toolContext =
               ToolContext.builder(invocationContext)
                   .functionCallId(functionCall.id().orElse(""))
-                  .toolConfirmation(toolConfirmations.get(functionCall.id().orElse(null)))
+                  .toolConfirmation(toolConfirmation)
                   .build();
+
+          if (toolConfirmation != null && !toolConfirmation.confirmed()) {
+            return Maybe.just(
+                buildResponseEvent(
+                    tool,
+                    ImmutableMap.of("error", "User declined tool execution for " + tool.name()),
+                    toolContext,
+                    invocationContext));
+          }
 
           Map<String, Object> functionArgs = functionCall.args().orElse(ImmutableMap.of());
 
@@ -241,6 +251,18 @@ public final class Functions {
    */
   public static Maybe<Event> handleFunctionCallsLive(
       InvocationContext invocationContext, Event functionCallEvent, Map<String, BaseTool> tools) {
+    return handleFunctionCallsLive(invocationContext, functionCallEvent, tools, ImmutableMap.of());
+  }
+
+  /**
+   * Handles function calls in a live/streaming context with tool confirmations, supporting
+   * background execution and stream termination.
+   */
+  public static Maybe<Event> handleFunctionCallsLive(
+      InvocationContext invocationContext,
+      Event functionCallEvent,
+      Map<String, BaseTool> tools,
+      Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
 
     for (FunctionCall functionCall : functionCalls) {
@@ -255,7 +277,9 @@ public final class Functions {
           ToolContext toolContext =
               ToolContext.builder(invocationContext)
                   .functionCallId(functionCall.id().orElse(""))
+                  .toolConfirmation(toolConfirmations.get(functionCall.id().orElse(null)))
                   .build();
+
           Map<String, Object> functionArgs = functionCall.args().orElse(new HashMap<>());
 
           Maybe<Map<String, Object>> maybeFunctionResult =
