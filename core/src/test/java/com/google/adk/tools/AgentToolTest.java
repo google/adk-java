@@ -23,7 +23,12 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.artifacts.InMemoryArtifactService;
+import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.plugins.BasePlugin;
+import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.ListSessionsResponse;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.common.collect.ImmutableList;
@@ -33,8 +38,10 @@ import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -342,6 +349,78 @@ public final class AgentToolTest {
 
     assertThat(testLlm.getLastRequest().contents())
         .containsExactly(Content.fromParts(Part.fromText("magic")));
+  }
+
+  @Test
+  public void create_withServicesAndPlugins_initializesCorrectly() {
+    LlmAgent testAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("agent name")
+            .description("agent description")
+            .build();
+
+    AgentTool agentTool =
+        AgentTool.create(
+            testAgent,
+            new InMemorySessionService(),
+            new InMemoryArtifactService(),
+            new InMemoryMemoryService(),
+            ImmutableList.of());
+
+    assertThat(agentTool).isNotNull();
+    assertThat(agentTool.declaration()).isPresent();
+  }
+
+  @Test
+  public void runAsync_withServicesAndPlugins_usesThem() {
+    LlmAgent testAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    LlmResponse.builder()
+                        .content(Content.fromParts(Part.fromText("Sub-agent executed")))
+                        .build()))
+            .name("sub-agent")
+            .description("sub-agent description")
+            .build();
+
+    InMemorySessionService sessionService = new InMemorySessionService();
+    TestPlugin testPlugin = new TestPlugin();
+
+    AgentTool agentTool =
+        AgentTool.create(
+            testAgent,
+            sessionService,
+            new InMemoryArtifactService(),
+            new InMemoryMemoryService(),
+            ImmutableList.of(testPlugin));
+
+    ToolContext toolContext = createToolContext(testAgent);
+
+    Map<String, Object> result =
+        agentTool.runAsync(ImmutableMap.of("request", "start"), toolContext).blockingGet();
+
+    assertThat(result).containsEntry("result", "Sub-agent executed");
+
+    assertThat(testPlugin.wasCalled.get()).isTrue();
+
+    ListSessionsResponse sessionsResponse =
+        sessionService.listSessions("sub-agent", "tmp-user").blockingGet();
+    assertThat(sessionsResponse.sessions()).isNotEmpty();
+  }
+
+  private static class TestPlugin extends BasePlugin {
+    final AtomicBoolean wasCalled = new AtomicBoolean(false);
+
+    TestPlugin() {
+      super("test-plugin");
+    }
+
+    @Override
+    public Maybe<Content> onUserMessageCallback(
+        InvocationContext invocationContext, Content userMessage) {
+      wasCalled.set(true);
+      return Maybe.empty();
+    }
   }
 
   private static ToolContext createToolContext(LlmAgent agent) {
