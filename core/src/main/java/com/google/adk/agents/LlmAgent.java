@@ -53,6 +53,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -567,10 +568,11 @@ public class LlmAgent extends BaseAgent {
 
   private void maybeSaveOutputToState(Event event) {
     if (outputKey().isPresent() && event.finalResponse() && event.content().isPresent()) {
-      // Concatenate text from all parts.
+      // Concatenate text from all parts, excluding thoughts.
       Object output;
       String rawResult =
           event.content().flatMap(Content::parts).orElse(ImmutableList.of()).stream()
+              .filter(part -> !isThought(part))
               .map(part -> part.text().orElse(""))
               .collect(joining());
 
@@ -600,6 +602,10 @@ public class LlmAgent extends BaseAgent {
       }
       event.actions().stateDelta().put(outputKey().get(), output);
     }
+  }
+
+  private static boolean isThought(Part part) {
+    return part.thought().isPresent() && part.thought().get();
   }
 
   @Override
