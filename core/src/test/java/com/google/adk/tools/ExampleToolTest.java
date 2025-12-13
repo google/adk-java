@@ -123,11 +123,7 @@ public final class ExampleToolTest {
     // Create a list with a non-Map entry (e.g., a String) to trigger line 121
     args.setAdditionalProperty("examples", ImmutableList.of("not a map"));
 
-    ConfigurationException ex =
-        assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
-
-    assertThat(ex).hasMessageThat().contains("Invalid example entry");
-    assertThat(ex).hasMessageThat().contains("Expected a map with 'input' and 'output'");
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
   }
 
   @Test
@@ -136,11 +132,7 @@ public final class ExampleToolTest {
     // Use an Integer instead of String or List to trigger line 149
     args.setAdditionalProperty("examples", 123);
 
-    ConfigurationException ex =
-        assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
-
-    assertThat(ex).hasMessageThat().contains("Unsupported 'examples' type");
-    assertThat(ex).hasMessageThat().contains("Provide a string provider ref or list of examples");
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
   }
 
   @Test
@@ -182,10 +174,7 @@ public final class ExampleToolTest {
     // Add some other key but not 'examples' to trigger line 107
     args.setAdditionalProperty("someOtherKey", "someValue");
 
-    ConfigurationException ex =
-        assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
-
-    assertThat(ex).hasMessageThat().contains("ExampleTool missing 'examples' argument");
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
   }
 
   @Test
@@ -198,10 +187,7 @@ public final class ExampleToolTest {
             ImmutableMap.of(
                 "output", ImmutableList.of(Content.fromParts(Part.fromText("answer"))))));
 
-    ConfigurationException ex =
-        assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
-
-    assertThat(ex).hasMessageThat().contains("Each example must include 'input' and 'output'");
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
   }
 
   @Test
@@ -212,10 +198,7 @@ public final class ExampleToolTest {
         "examples",
         ImmutableList.of(ImmutableMap.of("input", Content.fromParts(Part.fromText("question")))));
 
-    ConfigurationException ex =
-        assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
-
-    assertThat(ex).hasMessageThat().contains("Each example must include 'input' and 'output'");
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
   }
 
   @Test

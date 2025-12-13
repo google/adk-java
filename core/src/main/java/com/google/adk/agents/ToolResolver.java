@@ -74,7 +74,7 @@ final class ToolResolver {
         String toolName = toolConfig.name().trim();
 
         // First try to resolve as a toolset
-        BaseToolset toolset = resolveToolsetFromClass(toolName, toolConfig.args());
+        BaseToolset toolset = resolveToolsetFromClass(toolName, toolConfig.args(), configAbsPath);
         if (toolset != null) {
           resolvedItems.add(toolset);
           logger.debug("Successfully resolved toolset from class: {}", toolName);
@@ -90,7 +90,7 @@ final class ToolResolver {
         }
 
         // Option 2: Try to resolve as a tool class (with or without args)
-        BaseTool toolFromClass = resolveToolFromClass(toolName, toolConfig.args());
+        BaseTool toolFromClass = resolveToolFromClass(toolName, toolConfig.args(), configAbsPath);
         if (toolFromClass != null) {
           resolvedItems.add(toolFromClass);
           logger.debug("Successfully resolved tool from class: {}", toolName);
@@ -147,7 +147,7 @@ final class ToolResolver {
         }
 
         // Option 2: Try to resolve as a tool class (with or without args)
-        BaseTool toolFromClass = resolveToolFromClass(toolName, toolConfig.args());
+        BaseTool toolFromClass = resolveToolFromClass(toolName, toolConfig.args(), configAbsPath);
         if (toolFromClass != null) {
           resolvedTools.add(toolFromClass);
           logger.debug("Successfully resolved tool from class: {}", toolName);
@@ -258,8 +258,8 @@ final class ToolResolver {
    * @throws ConfigurationException if toolset instantiation fails.
    */
   @Nullable
-  static BaseToolset resolveToolsetFromClass(String className, ToolArgsConfig args)
-      throws ConfigurationException {
+  static BaseToolset resolveToolsetFromClass(
+      String className, ToolArgsConfig args, String configAbsPath) throws ConfigurationException {
     ComponentRegistry registry = ComponentRegistry.getInstance();
 
     // First try registry for class
@@ -383,7 +383,7 @@ final class ToolResolver {
    *     instantiation via the factory method or constructor fails.
    */
   @Nullable
-  static BaseTool resolveToolFromClass(String className, ToolArgsConfig args)
+  static BaseTool resolveToolFromClass(String className, ToolArgsConfig args, String configAbsPath)
       throws ConfigurationException {
     ComponentRegistry registry = ComponentRegistry.getInstance();
 
@@ -416,8 +416,9 @@ final class ToolResolver {
     // If args provided and not empty, try fromConfig method first
     if (args != null && !args.isEmpty()) {
       try {
-        Method fromConfigMethod = toolClass.getMethod("fromConfig", ToolArgsConfig.class);
-        Object instance = fromConfigMethod.invoke(null, args);
+        Method fromConfigMethod =
+            toolClass.getMethod("fromConfig", ToolArgsConfig.class, String.class);
+        Object instance = fromConfigMethod.invoke(null, args, configAbsPath);
         if (instance instanceof BaseTool baseTool) {
           return baseTool;
         }
