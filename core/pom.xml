@@ -104,6 +104,17 @@
       <groupId>com.fasterxml.jackson.dataformat</groupId>
       <artifactId>jackson-dataformat-yaml</artifactId>
     </dependency>
+    <!-- Jackson JAXB annotations module for ObjectMapper.findAndRegisterModules() -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.module</groupId>
+      <artifactId>jackson-module-jaxb-annotations</artifactId>
+    </dependency>
+    <!-- JAXB API needed by jackson-module-jaxb-annotations on modern JDKs -->
+    <dependency>
+      <groupId>jakarta.xml.bind</groupId>
+      <artifactId>jakarta.xml.bind-api</artifactId>
+      <version>4.0.0</version>
+    </dependency>
     <dependency>
       <groupId>com.google.protobuf</groupId>
       <artifactId>protobuf-java</artifactId>
@@ -188,6 +199,70 @@
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-sdk-testing</artifactId>
       <scope>test</scope>
+    </dependency>
+
+    <!-- Database Session Service Dependencies -->
+    
+    <!-- Hibernate ORM - JPA implementation for object-relational mapping -->
+    <dependency>
+      <groupId>org.hibernate.orm</groupId>
+      <artifactId>hibernate-core</artifactId>
+    </dependency>
+    
+    <!-- Jakarta Persistence API - Standard JPA annotations and interfaces -->
+    <dependency>
+      <groupId>jakarta.persistence</groupId>
+      <artifactId>jakarta.persistence-api</artifactId>
+    </dependency>
+    
+    <!-- HikariCP - High-performance JDBC connection pool -->
+    <dependency>
+      <groupId>com.zaxxer</groupId>
+      <artifactId>HikariCP</artifactId>
+    </dependency>
+    
+    <!-- Hibernate HikariCP Integration - Enables HikariCP as Hibernate's connection provider -->
+    <dependency>
+      <groupId>org.hibernate.orm</groupId>
+      <artifactId>hibernate-hikaricp</artifactId>
+    </dependency>
+    
+    <!-- Database Drivers -->
+    
+    <!-- H2 Database - In-memory database for testing -->
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>test</scope>
+    </dependency>
+    
+    <!-- PostgreSQL Driver - JDBC driver for PostgreSQL databases (optional for production use) -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <optional>true</optional>
+    </dependency>
+    
+    <!-- MySQL Driver - JDBC driver for MySQL databases (optional for production use) -->
+    <dependency>
+      <groupId>com.mysql</groupId>
+      <artifactId>mysql-connector-j</artifactId>
+      <optional>true</optional>
+    </dependency>
+    
+    <!-- Database Migration -->
+    
+    <!-- Flyway Core - Database schema migration and versioning tool -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    
+    <!-- Flyway PostgreSQL Support - PostgreSQL-specific migration support -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+      <scope>runtime</scope>
     </dependency>
   </dependencies>
   <build>

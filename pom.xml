@@ -72,6 +72,9 @@
     <anthropic.version>1.4.0</anthropic.version>
     <maven-plugin-tools.version>3.9.0</maven-plugin-tools.version>
     <httpclient5.version>5.4.3</httpclient5.version>
+    <hibernate.version>6.6.4.Final</hibernate.version>
+    <hikaricp.version>6.2.1</hikaricp.version>
+    <flyway.version>11.17.0</flyway.version>
   </properties>
 
   <dependencyManagement>
@@ -243,6 +246,31 @@
         <groupId>guru.nidi</groupId>
         <artifactId>graphviz-java</artifactId>
         <version>${graphviz.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.hibernate.orm</groupId>
+        <artifactId>hibernate-core</artifactId>
+        <version>${hibernate.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.hibernate.orm</groupId>
+        <artifactId>hibernate-hikaricp</artifactId>
+        <version>${hibernate.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.zaxxer</groupId>
+        <artifactId>HikariCP</artifactId>
+        <version>${hikaricp.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-core</artifactId>
+        <version>${flyway.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-database-postgresql</artifactId>
+        <version>${flyway.version}</version>
       </dependency>
       <dependency>
         <groupId>org.eclipse.jdt</groupId>
