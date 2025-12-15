@@ -24,6 +24,14 @@ public final class EventConverter {
 
   private EventConverter() {}
 
+  /**
+   * Aggregation mode for converting events to A2A messages.
+   *
+   * <p>AS_IS: Parts are aggregated as-is.
+   *
+   * <p>EXTERNAL_HANDOFF: Parts are aggregated as-is, except for function responses, which are
+   * converted to text parts with the function name and response map.
+   */
   public enum AggregationMode {
     AS_IS,
     EXTERNAL_HANDOFF
