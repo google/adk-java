@@ -167,7 +167,8 @@ public final class FunctionsTest {
                         .name("echo_tool")
                         .response(ImmutableMap.of("result", args2))
                         .build())
-                .build());
+                .build())
+        .inOrder();
   }
 
   @Test
@@ -229,7 +230,9 @@ public final class FunctionsTest {
                         .build()))
             .build();
 
-    Functions.populateClientFunctionCallId(event);
-    assertThat(event).isEqualTo(event);
+    Event eventCopy = Event.fromJson(event.toJson());
+    Functions.populateClientFunctionCallId(eventCopy);
+
+    assertThat(eventCopy).isEqualTo(event);
   }
 }
