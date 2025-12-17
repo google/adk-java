@@ -97,11 +97,48 @@ public class RequestConfirmationLlmRequestProcessorTest {
                       .build()))
           .build();
 
+  private static final Event FUNCTION_CALL_EVENT =
+      Event.builder()
+          .author("model")
+          .content(
+              Content.builder()
+                  .role("model")
+                  .parts(
+                      Part.builder()
+                          .functionCall(
+                              FunctionCall.builder()
+                                  .id(ORIGINAL_FUNCTION_CALL_ID)
+                                  .name(ECHO_TOOL_NAME)
+                                  .args(ImmutableMap.of("say", "hello"))
+                                  .build())
+                          .build())
+                  .build())
+          .build();
+
+  private static final Event FUNCTION_RESPONSE_EVENT =
+      Event.builder()
+          .author("user")
+          .content(
+              Content.builder()
+                  .role("user")
+                  .parts(
+                      Part.builder()
+                          .functionResponse(
+                              FunctionResponse.builder()
+                                  .id(ORIGINAL_FUNCTION_CALL_ID)
+                                  .name(ECHO_TOOL_NAME)
+                                  .response(
+                                      ImmutableMap.of("result", ImmutableMap.of("say", "hello")))
+                                  .build())
+                          .build())
+                  .build())
+          .build();
+
   private static final RequestConfirmationLlmRequestProcessor processor =
       new RequestConfirmationLlmRequestProcessor();
 
   @Test
-  public void runAsync_withConfirmation_callsOriginalFunction() {
+  public void runAsync_withConfirmation_callsOriginalFunctionAndAppendsToUpdatedRequest() {
     LlmAgent agent = createAgentWithEchoTool();
     Session session =
         Session.builder("session_id")
@@ -121,6 +158,14 @@ public class RequestConfirmationLlmRequestProcessorTest {
     assertThat(fr.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
     assertThat(fr.name()).hasValue(ECHO_TOOL_NAME);
     assertThat(fr.response()).hasValue(ImmutableMap.of("result", ORIGINAL_FUNCTION_CALL_ARGS));
+    assertThat(result.updatedRequest())
+        .isEqualTo(
+            LlmRequest.builder()
+                .contents(
+                    ImmutableList.of(
+                        FUNCTION_CALL_EVENT.content().get(),
+                        FUNCTION_RESPONSE_EVENT.content().get()))
+                .build());
   }
 
   @Test
