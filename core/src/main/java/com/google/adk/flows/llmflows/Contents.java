@@ -536,6 +536,14 @@ public final class Contents implements RequestProcessor {
               resultEvents.add(mergeFunctionResponseEvents(responseEventsToAdd));
             }
           }
+
+          // Skip events between the function call and the last function response.
+          if (!sortedIndices.isEmpty()) {
+            int maxIndex = sortedIndices.get(sortedIndices.size() - 1);
+            if (maxIndex > i) {
+              i = maxIndex;
+            }
+          }
         }
       } else {
         // gemini-3 specific part: buffer response events
