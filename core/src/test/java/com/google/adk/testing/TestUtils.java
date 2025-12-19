@@ -30,6 +30,8 @@ import com.google.adk.events.EventActions;
 import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.planners.BasePlanner;
+import com.google.adk.planners.PlanReActPlanner;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
@@ -193,9 +195,19 @@ public final class TestUtils {
     return createTestAgentBuilder(llm).build();
   }
 
+  // TODO: b/414071046 Deprecate.
+  public static LlmAgent createTestAgent(BaseLlm llm, BasePlanner planner) {
+    return createTestAgentBuilder(llm, planner).build();
+  }
+
   // TODO: b/414071046 Make this return TestAgent. It can be used with toBuilder().
   public static LlmAgent.Builder createTestAgentBuilder(BaseLlm llm) {
     return LlmAgent.builder().name("test agent").description("test agent description").model(llm);
+  }
+
+  // TODO: b/414071046 Make this return TestAgent. It can be used with toBuilder().
+  public static LlmAgent.Builder createTestAgentBuilder(BaseLlm llm, BasePlanner planner) {
+    return LlmAgent.builder().name("test agent").description("test agent description").planner(planner).model(llm);
   }
 
   public static TestLlm createTestLlm(LlmResponse response) {
