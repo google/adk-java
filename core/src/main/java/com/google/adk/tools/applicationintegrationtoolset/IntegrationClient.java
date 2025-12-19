@@ -5,12 +5,13 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.google.adk.tools.applicationintegrationtoolset.IntegrationConnectorTool.HttpExecutor;
+import com.google.auth.Credentials;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.io.IOException;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Arrays;
@@ -26,14 +27,17 @@ import java.util.Objects;
  * <p>This class provides methods for retrieving OpenAPI spec for an integration or a connection.
  */
 public class IntegrationClient {
-  String project;
-  String location;
-  String integration;
-  List<String> triggers;
-  String connection;
-  Map<String, List<String>> entityOperations;
-  List<String> actions;
-  private final HttpExecutor httpExecutor;
+  private final String project;
+  private final String location;
+  private final String integration;
+  private final List<String> triggers;
+  private final String connection;
+  private final Map<String, List<String>> entityOperations;
+  private final List<String> actions;
+  private final String serviceAccountJson;
+  private final HttpClient httpClient;
+  private final CredentialsHelper credentialsHelper;
+
   public static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
   IntegrationClient(
@@ -44,7 +48,10 @@ public class IntegrationClient {
       String connection,
       Map<String, List<String>> entityOperations,
       List<String> actions,
-      HttpExecutor httpExecutor) {
+      String serviceAccountJson,
+      HttpClient httpClient,
+      CredentialsHelper credentialsHelper) {
+
     this.project = project;
     this.location = location;
     this.integration = integration;
@@ -52,10 +59,53 @@ public class IntegrationClient {
     this.connection = connection;
     this.entityOperations = entityOperations;
     this.actions = actions;
-    this.httpExecutor = httpExecutor;
+    this.serviceAccountJson = serviceAccountJson;
+    this.httpClient = Preconditions.checkNotNull(httpClient);
+    this.credentialsHelper = Preconditions.checkNotNull(credentialsHelper);
     if (!isNullOrEmpty(connection)) {
       validate();
     }
+  }
+
+  IntegrationClient(
+      String project,
+      String location,
+      String integration,
+      List<String> triggers,
+      String connection,
+      Map<String, List<String>> entityOperations,
+      List<String> actions) {
+    this(
+        project,
+        location,
+        integration,
+        triggers,
+        connection,
+        entityOperations,
+        actions,
+        HttpClient.newHttpClient());
+  }
+
+  IntegrationClient(
+      String project,
+      String location,
+      String integration,
+      List<String> triggers,
+      String connection,
+      Map<String, List<String>> entityOperations,
+      List<String> actions,
+      HttpClient httpClient) {
+    this(
+        project,
+        location,
+        integration,
+        triggers,
+        connection,
+        entityOperations,
+        actions,
+        null,
+        httpClient,
+        new GoogleCredentialsHelper());
   }
 
   private void validate() {
@@ -116,15 +166,17 @@ public class IntegrationClient {
                         Arrays.asList(this.triggers))),
                 "fileFormat",
                 "JSON"));
-    HttpRequest request =
+    HttpRequest.Builder requestBuilder =
         HttpRequest.newBuilder()
             .uri(URI.create(url))
-            .header("Authorization", "Bearer " + httpExecutor.getToken())
             .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(jsonRequestBody))
-            .build();
+            .POST(HttpRequest.BodyPublishers.ofString(jsonRequestBody));
+
+    Credentials credentials = credentialsHelper.getGoogleCredentials(serviceAccountJson);
+    requestBuilder = CredentialsHelper.populateHeaders(requestBuilder, credentials);
+
     HttpResponse<String> response =
-        httpExecutor.send(request, HttpResponse.BodyHandlers.ofString());
+        httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
 
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
       throw new Exception("Error fetching OpenAPI spec. Status: " + response.statusCode());
@@ -326,6 +378,12 @@ public class IntegrationClient {
 
   ConnectionsClient createConnectionsClient() {
     return new ConnectionsClient(
-        this.project, this.location, this.connection, this.httpExecutor, OBJECT_MAPPER);
+        this.project,
+        this.location,
+        this.connection,
+        this.serviceAccountJson,
+        this.httpClient,
+        this.credentialsHelper,
+        OBJECT_MAPPER);
   }
 }
