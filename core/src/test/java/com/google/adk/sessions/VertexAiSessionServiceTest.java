@@ -42,6 +42,18 @@ public class VertexAiSessionServiceTest {
   private static final MediaType JSON_MEDIA_TYPE =
       MediaType.parse("application/json; charset=utf-8");
 
+  private static ApiResponse apiResponseJson(String json) {
+    return new ApiResponse() {
+      @Override
+      public ResponseBody getResponseBody() {
+        return ResponseBody.create(JSON_MEDIA_TYPE, json);
+      }
+
+      @Override
+      public void close() {}
+    };
+  }
+
   private static final String MOCK_SESSION_STRING_1 =
       """
       {
@@ -329,16 +341,7 @@ public class VertexAiSessionServiceTest {
   @Test
   public void listSessions_missingSessionsField_returnsEmpty() {
     when(mockApiClient.request("GET", "reasoningEngines/123/sessions?filter=user_id=userX", ""))
-        .thenReturn(
-            new ApiResponse() {
-              @Override
-              public ResponseBody getResponseBody() {
-                return ResponseBody.create(JSON_MEDIA_TYPE, "{}");
-              }
-
-              @Override
-              public void close() {}
-            });
+        .thenReturn(apiResponseJson("{}"));
 
     assertThat(vertexAiSessionService.listSessions("123", "userX").blockingGet().sessions())
         .isEmpty();
@@ -347,16 +350,7 @@ public class VertexAiSessionServiceTest {
   @Test
   public void listSessions_nullSessionsField_returnsEmpty() {
     when(mockApiClient.request("GET", "reasoningEngines/123/sessions?filter=user_id=userY", ""))
-        .thenReturn(
-            new ApiResponse() {
-              @Override
-              public ResponseBody getResponseBody() {
-                return ResponseBody.create(JSON_MEDIA_TYPE, "{\"sessions\": null}");
-              }
-
-              @Override
-              public void close() {}
-            });
+        .thenReturn(apiResponseJson("{\"sessions\": null}"));
 
     assertThat(vertexAiSessionService.listSessions("123", "userY").blockingGet().sessions())
         .isEmpty();
