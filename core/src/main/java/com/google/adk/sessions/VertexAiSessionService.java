@@ -130,9 +130,6 @@ public final class VertexAiSessionService implements BaseSessionService {
     }
     List<Map<String, Object>> apiSessions =
         objectMapper.convertValue(sessionsNode, new TypeReference<List<Map<String, Object>>>() {});
-    if (apiSessions == null) {
-      apiSessions = new ArrayList<>();
-    }
 
     List<Session> sessions = new ArrayList<>();
     for (Map<String, Object> apiSession : apiSessions) {
