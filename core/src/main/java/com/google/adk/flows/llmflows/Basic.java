@@ -57,7 +57,9 @@ public final class Basic implements RequestProcessor {
             .config(agent.generateContentConfig().orElse(GenerateContentConfig.builder().build()))
             .liveConnectConfig(liveConnectConfigBuilder.build());
 
-    agent.outputSchema().ifPresent(builder::outputSchema);
+    if (agent.outputSchema().isPresent() && agent.toolsUnion().isEmpty()) {
+      builder.outputSchema(agent.outputSchema().get());
+    }
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
   }
