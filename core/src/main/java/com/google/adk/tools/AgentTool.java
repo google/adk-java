@@ -28,6 +28,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -74,6 +75,11 @@ public class AgentTool extends BaseTool {
     super(agent.name(), agent.description());
     this.agent = agent;
     this.skipSummarization = skipSummarization;
+  }
+
+  @VisibleForTesting
+  BaseAgent getAgent() {
+    return agent;
   }
 
   @Override
