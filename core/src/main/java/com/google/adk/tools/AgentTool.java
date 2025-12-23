@@ -25,9 +25,15 @@ import com.google.adk.agents.BaseAgentConfig;
 import com.google.adk.agents.ConfigAgentUtils;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.artifacts.BaseArtifactService;
+import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
-import com.google.adk.runner.InMemoryRunner;
+import com.google.adk.memory.BaseMemoryService;
+import com.google.adk.memory.InMemoryMemoryService;
+import com.google.adk.plugins.BasePlugin;
 import com.google.adk.runner.Runner;
+import com.google.adk.sessions.BaseSessionService;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -35,6 +41,7 @@ import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Single;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -43,6 +50,19 @@ public class AgentTool extends BaseTool {
 
   private final BaseAgent agent;
   private final boolean skipSummarization;
+  private final List<BasePlugin> plugins;
+  private final BaseSessionService sessionService;
+  private final BaseArtifactService artifactService;
+  private final BaseMemoryService memoryService;
+
+  public static AgentTool create(
+      BaseAgent agent,
+      BaseSessionService sessionService,
+      BaseArtifactService artifactService,
+      BaseMemoryService memoryService,
+      List<BasePlugin> plugins) {
+    return new AgentTool(agent, false, sessionService, artifactService, memoryService, plugins);
+  }
 
   public static BaseTool fromConfig(ToolArgsConfig args, String configAbsPath)
       throws ConfigurationException {
@@ -63,17 +83,27 @@ public class AgentTool extends BaseTool {
   }
 
   public static AgentTool create(BaseAgent agent, boolean skipSummarization) {
-    return new AgentTool(agent, skipSummarization);
+    return new AgentTool(agent, skipSummarization, null, null, null, ImmutableList.of());
   }
 
   public static AgentTool create(BaseAgent agent) {
-    return new AgentTool(agent, false);
+    return new AgentTool(agent, false, null, null, null, ImmutableList.of());
   }
 
-  protected AgentTool(BaseAgent agent, boolean skipSummarization) {
+  protected AgentTool(
+      BaseAgent agent,
+      boolean skipSummarization,
+      BaseSessionService sessionService,
+      BaseArtifactService artifactService,
+      BaseMemoryService memoryService,
+      List<BasePlugin> plugins) {
     super(agent.name(), agent.description());
     this.agent = agent;
     this.skipSummarization = skipSummarization;
+    this.sessionService = sessionService;
+    this.artifactService = artifactService;
+    this.memoryService = memoryService;
+    this.plugins = plugins != null ? plugins : ImmutableList.of();
   }
 
   @Override
@@ -126,12 +156,34 @@ public class AgentTool extends BaseTool {
       content = Content.fromParts(Part.fromText(input.toString()));
     }
 
-    Runner runner = new InMemoryRunner(this.agent, toolContext.agentName());
+    // Determine effective services: use injected singletons if present, otherwise create fresh
+    // instances per run (default behavior)
+    BaseSessionService effectiveSessionService =
+        this.sessionService != null ? this.sessionService : new InMemorySessionService();
+    BaseArtifactService effectiveArtifactService =
+        this.artifactService != null ? this.artifactService : new InMemoryArtifactService();
+    BaseMemoryService effectiveMemoryService =
+        this.memoryService != null ? this.memoryService : new InMemoryMemoryService();
+
+    Runner runner =
+        new Runner(
+            this.agent,
+            toolContext.agentName(),
+            effectiveArtifactService,
+            effectiveSessionService,
+            effectiveMemoryService,
+            this.plugins);
+
+    String userId = "tmp-user";
+    if (toolContext.userId() != null) {
+      userId = toolContext.userId();
+    }
+
     // Session state is final, can't update to toolContext state
     // session.toBuilder().setState(toolContext.getState());
     return runner
         .sessionService()
-        .createSession(toolContext.agentName(), "tmp-user", toolContext.state(), null)
+        .createSession(toolContext.agentName(), userId, toolContext.state(), null)
         .flatMapPublisher(session -> runner.runAsync(session.userId(), session.id(), content))
         .lastElement()
         .map(Optional::of)
@@ -162,3 +214,4 @@ public class AgentTool extends BaseTool {
             });
   }
 }
+
