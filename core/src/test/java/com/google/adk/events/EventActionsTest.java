@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.tools.ToolConfirmation;
 import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Test;
@@ -30,17 +31,25 @@ import org.junit.runners.JUnit4;
 public final class EventActionsTest {
 
   private static final Part PART = Part.builder().text("text").build();
+  private static final Content CONTENT = Content.builder().parts(PART).build();
   private static final ToolConfirmation TOOL_CONFIRMATION =
       ToolConfirmation.builder().hint("hint").confirmed(true).build();
+  private static final EventCompaction COMPACTION =
+      EventCompaction.builder()
+          .startTimestamp(123L)
+          .endTimestamp(456L)
+          .compactedContent(CONTENT)
+          .build();
 
   @Test
   public void toBuilder_createsBuilderWithSameValues() {
     EventActions eventActionsWithSkipSummarization =
-        EventActions.builder().skipSummarization(true).build();
+        EventActions.builder().skipSummarization(true).compaction(COMPACTION).build();
 
     EventActions eventActionsAfterRebuild = eventActionsWithSkipSummarization.toBuilder().build();
 
     assertThat(eventActionsAfterRebuild).isEqualTo(eventActionsWithSkipSummarization);
+    assertThat(eventActionsAfterRebuild.compaction()).hasValue(COMPACTION);
   }
 
   @Test
@@ -55,6 +64,7 @@ public final class EventActionsTest {
                     ImmutableMap.of("config1", new ConcurrentHashMap<>(ImmutableMap.of("k", "v")))))
             .requestedToolConfirmations(
                 new ConcurrentHashMap<>(ImmutableMap.of("tool1", TOOL_CONFIRMATION)))
+            .compaction(COMPACTION)
             .build();
     EventActions eventActions2 =
         EventActions.builder()
@@ -86,5 +96,6 @@ public final class EventActionsTest {
     assertThat(merged.requestedToolConfirmations())
         .containsExactly("tool1", TOOL_CONFIRMATION, "tool2", TOOL_CONFIRMATION);
     assertThat(merged.endInvocation()).hasValue(true);
+    assertThat(merged.compaction()).hasValue(COMPACTION);
   }
 }
