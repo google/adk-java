@@ -25,7 +25,7 @@ import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
 import com.google.common.primitives.Booleans;
-import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.spec.McpSchema.ListToolsResult;
 import io.reactivex.rxjava3.core.Flowable;
@@ -34,6 +34,8 @@ import java.util.Objects;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 /**
  * Connects to a MCP Server, and retrieves MCP Tools into ADK Tools.
@@ -49,7 +51,7 @@ import org.slf4j.LoggerFactory;
 public class McpToolset implements BaseToolset {
   private static final Logger logger = LoggerFactory.getLogger(McpToolset.class);
   private final McpSessionManager mcpSessionManager;
-  private McpSyncClient mcpSession;
+  private McpAsyncClient mcpSession;
   private final ObjectMapper objectMapper;
   private final Optional<Object> toolFilter;
 
@@ -203,14 +205,15 @@ public class McpToolset implements BaseToolset {
             () -> {
               if (this.mcpSession == null) {
                 logger.info("MCP session is null, initializing.");
-                this.mcpSession = this.mcpSessionManager.createSession();
+                this.mcpSession = this.mcpSessionManager.createAsyncSession();
               }
 
               // Retrieve tools from the MCP session, wrap them in McpTool, filter them, and return
               // as a Flowable.
-              ListToolsResult toolsResponse = this.mcpSession.listTools();
-              return Flowable.fromStream(
-                  toolsResponse.tools().stream()
+              Mono<ListToolsResult> toolsResponse = this.mcpSession.listTools();
+              return Flowable.fromPublisher(
+                  toolsResponse
+                      .flatMapMany(result -> Flux.fromIterable(result.tools()))
                       .map(
                           tool ->
                               new McpTool(

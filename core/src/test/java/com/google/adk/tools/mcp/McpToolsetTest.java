@@ -30,7 +30,7 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.mcp.McpToolset.McpToolsetConfig;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.List;
@@ -42,13 +42,14 @@ import org.junit.runners.JUnit4;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import reactor.core.publisher.Mono;
 
 @RunWith(JUnit4.class)
 public class McpToolsetTest {
   @Rule public final MockitoRule mocks = MockitoJUnit.rule();
 
   @Mock private McpSessionManager mockMcpSessionManager;
-  @Mock private McpSyncClient mockMcpSyncClient;
+  @Mock private McpAsyncClient mockMcpAsyncClient;
   @Mock private ReadonlyContext mockReadonlyContext;
 
   private static final McpJsonMapper jsonMapper = McpJsonMapper.getDefault();
@@ -320,8 +321,8 @@ public class McpToolsetTest {
     McpSchema.ListToolsResult mockResult =
         new McpSchema.ListToolsResult(ImmutableList.of(mockTool1, mockTool2, mockTool3), null);
 
-    when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
-    when(mockMcpSyncClient.listTools()).thenReturn(mockResult);
+    when(mockMcpSessionManager.createAsyncSession()).thenReturn(mockMcpAsyncClient);
+    when(mockMcpAsyncClient.listTools()).thenReturn(Mono.just(mockResult));
 
     McpToolset toolset =
         new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper(), Optional.of(toolFilter));
@@ -331,14 +332,15 @@ public class McpToolsetTest {
     assertThat(tools.stream().map(BaseTool::name).collect(ImmutableList.toImmutableList()))
         .containsExactly("tool1", "tool3")
         .inOrder();
-    verify(mockMcpSessionManager).createSession();
-    verify(mockMcpSyncClient).listTools();
+    verify(mockMcpSessionManager).createAsyncSession();
+    verify(mockMcpAsyncClient).listTools();
   }
 
   @Test
   public void getTools_retriesAndFailsAfterMaxRetries() {
-    when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
-    when(mockMcpSyncClient.listTools()).thenThrow(new RuntimeException("Test Exception"));
+    when(mockMcpSessionManager.createAsyncSession()).thenReturn(mockMcpAsyncClient);
+    when(mockMcpAsyncClient.listTools())
+        .thenReturn(Mono.error(new RuntimeException("Test Exception")));
 
     McpToolset toolset =
         new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper(), Optional.empty());
@@ -349,18 +351,18 @@ public class McpToolsetTest {
         .awaitDone(5, SECONDS)
         .assertError(McpToolsetException.McpToolLoadingException.class);
 
-    verify(mockMcpSessionManager, times(3)).createSession();
-    verify(mockMcpSyncClient, times(3)).listTools();
+    verify(mockMcpSessionManager, times(3)).createAsyncSession();
+    verify(mockMcpAsyncClient, times(3)).listTools();
   }
 
   @Test
   public void getTools_succeedsOnLastRetryAttempt() {
     McpSchema.ListToolsResult mockResult = new McpSchema.ListToolsResult(ImmutableList.of(), null);
-    when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
-    when(mockMcpSyncClient.listTools())
-        .thenThrow(new RuntimeException("Attempt 1 failed"))
-        .thenThrow(new RuntimeException("Attempt 2 failed"))
-        .thenReturn(mockResult);
+    when(mockMcpSessionManager.createAsyncSession()).thenReturn(mockMcpAsyncClient);
+    when(mockMcpAsyncClient.listTools())
+        .thenReturn(Mono.error(new RuntimeException("Attempt 1 failed")))
+        .thenReturn(Mono.error(new RuntimeException("Attempt 2 failed")))
+        .thenReturn(Mono.just(mockResult));
 
     McpToolset toolset =
         new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper(), Optional.empty());
@@ -368,7 +370,7 @@ public class McpToolsetTest {
     List<BaseTool> tools = toolset.getTools(mockReadonlyContext).toList().blockingGet();
 
     assertThat(tools).isEmpty();
-    verify(mockMcpSessionManager, times(3)).createSession();
-    verify(mockMcpSyncClient, times(3)).listTools();
+    verify(mockMcpSessionManager, times(3)).createAsyncSession();
+    verify(mockMcpAsyncClient, times(3)).listTools();
   }
 }

@@ -22,9 +22,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableMap;
-import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
-import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Map;
@@ -38,7 +37,7 @@ import org.slf4j.LoggerFactory;
  * <p>This wraps a MCP Tool interface and an active MCP Session. It invokes the MCP Tool through
  * executing the tool from remote MCP Session.
  */
-public final class McpTool extends AbstractMcpTool<McpSyncClient> {
+public final class McpTool extends AbstractMcpTool<McpAsyncClient> {
 
   private static final Logger logger = LoggerFactory.getLogger(McpTool.class);
 
@@ -50,7 +49,7 @@ public final class McpTool extends AbstractMcpTool<McpSyncClient> {
    * @param mcpSessionManager The MCP session manager to use to create new sessions.
    * @throws IllegalArgumentException If mcpTool or mcpSession are null.
    */
-  public McpTool(Tool mcpTool, McpSyncClient mcpSession, McpSessionManager mcpSessionManager) {
+  public McpTool(Tool mcpTool, McpAsyncClient mcpSession, McpSessionManager mcpSessionManager) {
     super(mcpTool, mcpSession, mcpSessionManager, JsonBaseModel.getMapper());
   }
 
@@ -65,24 +64,22 @@ public final class McpTool extends AbstractMcpTool<McpSyncClient> {
    */
   public McpTool(
       Tool mcpTool,
-      McpSyncClient mcpSession,
+      McpAsyncClient mcpSession,
       McpSessionManager mcpSessionManager,
       ObjectMapper objectMapper) {
     super(mcpTool, mcpSession, mcpSessionManager, objectMapper);
   }
 
   private void reinitializeSession() {
-    this.mcpSession = this.mcpSessionManager.createSession();
+    this.mcpSession = this.mcpSessionManager.createAsyncSession();
   }
 
   @Override
   public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
-    return Single.<Map<String, Object>>fromCallable(
-            () -> {
-              CallToolResult callResult =
-                  mcpSession.callTool(new CallToolRequest(this.name(), ImmutableMap.copyOf(args)));
-              return wrapCallResult(this.objectMapper, this.name(), callResult);
-            })
+    return Single.fromPublisher(
+            mcpSession
+                .callTool(new CallToolRequest(this.name(), ImmutableMap.copyOf(args)))
+                .map(result -> wrapCallResult(this.objectMapper, this.name(), result)))
         .retryWhen(
             errors ->
                 errors
