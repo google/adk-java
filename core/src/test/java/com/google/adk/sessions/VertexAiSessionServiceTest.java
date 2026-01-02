@@ -25,6 +25,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import okhttp3.MediaType;
+import okhttp3.ResponseBody;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -37,6 +39,20 @@ import org.mockito.MockitoAnnotations;
 public class VertexAiSessionServiceTest {
 
   private static final ObjectMapper mapper = JsonBaseModel.getMapper();
+  private static final MediaType JSON_MEDIA_TYPE =
+      MediaType.parse("application/json; charset=utf-8");
+
+  private static ApiResponse apiResponseJson(String json) {
+    return new ApiResponse() {
+      @Override
+      public ResponseBody getResponseBody() {
+        return ResponseBody.create(JSON_MEDIA_TYPE, json);
+      }
+
+      @Override
+      public void close() {}
+    };
+  }
 
   private static final String MOCK_SESSION_STRING_1 =
       """
@@ -319,6 +335,24 @@ public class VertexAiSessionServiceTest {
   @Test
   public void listSessions_empty() {
     assertThat(vertexAiSessionService.listSessions("789", "user1").blockingGet().sessions())
+        .isEmpty();
+  }
+
+  @Test
+  public void listSessions_missingSessionsField_returnsEmpty() {
+    when(mockApiClient.request("GET", "reasoningEngines/123/sessions?filter=user_id=userX", ""))
+        .thenReturn(apiResponseJson("{}"));
+
+    assertThat(vertexAiSessionService.listSessions("123", "userX").blockingGet().sessions())
+        .isEmpty();
+  }
+
+  @Test
+  public void listSessions_nullSessionsField_returnsEmpty() {
+    when(mockApiClient.request("GET", "reasoningEngines/123/sessions?filter=user_id=userY", ""))
+        .thenReturn(apiResponseJson("{\"sessions\": null}"));
+
+    assertThat(vertexAiSessionService.listSessions("123", "userY").blockingGet().sessions())
         .isEmpty();
   }
 
