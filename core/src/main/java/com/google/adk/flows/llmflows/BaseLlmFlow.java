@@ -68,7 +68,6 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
   // Warning: This is local, in-process state that won't be preserved if the runtime is restarted.
   // "Max steps" is experimental and may evolve in the future (e.g., to support persistence).
-  protected int stepsCompleted = 0;
   protected final int maxSteps;
 
   public BaseLlmFlow(
@@ -393,8 +392,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
    */
   @Override
   public Flowable<Event> run(InvocationContext invocationContext) {
+    return run(invocationContext, 0);
+  }
+
+  private Flowable<Event> run(InvocationContext invocationContext, int stepsCompleted) {
     Flowable<Event> currentStepEvents = runOneStep(invocationContext).cache();
-    if (++stepsCompleted >= maxSteps) {
+    if (stepsCompleted + 1 >= maxSteps) {
       logger.debug("Ending flow execution because max steps reached.");
       return currentStepEvents;
     }
@@ -413,7 +416,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     return Flowable.empty();
                   } else {
                     logger.debug("Continuing to next step of the flow.");
-                    return Flowable.defer(() -> run(invocationContext));
+                    return Flowable.defer(() -> run(invocationContext, stepsCompleted + 1));
                   }
                 }));
   }
