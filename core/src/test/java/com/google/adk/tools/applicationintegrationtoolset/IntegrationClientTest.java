@@ -11,10 +11,11 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.adk.tools.applicationintegrationtoolset.ConnectionsClient.EntitySchemaAndOperations;
-import com.google.adk.tools.applicationintegrationtoolset.IntegrationConnectorTool.HttpExecutor;
+import com.google.auth.Credentials;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.io.IOException;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
@@ -35,9 +36,11 @@ public class IntegrationClientTest {
 
   @Rule public final MockitoRule mockito = MockitoJUnit.rule();
 
-  @Mock private HttpExecutor mockHttpExecutor;
+  @Mock private HttpClient mockHttpClient;
   @Mock private HttpResponse<String> mockHttpResponse;
   @Mock private ConnectionsClient mockConnectionsClient; // The mock we want the factory to return
+  @Mock private CredentialsHelper mockCredentialsHelper;
+  @Mock private Credentials mockCredentials;
 
   private static final String PROJECT = "test-project";
   private static final String LOCATION = "us-central1";
@@ -48,7 +51,7 @@ public class IntegrationClientTest {
 
   @Before
   public void setUp() throws IOException {
-    when(mockHttpExecutor.getToken()).thenReturn("fake-test-token");
+    when(mockCredentialsHelper.getGoogleCredentials(any())).thenReturn(mockCredentials);
   }
 
   @Test
@@ -65,7 +68,9 @@ public class IntegrationClientTest {
                     CONNECTION,
                     null,
                     null,
-                    mockHttpExecutor));
+                    null,
+                    mockHttpClient,
+                    mockCredentialsHelper));
 
     assertThat(exception)
         .hasMessageThat()
@@ -86,7 +91,9 @@ public class IntegrationClientTest {
                     CONNECTION,
                     ImmutableMap.of(),
                     null,
-                    mockHttpExecutor));
+                    null,
+                    mockHttpClient,
+                    mockCredentialsHelper));
 
     assertThat(exception).hasMessageThat().contains("entityOperations map cannot be empty");
   }
@@ -108,7 +115,7 @@ public class IntegrationClientTest {
                     CONNECTION,
                     invalidEntityOperations,
                     null,
-                    mockHttpExecutor));
+                    mockHttpClient));
 
     assertThat(exception)
         .hasMessageThat()
@@ -132,7 +139,7 @@ public class IntegrationClientTest {
                     CONNECTION,
                     invalidEntityOperations,
                     null,
-                    mockHttpExecutor));
+                    mockHttpClient));
 
     assertThat(exception)
         .hasMessageThat()
@@ -156,7 +163,9 @@ public class IntegrationClientTest {
                     CONNECTION,
                     invalidEntityOperations,
                     null,
-                    mockHttpExecutor));
+                    null,
+                    mockHttpClient,
+                    mockCredentialsHelper));
 
     assertThat(exception).hasMessageThat().contains("Operations for entity 'key1' cannot be null");
   }
@@ -181,7 +190,9 @@ public class IntegrationClientTest {
                     CONNECTION,
                     invalidEntityOperations,
                     null,
-                    mockHttpExecutor));
+                    null,
+                    mockHttpClient,
+                    mockCredentialsHelper));
 
     assertThat(exception)
         .hasMessageThat()
@@ -205,7 +216,9 @@ public class IntegrationClientTest {
                     CONNECTION,
                     invalidEntityOperations,
                     null,
-                    mockHttpExecutor));
+                    null,
+                    mockHttpClient,
+                    mockCredentialsHelper));
 
     assertThat(exception)
         .hasMessageThat()
@@ -227,7 +240,9 @@ public class IntegrationClientTest {
                     CONNECTION,
                     null,
                     ImmutableList.of(),
-                    mockHttpExecutor));
+                    null,
+                    mockHttpClient,
+                    mockCredentialsHelper));
 
     assertThat(exception).hasMessageThat().contains("Actions list cannot be empty");
   }
@@ -250,7 +265,9 @@ public class IntegrationClientTest {
                     CONNECTION,
                     null,
                     invalidActions,
-                    mockHttpExecutor));
+                    null,
+                    mockHttpClient,
+                    mockCredentialsHelper));
 
     assertThat(exception).hasMessageThat().contains("Actions list cannot contain null values");
   }
@@ -270,7 +287,9 @@ public class IntegrationClientTest {
                     CONNECTION,
                     null,
                     ImmutableList.of("action1", ""),
-                    mockHttpExecutor));
+                    null,
+                    mockHttpClient,
+                    mockCredentialsHelper));
 
     assertThat(exception).hasMessageThat().contains("Actions list cannot contain empty strings");
   }
@@ -288,7 +307,9 @@ public class IntegrationClientTest {
             CONNECTION,
             null,
             validActions,
-            mockHttpExecutor);
+            null,
+            mockHttpClient,
+            mockCredentialsHelper);
   }
 
   @Test
@@ -305,7 +326,9 @@ public class IntegrationClientTest {
             CONNECTION,
             validEntityOperations,
             null,
-            mockHttpExecutor);
+            null,
+            mockHttpClient,
+            mockCredentialsHelper);
   }
 
   @Test
@@ -320,12 +343,14 @@ public class IntegrationClientTest {
             null,
             null,
             null,
-            mockHttpExecutor);
+            null,
+            mockHttpClient,
+            mockCredentialsHelper);
     String mockResponse = "{\"openApiSpec\":\"{}\"}";
 
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn(mockResponse);
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(HttpRequest.class), any());
 
     String result = client.generateOpenApiSpec();
 
@@ -337,10 +362,19 @@ public class IntegrationClientTest {
   public void generateOpenApiSpec_httpError_throwsException() throws Exception {
     IntegrationClient client =
         new IntegrationClient(
-            PROJECT, LOCATION, INTEGRATION, null, null, null, null, mockHttpExecutor);
+            PROJECT,
+            LOCATION,
+            INTEGRATION,
+            null,
+            null,
+            null,
+            null,
+            null,
+            mockHttpClient,
+            mockCredentialsHelper);
     when(mockHttpResponse.statusCode()).thenReturn(404);
     when(mockHttpResponse.body()).thenReturn("Not Found");
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(HttpRequest.class), any());
 
     Exception exception = assertThrows(Exception.class, client::generateOpenApiSpec);
     assertThat(exception).hasMessageThat().contains("Error fetching OpenAPI spec. Status: 404");
@@ -357,7 +391,9 @@ public class IntegrationClientTest {
             CONNECTION,
             ImmutableMap.of("Issue", ImmutableList.of("GET")),
             null,
-            mockHttpExecutor);
+            null,
+            mockHttpClient,
+            mockCredentialsHelper);
 
     IntegrationClient spiedClient = spy(realClient);
 
@@ -378,7 +414,8 @@ public class IntegrationClientTest {
   @Test
   public void getOperationIdFromPathUrl_success() throws Exception {
     IntegrationClient client =
-        new IntegrationClient(null, null, null, null, null, null, null, null);
+        new IntegrationClient(
+            null, null, null, null, null, null, null, null, mockHttpClient, mockCredentialsHelper);
     String openApiSpec =
         "{\"openApiSpec\":"
             + "\"{\\\"paths\\\":{\\\"/my/path\\\":{\\\"post\\\":{\\\"operationId\\\":\\\"my-op-id\\\"}}}}\"}";
@@ -391,7 +428,8 @@ public class IntegrationClientTest {
   @Test
   public void getOperationIdFromPathUrl_pathNotFound_throwsException() {
     IntegrationClient client =
-        new IntegrationClient(null, null, null, null, null, null, null, null);
+        new IntegrationClient(
+            null, null, null, null, null, null, null, null, mockHttpClient, mockCredentialsHelper);
     String openApiSpec =
         "{\"openApiSpec\":"
             + "\"{\\\"paths\\\":{\\\"/my/path\\\":{\\\"post\\\":{\\\"operationId\\\":\\\"my-op-id\\\"}}}}\"}";
@@ -405,7 +443,8 @@ public class IntegrationClientTest {
   @Test
   public void getOperationIdFromPathUrl_invalidOpenApiSpec_throwsException() {
     IntegrationClient client =
-        new IntegrationClient(null, null, null, null, null, null, null, null);
+        new IntegrationClient(
+            null, null, null, null, null, null, null, null, mockHttpClient, mockCredentialsHelper);
     String openApiSpec = "{\"invalidKey\":\"value\"}";
 
     IllegalArgumentException e =
@@ -427,7 +466,9 @@ public class IntegrationClientTest {
             CONNECTION,
             ImmutableMap.of("Issue", ImmutableList.of("GET")),
             null,
-            mockHttpExecutor);
+            null,
+            mockHttpClient,
+            mockCredentialsHelper);
 
     IntegrationClient spyClient = spy(client);
     doReturn(mockConnectionsClient).when(spyClient).createConnectionsClient();

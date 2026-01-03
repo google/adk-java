@@ -8,9 +8,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
-import com.google.adk.tools.applicationintegrationtoolset.IntegrationConnectorTool.DefaultHttpExecutor;
-import com.google.adk.tools.applicationintegrationtoolset.IntegrationConnectorTool.HttpExecutor;
 import io.reactivex.rxjava3.core.Flowable;
+import java.net.http.HttpClient;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -30,7 +29,8 @@ public class ApplicationIntegrationToolset implements BaseToolset {
   @Nullable String toolNamePrefix;
   @Nullable String toolInstructions;
   public static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
-  HttpExecutor httpExecutor;
+  private final HttpClient httpClient;
+  private final CredentialsHelper credentialsHelper;
 
   /**
    * ApplicationIntegrationToolset generates tools from a given Application Integration resource.
@@ -85,7 +85,8 @@ public class ApplicationIntegrationToolset implements BaseToolset {
         serviceAccountJson,
         toolNamePrefix,
         toolInstructions,
-        new DefaultHttpExecutor().createExecutor(serviceAccountJson));
+        HttpClient.newHttpClient(),
+        new GoogleCredentialsHelper());
   }
 
   ApplicationIntegrationToolset(
@@ -99,7 +100,8 @@ public class ApplicationIntegrationToolset implements BaseToolset {
       String serviceAccountJson,
       String toolNamePrefix,
       String toolInstructions,
-      HttpExecutor httpExecutor) {
+      HttpClient httpClient,
+      CredentialsHelper credentialsHelper) {
     this.project = project;
     this.location = location;
     this.integration = integration;
@@ -110,7 +112,8 @@ public class ApplicationIntegrationToolset implements BaseToolset {
     this.serviceAccountJson = serviceAccountJson;
     this.toolNamePrefix = toolNamePrefix;
     this.toolInstructions = toolInstructions;
-    this.httpExecutor = httpExecutor;
+    this.httpClient = httpClient;
+    this.credentialsHelper = credentialsHelper;
   }
 
   List<String> getPathUrl(String openApiSchemaString) throws Exception {
@@ -145,7 +148,9 @@ public class ApplicationIntegrationToolset implements BaseToolset {
               null,
               null,
               null,
-              this.httpExecutor);
+              this.serviceAccountJson,
+              this.httpClient,
+              this.credentialsHelper);
       openApiSchemaString = integrationClient.generateOpenApiSpec();
       List<String> pathUrls = getPathUrl(openApiSchemaString);
       for (String pathUrl : pathUrls) {
@@ -161,7 +166,8 @@ public class ApplicationIntegrationToolset implements BaseToolset {
                   null,
                   null,
                   this.serviceAccountJson,
-                  this.httpExecutor));
+                  this.httpClient,
+                  this.credentialsHelper));
         }
       }
     } else if (!isNullOrEmpty(this.connection)
@@ -175,7 +181,9 @@ public class ApplicationIntegrationToolset implements BaseToolset {
               this.connection,
               this.entityOperations,
               this.actions,
-              this.httpExecutor);
+              this.serviceAccountJson,
+              this.httpClient,
+              this.credentialsHelper);
       ObjectNode parentOpenApiSpec = OBJECT_MAPPER.createObjectNode();
       ObjectNode openApiSpec =
           integrationClient.getOpenApiSpecForConnection(toolNamePrefix, toolInstructions);
@@ -188,7 +196,14 @@ public class ApplicationIntegrationToolset implements BaseToolset {
         if (!isNullOrEmpty(toolName)) {
           ConnectionsClient connectionsClient =
               new ConnectionsClient(
-                  this.project, this.location, this.connection, this.httpExecutor, OBJECT_MAPPER);
+                  this.project,
+                  this.location,
+                  this.connection,
+                  this.serviceAccountJson,
+                  this.httpClient,
+                  this.credentialsHelper,
+                  OBJECT_MAPPER);
+
           ConnectionsClient.ConnectionDetails connectionDetails =
               connectionsClient.getConnectionDetails();
 
@@ -202,7 +217,8 @@ public class ApplicationIntegrationToolset implements BaseToolset {
                   connectionDetails.serviceName,
                   connectionDetails.host,
                   this.serviceAccountJson,
-                  this.httpExecutor));
+                  this.httpClient,
+                  this.credentialsHelper));
         }
       }
     } else {

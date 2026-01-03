@@ -4,11 +4,13 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.adk.tools.applicationintegrationtoolset.IntegrationConnectorTool.HttpExecutor;
+import com.google.auth.Credentials;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.io.IOException;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.HashMap;
@@ -28,7 +30,9 @@ public class ConnectionsClient {
   private final String location;
   private final String connection;
   private static final String CONNECTOR_URL = "https://connectors.googleapis.com";
-  private final HttpExecutor httpExecutor;
+  private final HttpClient httpClient;
+  private final String serviceAccountJson;
+  private final CredentialsHelper credentialsHelper;
   private final ObjectMapper objectMapper;
 
   /** Represents details of a connection. */
@@ -63,13 +67,34 @@ public class ConnectionsClient {
       String project,
       String location,
       String connection,
-      HttpExecutor httpExecutor,
+      String serviceAccountJson,
+      HttpClient httpClient,
+      CredentialsHelper credentialsHelper,
       ObjectMapper objectMapper) {
+
     this.project = project;
     this.location = location;
     this.connection = connection;
-    this.httpExecutor = httpExecutor;
+    this.httpClient = Preconditions.checkNotNull(httpClient);
     this.objectMapper = objectMapper;
+    this.serviceAccountJson = serviceAccountJson;
+    this.credentialsHelper = Preconditions.checkNotNull(credentialsHelper);
+  }
+
+  public ConnectionsClient(
+      String project,
+      String location,
+      String connection,
+      HttpClient httpClient,
+      ObjectMapper objectMapper) {
+    this(
+        project,
+        location,
+        connection,
+        null,
+        httpClient,
+        new GoogleCredentialsHelper(),
+        objectMapper);
   }
 
   /**
@@ -173,16 +198,17 @@ public class ConnectionsClient {
   }
 
   private HttpResponse<String> executeApiCall(String url) throws IOException, InterruptedException {
-    HttpRequest request =
+    HttpRequest.Builder requestBuilder =
         HttpRequest.newBuilder()
             .uri(URI.create(url))
             .header("Content-Type", "application/json")
-            .header("Authorization", "Bearer " + httpExecutor.getToken())
-            .GET()
-            .build();
+            .GET();
+
+    Credentials credentials = credentialsHelper.getGoogleCredentials(serviceAccountJson);
+    requestBuilder = CredentialsHelper.populateHeaders(requestBuilder, credentials);
 
     HttpResponse<String> response =
-        httpExecutor.send(request, HttpResponse.BodyHandlers.ofString());
+        httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
 
     if (response.statusCode() >= 400) {
       String body = response.body();
