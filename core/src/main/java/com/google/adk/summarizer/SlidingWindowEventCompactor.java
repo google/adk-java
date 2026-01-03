@@ -12,6 +12,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class performs events compaction in a sliding window fashion based on the {@link
@@ -19,13 +21,18 @@ import java.util.Set;
  */
 public final class SlidingWindowEventCompactor implements EventCompactor {
 
+  private static final Logger logger = LoggerFactory.getLogger(SlidingWindowEventCompactor.class);
+
   private final EventsCompactionConfig config;
   private final BaseEventSummarizer summarizer;
 
   public SlidingWindowEventCompactor(EventsCompactionConfig config) {
     this.config = config;
-    // TODO default to LLM summarizer
-    this.summarizer = config.summarizer().orElseThrow();
+    this.summarizer =
+        config
+            .summarizer()
+            .orElseThrow(
+                () -> new IllegalArgumentException("Summarizer is required for event compaction."));
   }
 
   /**
@@ -80,6 +87,8 @@ public final class SlidingWindowEventCompactor implements EventCompactor {
    */
   @Override
   public Completable compact(Session session, BaseSessionService sessionService) {
+    logger.debug("Running event compaction for session {}", session.id());
+
     return Completable.fromMaybe(
         getCompactionEvents(session)
             .flatMap(summarizer::summarizeEvents)

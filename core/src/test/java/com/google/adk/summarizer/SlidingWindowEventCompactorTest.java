@@ -2,6 +2,7 @@ package com.google.adk.summarizer;
 
 import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -60,6 +61,26 @@ public class SlidingWindowEventCompactorTest {
             .build();
 
     compactor.compact(session, mockSessionService).blockingSubscribe();
+    verify(mockSessionService, never()).appendEvent(any(), any());
+  }
+
+  @Test
+  public void compaction_notEnoughInvocationsAfterCompact() {
+    EventCompactor compactor =
+        new SlidingWindowEventCompactor(
+            new EventsCompactionConfig(2, 0, Optional.of(mockSummarizer)));
+    Session session =
+        Session.builder("id")
+            .events(
+                ImmutableList.of(
+                    Event.builder().invocationId("1").timestamp(1).build(),
+                    Event.builder().invocationId("2").timestamp(2).build(),
+                    createCompactedEvent(1, 2, "Summary 1-2"),
+                    Event.builder().invocationId("3").timestamp(3).build()))
+            .build();
+
+    compactor.compact(session, mockSessionService).blockingSubscribe();
+    verify(mockSummarizer, never()).summarizeEvents(anyList());
     verify(mockSessionService, never()).appendEvent(any(), any());
   }
 
