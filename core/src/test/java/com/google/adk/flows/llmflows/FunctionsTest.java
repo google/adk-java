@@ -31,6 +31,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -38,6 +39,39 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link Functions}. */
 @RunWith(JUnit4.class)
 public final class FunctionsTest {
+
+  private static final Event EVENT_WITH_NO_CONTENT =
+      Event.builder()
+          .id("event1")
+          .invocationId("invocation1")
+          .author("agent")
+          .content(Optional.empty())
+          .build();
+
+  private static final Event EVENT_WITH_NO_PARTS =
+      Event.builder()
+          .id("event1")
+          .invocationId("invocation1")
+          .author("agent")
+          .content(Content.builder().role("model").parts(ImmutableList.of()).build())
+          .build();
+
+  private static final Event EVENT_WITH_NO_FUNCTION_CALLS =
+      Event.builder()
+          .id("event1")
+          .invocationId("invocation1")
+          .author("agent")
+          .content(Content.fromParts(Part.fromText("hello")))
+          .build();
+
+  private static final Event EVENT_WITH_NON_CONFIRMATION_FUNCTION_CALL =
+      Event.builder()
+          .id("event1")
+          .invocationId("invocation1")
+          .author("agent")
+          .content(Content.fromParts(Part.fromFunctionCall("other_function", ImmutableMap.of())))
+          .build();
+
   @Test
   public void handleFunctionCalls_noFunctionCalls() {
     InvocationContext invocationContext = createInvocationContext(createRootAgent());
@@ -215,6 +249,7 @@ public final class FunctionsTest {
 
   @Test
   public void populateClientFunctionCallId_withExistingId_noChange() {
+    String id = "some_id";
     Event event =
         createEvent("event").toBuilder()
             .content(
@@ -223,13 +258,77 @@ public final class FunctionsTest {
                         .functionCall(
                             FunctionCall.builder()
                                 .name("echo_tool")
-                                .id("some_id")
+                                .id(id)
                                 .args(ImmutableMap.of("key", "value"))
                                 .build())
                         .build()))
             .build();
 
     Functions.populateClientFunctionCallId(event);
-    assertThat(event).isEqualTo(event);
+
+    assertThat(event.content().get().parts().get().get(0).functionCall().get().id()).hasValue(id);
+  }
+
+  @Test
+  public void getAskUserConfirmationFunctionCalls_eventWithNoContent_returnsEmptyList() {
+    assertThat(Functions.getAskUserConfirmationFunctionCalls(EVENT_WITH_NO_CONTENT)).isEmpty();
+  }
+
+  @Test
+  public void getAskUserConfirmationFunctionCalls_eventWithNoParts_returnsEmptyList() {
+    assertThat(Functions.getAskUserConfirmationFunctionCalls(EVENT_WITH_NO_PARTS)).isEmpty();
+  }
+
+  @Test
+  public void getAskUserConfirmationFunctionCalls_eventWithNoFunctionCalls_returnsEmptyList() {
+    assertThat(Functions.getAskUserConfirmationFunctionCalls(EVENT_WITH_NO_FUNCTION_CALLS))
+        .isEmpty();
+  }
+
+  @Test
+  public void
+      getAskUserConfirmationFunctionCalls_eventWithNonConfirmationFunctionCall_returnsEmptyList() {
+    assertThat(
+            Functions.getAskUserConfirmationFunctionCalls(
+                EVENT_WITH_NON_CONFIRMATION_FUNCTION_CALL))
+        .isEmpty();
+  }
+
+  @Test
+  public void getAskUserConfirmationFunctionCalls_eventWithConfirmationFunctionCall_returnsCall() {
+    FunctionCall confirmationCall =
+        FunctionCall.builder().name(Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME).build();
+    Event event =
+        Event.builder()
+            .id("event1")
+            .invocationId("invocation1")
+            .author("agent")
+            .content(Content.fromParts(Part.builder().functionCall(confirmationCall).build()))
+            .build();
+    ImmutableList<FunctionCall> result = Functions.getAskUserConfirmationFunctionCalls(event);
+    assertThat(result).containsExactly(confirmationCall);
+  }
+
+  @Test
+  public void
+      getAskUserConfirmationFunctionCalls_eventWithMixedParts_returnsOnlyConfirmationCalls() {
+    FunctionCall confirmationCall1 =
+        FunctionCall.builder().name(Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME).build();
+    FunctionCall confirmationCall2 =
+        FunctionCall.builder().name(Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME).build();
+    Event event =
+        Event.builder()
+            .id("event1")
+            .invocationId("invocation1")
+            .author("agent")
+            .content(
+                Content.fromParts(
+                    Part.fromText("hello"),
+                    Part.builder().functionCall(confirmationCall1).build(),
+                    Part.fromFunctionCall("other_function", ImmutableMap.of()),
+                    Part.builder().functionCall(confirmationCall2).build()))
+            .build();
+    ImmutableList<FunctionCall> result = Functions.getAskUserConfirmationFunctionCalls(event);
+    assertThat(result).containsExactly(confirmationCall1, confirmationCall2);
   }
 }
