@@ -127,6 +127,20 @@ public class ToolContext extends CallbackContext {
         .toolConfirmation(toolConfirmation.orElse(null));
   }
 
+  @Override
+  public String toString() {
+    return "ToolContext{"
+        + "invocationContext="
+        + invocationContext
+        + ", eventActions="
+        + eventActions
+        + ", functionCallId="
+        + functionCallId
+        + ", toolConfirmation="
+        + toolConfirmation
+        + '}';
+  }
+
   /** Builder for {@link ToolContext}. */
   public static final class Builder {
     private final InvocationContext invocationContext;

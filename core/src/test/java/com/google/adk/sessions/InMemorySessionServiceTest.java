@@ -82,13 +82,31 @@ public final class InMemorySessionServiceTest {
   public void lifecycle_listSessions() {
     InMemorySessionService sessionService = new InMemorySessionService();
 
-    Session session = sessionService.createSession("app-name", "user-id").blockingGet();
+    Session session =
+        sessionService
+            .createSession("app-name", "user-id", new ConcurrentHashMap<>(), "session-1")
+            .blockingGet();
+
+    ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
+    stateDelta.put("sessionKey", "sessionValue");
+    stateDelta.put("_app_appKey", "appValue");
+    stateDelta.put("_user_userKey", "userValue");
+
+    Event event =
+        Event.builder().actions(EventActions.builder().stateDelta(stateDelta).build()).build();
+
+    var unused = sessionService.appendEvent(session, event).blockingGet();
 
     ListSessionsResponse response =
         sessionService.listSessions(session.appName(), session.userId()).blockingGet();
+    Session listedSession = response.sessions().get(0);
 
     assertThat(response.sessions()).hasSize(1);
-    assertThat(response.sessions().get(0).id()).isEqualTo(session.id());
+    assertThat(listedSession.id()).isEqualTo(session.id());
+    assertThat(listedSession.events()).isEmpty();
+    assertThat(listedSession.state()).containsEntry("sessionKey", "sessionValue");
+    assertThat(listedSession.state()).containsEntry("_app_appKey", "appValue");
+    assertThat(listedSession.state()).containsEntry("_user_userKey", "userValue");
   }
 
   @Test

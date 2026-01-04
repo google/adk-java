@@ -24,8 +24,8 @@ import org.springframework.context.annotation.Configuration;
  *   <li>Add optional remote-proxy wiring for cases where no local agent bean is available.
  * </ul>
  *
- * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
- *     not use in production code.
+ * <p>**EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do not
+ * use in production code.
  */
 @Configuration
 @ComponentScan(basePackages = "com.google.adk.webservice")

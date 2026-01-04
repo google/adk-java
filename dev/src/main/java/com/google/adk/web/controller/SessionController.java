@@ -158,7 +158,6 @@ public class SessionController {
    * @param appName The application name.
    * @param userId The user ID.
    * @param sessionId The desired session ID.
-   * @param state Optional initial state for the session.
    * @return The newly created Session object.
    * @throws ResponseStatusException if a session with the given ID already exists (BAD_REQUEST) or
    *     if creation fails (INTERNAL_SERVER_ERROR).
@@ -222,7 +221,6 @@ public class SessionController {
    *
    * @param appName The application name.
    * @param userId The user ID.
-   * @param state Optional initial state for the session.
    * @return The newly created Session object.
    * @throws ResponseStatusException if creation fails (INTERNAL_SERVER_ERROR).
    */

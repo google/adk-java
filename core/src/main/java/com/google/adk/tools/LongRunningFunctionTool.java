@@ -16,6 +16,8 @@
 
 package com.google.adk.tools;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.google.adk.utils.ComponentRegistry;
 import java.lang.reflect.Method;
 import javax.annotation.Nullable;
 
@@ -70,6 +72,11 @@ public class LongRunningFunctionTool extends FunctionTool {
     return new LongRunningFunctionTool(instance, method, requireConfirmation);
   }
 
+  /** Creates a LongRunningFunctionTool from a FunctionTool. */
+  public static LongRunningFunctionTool create(FunctionTool tool) {
+    return create(tool.instance(), tool.func(), tool.requireConfirmation());
+  }
+
   private LongRunningFunctionTool(Method func, boolean requireConfirmation) {
     super(null, func, /* isLongRunning= */ true, requireConfirmation);
   }
@@ -77,5 +84,26 @@ public class LongRunningFunctionTool extends FunctionTool {
   private LongRunningFunctionTool(
       @Nullable Object instance, Method func, boolean requireConfirmation) {
     super(instance, func, /* isLongRunning= */ true, requireConfirmation);
+  }
+
+  public static LongRunningFunctionTool fromConfig(ToolArgsConfig config, String configAbsPath) {
+    String funcName =
+        config
+            .getOrEmpty("func", new TypeReference<String>() {})
+            .orElseThrow(
+                () ->
+                    new IllegalArgumentException("\"func\" argument should be name of a function"));
+
+    FunctionTool funcTool =
+        ComponentRegistry.getInstance()
+            .get(funcName, FunctionTool.class)
+            .orElseThrow(
+                () ->
+                    new IllegalArgumentException(
+                        String.format(
+                            "failed to find FunctionTool \"%s\" in the ComponentRegistry",
+                            funcName)));
+
+    return create(funcTool);
   }
 }

@@ -1,6 +1,7 @@
 package com.google.adk.tools;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.artifacts.InMemoryArtifactService;
@@ -13,6 +14,8 @@ import com.google.adk.runner.Runner;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
+import com.google.adk.tools.BaseTool.ToolArgsConfig;
+import com.google.adk.utils.ComponentRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.Keep;
@@ -90,6 +93,51 @@ public final class LongRunningFunctionToolTest {
     assertSubsequentInteraction("increase_by_one", ImmutableMap.of("result", 3), "response4", 5);
 
     assertThat(TestFunctions.functionCalledCount.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void fromConfig_validConfig_createsTool() throws Exception {
+    // Register a FunctionTool to be retrieved by fromConfig
+    FunctionTool testTool =
+        FunctionTool.create(
+            null, TestFunctions.class.getMethod("increaseByOne", int.class, ToolContext.class));
+    ComponentRegistry.getInstance().register("testFunc", testTool);
+
+    ToolArgsConfig config = new ToolArgsConfig();
+    config.put("func", "testFunc");
+    LongRunningFunctionTool longRunningTool =
+        LongRunningFunctionTool.fromConfig(config, "testPath");
+
+    assertThat(longRunningTool).isNotNull();
+    assertThat(longRunningTool.name()).isEqualTo("increase_by_one");
+  }
+
+  @Test
+  public void fromConfig_missingFunc_throwsException() {
+    ToolArgsConfig config = new ToolArgsConfig();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> LongRunningFunctionTool.fromConfig(config, "testPath"));
+  }
+
+  @Test
+  public void fromConfig_funcNotString_throwsException() {
+    ToolArgsConfig config = new ToolArgsConfig();
+    config.put("func", 123);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> LongRunningFunctionTool.fromConfig(config, "testPath"));
+  }
+
+  @Test
+  public void fromConfig_funcNotFound_throwsException() {
+    ToolArgsConfig config = new ToolArgsConfig();
+    config.put("func", "nonExistentFunc");
+    IllegalArgumentException exception =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> LongRunningFunctionTool.fromConfig(config, "testPath"));
+    assertThat(exception).hasMessageThat().contains("\"nonExistentFunc\"");
   }
 
   private static class TestFunctions {

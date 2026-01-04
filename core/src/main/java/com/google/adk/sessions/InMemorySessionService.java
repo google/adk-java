@@ -27,6 +27,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -35,8 +36,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * An in-memory implementation of {@link BaseSessionService} assuming {@link Session} objects are
@@ -50,9 +49,6 @@ import org.slf4j.LoggerFactory;
  * during retrieval operations ({@code getSession}, {@code createSession}).
  */
 public final class InMemorySessionService implements BaseSessionService {
-
-  private static final Logger logger = LoggerFactory.getLogger(InMemorySessionService.class);
-
   // Structure: appName -> userId -> sessionId -> Session
   private final ConcurrentMap<String, ConcurrentMap<String, ConcurrentMap<String, Session>>>
       sessions;
@@ -178,9 +174,7 @@ public final class InMemorySessionService implements BaseSessionService {
 
     // Create copies with empty events and state for the response
     List<Session> sessionCopies =
-        userSessionsMap.values().stream()
-            .map(this::copySessionMetadata)
-            .collect(toCollection(ArrayList::new));
+        prepareSessionsForListResponse(appName, userId, userSessionsMap.values());
 
     return Single.just(ListSessionsResponse.builder().sessions(sessionCopies).build());
   }
@@ -299,21 +293,6 @@ public final class InMemorySessionService implements BaseSessionService {
   }
 
   /**
-   * Creates a copy of the session containing only metadata fields (ID, appName, userId, timestamp).
-   * State and Events are explicitly *not* copied.
-   *
-   * @param original The session whose metadata to copy.
-   * @return A new Session instance with only metadata fields populated.
-   */
-  private Session copySessionMetadata(Session original) {
-    return Session.builder(original.id())
-        .appName(original.appName())
-        .userId(original.userId())
-        .lastUpdateTime(original.lastUpdateTime())
-        .build();
-  }
-
-  /**
    * Merges the app-specific and user-specific state into the provided *mutable* session's state
    * map.
    *
@@ -337,5 +316,25 @@ public final class InMemorySessionService implements BaseSessionService {
         .forEach((key, value) -> sessionState.put(State.USER_PREFIX + key, value));
 
     return session;
+  }
+
+  /**
+   * Prepares copies of sessions for use in a {@code listSessions} response.
+   *
+   * <p>For each session provided, this method creates a deep copy, clears the copy's event list,
+   * and merges app-level and user-level state into the copy's state map.
+   *
+   * @param appName The application name.
+   * @param userId The user ID.
+   * @param sessions The collection of sessions to process.
+   * @return A list of processed {@link Session} copies.
+   */
+  private List<Session> prepareSessionsForListResponse(
+      String appName, String userId, Collection<Session> sessions) {
+    return sessions.stream()
+        .map(this::copySession)
+        .peek(s -> s.events().clear())
+        .map(s -> mergeWithGlobalState(appName, userId, s))
+        .collect(toCollection(ArrayList::new));
   }
 }

@@ -42,7 +42,8 @@ public final class ExitLoopTool {
       name = "exit_loop",
       description = "Exits the loop.\n\nCall this function only when you are instructed to do so.")
   public static void exitLoop(ToolContext toolContext) {
-    toolContext.setActions(toolContext.actions().toBuilder().escalate(true).build());
+    toolContext.setActions(
+        toolContext.actions().toBuilder().escalate(true).skipSummarization(true).build());
   }
 
   private ExitLoopTool() {}

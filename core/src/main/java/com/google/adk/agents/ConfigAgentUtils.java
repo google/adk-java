@@ -307,6 +307,10 @@ public final class ConfigAgentUtils {
       return ParallelAgentConfig.class;
     }
 
+    if (agentClass == LoopAgent.class) {
+      return LoopAgentConfig.class;
+    }
+
     // TODO: Add more agent class to config class mappings as needed
     // Example:
     // if (agentClass == CustomAgent.class) {

@@ -25,8 +25,8 @@ import org.slf4j.LoggerFactory;
 /**
  * A thin HTTP client for interacting with an A2A-compliant agent endpoint.
  *
- * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
- *     not use in production code.
+ * <p>**EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do not
+ * use in production code.
  */
 public final class A2AClient {
 

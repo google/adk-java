@@ -1,4 +1,4 @@
-package com.google.adk.a2a;
+package com.google.adk.a2a.converters;
 
 import com.google.adk.events.Event;
 import com.google.common.collect.ImmutableList;
@@ -21,8 +21,8 @@ import java.util.Optional;
  * <p>This mirrors the Python A2A implementation where the in-flight user message is maintained
  * separately from the persisted transcript.
  *
- * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
- *     not use in production code.
+ * <p>**EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do not
+ * use in production code.
  */
 public final class ConversationPreprocessor {
 

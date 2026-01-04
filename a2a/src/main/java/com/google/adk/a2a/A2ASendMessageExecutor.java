@@ -3,6 +3,9 @@ package com.google.adk.a2a;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
+import com.google.adk.a2a.converters.ConversationPreprocessor;
+import com.google.adk.a2a.converters.RequestConverter;
+import com.google.adk.a2a.converters.ResponseConverter;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.InMemoryArtifactService;
@@ -32,8 +35,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Shared SendMessage execution between HTTP service and other integrations.
  *
- * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
- *     not use in production code.
+ * <p>**EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do not
+ * use in production code.
  */
 public final class A2ASendMessageExecutor {
   private static final Logger logger = LoggerFactory.getLogger(A2ASendMessageExecutor.class);

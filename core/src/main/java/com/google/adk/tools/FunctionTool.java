@@ -185,6 +185,17 @@ public class FunctionTool extends BaseTool {
     return func;
   }
 
+  /** Returns the underlying function's {@link Object} instance if present. */
+  @Nullable
+  Object instance() {
+    return instance;
+  }
+
+  /** Returns whether the function requires confirmation */
+  boolean requireConfirmation() {
+    return requireConfirmation;
+  }
+
   /** Returns true if the wrapped function returns a Flowable and can be used for streaming. */
   public boolean isStreaming() {
     Type returnType = func.getGenericReturnType();

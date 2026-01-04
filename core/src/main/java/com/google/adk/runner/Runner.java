@@ -24,6 +24,7 @@ import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.BaseArtifactService;
+import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.flows.llmflows.ResumabilityConfig;
@@ -31,12 +32,13 @@ import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.utils.CollectionUtils;
 import com.google.common.collect.ImmutableList;
-import com.google.errorprone.annotations.InlineMe;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
 import com.google.genai.types.Content;
 import com.google.genai.types.Modality;
@@ -48,8 +50,8 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
-import java.lang.reflect.Parameter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -67,7 +69,92 @@ public class Runner {
   private final PluginManager pluginManager;
   private final ResumabilityConfig resumabilityConfig;
 
-  /** Creates a new {@code Runner}. */
+  /** Builder for {@link Runner}. */
+  public static class Builder {
+    private BaseAgent agent;
+    private String appName;
+    private BaseArtifactService artifactService = new InMemoryArtifactService();
+    private BaseSessionService sessionService = new InMemorySessionService();
+    @Nullable private BaseMemoryService memoryService = null;
+    private List<BasePlugin> plugins = ImmutableList.of();
+    private ResumabilityConfig resumabilityConfig = new ResumabilityConfig();
+
+    @CanIgnoreReturnValue
+    public Builder agent(BaseAgent agent) {
+      this.agent = agent;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder appName(String appName) {
+      this.appName = appName;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder artifactService(BaseArtifactService artifactService) {
+      this.artifactService = artifactService;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder sessionService(BaseSessionService sessionService) {
+      this.sessionService = sessionService;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder memoryService(BaseMemoryService memoryService) {
+      this.memoryService = memoryService;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder plugins(List<BasePlugin> plugins) {
+      this.plugins = plugins;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder resumabilityConfig(ResumabilityConfig resumabilityConfig) {
+      this.resumabilityConfig = resumabilityConfig;
+      return this;
+    }
+
+    public Runner build() {
+      if (agent == null) {
+        throw new IllegalStateException("Agent must be provided.");
+      }
+      if (appName == null) {
+        throw new IllegalStateException("App name must be provided.");
+      }
+      if (artifactService == null) {
+        throw new IllegalStateException("Artifact service must be provided.");
+      }
+      if (sessionService == null) {
+        throw new IllegalStateException("Session service must be provided.");
+      }
+      return new Runner(
+          agent,
+          appName,
+          artifactService,
+          sessionService,
+          memoryService,
+          plugins,
+          resumabilityConfig);
+    }
+  }
+
+  public static Builder builder() {
+    return new Builder();
+  }
+
+  /**
+   * Creates a new {@code Runner}.
+   *
+   * @deprecated Use {@link Runner.Builder} instead.
+   */
+  @Deprecated
   public Runner(
       BaseAgent agent,
       String appName,
@@ -84,7 +171,12 @@ public class Runner {
         new ResumabilityConfig());
   }
 
-  /** Creates a new {@code Runner} with a list of plugins. */
+  /**
+   * Creates a new {@code Runner} with a list of plugins.
+   *
+   * @deprecated Use {@link Runner.Builder} instead.
+   */
+  @Deprecated
   public Runner(
       BaseAgent agent,
       String appName,
@@ -102,7 +194,12 @@ public class Runner {
         new ResumabilityConfig());
   }
 
-  /** Creates a new {@code Runner} with a list of plugins and resumability config. */
+  /**
+   * Creates a new {@code Runner} with a list of plugins and resumability config.
+   *
+   * @deprecated Use {@link Runner.Builder} instead.
+   */
+  @Deprecated
   public Runner(
       BaseAgent agent,
       String appName,
@@ -123,10 +220,8 @@ public class Runner {
   /**
    * Creates a new {@code Runner}.
    *
-   * @deprecated Use the constructor with {@code BaseMemoryService} instead even if with a null if
-   *     you don't need the memory service.
+   * @deprecated Use {@link Runner.Builder} instead.
    */
-  @InlineMe(replacement = "this(agent, appName, artifactService, sessionService, null)")
   @Deprecated
   public Runner(
       BaseAgent agent,
@@ -521,35 +616,39 @@ public class Runner {
     try {
       InvocationContext invocationContext =
           newInvocationContextForLive(session, Optional.of(liveRequestQueue), runConfig);
-      if (invocationContext.agent() instanceof LlmAgent) {
-        LlmAgent agent = (LlmAgent) invocationContext.agent();
-        for (BaseTool tool : agent.tools()) {
-          if (tool instanceof FunctionTool functionTool) {
-            for (Parameter parameter : functionTool.func().getParameters()) {
-              if (parameter.getType().equals(LiveRequestQueue.class)) {
-                invocationContext
-                    .activeStreamingTools()
-                    .put(functionTool.name(), new ActiveStreamingTool(new LiveRequestQueue()));
-              }
-            }
-          }
-        }
+
+      Single<InvocationContext> invocationContextSingle;
+      if (invocationContext.agent() instanceof LlmAgent agent) {
+        invocationContextSingle =
+            agent
+                .tools()
+                .map(
+                    tools -> {
+                      this.addActiveStreamingTools(invocationContext, tools);
+                      return invocationContext;
+                    });
+      } else {
+        invocationContextSingle = Single.just(invocationContext);
       }
-      return Telemetry.traceFlowable(
-          spanContext,
-          span,
-          () ->
-              invocationContext
-                  .agent()
-                  .runLive(invocationContext)
-                  .doOnNext(event -> this.sessionService.appendEvent(session, event))
-                  .onErrorResumeNext(
-                      throwable -> {
-                        span.setStatus(StatusCode.ERROR, "Error in runLive Flowable execution");
-                        span.recordException(throwable);
-                        span.end();
-                        return Flowable.error(throwable);
-                      }));
+
+      return invocationContextSingle.flatMapPublisher(
+          updatedInvocationContext ->
+              Telemetry.traceFlowable(
+                  spanContext,
+                  span,
+                  () ->
+                      updatedInvocationContext
+                          .agent()
+                          .runLive(updatedInvocationContext)
+                          .doOnNext(event -> this.sessionService.appendEvent(session, event))
+                          .onErrorResumeNext(
+                              throwable -> {
+                                span.setStatus(
+                                    StatusCode.ERROR, "Error in runLive Flowable execution");
+                                span.recordException(throwable);
+                                span.end();
+                                return Flowable.error(throwable);
+                              })));
     } catch (Throwable t) {
       span.setStatus(StatusCode.ERROR, "Error during runLive synchronous setup");
       span.recordException(t);
@@ -643,6 +742,23 @@ public class Runner {
     }
 
     return rootAgent;
+  }
+
+  private void addActiveStreamingTools(InvocationContext invocationContext, List<BaseTool> tools) {
+    tools.stream()
+        .filter(FunctionTool.class::isInstance)
+        .map(FunctionTool.class::cast)
+        .filter(this::hasLiveRequestQueueParameter)
+        .forEach(
+            tool ->
+                invocationContext
+                    .activeStreamingTools()
+                    .put(tool.name(), new ActiveStreamingTool(new LiveRequestQueue())));
+  }
+
+  private boolean hasLiveRequestQueueParameter(FunctionTool functionTool) {
+    return Arrays.stream(functionTool.func().getParameters())
+        .anyMatch(parameter -> parameter.getType().equals(LiveRequestQueue.class));
   }
 
   // TODO: run statelessly

@@ -1,7 +1,7 @@
 package com.google.adk.webservice;
 
 import com.google.adk.a2a.A2ASendMessageExecutor;
-import com.google.adk.a2a.ResponseConverter;
+import com.google.adk.a2a.converters.ResponseConverter;
 import io.a2a.spec.JSONRPCError;
 import io.a2a.spec.Message;
 import io.a2a.spec.MessageSendParams;
@@ -16,8 +16,8 @@ import org.springframework.stereotype.Service;
 /**
  * Core service that bridges the A2A JSON-RPC sendMessage API to a local ADK runner.
  *
- * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
- *     not use in production code.
+ * <p>**EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do not
+ * use in production code.
  */
 @Service
 public class A2ARemoteService {

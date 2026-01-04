@@ -44,6 +44,7 @@ import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public class RequestConfirmationLlmRequestProcessorTest {
+  private static final String ORIGINAL_FUNCTION_CALL_ID = "fc0";
   private static final String REQUEST_CONFIRMATION_FUNCTION_CALL_ID = "fc1";
   private static final String ECHO_TOOL_NAME = "echo_tool";
 
@@ -62,7 +63,7 @@ public class RequestConfirmationLlmRequestProcessorTest {
                                       "originalFunctionCall",
                                       ImmutableMap.of(
                                           "id",
-                                          "fc0",
+                                          ORIGINAL_FUNCTION_CALL_ID,
                                           "name",
                                           ECHO_TOOL_NAME,
                                           "args",
@@ -82,6 +83,21 @@ public class RequestConfirmationLlmRequestProcessorTest {
                               .id(REQUEST_CONFIRMATION_FUNCTION_CALL_ID)
                               .name(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
                               .response(ImmutableMap.of("confirmed", true))
+                              .build())
+                      .build()))
+          .build();
+
+  private static final Event USER_DECLINE_EVENT =
+      Event.builder()
+          .author("user")
+          .content(
+              Content.fromParts(
+                  Part.builder()
+                      .functionResponse(
+                          FunctionResponse.builder()
+                              .id(REQUEST_CONFIRMATION_FUNCTION_CALL_ID)
+                              .name(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+                              .response(ImmutableMap.of("confirmed", false))
                               .build())
                       .build()))
           .build();
@@ -107,15 +123,88 @@ public class RequestConfirmationLlmRequestProcessorTest {
     Event event = result.events().iterator().next();
     assertThat(event.functionResponses()).hasSize(1);
     FunctionResponse fr = event.functionResponses().get(0);
-    assertThat(fr.id()).hasValue("fc0");
+    assertThat(fr.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
     assertThat(fr.name()).hasValue(ECHO_TOOL_NAME);
     assertThat(fr.response()).hasValue(ImmutableMap.of("result", ImmutableMap.of("say", "hello")));
+  }
+
+  @Test
+  public void runAsync_withDecline_returnsErrorFunctionResponse() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session =
+        Session.builder("session_id")
+            .events(ImmutableList.of(REQUEST_CONFIRMATION_EVENT, USER_DECLINE_EVENT))
+            .build();
+
+    InvocationContext context = createInvocationContext(agent, session);
+
+    RequestProcessor.RequestProcessingResult result =
+        processor.processRequest(context, LlmRequest.builder().build()).blockingGet();
+
+    assertThat(result).isNotNull();
+    assertThat(result.events()).hasSize(1);
+    Event event = result.events().iterator().next();
+    assertThat(event.functionResponses()).hasSize(1);
+    FunctionResponse fr = event.functionResponses().get(0);
+    assertThat(fr.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
+    assertThat(fr.name()).hasValue(ECHO_TOOL_NAME);
+    assertThat(fr.response())
+        .hasValue(ImmutableMap.of("error", "User declined tool execution for echo_tool"));
+  }
+
+  @Test
+  public void runAsync_withConfirmationAndToolAlreadyCalled_doesNotCallOriginalFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Event toolResponseEvent =
+        Event.builder()
+            .author("model")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .id(ORIGINAL_FUNCTION_CALL_ID)
+                                .name(ECHO_TOOL_NAME)
+                                .response(
+                                    ImmutableMap.of("result", ImmutableMap.of("say", "hello")))
+                                .build())
+                        .build()))
+            .build();
+    Session session =
+        Session.builder("session_id")
+            .events(
+                ImmutableList.of(
+                    REQUEST_CONFIRMATION_EVENT, USER_CONFIRMATION_EVENT, toolResponseEvent))
+            .build();
+
+    InvocationContext context = createInvocationContext(agent, session);
+
+    RequestProcessor.RequestProcessingResult result =
+        processor.processRequest(context, LlmRequest.builder().build()).blockingGet();
+
+    assertThat(result).isNotNull();
+    assertThat(result.events()).isEmpty();
   }
 
   @Test
   public void runAsync_noEvents_empty() {
     LlmAgent agent = createAgentWithEchoTool();
     Session session = Session.builder("session_id").events(ImmutableList.of()).build();
+
+    assertThat(
+            processor
+                .processRequest(
+                    createInvocationContext(agent, session), LlmRequest.builder().build())
+                .blockingGet()
+                .events())
+        .isEmpty();
+  }
+
+  @Test
+  public void runAsync_noUserConfirmationEvent_empty() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session =
+        Session.builder("session_id").events(ImmutableList.of(REQUEST_CONFIRMATION_EVENT)).build();
 
     assertThat(
             processor

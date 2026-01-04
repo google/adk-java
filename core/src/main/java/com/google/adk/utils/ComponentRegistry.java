@@ -29,9 +29,13 @@ import com.google.adk.agents.SequentialAgent;
 import com.google.adk.tools.AgentTool;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
+import com.google.adk.tools.ExampleTool;
 import com.google.adk.tools.ExitLoopTool;
+import com.google.adk.tools.GoogleMapsTool;
 import com.google.adk.tools.GoogleSearchTool;
 import com.google.adk.tools.LoadArtifactsTool;
+import com.google.adk.tools.LongRunningFunctionTool;
+import com.google.adk.tools.UrlContextTool;
 import com.google.adk.tools.mcp.McpToolset;
 import java.util.Map;
 import java.util.Optional;
@@ -62,6 +66,8 @@ import org.slf4j.LoggerFactory;
  *   <li>"google_search" - GoogleSearchTool instance
  *   <li>"code_execution" - BuiltInCodeExecutionTool instance
  *   <li>"exit_loop" - ExitLoopTool instance
+ *   <li>"url_context" - UrlContextTool instance
+ *   <li>"google_maps_grounding" - GoogleMapsTool instance
  * </ul>
  *
  * <p>Example usage:
@@ -105,8 +111,12 @@ public class ComponentRegistry {
     registerAdkToolInstance("google_search", GoogleSearchTool.INSTANCE);
     registerAdkToolInstance("load_artifacts", LoadArtifactsTool.INSTANCE);
     registerAdkToolInstance("exit_loop", ExitLoopTool.INSTANCE);
+    registerAdkToolInstance("url_context", UrlContextTool.INSTANCE);
+    registerAdkToolInstance("google_maps_grounding", GoogleMapsTool.INSTANCE);
 
     registerAdkToolClass(AgentTool.class);
+    registerAdkToolClass(LongRunningFunctionTool.class);
+    registerAdkToolClass(ExampleTool.class);
 
     registerAdkToolsetClass(McpToolset.class);
     // TODO: add all python tools that also exist in Java.

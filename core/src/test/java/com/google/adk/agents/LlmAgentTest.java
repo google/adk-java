@@ -97,6 +97,25 @@ public final class LlmAgentTest {
   }
 
   @Test
+  public void testRun_withOutputKey_savesState_ignoresThoughts() {
+    Content modelContent =
+        Content.fromParts(
+            Part.fromText("Saved output"),
+            Part.fromText("Ignored thought").toBuilder().thought(true).build());
+    TestLlm testLlm = createTestLlm(createLlmResponse(modelContent));
+    LlmAgent agent = createTestAgentBuilder(testLlm).outputKey("myOutput").build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).content()).hasValue(modelContent);
+    assertThat(events.get(0).finalResponse()).isTrue();
+
+    assertThat(events.get(0).actions().stateDelta()).containsEntry("myOutput", "Saved output");
+  }
+
+  @Test
   public void testRun_withoutOutputKey_doesNotSaveState() {
     Content modelContent = Content.fromParts(Part.fromText("Some output"));
     TestLlm testLlm = createTestLlm(createLlmResponse(modelContent));
