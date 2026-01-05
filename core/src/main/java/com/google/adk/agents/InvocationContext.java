@@ -22,6 +22,7 @@ import com.google.adk.flows.llmflows.ResumabilityConfig;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
 import com.google.adk.plugins.PluginManager;
+import com.google.adk.reasoning.BaseReasoningBankService;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableSet;
@@ -42,6 +43,7 @@ public class InvocationContext {
   private final BaseSessionService sessionService;
   private final BaseArtifactService artifactService;
   private final BaseMemoryService memoryService;
+  private final BaseReasoningBankService reasoningBankService;
   private final PluginManager pluginManager;
   private final Optional<LiveRequestQueue> liveRequestQueue;
   private final Map<String, ActiveStreamingTool> activeStreamingTools = new ConcurrentHashMap<>();
@@ -60,6 +62,7 @@ public class InvocationContext {
     this.sessionService = builder.sessionService;
     this.artifactService = builder.artifactService;
     this.memoryService = builder.memoryService;
+    this.reasoningBankService = builder.reasoningBankService;
     this.pluginManager = builder.pluginManager;
     this.liveRequestQueue = builder.liveRequestQueue;
     this.branch = builder.branch;
@@ -204,6 +207,7 @@ public class InvocationContext {
             .sessionService(other.sessionService)
             .artifactService(other.artifactService)
             .memoryService(other.memoryService)
+            .reasoningBankService(other.reasoningBankService)
             .pluginManager(other.pluginManager)
             .liveRequestQueue(other.liveRequestQueue)
             .branch(other.branch)
@@ -232,6 +236,11 @@ public class InvocationContext {
   /** Returns the memory service for accessing agent memory. */
   public BaseMemoryService memoryService() {
     return memoryService;
+  }
+
+  /** Returns the reasoning bank service for accessing reasoning strategies. */
+  public BaseReasoningBankService reasoningBankService() {
+    return reasoningBankService;
   }
 
   /** Returns the plugin manager for accessing tools and plugins. */
@@ -376,6 +385,7 @@ public class InvocationContext {
     private BaseSessionService sessionService;
     private BaseArtifactService artifactService;
     private BaseMemoryService memoryService;
+    private BaseReasoningBankService reasoningBankService;
     private PluginManager pluginManager = new PluginManager();
     private Optional<LiveRequestQueue> liveRequestQueue = Optional.empty();
     private Optional<String> branch = Optional.empty();
@@ -420,6 +430,18 @@ public class InvocationContext {
     @CanIgnoreReturnValue
     public Builder memoryService(BaseMemoryService memoryService) {
       this.memoryService = memoryService;
+      return this;
+    }
+
+    /**
+     * Sets the reasoning bank service for accessing reasoning strategies.
+     *
+     * @param reasoningBankService the reasoning bank service to use.
+     * @return this builder instance for chaining.
+     */
+    @CanIgnoreReturnValue
+    public Builder reasoningBankService(BaseReasoningBankService reasoningBankService) {
+      this.reasoningBankService = reasoningBankService;
       return this;
     }
 
@@ -608,6 +630,7 @@ public class InvocationContext {
         && Objects.equals(sessionService, that.sessionService)
         && Objects.equals(artifactService, that.artifactService)
         && Objects.equals(memoryService, that.memoryService)
+        && Objects.equals(reasoningBankService, that.reasoningBankService)
         && Objects.equals(pluginManager, that.pluginManager)
         && Objects.equals(liveRequestQueue, that.liveRequestQueue)
         && Objects.equals(activeStreamingTools, that.activeStreamingTools)
@@ -626,6 +649,7 @@ public class InvocationContext {
         sessionService,
         artifactService,
         memoryService,
+        reasoningBankService,
         pluginManager,
         liveRequestQueue,
         activeStreamingTools,
