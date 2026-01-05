@@ -3,19 +3,21 @@ package com.google.adk.tools.applicationintegrationtoolset;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.core.JsonParseException;
 import com.google.adk.tools.BaseTool;
-import com.google.adk.tools.applicationintegrationtoolset.IntegrationConnectorTool.HttpExecutor;
+import com.google.auth.Credentials;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import java.io.IOException;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.Objects;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -28,13 +30,19 @@ import org.mockito.junit.MockitoRule;
 public final class ApplicationIntegrationToolsetTest {
 
   @Rule public final MockitoRule mockito = MockitoJUnit.rule();
-  @Mock private HttpExecutor mockHttpExecutor;
+  @Mock private HttpClient mockHttpClient;
+  @Mock private CredentialsHelper mockCredentialsHelper;
+  @Mock private Credentials mockCredentials;
 
   private static final String LOCATION = "us-central1";
   private static final String PROJECT = "test-project";
-  private static final String MOCK_ACCESS_TOKEN = "test-token";
   private static final String CONNECTION =
       "projects/test-project/locations/us-central1/connections/test-conn";
+
+  @Before
+  public void setUp() throws IOException {
+    when(mockCredentialsHelper.getGoogleCredentials(any())).thenReturn(mockCredentials);
+  }
 
   @Test
   public void getTools_forIntegration_success() throws Exception {
@@ -50,7 +58,8 @@ public final class ApplicationIntegrationToolsetTest {
             null,
             null,
             null,
-            mockHttpExecutor);
+            mockHttpClient,
+            mockCredentialsHelper);
 
     String mockOpenApiSpecJson =
         "{\"openApiSpec\":"
@@ -59,10 +68,9 @@ public final class ApplicationIntegrationToolsetTest {
 
     @SuppressWarnings("unchecked")
     HttpResponse<String> mockHttpResponse = mock(HttpResponse.class);
-    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn(mockOpenApiSpecJson);
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+    when(mockHttpClient.<String>send(any(HttpRequest.class), any())).thenReturn(mockHttpResponse);
 
     List<BaseTool> tools = toolset.getTools(null).toList().blockingGet();
 
@@ -84,7 +92,8 @@ public final class ApplicationIntegrationToolsetTest {
             null,
             "Jira",
             "Tools for Jira",
-            mockHttpExecutor);
+            mockHttpClient,
+            mockCredentialsHelper);
 
     String mockConnectionDetailsJson =
         "{\"name\":\""
@@ -97,12 +106,11 @@ public final class ApplicationIntegrationToolsetTest {
     @SuppressWarnings("unchecked")
     HttpResponse<String> mockHttpResponse = mock(HttpResponse.class);
 
-    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body())
         .thenReturn(mockConnectionDetailsJson)
         .thenReturn(mockEntitySchemaJson);
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+    when(mockHttpClient.<String>send(any(HttpRequest.class), any())).thenReturn(mockHttpResponse);
 
     List<BaseTool> tools = toolset.getTools(null).toList().blockingGet();
 
@@ -124,7 +132,8 @@ public final class ApplicationIntegrationToolsetTest {
             null,
             null,
             null,
-            mockHttpExecutor);
+            mockHttpClient,
+            mockCredentialsHelper);
 
     toolset
         .getTools(null)
@@ -142,7 +151,18 @@ public final class ApplicationIntegrationToolsetTest {
   public void getTools_forConnection_noEntityOperationsOrActions_emitsError() {
     ApplicationIntegrationToolset toolset =
         new ApplicationIntegrationToolset(
-            PROJECT, LOCATION, null, null, null, null, null, null, null, null, mockHttpExecutor);
+            PROJECT,
+            LOCATION,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            mockHttpClient,
+            mockCredentialsHelper);
 
     toolset
         .getTools(null)
