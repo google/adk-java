@@ -120,34 +120,8 @@ public class ToolConverter {
         FunctionDeclaration declaration = tool.declaration().get();
 
         // Create a ToolCallback that wraps the ADK tool
-        // Create a Function that takes Map input and calls the ADK tool
-        java.util.function.Function<Map<String, Object>, String> toolFunction =
-            args -> {
-              try {
-                logger.debug("Spring AI calling tool '{}'", tool.name());
-                logger.debug("Raw args from Spring AI: {}", args);
-                logger.debug("Args type: {}", args.getClass().getName());
-                logger.debug("Args keys: {}", args.keySet());
-                for (Map.Entry<String, Object> entry : args.entrySet()) {
-                  logger.debug(
-                      "  {} -> {} ({})",
-                      entry.getKey(),
-                      entry.getValue(),
-                      entry.getValue().getClass().getName());
-                }
-
-                // Handle different argument formats that Spring AI might pass
-                Map<String, Object> processedArgs = processArguments(args, declaration);
-                logger.debug("Processed args for ADK: {}", processedArgs);
-
-                // Call the ADK tool and wait for the result
-                Map<String, Object> result = tool.runAsync(processedArgs, null).blockingGet();
-                // Convert result back to JSON string
-                return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(result);
-              } catch (Exception e) {
-                throw new RuntimeException("Tool execution failed: " + e.getMessage(), e);
-              }
-            };
+        // Create a Function that does nothing. Function calling is done by ADK.
+        java.util.function.Function<Map<String, Object>, String> toolFunction = args -> "";
 
         FunctionToolCallback.Builder callbackBuilder =
             FunctionToolCallback.builder(tool.name(), toolFunction).description(tool.description());
@@ -179,54 +153,6 @@ public class ToolConverter {
     }
 
     return toolCallbacks;
-  }
-
-  /**
-   * Process arguments from Spring AI format to ADK format. Spring AI might pass arguments in
-   * different formats depending on the provider.
-   */
-  private Map<String, Object> processArguments(
-      Map<String, Object> args, FunctionDeclaration declaration) {
-    // If the arguments already match the expected format, return as-is
-    if (declaration.parameters().isPresent()) {
-      var schema = declaration.parameters().get();
-      if (schema.properties().isPresent()) {
-        var expectedParams = schema.properties().get().keySet();
-
-        // Check if all expected parameters are present at the top level
-        boolean allParamsPresent = expectedParams.stream().allMatch(args::containsKey);
-        if (allParamsPresent) {
-          return args;
-        }
-
-        // Check if arguments are nested under a single key (common pattern)
-        if (args.size() == 1) {
-          var singleValue = args.values().iterator().next();
-          if (singleValue instanceof Map) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> nestedArgs = (Map<String, Object>) singleValue;
-            boolean allNestedParamsPresent =
-                expectedParams.stream().allMatch(nestedArgs::containsKey);
-            if (allNestedParamsPresent) {
-              return nestedArgs;
-            }
-          }
-        }
-
-        // Check if we have a single parameter function and got a direct value
-        if (expectedParams.size() == 1) {
-          String expectedParam = expectedParams.iterator().next();
-          if (args.size() == 1 && !args.containsKey(expectedParam)) {
-            // Try to map the single value to the expected parameter name
-            Object singleValue = args.values().iterator().next();
-            return Map.of(expectedParam, singleValue);
-          }
-        }
-      }
-    }
-
-    // If no processing worked, return original args and let ADK handle the error
-    return args;
   }
 
   /** Simple metadata holder for tool information. */

@@ -31,6 +31,7 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -124,7 +125,8 @@ public class MessageConverter {
       List<ToolCallback> toolCallbacks = toolConverter.convertToSpringAiTools(llmRequest.tools());
       if (!toolCallbacks.isEmpty()) {
         // Create new ChatOptions with tools included
-        ToolCallingChatOptions.Builder optionsBuilder = ToolCallingChatOptions.builder();
+        ToolCallingChatOptions.Builder optionsBuilder =
+            ToolCallingChatOptions.builder().internalToolExecutionEnabled(false);
 
         // Always set tool callbacks
         optionsBuilder.toolCallbacks(toolCallbacks);
@@ -204,10 +206,26 @@ public class MessageConverter {
       if (part.text().isPresent()) {
         textBuilder.append(part.text().get());
       } else if (part.functionResponse().isPresent()) {
-        // TODO: Spring AI 1.1.0 ToolResponseMessage constructors are protected
-        // For now, we skip tool responses in user messages
-        // This will need to be addressed in a future update when Spring AI provides
-        // a public API for creating ToolResponseMessage
+        var functionResponse = part.functionResponse().get();
+        functionResponse
+            .id()
+            .ifPresent(
+                id ->
+                    functionResponse
+                        .name()
+                        .ifPresent(
+                            name ->
+                                functionResponse
+                                    .response()
+                                    .ifPresent(
+                                        response ->
+                                            toolResponseMessages.add(
+                                                ToolResponseMessage.builder()
+                                                    .responses(
+                                                        List.of(
+                                                            new ToolResponse(
+                                                                id, name, toJson(response))))
+                                                    .build()))));
       } else if (part.inlineData().isPresent()) {
         // Handle inline media data (images, audio, video, etc.)
         com.google.genai.types.Blob blob = part.inlineData().get();
@@ -243,12 +261,11 @@ public class MessageConverter {
     }
 
     List<Message> messages = new ArrayList<>();
-    // Create UserMessage with text
-    // TODO: Media attachments support - UserMessage constructors with media are private in Spring
-    // AI 1.1.0
-    // For now, only text content is supported
-    messages.add(new UserMessage(textBuilder.toString()));
-    messages.addAll(toolResponseMessages);
+    if (!toolResponseMessages.isEmpty()) {
+      messages.addAll(toolResponseMessages);
+    } else {
+      messages.add(UserMessage.builder().text(textBuilder.toString()).media(mediaList).build());
+    }
 
     return messages;
   }
