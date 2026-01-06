@@ -2,10 +2,17 @@ package com.google.adk.webservice;
 
 import com.google.adk.a2a.A2ASendMessageExecutor;
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.artifacts.BaseArtifactService;
+import com.google.adk.artifacts.InMemoryArtifactService;
+import com.google.adk.memory.BaseMemoryService;
+import com.google.adk.memory.InMemoryMemoryService;
+import com.google.adk.sessions.BaseSessionService;
+import com.google.adk.sessions.InMemorySessionService;
 import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
@@ -36,14 +43,48 @@ public class A2ARemoteConfiguration {
   private static final long DEFAULT_TIMEOUT_SECONDS = 15L;
 
   @Bean
+  @ConditionalOnMissingBean
+  public BaseSessionService sessionService() {
+    return new InMemorySessionService();
+  }
+
+  @Bean
+  @ConditionalOnMissingBean
+  public BaseArtifactService artifactService() {
+    return new InMemoryArtifactService();
+  }
+
+  @Bean
+  @ConditionalOnMissingBean
+  public BaseMemoryService memoryService() {
+    return new InMemoryMemoryService();
+  }
+
+  @Bean
   public A2ASendMessageExecutor a2aSendMessageExecutor(
       BaseAgent agent,
       @Value("${a2a.remote.appName:" + DEFAULT_APP_NAME + "}") String appName,
-      @Value("${a2a.remote.timeoutSeconds:" + DEFAULT_TIMEOUT_SECONDS + "}") long timeoutSeconds) {
+      @Value("${a2a.remote.timeoutSeconds:" + DEFAULT_TIMEOUT_SECONDS + "}") long timeoutSeconds,
+      BaseSessionService sessionService,
+      BaseArtifactService artifactService,
+      BaseMemoryService memoryService) {
+
     logger.info(
         "Initializing A2A send message executor for appName {} with timeout {}s",
         appName,
         timeoutSeconds);
-    return new A2ASendMessageExecutor(agent, appName, Duration.ofSeconds(timeoutSeconds));
+    logger.info(
+        "Using services: session={}, artifact={}, memory={}",
+        sessionService.getClass().getSimpleName(),
+        artifactService.getClass().getSimpleName(),
+        memoryService.getClass().getSimpleName());
+
+    return new A2ASendMessageExecutor(
+        agent,
+        appName,
+        Duration.ofSeconds(timeoutSeconds),
+        sessionService,
+        artifactService,
+        memoryService);
   }
 }

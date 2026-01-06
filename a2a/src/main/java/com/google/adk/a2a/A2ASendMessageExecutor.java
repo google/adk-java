@@ -8,11 +8,11 @@ import com.google.adk.a2a.converters.RequestConverter;
 import com.google.adk.a2a.converters.ResponseConverter;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.RunConfig;
-import com.google.adk.artifacts.InMemoryArtifactService;
+import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
-import com.google.adk.memory.InMemoryMemoryService;
+import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.runner.Runner;
-import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
@@ -51,29 +51,63 @@ public final class A2ASendMessageExecutor {
         String invocationId);
   }
 
-  private final InMemorySessionService sessionService;
+  private final BaseSessionService sessionService;
   private final String appName;
   @Nullable private final Runner runner;
   @Nullable private final Duration agentTimeout;
   private static final RunConfig DEFAULT_RUN_CONFIG =
       RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.NONE).setMaxLlmCalls(20).build();
 
-  public A2ASendMessageExecutor(InMemorySessionService sessionService, String appName) {
+  public A2ASendMessageExecutor(BaseSessionService sessionService, String appName) {
     this.sessionService = sessionService;
     this.appName = appName;
     this.runner = null;
     this.agentTimeout = null;
   }
 
-  public A2ASendMessageExecutor(BaseAgent agent, String appName, Duration agentTimeout) {
-    InMemorySessionService sessionService = new InMemorySessionService();
+  /**
+   * Creates an A2A send message executor with explicit service dependencies.
+   *
+   * <p>This constructor requires all service implementations to be provided explicitly, enabling
+   * flexible deployment configurations (e.g., persistent sessions, distributed artifacts).
+   *
+   * <p><strong>Note:</strong> In version 0.5.1, the constructor signature changed to require
+   * explicit service injection. Previously, services were created internally as in-memory
+   * implementations.
+   *
+   * <p><strong>For Spring Boot applications:</strong> Use {@link
+   * com.google.adk.webservice.A2ARemoteConfiguration} which automatically provides service beans
+   * with sensible defaults. Direct instantiation is typically only needed for custom frameworks or
+   * testing.
+   *
+   * <p>Example usage:
+   *
+   * <pre>{@code
+   * A2ASendMessageExecutor executor = new A2ASendMessageExecutor(
+   *     myAgent,
+   *     "my-app",
+   *     Duration.ofSeconds(30),
+   *     new InMemorySessionService(),    // or DatabaseSessionService for persistence
+   *     new InMemoryArtifactService(),   // or S3ArtifactService for distributed storage
+   *     new InMemoryMemoryService());    // or RedisMemoryService for shared state
+   * }</pre>
+   *
+   * @param agent the agent to execute when processing messages
+   * @param appName the application name used for session identification
+   * @param agentTimeout maximum duration to wait for agent execution before timing out
+   * @param sessionService service for managing conversation sessions (required, non-null)
+   * @param artifactService service for storing and retrieving artifacts (required, non-null)
+   * @param memoryService service for managing agent memory/state (required, non-null)
+   */
+  public A2ASendMessageExecutor(
+      BaseAgent agent,
+      String appName,
+      Duration agentTimeout,
+      BaseSessionService sessionService,
+      BaseArtifactService artifactService,
+      BaseMemoryService memoryService) {
     Runner runnerInstance =
-        new Runner(
-            agent,
-            appName,
-            new InMemoryArtifactService(),
-            sessionService,
-            new InMemoryMemoryService());
+        new Runner(agent, appName, artifactService, sessionService, memoryService);
     this.sessionService = sessionService;
     this.appName = appName;
     this.runner = runnerInstance;
