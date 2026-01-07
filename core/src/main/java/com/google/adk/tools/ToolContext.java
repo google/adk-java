@@ -20,6 +20,7 @@ import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.EventActions;
 import com.google.adk.memory.SearchMemoryResponse;
+import com.google.adk.reasoning.SearchReasoningResponse;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Optional;
@@ -114,6 +115,16 @@ public class ToolContext extends CallbackContext {
         .memoryService()
         .searchMemory(
             invocationContext.session().appName(), invocationContext.session().userId(), query);
+  }
+
+  /** Searches for reasoning strategies matching the given query. */
+  public Single<SearchReasoningResponse> searchReasoningStrategies(String query) {
+    if (invocationContext.reasoningBankService() == null) {
+      throw new IllegalStateException("Reasoning bank service is not initialized.");
+    }
+    return invocationContext
+        .reasoningBankService()
+        .searchStrategies(invocationContext.session().appName(), query);
   }
 
   public static Builder builder(InvocationContext invocationContext) {
