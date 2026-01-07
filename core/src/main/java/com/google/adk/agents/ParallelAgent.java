@@ -20,6 +20,8 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -35,6 +37,7 @@ import org.slf4j.LoggerFactory;
 public class ParallelAgent extends BaseAgent {
 
   private static final Logger logger = LoggerFactory.getLogger(ParallelAgent.class);
+  private final Scheduler scheduler;
 
   /**
    * Constructor for ParallelAgent.
@@ -44,24 +47,34 @@ public class ParallelAgent extends BaseAgent {
    * @param subAgents The list of sub-agents to run in parallel.
    * @param beforeAgentCallback Optional callback before the agent runs.
    * @param afterAgentCallback Optional callback after the agent runs.
+   * @param scheduler The scheduler to use for parallel execution.
    */
   private ParallelAgent(
       String name,
       String description,
       List<? extends BaseAgent> subAgents,
       List<Callbacks.BeforeAgentCallback> beforeAgentCallback,
-      List<Callbacks.AfterAgentCallback> afterAgentCallback) {
+      List<Callbacks.AfterAgentCallback> afterAgentCallback,
+      Scheduler scheduler) {
 
     super(name, description, subAgents, beforeAgentCallback, afterAgentCallback);
+    this.scheduler = scheduler;
   }
 
   /** Builder for {@link ParallelAgent}. */
   public static class Builder extends BaseAgent.Builder<Builder> {
 
+    private Scheduler scheduler = Schedulers.io();
+
+    public Builder scheduler(Scheduler scheduler) {
+      this.scheduler = scheduler;
+      return this;
+    }
+
     @Override
     public ParallelAgent build() {
       return new ParallelAgent(
-          name, description, subAgents, beforeAgentCallback, afterAgentCallback);
+          name, description, subAgents, beforeAgentCallback, afterAgentCallback, scheduler);
     }
   }
 
@@ -131,7 +144,7 @@ public class ParallelAgent extends BaseAgent {
 
     List<Flowable<Event>> agentFlowables = new ArrayList<>();
     for (BaseAgent subAgent : currentSubAgents) {
-      agentFlowables.add(subAgent.runAsync(invocationContext));
+      agentFlowables.add(subAgent.runAsync(invocationContext).subscribeOn(scheduler));
     }
     return Flowable.merge(agentFlowables);
   }
