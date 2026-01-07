@@ -180,6 +180,7 @@ public abstract class LlmResponse extends JsonBaseModel {
       Optional<List<Candidate>> candidatesOpt = response.candidates();
       if (candidatesOpt.isPresent() && !candidatesOpt.get().isEmpty()) {
         Candidate candidate = candidatesOpt.get().get(0);
+        this.finishReason(candidate.finishReason());
         if (candidate.content().isPresent()) {
           this.content(candidate.content().get());
           this.groundingMetadata(candidate.groundingMetadata());
