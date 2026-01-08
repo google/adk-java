@@ -69,7 +69,7 @@ public final class InvocationContextTest {
   }
 
   @Test
-  public void testCreateWithUserContent() {
+  public void testBuildWithUserContent() {
     InvocationContext context =
         InvocationContext.builder()
             .sessionService(mockSessionService)
@@ -79,7 +79,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -98,7 +98,7 @@ public final class InvocationContextTest {
   }
 
   @Test
-  public void testCreateWithNullUserContent() {
+  public void testBuildWithNullUserContent() {
     InvocationContext context =
         InvocationContext.builder()
             .sessionService(mockSessionService)
@@ -108,7 +108,6 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.empty())
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -118,7 +117,7 @@ public final class InvocationContextTest {
   }
 
   @Test
-  public void testCreateWithLiveRequestQueue() {
+  public void testBuildWithLiveRequestQueue() {
     InvocationContext context =
         InvocationContext.builder()
             .sessionService(mockSessionService)
@@ -128,7 +127,6 @@ public final class InvocationContextTest {
             .liveRequestQueue(liveRequestQueue)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.empty())
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -157,13 +155,13 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
     originalContext.activeStreamingTools().putAll(activeStreamingTools);
 
-    InvocationContext copiedContext = InvocationContext.copyOf(originalContext);
+    InvocationContext copiedContext = originalContext.toBuilder().build();
 
     assertThat(copiedContext).isNotNull();
     assertThat(copiedContext).isNotSameInstanceAs(originalContext);
@@ -193,7 +191,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -212,6 +210,7 @@ public final class InvocationContextTest {
 
   @Test
   public void testSetAgent() {
+    BaseAgent newMockAgent = mock(BaseAgent.class);
     InvocationContext context =
         InvocationContext.builder()
             .sessionService(mockSessionService)
@@ -221,13 +220,11 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
+            .agent(newMockAgent)
             .build();
-
-    BaseAgent newMockAgent = mock(BaseAgent.class);
-    context.agent(newMockAgent);
 
     assertThat(context.agent()).isEqualTo(newMockAgent);
   }
@@ -255,7 +252,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -274,7 +271,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -293,7 +290,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -308,7 +305,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -328,7 +325,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -343,7 +340,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -357,7 +354,7 @@ public final class InvocationContextTest {
             .invocationId("another-id") // Different ID
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -371,7 +368,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mock(BaseAgent.class)) // Different mock
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -385,7 +382,6 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.empty())
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -399,7 +395,6 @@ public final class InvocationContextTest {
             .liveRequestQueue(liveRequestQueue)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.empty())
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -422,7 +417,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -437,7 +432,7 @@ public final class InvocationContextTest {
             .invocationId(testInvocationId)
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();
@@ -451,7 +446,7 @@ public final class InvocationContextTest {
             .invocationId("another-id") // Different ID
             .agent(mockAgent)
             .session(session)
-            .userContent(Optional.of(userContent))
+            .userContent(userContent)
             .runConfig(runConfig)
             .endInvocation(false)
             .build();

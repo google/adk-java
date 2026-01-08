@@ -22,12 +22,9 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.agents.RunConfig;
-import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.Model;
-import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -639,14 +636,11 @@ public final class ContentsTest {
             .events(new ArrayList<>(events))
             .build();
     InvocationContext context =
-        InvocationContext.create(
-            new InMemorySessionService(),
-            new InMemoryArtifactService(),
-            "test-invocation",
-            agent,
-            session,
-            /* userContent= */ null,
-            RunConfig.builder().build());
+        InvocationContext.builder()
+            .invocationId("test-invocation")
+            .agent(agent)
+            .session(session)
+            .build();
 
     LlmRequest initialRequest = LlmRequest.builder().build();
     RequestProcessor.RequestProcessingResult result =
@@ -671,14 +665,11 @@ public final class ContentsTest {
             .events(new ArrayList<>(events))
             .build();
     InvocationContext context =
-        InvocationContext.create(
-            new InMemorySessionService(),
-            new InMemoryArtifactService(),
-            "test-invocation",
-            agent,
-            session,
-            /* userContent= */ null,
-            RunConfig.builder().build());
+        InvocationContext.builder()
+            .invocationId("test-invocation")
+            .agent(agent)
+            .session(session)
+            .build();
 
     LlmRequest initialRequest = LlmRequest.builder().build();
     RequestProcessor.RequestProcessingResult result =

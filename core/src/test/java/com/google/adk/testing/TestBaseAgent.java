@@ -58,14 +58,14 @@ public final class TestBaseAgent extends BaseAgent {
 
   @Override
   public Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    lastInvocationContext = InvocationContext.copyOf(invocationContext);
+    lastInvocationContext = invocationContext.toBuilder().build();
     invocationCount++;
     return eventSupplier.get();
   }
 
   @Override
   public Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
-    lastInvocationContext = InvocationContext.copyOf(invocationContext);
+    lastInvocationContext = invocationContext.toBuilder().build();
     invocationCount++;
     return eventSupplier.get();
   }

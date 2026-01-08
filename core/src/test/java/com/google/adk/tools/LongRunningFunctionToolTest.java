@@ -187,14 +187,14 @@ public final class LongRunningFunctionToolTest {
             .description(description)
             .build();
     runner =
-        new Runner(
-            agent,
-            "test_app",
-            artifactService,
-            sessionService,
-            memoryService,
-            null,
-            new ResumabilityConfig(false));
+        Runner.builder()
+            .agent(agent)
+            .appName("test_app")
+            .artifactService(artifactService)
+            .sessionService(sessionService)
+            .memoryService(memoryService)
+            .resumabilityConfig(new ResumabilityConfig(false))
+            .build();
     session =
         runner
             .sessionService()

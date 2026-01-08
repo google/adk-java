@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Optional;
 
 /** Base interface for toolsets. */
-public interface BaseToolset extends AutoCloseable {
+public interface BaseToolset extends AutoCloseable, ToolMarker {
 
   /**
    * Return all tools in the toolset based on the provided context.

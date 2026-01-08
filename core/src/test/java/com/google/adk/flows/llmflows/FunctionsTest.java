@@ -23,6 +23,8 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.RunConfig;
+import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
 import com.google.adk.testing.TestUtils;
 import com.google.common.collect.ImmutableList;
@@ -151,8 +153,11 @@ public final class FunctionsTest {
   }
 
   @Test
-  public void handleFunctionCalls_multipleFunctionCalls() {
-    InvocationContext invocationContext = createInvocationContext(createRootAgent());
+  public void handleFunctionCalls_multipleFunctionCalls_parallel() {
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createRootAgent(),
+            RunConfig.builder().setToolExecutionMode(ToolExecutionMode.PARALLEL).build());
     ImmutableMap<String, Object> args1 = ImmutableMap.<String, Object>of("key1", "value2");
     ImmutableMap<String, Object> args2 = ImmutableMap.<String, Object>of("key2", "value2");
     Event event =
@@ -201,7 +206,66 @@ public final class FunctionsTest {
                         .name("echo_tool")
                         .response(ImmutableMap.of("result", args2))
                         .build())
-                .build());
+                .build())
+        .inOrder();
+  }
+
+  @Test
+  public void handleFunctionCalls_multipleFunctionCalls_sequential() {
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createRootAgent(),
+            RunConfig.builder().setToolExecutionMode(ToolExecutionMode.SEQUENTIAL).build());
+    ImmutableMap<String, Object> args1 = ImmutableMap.<String, Object>of("key1", "value2");
+    ImmutableMap<String, Object> args2 = ImmutableMap.<String, Object>of("key2", "value2");
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromText("..."),
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id("function_call_id1")
+                                .name("echo_tool")
+                                .args(args1)
+                                .build())
+                        .build(),
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id("function_call_id2")
+                                .name("echo_tool")
+                                .args(args2)
+                                .build())
+                        .build()))
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(
+                invocationContext, event, ImmutableMap.of("echo_tool", new TestUtils.EchoTool()))
+            .blockingGet();
+
+    assertThat(functionResponseEvent).isNotNull();
+    assertThat(functionResponseEvent.content().get().parts().get())
+        .containsExactly(
+            Part.builder()
+                .functionResponse(
+                    FunctionResponse.builder()
+                        .id("function_call_id1")
+                        .name("echo_tool")
+                        .response(ImmutableMap.of("result", args1))
+                        .build())
+                .build(),
+            Part.builder()
+                .functionResponse(
+                    FunctionResponse.builder()
+                        .id("function_call_id2")
+                        .name("echo_tool")
+                        .response(ImmutableMap.of("result", args2))
+                        .build())
+                .build())
+        .inOrder();
   }
 
   @Test

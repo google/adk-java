@@ -19,6 +19,7 @@ package com.google.adk.tools;
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
 import com.google.adk.memory.SearchMemoryResponse;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Single;

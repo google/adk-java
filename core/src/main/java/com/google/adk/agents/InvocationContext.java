@@ -21,6 +21,7 @@ import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.ResumabilityConfig;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
+import com.google.adk.plugins.Plugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
@@ -42,26 +43,27 @@ public class InvocationContext {
   private final BaseSessionService sessionService;
   private final BaseArtifactService artifactService;
   private final BaseMemoryService memoryService;
-  private final PluginManager pluginManager;
+  private final Plugin pluginManager;
   private final Optional<LiveRequestQueue> liveRequestQueue;
-  private final Map<String, ActiveStreamingTool> activeStreamingTools = new ConcurrentHashMap<>();
+  private final Map<String, ActiveStreamingTool> activeStreamingTools;
   private final String invocationId;
   private final Session session;
   private final Optional<Content> userContent;
   private final RunConfig runConfig;
   private final ResumabilityConfig resumabilityConfig;
-  private final InvocationCostManager invocationCostManager = new InvocationCostManager();
+  private final InvocationCostManager invocationCostManager;
 
   private Optional<String> branch;
   private BaseAgent agent;
   private boolean endInvocation;
 
-  private InvocationContext(Builder builder) {
+  protected InvocationContext(Builder builder) {
     this.sessionService = builder.sessionService;
     this.artifactService = builder.artifactService;
     this.memoryService = builder.memoryService;
     this.pluginManager = builder.pluginManager;
     this.liveRequestQueue = builder.liveRequestQueue;
+    this.activeStreamingTools = builder.activeStreamingTools;
     this.branch = builder.branch;
     this.invocationId = builder.invocationId;
     this.agent = builder.agent;
@@ -70,6 +72,7 @@ public class InvocationContext {
     this.runConfig = builder.runConfig;
     this.endInvocation = builder.endInvocation;
     this.resumabilityConfig = builder.resumabilityConfig;
+    this.invocationCostManager = builder.invocationCostManager;
   }
 
   /**
@@ -80,7 +83,7 @@ public class InvocationContext {
       BaseSessionService sessionService,
       BaseArtifactService artifactService,
       BaseMemoryService memoryService,
-      PluginManager pluginManager,
+      Plugin pluginManager,
       Optional<LiveRequestQueue> liveRequestQueue,
       Optional<String> branch,
       String invocationId,
@@ -187,7 +190,7 @@ public class InvocationContext {
         .artifactService(artifactService)
         .agent(agent)
         .session(session)
-        .liveRequestQueue(Optional.ofNullable(liveRequestQueue))
+        .liveRequestQueue(liveRequestQueue)
         .runConfig(runConfig)
         .build();
   }
@@ -197,26 +200,19 @@ public class InvocationContext {
     return new Builder();
   }
 
-  /** Creates a shallow copy of the given {@link InvocationContext}. */
+  /** Returns a {@link Builder} initialized with the values of this instance. */
+  public Builder toBuilder() {
+    return new Builder(this);
+  }
+
+  /**
+   * Creates a shallow copy of the given {@link InvocationContext}.
+   *
+   * @deprecated Use {@code other.toBuilder().build()} instead.
+   */
+  @Deprecated(forRemoval = true)
   public static InvocationContext copyOf(InvocationContext other) {
-    InvocationContext newContext =
-        builder()
-            .sessionService(other.sessionService)
-            .artifactService(other.artifactService)
-            .memoryService(other.memoryService)
-            .pluginManager(other.pluginManager)
-            .liveRequestQueue(other.liveRequestQueue)
-            .branch(other.branch)
-            .invocationId(other.invocationId)
-            .agent(other.agent)
-            .session(other.session)
-            .userContent(other.userContent)
-            .runConfig(other.runConfig)
-            .endInvocation(other.endInvocation)
-            .resumabilityConfig(other.resumabilityConfig)
-            .build();
-    newContext.activeStreamingTools.putAll(other.activeStreamingTools);
-    return newContext;
+    return other.toBuilder().build();
   }
 
   /** Returns the session service for managing session state. */
@@ -235,7 +231,7 @@ public class InvocationContext {
   }
 
   /** Returns the plugin manager for accessing tools and plugins. */
-  public PluginManager pluginManager() {
+  public Plugin pluginManager() {
     return pluginManager;
   }
 
@@ -257,7 +253,10 @@ public class InvocationContext {
   /**
    * Sets the [branch] ID for the current invocation. A branch represents a fork in the conversation
    * history.
+   *
+   * @deprecated Use {@link #toBuilder()} and {@link Builder#branch(String)} instead.
    */
+  @Deprecated(forRemoval = true)
   public void branch(@Nullable String branch) {
     this.branch = Optional.ofNullable(branch);
   }
@@ -275,7 +274,12 @@ public class InvocationContext {
     return agent;
   }
 
-  /** Sets the [agent] being invoked. This is useful when delegating to a sub-agent. */
+  /**
+   * Sets the [agent] being invoked. This is useful when delegating to a sub-agent.
+   *
+   * @deprecated Use {@link #toBuilder()} and {@link Builder#agent(BaseAgent)} instead.
+   */
+  @Deprecated(forRemoval = true)
   public void agent(BaseAgent agent) {
     this.agent = agent;
   }
@@ -369,15 +373,53 @@ public class InvocationContext {
             "Max number of llm calls limit of " + runConfig.maxLlmCalls() + " exceeded");
       }
     }
+
+    @Override
+    public boolean equals(Object o) {
+      if (this == o) {
+        return true;
+      }
+      if (!(o instanceof InvocationCostManager that)) {
+        return false;
+      }
+      return numberOfLlmCalls == that.numberOfLlmCalls;
+    }
+
+    @Override
+    public int hashCode() {
+      return Integer.hashCode(numberOfLlmCalls);
+    }
   }
 
   /** Builder for {@link InvocationContext}. */
   public static class Builder {
+
+    private Builder() {}
+
+    private Builder(InvocationContext context) {
+      this.sessionService = context.sessionService;
+      this.artifactService = context.artifactService;
+      this.memoryService = context.memoryService;
+      this.pluginManager = context.pluginManager;
+      this.liveRequestQueue = context.liveRequestQueue;
+      this.activeStreamingTools = new ConcurrentHashMap<>(context.activeStreamingTools);
+      this.branch = context.branch;
+      this.invocationId = context.invocationId;
+      this.agent = context.agent;
+      this.session = context.session;
+      this.userContent = context.userContent;
+      this.runConfig = context.runConfig;
+      this.endInvocation = context.endInvocation;
+      this.resumabilityConfig = context.resumabilityConfig;
+      this.invocationCostManager = context.invocationCostManager;
+    }
+
     private BaseSessionService sessionService;
     private BaseArtifactService artifactService;
     private BaseMemoryService memoryService;
-    private PluginManager pluginManager = new PluginManager();
+    private Plugin pluginManager = new PluginManager();
     private Optional<LiveRequestQueue> liveRequestQueue = Optional.empty();
+    private Map<String, ActiveStreamingTool> activeStreamingTools = new ConcurrentHashMap<>();
     private Optional<String> branch = Optional.empty();
     private String invocationId = newInvocationContextId();
     private BaseAgent agent;
@@ -386,6 +428,7 @@ public class InvocationContext {
     private RunConfig runConfig = RunConfig.builder().build();
     private boolean endInvocation = false;
     private ResumabilityConfig resumabilityConfig = new ResumabilityConfig();
+    private InvocationCostManager invocationCostManager = new InvocationCostManager();
 
     /**
      * Sets the session service for managing session state.
@@ -430,7 +473,7 @@ public class InvocationContext {
      * @return this builder instance for chaining.
      */
     @CanIgnoreReturnValue
-    public Builder pluginManager(PluginManager pluginManager) {
+    public Builder pluginManager(Plugin pluginManager) {
       this.pluginManager = pluginManager;
       return this;
     }
@@ -457,8 +500,8 @@ public class InvocationContext {
      * @return this builder instance for chaining.
      */
     @CanIgnoreReturnValue
-    public Builder liveRequestQueue(LiveRequestQueue liveRequestQueue) {
-      this.liveRequestQueue = Optional.of(liveRequestQueue);
+    public Builder liveRequestQueue(@Nullable LiveRequestQueue liveRequestQueue) {
+      this.liveRequestQueue = Optional.ofNullable(liveRequestQueue);
       return this;
     }
 
@@ -617,7 +660,8 @@ public class InvocationContext {
         && Objects.equals(session, that.session)
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
-        && Objects.equals(resumabilityConfig, that.resumabilityConfig);
+        && Objects.equals(resumabilityConfig, that.resumabilityConfig)
+        && Objects.equals(invocationCostManager, that.invocationCostManager);
   }
 
   @Override
@@ -636,6 +680,7 @@ public class InvocationContext {
         userContent,
         runConfig,
         endInvocation,
-        resumabilityConfig);
+        resumabilityConfig,
+        invocationCostManager);
   }
 }

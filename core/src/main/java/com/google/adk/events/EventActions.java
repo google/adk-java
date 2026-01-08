@@ -17,7 +17,6 @@ package com.google.adk.events;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
-import com.google.adk.tools.ToolConfirmation;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Part;
 import java.util.Objects;

@@ -18,7 +18,6 @@ package com.google.adk.events;
 
 import static com.google.common.truth.Truth.assertThat;
 
-import com.google.adk.tools.ToolConfirmation;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;

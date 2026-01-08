@@ -24,7 +24,6 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.plugins.PluginManager;
@@ -37,7 +36,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
-import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -216,19 +214,12 @@ public class RequestConfirmationLlmRequestProcessorTest {
   }
 
   private static InvocationContext createInvocationContext(LlmAgent agent, Session session) {
-    return new InvocationContext(
-        /* sessionService= */ null,
-        /* artifactService= */ null,
-        /* memoryService= */ null,
-        /* pluginManager= */ new PluginManager(),
-        /* liveRequestQueue= */ Optional.empty(),
-        /* branch= */ Optional.empty(),
-        /* invocationId= */ InvocationContext.newInvocationContextId(),
-        /* agent= */ agent,
-        /* session= */ session,
-        /* userContent= */ Optional.empty(),
-        /* runConfig= */ RunConfig.builder().build(),
-        /* endInvocation= */ false);
+    return InvocationContext.builder()
+        .pluginManager(new PluginManager())
+        .invocationId(InvocationContext.newInvocationContextId())
+        .agent(agent)
+        .session(session)
+        .build();
   }
 
   private static LlmAgent createAgentWithEchoTool() {

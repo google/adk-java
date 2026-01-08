@@ -29,9 +29,9 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
-import com.google.adk.tools.ToolConfirmation;
 import com.google.adk.tools.ToolContext;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
@@ -46,6 +46,7 @@ import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Function;
@@ -152,15 +153,16 @@ public final class Functions {
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         getFunctionCallMapper(invocationContext, tools, toolConfirmations, false);
 
-    Flowable<Event> functionResponseEventsFlowable;
+    Observable<Event> functionResponseEventsObservable;
     if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
-      functionResponseEventsFlowable =
-          Flowable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
+      functionResponseEventsObservable =
+          Observable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
     } else {
-      functionResponseEventsFlowable =
-          Flowable.fromIterable(functionCalls).flatMapMaybe(functionCallMapper);
+      functionResponseEventsObservable =
+          Observable.fromIterable(functionCalls)
+              .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
     }
-    return functionResponseEventsFlowable
+    return functionResponseEventsObservable
         .toList()
         .flatMapMaybe(
             events -> {
@@ -217,16 +219,17 @@ public final class Functions {
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         getFunctionCallMapper(invocationContext, tools, toolConfirmations, true);
 
-    Flowable<Event> responseEventsFlowable;
+    Observable<Event> responseEventsObservable;
     if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
-      responseEventsFlowable =
-          Flowable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
+      responseEventsObservable =
+          Observable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
     } else {
-      responseEventsFlowable =
-          Flowable.fromIterable(functionCalls).flatMapMaybe(functionCallMapper);
+      responseEventsObservable =
+          Observable.fromIterable(functionCalls)
+              .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
     }
 
-    return responseEventsFlowable
+    return responseEventsObservable
         .toList()
         .flatMapMaybe(
             events -> {
@@ -387,7 +390,7 @@ public final class Functions {
             t ->
                 invocationContext
                     .pluginManager()
-                    .runOnToolErrorCallback(tool, functionArgs, toolContext, t)
+                    .onToolErrorCallback(tool, functionArgs, toolContext, t)
                     .map(isLive ? Optional::ofNullable : Optional::of)
                     .switchIfEmpty(Single.error(t)))
         .flatMapMaybe(
@@ -459,7 +462,7 @@ public final class Functions {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
 
       Maybe<Map<String, Object>> pluginResult =
-          invocationContext.pluginManager().runBeforeToolCallback(tool, functionArgs, toolContext);
+          invocationContext.pluginManager().beforeToolCallback(tool, functionArgs, toolContext);
 
       Optional<List<? extends BeforeToolCallback>> callbacksOpt = agent.beforeToolCallback();
       if (callbacksOpt.isEmpty() || callbacksOpt.get().isEmpty()) {
@@ -493,7 +496,7 @@ public final class Functions {
       Maybe<Map<String, Object>> pluginResult =
           invocationContext
               .pluginManager()
-              .runAfterToolCallback(tool, functionArgs, toolContext, functionResult);
+              .afterToolCallback(tool, functionArgs, toolContext, functionResult);
 
       Optional<List<? extends AfterToolCallback>> callbacksOpt = agent.afterToolCallback();
       if (callbacksOpt.isEmpty() || callbacksOpt.get().isEmpty()) {
