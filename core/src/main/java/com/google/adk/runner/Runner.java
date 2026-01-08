@@ -459,29 +459,27 @@ public class Runner {
                                                   contextWithUpdatedSession
                                                       .agent()
                                                       .runAsync(contextWithUpdatedSession)
-                                                      .flatMap(
+                                                      .concatMap(
                                                           agentEvent ->
                                                               this.sessionService
                                                                   .appendEvent(
                                                                       updatedSession, agentEvent)
-                                                                  .flatMap(
-                                                                      registeredEvent -> {
-                                                                        // TODO: remove this hack
-                                                                        // after
-                                                                        // deprecating runAsync with
-                                                                        // Session.
-                                                                        copySessionStates(
-                                                                            updatedSession,
-                                                                            session);
-                                                                        return contextWithUpdatedSession
-                                                                            .pluginManager()
-                                                                            .onEventCallback(
-                                                                                contextWithUpdatedSession,
-                                                                                registeredEvent)
-                                                                            .defaultIfEmpty(
-                                                                                registeredEvent);
-                                                                      })
-                                                                  .toFlowable());
+                                                                  .toFlowable())
+                                                      .concatMap(
+                                                          registeredEvent -> {
+                                                            // TODO: remove this hack after
+                                                            // deprecating runAsync with
+                                                            // Session.
+                                                            copySessionStates(
+                                                                updatedSession, session);
+                                                            return contextWithUpdatedSession
+                                                                .pluginManager()
+                                                                .onEventCallback(
+                                                                    contextWithUpdatedSession,
+                                                                    registeredEvent)
+                                                                .defaultIfEmpty(registeredEvent)
+                                                                .toFlowable();
+                                                          });
 
                                               // If beforeRunCallback returns content, emit it and
                                               // skip
