@@ -17,12 +17,15 @@
 package com.google.adk.flows.llmflows;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.truth.Correspondence.transforming;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
+import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.Model;
 import com.google.adk.sessions.Session;
@@ -487,12 +490,94 @@ public final class ContentsTest {
         .hasValue("tool2");
   }
 
+  @Test
+  public void processRequest_singleCompaction() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("env1", "content 1", "inv1", 1),
+            createUserEvent("env2", "content 2", "inv2", 2),
+            createCompactedEvent(1, 2, "Summary 1-2"),
+            createUserEvent("env3", "content 3", "inv3", 3));
+
+    List<Content> contents = runContentsProcessor(events);
+    assertThat(contents)
+        .comparingElementsUsing(
+            transforming((Content c) -> c.parts().get().get(0).text().get(), "content text"))
+        .containsExactly("Summary 1-2", "content 3");
+  }
+
+  @Test
+  public void processRequest_startsWithCompaction() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createCompactedEvent(1, 2, "Summary 1-2"),
+            createUserEvent("env3", "content 3", "inv3", 3),
+            createUserEvent("env4", "content 4", "inv4", 4));
+
+    List<Content> contents = runContentsProcessor(events);
+    assertThat(contents)
+        .comparingElementsUsing(
+            transforming((Content c) -> c.parts().get().get(0).text().get(), "content text"))
+        .containsExactly("Summary 1-2", "content 3", "content 4");
+  }
+
+  @Test
+  public void processRequest_endsWithCompaction() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("env1", "content 1", "inv1", 1),
+            createUserEvent("env2", "content 2", "inv2", 2),
+            createUserEvent("env3", "content 3", "inv3", 2),
+            createCompactedEvent(2, 3, "Summary 2-3"));
+
+    List<Content> contents = runContentsProcessor(events);
+    assertThat(contents)
+        .comparingElementsUsing(
+            transforming((Content c) -> c.parts().get().get(0).text().get(), "content text"))
+        .containsExactly("content 1", "Summary 2-3");
+  }
+
+  @Test
+  public void processRequest_multipleCompactions() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("env1", "content 1", "inv1", 1),
+            createUserEvent("env2", "content 2", "inv2", 2),
+            createUserEvent("env3", "content 3", "inv3", 3),
+            createUserEvent("env4", "content 4", "inv4", 4),
+            createCompactedEvent(1, 4, "Summary 1-4"),
+            createUserEvent("env5", "content 5", "inv5", 5),
+            createUserEvent("env6", "content 6", "inv6", 6),
+            createUserEvent("env7-1", "content 7-1", "inv7", 7),
+            createUserEvent("env7-2", "content 7-2", "inv8", 8),
+            createUserEvent("env9", "content 9", "inv9", 9),
+            createCompactedEvent(6, 9, "Summary 6-9"),
+            createUserEvent("env10", "content 10", "inv10", 10));
+
+    List<Content> contents = runContentsProcessor(events);
+    assertThat(contents)
+        .comparingElementsUsing(
+            transforming((Content c) -> c.parts().get().get(0).text().get(), "content text"))
+        .containsExactly("Summary 1-4", "content 5", "Summary 6-9", "content 10");
+  }
+
   private static Event createUserEvent(String id, String text) {
     return Event.builder()
         .id(id)
         .author(USER)
         .content(Optional.of(Content.fromParts(Part.fromText(text))))
         .invocationId("invocationId")
+        .build();
+  }
+
+  private static Event createUserEvent(
+      String id, String text, String invocationId, long timestamp) {
+    return Event.builder()
+        .id(id)
+        .author(USER)
+        .content(Optional.of(Content.fromParts(Part.fromText(text))))
+        .invocationId(invocationId)
+        .timestamp(timestamp)
         .build();
   }
 
@@ -683,5 +768,23 @@ public final class ContentsTest {
         .filter(Objects::nonNull)
         .map(Optional::get)
         .collect(toImmutableList());
+  }
+
+  private Event createCompactedEvent(long startTimestamp, long endTimestamp, String content) {
+    return Event.builder()
+        .actions(
+            EventActions.builder()
+                .compaction(
+                    EventCompaction.builder()
+                        .startTimestamp(startTimestamp)
+                        .endTimestamp(endTimestamp)
+                        .compactedContent(
+                            Content.builder()
+                                .role("model")
+                                .parts(Part.builder().text(content).build())
+                                .build())
+                        .build())
+                .build())
+        .build();
   }
 }

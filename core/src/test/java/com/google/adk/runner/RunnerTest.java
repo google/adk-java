@@ -17,6 +17,7 @@
 package com.google.adk.runner;
 
 import static com.google.adk.testing.TestUtils.createLlmResponse;
+import static com.google.adk.testing.TestUtils.createTestAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
@@ -38,6 +39,7 @@ import com.google.adk.flows.llmflows.ResumabilityConfig;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.sessions.Session;
+import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.testing.TestUtils.EchoTool;
@@ -117,6 +119,45 @@ public final class RunnerTest {
   @After
   public void tearDown() {
     Telemetry.setTracerForTesting(originalTracer);
+  }
+
+  @Test
+  public void eventsCompaction_enabled() {
+    LlmAgent agent =
+        createTestAgent(
+            createTestLlm(
+                createLlmResponse(createContent("llm 1")),
+                createLlmResponse(createContent("summary 1")),
+                createLlmResponse(createContent("llm 2")),
+                createLlmResponse(createContent("summary 2"))));
+
+    Runner runner =
+        Runner.builder()
+            .eventsCompactionConfig(new EventsCompactionConfig(1, 0))
+            .agent(agent)
+            .sessionService(this.runner.sessionService())
+            .appName(this.runner.appName())
+            .build();
+    var events =
+        runner.runAsync("user", session.id(), createContent("user 1")).toList().blockingGet();
+    assertThat(simplifyEvents(events)).containsExactly("test agent: llm 1");
+
+    events = runner.runAsync("user", session.id(), createContent("user 2")).toList().blockingGet();
+    assertThat(simplifyEvents(events)).containsExactly("test agent: llm 2");
+
+    Session updatedSession =
+        runner
+            .sessionService()
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(simplifyEvents(updatedSession.events()))
+        .containsExactly(
+            "user: user 1",
+            "test agent: llm 1",
+            "user: summary 1",
+            "user: user 2",
+            "test agent: llm 2",
+            "user: summary 2");
   }
 
   @Test

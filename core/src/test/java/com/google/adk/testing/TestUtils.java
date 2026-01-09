@@ -26,6 +26,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.EventCompaction;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.sessions.InMemorySessionService;
@@ -89,7 +90,8 @@ public final class TestUtils {
   private static String formatEventContent(Event event) {
     return event
         .content()
-        .flatMap(content -> content.parts())
+        .or(() -> event.actions().compaction().map(EventCompaction::compactedContent))
+        .flatMap(Content::parts)
         .map(
             parts -> {
               if (parts.size() == 1) {
