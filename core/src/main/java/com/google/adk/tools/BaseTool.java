@@ -50,6 +50,14 @@ public abstract class BaseTool {
   private final boolean isLongRunning;
   private final HashMap<String, Object> customMetadata;
 
+  protected BaseTool() {
+    this(/* name= */ null, /* description= */ null, /* isLongRunning= */ false);
+  }
+
+  protected BaseTool(boolean isLongRunning) {
+    this(/* name= */ null, /* description= */ null, isLongRunning);
+  }
+
   protected BaseTool(@Nonnull String name, @Nonnull String description) {
     this(name, description, /* isLongRunning= */ false);
   }
@@ -62,11 +70,19 @@ public abstract class BaseTool {
   }
 
   public String name() {
-    return name;
+    return name != null
+        ? name
+        : declaration()
+            .flatMap(FunctionDeclaration::name)
+            .orElseThrow(() -> new IllegalStateException("Tool name is not set."));
   }
 
   public String description() {
-    return description;
+    return description != null
+        ? description
+        : declaration()
+            .flatMap(FunctionDeclaration::description)
+            .orElseThrow(() -> new IllegalStateException("Tool description is not set."));
   }
 
   public boolean longRunning() {
