@@ -34,6 +34,11 @@ public class ReadonlyContext {
     this.invocationContext = invocationContext;
   }
 
+  /** Returns the invocation context. */
+  public InvocationContext invocationContext() {
+    return invocationContext;
+  }
+
   /** Returns the user content that initiated this invocation. */
   public Optional<Content> userContent() {
     return invocationContext.userContent();

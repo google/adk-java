@@ -18,7 +18,6 @@ package com.google.adk.agents;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
 import io.reactivex.rxjava3.core.Flowable;
-import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,14 +35,12 @@ public class SequentialAgent extends BaseAgent {
    * @param beforeAgentCallback Optional callback before the agent runs.
    * @param afterAgentCallback Optional callback after the agent runs.
    */
-  private SequentialAgent(
-      String name,
-      String description,
-      List<? extends BaseAgent> subAgents,
-      List<Callbacks.BeforeAgentCallback> beforeAgentCallback,
-      List<Callbacks.AfterAgentCallback> afterAgentCallback) {
-
-    super(name, description, subAgents, beforeAgentCallback, afterAgentCallback);
+  private SequentialAgent(Builder builder) {
+    super(
+        builder.name,
+        builder.description,
+        builder.subAgents,
+        builder.callbackPluginBuilder.build());
   }
 
   /** Builder for {@link SequentialAgent}. */
@@ -51,9 +48,7 @@ public class SequentialAgent extends BaseAgent {
 
     @Override
     public SequentialAgent build() {
-      // TODO(b/410859954): Add validation for required fields like name.
-      return new SequentialAgent(
-          name, description, subAgents, beforeAgentCallback, afterAgentCallback);
+      return new SequentialAgent(this);
     }
   }
 
