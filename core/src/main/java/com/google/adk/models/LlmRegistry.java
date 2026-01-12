@@ -34,10 +34,10 @@ public final class LlmRegistry {
   /** Map of model name patterns regex to factories. */
   private static final Map<String, LlmFactory> llmFactories = new ConcurrentHashMap<>();
 
-  /** Registers default LLM factories, e.g. for Gemini models. */
+  /* Registers default LLM factories, e.g. for Gemini models. */
   static {
-    registerLlm("gemini-.*", modelName -> Gemini.builder().modelName(modelName).build());
-    registerLlm("apigee/.*", modelName -> ApigeeLlm.builder().modelName(modelName).build());
+    registerViaReflection("com.google.adk.models.Gemini", "gemini-.*");
+    registerViaReflection("com.google.adk.models.ApigeeLlm", "apigee/.*");
   }
 
   /**
@@ -76,6 +76,31 @@ public final class LlmRegistry {
       }
     }
     throw new IllegalArgumentException("Unsupported model: " + modelName);
+  }
+
+  /**
+   * Registers an LLM factory via reflection, if the class is available.
+   *
+   * @param className The fully qualified class name of the LLM.
+   * @param pattern The regex pattern for matching model names.
+   */
+  private static void registerViaReflection(String className, String pattern) {
+    try {
+      Class<?> llmClass = Class.forName(className);
+      LlmFactory factory =
+          modelName -> {
+            try {
+              Object builder = llmClass.getMethod("builder").invoke(null);
+              builder.getClass().getMethod("modelName", String.class).invoke(builder, modelName);
+              return (BaseLlm) builder.getClass().getMethod("build").invoke(builder);
+            } catch (ReflectiveOperationException e) {
+              throw new IllegalArgumentException("Failed to create instance of " + className, e);
+            }
+          };
+      registerLlm(pattern, factory);
+    } catch (ClassNotFoundException e) {
+      // ignore - LLM not available.
+    }
   }
 
   /**

@@ -298,7 +298,7 @@ public final class ComponentRegistryTest {
 
   @Test
   public void testMcpToolsetRegistration() {
-    ComponentRegistry registry = ComponentRegistry.getInstance();
+    ComponentRegistry registry = new ComponentRegistry();
 
     // Verify direct registry storage (tests lines 134, 136, 138, 142 in ComponentRegistry.java)
     Optional<Object> directFullName = registry.get("com.google.adk.tools.mcp.McpToolset");

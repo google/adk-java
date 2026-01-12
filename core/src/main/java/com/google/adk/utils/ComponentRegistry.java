@@ -22,26 +22,13 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks;
-import com.google.adk.agents.LlmAgent;
-import com.google.adk.agents.LoopAgent;
-import com.google.adk.agents.ParallelAgent;
-import com.google.adk.agents.SequentialAgent;
-import com.google.adk.tools.AgentTool;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
-import com.google.adk.tools.ExampleTool;
-import com.google.adk.tools.ExitLoopTool;
-import com.google.adk.tools.GoogleMapsTool;
-import com.google.adk.tools.GoogleSearchTool;
-import com.google.adk.tools.LoadArtifactsTool;
-import com.google.adk.tools.LongRunningFunctionTool;
-import com.google.adk.tools.UrlContextTool;
-import com.google.adk.tools.mcp.McpToolset;
+import com.google.common.collect.ImmutableMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import javax.annotation.Nonnull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -93,6 +80,8 @@ import org.slf4j.LoggerFactory;
 public class ComponentRegistry {
 
   private static final Logger logger = LoggerFactory.getLogger(ComponentRegistry.class);
+  private static volatile ImmutableMap<String, Object> DEFAULT_REGISTRY;
+
   private static volatile ComponentRegistry instance = new ComponentRegistry();
 
   private final Map<String, Object> registry = new ConcurrentHashMap<>();
@@ -103,55 +92,80 @@ public class ComponentRegistry {
 
   /** Initializes the registry with base pre-wired ADK instances. */
   private void initializePreWiredEntries() {
-    registerAdkAgentClass(LlmAgent.class);
-    registerAdkAgentClass(LoopAgent.class);
-    registerAdkAgentClass(ParallelAgent.class);
-    registerAdkAgentClass(SequentialAgent.class);
+    if (DEFAULT_REGISTRY == null) {
+      synchronized (ComponentRegistry.class) {
+        if (DEFAULT_REGISTRY == null) {
+          registerAdkClassByName("com.google.adk.agents.LlmAgent");
+          registerAdkClassByName("com.google.adk.agents.LoopAgent");
+          registerAdkClassByName("com.google.adk.agents.ParallelAgent");
+          registerAdkClassByName("com.google.adk.agents.SequentialAgent");
 
-    registerAdkToolInstance("google_search", GoogleSearchTool.INSTANCE);
-    registerAdkToolInstance("load_artifacts", LoadArtifactsTool.INSTANCE);
-    registerAdkToolInstance("exit_loop", ExitLoopTool.INSTANCE);
-    registerAdkToolInstance("url_context", UrlContextTool.INSTANCE);
-    registerAdkToolInstance("google_maps_grounding", GoogleMapsTool.INSTANCE);
+          registerAdkToolInstance("google_search", "com.google.adk.tools.GoogleSearchTool");
+          registerAdkToolInstance("load_artifacts", "com.google.adk.tools.LoadArtifactsTool");
+          registerAdkToolInstance("exit_loop", "com.google.adk.tools.ExitLoopTool");
+          registerAdkToolInstance("url_context", "com.google.adk.tools.UrlContextTool");
+          registerAdkToolInstance("google_maps_grounding", "com.google.adk.tools.GoogleMapsTool");
 
-    registerAdkToolClass(AgentTool.class);
-    registerAdkToolClass(LongRunningFunctionTool.class);
-    registerAdkToolClass(ExampleTool.class);
+          registerAdkClassByName("com.google.adk.tools.AgentTool");
+          registerAdkClassByName("com.google.adk.tools.LongRunningFunctionTool");
+          registerAdkClassByName("com.google.adk.tools.ExampleTool");
 
-    registerAdkToolsetClass(McpToolset.class);
-    // TODO: add all python tools that also exist in Java.
+          registerAdkClassByName("com.google.adk.tools.mcp.McpToolset");
+          // TODO: add all python tools that also exist in Java.
 
+          DEFAULT_REGISTRY = ImmutableMap.copyOf(registry);
+          return;
+        }
+      }
+    }
+    registry.putAll(DEFAULT_REGISTRY);
     logger.debug("Initialized base pre-wired entries in ComponentRegistry");
   }
 
-  private void registerAdkAgentClass(Class<? extends BaseAgent> agentClass) {
-    registry.put(agentClass.getName(), agentClass);
-    // For python compatibility, also register the name used in ADK Python.
-    registry.put("google.adk.agents." + agentClass.getSimpleName(), agentClass);
+  private void registerAdkClassByName(String className) {
+    try {
+      Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
+      String standardPrefix;
+      if (BaseAgent.class.isAssignableFrom(clazz)) {
+        standardPrefix = "google.adk.agents.";
+      } else if (BaseTool.class.isAssignableFrom(clazz)) {
+        standardPrefix = "google.adk.tools.";
+      } else if (BaseToolset.class.isAssignableFrom(clazz)) {
+        standardPrefix = "google.adk.tools.";
+      } else {
+        throw new IllegalArgumentException(
+            "Cannot determine standardPrefix for type " + clazz.getName());
+      }
+
+      registry.put(clazz.getName(), clazz);
+      // For python compatibility, also register the name used in ADK Python.
+      registry.put(standardPrefix + clazz.getSimpleName(), clazz);
+
+      if (BaseToolset.class.isAssignableFrom(clazz)) {
+        registry.put(clazz.getSimpleName(), clazz);
+        if (clazz.getSimpleName().equals("McpToolset")) {
+          registry.put("mcp.McpToolset", clazz);
+        }
+      }
+    } catch (Exception e) {
+      logger.info(
+          "{} not found, skipping registration: {}",
+          className.substring(className.lastIndexOf('.') + 1),
+          e.getMessage());
+    }
   }
 
-  private void registerAdkToolInstance(String name, @Nonnull Object toolInstance) {
-    registry.put(name, toolInstance);
-    // For python compatibility, also register the name used in ADK Python.
-    registry.put("google.adk.tools." + name, toolInstance);
-  }
-
-  private void registerAdkToolClass(@Nonnull Class<?> toolClass) {
-    registry.put(toolClass.getName(), toolClass);
-    // For python compatibility, also register the name used in ADK Python.
-    registry.put("google.adk.tools." + toolClass.getSimpleName(), toolClass);
-  }
-
-  private void registerAdkToolsetClass(@Nonnull Class<? extends BaseToolset> toolsetClass) {
-    registry.put(toolsetClass.getName(), toolsetClass);
-    // For python compatibility, also register the name used in ADK Python.
-    registry.put("google.adk.tools." + toolsetClass.getSimpleName(), toolsetClass);
-    // Also register by simple class name
-    registry.put(toolsetClass.getSimpleName(), toolsetClass);
-    // Special support for toolsets with various naming conventions
-    String simpleName = toolsetClass.getSimpleName();
-    if (simpleName.equals("McpToolset")) {
-      registry.put("mcp.McpToolset", toolsetClass);
+  private void registerAdkToolInstance(String name, String toolClassName) {
+    try {
+      Object toolInstance = Class.forName(toolClassName).getField("INSTANCE").get(null);
+      registry.put(name, toolInstance);
+      // For python compatibility, also register the name used in ADK Python.
+      registry.put("google.adk.tools." + name, toolInstance);
+    } catch (Exception e) {
+      logger.info(
+          "{} not found, skipping registration: {}",
+          toolClassName.substring(toolClassName.lastIndexOf('.') + 1),
+          e.getMessage());
     }
   }
 
@@ -281,30 +295,31 @@ public class ComponentRegistry {
    */
   public static Class<? extends BaseAgent> resolveAgentClass(String agentClassName) {
     // If no agent_class is specified, it will default to LlmAgent.
-    if (isNullOrEmpty(agentClassName)) {
-      return LlmAgent.class;
-    }
+    final String effectiveAgentClassName =
+        isNullOrEmpty(agentClassName) ? "com.google.adk.agents.LlmAgent" : agentClassName;
 
     Optional<Class<? extends BaseAgent>> agentClass;
 
-    if (agentClassName.contains(".")) {
+    if (effectiveAgentClassName.contains(".")) {
       // If agentClassName contains '.', use it directly
-      agentClass = getType(agentClassName, BaseAgent.class);
+      agentClass = getType(effectiveAgentClassName, BaseAgent.class);
     } else {
       // First try the simple name
       agentClass =
-          getType(agentClassName, BaseAgent.class)
+          getType(effectiveAgentClassName, BaseAgent.class)
               // If not found, try with com.google.adk.agents prefix
-              .or(() -> getType("com.google.adk.agents." + agentClassName, BaseAgent.class))
+              .or(
+                  () ->
+                      getType("com.google.adk.agents." + effectiveAgentClassName, BaseAgent.class))
               // For Python compatibility, also try with google.adk.agents prefix
-              .or(() -> getType("google.adk.agents." + agentClassName, BaseAgent.class));
+              .or(() -> getType("google.adk.agents." + effectiveAgentClassName, BaseAgent.class));
     }
 
     return agentClass.orElseThrow(
         () ->
             new IllegalArgumentException(
                 "agentClass '"
-                    + agentClassName
+                    + effectiveAgentClassName
                     + "' is not in registry or not a subclass of BaseAgent."));
   }
 
