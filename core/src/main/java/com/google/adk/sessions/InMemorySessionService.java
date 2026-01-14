@@ -127,7 +127,7 @@ public final class InMemorySessionService implements BaseSessionService {
     Session sessionCopy = copySession(storedSession);
 
     // Apply filtering based on config directly to the mutable list in the copy
-    GetSessionConfig config = configOpt.orElse(GetSessionConfig.builder().build());
+    GetSessionConfig config = configOpt.orElseGet(() -> GetSessionConfig.builder().build());
     List<Event> eventsInCopy = sessionCopy.events();
 
     config
@@ -257,8 +257,8 @@ public final class InMemorySessionService implements BaseSessionService {
 
     // --- Update the session stored in this service ---
     sessions
-        .getOrDefault(appName, new ConcurrentHashMap<>())
-        .getOrDefault(userId, new ConcurrentHashMap<>())
+        .computeIfAbsent(appName, k -> new ConcurrentHashMap<>())
+        .computeIfAbsent(userId, k -> new ConcurrentHashMap<>())
         .put(sessionId, session);
 
     mergeWithGlobalState(appName, userId, session);

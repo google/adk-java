@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.adk.summarizer;
 
 import com.google.adk.events.Event;
@@ -12,6 +28,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class performs events compaction in a sliding window fashion based on the {@link
@@ -19,13 +37,12 @@ import java.util.Set;
  */
 public final class SlidingWindowEventCompactor implements EventCompactor {
 
+  private static final Logger logger = LoggerFactory.getLogger(SlidingWindowEventCompactor.class);
+
   private final EventsCompactionConfig config;
-  private final BaseEventSummarizer summarizer;
 
   public SlidingWindowEventCompactor(EventsCompactionConfig config) {
     this.config = config;
-    // TODO default to LLM summarizer
-    this.summarizer = config.summarizer().orElseThrow();
   }
 
   /**
@@ -80,9 +97,11 @@ public final class SlidingWindowEventCompactor implements EventCompactor {
    */
   @Override
   public Completable compact(Session session, BaseSessionService sessionService) {
+    logger.debug("Running event compaction for session {}", session.id());
+
     return Completable.fromMaybe(
         getCompactionEvents(session)
-            .flatMap(summarizer::summarizeEvents)
+            .flatMap(config.summarizer()::summarizeEvents)
             .flatMapSingle(e -> sessionService.appendEvent(session, e)));
   }
 

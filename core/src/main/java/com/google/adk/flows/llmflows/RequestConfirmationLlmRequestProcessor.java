@@ -60,7 +60,7 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       InvocationContext invocationContext, LlmRequest llmRequest) {
     ImmutableList<Event> events = ImmutableList.copyOf(invocationContext.session().events());
     if (events.isEmpty()) {
-      logger.info(
+      logger.trace(
           "No events are present in the session. Skipping request confirmation processing.");
       return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
     }
@@ -93,7 +93,7 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       }
     }
     if (responses.isEmpty()) {
-      logger.info("No request confirmation function responses found.");
+      logger.trace("No request confirmation function responses found.");
       return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
     }
 

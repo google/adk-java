@@ -94,6 +94,9 @@ final class SessionJsonConverter {
       actionsJson.put("transferAgent", event.actions().transferToAgent());
       actionsJson.put("escalate", event.actions().escalate());
       actionsJson.put("requestedAuthConfigs", event.actions().requestedAuthConfigs());
+      actionsJson.put("requestedToolConfirmations", event.actions().requestedToolConfirmations());
+      actionsJson.put("endInvocation", event.actions().endInvocation());
+      actionsJson.put("compaction", event.actions().compaction());
       eventJson.put("actions", actionsJson);
     }
     if (event.content().isPresent()) {
@@ -146,26 +149,25 @@ final class SessionJsonConverter {
    */
   @SuppressWarnings("unchecked")
   static Event fromApiEvent(Map<String, Object> apiEvent) {
-    EventActions eventActions = new EventActions();
+    EventActions.Builder eventActionsBuilder = EventActions.builder();
     if (apiEvent.get("actions") != null) {
       Map<String, Object> actionsMap = (Map<String, Object>) apiEvent.get("actions");
-      eventActions.setSkipSummarization(
-          Optional.ofNullable(actionsMap.get("skipSummarization")).map(value -> (Boolean) value));
-      eventActions.setStateDelta(
+      if (actionsMap.get("skipSummarization") != null) {
+        eventActionsBuilder.skipSummarization((Boolean) actionsMap.get("skipSummarization"));
+      }
+      eventActionsBuilder.stateDelta(
           actionsMap.get("stateDelta") != null
               ? new ConcurrentHashMap<>((Map<String, Object>) actionsMap.get("stateDelta"))
               : new ConcurrentHashMap<>());
-      eventActions.setArtifactDelta(
+      eventActionsBuilder.artifactDelta(
           actionsMap.get("artifactDelta") != null
               ? convertToArtifactDeltaMap(actionsMap.get("artifactDelta"))
               : new ConcurrentHashMap<>());
-      eventActions.setTransferToAgent(
-          actionsMap.get("transferAgent") != null
-              ? (String) actionsMap.get("transferAgent")
-              : null);
-      eventActions.setEscalate(
-          Optional.ofNullable(actionsMap.get("escalate")).map(value -> (Boolean) value));
-      eventActions.setRequestedAuthConfigs(
+      eventActionsBuilder.transferToAgent((String) actionsMap.get("transferAgent"));
+      if (actionsMap.get("escalate") != null) {
+        eventActionsBuilder.escalate((Boolean) actionsMap.get("escalate"));
+      }
+      eventActionsBuilder.requestedAuthConfigs(
           Optional.ofNullable(actionsMap.get("requestedAuthConfigs"))
               .map(SessionJsonConverter::asConcurrentMapOfConcurrentMaps)
               .orElse(new ConcurrentHashMap<>()));
@@ -176,7 +178,7 @@ final class SessionJsonConverter {
             .id((String) Iterables.getLast(Splitter.on('/').split(apiEvent.get("name").toString())))
             .invocationId((String) apiEvent.get("invocationId"))
             .author((String) apiEvent.get("author"))
-            .actions(eventActions)
+            .actions(eventActionsBuilder.build())
             .content(
                 Optional.ofNullable(apiEvent.get("content"))
                     .map(SessionJsonConverter::convertMapToContent)

@@ -28,13 +28,16 @@ public final class SessionJsonConverterTest {
 
   @Test
   public void convertEventToJson_fullEvent_success() throws JsonProcessingException {
-    EventActions actions = new EventActions();
-    actions.setSkipSummarization(Optional.of(true));
-    actions.setStateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key", "value")));
-    actions.setArtifactDelta(
-        new ConcurrentHashMap<>(ImmutableMap.of("artifact", Part.fromText("artifact_text"))));
-    actions.setTransferToAgent("agent");
-    actions.setEscalate(Optional.of(true));
+    EventActions actions =
+        EventActions.builder()
+            .skipSummarization(true)
+            .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key", "value")))
+            .artifactDelta(
+                new ConcurrentHashMap<>(
+                    ImmutableMap.of("artifact", Part.fromText("artifact_text"))))
+            .transferToAgent("agent")
+            .escalate(true)
+            .build();
 
     Event event =
         Event.builder()

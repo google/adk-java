@@ -23,9 +23,11 @@ import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -36,6 +38,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -99,24 +102,25 @@ public final class Contents implements RequestProcessor {
   private ImmutableList<Content> getContents(
       Optional<String> currentBranch, List<Event> events, String agentName, String modelName) {
     List<Event> filteredEvents = new ArrayList<>();
+    boolean hasCompactEvent = false;
 
     // Filter the events, leaving the contents and the function calls and responses from the current
     // agent.
     for (Event event : events) {
-      // Skip events without content, or generated neither by user nor by model or has empty text.
-      // E.g. events purely for mutating session states.
-      if (event.content().isEmpty()) {
-        continue;
-      }
-      var content = event.content().get();
-      if (content.role().isEmpty()
-          || content.role().get().isEmpty()
-          || content.parts().isEmpty()
-          || content.parts().get().isEmpty()
-          || content.parts().get().get(0).text().map(String::isEmpty).orElse(false)) {
+      if (event.actions().compaction().isPresent()) {
+        // Always include the compaction event for the later processCompactionEvent call.
+        // The compaction event is used to filter out normal events that are covered by the
+        // compaction event.
+        hasCompactEvent = true;
+        filteredEvents.add(event);
         continue;
       }
 
+      // Skip events without content, or generated neither by user nor by model or has empty text.
+      // E.g. events purely for mutating session states.
+      if (isEmptyContent(event)) {
+        continue;
+      }
       if (!isEventBelongsToBranch(currentBranch, event)) {
         continue;
       }
@@ -133,6 +137,10 @@ public final class Contents implements RequestProcessor {
       }
     }
 
+    if (hasCompactEvent) {
+      filteredEvents = processCompactionEvent(filteredEvents);
+    }
+
     List<Event> resultEvents = rearrangeEventsForLatestFunctionResponse(filteredEvents);
     resultEvents = rearrangeEventsForAsyncFunctionResponsesInHistory(resultEvents, modelName);
 
@@ -140,6 +148,93 @@ public final class Contents implements RequestProcessor {
         .map(Event::content)
         .flatMap(Optional::stream)
         .collect(toImmutableList());
+  }
+
+  /**
+   * Check if an event has missing or empty content.
+   *
+   * <p>This can happen to the events that only changed session state. When both content and
+   * transcriptions are empty, the event will be considered as empty. The content is considered
+   * empty if none of its parts contain text, inline data, file data, function call, or function
+   * response. Parts with only thoughts are also considered empty.
+   *
+   * @param event the event to check.
+   * @return {@code true} if the event is considered to have empty content, {@code false} otherwise.
+   */
+  private boolean isEmptyContent(Event event) {
+    if (event.content().isEmpty()) {
+      return true;
+    }
+    var content = event.content().get();
+    return (content.role().isEmpty()
+        || content.role().get().isEmpty()
+        || content.parts().isEmpty()
+        || content.parts().get().isEmpty()
+        || content.parts().get().get(0).text().map(String::isEmpty).orElse(false));
+  }
+
+  /**
+   * Filters events that are covered by compaction events by identifying compacted ranges and
+   * filters out events that are covered by compaction summaries
+   *
+   * <p>Example of input
+   *
+   * <pre>
+   * [
+   *   event_1(timestamp=1),
+   *   event_2(timestamp=2),
+   *   compaction_1(event_1, event_2, timestamp=3, content=summary_1_2, startTime=1, endTime=2),
+   *   event_3(timestamp=4),
+   *   compaction_2(event_2, event_3, timestamp=5, content=summary_2_3, startTime=2, endTime=3),
+   *   event_4(timestamp=6)
+   * ]
+   * </pre>
+   *
+   * Will result in the following events output
+   *
+   * <pre>
+   * [
+   *   compaction_1,
+   *   compaction_2
+   *   event_4
+   * ]
+   * </pre>
+   *
+   * Compaction events are always strictly in order based on event timestamp.
+   *
+   * @param events the list of event to filter.
+   * @return a new list with compaction applied.
+   */
+  private List<Event> processCompactionEvent(List<Event> events) {
+    List<Event> result = new ArrayList<>();
+    ListIterator<Event> iter = events.listIterator(events.size());
+    Long lastCompactionStartTime = null;
+
+    while (iter.hasPrevious()) {
+      Event event = iter.previous();
+      EventCompaction compaction = event.actions().compaction().orElse(null);
+      if (compaction == null) {
+        if (lastCompactionStartTime == null || event.timestamp() < lastCompactionStartTime) {
+          result.add(event);
+        }
+        continue;
+      }
+      // Create a new event for the compaction event in the result.
+      result.add(
+          Event.builder()
+              .timestamp(compaction.endTimestamp())
+              .author("model")
+              .content(compaction.compactedContent())
+              .branch(event.branch())
+              .invocationId(event.invocationId())
+              .actions(event.actions())
+              .build());
+      lastCompactionStartTime =
+          lastCompactionStartTime == null
+              ? compaction.startTimestamp()
+              : Long.min(lastCompactionStartTime, compaction.startTimestamp());
+    }
+    return Lists.reverse(result);
   }
 
   /** Whether the event is a reply from another agent. */

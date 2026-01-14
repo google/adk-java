@@ -1,7 +1,24 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.adk.summarizer;
 
 import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -19,7 +36,6 @@ import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
-import java.util.Optional;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -41,8 +57,7 @@ public class SlidingWindowEventCompactorTest {
   @Test
   public void compaction_noEvents() {
     EventCompactor compactor =
-        new SlidingWindowEventCompactor(
-            new EventsCompactionConfig(2, 1, Optional.of(mockSummarizer)));
+        new SlidingWindowEventCompactor(new EventsCompactionConfig(2, 1, mockSummarizer));
     Session session = Session.builder("id").build();
 
     compactor.compact(session, mockSessionService).blockingSubscribe();
@@ -52,8 +67,7 @@ public class SlidingWindowEventCompactorTest {
   @Test
   public void compaction_notEnoughInvocations() {
     EventCompactor compactor =
-        new SlidingWindowEventCompactor(
-            new EventsCompactionConfig(2, 1, Optional.of(mockSummarizer)));
+        new SlidingWindowEventCompactor(new EventsCompactionConfig(2, 1, mockSummarizer));
     Session session =
         Session.builder("id")
             .events(ImmutableList.of(Event.builder().invocationId("1").build()))
@@ -64,10 +78,28 @@ public class SlidingWindowEventCompactorTest {
   }
 
   @Test
+  public void compaction_notEnoughInvocationsAfterCompact() {
+    EventCompactor compactor =
+        new SlidingWindowEventCompactor(new EventsCompactionConfig(2, 0, mockSummarizer));
+    Session session =
+        Session.builder("id")
+            .events(
+                ImmutableList.of(
+                    Event.builder().invocationId("1").timestamp(1).build(),
+                    Event.builder().invocationId("2").timestamp(2).build(),
+                    createCompactedEvent(1, 2, "Summary 1-2"),
+                    Event.builder().invocationId("3").timestamp(3).build()))
+            .build();
+
+    compactor.compact(session, mockSessionService).blockingSubscribe();
+    verify(mockSummarizer, never()).summarizeEvents(anyList());
+    verify(mockSessionService, never()).appendEvent(any(), any());
+  }
+
+  @Test
   public void compaction_firstCompaction() {
     EventCompactor compactor =
-        new SlidingWindowEventCompactor(
-            new EventsCompactionConfig(2, 1, Optional.of(mockSummarizer)));
+        new SlidingWindowEventCompactor(new EventsCompactionConfig(2, 1, mockSummarizer));
     // Add 4 events without any compaction event
     ImmutableList<Event> events =
         ImmutableList.of(
@@ -89,8 +121,7 @@ public class SlidingWindowEventCompactorTest {
   @Test
   public void compaction_withOverlap() {
     EventCompactor compactor =
-        new SlidingWindowEventCompactor(
-            new EventsCompactionConfig(2, 1, Optional.of(mockSummarizer)));
+        new SlidingWindowEventCompactor(new EventsCompactionConfig(2, 1, mockSummarizer));
     // First 2 events are compacted, plus three uncompacted events
     ImmutableList<Event> events =
         ImmutableList.of(
@@ -120,8 +151,7 @@ public class SlidingWindowEventCompactorTest {
   @Test
   public void compaction_multipleEventsWithSameInvocation() {
     EventCompactor compactor =
-        new SlidingWindowEventCompactor(
-            new EventsCompactionConfig(1, 1, Optional.of(mockSummarizer)));
+        new SlidingWindowEventCompactor(new EventsCompactionConfig(1, 1, mockSummarizer));
     ImmutableList<Event> events =
         ImmutableList.of(
             Event.builder().invocationId("1").timestamp(1).build(),
@@ -150,8 +180,7 @@ public class SlidingWindowEventCompactorTest {
   @Test
   public void compaction_noCompactionEventFromSummarizer() {
     EventCompactor compactor =
-        new SlidingWindowEventCompactor(
-            new EventsCompactionConfig(1, 0, Optional.of(mockSummarizer)));
+        new SlidingWindowEventCompactor(new EventsCompactionConfig(1, 0, mockSummarizer));
     ImmutableList<Event> events =
         ImmutableList.of(Event.builder().invocationId("1").timestamp(1).build());
     Session session = Session.builder("id").events(events).build();

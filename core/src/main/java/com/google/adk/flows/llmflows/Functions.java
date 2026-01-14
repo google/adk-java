@@ -263,8 +263,7 @@ public final class Functions {
                 invocationContext));
       }
 
-      Map<String, Object> functionArgs =
-          functionCall.args().orElse(isLive ? new HashMap<>() : ImmutableMap.of());
+      Map<String, Object> functionArgs = functionCall.args().orElse(new HashMap<>());
 
       Maybe<Map<String, Object>> maybeFunctionResult =
           maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
@@ -369,7 +368,7 @@ public final class Functions {
         continue;
       }
       BaseTool tool = tools.get(functionCall.name().get());
-      if (tool.longRunning()) {
+      if (tool != null && tool.longRunning()) {
         longRunningFunctionCalls.add(functionCall.id().orElse(""));
       }
     }

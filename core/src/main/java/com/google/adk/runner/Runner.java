@@ -34,6 +34,8 @@ import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.adk.summarizer.SlidingWindowEventCompactor;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.utils.CollectionUtils;
@@ -68,6 +70,7 @@ public class Runner {
   @Nullable private final BaseMemoryService memoryService;
   private final PluginManager pluginManager;
   private final ResumabilityConfig resumabilityConfig;
+  @Nullable private final EventsCompactionConfig eventsCompactionConfig;
 
   /** Builder for {@link Runner}. */
   public static class Builder {
@@ -78,6 +81,7 @@ public class Runner {
     @Nullable private BaseMemoryService memoryService = null;
     private List<BasePlugin> plugins = ImmutableList.of();
     private ResumabilityConfig resumabilityConfig = new ResumabilityConfig();
+    @Nullable private EventsCompactionConfig eventsCompactionConfig;
 
     @CanIgnoreReturnValue
     public Builder agent(BaseAgent agent) {
@@ -121,6 +125,12 @@ public class Runner {
       return this;
     }
 
+    @CanIgnoreReturnValue
+    public Builder eventsCompactionConfig(EventsCompactionConfig eventsCompactionConfig) {
+      this.eventsCompactionConfig = eventsCompactionConfig;
+      return this;
+    }
+
     public Runner build() {
       if (agent == null) {
         throw new IllegalStateException("Agent must be provided.");
@@ -141,7 +151,8 @@ public class Runner {
           sessionService,
           memoryService,
           plugins,
-          resumabilityConfig);
+          resumabilityConfig,
+          eventsCompactionConfig);
     }
   }
 
@@ -208,6 +219,32 @@ public class Runner {
       @Nullable BaseMemoryService memoryService,
       List<BasePlugin> plugins,
       ResumabilityConfig resumabilityConfig) {
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        plugins,
+        resumabilityConfig,
+        null);
+  }
+
+  /**
+   * Creates a new {@code Runner} with a list of plugins and resumability config.
+   *
+   * @deprecated Use {@link Runner.Builder} instead.
+   */
+  @Deprecated
+  protected Runner(
+      BaseAgent agent,
+      String appName,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService,
+      @Nullable BaseMemoryService memoryService,
+      List<BasePlugin> plugins,
+      ResumabilityConfig resumabilityConfig,
+      @Nullable EventsCompactionConfig eventsCompactionConfig) {
     this.agent = agent;
     this.appName = appName;
     this.artifactService = artifactService;
@@ -215,6 +252,7 @@ public class Runner {
     this.memoryService = memoryService;
     this.pluginManager = new PluginManager(plugins);
     this.resumabilityConfig = resumabilityConfig;
+    this.eventsCompactionConfig = eventsCompactionConfig;
   }
 
   /**
@@ -493,7 +531,10 @@ public class Runner {
                                                       Completable.defer(
                                                           () ->
                                                               pluginManager.runAfterRunCallback(
-                                                                  contextWithUpdatedSession)));
+                                                                  contextWithUpdatedSession)))
+                                                  .concatWith(
+                                                      Completable.defer(
+                                                          () -> compactEvents(updatedSession)));
                                             });
                                   }))
                   .doOnError(
@@ -507,6 +548,13 @@ public class Runner {
       span.end();
       return Flowable.error(t);
     }
+  }
+
+  private Completable compactEvents(Session session) {
+    return Optional.ofNullable(eventsCompactionConfig)
+        .map(SlidingWindowEventCompactor::new)
+        .map(c -> c.compact(session, sessionService))
+        .orElse(Completable.complete());
   }
 
   private void copySessionStates(Session source, Session target) {

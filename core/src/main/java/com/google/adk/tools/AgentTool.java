@@ -109,7 +109,7 @@ public class AgentTool extends BaseTool {
   public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
 
     if (this.skipSummarization) {
-      toolContext.actions().setSkipSummarization(true);
+      toolContext.setActions(toolContext.actions().toBuilder().skipSummarization(true).build());
     }
 
     Optional<Schema> agentInputSchema = Optional.empty();
