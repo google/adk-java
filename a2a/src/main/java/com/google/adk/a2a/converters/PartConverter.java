@@ -34,9 +34,13 @@ import org.slf4j.LoggerFactory;
 public final class PartConverter {
   private static final Logger logger = LoggerFactory.getLogger(PartConverter.class);
   private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
-  // Constants for metadata types
-  public static final String A2A_DATA_PART_METADATA_TYPE_KEY = "type";
-  public static final String A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY = "is_long_running";
+  // ADK metadata key prefix (must match Python's ADK_METADATA_KEY_PREFIX)
+  private static final String ADK_METADATA_KEY_PREFIX = "adk_";
+
+// Constants for metadata keys (prefixed with adk_ to match Python)
+  public static final String A2A_DATA_PART_METADATA_TYPE_KEY = ADK_METADATA_KEY_PREFIX + "type";
+  public static final String A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY =
+      ADK_METADATA_KEY_PREFIX + "is_long_running";
   public static final String A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL = "function_call";
   public static final String A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE = "function_response";
   public static final String A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT =
