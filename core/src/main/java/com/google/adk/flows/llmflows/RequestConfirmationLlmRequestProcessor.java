@@ -42,6 +42,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -109,8 +110,8 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
         continue;
       }
 
-      Map<String, ToolConfirmation> toolsToResumeWithConfirmation = new HashMap<>();
-      Map<String, FunctionCall> toolsToResumeWithArgs = new HashMap<>();
+      final Map<String, ToolConfirmation> toolsToResumeWithConfirmation = new HashMap<>();
+      final Map<String, FunctionCall> toolsToResumeWithArgs = new HashMap<>();
 
       event.functionCalls().stream()
           .filter(
@@ -163,6 +164,16 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
                 // Create an updated LlmRequest including the new event's content
                 ImmutableList.Builder<Content> updatedContentsBuilder =
                     ImmutableList.<Content>builder().addAll(llmRequest.contents());
+
+                final List<Part> functionCalls =
+                    toolsToResumeWithArgs.values().stream()
+                        .map(functionCall -> Part.builder().functionCall(functionCall).build())
+                        .collect(toImmutableList());
+                Content functionCallContent =
+                    Content.builder().role("model").parts(functionCalls).build();
+                // add function call
+                updatedContentsBuilder.add(functionCallContent);
+                // add function response
                 assembledEvent.content().ifPresent(updatedContentsBuilder::add);
 
                 LlmRequest updatedLlmRequest =
