@@ -46,13 +46,16 @@ public class LoopAgent extends BaseAgent {
    * @param beforeAgentCallback Optional callback before the agent runs.
    * @param afterAgentCallback Optional callback after the agent runs.
    */
-  private LoopAgent(Builder builder) {
-    super(
-        builder.name,
-        builder.description,
-        builder.subAgents,
-        builder.callbackPluginBuilder.build());
-    this.maxIterations = builder.maxIterations;
+  private LoopAgent(
+      String name,
+      String description,
+      List<? extends BaseAgent> subAgents,
+      Optional<Integer> maxIterations,
+      List<Callbacks.BeforeAgentCallback> beforeAgentCallback,
+      List<Callbacks.AfterAgentCallback> afterAgentCallback) {
+
+    super(name, description, subAgents, beforeAgentCallback, afterAgentCallback);
+    this.maxIterations = maxIterations;
   }
 
   /** Builder for {@link LoopAgent}. */
@@ -73,7 +76,9 @@ public class LoopAgent extends BaseAgent {
 
     @Override
     public LoopAgent build() {
-      return new LoopAgent(this);
+      // TODO(b/410859954): Add validation for required fields like name.
+      return new LoopAgent(
+          name, description, subAgents, maxIterations, beforeAgentCallback, afterAgentCallback);
     }
   }
 

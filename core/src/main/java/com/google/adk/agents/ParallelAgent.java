@@ -45,12 +45,14 @@ public class ParallelAgent extends BaseAgent {
    * @param beforeAgentCallback Optional callback before the agent runs.
    * @param afterAgentCallback Optional callback after the agent runs.
    */
-  private ParallelAgent(Builder builder) {
-    super(
-        builder.name,
-        builder.description,
-        builder.subAgents,
-        builder.callbackPluginBuilder.build());
+  private ParallelAgent(
+      String name,
+      String description,
+      List<? extends BaseAgent> subAgents,
+      List<Callbacks.BeforeAgentCallback> beforeAgentCallback,
+      List<Callbacks.AfterAgentCallback> afterAgentCallback) {
+
+    super(name, description, subAgents, beforeAgentCallback, afterAgentCallback);
   }
 
   /** Builder for {@link ParallelAgent}. */
@@ -58,7 +60,8 @@ public class ParallelAgent extends BaseAgent {
 
     @Override
     public ParallelAgent build() {
-      return new ParallelAgent(this);
+      return new ParallelAgent(
+          name, description, subAgents, beforeAgentCallback, afterAgentCallback);
     }
   }
 
