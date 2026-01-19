@@ -274,13 +274,6 @@ public class LlmAgent extends BaseAgent {
       return this;
     }
 
-    // (b/476510024): Temporary workaround for ces
-    @CanIgnoreReturnValue
-    public Builder clearBeforeModelCallbacks() {
-      callbackPluginBuilder.clearBeforeModelCallbacks();
-      return this;
-    }
-
     @CanIgnoreReturnValue
     public Builder beforeModelCallback(BeforeModelCallback beforeModelCallback) {
       callbackPluginBuilder.addBeforeModelCallback(beforeModelCallback);

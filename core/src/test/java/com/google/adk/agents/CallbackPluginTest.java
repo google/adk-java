@@ -496,4 +496,17 @@ public final class CallbackPluginTest {
     assertThat(testCallback2.wasCalled()).isTrue();
     assertThat(result).isNull();
   }
+
+  @Test
+  public void addBeforeModelCallback_isIdempotent() {
+    LlmResponse expectedResponse = LlmResponse.builder().build();
+    var testCallback = TestCallback.returning(expectedResponse);
+    BeforeModelCallback callback = testCallback.asBeforeModelCallback();
+    CallbackPlugin plugin =
+        CallbackPlugin.builder()
+            .addBeforeModelCallback(callback)
+            .addBeforeModelCallback(callback)
+            .build();
+    assertThat(plugin.getBeforeModelCallback()).containsExactly(callback);
+  }
 }
