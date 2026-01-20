@@ -135,7 +135,7 @@ public class Runner {
 
     public Runner build() {
       if (agent == null) {
-        throw new IllegalStateException("Agent must be provided.");
+        throw new IllegalStateException("Agent must be provided. Test - do not submit");
       }
       if (appName == null) {
         throw new IllegalStateException("App name must be provided.");
