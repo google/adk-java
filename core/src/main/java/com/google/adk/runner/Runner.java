@@ -529,7 +529,7 @@ public class Runner {
                               // TODO: remove this hack after deprecating runAsync with Session.
                               copySessionStates(updatedSession, session);
                               return contextWithUpdatedSession
-                                  .pluginManager()
+                                  .combinedPlugin()
                                   .onEventCallback(contextWithUpdatedSession, registeredEvent)
                                   .defaultIfEmpty(registeredEvent);
                             })

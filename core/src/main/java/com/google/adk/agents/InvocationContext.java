@@ -25,6 +25,7 @@ import com.google.adk.plugins.Plugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.InlineMe;
@@ -44,6 +45,7 @@ public class InvocationContext {
   private final BaseArtifactService artifactService;
   private final BaseMemoryService memoryService;
   private final Plugin pluginManager;
+  private final Plugin combinedPlugin;
   private final Optional<LiveRequestQueue> liveRequestQueue;
   private final Map<String, ActiveStreamingTool> activeStreamingTools;
   private final String invocationId;
@@ -73,6 +75,13 @@ public class InvocationContext {
     this.endInvocation = builder.endInvocation;
     this.resumabilityConfig = builder.resumabilityConfig;
     this.invocationCostManager = builder.invocationCostManager;
+    this.combinedPlugin =
+        Optional.ofNullable(builder.agent)
+            .map(BaseAgent::getPlugin)
+            .map(
+                agentPlugin ->
+                    (Plugin) new PluginManager(ImmutableList.of(pluginManager, agentPlugin)))
+            .orElse(pluginManager);
   }
 
   /**
@@ -233,6 +242,14 @@ public class InvocationContext {
   /** Returns the plugin manager for accessing tools and plugins. */
   public Plugin pluginManager() {
     return pluginManager;
+  }
+
+  /**
+   * Returns a {@link Plugin} that combines agent-specific plugins with framework-level plugins,
+   * allowing tools from both to be invoked.
+   */
+  public Plugin combinedPlugin() {
+    return combinedPlugin;
   }
 
   /** Returns a map of tool call IDs to active streaming tools for the current invocation. */
