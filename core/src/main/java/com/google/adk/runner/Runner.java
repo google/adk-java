@@ -606,6 +606,7 @@ public class Runner {
         .agent(rootAgent)
         .session(session)
         .resumabilityConfig(this.resumabilityConfig)
+        .eventsCompactionConfig(this.eventsCompactionConfig)
         .agent(this.findAgentToRun(session, rootAgent));
   }
 

@@ -21,6 +21,7 @@ import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.ResumabilityConfig;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
+import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
@@ -51,6 +52,7 @@ public class InvocationContext {
   private final Optional<Content> userContent;
   private final RunConfig runConfig;
   private final ResumabilityConfig resumabilityConfig;
+  private final Optional<EventsCompactionConfig> eventsCompactionConfig;
   private final InvocationCostManager invocationCostManager;
 
   private Optional<String> branch;
@@ -72,6 +74,7 @@ public class InvocationContext {
     this.runConfig = builder.runConfig;
     this.endInvocation = builder.endInvocation;
     this.resumabilityConfig = builder.resumabilityConfig;
+    this.eventsCompactionConfig = builder.eventsCompactionConfig;
     this.invocationCostManager = builder.invocationCostManager;
   }
 
@@ -342,6 +345,11 @@ public class InvocationContext {
     return resumabilityConfig.isResumable();
   }
 
+  /** Returns the events compaction configuration for the current agent run. */
+  public Optional<EventsCompactionConfig> eventsCompactionConfig() {
+    return eventsCompactionConfig;
+  }
+
   /** Returns whether to pause the invocation right after this [event]. */
   public boolean shouldPauseInvocation(Event event) {
     if (!isResumable()) {
@@ -411,6 +419,7 @@ public class InvocationContext {
       this.runConfig = context.runConfig;
       this.endInvocation = context.endInvocation;
       this.resumabilityConfig = context.resumabilityConfig;
+      this.eventsCompactionConfig = context.eventsCompactionConfig;
       this.invocationCostManager = context.invocationCostManager;
     }
 
@@ -428,6 +437,7 @@ public class InvocationContext {
     private RunConfig runConfig = RunConfig.builder().build();
     private boolean endInvocation = false;
     private ResumabilityConfig resumabilityConfig = new ResumabilityConfig();
+    private Optional<EventsCompactionConfig> eventsCompactionConfig = Optional.empty();
     private InvocationCostManager invocationCostManager = new InvocationCostManager();
 
     /**
@@ -629,6 +639,18 @@ public class InvocationContext {
     }
 
     /**
+     * Sets the events compaction configuration for the current agent run.
+     *
+     * @param eventsCompactionConfig the events compaction configuration.
+     * @return this builder instance for chaining.
+     */
+    @CanIgnoreReturnValue
+    public Builder eventsCompactionConfig(@Nullable EventsCompactionConfig eventsCompactionConfig) {
+      this.eventsCompactionConfig = Optional.ofNullable(eventsCompactionConfig);
+      return this;
+    }
+
+    /**
      * Builds the {@link InvocationContext} instance.
      *
      * @throws IllegalStateException if any required parameters are missing.
@@ -661,6 +683,7 @@ public class InvocationContext {
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
         && Objects.equals(resumabilityConfig, that.resumabilityConfig)
+        && Objects.equals(eventsCompactionConfig, that.eventsCompactionConfig)
         && Objects.equals(invocationCostManager, that.invocationCostManager);
   }
 
@@ -681,6 +704,7 @@ public class InvocationContext {
         runConfig,
         endInvocation,
         resumabilityConfig,
+        eventsCompactionConfig,
         invocationCostManager);
   }
 }
