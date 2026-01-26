@@ -16,6 +16,7 @@
 
 package com.google.adk.agents;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.stream.Collectors.joining;
 
@@ -54,7 +55,6 @@ import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.Model;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
@@ -155,7 +155,7 @@ public class LlmAgent extends BaseAgent {
     this.llmFlow = determineLlmFlow();
 
     // Validate name not empty.
-    Preconditions.checkArgument(!this.name().isEmpty(), "Agent name cannot be empty.");
+    checkArgument(!this.name().isEmpty(), "Agent name cannot be empty.");
   }
 
   /** Returns a {@link Builder} for {@link LlmAgent}. */
@@ -613,21 +613,29 @@ public class LlmAgent extends BaseAgent {
     }
 
     protected void validate() {
-      this.disallowTransferToParent =
-          this.disallowTransferToParent != null && this.disallowTransferToParent;
-      this.disallowTransferToPeers =
-          this.disallowTransferToPeers != null && this.disallowTransferToPeers;
+      if (this.generateContentConfig != null) {
+        checkArgument(
+            this.generateContentConfig.tools().isEmpty(),
+            "All tools must be set via LlmAgent.builder().tools().");
+        checkArgument(
+            this.generateContentConfig.systemInstruction().isEmpty(),
+            "System instruction must be set via LlmAgent.builder().instruction().");
+        checkArgument(
+            this.generateContentConfig.responseSchema().isEmpty(),
+            "Response schema must be set via LlmAgent.builder().outputSchema().");
+      }
 
       if (this.outputSchema != null) {
-        if (!this.disallowTransferToParent || !this.disallowTransferToPeers) {
+        if (Objects.equals(this.disallowTransferToParent, false)
+            || Objects.equals(this.disallowTransferToPeers, false)) {
           logger.warn(
               "Invalid config for agent {}: outputSchema cannot co-exist with agent transfer"
                   + " configurations. Setting disallowTransferToParent=true and"
                   + " disallowTransferToPeers=true.",
               this.name);
-          this.disallowTransferToParent = true;
-          this.disallowTransferToPeers = true;
         }
+        this.disallowTransferToParent = true;
+        this.disallowTransferToPeers = true;
 
         if (this.subAgents != null && !this.subAgents.isEmpty()) {
           throw new IllegalArgumentException(
@@ -642,6 +650,11 @@ public class LlmAgent extends BaseAgent {
                   + this.name
                   + ": if outputSchema is set, tools must be empty.");
         }
+      } else {
+        this.disallowTransferToParent =
+            this.disallowTransferToParent != null && this.disallowTransferToParent;
+        this.disallowTransferToPeers =
+            this.disallowTransferToPeers != null && this.disallowTransferToPeers;
       }
     }
 
@@ -669,6 +682,10 @@ public class LlmAgent extends BaseAgent {
               .filter(part -> !isThought(part))
               .map(part -> part.text().orElse(""))
               .collect(joining());
+
+      if (rawResult.isBlank()) {
+        return;
+      }
 
       Optional<Schema> outputSchema = outputSchema();
       if (outputSchema.isPresent()) {
