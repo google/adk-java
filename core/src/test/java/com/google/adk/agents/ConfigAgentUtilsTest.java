@@ -1209,10 +1209,8 @@ public final class ConfigAgentUtilsTest {
     assertThat(agent).isInstanceOf(LlmAgent.class);
     LlmAgent llm = (LlmAgent) agent;
 
-    assertThat(agent.beforeAgentCallback()).isPresent();
-    assertThat(agent.beforeAgentCallback().get()).hasSize(2);
-    assertThat(agent.afterAgentCallback()).isPresent();
-    assertThat(agent.afterAgentCallback().get()).hasSize(1);
+    assertThat(agent.beforeAgentCallback()).hasSize(2);
+    assertThat(agent.afterAgentCallback()).hasSize(1);
 
     assertThat(llm.beforeModelCallback()).hasSize(1);
     assertThat(llm.afterModelCallback()).hasSize(1);
