@@ -54,6 +54,7 @@ import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.Model;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
+import com.google.adk.tools.SetModelResponseTool;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -148,7 +149,17 @@ public class LlmAgent extends BaseAgent {
     this.outputSchema = Optional.ofNullable(builder.outputSchema);
     this.executor = Optional.ofNullable(builder.executor);
     this.outputKey = Optional.ofNullable(builder.outputKey);
-    this.toolsUnion = builder.toolsUnion != null ? builder.toolsUnion : ImmutableList.of();
+    ImmutableList<Object> userTools =
+        builder.toolsUnion != null ? builder.toolsUnion : ImmutableList.of();
+    if (builder.outputSchema != null && !userTools.isEmpty()) {
+      this.toolsUnion =
+          ImmutableList.builder()
+              .addAll(userTools)
+              .add(new SetModelResponseTool(builder.outputSchema))
+              .build();
+    } else {
+      this.toolsUnion = userTools;
+    }
     this.toolsets = extractToolsets(this.toolsUnion);
     this.codeExecutor = Optional.ofNullable(builder.codeExecutor);
 
@@ -635,12 +646,6 @@ public class LlmAgent extends BaseAgent {
                   + this.name
                   + ": if outputSchema is set, subAgents must be empty to disable agent"
                   + " transfer.");
-        }
-        if (this.toolsUnion != null && !this.toolsUnion.isEmpty()) {
-          throw new IllegalArgumentException(
-              "Invalid config for agent "
-                  + this.name
-                  + ": if outputSchema is set, tools must be empty.");
         }
       }
     }
