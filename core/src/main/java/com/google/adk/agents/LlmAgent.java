@@ -674,7 +674,7 @@ public class LlmAgent extends BaseAgent {
       if (outputSchema.isPresent()) {
         try {
           Map<String, Object> validatedMap =
-              SchemaUtils.validateOutputSchema(rawResult, outputSchema.get());
+              SchemaUtils.validateSchema(rawResult, outputSchema.get());
           output = validatedMap;
         } catch (JsonProcessingException e) {
           logger.error(

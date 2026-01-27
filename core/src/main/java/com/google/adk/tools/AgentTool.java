@@ -168,7 +168,7 @@ public class AgentTool extends BaseTool {
               }
 
               if (agentOutputSchema.isPresent()) {
-                return SchemaUtils.validateOutputSchema(output, agentOutputSchema.get());
+                return SchemaUtils.validateSchema(output, agentOutputSchema.get());
               } else {
                 return ImmutableMap.of("result", output);
               }

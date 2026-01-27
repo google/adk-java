@@ -132,12 +132,28 @@ public final class SchemaUtils {
    * @return The output map.
    * @throws IllegalArgumentException If the output string does not match the schema.
    * @throws JsonProcessingException If the output string cannot be parsed.
+   * @deprecated Use {@link #validateSchema(String, Schema)} instead.
    */
-  @SuppressWarnings("unchecked") // For tool parameter type casting.
+  @Deprecated
   public static Map<String, Object> validateOutputSchema(String output, Schema schema)
       throws JsonProcessingException {
-    Map<String, Object> outputMap = JsonBaseModel.getMapper().readValue(output, HashMap.class);
-    validateMapOnSchema(outputMap, schema, false);
-    return outputMap;
+    return validateSchema(output, schema);
+  }
+
+  /**
+   * Validates a string against a schema.
+   *
+   * @param input The input string to validate.
+   * @param schema The schema to validate against.
+   * @return The input map.
+   * @throws IllegalArgumentException If the input string does not match the schema.
+   * @throws JsonProcessingException If the input string cannot be parsed.
+   */
+  @SuppressWarnings("unchecked") // For tool parameter type casting.
+  public static Map<String, Object> validateSchema(String s, Schema schema)
+      throws JsonProcessingException {
+    Map<String, Object> map = JsonBaseModel.getMapper().readValue(s, HashMap.class);
+    validateMapOnSchema(map, schema, false);
+    return map;
   }
 }
