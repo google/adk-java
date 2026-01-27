@@ -94,6 +94,9 @@ public class EventActions {
   }
 
   @JsonProperty("stateDelta")
+  // NOTE: This uses ConcurrentMap, which prohibits null values. This is inconsistent with Python
+  // ADK, which uses dicts with None values to signal key deletion in state deltas, preventing
+  // session rewind from being able to delete keys from state.
   public ConcurrentMap<String, Object> stateDelta() {
     return stateDelta;
   }
@@ -103,6 +106,8 @@ public class EventActions {
   }
 
   @JsonProperty("artifactDelta")
+  // NOTE: This stores Part objects, unlike Python ADK which stores integer versions. This
+  // prevents artifact rewind as implemented in Python, which relies on version numbers.
   public ConcurrentMap<String, Part> artifactDelta() {
     return artifactDelta;
   }
