@@ -316,4 +316,24 @@ public final class BaseAgentTest {
     assertThat(agent.canonicalBeforeAgentCallbacks()).containsExactly(bc);
     assertThat(agent.canonicalAfterAgentCallbacks()).containsExactly(ac);
   }
+
+  @Test
+  public void runLive_invokesRunLiveImpl() {
+    var runLiveCallback = TestCallback.<Void>returningEmpty();
+    Content runLiveImplContent = Content.fromParts(Part.fromText("live_output"));
+    TestBaseAgent agent =
+        new TestBaseAgent(
+            TEST_AGENT_NAME,
+            TEST_AGENT_DESCRIPTION,
+            /* beforeAgentCallbacks= */ ImmutableList.of(),
+            /* afterAgentCallbacks= */ ImmutableList.of(),
+            runLiveCallback.asRunLiveImplSupplier(runLiveImplContent));
+    InvocationContext invocationContext = TestUtils.createInvocationContext(agent);
+
+    List<Event> results = agent.runLive(invocationContext).toList().blockingGet();
+
+    assertThat(results).hasSize(1);
+    assertThat(results.get(0).content()).hasValue(runLiveImplContent);
+    assertThat(runLiveCallback.wasCalled()).isTrue();
+  }
 }
