@@ -341,6 +341,13 @@ public final class LlmAgentTest {
     assertThat(agent.canonicalBeforeToolCallbacks()).isEmpty();
     assertThat(agent.canonicalAfterToolCallbacks()).isEmpty();
     assertThat(agent.canonicalOnToolErrorCallbacks()).isEmpty();
+
+    assertThat(agent.beforeModelCallback()).isEmpty();
+    assertThat(agent.afterModelCallback()).isEmpty();
+    assertThat(agent.onModelErrorCallback()).isEmpty();
+    assertThat(agent.beforeToolCallback()).isEmpty();
+    assertThat(agent.afterToolCallback()).isEmpty();
+    assertThat(agent.onToolErrorCallback()).isEmpty();
   }
 
   @Test
@@ -371,5 +378,12 @@ public final class LlmAgentTest {
     assertThat(agent.canonicalBeforeToolCallbacks()).containsExactly(btc);
     assertThat(agent.canonicalAfterToolCallbacks()).containsExactly(atc);
     assertThat(agent.canonicalOnToolErrorCallbacks()).containsExactly(otec);
+
+    assertThat(agent.beforeModelCallback()).containsExactly(bmc);
+    assertThat(agent.afterModelCallback()).containsExactly(amc);
+    assertThat(agent.onModelErrorCallback()).containsExactly(omec);
+    assertThat(agent.beforeToolCallback()).containsExactly(btc);
+    assertThat(agent.afterToolCallback()).containsExactly(atc);
+    assertThat(agent.onToolErrorCallback()).containsExactly(otec);
   }
 }
