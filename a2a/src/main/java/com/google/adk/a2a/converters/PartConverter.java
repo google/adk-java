@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Blob;
+import com.google.genai.types.Content;
 import com.google.genai.types.FileData;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -16,6 +17,7 @@ import io.a2a.spec.FileContent;
 import io.a2a.spec.FilePart;
 import io.a2a.spec.FileWithBytes;
 import io.a2a.spec.FileWithUri;
+import io.a2a.spec.Message;
 import io.a2a.spec.TextPart;
 import java.util.Base64;
 import java.util.HashMap;
@@ -181,6 +183,12 @@ public final class PartConverter {
     }
   }
 
+  // Converts an A2A Message to a Google GenAI Content object.
+  public static Content messageToContent(Message message) {
+    ImmutableList<com.google.genai.types.Part> parts = toGenaiParts(message.getParts());
+    return Content.builder().role("user").parts(parts).build();
+  }
+
   /**
    * Creates an A2A DataPart from a Google GenAI FunctionResponse.
    *
@@ -227,7 +235,7 @@ public final class PartConverter {
     }
 
     if (part.text().isPresent()) {
-      return Optional.of(new TextPart(part.text().get()));
+      return Optional.of(new TextPart(part.text().get(), new HashMap<>()));
     }
 
     if (part.fileData().isPresent()) {
@@ -235,7 +243,7 @@ public final class PartConverter {
       String uri = fileData.fileUri().orElse(null);
       String mime = fileData.mimeType().orElse(null);
       String name = fileData.displayName().orElse(null);
-      return Optional.of(new FilePart(new FileWithUri(mime, name, uri)));
+      return Optional.of(new FilePart(new FileWithUri(mime, name, uri), new HashMap<>()));
     }
 
     if (part.inlineData().isPresent()) {
@@ -244,7 +252,7 @@ public final class PartConverter {
       String encoded = bytes != null ? Base64.getEncoder().encodeToString(bytes) : null;
       String mime = blob.mimeType().orElse(null);
       String name = blob.displayName().orElse(null);
-      return Optional.of(new FilePart(new FileWithBytes(mime, name, encoded)));
+      return Optional.of(new FilePart(new FileWithBytes(mime, name, encoded), new HashMap<>()));
     }
 
     if (part.functionCall().isPresent() || part.functionResponse().isPresent()) {
