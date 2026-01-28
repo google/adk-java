@@ -125,6 +125,14 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     return Single.just(IntStream.range(0, size).boxed().collect(toImmutableList()));
   }
 
+  @Override
+  public Maybe<Part> saveAndReloadArtifact(
+      String appName, String userId, String sessionId, String filename, Part artifact) {
+    return saveArtifact(appName, userId, sessionId, filename, artifact)
+        .flatMapMaybe(
+            version -> loadArtifact(appName, userId, sessionId, filename, Optional.of(version)));
+  }
+
   private Map<String, List<Part>> getArtifactsMap(String appName, String userId, String sessionId) {
     return artifacts
         .computeIfAbsent(appName, unused -> new HashMap<>())

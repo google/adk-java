@@ -73,6 +73,23 @@ public interface BaseArtifactService {
   Completable deleteArtifact(String appName, String userId, String sessionId, String filename);
 
   /**
+   * Saves an artifact and returns it with fileData if available.
+   *
+   * @param appName the app name
+   * @param userId the user ID
+   * @param sessionId the session ID
+   * @param filename the filename
+   * @param artifact the artifact to save
+   * @return the saved artifact with fileData if available.
+   */
+  default Maybe<Part> saveAndReloadArtifact(
+      String appName, String userId, String sessionId, String filename, Part artifact) {
+    return saveArtifact(appName, userId, sessionId, filename, artifact)
+        .flatMapMaybe(
+            version -> loadArtifact(appName, userId, sessionId, filename, Optional.of(version)));
+  }
+
+  /**
    * Lists all the versions (as revision IDs) of an artifact.
    *
    * @param appName the app name

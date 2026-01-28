@@ -76,6 +76,7 @@ public class GcsArtifactServiceTest {
     when(blob.exists()).thenReturn(true);
     BlobId blobId = BlobId.of(BUCKET_NAME, name);
     when(blob.getBlobId()).thenReturn(blobId);
+    when(blob.getBucket()).thenReturn(BUCKET_NAME);
     return blob;
   }
 
@@ -89,6 +90,8 @@ public class GcsArtifactServiceTest {
         BlobInfo.newBuilder(expectedBlobId).setContentType("application/octet-stream").build();
 
     when(mockBlobPage.iterateAll()).thenReturn(ImmutableList.of());
+    Blob savedBlob = mockBlob(expectedBlobName, "application/octet-stream", new byte[] {1, 2, 3});
+    when(mockStorage.create(eq(expectedBlobInfo), eq(new byte[] {1, 2, 3}))).thenReturn(savedBlob);
 
     int version =
         service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact).blockingGet();
@@ -109,6 +112,8 @@ public class GcsArtifactServiceTest {
 
     Blob blobV0 = mockBlob(blobNameV0, "text/plain", new byte[] {1});
     when(mockBlobPage.iterateAll()).thenReturn(Collections.singletonList(blobV0));
+    Blob savedBlob = mockBlob(expectedBlobNameV1, "image/png", new byte[] {4, 5});
+    when(mockStorage.create(eq(expectedBlobInfoV1), eq(new byte[] {4, 5}))).thenReturn(savedBlob);
 
     int version =
         service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact).blockingGet();
@@ -126,6 +131,8 @@ public class GcsArtifactServiceTest {
         BlobInfo.newBuilder(expectedBlobId).setContentType("application/json").build();
 
     when(mockBlobPage.iterateAll()).thenReturn(ImmutableList.of());
+    Blob savedBlob = mockBlob(expectedBlobName, "application/json", new byte[] {1, 2, 3});
+    when(mockStorage.create(eq(expectedBlobInfo), eq(new byte[] {1, 2, 3}))).thenReturn(savedBlob);
 
     int version =
         service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, USER_FILENAME, artifact).blockingGet();
@@ -328,6 +335,31 @@ public class GcsArtifactServiceTest {
         service.listVersions(APP_NAME, USER_ID, SESSION_ID, FILENAME).blockingGet();
 
     assertThat(versions).isEmpty();
+  }
+
+  @Test
+  public void saveAndReloadArtifact_savesAndReturnsFileData() {
+    Part artifact = Part.fromBytes(new byte[] {1, 2, 3}, "application/octet-stream");
+    String expectedBlobName =
+        String.format("%s/%s/%s/%s/0", APP_NAME, USER_ID, SESSION_ID, FILENAME);
+    BlobId expectedBlobId = BlobId.of(BUCKET_NAME, expectedBlobName);
+    BlobInfo expectedBlobInfo =
+        BlobInfo.newBuilder(expectedBlobId).setContentType("application/octet-stream").build();
+
+    when(mockBlobPage.iterateAll()).thenReturn(ImmutableList.of());
+    Blob savedBlob = mockBlob(expectedBlobName, "application/octet-stream", new byte[] {1, 2, 3});
+    when(mockStorage.create(eq(expectedBlobInfo), eq(new byte[] {1, 2, 3}))).thenReturn(savedBlob);
+
+    Optional<Part> result =
+        asOptional(
+            service.saveAndReloadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact));
+
+    assertThat(result).isPresent();
+    assertThat(result.get().fileData()).isPresent();
+    assertThat(result.get().fileData().get().fileUri())
+        .hasValue("gs://" + BUCKET_NAME + "/" + expectedBlobName);
+    assertThat(result.get().fileData().get().mimeType()).hasValue("application/octet-stream");
+    verify(mockStorage).create(eq(expectedBlobInfo), eq(new byte[] {1, 2, 3}));
   }
 
   private static <T> Optional<T> asOptional(Maybe<T> maybe) {
