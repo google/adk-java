@@ -166,7 +166,7 @@ public final class LlmAgentTest {
   }
 
   @Test
-  public void build_withOutputSchemaAndTools_throwsIllegalArgumentException() {
+  public void build_withOutputSchemaAndTools_addsSetModelResponseTool() {
     BaseTool tool =
         new BaseTool("test_tool", "test_description") {
           @Override
@@ -182,22 +182,18 @@ public final class LlmAgentTest {
             .required(ImmutableList.of("status"))
             .build();
 
-    // Expecting an IllegalArgumentException when building the agent
-    IllegalArgumentException exception =
-        assertThrows(
-            IllegalArgumentException.class,
-            () ->
-                LlmAgent.builder() // Use the agent builder directly
-                    .name("agent with invalid tool config")
-                    .outputSchema(outputSchema) // Set the output schema
-                    .tools(ImmutableList.of(tool)) // Set tools (this should cause the error)
-                    .build()); // Attempt to build the agent
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent with valid tool config")
+            .outputSchema(outputSchema)
+            .tools(ImmutableList.of(tool))
+            .build();
 
-    assertThat(exception)
-        .hasMessageThat()
-        .contains(
-            "Invalid config for agent agent with invalid tool config: if outputSchema is set, tools"
-                + " must be empty");
+    List<BaseTool> tools = agent.tools();
+    assertThat(tools).hasSize(2);
+    assertThat(tools.stream().anyMatch(t -> t instanceof com.google.adk.tools.SetModelResponseTool))
+        .isTrue();
+    assertThat(tools.stream().anyMatch(t -> t.name().equals("test_tool"))).isTrue();
   }
 
   @Test
