@@ -30,7 +30,9 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.Session;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
@@ -66,6 +68,19 @@ public final class TestUtils {
 
   public static InvocationContext createInvocationContext(BaseAgent agent) {
     return createInvocationContext(agent, RunConfig.builder().build());
+  }
+
+  public static InvocationContext createInvocationContext(
+      BaseAgent agent, BaseSessionService sessionService, Session session) {
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .artifactService(new InMemoryArtifactService())
+        .invocationId("invocationId")
+        .agent(agent)
+        .session(session)
+        .userContent(Content.fromParts(Part.fromText("user content")))
+        .runConfig(RunConfig.builder().build())
+        .build();
   }
 
   public static Event createEvent(String id) {
