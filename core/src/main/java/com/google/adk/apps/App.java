@@ -17,7 +17,7 @@
 package com.google.adk.apps;
 
 import com.google.adk.agents.BaseAgent;
-import com.google.adk.plugins.BasePlugin;
+import com.google.adk.plugins.Plugin;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -38,14 +38,14 @@ public class App {
 
   private final String name;
   private final BaseAgent rootAgent;
-  private final ImmutableList<BasePlugin> plugins;
+  private final ImmutableList<? extends Plugin> plugins;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ResumabilityConfig resumabilityConfig;
 
   private App(
       String name,
       BaseAgent rootAgent,
-      List<BasePlugin> plugins,
+      List<? extends Plugin> plugins,
       @Nullable EventsCompactionConfig eventsCompactionConfig,
       @Nullable ResumabilityConfig resumabilityConfig) {
     this.name = name;
@@ -63,7 +63,7 @@ public class App {
     return rootAgent;
   }
 
-  public ImmutableList<BasePlugin> plugins() {
+  public ImmutableList<? extends Plugin> plugins() {
     return plugins;
   }
 
@@ -81,7 +81,7 @@ public class App {
   public static class Builder {
     private String name;
     private BaseAgent rootAgent;
-    private List<BasePlugin> plugins = ImmutableList.of();
+    private List<? extends Plugin> plugins = ImmutableList.of();
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
     @Nullable private ResumabilityConfig resumabilityConfig;
 
@@ -98,7 +98,7 @@ public class App {
     }
 
     @CanIgnoreReturnValue
-    public Builder plugins(List<BasePlugin> plugins) {
+    public Builder plugins(List<? extends Plugin> plugins) {
       this.plugins = plugins;
       return this;
     }

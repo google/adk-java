@@ -41,26 +41,19 @@ import org.slf4j.LoggerFactory;
  * <p>The PluginManager is an internal class that orchestrates the invocation of plugin callbacks at
  * key points in the SDK's execution lifecycle.
  */
-public class PluginManager implements Plugin {
+public class PluginManager extends BasePlugin {
   private static final Logger logger = LoggerFactory.getLogger(PluginManager.class);
-  private final List<Plugin> plugins;
+  private final List<Plugin> plugins = new ArrayList<>();
 
   public PluginManager(List<? extends Plugin> plugins) {
-    this.plugins = new ArrayList<>();
+    super("PluginManager");
     if (plugins != null) {
-      for (var plugin : plugins) {
-        this.registerPlugin(plugin);
-      }
+      plugins.forEach(this::registerPlugin);
     }
   }
 
   public PluginManager() {
     this(null);
-  }
-
-  @Override
-  public String getName() {
-    return "PluginManager";
   }
 
   /**

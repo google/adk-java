@@ -30,7 +30,7 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.Model;
-import com.google.adk.plugins.BasePlugin;
+import com.google.adk.plugins.Plugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
@@ -84,7 +84,7 @@ public class Runner {
     private BaseArtifactService artifactService = new InMemoryArtifactService();
     private BaseSessionService sessionService = new InMemorySessionService();
     @Nullable private BaseMemoryService memoryService = null;
-    private List<BasePlugin> plugins = ImmutableList.of();
+    private List<? extends Plugin> plugins = ImmutableList.of();
 
     @CanIgnoreReturnValue
     public Builder app(App app) {
@@ -126,7 +126,7 @@ public class Runner {
     }
 
     @CanIgnoreReturnValue
-    public Builder plugins(List<BasePlugin> plugins) {
+    public Builder plugins(List<? extends Plugin> plugins) {
       Preconditions.checkState(this.app == null, "plugins() cannot be called when app is set.");
       this.plugins = plugins;
       return this;
@@ -135,7 +135,7 @@ public class Runner {
     public Runner build() {
       BaseAgent buildAgent;
       String buildAppName;
-      List<BasePlugin> buildPlugins;
+      List<? extends Plugin> buildPlugins;
       ResumabilityConfig buildResumabilityConfig;
       EventsCompactionConfig buildEventsCompactionConfig;
 
@@ -224,7 +224,7 @@ public class Runner {
       BaseArtifactService artifactService,
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService,
-      List<BasePlugin> plugins) {
+      List<? extends Plugin> plugins) {
     this(
         agent,
         appName,
@@ -247,7 +247,7 @@ public class Runner {
       BaseArtifactService artifactService,
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService,
-      List<BasePlugin> plugins,
+      List<? extends Plugin> plugins,
       ResumabilityConfig resumabilityConfig) {
     this(
         agent,
@@ -272,7 +272,7 @@ public class Runner {
       BaseArtifactService artifactService,
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService,
-      List<BasePlugin> plugins,
+      List<? extends Plugin> plugins,
       ResumabilityConfig resumabilityConfig,
       @Nullable EventsCompactionConfig eventsCompactionConfig) {
     this.agent = agent;
