@@ -34,8 +34,11 @@ import com.google.adk.agents.Callbacks.OnModelErrorCallback;
 import com.google.adk.agents.Callbacks.OnToolErrorCallback;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRegistry;
+import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.models.Model;
+import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.tools.BaseTool;
@@ -49,6 +52,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -371,5 +375,56 @@ public final class LlmAgentTest {
     assertThat(agent.canonicalBeforeToolCallbacks()).containsExactly(btc);
     assertThat(agent.canonicalAfterToolCallbacks()).containsExactly(atc);
     assertThat(agent.canonicalOnToolErrorCallbacks()).containsExactly(otec);
+  }
+
+  @Test
+  public void run_sequentialAgents_shareTempStateViaSession() {
+    // 1. Setup Session Service and Session
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session =
+        sessionService
+            .createSession("app", "user", new ConcurrentHashMap<>(), "session1")
+            .blockingGet();
+
+    // 2. Agent 1: runs and produces output "value1" to state "temp:key1"
+    Content model1Content = Content.fromParts(Part.fromText("value1"));
+    TestLlm testLlm1 = createTestLlm(createLlmResponse(model1Content));
+    LlmAgent agent1 =
+        createTestAgentBuilder(testLlm1).name("agent1").outputKey("temp:key1").build();
+    InvocationContext invocationContext1 = createInvocationContext(agent1, sessionService, session);
+
+    List<Event> events1 = agent1.runAsync(invocationContext1).toList().blockingGet();
+    assertThat(events1).hasSize(1);
+    Event event1 = events1.get(0);
+    assertThat(event1.actions()).isNotNull();
+    assertThat(event1.actions().stateDelta()).containsEntry("temp:key1", "value1");
+
+    // 3. Simulate orchestrator: append event1 to session, updating its state
+    var unused = sessionService.appendEvent(session, event1).blockingGet();
+    assertThat(session.state()).containsEntry("temp:key1", "value1");
+
+    // 4. Agent 2: uses Instruction.Provider to read "temp:key1" from session state
+    // and generates an instruction based on it.
+    TestLlm testLlm2 =
+        createTestLlm(createLlmResponse(Content.fromParts(Part.fromText("response2"))));
+    LlmAgent agent2 =
+        createTestAgentBuilder(testLlm2)
+            .name("agent2")
+            .instruction(
+                new Instruction.Provider(
+                    ctx ->
+                        Single.just(
+                            "Instruction for Agent2 based on Agent1 output: "
+                                + ctx.state().get("temp:key1"))))
+            .build();
+    InvocationContext invocationContext2 = createInvocationContext(agent2, sessionService, session);
+    List<Event> events2 = agent2.runAsync(invocationContext2).toList().blockingGet();
+    assertThat(events2).hasSize(1);
+
+    // 5. Verify that agent2's LLM received an instruction containing agent1's output
+    assertThat(testLlm2.getRequests()).hasSize(1);
+    LlmRequest request2 = testLlm2.getRequests().get(0);
+    assertThat(request2.getFirstSystemInstruction().get())
+        .contains("Instruction for Agent2 based on Agent1 output: value1");
   }
 }
