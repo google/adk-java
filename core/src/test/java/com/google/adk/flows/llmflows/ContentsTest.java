@@ -577,6 +577,102 @@ public final class ContentsTest {
         .containsExactly("content 3", "Summary 1-2");
   }
 
+  @Test
+  public void processRequest_rollingSummary_removesRedundancy() {
+    // Input: [E1(1), C1(Cover 1-1), E3(3), C2(Cover 1-3)]
+    // Expected: [C2] (C1 is redundant, E1/E3 are covered).
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("e1", "E1", "inv1", 1),
+            createCompactedEvent(1, 1, "C1"),
+            createUserEvent("e3", "E3", "inv3", 3),
+            createCompactedEvent(1, 3, "C2"));
+
+    List<Content> contents = runContentsProcessor(events);
+    assertThat(contents)
+        .comparingElementsUsing(
+            transforming((Content c) -> c.parts().get().get(0).text().get(), "content text"))
+        .containsExactly("C2");
+  }
+
+  @Test
+  public void processRequest_rollingSummaryWithRetention() {
+    // Input: with retention size 3: [E1, E2, E3, E4, C1(Cover 1-1), E6, E7, C2(Cover 1-3), E9]
+    // Expected: [C2, E4, E6, E7, E9]
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("e1", "E1", "inv1", 1),
+            createUserEvent("e2", "E2", "inv2", 2),
+            createUserEvent("e3", "E3", "inv3", 3),
+            createUserEvent("e4", "E4", "inv4", 4),
+            createCompactedEvent(1, 1, "C1"),
+            createUserEvent("e6", "E6", "inv6", 6),
+            createUserEvent("e7", "E7", "inv7", 7),
+            createCompactedEvent(1, 3, "C2"),
+            createUserEvent("e9", "E9", "inv9", 9));
+
+    List<Content> contents = runContentsProcessor(events);
+    assertThat(contents)
+        .comparingElementsUsing(
+            transforming((Content c) -> c.parts().get().get(0).text().get(), "content text"))
+        .containsExactly("C2", "E4", "E6", "E7", "E9");
+  }
+
+  @Test
+  public void processRequest_rollingSummary_preservesUncoveredHistory() {
+    // Input: [E1(1), E2(2), E3(3), E4(4), C1(2-2), E6(6), E7(7), C2(2-3), E9(9)]
+    // Expected: [E1, C2, E4, E6, E7, E9]
+    // E1 is before C1/C2 range, so it is preserved.
+    // C1 (2-2) is covered by C2 (2-3), so C1 is removed.
+    // E2, E3 are covered by C2.
+    // E4, E6, E7, E9 are retained.
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("e1", "E1", "inv1", 1),
+            createUserEvent("e2", "E2", "inv2", 2),
+            createUserEvent("e3", "E3", "inv3", 3),
+            createUserEvent("e4", "E4", "inv4", 4),
+            createCompactedEvent(2, 2, "C1"),
+            createUserEvent("e6", "E6", "inv6", 6),
+            createUserEvent("e7", "E7", "inv7", 7),
+            createCompactedEvent(2, 3, "C2"),
+            createUserEvent("e9", "E9", "inv9", 9));
+
+    List<Content> contents = runContentsProcessor(events);
+    assertThat(contents)
+        .comparingElementsUsing(
+            transforming((Content c) -> c.parts().get().get(0).text().get(), "content text"))
+        .containsExactly("E1", "C2", "E4", "E6", "E7", "E9");
+  }
+
+  @Test
+  public void processRequest_slidingWindow_preservesOverlappingCompactions() {
+    // Case 1: Sliding Window + Retention
+    // Input: [E1(1), E2(2), E3(3), C1(1-2), E4(5), C2(2-3), E5(7)]
+    // Overlap: C1 and C2 overlap at 2. C1 is NOT redundant (start 1 < start 2).
+    // Expected: [C1, C2, E4, E5]
+    // E1(1) covered by C1.
+    // E2(2) covered by C1 (and C2).
+    // E3(3) covered by C2.
+    // E4(5) retained.
+    // E5(7) retained.
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("e1", "E1", "inv1", 1),
+            createUserEvent("e2", "E2", "inv2", 2),
+            createUserEvent("e3", "E3", "inv3", 3),
+            createCompactedEvent(1, 2, "C1"),
+            createUserEvent("e4", "E4", "inv4", 5),
+            createCompactedEvent(2, 3, "C2"),
+            createUserEvent("e5", "E5", "inv5", 7));
+
+    List<Content> contents = runContentsProcessor(events);
+    assertThat(contents)
+        .comparingElementsUsing(
+            transforming((Content c) -> c.parts().get().get(0).text().get(), "content text"))
+        .containsExactly("C1", "C2", "E4", "E5");
+  }
+
   private static Event createUserEvent(String id, String text) {
     return Event.builder()
         .id(id)
