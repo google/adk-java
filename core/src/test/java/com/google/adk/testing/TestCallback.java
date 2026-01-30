@@ -102,63 +102,80 @@ public final class TestCallback<T> {
     return asRunAsyncImplSupplier(Content.fromParts(Part.fromText(contentText)));
   }
 
+  /**
+   * Returns a {@link Supplier} that marks this callback as called and returns a {@link Flowable}
+   * with an event containing the given content.
+   */
+  public Supplier<Flowable<Event>> asRunLiveImplSupplier(Content content) {
+    return () ->
+        Flowable.defer(
+            () -> {
+              markAsCalled();
+              return Flowable.just(Event.builder().content(content).build());
+            });
+  }
+
   @SuppressWarnings("unchecked") // This cast is safe if T is Content.
   public BeforeAgentCallback asBeforeAgentCallback() {
-    return ctx -> (Maybe<Content>) callMaybe();
+    return (unusedCtx) -> (Maybe<Content>) callMaybe();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is Content.
   public BeforeAgentCallbackSync asBeforeAgentCallbackSync() {
-    return ctx -> (Optional<Content>) callOptional();
+    return (unusedCtx) -> (Optional<Content>) callOptional();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is Content.
   public AfterAgentCallback asAfterAgentCallback() {
-    return ctx -> (Maybe<Content>) callMaybe();
+    return (unusedCtx) -> (Maybe<Content>) callMaybe();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is Content.
   public AfterAgentCallbackSync asAfterAgentCallbackSync() {
-    return ctx -> (Optional<Content>) callOptional();
+    return (unusedCtx) -> (Optional<Content>) callOptional();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is LlmResponse.
   public BeforeModelCallback asBeforeModelCallback() {
-    return (ctx, req) -> (Maybe<LlmResponse>) callMaybe();
+    return (unusedCtx, unusedReq) -> (Maybe<LlmResponse>) callMaybe();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is LlmResponse.
   public BeforeModelCallbackSync asBeforeModelCallbackSync() {
-    return (ctx, req) -> (Optional<LlmResponse>) callOptional();
+    return (unusedCtx, unusedReq) -> (Optional<LlmResponse>) callOptional();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is LlmResponse.
   public AfterModelCallback asAfterModelCallback() {
-    return (ctx, res) -> (Maybe<LlmResponse>) callMaybe();
+    return (unusedCtx, unusedRes) -> (Maybe<LlmResponse>) callMaybe();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is LlmResponse.
   public AfterModelCallbackSync asAfterModelCallbackSync() {
-    return (ctx, res) -> (Optional<LlmResponse>) callOptional();
+    return (unusedCtx, unusedRes) -> (Optional<LlmResponse>) callOptional();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is Map<String, Object>.
   public BeforeToolCallback asBeforeToolCallback() {
-    return (invCtx, tool, toolArgs, toolCtx) -> (Maybe<Map<String, Object>>) callMaybe();
+    return (unusedCtx, unusedTool, unusedToolArgs, unusedToolCtx) ->
+        (Maybe<Map<String, Object>>) callMaybe();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is Map<String, Object>.
   public BeforeToolCallbackSync asBeforeToolCallbackSync() {
-    return (invCtx, tool, toolArgs, toolCtx) -> (Optional<Map<String, Object>>) callOptional();
+    return (unusedCtx, unusedTool, unusedToolArgs, unusedToolCtx) ->
+        (Optional<Map<String, Object>>) callOptional();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is Map<String, Object>.
   public AfterToolCallback asAfterToolCallback() {
-    return (invCtx, tool, toolArgs, toolCtx, res) -> (Maybe<Map<String, Object>>) callMaybe();
+    return (unusedCtx, unusedTool, unusedToolArgs, unusedToolCtx, unusedRes) ->
+        (Maybe<Map<String, Object>>) callMaybe();
   }
 
   @SuppressWarnings("unchecked") // This cast is safe if T is Map<String, Object>.
   public AfterToolCallbackSync asAfterToolCallbackSync() {
-    return (invCtx, tool, toolArgs, toolCtx, res) -> (Optional<Map<String, Object>>) callOptional();
+    return (unusedCtx, unusedTool, unusedToolArgs, unusedToolCtx, unusedRes) ->
+        (Optional<Map<String, Object>>) callOptional();
   }
 }
