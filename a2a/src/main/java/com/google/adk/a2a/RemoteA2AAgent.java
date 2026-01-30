@@ -2,7 +2,11 @@ package com.google.adk.a2a;
 
 import static com.google.common.base.Strings.nullToEmpty;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.google.adk.a2a.common.A2AClientError;
+import com.google.adk.a2a.common.A2AMetadata;
 import com.google.adk.a2a.converters.EventConverter;
 import com.google.adk.a2a.converters.ResponseConverter;
 import com.google.adk.agents.BaseAgent;
@@ -11,21 +15,31 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.Part;
 import io.a2a.client.Client;
 import io.a2a.client.ClientEvent;
+import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskEvent;
 import io.a2a.client.TaskUpdateEvent;
 import io.a2a.spec.A2AClientException;
 import io.a2a.spec.AgentCard;
 import io.a2a.spec.Message;
+import io.a2a.spec.TaskArtifactUpdateEvent;
 import io.a2a.spec.TaskState;
+import io.a2a.spec.TaskStatusUpdateEvent;
 import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.FlowableEmitter;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.UUID;
 import java.util.function.BiConsumer;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,6 +68,8 @@ import org.slf4j.LoggerFactory;
 public class RemoteA2AAgent extends BaseAgent {
 
   private static final Logger logger = LoggerFactory.getLogger(RemoteA2AAgent.class);
+  private static final ObjectMapper objectMapper =
+      new ObjectMapper().registerModule(new JavaTimeModule());
 
   private final AgentCard agentCard;
   private final Client a2aClient;
@@ -173,60 +189,295 @@ public class RemoteA2AAgent extends BaseAgent {
     }
 
     Message originalMessage = a2aMessageOpt.get();
+    String requestJson = serializeMessageToJson(originalMessage);
 
     return Flowable.create(
         emitter -> {
-          FlowableEmitter<Event> flowableEmitter = emitter.serialize();
-          AtomicBoolean done = new AtomicBoolean(false);
+          StreamHandler handler =
+              new StreamHandler(
+                  emitter.serialize(), invocationContext, requestJson, streaming, name());
           ImmutableList<BiConsumer<ClientEvent, AgentCard>> consumers =
-              ImmutableList.of(
-                  (event, unused) ->
-                      handleClientEvent(event, flowableEmitter, invocationContext, done));
-          a2aClient.sendMessage(
-              originalMessage, consumers, e -> handleClientError(e, flowableEmitter, done), null);
+              ImmutableList.of(handler::handleEvent);
+          a2aClient.sendMessage(originalMessage, consumers, handler::handleError, null);
         },
         BackpressureStrategy.BUFFER);
   }
 
-  private void handleClientError(Throwable e, FlowableEmitter<Event> emitter, AtomicBoolean done) {
-    // Mark the flow as done if it is already cancelled.
-    done.compareAndSet(false, emitter.isCancelled());
-
-    // If the flow is already done, stop processing and exit the consumer.
-    if (done.get()) {
-      return;
-    }
-    // If the error is raised, complete the flow with an error.
-    if (!done.getAndSet(true)) {
-      emitter.tryOnError(new A2AClientError("Failed to communicate with the remote agent", e));
+  private @Nullable String serializeMessageToJson(Message message) {
+    try {
+      return objectMapper.writeValueAsString(message);
+    } catch (JsonProcessingException e) {
+      logger.warn("Failed to serialize request", e);
+      return null;
     }
   }
 
-  private void handleClientEvent(
-      ClientEvent clientEvent,
-      FlowableEmitter<Event> emitter,
-      InvocationContext invocationContext,
-      AtomicBoolean done) {
-    // Mark the flow as done if it is already cancelled.
-    done.compareAndSet(false, emitter.isCancelled());
+  private static class StreamHandler {
+    private final FlowableEmitter<Event> emitter;
+    private final InvocationContext invocationContext;
+    private final String requestJson;
+    private final boolean streaming;
+    private final String agentName;
+    private boolean done = false;
+    private final StringBuilder textBuffer = new StringBuilder();
+    private final StringBuilder thoughtsBuffer = new StringBuilder();
 
-    // If the flow is already done, stop processing and exit the consumer.
-    if (done.get()) {
-      return;
+    StreamHandler(
+        FlowableEmitter<Event> emitter,
+        InvocationContext invocationContext,
+        String requestJson,
+        boolean streaming,
+        String agentName) {
+      this.emitter = emitter;
+      this.invocationContext = invocationContext;
+      this.requestJson = requestJson;
+      this.streaming = streaming;
+      this.agentName = agentName;
     }
 
-    Optional<Event> event = ResponseConverter.clientEventToEvent(clientEvent, invocationContext);
-    if (event.isPresent()) {
-      emitter.onNext(event.get());
-    }
-
-    // For non-streaming communication, complete the flow; for streaming, wait until the client
-    // marks the completion.
-    if (isCompleted(clientEvent) || !streaming) {
-      // Only complete the flow once.
-      if (!done.getAndSet(true)) {
-        emitter.onComplete();
+    synchronized void handleError(Throwable e) {
+      // Mark the flow as done if it is already cancelled.
+      if (!done) {
+        done = emitter.isCancelled();
       }
+
+      // If the flow is already done, stop processing.
+      if (done) {
+        return;
+      }
+      // If the error is raised, complete the flow with an error.
+      done = true;
+      emitter.tryOnError(new A2AClientError("Failed to communicate with the remote agent", e));
+    }
+
+    // TODO: b/483038527 - The synchronized block might block the thread, we should optimize for
+    // performance in the future.
+    synchronized void handleEvent(ClientEvent clientEvent, AgentCard unused) {
+      // Mark the flow as done if it is already cancelled.
+      if (!done) {
+        done = emitter.isCancelled();
+      }
+
+      // If the flow is already done, stop processing.
+      if (done) {
+        return;
+      }
+
+      Optional<Event> eventOpt =
+          ResponseConverter.clientEventToEvent(clientEvent, invocationContext);
+      eventOpt.ifPresent(
+          event -> {
+            addMetadata(event, clientEvent);
+
+            if (isCompleted(clientEvent)) {
+              // Terminal event, check if we can merge.
+              boolean unusedMergeResult = mergeAggregatedContentIntoEvent(event);
+              if (!unusedMergeResult) {
+                emitAggregatedEventAndClearBuffer(null);
+              }
+            } else {
+              boolean isPartial = event.partial().orElse(false);
+              if (isPartial) {
+                if (shouldResetBuffer(clientEvent)) {
+                  clearBuffer();
+                }
+                boolean addedToBuffer = bufferContent(event, clientEvent);
+                if (!addedToBuffer) {
+                  // Partial event with no content to buffer (e.g. tool call).
+                  // Flush buffer before emitting this event.
+                  emitAggregatedEventAndClearBuffer(null);
+                }
+              } else {
+                // Intermediate non-partial.
+                emitAggregatedEventAndClearBuffer(null);
+              }
+            }
+            emitter.onNext(event);
+          });
+
+      // For non-streaming communication, complete the flow; for streaming, wait until the client
+      // marks the completion.
+      if (isCompleted(clientEvent) || !streaming) {
+        // Only complete the flow once.
+        if (!done) {
+          emitAggregatedEventAndClearBuffer(clientEvent);
+          done = true;
+          emitter.onComplete();
+        }
+      }
+    }
+
+    private void addMetadata(Event event, ClientEvent clientEvent) {
+      ImmutableList.Builder<CustomMetadata> eventMetadataBuilder = ImmutableList.builder();
+      event.customMetadata().ifPresent(eventMetadataBuilder::addAll);
+      if (requestJson != null) {
+        eventMetadataBuilder.add(
+            CustomMetadata.builder()
+                .key(A2AMetadata.Key.REQUEST.getValue())
+                .stringValue(requestJson)
+                .build());
+      }
+      try {
+        if (clientEvent != null) {
+          eventMetadataBuilder.add(
+              CustomMetadata.builder()
+                  .key(A2AMetadata.Key.RESPONSE.getValue())
+                  .stringValue(objectMapper.writeValueAsString(clientEvent))
+                  .build());
+        }
+      } catch (JsonProcessingException e) {
+        // metadata serialization is not critical for agent execution, so we just log and continue.
+        logger.warn("Failed to serialize response metadata", e);
+      }
+      event.setCustomMetadata(eventMetadataBuilder.build());
+    }
+
+    /**
+     * Buffers the content from the event into the text and thoughts buffers.
+     *
+     * @return true if the event has content that was added to the buffer, false otherwise.
+     */
+    private boolean bufferContent(Event event, ClientEvent clientEvent) {
+      if (!shouldBuffer(clientEvent)) {
+        return false;
+      }
+
+      boolean updated = false;
+      for (Part part : eventParts(event)) {
+        if (part.text().isPresent()) {
+          String t = part.text().get();
+          if (part.thought().orElse(false)) {
+            thoughtsBuffer.append(t);
+            updated = true;
+          } else {
+            textBuffer.append(t);
+            updated = true;
+          }
+        }
+      }
+      return updated;
+    }
+
+    private boolean shouldBuffer(ClientEvent event) {
+      if (event instanceof TaskUpdateEvent taskUpdateEvent) {
+        Object innerEvent = taskUpdateEvent.getUpdateEvent();
+        if (innerEvent instanceof TaskArtifactUpdateEvent) {
+          return true;
+        }
+        if (innerEvent instanceof TaskStatusUpdateEvent) {
+          return false;
+        }
+        return true;
+      }
+      if (event instanceof MessageEvent) {
+        return true;
+      }
+      if (event instanceof TaskEvent taskEvent) {
+        return !taskEvent.getTask().getArtifacts().isEmpty();
+      }
+      return true;
+    }
+
+    private boolean shouldResetBuffer(ClientEvent event) {
+      if (event instanceof TaskUpdateEvent taskUpdateEvent) {
+        Object innerEvent = taskUpdateEvent.getUpdateEvent();
+        if (innerEvent instanceof TaskArtifactUpdateEvent artifactEvent) {
+          return Objects.equals(artifactEvent.isAppend(), false)
+              && Objects.equals(artifactEvent.isLastChunk(), false);
+        }
+      }
+      return false;
+    }
+
+    private void clearBuffer() {
+      thoughtsBuffer.setLength(0);
+      textBuffer.setLength(0);
+    }
+
+    private void emitAggregatedEventAndClearBuffer(@Nullable ClientEvent triggerEvent) {
+      if (thoughtsBuffer.length() > 0 || textBuffer.length() > 0) {
+        List<Part> parts = new ArrayList<>();
+        if (thoughtsBuffer.length() > 0) {
+          parts.add(Part.builder().thought(true).text(thoughtsBuffer.toString()).build());
+        }
+        if (textBuffer.length() > 0) {
+          parts.add(Part.builder().text(textBuffer.toString()).build());
+        }
+        Content aggregatedContent = Content.builder().role("model").parts(parts).build();
+        emitter.onNext(createAggregatedEvent(aggregatedContent, triggerEvent));
+        clearBuffer();
+      }
+    }
+
+    private boolean mergeAggregatedContentIntoEvent(Event event) {
+      if (thoughtsBuffer.isEmpty() && textBuffer.isEmpty()) {
+        return false;
+      }
+      boolean hasContent =
+          event.content().isPresent()
+              && !event.content().get().parts().orElse(ImmutableList.of()).isEmpty();
+      if (hasContent) {
+        return false;
+      }
+
+      List<Part> parts = new ArrayList<>();
+      if (thoughtsBuffer.length() > 0) {
+        parts.add(Part.builder().thought(true).text(thoughtsBuffer.toString()).build());
+      }
+      if (textBuffer.length() > 0) {
+        parts.add(Part.builder().text(textBuffer.toString()).build());
+      }
+      Content aggregatedContent = Content.builder().role("model").parts(parts).build();
+
+      event.setContent(Optional.of(aggregatedContent));
+
+      ImmutableList.Builder<CustomMetadata> newMetadata = ImmutableList.builder();
+      event.customMetadata().ifPresent(newMetadata::addAll);
+      newMetadata.add(
+          CustomMetadata.builder()
+              .key(A2AMetadata.Key.AGGREGATED.getValue())
+              .stringValue("true")
+              .build());
+      event.setCustomMetadata(newMetadata.build());
+
+      clearBuffer();
+      return true;
+    }
+
+    private Event createAggregatedEvent(Content content, @Nullable ClientEvent triggerEvent) {
+      ImmutableList.Builder<CustomMetadata> aggMetadataBuilder = ImmutableList.builder();
+      aggMetadataBuilder.add(
+          CustomMetadata.builder()
+              .key(A2AMetadata.Key.AGGREGATED.getValue())
+              .stringValue("true")
+              .build());
+      if (requestJson != null) {
+        aggMetadataBuilder.add(
+            CustomMetadata.builder()
+                .key(A2AMetadata.Key.REQUEST.getValue())
+                .stringValue(requestJson)
+                .build());
+      }
+      if (triggerEvent != null) {
+        try {
+          aggMetadataBuilder.add(
+              CustomMetadata.builder()
+                  .key(A2AMetadata.Key.RESPONSE.getValue())
+                  .stringValue(objectMapper.writeValueAsString(triggerEvent))
+                  .build());
+        } catch (JsonProcessingException e) {
+          logger.warn("Failed to serialize response metadata for aggregated event", e);
+        }
+      }
+
+      return Event.builder()
+          .id(UUID.randomUUID().toString())
+          .invocationId(invocationContext.invocationId())
+          .author(agentName)
+          .content(content)
+          .timestamp(Instant.now().toEpochMilli())
+          .customMetadata(aggMetadataBuilder.build())
+          .build();
     }
   }
 
@@ -238,6 +489,10 @@ public class RemoteA2AAgent extends BaseAgent {
       executionState = updateEvent.getTask().getStatus().state();
     }
     return executionState.equals(TaskState.COMPLETED);
+  }
+
+  private static ImmutableList<Part> eventParts(Event event) {
+    return ImmutableList.copyOf(event.content().flatMap(Content::parts).orElse(ImmutableList.of()));
   }
 
   @Override
