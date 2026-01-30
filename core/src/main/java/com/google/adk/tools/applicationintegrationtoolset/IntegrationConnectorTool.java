@@ -129,7 +129,7 @@ public class IntegrationConnectorTool extends BaseTool {
     this.credentialsHelper = Preconditions.checkNotNull(credentialsHelper);
   }
 
-  Schema toGeminiSchema(String openApiSchema, String operationId) throws Exception {
+  Schema toGeminiSchema(String openApiSchema, String operationId) throws IOException {
     String resolvedSchemaString = getResolvedRequestSchemaByOperationId(openApiSchema, operationId);
     return Schema.fromJson(resolvedSchemaString);
   }
@@ -148,7 +148,7 @@ public class IntegrationConnectorTool extends BaseTool {
               .parameters(parametersSchema)
               .build();
       return Optional.of(declaration);
-    } catch (Exception e) {
+    } catch (IOException e) {
       logger.error("Failed to get OpenAPI spec", e);
       return Optional.empty();
     }
@@ -175,20 +175,21 @@ public class IntegrationConnectorTool extends BaseTool {
           try {
             String response = executeIntegration(args);
             return ImmutableMap.of("result", response);
-          } catch (Exception e) {
+          } catch (IOException | InterruptedException e) {
             logger.error("Failed to execute integration", e);
             return ImmutableMap.of("error", e.getMessage());
           }
         });
   }
 
-  private String executeIntegration(Map<String, Object> args) throws Exception {
+  private String executeIntegration(Map<String, Object> args)
+      throws IOException, InterruptedException {
     String url = String.format("https://integrations.googleapis.com%s", this.pathUrl);
     String jsonRequestBody;
     try {
       jsonRequestBody = objectMapper.writeValueAsString(args);
     } catch (IOException e) {
-      throw new Exception("Error converting args to JSON: " + e.getMessage(), e);
+      throw new IOException("Error converting args to JSON: " + e.getMessage(), e);
     }
     Credentials credentials = credentialsHelper.getGoogleCredentials(this.serviceAccountJson);
     HttpRequest.Builder requestBuilder =
@@ -203,7 +204,7 @@ public class IntegrationConnectorTool extends BaseTool {
         httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
 
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
-      throw new Exception(
+      throw new IOException(
           "Error executing integration. Status: "
               + response.statusCode()
               + " , Response: "
@@ -212,7 +213,7 @@ public class IntegrationConnectorTool extends BaseTool {
     return response.body();
   }
 
-  String getOperationIdFromPathUrl(String openApiSchemaString, String pathUrl) throws Exception {
+  String getOperationIdFromPathUrl(String openApiSchemaString, String pathUrl) throws IOException {
     JsonNode topLevelNode = objectMapper.readTree(openApiSchemaString);
     JsonNode specNode = topLevelNode.path("openApiSpec");
     if (specNode.isMissingNode() || !specNode.isTextual()) {
@@ -254,11 +255,11 @@ public class IntegrationConnectorTool extends BaseTool {
         }
       }
     }
-    throw new Exception("Could not find operationId for pathUrl: " + pathUrl);
+    throw new IOException("Could not find operationId for pathUrl: " + pathUrl);
   }
 
   private String getResolvedRequestSchemaByOperationId(
-      String openApiSchemaString, String operationId) throws Exception {
+      String openApiSchemaString, String operationId) throws IOException {
     JsonNode topLevelNode = objectMapper.readTree(openApiSchemaString);
     JsonNode specNode = topLevelNode.path("openApiSpec");
     if (specNode.isMissingNode() || !specNode.isTextual()) {
@@ -268,13 +269,13 @@ public class IntegrationConnectorTool extends BaseTool {
     JsonNode rootNode = objectMapper.readTree(specNode.asText());
     JsonNode operationNode = findOperationNodeById(rootNode, operationId);
     if (operationNode == null) {
-      throw new Exception("Could not find operation with operationId: " + operationId);
+      throw new IOException("Could not find operation with operationId: " + operationId);
     }
     JsonNode requestSchemaNode =
         operationNode.path("requestBody").path("content").path("application/json").path("schema");
 
     if (requestSchemaNode.isMissingNode()) {
-      throw new Exception("Could not find request body schema for operationId: " + operationId);
+      throw new IOException("Could not find request body schema for operationId: " + operationId);
     }
 
     JsonNode resolvedSchema = resolveRefs(requestSchemaNode, rootNode);
@@ -355,7 +356,7 @@ public class IntegrationConnectorTool extends BaseTool {
   }
 
   private String getOperationDescription(String openApiSchemaString, String operationId)
-      throws Exception {
+      throws IOException {
     JsonNode topLevelNode = objectMapper.readTree(openApiSchemaString);
     JsonNode specNode = topLevelNode.path("openApiSpec");
     if (specNode.isMissingNode() || !specNode.isTextual()) {
