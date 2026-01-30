@@ -18,6 +18,7 @@ package com.google.adk.models.langchain4j;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.JsonBaseModel;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.BaseLlmConnection;
 import com.google.adk.models.LlmRequest;
@@ -428,8 +429,26 @@ public class LangChain4j extends BaseLlm {
             baseTool -> {
               if (baseTool.declaration().isPresent()) {
                 FunctionDeclaration functionDeclaration = baseTool.declaration().get();
-                if (functionDeclaration.parameters().isPresent()) {
-                  Schema schema = functionDeclaration.parameters().get();
+                Schema schema = null;
+                if (functionDeclaration.parametersJsonSchema().isPresent()) {
+                  Object jsonSchemaObj = functionDeclaration.parametersJsonSchema().get();
+                  try {
+                    if (jsonSchemaObj instanceof Schema) {
+                      schema = (Schema) jsonSchemaObj;
+                    } else {
+                      ObjectMapper adkMapper = JsonBaseModel.getMapper();
+                      String jsonSchemaStr = adkMapper.writeValueAsString(jsonSchemaObj);
+                      schema = adkMapper.readValue(jsonSchemaStr, Schema.class);
+                    }
+                  } catch (Exception e) {
+                    throw new IllegalStateException(
+                        "Failed to convert parametersJsonSchema to Schema: " + e.getMessage(), e);
+                  }
+                } else if (functionDeclaration.parameters().isPresent()) {
+                  schema = functionDeclaration.parameters().get();
+                }
+
+                if (schema != null) {
                   ToolSpecification toolSpecification =
                       ToolSpecification.builder()
                           .name(baseTool.name())
@@ -438,11 +457,9 @@ public class LangChain4j extends BaseLlm {
                           .build();
                   toolSpecifications.add(toolSpecification);
                 } else {
-                  // TODO exception or something else?
                   throw new IllegalStateException("Tool lacking parameters: " + baseTool);
                 }
               } else {
-                // TODO exception or something else?
                 throw new IllegalStateException("Tool lacking declaration: " + baseTool);
               }
             });

@@ -688,4 +688,131 @@ class LangChain4jTest {
     final UserMessage userMessage = (UserMessage) capturedRequest.messages().get(0);
     assertThat(userMessage.singleText()).isEqualTo("Give me information about John Doe");
   }
+
+  @Test
+  @DisplayName("Should handle MCP tools with parametersJsonSchema")
+  void testGenerateContentWithMcpToolParametersJsonSchema() {
+    // Given
+    // Create a mock BaseTool for MCP tool
+    final com.google.adk.tools.BaseTool mcpTool = mock(com.google.adk.tools.BaseTool.class);
+    when(mcpTool.name()).thenReturn("mcpTool");
+    when(mcpTool.description()).thenReturn("An MCP tool");
+
+    // Create a mock FunctionDeclaration
+    final FunctionDeclaration functionDeclaration = mock(FunctionDeclaration.class);
+    when(mcpTool.declaration()).thenReturn(Optional.of(functionDeclaration));
+
+    // MCP tools use parametersJsonSchema() instead of parameters()
+    // Create a JSON schema object (Map representation)
+    final Map<String, Object> jsonSchemaMap =
+        Map.of(
+            "type",
+            "object",
+            "properties",
+            Map.of("city", Map.of("type", "string", "description", "City name")),
+            "required",
+            List.of("city"));
+
+    // Mock parametersJsonSchema() to return the JSON schema object
+    when(functionDeclaration.parametersJsonSchema()).thenReturn(Optional.of(jsonSchemaMap));
+    when(functionDeclaration.parameters()).thenReturn(Optional.empty());
+
+    // Create a LlmRequest with the MCP tool
+    final LlmRequest llmRequest =
+        LlmRequest.builder()
+            .contents(List.of(Content.fromParts(Part.fromText("Use the MCP tool"))))
+            .tools(Map.of("mcpTool", mcpTool))
+            .build();
+
+    // Mock the AI response
+    final AiMessage aiMessage = AiMessage.from("Tool executed successfully");
+
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    when(chatResponse.aiMessage()).thenReturn(aiMessage);
+    when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+
+    // When
+    final LlmResponse response = langChain4j.generateContent(llmRequest, false).blockingFirst();
+
+    // Then
+    // Verify the response
+    assertThat(response).isNotNull();
+    assertThat(response.content()).isPresent();
+    assertThat(response.content().get().text()).isEqualTo("Tool executed successfully");
+
+    // Verify the request was built correctly with the tool specification
+    final ArgumentCaptor<ChatRequest> requestCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+    verify(chatModel).chat(requestCaptor.capture());
+    final ChatRequest capturedRequest = requestCaptor.getValue();
+
+    // Verify tool specifications were created from parametersJsonSchema
+    assertThat(capturedRequest.toolSpecifications()).isNotEmpty();
+    assertThat(capturedRequest.toolSpecifications().get(0).name()).isEqualTo("mcpTool");
+    assertThat(capturedRequest.toolSpecifications().get(0).description()).isEqualTo("An MCP tool");
+  }
+
+  @Test
+  @DisplayName("Should handle MCP tools with parametersJsonSchema when it's already a Schema")
+  void testGenerateContentWithMcpToolParametersJsonSchemaAsSchema() {
+    // Given
+    // Create a mock BaseTool for MCP tool
+    final com.google.adk.tools.BaseTool mcpTool = mock(com.google.adk.tools.BaseTool.class);
+    when(mcpTool.name()).thenReturn("mcpTool");
+    when(mcpTool.description()).thenReturn("An MCP tool");
+
+    // Create a mock FunctionDeclaration
+    final FunctionDeclaration functionDeclaration = mock(FunctionDeclaration.class);
+    when(mcpTool.declaration()).thenReturn(Optional.of(functionDeclaration));
+
+    // Create a Schema object directly (when parametersJsonSchema returns Schema)
+    final Schema cityPropertySchema =
+        Schema.builder()
+            .type(Type.builder().knownEnum(Type.Known.STRING).build())
+            .description("City name")
+            .build();
+
+    final Schema objectSchema =
+        Schema.builder()
+            .type(Type.builder().knownEnum(Type.Known.OBJECT).build())
+            .properties(Map.of("city", cityPropertySchema))
+            .required(List.of("city"))
+            .build();
+
+    // Mock parametersJsonSchema() to return Schema directly
+    when(functionDeclaration.parametersJsonSchema()).thenReturn(Optional.of(objectSchema));
+    when(functionDeclaration.parameters()).thenReturn(Optional.empty());
+
+    // Create a LlmRequest with the MCP tool
+    final LlmRequest llmRequest =
+        LlmRequest.builder()
+            .contents(List.of(Content.fromParts(Part.fromText("Use the MCP tool"))))
+            .tools(Map.of("mcpTool", mcpTool))
+            .build();
+
+    // Mock the AI response
+    final AiMessage aiMessage = AiMessage.from("Tool executed successfully");
+
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    when(chatResponse.aiMessage()).thenReturn(aiMessage);
+    when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+
+    // When
+    final LlmResponse response = langChain4j.generateContent(llmRequest, false).blockingFirst();
+
+    // Then
+    // Verify the response
+    assertThat(response).isNotNull();
+    assertThat(response.content()).isPresent();
+    assertThat(response.content().get().text()).isEqualTo("Tool executed successfully");
+
+    // Verify the request was built correctly with the tool specification
+    final ArgumentCaptor<ChatRequest> requestCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+    verify(chatModel).chat(requestCaptor.capture());
+    final ChatRequest capturedRequest = requestCaptor.getValue();
+
+    // Verify tool specifications were created from parametersJsonSchema
+    assertThat(capturedRequest.toolSpecifications()).isNotEmpty();
+    assertThat(capturedRequest.toolSpecifications().get(0).name()).isEqualTo("mcpTool");
+    assertThat(capturedRequest.toolSpecifications().get(0).description()).isEqualTo("An MCP tool");
+  }
 }
