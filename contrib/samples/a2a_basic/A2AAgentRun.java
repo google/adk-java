@@ -1,11 +1,5 @@
 package com.example.a2a_basic;
 
-import java.util.List;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
-
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.InMemoryArtifactService;
@@ -15,8 +9,12 @@ import com.google.adk.sessions.InMemorySessionService;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
-
 import io.reactivex.rxjava3.core.Flowable;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 
 /** Main class to demonstrate running the A2A agent with sequential inputs. */
 public final class A2AAgentRun {
