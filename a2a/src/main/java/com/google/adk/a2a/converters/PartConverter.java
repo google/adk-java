@@ -7,10 +7,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Blob;
+import com.google.genai.types.CodeExecutionResult;
+import com.google.genai.types.ExecutableCode;
 import com.google.genai.types.Content;
 import com.google.genai.types.FileData;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.Language;
+import com.google.genai.types.Outcome;
 import com.google.genai.types.Part;
 import io.a2a.spec.DataPart;
 import io.a2a.spec.FileContent;
@@ -22,6 +26,7 @@ import io.a2a.spec.TextPart;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -95,6 +100,10 @@ public final class PartConverter {
       return createDataPartFromFunctionCall(part.functionCall().get());
     } else if (part.functionResponse().isPresent()) {
       return createDataPartFromFunctionResponse(part.functionResponse().get());
+    } else if (part.executableCode().isPresent()) {
+      return createDataPartFromExecutableCode(part.executableCode().get());
+    } else if (part.codeExecutionResult().isPresent()) {
+      return createDataPartFromCodeExecutionResult(part.codeExecutionResult().get());
     }
 
     logger.warn("Cannot convert unsupported part for Google GenAI part: " + part);
@@ -174,6 +183,33 @@ public final class PartConverter {
               .build());
     }
 
+    if ((data.containsKey("code") && data.containsKey("language"))
+        || metadataType.equals(A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE)) {
+      String code = String.valueOf(data.getOrDefault("code", ""));
+      String language =
+          String.valueOf(data.getOrDefault("language", "PYTHON")).toUpperCase(Locale.getDefault());
+      return Optional.of(
+          com.google.genai.types.Part.builder()
+              .executableCode(
+                  ExecutableCode.builder().code(code).language(new Language(language)).build())
+              .build());
+    }
+
+    if ((data.containsKey("outcome") && data.containsKey("output"))
+        || metadataType.equals(A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT)) {
+      String outcome =
+          String.valueOf(data.getOrDefault("outcome", "OK")).toUpperCase(Locale.getDefault());
+      String output = String.valueOf(data.getOrDefault("output", ""));
+      return Optional.of(
+          com.google.genai.types.Part.builder()
+              .codeExecutionResult(
+                  CodeExecutionResult.builder()
+                      .outcome(new Outcome(outcome))
+                      .output(output)
+                      .build())
+              .build());
+    }
+
     try {
       String json = objectMapper.writeValueAsString(data);
       return Optional.of(com.google.genai.types.Part.builder().text(json).build());
@@ -231,6 +267,32 @@ public final class PartConverter {
     return Optional.of(new DataPart(data, metadata));
   }
 
+  private static Optional<DataPart> createDataPartFromExecutableCode(
+      ExecutableCode executableCode) {
+    Map<String, Object> data = new HashMap<>();
+    data.put("code", executableCode.code().orElse(""));
+    data.put("language", executableCode.language().map(Language::toString).orElse("PYTHON"));
+
+    ImmutableMap<String, Object> metadata =
+        ImmutableMap.of(
+            A2A_DATA_PART_METADATA_TYPE_KEY, A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE);
+
+    return Optional.of(new DataPart(data, metadata));
+  }
+
+  private static Optional<DataPart> createDataPartFromCodeExecutionResult(
+      CodeExecutionResult result) {
+    Map<String, Object> data = new HashMap<>();
+    data.put("outcome", result.outcome().map(Outcome::toString).orElse("OK"));
+    data.put("output", result.output().orElse(""));
+
+    ImmutableMap<String, Object> metadata =
+        ImmutableMap.of(
+            A2A_DATA_PART_METADATA_TYPE_KEY, A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT);
+
+    return Optional.of(new DataPart(data, metadata));
+  }
+
   private PartConverter() {}
 
   /** Convert a GenAI part into the A2A JSON representation. */
@@ -260,7 +322,10 @@ public final class PartConverter {
       return Optional.of(new FilePart(new FileWithBytes(mime, name, encoded), new HashMap<>()));
     }
 
-    if (part.functionCall().isPresent() || part.functionResponse().isPresent()) {
+    if (part.functionCall().isPresent()
+        || part.functionResponse().isPresent()
+        || part.executableCode().isPresent()
+        || part.codeExecutionResult().isPresent()) {
       return convertGenaiPartToA2aPart(part).map(data -> data);
     }
 
