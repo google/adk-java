@@ -59,10 +59,10 @@ public final class BaseAgentTest {
     TestBaseAgent agent =
         new TestBaseAgent(
             TEST_AGENT_NAME, TEST_AGENT_DESCRIPTION, null, ImmutableList.of(subAgent), null, null);
-    assertThat(agent.findAgent("subSubAgent")).isEqualTo(subSubAgent);
-    assertThat(agent.findAgent("subAgent")).isEqualTo(subAgent);
-    assertThat(agent.findAgent(TEST_AGENT_NAME)).isEqualTo(agent);
-    assertThat(agent.findAgent("nonExistent")).isNull();
+    assertThat(agent.findAgent("subSubAgent")).hasValue(subSubAgent);
+    assertThat(agent.findAgent("subAgent")).hasValue(subAgent);
+    assertThat(agent.findAgent(TEST_AGENT_NAME)).hasValue(agent);
+    assertThat(agent.findAgent("nonExistent")).isEmpty();
   }
 
   @Test

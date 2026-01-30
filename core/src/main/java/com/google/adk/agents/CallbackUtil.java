@@ -26,7 +26,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.List;
-import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,45 +37,43 @@ public final class CallbackUtil {
    * Normalizes before-agent callbacks.
    *
    * @param beforeAgentCallback Callback list (sync or async).
-   * @return normalized async callbacks, or null if input is null.
+   * @return normalized async callbacks, or empty list if input is null.
    */
   @CanIgnoreReturnValue
-  public static @Nullable ImmutableList<BeforeAgentCallback> getBeforeAgentCallbacks(
+  public static ImmutableList<BeforeAgentCallback> getBeforeAgentCallbacks(
       List<BeforeAgentCallbackBase> beforeAgentCallback) {
-    if (beforeAgentCallback == null) {
-      return null;
-    } else if (beforeAgentCallback.isEmpty()) {
+    if (beforeAgentCallback == null || beforeAgentCallback.isEmpty()) {
       return ImmutableList.of();
-    } else {
-      ImmutableList.Builder<BeforeAgentCallback> builder = ImmutableList.builder();
-      for (BeforeAgentCallbackBase callback : beforeAgentCallback) {
-        if (callback instanceof BeforeAgentCallback beforeAgentCallbackInstance) {
-          builder.add(beforeAgentCallbackInstance);
-        } else if (callback instanceof BeforeAgentCallbackSync beforeAgentCallbackSyncInstance) {
-          builder.add(
-              (callbackContext) ->
-                  Maybe.fromOptional(beforeAgentCallbackSyncInstance.call(callbackContext)));
-        } else {
-          logger.warn(
-              "Invalid beforeAgentCallback callback type: {}. Ignoring this callback.",
-              callback.getClass().getName());
-        }
-      }
-      return builder.build();
     }
+
+    ImmutableList.Builder<BeforeAgentCallback> builder = ImmutableList.builder();
+    for (BeforeAgentCallbackBase callback : beforeAgentCallback) {
+      if (callback instanceof BeforeAgentCallback beforeAgentCallbackInstance) {
+        builder.add(beforeAgentCallbackInstance);
+      } else if (callback instanceof BeforeAgentCallbackSync beforeAgentCallbackSyncInstance) {
+        builder.add(
+            (callbackContext) ->
+                Maybe.fromOptional(beforeAgentCallbackSyncInstance.call(callbackContext)));
+      } else {
+        logger.warn(
+            "Invalid beforeAgentCallback callback type: {}. Ignoring this callback.",
+            callback.getClass().getName());
+      }
+    }
+    return builder.build();
   }
 
   /**
    * Normalizes after-agent callbacks.
    *
    * @param afterAgentCallback Callback list (sync or async).
-   * @return normalized async callbacks, or null if input is null.
+   * @return normalized async callbacks, or empty list if input is null.
    */
   @CanIgnoreReturnValue
-  public static @Nullable ImmutableList<AfterAgentCallback> getAfterAgentCallbacks(
+  public static ImmutableList<AfterAgentCallback> getAfterAgentCallbacks(
       List<AfterAgentCallbackBase> afterAgentCallback) {
     if (afterAgentCallback == null) {
-      return null;
+      return ImmutableList.of();
     } else if (afterAgentCallback.isEmpty()) {
       return ImmutableList.of();
     } else {

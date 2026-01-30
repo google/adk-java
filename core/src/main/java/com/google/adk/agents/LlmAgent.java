@@ -935,9 +935,8 @@ public class LlmAgent extends BaseAgent {
     return outputKey;
   }
 
-  @Nullable
-  public BaseCodeExecutor codeExecutor() {
-    return codeExecutor.orElse(null);
+  public Optional<BaseCodeExecutor> codeExecutor() {
+    return codeExecutor;
   }
 
   public Model resolvedModel() {

@@ -57,10 +57,10 @@ public abstract class BaseAgent {
    */
   private BaseAgent parentAgent;
 
-  private final List<? extends BaseAgent> subAgents;
+  private final ImmutableList<? extends BaseAgent> subAgents;
 
-  private final Optional<List<? extends BeforeAgentCallback>> beforeAgentCallback;
-  private final Optional<List<? extends AfterAgentCallback>> afterAgentCallback;
+  private final ImmutableList<? extends BeforeAgentCallback> beforeAgentCallback;
+  private final ImmutableList<? extends AfterAgentCallback> afterAgentCallback;
 
   /**
    * Creates a new BaseAgent.
@@ -82,9 +82,13 @@ public abstract class BaseAgent {
     this.name = name;
     this.description = description;
     this.parentAgent = null;
-    this.subAgents = subAgents != null ? subAgents : ImmutableList.of();
-    this.beforeAgentCallback = Optional.ofNullable(beforeAgentCallback);
-    this.afterAgentCallback = Optional.ofNullable(afterAgentCallback);
+    this.subAgents = subAgents == null ? ImmutableList.of() : ImmutableList.copyOf(subAgents);
+    this.beforeAgentCallback =
+        beforeAgentCallback == null
+            ? ImmutableList.of()
+            : ImmutableList.copyOf(beforeAgentCallback);
+    this.afterAgentCallback =
+        afterAgentCallback == null ? ImmutableList.of() : ImmutableList.copyOf(afterAgentCallback);
 
     // Establish parent relationships for all sub-agents if needed.
     for (BaseAgent subAgent : this.subAgents) {
@@ -144,38 +148,40 @@ public abstract class BaseAgent {
   /**
    * Finds an agent (this or descendant) by name.
    *
-   * @return the agent or descendant with the given name, or {@code null} if not found.
+   * @return an {@link Optional} containing the agent or descendant with the given name, or {@link
+   *     Optional#empty()} if not found.
    */
-  public BaseAgent findAgent(String name) {
+  public Optional<BaseAgent> findAgent(String name) {
     if (this.name().equals(name)) {
-      return this;
+      return Optional.of(this);
     }
     return findSubAgent(name);
   }
 
-  /** Recursively search sub agent by name. */
-  public @Nullable BaseAgent findSubAgent(String name) {
-    for (BaseAgent subAgent : subAgents) {
-      if (subAgent.name().equals(name)) {
-        return subAgent;
-      }
-      BaseAgent result = subAgent.findSubAgent(name);
-      if (result != null) {
-        return result;
-      }
-    }
-    return null;
+  /**
+   * Recursively search sub agent by name.
+   *
+   * @return an {@link Optional} containing the sub agent with the given name, or {@link
+   *     Optional#empty()} if not found.
+   */
+  public Optional<BaseAgent> findSubAgent(String name) {
+    return subAgents.stream()
+        .map(
+            subAgent ->
+                subAgent.name().equals(name) ? Optional.of(subAgent) : subAgent.findSubAgent(name))
+        .flatMap(Optional::stream)
+        .findFirst();
   }
 
-  public List<? extends BaseAgent> subAgents() {
+  public ImmutableList<? extends BaseAgent> subAgents() {
     return subAgents;
   }
 
-  public Optional<List<? extends BeforeAgentCallback>> beforeAgentCallback() {
+  public ImmutableList<? extends BeforeAgentCallback> beforeAgentCallback() {
     return beforeAgentCallback;
   }
 
-  public Optional<List<? extends AfterAgentCallback>> afterAgentCallback() {
+  public ImmutableList<? extends AfterAgentCallback> afterAgentCallback() {
     return afterAgentCallback;
   }
 
@@ -184,8 +190,8 @@ public abstract class BaseAgent {
    *
    * <p>This method is only for use by Agent Development Kit.
    */
-  public List<? extends BeforeAgentCallback> canonicalBeforeAgentCallbacks() {
-    return beforeAgentCallback.orElse(ImmutableList.of());
+  public ImmutableList<? extends BeforeAgentCallback> canonicalBeforeAgentCallbacks() {
+    return beforeAgentCallback;
   }
 
   /**
@@ -193,8 +199,8 @@ public abstract class BaseAgent {
    *
    * <p>This method is only for use by Agent Development Kit.
    */
-  public List<? extends AfterAgentCallback> canonicalAfterAgentCallbacks() {
-    return afterAgentCallback.orElse(ImmutableList.of());
+  public ImmutableList<? extends AfterAgentCallback> canonicalAfterAgentCallbacks() {
+    return afterAgentCallback;
   }
 
   /**
@@ -239,8 +245,7 @@ public abstract class BaseAgent {
               () ->
                   callCallback(
                           beforeCallbacksToFunctions(
-                              invocationContext.pluginManager(),
-                              beforeAgentCallback.orElse(ImmutableList.of())),
+                              invocationContext.pluginManager(), beforeAgentCallback),
                           invocationContext)
                       .flatMapPublisher(
                           beforeEventOpt -> {
@@ -257,7 +262,7 @@ public abstract class BaseAgent {
                                         callCallback(
                                                 afterCallbacksToFunctions(
                                                     invocationContext.pluginManager(),
-                                                    afterAgentCallback.orElse(ImmutableList.of())),
+                                                    afterAgentCallback),
                                                 invocationContext)
                                             .flatMapPublisher(Flowable::fromOptional));
 

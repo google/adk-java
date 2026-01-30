@@ -108,12 +108,12 @@ public final class CodeExecution {
     public Single<RequestProcessor.RequestProcessingResult> processRequest(
         InvocationContext invocationContext, LlmRequest llmRequest) {
       if (!(invocationContext.agent() instanceof LlmAgent llmAgent)
-          || llmAgent.codeExecutor() == null) {
+          || llmAgent.codeExecutor().isEmpty()) {
         return Single.just(
             RequestProcessor.RequestProcessingResult.create(llmRequest, ImmutableList.of()));
       }
 
-      if (llmAgent.codeExecutor() instanceof BuiltInCodeExecutor builtInCodeExecutor) {
+      if (llmAgent.codeExecutor().get() instanceof BuiltInCodeExecutor builtInCodeExecutor) {
         var llmRequestBuilder = llmRequest.toBuilder();
         builtInCodeExecutor.processLlmRequest(llmRequestBuilder);
         LlmRequest updatedLlmRequest = llmRequestBuilder.build();
@@ -124,8 +124,8 @@ public final class CodeExecution {
       Flowable<Event> preprocessorEvents = runPreProcessor(invocationContext, llmRequest);
 
       // Convert the code execution parts to text parts.
-      if (llmAgent.codeExecutor() != null) {
-        BaseCodeExecutor baseCodeExecutor = llmAgent.codeExecutor();
+      if (llmAgent.codeExecutor().isPresent()) {
+        BaseCodeExecutor baseCodeExecutor = llmAgent.codeExecutor().get();
         List<Content> updatedContents = new ArrayList<>();
         for (Content content : llmRequest.contents()) {
           List<String> delimiters =
@@ -173,10 +173,11 @@ public final class CodeExecution {
       return Flowable.empty();
     }
 
-    var codeExecutor = llmAgent.codeExecutor();
-    if (codeExecutor == null) {
+    var codeExecutorOptional = llmAgent.codeExecutor();
+    if (codeExecutorOptional.isEmpty()) {
       return Flowable.empty();
     }
+    var codeExecutor = codeExecutorOptional.get();
 
     if (codeExecutor instanceof BuiltInCodeExecutor) {
       return Flowable.empty();
@@ -268,10 +269,11 @@ public final class CodeExecution {
     if (!(invocationContext.agent() instanceof LlmAgent llmAgent)) {
       return Flowable.empty();
     }
-    var codeExecutor = llmAgent.codeExecutor();
-    if (codeExecutor == null) {
+    var codeExecutorOptional = llmAgent.codeExecutor();
+    if (codeExecutorOptional.isEmpty()) {
       return Flowable.empty();
     }
+    var codeExecutor = codeExecutorOptional.get();
     if (llmResponse.content().isEmpty()) {
       return Flowable.empty();
     }
@@ -387,8 +389,8 @@ public final class CodeExecution {
   private static Optional<String> getOrSetExecutionId(
       InvocationContext invocationContext, CodeExecutorContext codeExecutorContext) {
     if (!(invocationContext.agent() instanceof LlmAgent llmAgent)
-        || llmAgent.codeExecutor() == null
-        || !llmAgent.codeExecutor().stateful()) {
+        || llmAgent.codeExecutor().isEmpty()
+        || !llmAgent.codeExecutor().get().stateful()) {
       return Optional.empty();
     }
 
