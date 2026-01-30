@@ -768,14 +768,14 @@ public class Runner {
         return rootAgent;
       }
 
-      BaseAgent agent = rootAgent.findSubAgent(author);
+      Optional<BaseAgent> agent = rootAgent.findSubAgent(author);
 
-      if (agent == null) {
+      if (agent.isEmpty()) {
         continue;
       }
 
-      if (this.isTransferableAcrossAgentTree(agent)) {
-        return agent;
+      if (this.isTransferableAcrossAgentTree(agent.get())) {
+        return agent.get();
       }
     }
 

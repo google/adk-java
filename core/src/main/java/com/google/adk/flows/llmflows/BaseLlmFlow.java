@@ -388,15 +388,15 @@ public abstract class BaseLlmFlow implements BaseFlow {
                           String agentToTransfer = event.actions().transferToAgent().get();
                           logger.debug("Transferring to agent: {}", agentToTransfer);
                           BaseAgent rootAgent = context.agent().rootAgent();
-                          BaseAgent nextAgent = rootAgent.findAgent(agentToTransfer);
-                          if (nextAgent == null) {
+                          Optional<BaseAgent> nextAgent = rootAgent.findAgent(agentToTransfer);
+                          if (nextAgent.isEmpty()) {
                             String errorMsg = "Agent not found for transfer: " + agentToTransfer;
                             logger.error(errorMsg);
                             return postProcessedEvents.concatWith(
                                 Flowable.error(new IllegalStateException(errorMsg)));
                           }
                           return postProcessedEvents.concatWith(
-                              Flowable.defer(() -> nextAgent.runAsync(context)));
+                              Flowable.defer(() -> nextAgent.get().runAsync(context)));
                         }
                         return postProcessedEvents;
                       });
@@ -574,14 +574,14 @@ public abstract class BaseLlmFlow implements BaseFlow {
                             Flowable<Event> events = Flowable.just(event);
                             if (event.actions().transferToAgent().isPresent()) {
                               BaseAgent rootAgent = invocationContext.agent().rootAgent();
-                              BaseAgent nextAgent =
+                              Optional<BaseAgent> nextAgent =
                                   rootAgent.findAgent(event.actions().transferToAgent().get());
-                              if (nextAgent == null) {
+                              if (nextAgent.isEmpty()) {
                                 throw new IllegalStateException(
                                     "Agent not found: " + event.actions().transferToAgent().get());
                               }
                               Flowable<Event> nextAgentEvents =
-                                  nextAgent.runLive(invocationContext);
+                                  nextAgent.get().runLive(invocationContext);
                               events = Flowable.concat(events, nextAgentEvents);
                             }
                             return events;

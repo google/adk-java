@@ -16,6 +16,7 @@
 
 package com.google.adk.agents;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -132,7 +133,7 @@ public class BaseAgentConfig {
   }
 
   public List<AgentRefConfig> subAgents() {
-    return subAgents;
+    return subAgents == null ? Collections.emptyList() : subAgents;
   }
 
   public void setSubAgents(List<AgentRefConfig> subAgents) {
@@ -140,7 +141,7 @@ public class BaseAgentConfig {
   }
 
   public List<CallbackRef> beforeAgentCallbacks() {
-    return beforeAgentCallbacks;
+    return beforeAgentCallbacks == null ? Collections.emptyList() : beforeAgentCallbacks;
   }
 
   public void setBeforeAgentCallbacks(List<CallbackRef> beforeAgentCallbacks) {
@@ -148,7 +149,7 @@ public class BaseAgentConfig {
   }
 
   public List<CallbackRef> afterAgentCallbacks() {
-    return afterAgentCallbacks;
+    return afterAgentCallbacks == null ? Collections.emptyList() : afterAgentCallbacks;
   }
 
   public void setAfterAgentCallbacks(List<CallbackRef> afterAgentCallbacks) {
