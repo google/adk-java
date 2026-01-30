@@ -61,19 +61,13 @@ public abstract class BaseCodeExecutor extends JsonBaseModel {
   }
 
   /**
-   * The list of the enclosing delimiters to identify the code blocks.
+   * The list of enclosing delimiters to identify code blocks in model responses.
    *
-   * <p>Each inner list contains a pair of start and end delimiters. This supports multiple pairs of
-   * delimiters.
+   * <p>Each inner list should contain a pair of strings: the start delimiter and the end delimiter.
+   * This structure supports multiple pairs of delimiters. For example, `[["```tool_code\n",
+   * "\n```"], ["```python\n", "\n```"]]` defines two sets of delimiters.
    *
-   * <p>For example, the delimiter ('```python\n', '\n```') can be used to identify code blocks with
-   * the following format:
-   *
-   * <p>```python
-   *
-   * <p>print("hello")
-   *
-   * <p>```
+   * <p>Defaults to `[["```tool_code\n", "\n```"], ["```python\n", "\n```"]]`.
    */
   public ImmutableList<ImmutableList<String>> codeBlockDelimiters() {
     return CODE_BLOCK_DELIMITERS;

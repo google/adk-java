@@ -21,7 +21,9 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.stream.Collectors.joining;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.google.adk.JsonBaseModel;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
@@ -211,7 +213,13 @@ public final class CodeExecutionUtils {
 
     /** Builder for {@link CodeExecutionResult}. */
     @AutoValue.Builder
+    @JsonPOJOBuilder(withPrefix = "")
     public abstract static class Builder {
+      @JsonCreator
+      static Builder create() {
+        return CodeExecutionResult.builder();
+      }
+
       public abstract Builder stdout(String stdout);
 
       public abstract Builder stderr(String stderr);
@@ -243,7 +251,13 @@ public final class CodeExecutionUtils {
 
     /** Builder for {@link CodeExecutionInput}. */
     @AutoValue.Builder
+    @JsonPOJOBuilder(withPrefix = "")
     public abstract static class Builder {
+      @JsonCreator
+      static Builder create() {
+        return CodeExecutionInput.builder();
+      }
+
       public abstract Builder code(String code);
 
       public abstract Builder inputFiles(List<File> inputFiles);
@@ -273,7 +287,13 @@ public final class CodeExecutionUtils {
 
     /** Builder for {@link File}. */
     @AutoValue.Builder
+    @JsonPOJOBuilder(withPrefix = "")
     public abstract static class Builder {
+      @JsonCreator
+      static Builder create() {
+        return File.builder();
+      }
+
       public abstract Builder name(String name);
 
       public abstract Builder content(String content);
