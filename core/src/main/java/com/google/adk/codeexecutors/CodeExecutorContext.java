@@ -22,6 +22,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.codeexecutors.CodeExecutionUtils.File;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.time.InstantSource;
 import java.util.ArrayList;
@@ -88,9 +89,10 @@ public class CodeExecutorContext {
    *
    * @return A list of processed file names in the code executor context.
    */
-  public List<String> getProcessedFileNames() {
-    return (List<String>)
-        this.context.computeIfAbsent(PROCESSED_FILE_NAMES_KEY, unused -> new ArrayList<>());
+  public ImmutableList<String> getProcessedFileNames() {
+    return ImmutableList.copyOf(
+        (List<String>)
+            this.context.computeIfAbsent(PROCESSED_FILE_NAMES_KEY, unused -> new ArrayList<>()));
   }
 
   /**
@@ -110,7 +112,7 @@ public class CodeExecutorContext {
    *
    * @return A list of input files in the code executor context.
    */
-  public List<File> getInputFiles() {
+  public ImmutableList<File> getInputFiles() {
     List<Map<String, Object>> fileMaps =
         (List<Map<String, Object>>)
             this.sessionState.getOrDefault(INPUT_FILE_KEY, new ArrayList<>());

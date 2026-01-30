@@ -36,7 +36,11 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** A code executor that uses a custom container to execute code. */
+/**
+ * A code executor that uses a custom container to execute code.
+ *
+ * <p>This implementation uses blocking I/O to interact with Docker via {@code docker-java} library.
+ */
 public class ContainerCodeExecutor extends BaseCodeExecutor {
   private static final Logger logger = LoggerFactory.getLogger(ContainerCodeExecutor.class);
   private static final String DEFAULT_IMAGE_TAG = "adk-code-executor:latest";
@@ -91,6 +95,11 @@ public class ContainerCodeExecutor extends BaseCodeExecutor {
     return false;
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>This method blocks waiting for container execution to complete.
+   */
   @Override
   public CodeExecutionResult executeCode(
       InvocationContext invocationContext, CodeExecutionInput codeExecutionInput) {
