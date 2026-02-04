@@ -41,10 +41,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.Tracer;
-import io.opentelemetry.context.Context;
-import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Observable;
@@ -177,14 +173,8 @@ public final class Functions {
               var mergedEvent = maybeMergedEvent.get();
 
               if (events.size() > 1) {
-                Tracer tracer = Tracing.getTracer();
-                Span mergedSpan =
-                    tracer.spanBuilder("tool_response").setParent(Context.current()).startSpan();
-                try (Scope scope = mergedSpan.makeCurrent()) {
-                  Tracing.traceToolResponse(invocationContext, mergedEvent.id(), mergedEvent);
-                } finally {
-                  mergedSpan.end();
-                }
+                Tracing.traceToolResponse(
+                    "tool_response", invocationContext, mergedEvent.id(), mergedEvent);
               }
               return Maybe.just(mergedEvent);
             });
@@ -551,25 +541,12 @@ public final class Functions {
 
   private static Maybe<Map<String, Object>> callTool(
       BaseTool tool, Map<String, Object> args, ToolContext toolContext) {
-    Tracer tracer = Tracing.getTracer();
-    return Maybe.defer(
+    return Tracing.traceMaybe(
+        "tool_call [" + tool.name() + "]",
+        toolContext.invocationContext(),
         () -> {
-          Span span =
-              tracer
-                  .spanBuilder("tool_call [" + tool.name() + "]")
-                  .setParent(Context.current())
-                  .startSpan();
-          try (Scope scope = span.makeCurrent()) {
-            Tracing.traceToolCall(args);
-            return tool.runAsync(args, toolContext)
-                .toMaybe()
-                .doOnError(span::recordException)
-                .doFinally(span::end);
-          } catch (RuntimeException e) {
-            span.recordException(e);
-            span.end();
-            return Maybe.error(new RuntimeException("Failed to call tool: " + tool.name(), e));
-          }
+          Tracing.traceToolCall(args);
+          return tool.runAsync(args, toolContext).toMaybe();
         });
   }
 
@@ -578,42 +555,31 @@ public final class Functions {
       Map<String, Object> response,
       ToolContext toolContext,
       InvocationContext invocationContext) {
-    Tracer tracer = Tracing.getTracer();
-    Span span =
-        tracer
-            .spanBuilder("tool_response [" + tool.name() + "]")
-            .setParent(Context.current())
-            .startSpan();
-    try (Scope scope = span.makeCurrent()) {
-      // use a empty placeholder response if tool response is null.
-      if (response == null) {
-        response = new HashMap<>();
-      }
+    // use a empty placeholder response if tool response is null.
+    Map<String, Object> finalResponse = response == null ? new HashMap<>() : response;
 
-      Part partFunctionResponse =
-          Part.builder()
-              .functionResponse(
-                  FunctionResponse.builder()
-                      .id(toolContext.functionCallId().orElse(""))
-                      .name(tool.name())
-                      .response(response)
-                      .build())
-              .build();
+    Part partFunctionResponse =
+        Part.builder()
+            .functionResponse(
+                FunctionResponse.builder()
+                    .id(toolContext.functionCallId().orElse(""))
+                    .name(tool.name())
+                    .response(finalResponse)
+                    .build())
+            .build();
 
-      Event event =
-          Event.builder()
-              .id(Event.generateEventId())
-              .invocationId(invocationContext.invocationId())
-              .author(invocationContext.agent().name())
-              .branch(invocationContext.branch())
-              .content(Content.builder().role("user").parts(partFunctionResponse).build())
-              .actions(toolContext.eventActions())
-              .build();
-      Tracing.traceToolResponse(invocationContext, event.id(), event);
-      return event;
-    } finally {
-      span.end();
-    }
+    Event event =
+        Event.builder()
+            .id(Event.generateEventId())
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .branch(invocationContext.branch())
+            .content(Content.builder().role("user").parts(partFunctionResponse).build())
+            .actions(toolContext.eventActions())
+            .build();
+    Tracing.traceToolResponse(
+        "tool_response [" + tool.name() + "]", invocationContext, event.id(), event);
+    return event;
   }
 
   /**

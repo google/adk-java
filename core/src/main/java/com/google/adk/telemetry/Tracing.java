@@ -26,19 +26,26 @@ import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.functions.Action;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -66,15 +73,51 @@ public class Tracing {
     Tracing.tracer = tracer;
   }
 
+  /** Starts a new span with common ADK attributes from the invocation context. */
+  public static Span startSpan(String spanName, InvocationContext invocationContext) {
+    Span span = tracer.spanBuilder(spanName).setParent(Context.current()).startSpan();
+    span.setAttribute("gen_ai.system", "com.google.adk");
+    if (invocationContext != null) {
+      setInvocationAttributes(span, invocationContext);
+    }
+    return span;
+  }
+
+  private static void traceInSpan(Span span, Runnable runnable, boolean endSpan) {
+    traceInSpan(
+        span,
+        () -> {
+          runnable.run();
+          return null;
+        },
+        endSpan);
+  }
+
+  @CanIgnoreReturnValue
+  private static <T> T traceInSpan(Span span, Supplier<T> supplier, boolean endSpan) {
+    try (Scope scope = span.makeCurrent()) {
+      return supplier.get();
+    } catch (Throwable t) {
+      span.recordException(t);
+      if (endSpan) {
+        span.setStatus(StatusCode.ERROR);
+      }
+      throw t;
+    } finally {
+      if (endSpan) {
+        span.end();
+      }
+    }
+  }
+
   /**
    * Traces tool call arguments.
    *
    * @param args The arguments to the tool call.
    */
   public static void traceToolCall(Map<String, Object> args) {
-    Span span = Span.current();
-    if (span == null || !span.getSpanContext().isValid()) {
-      log.trace("traceToolCall: No valid span in current context.");
+    Span span = getValidSpan("traceToolCall");
+    if (span == null) {
       return;
     }
 
@@ -95,52 +138,44 @@ public class Tracing {
    */
   public static void traceToolResponse(
       InvocationContext invocationContext, String eventId, Event functionResponseEvent) {
-    Span span = Span.current();
-    if (span == null || !span.getSpanContext().isValid()) {
-      log.trace("traceToolResponse: No valid span in current context.");
+    Span span = getValidSpan("traceToolResponse");
+    if (span == null) {
       return;
     }
 
     span.setAttribute("gen_ai.system", "com.google.adk");
-    span.setAttribute("adk.invocation_id", invocationContext.invocationId());
+    setInvocationAttributes(span, invocationContext);
     span.setAttribute("adk.event_id", eventId);
     span.setAttribute("adk.tool_response", functionResponseEvent.toJson());
 
     // Setting empty llm request and response (as the AdkDevServer UI expects these)
     span.setAttribute("adk.llm_request", "{}");
     span.setAttribute("adk.llm_response", "{}");
-    if (invocationContext.session() != null && invocationContext.session().id() != null) {
-      span.setAttribute("adk.session_id", invocationContext.session().id());
-    }
   }
 
   /**
-   * Builds a dictionary representation of the LLM request for tracing. {@code GenerationConfig} is
-   * included as a whole. For other fields like {@code Content}, parts that cannot be easily
-   * serialized or are not needed for the trace (e.g., inlineData) are excluded.
+   * Traces tool response event within a new span.
    *
-   * @param llmRequest The LlmRequest object.
-   * @return A Map representation of the LLM request for tracing.
+   * @param spanName The name of the span to create.
+   * @param invocationContext The invocation context for the current agent run.
+   * @param eventId The ID of the event.
+   * @param functionResponseEvent The function response event.
    */
-  private static Map<String, Object> buildLlmRequestForTrace(LlmRequest llmRequest) {
-    Map<String, Object> result = new HashMap<>();
-    result.put("model", llmRequest.model().orElse(null));
-    llmRequest.config().ifPresent(config -> result.put("config", config));
-
-    List<Content> contentsList = new ArrayList<>();
-    for (Content content : llmRequest.contents()) {
-      ImmutableList<Part> filteredParts =
-          content.parts().orElse(ImmutableList.of()).stream()
-              .filter(part -> part.inlineData().isEmpty())
-              .collect(toImmutableList());
-
-      Content.Builder contentBuilder = Content.builder();
-      content.role().ifPresent(contentBuilder::role);
-      contentBuilder.parts(filteredParts);
-      contentsList.add(contentBuilder.build());
+  public static void traceToolResponse(
+      String spanName,
+      InvocationContext invocationContext,
+      String eventId,
+      Event functionResponseEvent) {
+    Span span = startSpan(spanName, invocationContext);
+    try (Scope scope = span.makeCurrent()) {
+      traceToolResponse(invocationContext, eventId, functionResponseEvent);
+    } catch (Throwable t) {
+      span.recordException(t);
+      span.setStatus(StatusCode.ERROR);
+      throw t;
+    } finally {
+      span.end();
     }
-    result.put("contents", contentsList);
-    return result;
   }
 
   /**
@@ -156,24 +191,15 @@ public class Tracing {
       String eventId,
       LlmRequest llmRequest,
       LlmResponse llmResponse) {
-    Span span = Span.current();
-    if (span == null || !span.getSpanContext().isValid()) {
-      log.trace("traceCallLlm: No valid span in current context.");
+    Span span = getValidSpan("traceCallLlm");
+    if (span == null) {
       return;
     }
 
     span.setAttribute("gen_ai.system", "com.google.adk");
     llmRequest.model().ifPresent(modelName -> span.setAttribute("gen_ai.request.model", modelName));
-    span.setAttribute("adk.invocation_id", invocationContext.invocationId());
+    setInvocationAttributes(span, invocationContext);
     span.setAttribute("adk.event_id", eventId);
-
-    if (invocationContext.session() != null && invocationContext.session().id() != null) {
-      span.setAttribute("adk.session_id", invocationContext.session().id());
-    } else {
-      log.trace(
-          "traceCallLlm: InvocationContext session or session ID is null, cannot set"
-              + " adk.session_id");
-    }
 
     if (CAPTURE_MESSAGE_CONTENT_IN_SPANS) {
       try {
@@ -191,6 +217,38 @@ public class Tracing {
   }
 
   /**
+   * Traces a call to the LLM within an existing span.
+   *
+   * @param span The span to use for tracing.
+   * @param invocationContext The invocation context.
+   * @param eventId The ID of the event associated with this LLM call/response.
+   * @param llmRequest The LLM request object.
+   * @param llmResponse The LLM response object.
+   */
+  public static void traceCallLlm(
+      Span span,
+      InvocationContext invocationContext,
+      String eventId,
+      LlmRequest llmRequest,
+      LlmResponse llmResponse) {
+    traceInSpan(
+        span, () -> traceCallLlm(invocationContext, eventId, llmRequest, llmResponse), false);
+  }
+
+  /**
+   * Traces the sending of data within an existing span.
+   *
+   * @param span The span to use for tracing.
+   * @param invocationContext The invocation context.
+   * @param eventId The ID of the event, if applicable.
+   * @param data A list of content objects being sent.
+   */
+  public static void traceSendData(
+      Span span, InvocationContext invocationContext, String eventId, List<Content> data) {
+    traceInSpan(span, () -> traceSendData(invocationContext, eventId, data), false);
+  }
+
+  /**
    * Traces the sending of data (history or new content) to the agent/model.
    *
    * @param invocationContext The invocation context.
@@ -199,19 +257,14 @@ public class Tracing {
    */
   public static void traceSendData(
       InvocationContext invocationContext, String eventId, List<Content> data) {
-    Span span = Span.current();
-    if (span == null || !span.getSpanContext().isValid()) {
-      log.trace("traceSendData: No valid span in current context.");
+    Span span = getValidSpan("traceSendData");
+    if (span == null) {
       return;
     }
 
-    span.setAttribute("adk.invocation_id", invocationContext.invocationId());
+    setInvocationAttributes(span, invocationContext);
     if (eventId != null && !eventId.isEmpty()) {
       span.setAttribute("adk.event_id", eventId);
-    }
-
-    if (invocationContext.session() != null && invocationContext.session().id() != null) {
-      span.setAttribute("adk.session_id", invocationContext.session().id());
     }
 
     try {
@@ -241,36 +294,122 @@ public class Tracing {
   }
 
   /**
-   * Executes a Flowable with an OpenTelemetry Scope active for its entire lifecycle.
+   * Traces a Flowable by starting a new span with the given invocation context.
    *
-   * <p>This helper manages the OpenTelemetry Scope lifecycle for RxJava Flowables to ensure proper
-   * context propagation across async boundaries. The scope remains active from when the Flowable is
-   * returned through all operators until stream completion (onComplete, onError, or cancel).
-   *
-   * <p><b>Why not try-with-resources?</b> RxJava Flowables execute lazily - operators run at
-   * subscription time, not at chain construction time. Using try-with-resources would close the
-   * scope before the Flowable subscribes, causing Context.current() to return ROOT in nested
-   * operations and breaking parent-child span relationships (fragmenting traces).
-   *
-   * <p>The scope is properly closed via doFinally when the stream terminates, ensuring no resource
-   * leaks regardless of completion mode (success, error, or cancellation).
-   *
-   * @param spanContext The context containing the span to activate
-   * @param span The span to end when the stream completes
-   * @param flowableSupplier Supplier that creates the Flowable to execute with active scope
-   * @param <T> The type of items emitted by the Flowable
-   * @return Flowable with OpenTelemetry scope lifecycle management
+   * @param spanName The name of the span.
+   * @param invocationContext The invocation context.
+   * @param flowableSupplier Supplier that creates the Flowable.
    */
-  @SuppressWarnings("MustBeClosedChecker") // Scope lifecycle managed by RxJava doFinally
+  @SuppressWarnings("MustBeClosedChecker")
   public static <T> Flowable<T> traceFlowable(
-      Context spanContext, Span span, Supplier<Flowable<T>> flowableSupplier) {
-    Scope scope = spanContext.makeCurrent();
-    return flowableSupplier
-        .get()
-        .doFinally(
-            () -> {
-              scope.close();
-              span.end();
-            });
+      String spanName,
+      InvocationContext invocationContext,
+      Supplier<Flowable<T>> flowableSupplier) {
+    return Flowable.defer(
+        () -> {
+          TraceState state = TraceState.start(spanName, invocationContext);
+          try {
+            return flowableSupplier.get().doOnError(state).doFinally(state);
+          } catch (Throwable t) {
+            state.accept(t);
+            state.run();
+            return Flowable.error(t);
+          }
+        });
+  }
+
+  /** Similar to traceFlowable for Maybe. */
+  @SuppressWarnings("MustBeClosedChecker")
+  public static <T> Maybe<T> traceMaybe(
+      String spanName, InvocationContext invocationContext, Supplier<Maybe<T>> maybeSupplier) {
+    return traceFlowable(spanName, invocationContext, () -> maybeSupplier.get().toFlowable())
+        .singleElement();
+  }
+
+  /** Similar to traceFlowable for Completable with the given invocation context. */
+  @SuppressWarnings("MustBeClosedChecker")
+  public static Completable traceCompletable(
+      String spanName,
+      InvocationContext invocationContext,
+      Supplier<Completable> completableSupplier) {
+    return traceFlowable(spanName, invocationContext, () -> completableSupplier.get().toFlowable())
+        .ignoreElements();
+  }
+
+  private static @Nullable Span getValidSpan(String methodName) {
+    Span span = Span.current();
+    if (span == null || !span.getSpanContext().isValid()) {
+      log.trace("{}: No valid span in current context.", methodName);
+      return null;
+    }
+    return span;
+  }
+
+  private static void setInvocationAttributes(Span span, InvocationContext invocationContext) {
+    span.setAttribute("adk.invocation_id", invocationContext.invocationId());
+    if (invocationContext.session() != null && invocationContext.session().id() != null) {
+      span.setAttribute("adk.session_id", invocationContext.session().id());
+    }
+  }
+
+  /**
+   * Builds a dictionary representation of the LLM request for tracing. {@code GenerationConfig} is
+   * included as a whole. For other fields like {@code Content}, parts that cannot be easily
+   * serialized or are not needed for the trace (e.g., inlineData) are excluded.
+   *
+   * @param llmRequest The LlmRequest object.
+   * @return A Map representation of the LLM request for tracing.
+   */
+  private static Map<String, Object> buildLlmRequestForTrace(LlmRequest llmRequest) {
+    Map<String, Object> result = new HashMap<>();
+    result.put("model", llmRequest.model().orElse(null));
+    llmRequest.config().ifPresent(config -> result.put("config", config));
+
+    ImmutableList<Content> contentsList =
+        llmRequest.contents().stream()
+            .map(
+                content -> {
+                  ImmutableList<Part> filteredParts =
+                      content.parts().orElse(ImmutableList.of()).stream()
+                          .filter(part -> part.inlineData().isEmpty())
+                          .collect(toImmutableList());
+                  Content.Builder contentBuilder = Content.builder().parts(filteredParts);
+                  content.role().ifPresent(contentBuilder::role);
+                  return contentBuilder.build();
+                })
+            .collect(toImmutableList());
+    result.put("contents", contentsList);
+    return result;
+  }
+
+  /** Internal helper to manage span and scope for RxJava types. */
+  private static class TraceState
+      implements Action, io.reactivex.rxjava3.functions.Consumer<Throwable> {
+    private final Span span;
+    private final Scope scope;
+
+    private TraceState(Span span, Scope scope) {
+      this.span = span;
+      this.scope = scope;
+    }
+
+    @Override
+    public void run() {
+      scope.close();
+      span.end();
+    }
+
+    @Override
+    public void accept(Throwable t) {
+      span.recordException(t);
+      span.setStatus(StatusCode.ERROR);
+    }
+
+    @SuppressWarnings("MustBeClosedChecker")
+    static TraceState start(String spanName, InvocationContext invocationContext) {
+      Span span = startSpan(spanName, invocationContext);
+      Scope scope = Context.current().with(span).makeCurrent();
+      return new TraceState(span, scope);
+    }
   }
 }

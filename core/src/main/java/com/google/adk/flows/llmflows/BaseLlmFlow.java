@@ -43,9 +43,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.FunctionResponse;
 import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.StatusCode;
-import io.opentelemetry.context.Context;
-import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -175,44 +172,31 @@ public abstract class BaseLlmFlow implements BaseFlow {
                   agent.resolvedModel().model().isPresent()
                       ? agent.resolvedModel().model().get()
                       : LlmRegistry.getLlm(agent.resolvedModel().modelName().get());
-              return Flowable.defer(
+              return Tracing.traceFlowable(
+                      "call_llm",
+                      context,
                       () -> {
-                        Span llmCallSpan =
-                            Tracing.getTracer()
-                                .spanBuilder("call_llm")
-                                .setParent(Context.current())
-                                .startSpan();
-
-                        try (Scope scope = llmCallSpan.makeCurrent()) {
-                          return llm.generateContent(
-                                  llmRequestBuilder.build(),
-                                  context.runConfig().streamingMode() == StreamingMode.SSE)
-                              .onErrorResumeNext(
-                                  exception ->
-                                      handleOnModelErrorCallback(
-                                              context,
-                                              llmRequestBuilder,
-                                              eventForCallbackUsage,
-                                              exception)
-                                          .switchIfEmpty(Single.error(exception))
-                                          .toFlowable())
-                              .doOnNext(
-                                  llmResp -> {
-                                    try (Scope innerScope = llmCallSpan.makeCurrent()) {
-                                      Tracing.traceCallLlm(
-                                          context,
-                                          eventForCallbackUsage.id(),
-                                          llmRequestBuilder.build(),
-                                          llmResp);
-                                    }
-                                  })
-                              .doOnError(
-                                  error -> {
-                                    llmCallSpan.setStatus(StatusCode.ERROR, error.getMessage());
-                                    llmCallSpan.recordException(error);
-                                  })
-                              .doFinally(llmCallSpan::end);
-                        }
+                        Span llmCallSpan = Span.current();
+                        return llm.generateContent(
+                                llmRequestBuilder.build(),
+                                context.runConfig().streamingMode() == StreamingMode.SSE)
+                            .onErrorResumeNext(
+                                exception ->
+                                    handleOnModelErrorCallback(
+                                            context,
+                                            llmRequestBuilder,
+                                            eventForCallbackUsage,
+                                            exception)
+                                        .switchIfEmpty(Single.error(exception))
+                                        .toFlowable())
+                            .doOnNext(
+                                llmResp ->
+                                    Tracing.traceCallLlm(
+                                        llmCallSpan,
+                                        context,
+                                        eventForCallbackUsage.id(),
+                                        llmRequestBuilder.build(),
+                                        llmResp));
                       })
                   .concatMap(
                       llmResp ->
@@ -473,37 +457,28 @@ public abstract class BaseLlmFlow implements BaseFlow {
                       ? Completable.complete()
                       : Completable.defer(
                           () -> {
-                            Span sendDataSpan =
-                                Tracing.getTracer()
-                                    .spanBuilder("send_data")
-                                    .setParent(Context.current())
-                                    .startSpan();
-                            try (Scope scope = sendDataSpan.makeCurrent()) {
-                              return connection
-                                  .sendHistory(llmRequestAfterPreprocess.contents())
-                                  .doOnComplete(
-                                      () -> {
-                                        try (Scope innerScope = sendDataSpan.makeCurrent()) {
-                                          Tracing.traceSendData(
-                                              invocationContext,
-                                              eventIdForSendData,
-                                              llmRequestAfterPreprocess.contents());
-                                        }
-                                      })
-                                  .doOnError(
-                                      error -> {
-                                        sendDataSpan.setStatus(
-                                            StatusCode.ERROR, error.getMessage());
-                                        sendDataSpan.recordException(error);
-                                        try (Scope innerScope = sendDataSpan.makeCurrent()) {
-                                          Tracing.traceSendData(
-                                              invocationContext,
-                                              eventIdForSendData,
-                                              llmRequestAfterPreprocess.contents());
-                                        }
-                                      })
-                                  .doFinally(sendDataSpan::end);
-                            }
+                            return Tracing.traceCompletable(
+                                "send_data",
+                                invocationContext,
+                                () -> {
+                                  Span sendDataSpan = Span.current();
+                                  return connection
+                                      .sendHistory(llmRequestAfterPreprocess.contents())
+                                      .doOnComplete(
+                                          () ->
+                                              Tracing.traceSendData(
+                                                  sendDataSpan,
+                                                  invocationContext,
+                                                  eventIdForSendData,
+                                                  llmRequestAfterPreprocess.contents()))
+                                      .doOnError(
+                                          error ->
+                                              Tracing.traceSendData(
+                                                  sendDataSpan,
+                                                  invocationContext,
+                                                  eventIdForSendData,
+                                                  llmRequestAfterPreprocess.contents()));
+                                });
                           });
 
               Flowable<LiveRequest> liveRequests =

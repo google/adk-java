@@ -29,9 +29,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.DoNotCall;
 import com.google.genai.types.Content;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.Tracer;
-import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
@@ -247,47 +244,36 @@ public abstract class BaseAgent {
    * @return stream of agent-generated events.
    */
   public Flowable<Event> runAsync(InvocationContext parentContext) {
-    Tracer tracer = Tracing.getTracer();
-    return Flowable.defer(
+    return Tracing.traceFlowable(
+        "agent_run [" + name() + "]",
+        parentContext,
         () -> {
-          Span span =
-              tracer
-                  .spanBuilder("agent_run [" + name() + "]")
-                  .setParent(Context.current())
-                  .startSpan();
-          Context spanContext = Context.current().with(span);
-
           InvocationContext invocationContext = createInvocationContext(parentContext);
 
-          return Tracing.traceFlowable(
-              spanContext,
-              span,
-              () ->
-                  callCallback(
-                          beforeCallbacksToFunctions(
-                              invocationContext.pluginManager(), beforeAgentCallback),
-                          invocationContext)
-                      .flatMapPublisher(
-                          beforeEventOpt -> {
-                            if (invocationContext.endInvocation()) {
-                              return Flowable.fromOptional(beforeEventOpt);
-                            }
+          return callCallback(
+                  beforeCallbacksToFunctions(
+                      invocationContext.pluginManager(), beforeAgentCallback),
+                  invocationContext)
+              .flatMapPublisher(
+                  beforeEventOpt -> {
+                    if (invocationContext.endInvocation()) {
+                      return Flowable.fromOptional(beforeEventOpt);
+                    }
 
-                            Flowable<Event> beforeEvents = Flowable.fromOptional(beforeEventOpt);
-                            Flowable<Event> mainEvents =
-                                Flowable.defer(() -> runAsyncImpl(invocationContext));
-                            Flowable<Event> afterEvents =
-                                Flowable.defer(
-                                    () ->
-                                        callCallback(
-                                                afterCallbacksToFunctions(
-                                                    invocationContext.pluginManager(),
-                                                    afterAgentCallback),
-                                                invocationContext)
-                                            .flatMapPublisher(Flowable::fromOptional));
+                    Flowable<Event> beforeEvents = Flowable.fromOptional(beforeEventOpt);
+                    Flowable<Event> mainEvents =
+                        Flowable.defer(() -> runAsyncImpl(invocationContext));
+                    Flowable<Event> afterEvents =
+                        Flowable.defer(
+                            () ->
+                                callCallback(
+                                        afterCallbacksToFunctions(
+                                            invocationContext.pluginManager(), afterAgentCallback),
+                                        invocationContext)
+                                    .flatMapPublisher(Flowable::fromOptional));
 
-                            return Flowable.concat(beforeEvents, mainEvents, afterEvents);
-                          }));
+                    return Flowable.concat(beforeEvents, mainEvents, afterEvents);
+                  });
         });
   }
 
@@ -386,20 +372,10 @@ public abstract class BaseAgent {
    * @return stream of agent-generated events.
    */
   public Flowable<Event> runLive(InvocationContext parentContext) {
-    Tracer tracer = Tracing.getTracer();
-    return Flowable.defer(
-        () -> {
-          Span span =
-              tracer
-                  .spanBuilder("agent_run [" + name() + "]")
-                  .setParent(Context.current())
-                  .startSpan();
-          Context spanContext = Context.current().with(span);
-
-          InvocationContext invocationContext = createInvocationContext(parentContext);
-
-          return Tracing.traceFlowable(spanContext, span, () -> runLiveImpl(invocationContext));
-        });
+    return Tracing.traceFlowable(
+        "agent_run [" + name() + "]",
+        parentContext,
+        () -> runLiveImpl(createInvocationContext(parentContext)));
   }
 
   /**
