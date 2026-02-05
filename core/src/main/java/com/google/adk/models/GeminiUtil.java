@@ -24,7 +24,9 @@ import com.google.common.collect.Iterables;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FileData;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import com.google.genai.types.UsageMetadata;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
@@ -223,5 +225,23 @@ public final class GeminiUtil {
               return content.toBuilder().parts(nonThoughtParts).build();
             })
         .collect(toImmutableList());
+  }
+
+  public static GenerateContentResponseUsageMetadata toGenerateContentResponseUsageMetadata(
+      UsageMetadata usageMetadata) {
+    GenerateContentResponseUsageMetadata.Builder builder =
+        GenerateContentResponseUsageMetadata.builder();
+    usageMetadata.promptTokenCount().ifPresent(builder::promptTokenCount);
+    usageMetadata.cachedContentTokenCount().ifPresent(builder::cachedContentTokenCount);
+    usageMetadata.responseTokenCount().ifPresent(builder::candidatesTokenCount);
+    usageMetadata.toolUsePromptTokenCount().ifPresent(builder::toolUsePromptTokenCount);
+    usageMetadata.thoughtsTokenCount().ifPresent(builder::thoughtsTokenCount);
+    usageMetadata.totalTokenCount().ifPresent(builder::totalTokenCount);
+    usageMetadata.promptTokensDetails().ifPresent(builder::promptTokensDetails);
+    usageMetadata.cacheTokensDetails().ifPresent(builder::cacheTokensDetails);
+    usageMetadata.responseTokensDetails().ifPresent(builder::candidatesTokensDetails);
+    usageMetadata.toolUsePromptTokensDetails().ifPresent(builder::toolUsePromptTokensDetails);
+    usageMetadata.trafficType().ifPresent(builder::trafficType);
+    return builder.build();
   }
 }
