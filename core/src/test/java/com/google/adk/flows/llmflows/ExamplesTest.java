@@ -24,6 +24,7 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.examples.BaseExampleProvider;
 import com.google.adk.examples.Example;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
@@ -55,6 +56,7 @@ public final class ExamplesTest {
     InvocationContext context =
         InvocationContext.builder()
             .invocationId("invocation1")
+            .session(Session.builder("session1").build())
             .agent(agent)
             .userContent(Content.fromParts(Part.fromText("what is up?")))
             .runConfig(RunConfig.builder().build())
@@ -76,6 +78,7 @@ public final class ExamplesTest {
     InvocationContext context =
         InvocationContext.builder()
             .invocationId("invocation1")
+            .session(Session.builder("session1").build())
             .agent(agent)
             .userContent(Content.fromParts(Part.fromText("what is up?")))
             .runConfig(RunConfig.builder().build())

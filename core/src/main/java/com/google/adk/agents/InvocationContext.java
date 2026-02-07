@@ -16,6 +16,8 @@
 
 package com.google.adk.agents;
 
+import static com.google.common.base.Strings.isNullOrEmpty;
+
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
@@ -747,9 +749,27 @@ public class InvocationContext {
      *
      * @throws IllegalStateException if any required parameters are missing.
      */
-    // TODO: b/462183912 - Add validation for required parameters.
     public InvocationContext build() {
+      validate(this);
       return new InvocationContext(this);
+    }
+  }
+
+  /**
+   * Validates the required parameters fields: invocationId, agent, and session.
+   *
+   * @param builder the builder to validate.
+   * @throws IllegalStateException if any required parameters are missing.
+   */
+  private static void validate(Builder builder) {
+    if (isNullOrEmpty(builder.invocationId)) {
+      throw new IllegalStateException("Invocation ID must be non-empty.");
+    }
+    if (builder.agent == null) {
+      throw new IllegalStateException("Agent must be set.");
+    }
+    if (builder.session == null) {
+      throw new IllegalStateException("Session must be set.");
     }
   }
 

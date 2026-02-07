@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
@@ -232,10 +233,14 @@ public final class FunctionToolTest {
 
   @Test
   public void call_withAllSupportedParameterTypes() throws Exception {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     FunctionTool tool = FunctionTool.create(Functions.class, "returnAllSupportedParametersAsMap");
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
 
@@ -576,12 +581,16 @@ public final class FunctionToolTest {
   @Test
   @SuppressWarnings("BooleanLiteral")
   public void call_nonStaticWithAllSupportedParameterTypes() throws Exception {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     Functions functions = new Functions();
     FunctionTool tool =
         FunctionTool.create(functions, "nonStaticReturnAllSupportedParametersAsMap");
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
 
@@ -627,12 +636,16 @@ public final class FunctionToolTest {
 
   @Test
   public void runAsync_withRequireConfirmation() throws Exception {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     Method method = Functions.class.getMethod("returnsMap");
     FunctionTool tool =
         new FunctionTool(null, method, /* isLongRunning= */ false, /* requireConfirmation= */ true);
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
 
@@ -660,12 +673,16 @@ public final class FunctionToolTest {
 
   @Test
   public void create_instanceMethodWithConfirmation_requestsConfirmation() throws Exception {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     Functions functions = new Functions();
     Method method = Functions.class.getMethod("nonStaticVoidReturnWithoutSchema");
     FunctionTool tool = FunctionTool.create(functions, method, /* requireConfirmation= */ true);
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
 
@@ -678,11 +695,15 @@ public final class FunctionToolTest {
 
   @Test
   public void create_staticMethodWithConfirmation_requestsConfirmation() throws Exception {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     Method method = Functions.class.getMethod("voidReturnWithoutSchema");
     FunctionTool tool = FunctionTool.create(method, /* requireConfirmation= */ true);
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
 
@@ -695,12 +716,16 @@ public final class FunctionToolTest {
 
   @Test
   public void create_classMethodNameWithConfirmation_requestsConfirmation() throws Exception {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     FunctionTool tool =
         FunctionTool.create(
             Functions.class, "voidReturnWithoutSchema", /* requireConfirmation= */ true);
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
 
@@ -713,13 +738,17 @@ public final class FunctionToolTest {
 
   @Test
   public void create_instanceMethodNameWithConfirmation_requestsConfirmation() throws Exception {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     Functions functions = new Functions();
     FunctionTool tool =
         FunctionTool.create(
             functions, "nonStaticVoidReturnWithoutSchema", /* requireConfirmation= */ true);
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
 

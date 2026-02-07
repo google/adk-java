@@ -6,6 +6,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.sessions.Session;
 import com.google.adk.tools.ToolContext;
@@ -41,6 +42,7 @@ public final class VertexAiRagRetrievalTest {
 
   @Test
   public void runAsync_withResults_returnsContexts() throws Exception {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     ImmutableList<RagResource> ragResources =
         ImmutableList.of(RagResource.newBuilder().setRagCorpus("corpus1").build());
     Double vectorDistanceThreshold = 0.5;
@@ -55,7 +57,10 @@ public final class VertexAiRagRetrievalTest {
     String query = "test query";
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
     RetrieveContextsRequest expectedRequest =
@@ -85,6 +90,7 @@ public final class VertexAiRagRetrievalTest {
 
   @Test
   public void runAsync_noResults_returnsNoResultFoundMessage() throws Exception {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     ImmutableList<RagResource> ragResources =
         ImmutableList.of(RagResource.newBuilder().setRagCorpus("corpus1").build());
     Double vectorDistanceThreshold = 0.5;
@@ -99,7 +105,10 @@ public final class VertexAiRagRetrievalTest {
     String query = "test query";
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
     RetrieveContextsRequest expectedRequest =
@@ -129,6 +138,7 @@ public final class VertexAiRagRetrievalTest {
 
   @Test
   public void processLlmRequest_gemini2Model_addVertexRagStoreToConfig() {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     // This test's behavior depends on the GOOGLE_GENAI_USE_VERTEXAI environment variable
     boolean useVertexAi = Boolean.parseBoolean(System.getenv("GOOGLE_GENAI_USE_VERTEXAI"));
     ImmutableList<RagResource> ragResources =
@@ -145,7 +155,10 @@ public final class VertexAiRagRetrievalTest {
     LlmRequest.Builder llmRequestBuilder = LlmRequest.builder().model("gemini-2-pro");
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
 
@@ -197,6 +210,7 @@ public final class VertexAiRagRetrievalTest {
 
   @Test
   public void processLlmRequest_otherModel_doNotAddVertexRagStoreToConfig() {
+    LlmAgent agent = LlmAgent.builder().name("test-agent").build();
     ImmutableList<RagResource> ragResources =
         ImmutableList.of(RagResource.newBuilder().setRagCorpus("corpus1").build());
     Double vectorDistanceThreshold = 0.5;
@@ -211,7 +225,10 @@ public final class VertexAiRagRetrievalTest {
     LlmRequest.Builder llmRequestBuilder = LlmRequest.builder().model("gemini-1-pro");
     ToolContext toolContext =
         ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
+                InvocationContext.builder()
+                    .agent(agent)
+                    .session(Session.builder("123").build())
+                    .build())
             .functionCallId("functionCallId")
             .build();
     GenerateContentConfig initialConfig = GenerateContentConfig.builder().build();
