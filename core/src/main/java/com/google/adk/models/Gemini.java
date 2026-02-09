@@ -239,7 +239,7 @@ public class Gemini extends BaseLlm {
                                           p ->
                                               p.functionCall().isPresent()
                                                   || p.functionResponse().isPresent()
-                                                  || p.text().map(t -> !t.isBlank()).orElse(false)))
+                                                  || p.text().isPresent()))
                       .orElse(false));
     } else {
       logger.debug("Sending generateContent request to model {}", effectiveModelName);
@@ -272,11 +272,17 @@ public class Gemini extends BaseLlm {
                 if (part.get().thought().orElse(false)) {
                   accumulatedThoughtText.append(currentTextChunk);
                   responsesToEmit.add(
-                      thinkingResponseFromText(currentTextChunk).toBuilder().partial(true).build());
+                      thinkingResponseFromText(currentTextChunk).toBuilder()
+                          .usageMetadata(currentProcessedLlmResponse.usageMetadata())
+                          .partial(true)
+                          .build());
                 } else {
                   accumulatedText.append(currentTextChunk);
                   responsesToEmit.add(
-                      responseFromText(currentTextChunk).toBuilder().partial(true).build());
+                      responseFromText(currentTextChunk).toBuilder()
+                          .usageMetadata(currentProcessedLlmResponse.usageMetadata())
+                          .partial(true)
+                          .build());
                 }
               } else {
                 if (accumulatedThoughtText.length() > 0
@@ -316,11 +322,20 @@ public class Gemini extends BaseLlm {
                     List<LlmResponse> finalResponses = new ArrayList<>();
                     if (accumulatedThoughtText.length() > 0) {
                       finalResponses.add(
-                          thinkingResponseFromText(accumulatedThoughtText.toString()));
+                          thinkingResponseFromText(accumulatedThoughtText.toString()).toBuilder()
+                              .usageMetadata(
+                                  accumulatedText.length() > 0
+                                      ? Optional.empty()
+                                      : finalRawResp.usageMetadata())
+                              .build());
                     }
                     if (accumulatedText.length() > 0) {
-                      finalResponses.add(responseFromText(accumulatedText.toString()));
+                      finalResponses.add(
+                          responseFromText(accumulatedText.toString()).toBuilder()
+                              .usageMetadata(finalRawResp.usageMetadata())
+                              .build());
                     }
+
                     return Flowable.fromIterable(finalResponses);
                   }
                   return Flowable.empty();
