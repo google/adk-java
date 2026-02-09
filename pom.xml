@@ -38,6 +38,7 @@
     <module>tutorials/live-audio-single-agent</module>
     <module>a2a</module>
     <module>a2a/webservice</module>
+    <module>contrib/adk-spring-boot-starter</module>
   </modules>
 
   <properties>
