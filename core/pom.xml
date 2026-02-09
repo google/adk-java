@@ -274,13 +274,6 @@
       <artifactId>future-converter-java8-guava</artifactId>
       <version>1.2.0</version>
     </dependency>
-    <!-- Optional A2A dependency - only needed if using A2A features -->
-    <dependency>
-      <groupId>com.google.adk</groupId>
-      <artifactId>google-adk-a2a</artifactId>
-      <version>${project.version}</version>
-      <optional>true</optional>
-    </dependency>
   </dependencies>
   <build>
     <resources>
