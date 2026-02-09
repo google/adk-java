@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.events.Event;
+import com.google.genai.ApiResponse;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -12,6 +13,7 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import okhttp3.Headers;
 import okhttp3.MediaType;
 import okhttp3.ResponseBody;
 import org.mockito.invocation.InvocationOnMock;
@@ -68,8 +70,13 @@ class MockApiAnswer implements Answer<ApiResponse> {
   private static ApiResponse responseWithBody(String body) {
     return new ApiResponse() {
       @Override
-      public ResponseBody getResponseBody() {
+      public ResponseBody getBody() {
         return ResponseBody.create(JSON_MEDIA_TYPE, body);
+      }
+
+      @Override
+      public Headers getHeaders() {
+        return Headers.of();
       }
 
       @Override

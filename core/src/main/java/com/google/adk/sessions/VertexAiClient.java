@@ -8,6 +8,8 @@ import com.google.adk.JsonBaseModel;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Splitter;
 import com.google.common.collect.Iterables;
+import com.google.genai.ApiResponse;
+import com.google.genai.HttpApiClient;
 import com.google.genai.types.HttpOptions;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -38,7 +40,13 @@ final class VertexAiClient {
 
   VertexAiClient() {
     this.apiClient =
-        new HttpApiClient(Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
+        new HttpApiClient(
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty());
   }
 
   VertexAiClient(
@@ -47,7 +55,13 @@ final class VertexAiClient {
       Optional<GoogleCredentials> credentials,
       Optional<HttpOptions> httpOptions) {
     this.apiClient =
-        new HttpApiClient(Optional.of(project), Optional.of(location), credentials, httpOptions);
+        new HttpApiClient(
+            Optional.empty(),
+            Optional.of(project),
+            Optional.of(location),
+            credentials,
+            httpOptions,
+            Optional.empty());
   }
 
   Maybe<JsonNode> createSession(
@@ -65,7 +79,6 @@ final class VertexAiClient {
                     "POST", "reasoningEngines/" + reasoningEngineId + "/sessions", sessionJson))
         .flatMapMaybe(
             apiResponse -> {
-              logger.debug("Create Session response {}", apiResponse.getResponseBody());
               return getJsonResponse(apiResponse);
             })
         .flatMap(
@@ -119,7 +132,6 @@ final class VertexAiClient {
             "GET",
             "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId + "/events",
             "")
-        .doOnSuccess(apiResponse -> logger.debug("List events response {}", apiResponse))
         .flatMapMaybe(VertexAiClient::getJsonResponse);
   }
 
@@ -144,7 +156,7 @@ final class VertexAiClient {
         .flatMapCompletable(
             response -> {
               try (response) {
-                ResponseBody responseBody = response.getResponseBody();
+                ResponseBody responseBody = response.getBody();
                 if (responseBody != null) {
                   String responseString = responseBody.string();
                   if (responseString.contains("com.google.genai.errors.ClientException")) {
@@ -166,7 +178,7 @@ final class VertexAiClient {
   private Single<ApiResponse> performApiRequest(String method, String path, String body) {
     return Single.fromCallable(
         () -> {
-          return apiClient.request(method, path, body);
+          return apiClient.request(method, path, body, Optional.empty());
         });
   }
 
@@ -178,11 +190,11 @@ final class VertexAiClient {
   @Nullable
   private static Maybe<JsonNode> getJsonResponse(ApiResponse apiResponse) {
     try {
-      if (apiResponse == null || apiResponse.getResponseBody() == null) {
+      if (apiResponse == null || apiResponse.getBody() == null) {
         return Maybe.empty();
       }
       try {
-        ResponseBody responseBody = apiResponse.getResponseBody();
+        ResponseBody responseBody = apiResponse.getBody();
         String responseString = responseBody.string(); // Read body here
         if (responseString.isEmpty()) {
           return Maybe.empty();

@@ -26,6 +26,7 @@ import com.google.adk.events.Event;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Splitter;
 import com.google.common.collect.Iterables;
+import com.google.genai.HttpApiClient;
 import com.google.genai.types.HttpOptions;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;

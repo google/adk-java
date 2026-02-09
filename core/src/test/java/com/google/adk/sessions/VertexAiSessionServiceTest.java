@@ -3,6 +3,7 @@ package com.google.adk.sessions;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
@@ -14,6 +15,7 @@ import com.google.adk.events.EventActions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.genai.HttpApiClient;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Single;
@@ -161,7 +163,7 @@ public class VertexAiSessionServiceTest {
     MockitoAnnotations.openMocks(this);
     vertexAiSessionService =
         new VertexAiSessionService("test-project", "test-location", mockApiClient);
-    when(mockApiClient.request(anyString(), anyString(), anyString()))
+    when(mockApiClient.request(anyString(), anyString(), anyString(), any()))
         .thenAnswer(new MockApiAnswer(sessionMap, eventMap));
   }
 
