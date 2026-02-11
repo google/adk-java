@@ -62,6 +62,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
@@ -1053,6 +1054,26 @@ public class LlmAgent extends BaseAgent {
         agent.subAgents() != null ? agent.subAgents().size() : 0);
 
     return agent;
+  }
+
+  @Override
+  public Completable close() {
+    List<Completable> completables = new ArrayList<>();
+    toolsets()
+        .forEach(
+            toolset ->
+                completables.add(
+                    Completable.fromAction(
+                        () -> {
+                          try {
+                            toolset.close();
+                          } catch (Exception e) {
+                            logger.error("Failed to close toolset", e);
+                            throw e;
+                          }
+                        })));
+    completables.add(super.close());
+    return Completable.mergeDelayError(completables);
   }
 
   private static void setCallbacksFromConfig(LlmAgentConfig config, Builder builder)

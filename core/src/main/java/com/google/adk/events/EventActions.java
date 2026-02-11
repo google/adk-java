@@ -46,7 +46,6 @@ public class EventActions extends JsonBaseModel {
   private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
   private boolean endOfAgent;
   private ConcurrentMap<String, BaseAgentState> agentState;
-  private Optional<Boolean> endInvocation;
   private Optional<EventCompaction> compaction;
   private Optional<String> rewindBeforeInvocationId;
 
@@ -61,7 +60,6 @@ public class EventActions extends JsonBaseModel {
     this.requestedAuthConfigs = new ConcurrentHashMap<>();
     this.requestedToolConfirmations = new ConcurrentHashMap<>();
     this.endOfAgent = false;
-    this.endInvocation = Optional.empty();
     this.compaction = Optional.empty();
     this.agentState = new ConcurrentHashMap<>();
     this.rewindBeforeInvocationId = Optional.empty();
@@ -77,7 +75,6 @@ public class EventActions extends JsonBaseModel {
     this.requestedAuthConfigs = builder.requestedAuthConfigs;
     this.requestedToolConfirmations = builder.requestedToolConfirmations;
     this.endOfAgent = builder.endOfAgent;
-    this.endInvocation = builder.endInvocation;
     this.compaction = builder.compaction;
     this.agentState = builder.agentState;
     this.rewindBeforeInvocationId = builder.rewindBeforeInvocationId;
@@ -194,17 +191,28 @@ public class EventActions extends JsonBaseModel {
     this.endOfAgent = endOfAgent;
   }
 
-  @JsonProperty("endInvocation")
+  /**
+   * @deprecated Use {@link #endOfAgent()} instead.
+   */
+  @Deprecated
   public Optional<Boolean> endInvocation() {
-    return endInvocation;
+    return endOfAgent ? Optional.of(true) : Optional.empty();
   }
 
+  /**
+   * @deprecated Use {@link #setEndOfAgent(boolean)} instead.
+   */
+  @Deprecated
   public void setEndInvocation(Optional<Boolean> endInvocation) {
-    this.endInvocation = endInvocation;
+    this.endOfAgent = endInvocation.orElse(false);
   }
 
+  /**
+   * @deprecated Use {@link #setEndOfAgent(boolean)} instead.
+   */
+  @Deprecated
   public void setEndInvocation(boolean endInvocation) {
-    this.endInvocation = Optional.of(endInvocation);
+    this.endOfAgent = endInvocation;
   }
 
   @JsonProperty("compaction")
@@ -260,7 +268,6 @@ public class EventActions extends JsonBaseModel {
         && Objects.equals(requestedAuthConfigs, that.requestedAuthConfigs)
         && Objects.equals(requestedToolConfirmations, that.requestedToolConfirmations)
         && (endOfAgent == that.endOfAgent)
-        && Objects.equals(endInvocation, that.endInvocation)
         && Objects.equals(compaction, that.compaction)
         && Objects.equals(agentState, that.agentState)
         && Objects.equals(rewindBeforeInvocationId, that.rewindBeforeInvocationId);
@@ -278,7 +285,6 @@ public class EventActions extends JsonBaseModel {
         requestedAuthConfigs,
         requestedToolConfirmations,
         endOfAgent,
-        endInvocation,
         compaction,
         agentState,
         rewindBeforeInvocationId);
@@ -295,7 +301,6 @@ public class EventActions extends JsonBaseModel {
     private ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs;
     private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
     private boolean endOfAgent = false;
-    private Optional<Boolean> endInvocation;
     private Optional<EventCompaction> compaction;
     private ConcurrentMap<String, BaseAgentState> agentState;
     private Optional<String> rewindBeforeInvocationId;
@@ -309,7 +314,6 @@ public class EventActions extends JsonBaseModel {
       this.escalate = Optional.empty();
       this.requestedAuthConfigs = new ConcurrentHashMap<>();
       this.requestedToolConfirmations = new ConcurrentHashMap<>();
-      this.endInvocation = Optional.empty();
       this.compaction = Optional.empty();
       this.agentState = new ConcurrentHashMap<>();
       this.rewindBeforeInvocationId = Optional.empty();
@@ -326,7 +330,6 @@ public class EventActions extends JsonBaseModel {
       this.requestedToolConfirmations =
           new ConcurrentHashMap<>(eventActions.requestedToolConfirmations());
       this.endOfAgent = eventActions.endOfAgent();
-      this.endInvocation = eventActions.endInvocation();
       this.compaction = eventActions.compaction();
       this.agentState = new ConcurrentHashMap<>(eventActions.agentState());
       this.rewindBeforeInvocationId = eventActions.rewindBeforeInvocationId();
@@ -396,10 +399,14 @@ public class EventActions extends JsonBaseModel {
       return this;
     }
 
+    /**
+     * @deprecated Use {@link #endOfAgent(boolean)} instead.
+     */
     @CanIgnoreReturnValue
     @JsonProperty("endInvocation")
+    @Deprecated
     public Builder endInvocation(boolean endInvocation) {
-      this.endInvocation = Optional.of(endInvocation);
+      this.endOfAgent = endInvocation;
       return this;
     }
 
@@ -435,7 +442,6 @@ public class EventActions extends JsonBaseModel {
       this.requestedAuthConfigs.putAll(other.requestedAuthConfigs());
       this.requestedToolConfirmations.putAll(other.requestedToolConfirmations());
       this.endOfAgent = other.endOfAgent();
-      other.endInvocation().ifPresent(this::endInvocation);
       other.compaction().ifPresent(this::compaction);
       this.agentState.putAll(other.agentState());
       other.rewindBeforeInvocationId().ifPresent(this::rewindBeforeInvocationId);

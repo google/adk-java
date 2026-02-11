@@ -88,6 +88,16 @@ public interface Plugin {
   }
 
   /**
+   * Method executed when the runner is closed.
+   *
+   * <p>This method is used for cleanup tasks such as closing network connections or releasing
+   * resources.
+   */
+  default Completable close() {
+    return Completable.complete();
+  }
+
+  /**
    * Callback executed before an agent's primary logic is invoked.
    *
    * @param agent The agent that is about to run.

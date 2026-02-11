@@ -109,7 +109,7 @@ final class SessionJsonConverter {
                 actionsJson.put("transferAgent", v);
               });
       actions.escalate().ifPresent(v -> actionsJson.put("escalate", v));
-      actions.endInvocation().ifPresent(v -> actionsJson.put("endOfAgent", v));
+      actionsJson.put("endOfAgent", actions.endOfAgent());
       putIfNotEmpty(actionsJson, "requestedAuthConfigs", actions.requestedAuthConfigs());
       putIfNotEmpty(
           actionsJson, "requestedToolConfirmations", actions.requestedToolConfirmations());
@@ -182,7 +182,6 @@ final class SessionJsonConverter {
       Boolean endOfAgent = (Boolean) actionsMap.get("endOfAgent");
       if (endOfAgent != null) {
         eventActionsBuilder.endOfAgent(endOfAgent);
-        eventActionsBuilder.endInvocation(endOfAgent);
       }
       eventActionsBuilder.requestedAuthConfigs(
           Optional.ofNullable(actionsMap.get("requestedAuthConfigs"))

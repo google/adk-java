@@ -17,7 +17,6 @@
 
   <modules>
     <module>a2a_basic</module>
-    <module>a2a_remote</module>
     <module>configagent</module>
     <module>helloworld</module>
     <module>mcpfilesystem</module>

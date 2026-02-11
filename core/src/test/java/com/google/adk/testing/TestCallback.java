@@ -115,6 +115,13 @@ public final class TestCallback<T> {
             });
   }
 
+  /**
+   * Returns a {@link Supplier} that marks this callback as called and returns a {@link Flowable}
+   */
+  public Supplier<Flowable<Event>> asRunLiveImplSupplier(String contentText) {
+    return asRunLiveImplSupplier(Content.fromParts(Part.fromText(contentText)));
+  }
+
   @SuppressWarnings("unchecked") // This cast is safe if T is Content.
   public BeforeAgentCallback asBeforeAgentCallback() {
     return (unusedCtx) -> (Maybe<Content>) callMaybe();

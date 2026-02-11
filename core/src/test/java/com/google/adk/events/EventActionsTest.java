@@ -84,7 +84,7 @@ public final class EventActionsTest {
                     ImmutableMap.of("config2", new ConcurrentHashMap<>(ImmutableMap.of("k", "v")))))
             .requestedToolConfirmations(
                 new ConcurrentHashMap<>(ImmutableMap.of("tool2", TOOL_CONFIRMATION)))
-            .endInvocation(true)
+            .endOfAgent(true)
             .build();
 
     EventActions merged = eventActions1.toBuilder().merge(eventActions2).build();
@@ -103,7 +103,7 @@ public final class EventActionsTest {
             new ConcurrentHashMap<>(ImmutableMap.of("k", "v")));
     assertThat(merged.requestedToolConfirmations())
         .containsExactly("tool1", TOOL_CONFIRMATION, "tool2", TOOL_CONFIRMATION);
-    assertThat(merged.endInvocation()).hasValue(true);
+    assertThat(merged.endOfAgent()).isTrue();
     assertThat(merged.compaction()).hasValue(COMPACTION);
   }
 

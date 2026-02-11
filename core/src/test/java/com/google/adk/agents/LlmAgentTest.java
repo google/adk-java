@@ -22,8 +22,10 @@ import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Callbacks.AfterModelCallback;
@@ -39,20 +41,32 @@ import com.google.adk.models.LlmResponse;
 import com.google.adk.models.Model;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.telemetry.Tracing;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -60,6 +74,34 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link LlmAgent}. */
 @RunWith(JUnit4.class)
 public final class LlmAgentTest {
+  @Rule public final OpenTelemetryRule openTelemetryRule = OpenTelemetryRule.create();
+
+  private Tracer originalTracer;
+
+  @Before
+  public void setup() {
+    this.originalTracer = Tracing.getTracer();
+    Tracing.setTracerForTesting(openTelemetryRule.getOpenTelemetry().getTracer("gcp.vertex.agent"));
+  }
+
+  @After
+  public void tearDown() {
+    Tracing.setTracerForTesting(originalTracer);
+  }
+
+  private static class ClosableToolset implements BaseToolset {
+    final AtomicBoolean closed = new AtomicBoolean(false);
+
+    @Override
+    public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+      return Flowable.empty();
+    }
+
+    @Override
+    public void close() {
+      closed.set(true);
+    }
+  }
 
   @Test
   public void testRun_withNoCallbacks() {
@@ -440,5 +482,160 @@ public final class LlmAgentTest {
     LlmRequest request2 = testLlm2.getRequests().get(0);
     assertThat(request2.getFirstSystemInstruction().get())
         .contains("Instruction for Agent2 based on Agent1 output: value1");
+  }
+
+  @Test
+  public void close_closesToolsets() throws Exception {
+    ClosableToolset toolset1 = new ClosableToolset();
+    ClosableToolset toolset2 = new ClosableToolset();
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .tools(toolset1, toolset2)
+            .build();
+    agent.close().blockingAwait();
+    assertThat(toolset1.closed.get()).isTrue();
+    assertThat(toolset2.closed.get()).isTrue();
+  }
+
+  @Test
+  public void close_closesToolsetsOnException() throws Exception {
+    ClosableToolset toolset1 =
+        new ClosableToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.empty();
+          }
+
+          @Override
+          public void close() {
+            super.close();
+            throw new RuntimeException("toolset1 failed to close");
+          }
+        };
+    ClosableToolset toolset2 = new ClosableToolset();
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .tools(toolset1, toolset2)
+            .build();
+    agent.close().test().assertError(RuntimeException.class);
+    assertThat(toolset1.closed.get()).isTrue();
+    assertThat(toolset2.closed.get()).isTrue();
+  }
+
+  @Test
+  public void runAsync_createsInvokeAgentSpan() throws InterruptedException {
+    Content modelContent = Content.fromParts(Part.fromText("response"));
+    TestLlm testLlm = createTestLlm(createLlmResponse(modelContent));
+    LlmAgent agent = createTestAgent(testLlm);
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    agent.runAsync(invocationContext).test().await().assertComplete();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans.stream().anyMatch(s -> s.getName().equals("invoke_agent test agent")))
+        .isTrue();
+  }
+
+  @Test
+  public void runAsync_withTools_createsToolSpans() throws InterruptedException {
+    ImmutableMap<String, Object> echoArgs = ImmutableMap.of("arg", "value");
+    Content contentWithFunctionCall =
+        Content.fromParts(Part.fromText("text"), Part.fromFunctionCall("echo_tool", echoArgs));
+    Content finalResponse = Content.fromParts(Part.fromText("finished"));
+    TestLlm testLlm =
+        createTestLlm(createLlmResponse(contentWithFunctionCall), createLlmResponse(finalResponse));
+    LlmAgent agent = createTestAgentBuilder(testLlm).tools(new EchoTool()).build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    agent.runAsync(invocationContext).test().await().assertComplete();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    SpanData agentSpan = findSpanByName(spans, "invoke_agent test agent");
+    List<SpanData> llmSpans = findSpansByName(spans, "call_llm");
+    List<SpanData> toolCallSpans = findSpansByName(spans, "tool_call [echo_tool]");
+    List<SpanData> toolResponseSpans = findSpansByName(spans, "tool_response [echo_tool]");
+
+    assertThat(llmSpans).hasSize(2);
+    assertThat(toolCallSpans).hasSize(1);
+    assertThat(toolResponseSpans).hasSize(1);
+
+    String agentSpanId = agentSpan.getSpanContext().getSpanId();
+    llmSpans.forEach(s -> assertEquals(agentSpanId, s.getParentSpanContext().getSpanId()));
+    toolCallSpans.forEach(s -> assertEquals(agentSpanId, s.getParentSpanContext().getSpanId()));
+    toolResponseSpans.forEach(s -> assertEquals(agentSpanId, s.getParentSpanContext().getSpanId()));
+  }
+
+  @Test
+  public void runAsync_afterToolCallback_propagatesContext() throws InterruptedException {
+    ImmutableMap<String, Object> echoArgs = ImmutableMap.of("arg", "value");
+    Content contentWithFunctionCall =
+        Content.fromParts(Part.fromText("text"), Part.fromFunctionCall("echo_tool", echoArgs));
+    Content finalResponse = Content.fromParts(Part.fromText("finished"));
+    TestLlm testLlm =
+        createTestLlm(createLlmResponse(contentWithFunctionCall), createLlmResponse(finalResponse));
+
+    AfterToolCallback afterToolCallback =
+        (invCtx, tool, input, toolCtx, response) -> {
+          // Verify that the OpenTelemetry context is correctly propagated to the callback.
+          assertThat(Span.current().getSpanContext().isValid()).isTrue();
+          return Maybe.empty();
+        };
+
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .tools(new EchoTool())
+            .afterToolCallback(ImmutableList.of(afterToolCallback))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    agent.runAsync(invocationContext).test().await().assertComplete();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    findSpanByName(spans, "invoke_agent test agent");
+  }
+
+  @Test
+  public void runAsync_withSubAgents_createsSpans() throws InterruptedException {
+    LlmAgent subAgent =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub response")))
+            .name("sub-agent")
+            .build();
+
+    // Force a transfer to sub-agent using a callback
+    AfterModelCallback transferCallback =
+        (ctx, response) -> {
+          ctx.eventActions().setTransferToAgent(subAgent.name());
+          return Maybe.empty();
+        };
+
+    TestLlm testLlm = createTestLlm(createTextLlmResponse("initial"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .subAgents(subAgent)
+            .afterModelCallback(ImmutableList.of(transferCallback))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    agent.runAsync(invocationContext).test().await().assertComplete();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans.stream().anyMatch(s -> s.getName().equals("invoke_agent test agent")))
+        .isTrue();
+    assertThat(spans.stream().anyMatch(s -> s.getName().equals("invoke_agent sub-agent"))).isTrue();
+
+    List<SpanData> llmSpans = findSpansByName(spans, "call_llm");
+    assertThat(llmSpans).hasSize(2); // One for main agent, one for sub agent
+  }
+
+  private List<SpanData> findSpansByName(List<SpanData> spans, String name) {
+    return spans.stream().filter(s -> s.getName().equals(name)).toList();
+  }
+
+  @CanIgnoreReturnValue
+  private SpanData findSpanByName(List<SpanData> spans, String name) {
+    return spans.stream()
+        .filter(s -> s.getName().equals(name))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("Span not found: " + name));
   }
 }

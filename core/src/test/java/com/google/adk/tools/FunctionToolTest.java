@@ -20,7 +20,9 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.ToolConfirmation;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -41,6 +43,16 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link FunctionTool}. */
 @RunWith(JUnit4.class)
 public final class FunctionToolTest {
+  private static final ToolContext toolContext =
+      ToolContext.builder(
+              InvocationContext.builder()
+                  .agent(LlmAgent.builder().name("test-agent").build())
+                  .session(Session.builder("123").build())
+                  .sessionService(new InMemorySessionService())
+                  .invocationId("invocation-id")
+                  .build())
+          .functionCallId("functionCallId")
+          .build();
 
   @Test
   public void create_withNonSerializableParameter_raisesIllegalArgumentException() {
@@ -233,11 +245,6 @@ public final class FunctionToolTest {
   @Test
   public void call_withAllSupportedParameterTypes() throws Exception {
     FunctionTool tool = FunctionTool.create(Functions.class, "returnAllSupportedParametersAsMap");
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
 
     Map<String, Object> result =
         tool.runAsync(
@@ -579,11 +586,6 @@ public final class FunctionToolTest {
     Functions functions = new Functions();
     FunctionTool tool =
         FunctionTool.create(functions, "nonStaticReturnAllSupportedParametersAsMap");
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
 
     Map<String, Object> result =
         tool.runAsync(
@@ -630,11 +632,6 @@ public final class FunctionToolTest {
     Method method = Functions.class.getMethod("returnsMap");
     FunctionTool tool =
         new FunctionTool(null, method, /* isLongRunning= */ false, /* requireConfirmation= */ true);
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
 
     // First call, should request confirmation
     Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
@@ -663,11 +660,6 @@ public final class FunctionToolTest {
     Functions functions = new Functions();
     Method method = Functions.class.getMethod("nonStaticVoidReturnWithoutSchema");
     FunctionTool tool = FunctionTool.create(functions, method, /* requireConfirmation= */ true);
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
 
     Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
     assertThat(result)
@@ -680,11 +672,6 @@ public final class FunctionToolTest {
   public void create_staticMethodWithConfirmation_requestsConfirmation() throws Exception {
     Method method = Functions.class.getMethod("voidReturnWithoutSchema");
     FunctionTool tool = FunctionTool.create(method, /* requireConfirmation= */ true);
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
 
     Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
     assertThat(result)
@@ -698,11 +685,6 @@ public final class FunctionToolTest {
     FunctionTool tool =
         FunctionTool.create(
             Functions.class, "voidReturnWithoutSchema", /* requireConfirmation= */ true);
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
 
     Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
     assertThat(result)
@@ -717,11 +699,6 @@ public final class FunctionToolTest {
     FunctionTool tool =
         FunctionTool.create(
             functions, "nonStaticVoidReturnWithoutSchema", /* requireConfirmation= */ true);
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
 
     Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
     assertThat(result)

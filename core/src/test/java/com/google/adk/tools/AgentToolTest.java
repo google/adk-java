@@ -28,6 +28,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.utils.ComponentRegistry;
@@ -47,6 +48,8 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link AgentTool}. */
 @RunWith(JUnit4.class)
 public final class AgentToolTest {
+
+  private static final InMemorySessionService sessionService = new InMemorySessionService();
 
   @Test
   public void fromConfig_withRegisteredAgent_returnsAgentTool() throws Exception {
@@ -661,6 +664,7 @@ public final class AgentToolTest {
                 .invocationId(InvocationContext.newInvocationContextId())
                 .agent(agent)
                 .session(Session.builder("123").build())
+                .sessionService(sessionService)
                 .build())
         .build();
   }

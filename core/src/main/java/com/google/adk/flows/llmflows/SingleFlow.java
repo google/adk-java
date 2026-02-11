@@ -30,6 +30,7 @@ public class SingleFlow extends BaseLlmFlow {
           new RequestConfirmationLlmRequestProcessor(),
           new Instructions(),
           new Identity(),
+          new Compaction(),
           new Contents(),
           new Examples(),
           CodeExecution.requestProcessor);

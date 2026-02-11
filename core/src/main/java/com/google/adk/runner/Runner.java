@@ -18,6 +18,7 @@ package com.google.adk.runner;
 
 import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
@@ -75,6 +76,7 @@ public class Runner {
   private final PluginManager pluginManager;
   private final ResumabilityConfig resumabilityConfig;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
+  @Nullable private final ContextCacheConfig contextCacheConfig;
 
   /** Builder for {@link Runner}. */
   public static class Builder {
@@ -138,6 +140,7 @@ public class Runner {
       List<? extends Plugin> buildPlugins;
       ResumabilityConfig buildResumabilityConfig;
       EventsCompactionConfig buildEventsCompactionConfig;
+      ContextCacheConfig buildContextCacheConfig;
 
       if (this.app != null) {
         if (this.agent != null) {
@@ -154,12 +157,14 @@ public class Runner {
                 ? this.app.resumabilityConfig()
                 : new ResumabilityConfig();
         buildEventsCompactionConfig = this.app.eventsCompactionConfig();
+        buildContextCacheConfig = this.app.contextCacheConfig();
       } else {
         buildAgent = this.agent;
         buildAppName = this.appName;
         buildPlugins = this.plugins;
         buildResumabilityConfig = new ResumabilityConfig();
         buildEventsCompactionConfig = null;
+        buildContextCacheConfig = null;
       }
 
       if (buildAgent == null) {
@@ -182,7 +187,8 @@ public class Runner {
           memoryService,
           buildPlugins,
           buildResumabilityConfig,
-          buildEventsCompactionConfig);
+          buildEventsCompactionConfig,
+          buildContextCacheConfig);
     }
   }
 
@@ -257,6 +263,7 @@ public class Runner {
         memoryService,
         plugins,
         resumabilityConfig,
+        null,
         null);
   }
 
@@ -274,7 +281,8 @@ public class Runner {
       @Nullable BaseMemoryService memoryService,
       List<? extends Plugin> plugins,
       ResumabilityConfig resumabilityConfig,
-      @Nullable EventsCompactionConfig eventsCompactionConfig) {
+      @Nullable EventsCompactionConfig eventsCompactionConfig,
+      @Nullable ContextCacheConfig contextCacheConfig) {
     this.agent = agent;
     this.appName = appName;
     this.artifactService = artifactService;
@@ -283,6 +291,7 @@ public class Runner {
     this.pluginManager = new PluginManager(plugins);
     this.resumabilityConfig = resumabilityConfig;
     this.eventsCompactionConfig = createEventsCompactionConfig(agent, eventsCompactionConfig);
+    this.contextCacheConfig = contextCacheConfig;
   }
 
   /**
@@ -322,6 +331,14 @@ public class Runner {
 
   public PluginManager pluginManager() {
     return this.pluginManager;
+  }
+
+  /** Closes all plugins, code executors, and releases any resources. */
+  public Completable close() {
+    List<Completable> completables = new ArrayList<>();
+    completables.add(agent.close());
+    completables.add(this.pluginManager.close());
+    return Completable.mergeDelayError(completables);
   }
 
   /**
@@ -636,6 +653,7 @@ public class Runner {
         .session(session)
         .resumabilityConfig(this.resumabilityConfig)
         .eventsCompactionConfig(this.eventsCompactionConfig)
+        .contextCacheConfig(this.contextCacheConfig)
         .agent(this.findAgentToRun(session, rootAgent));
   }
 

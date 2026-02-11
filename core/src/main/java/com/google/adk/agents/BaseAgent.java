@@ -32,9 +32,11 @@ import com.google.genai.types.Content;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -106,6 +108,17 @@ public abstract class BaseAgent {
     for (BaseAgent subAgent : this.subAgents) {
       subAgent.parentAgent(this);
     }
+  }
+
+  /**
+   * Closes all sub-agents.
+   *
+   * @return a {@link Completable} that completes when all sub-agents are closed.
+   */
+  public Completable close() {
+    List<Completable> completables = new ArrayList<>();
+    this.subAgents.forEach(subAgent -> completables.add(subAgent.close()));
+    return Completable.mergeDelayError(completables);
   }
 
   /**
@@ -275,9 +288,10 @@ public abstract class BaseAgent {
     InvocationContext.Builder builder = parentContext.toBuilder();
     builder.agent(this);
     // Check for branch to be truthy (not None, not empty string),
-    if (parentContext.branch().filter(s -> !s.isEmpty()).isPresent()) {
-      builder.branch(parentContext.branch().get() + "." + name());
-    }
+    parentContext
+        .branch()
+        .filter(s -> !s.isEmpty())
+        .ifPresent(branch -> builder.branch(branch + "." + name()));
     return builder.build();
   }
 
@@ -288,17 +302,27 @@ public abstract class BaseAgent {
    * @return stream of agent-generated events.
    */
   public Flowable<Event> runAsync(InvocationContext parentContext) {
+    return run(parentContext, this::runAsyncImpl);
+  }
+
+  /**
+   * Runs the agent with the given implementation.
+   *
+   * @param parentContext Parent context to inherit.
+   * @param runImplementation The agent-specific logic to run.
+   * @return stream of agent-generated events.
+   */
+  private Flowable<Event> run(
+      InvocationContext parentContext,
+      Function<InvocationContext, Flowable<Event>> runImplementation) {
     Tracer tracer = Tracing.getTracer();
     return Flowable.defer(
         () -> {
-          Span span =
-              tracer
-                  .spanBuilder("agent_run [" + name() + "]")
-                  .setParent(Context.current())
-                  .startSpan();
-          Context spanContext = Context.current().with(span);
-
           InvocationContext invocationContext = createInvocationContext(parentContext);
+          Span span =
+              tracer.spanBuilder("invoke_agent " + name()).setParent(Context.current()).startSpan();
+          Tracing.traceAgentInvocation(span, name(), description(), invocationContext);
+          Context spanContext = Context.current().with(span);
 
           return Tracing.traceFlowable(
               spanContext,
@@ -316,7 +340,7 @@ public abstract class BaseAgent {
 
                             Flowable<Event> beforeEvents = Flowable.fromOptional(beforeEventOpt);
                             Flowable<Event> mainEvents =
-                                Flowable.defer(() -> runAsyncImpl(invocationContext));
+                                Flowable.defer(() -> runImplementation.apply(invocationContext));
                             Flowable<Event> afterEvents =
                                 Flowable.defer(
                                     () ->
@@ -372,7 +396,7 @@ public abstract class BaseAgent {
   private Single<Optional<Event>> callCallback(
       List<Function<CallbackContext, Maybe<Content>>> agentCallbacks,
       InvocationContext invocationContext) {
-    if (agentCallbacks == null || agentCallbacks.isEmpty()) {
+    if (agentCallbacks.isEmpty()) {
       return Single.just(Optional.empty());
     }
 
@@ -427,20 +451,7 @@ public abstract class BaseAgent {
    * @return stream of agent-generated events.
    */
   public Flowable<Event> runLive(InvocationContext parentContext) {
-    Tracer tracer = Tracing.getTracer();
-    return Flowable.defer(
-        () -> {
-          Span span =
-              tracer
-                  .spanBuilder("agent_run [" + name() + "]")
-                  .setParent(Context.current())
-                  .startSpan();
-          Context spanContext = Context.current().with(span);
-
-          InvocationContext invocationContext = createInvocationContext(parentContext);
-
-          return Tracing.traceFlowable(spanContext, span, () -> runLiveImpl(invocationContext));
-        });
+    return run(parentContext, this::runLiveImpl);
   }
 
   /**

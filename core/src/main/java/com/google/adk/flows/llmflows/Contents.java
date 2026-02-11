@@ -564,8 +564,7 @@ public final class Contents implements RequestProcessor {
     for (int i = 0; i < events.size(); i++) {
       Event event = events.get(i);
 
-      // Skip response events that will be processed via responseEventsBuffer
-      if (processedResponseIndices.contains(i)) {
+      if (!event.functionResponses().isEmpty()) {
         continue;
       }
 

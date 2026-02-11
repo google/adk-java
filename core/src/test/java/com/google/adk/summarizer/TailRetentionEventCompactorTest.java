@@ -75,9 +75,13 @@ public class TailRetentionEventCompactorTest {
   }
 
   @Test
-  // TODO: b/480013930 - Add a test case for estimating the prompt token if the usage metadata is
-  // not available.
-  public void compaction_skippedWhenTokenUsageMissing() {
+  public void compaction_skippedWhenEstimatedTokenUsageBelowThreshold() {
+    // Threshold is 100.
+    // Event1: "Event1" -> length 6.
+    // Retain1: "Retain1" -> length 7.
+    // Retain2: "Retain2" -> length 7.
+    // Total length = 20. Estimated tokens = 20 / 4 = 5.
+    // 5 <= 100 -> Skip.
     EventCompactor compactor = new TailRetentionEventCompactor(mockSummarizer, 2, 100);
     ImmutableList<Event> events =
         ImmutableList.of(
@@ -90,6 +94,34 @@ public class TailRetentionEventCompactorTest {
 
     verify(mockSummarizer, never()).summarizeEvents(any());
     verify(mockSessionService, never()).appendEvent(any(), any());
+  }
+
+  @Test
+  public void compaction_happensWhenEstimatedTokenUsageAboveThreshold() {
+    // Threshold is 2.
+    // Event1: "Event1" -> length 6.
+    // Retain1: "Retain1" -> length 7.
+    // Retain2: "Retain2" -> length 7.
+    // Total eligible for estimation (including retained ones as per current logic):
+    // Logic: getCompactionEvents returns [Event1, Retain1, Retain2] for estimation.
+    // Total length = 20. Estimated tokens = 20 / 4 = 5.
+    // 5 > 2 -> Compact.
+    EventCompactor compactor = new TailRetentionEventCompactor(mockSummarizer, 2, 2);
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createEvent(1, "Event1"),
+            createEvent(2, "Retain1"),
+            createEvent(3, "Retain2")); // No usage metadata
+    Session session = Session.builder("id").events(events).build();
+    Event summaryEvent = createEvent(4, "Summary");
+
+    when(mockSummarizer.summarizeEvents(any())).thenReturn(Maybe.just(summaryEvent));
+    when(mockSessionService.appendEvent(any(), any())).thenReturn(Single.just(summaryEvent));
+
+    compactor.compact(session, mockSessionService).blockingSubscribe();
+
+    verify(mockSummarizer).summarizeEvents(any());
+    verify(mockSessionService).appendEvent(eq(session), eq(summaryEvent));
   }
 
   @Test

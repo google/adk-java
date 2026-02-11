@@ -1108,6 +1108,26 @@ public final class RunnerTest {
         .inOrder();
   }
 
+  @Test
+  public void close_closesPluginsAndCodeExecutors() {
+    BasePlugin plugin = mockPlugin("close_test_plugin");
+    when(plugin.close()).thenReturn(Completable.complete());
+    LlmAgent agentWithCodeExecutor = createTestAgentBuilder(testLlm).build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agentWithCodeExecutor)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
+
+    runner.close().blockingAwait();
+
+    verify(plugin).close();
+  }
+
   public static class Tools {
     private Tools() {}
 

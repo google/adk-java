@@ -28,6 +28,7 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.Model;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -53,7 +54,8 @@ public final class ContentsTest {
   private static final String AGENT = "agent";
   private static final String OTHER_AGENT = "other_agent";
 
-  private final Contents contentsProcessor = new Contents();
+  private static final Contents contentsProcessor = new Contents();
+  private static final InMemorySessionService sessionService = new InMemorySessionService();
 
   @Test
   public void rearrangeLatest_emptyList_returnsEmptyList() {
@@ -203,9 +205,11 @@ public final class ContentsTest {
   public void rearrangeHistory_multipleFRsForSameFC_returnsMergedFR() {
     Event fcEvent = createFunctionCallEvent("fc1", "tool1", "call1");
     Event frEvent1 =
-        createFunctionResponseEvent("fr1", "tool1", "call1", ImmutableMap.of("status", "running"));
+        createFunctionResponseEvent("fr1", "tool1", "call1", ImmutableMap.of("status", "pending"));
     Event frEvent2 =
-        createFunctionResponseEvent("fr2", "tool1", "call1", ImmutableMap.of("status", "done"));
+        createFunctionResponseEvent("fr2", "tool1", "call1", ImmutableMap.of("status", "running"));
+    Event frEvent3 =
+        createFunctionResponseEvent("fr3", "tool1", "call1", ImmutableMap.of("status", "done"));
     ImmutableList<Event> inputEvents =
         ImmutableList.of(
             createUserEvent("u1", "Query"),
@@ -213,17 +217,75 @@ public final class ContentsTest {
             createUserEvent("u2", "Wait"),
             frEvent1,
             createUserEvent("u3", "Done?"),
-            frEvent2);
+            frEvent2,
+            frEvent3,
+            createUserEvent("u4", "Follow up query"));
 
     List<Content> result = runContentsProcessor(inputEvents);
 
-    assertThat(result).hasSize(3); // u1, fc1, merged_fr
+    assertThat(result).hasSize(6); // u1, fc1, merged_fr, u2, u3, u4
     assertThat(result.get(0)).isEqualTo(inputEvents.get(0).content().get());
-    assertThat(result.get(1)).isEqualTo(inputEvents.get(1).content().get()); // Check merged event
+    assertThat(result.get(1)).isEqualTo(inputEvents.get(1).content().get()); // Check fcEvent
     Content mergedContent = result.get(2);
     assertThat(mergedContent.parts().get()).hasSize(1);
     assertThat(mergedContent.parts().get().get(0).functionResponse().get().response().get())
-        .containsExactly("status", "done"); // Last FR wins
+        .containsExactly("status", "done"); // Last FR wins (frEvent3)
+    assertThat(result.get(3)).isEqualTo(inputEvents.get(2).content().get()); // u2
+    assertThat(result.get(4)).isEqualTo(inputEvents.get(4).content().get()); // u3
+    assertThat(result.get(5)).isEqualTo(inputEvents.get(7).content().get()); // u4
+  }
+
+  @Test
+  public void rearrangeHistory_multipleFRsForMultipleFC_returnsMergedFR() {
+    Event fcEvent1 = createFunctionCallEvent("fc1", "tool1", "call1");
+    Event fcEvent2 = createFunctionCallEvent("fc2", "tool1", "call2");
+
+    Event frEvent1 =
+        createFunctionResponseEvent("fr1", "tool1", "call1", ImmutableMap.of("status", "pending"));
+    Event frEvent2 =
+        createFunctionResponseEvent("fr2", "tool1", "call1", ImmutableMap.of("status", "done"));
+
+    Event frEvent3 =
+        createFunctionResponseEvent("fr3", "tool1", "call2", ImmutableMap.of("status", "pending"));
+    Event frEvent4 =
+        createFunctionResponseEvent("fr4", "tool1", "call2", ImmutableMap.of("status", "done"));
+
+    ImmutableList<Event> inputEvents =
+        ImmutableList.of(
+            createUserEvent("u1", "I"),
+            fcEvent1,
+            createUserEvent("u2", "am"),
+            frEvent1,
+            createUserEvent("u3", "waiting"),
+            frEvent2,
+            createUserEvent("u4", "for"),
+            fcEvent2,
+            createUserEvent("u5", "you"),
+            frEvent3,
+            createUserEvent("u6", "to"),
+            frEvent4,
+            createUserEvent("u7", "Follow up query"));
+
+    List<Content> result = runContentsProcessor(inputEvents);
+
+    assertThat(result).hasSize(11); // u1, fc1, frEvent2, u2, u3, u4, fc2, frEvent4, u5, u6, u7
+    assertThat(result.get(0)).isEqualTo(inputEvents.get(0).content().get()); // u1
+    assertThat(result.get(1)).isEqualTo(inputEvents.get(1).content().get()); // fc1
+    Content mergedContent = result.get(2);
+    assertThat(mergedContent.parts().get()).hasSize(1);
+    assertThat(mergedContent.parts().get().get(0).functionResponse().get().response().get())
+        .containsExactly("status", "done"); // Last FR wins (frEvent2)
+    assertThat(result.get(3)).isEqualTo(inputEvents.get(2).content().get()); // u2
+    assertThat(result.get(4)).isEqualTo(inputEvents.get(4).content().get()); // u3
+    assertThat(result.get(5)).isEqualTo(inputEvents.get(6).content().get()); // u4
+    assertThat(result.get(6)).isEqualTo(inputEvents.get(7).content().get()); // fc2
+    Content mergedContent2 = result.get(7);
+    assertThat(mergedContent2.parts().get()).hasSize(1);
+    assertThat(mergedContent2.parts().get().get(0).functionResponse().get().response().get())
+        .containsExactly("status", "done"); // Last FR wins (frEvent4)
+    assertThat(result.get(8)).isEqualTo(inputEvents.get(8).content().get()); // u5
+    assertThat(result.get(9)).isEqualTo(inputEvents.get(10).content().get()); // u6
+    assertThat(result.get(10)).isEqualTo(inputEvents.get(12).content().get()); // u7
   }
 
   @Test
@@ -840,6 +902,7 @@ public final class ContentsTest {
             .invocationId("test-invocation")
             .agent(agent)
             .session(session)
+            .sessionService(sessionService)
             .build();
 
     LlmRequest initialRequest = LlmRequest.builder().build();
@@ -869,6 +932,7 @@ public final class ContentsTest {
             .invocationId("test-invocation")
             .agent(agent)
             .session(session)
+            .sessionService(sessionService)
             .build();
 
     LlmRequest initialRequest = LlmRequest.builder().build();

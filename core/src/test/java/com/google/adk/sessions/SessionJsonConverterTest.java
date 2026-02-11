@@ -189,7 +189,7 @@ public final class SessionJsonConverterTest {
         EventActions.builder()
             .requestedAuthConfigs(authConfigs)
             .requestedToolConfirmations(toolConfirmations)
-            .endInvocation(true)
+            .endOfAgent(true)
             .build();
 
     GenerateContentResponseUsageMetadata usageMetadata =

@@ -26,9 +26,12 @@ import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
@@ -37,7 +40,9 @@ import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,8 +57,59 @@ public class Tracing {
 
   private static final Logger log = LoggerFactory.getLogger(Tracing.class);
 
+  private static final AttributeKey<List<String>> GEN_AI_RESPONSE_FINISH_REASONS =
+      AttributeKey.stringArrayKey("gen_ai.response.finish_reasons");
+
+  private static final AttributeKey<String> GEN_AI_OPERATION_NAME =
+      AttributeKey.stringKey("gen_ai.operation.name");
+  private static final AttributeKey<String> GEN_AI_AGENT_DESCRIPTION =
+      AttributeKey.stringKey("gen_ai.agent.description");
+  private static final AttributeKey<String> GEN_AI_AGENT_NAME =
+      AttributeKey.stringKey("gen_ai.agent.name");
+  private static final AttributeKey<String> GEN_AI_CONVERSATION_ID =
+      AttributeKey.stringKey("gen_ai.conversation.id");
+  private static final AttributeKey<String> GEN_AI_SYSTEM = AttributeKey.stringKey("gen_ai.system");
+  private static final AttributeKey<String> GEN_AI_TOOL_CALL_ID =
+      AttributeKey.stringKey("gen_ai.tool_call.id");
+  private static final AttributeKey<String> GEN_AI_TOOL_DESCRIPTION =
+      AttributeKey.stringKey("gen_ai.tool.description");
+  private static final AttributeKey<String> GEN_AI_TOOL_NAME =
+      AttributeKey.stringKey("gen_ai.tool.name");
+  private static final AttributeKey<String> GEN_AI_TOOL_TYPE =
+      AttributeKey.stringKey("gen_ai.tool.type");
+  private static final AttributeKey<String> GEN_AI_REQUEST_MODEL =
+      AttributeKey.stringKey("gen_ai.request.model");
+  private static final AttributeKey<Double> GEN_AI_REQUEST_TOP_P =
+      AttributeKey.doubleKey("gen_ai.request.top_p");
+  private static final AttributeKey<Long> GEN_AI_REQUEST_MAX_TOKENS =
+      AttributeKey.longKey("gen_ai.request.max_tokens");
+  private static final AttributeKey<Long> GEN_AI_USAGE_INPUT_TOKENS =
+      AttributeKey.longKey("gen_ai.usage.input_tokens");
+  private static final AttributeKey<Long> GEN_AI_USAGE_OUTPUT_TOKENS =
+      AttributeKey.longKey("gen_ai.usage.output_tokens");
+
+  private static final AttributeKey<String> ADK_TOOL_CALL_ARGS =
+      AttributeKey.stringKey("gcp.vertex.agent.tool_call_args");
+  private static final AttributeKey<String> ADK_LLM_REQUEST =
+      AttributeKey.stringKey("gcp.vertex.agent.llm_request");
+  private static final AttributeKey<String> ADK_LLM_RESPONSE =
+      AttributeKey.stringKey("gcp.vertex.agent.llm_response");
+  private static final AttributeKey<String> ADK_INVOCATION_ID =
+      AttributeKey.stringKey("gcp.vertex.agent.invocation_id");
+  private static final AttributeKey<String> ADK_EVENT_ID =
+      AttributeKey.stringKey("gcp.vertex.agent.event_id");
+  private static final AttributeKey<String> ADK_TOOL_RESPONSE =
+      AttributeKey.stringKey("gcp.vertex.agent.tool_response");
+  private static final AttributeKey<String> ADK_SESSION_ID =
+      AttributeKey.stringKey("gcp.vertex.agent.session_id");
+  private static final AttributeKey<String> ADK_DATA =
+      AttributeKey.stringKey("gcp.vertex.agent.data");
+
+  private static final TypeReference<Map<String, Object>> MAP_TYPE_REFERENCE =
+      new TypeReference<Map<String, Object>>() {};
+
   @SuppressWarnings("NonFinalStaticField")
-  private static Tracer tracer = GlobalOpenTelemetry.getTracer("com.google.adk");
+  private static Tracer tracer = GlobalOpenTelemetry.getTracer("gcp.vertex.agent");
 
   private static final boolean CAPTURE_MESSAGE_CONTENT_IN_SPANS =
       Boolean.parseBoolean(
@@ -67,51 +123,104 @@ public class Tracing {
   }
 
   /**
+   * Sets span attributes immediately available on agent invocation according to OTEL semconv
+   * version 1.37.
+   *
+   * @param span Span on which attributes are set.
+   * @param agentName Agent name from which attributes are gathered.
+   * @param agentDescription Agent description from which attributes are gathered.
+   * @param invocationContext InvocationContext from which attributes are gathered.
+   */
+  public static void traceAgentInvocation(
+      Span span, String agentName, String agentDescription, InvocationContext invocationContext) {
+    span.setAttribute(GEN_AI_OPERATION_NAME, "invoke_agent");
+    span.setAttribute(GEN_AI_AGENT_DESCRIPTION, agentDescription);
+    span.setAttribute(GEN_AI_AGENT_NAME, agentName);
+    if (invocationContext.session() != null && invocationContext.session().id() != null) {
+      span.setAttribute(GEN_AI_CONVERSATION_ID, invocationContext.session().id());
+    }
+  }
+
+  /**
    * Traces tool call arguments.
    *
    * @param args The arguments to the tool call.
    */
-  public static void traceToolCall(Map<String, Object> args) {
+  public static void traceToolCall(
+      String toolName, String toolDescription, String toolType, Map<String, Object> args) {
     Span span = Span.current();
     if (span == null || !span.getSpanContext().isValid()) {
       log.trace("traceToolCall: No valid span in current context.");
       return;
     }
 
-    span.setAttribute("gen_ai.system", "com.google.adk");
-    try {
-      span.setAttribute("adk.tool_call_args", JsonBaseModel.getMapper().writeValueAsString(args));
-    } catch (JsonProcessingException e) {
-      log.warn("traceToolCall: Failed to serialize tool call args to JSON", e);
+    span.setAttribute(GEN_AI_OPERATION_NAME, "execute_tool");
+    span.setAttribute(GEN_AI_TOOL_NAME, toolName);
+    span.setAttribute(GEN_AI_TOOL_DESCRIPTION, toolDescription);
+    span.setAttribute(GEN_AI_TOOL_TYPE, toolType);
+    if (CAPTURE_MESSAGE_CONTENT_IN_SPANS) {
+      try {
+        span.setAttribute(ADK_TOOL_CALL_ARGS, JsonBaseModel.getMapper().writeValueAsString(args));
+      } catch (JsonProcessingException e) {
+        log.warn("traceToolCall: Failed to serialize tool call args to JSON", e);
+      }
+    } else {
+      span.setAttribute(ADK_TOOL_CALL_ARGS, "{}");
     }
+    span.setAttribute(ADK_LLM_REQUEST, "{}");
+    span.setAttribute(ADK_LLM_RESPONSE, "{}");
   }
 
   /**
    * Traces tool response event.
    *
-   * @param invocationContext The invocation context for the current agent run.
    * @param eventId The ID of the event.
    * @param functionResponseEvent The function response event.
    */
-  public static void traceToolResponse(
-      InvocationContext invocationContext, String eventId, Event functionResponseEvent) {
+  public static void traceToolResponse(String eventId, Event functionResponseEvent) {
     Span span = Span.current();
     if (span == null || !span.getSpanContext().isValid()) {
       log.trace("traceToolResponse: No valid span in current context.");
       return;
     }
 
-    span.setAttribute("gen_ai.system", "com.google.adk");
-    span.setAttribute("adk.invocation_id", invocationContext.invocationId());
-    span.setAttribute("adk.event_id", eventId);
-    span.setAttribute("adk.tool_response", functionResponseEvent.toJson());
+    span.setAttribute(GEN_AI_OPERATION_NAME, "execute_tool");
+    span.setAttribute(ADK_EVENT_ID, eventId);
+
+    String toolCallId = "<not specified>";
+    Object toolResponse = "<not specified>";
+
+    Optional<FunctionResponse> optionalFunctionResponse =
+        functionResponseEvent.functionResponses().stream().findFirst();
+
+    if (optionalFunctionResponse.isPresent()) {
+      FunctionResponse functionResponse = optionalFunctionResponse.get();
+      toolCallId = functionResponse.id().orElse(toolCallId);
+      if (functionResponse.response().isPresent()) {
+        toolResponse = functionResponse.response().get();
+      }
+    }
+    span.setAttribute(GEN_AI_TOOL_CALL_ID, toolCallId);
+
+    if (!(toolResponse instanceof Map)) {
+      toolResponse = ImmutableMap.of("result", toolResponse);
+    }
+
+    if (CAPTURE_MESSAGE_CONTENT_IN_SPANS) {
+      try {
+        span.setAttribute(
+            ADK_TOOL_RESPONSE, JsonBaseModel.getMapper().writeValueAsString(toolResponse));
+      } catch (JsonProcessingException e) {
+        log.warn("traceToolResponse: Failed to serialize tool response to JSON", e);
+        span.setAttribute(ADK_TOOL_RESPONSE, "{\"error\": \"serialization failed\"}");
+      }
+    } else {
+      span.setAttribute(ADK_TOOL_RESPONSE, "{}");
+    }
 
     // Setting empty llm request and response (as the AdkDevServer UI expects these)
-    span.setAttribute("adk.llm_request", "{}");
-    span.setAttribute("adk.llm_response", "{}");
-    if (invocationContext.session() != null && invocationContext.session().id() != null) {
-      span.setAttribute("adk.session_id", invocationContext.session().id());
-    }
+    span.setAttribute(ADK_LLM_REQUEST, "{}");
+    span.setAttribute(ADK_LLM_RESPONSE, "{}");
   }
 
   /**
@@ -162,32 +271,62 @@ public class Tracing {
       return;
     }
 
-    span.setAttribute("gen_ai.system", "com.google.adk");
-    llmRequest.model().ifPresent(modelName -> span.setAttribute("gen_ai.request.model", modelName));
-    span.setAttribute("adk.invocation_id", invocationContext.invocationId());
-    span.setAttribute("adk.event_id", eventId);
+    span.setAttribute(GEN_AI_SYSTEM, "gcp.vertex.agent");
+    llmRequest.model().ifPresent(modelName -> span.setAttribute(GEN_AI_REQUEST_MODEL, modelName));
+    span.setAttribute(ADK_INVOCATION_ID, invocationContext.invocationId());
+    span.setAttribute(ADK_EVENT_ID, eventId);
 
     if (invocationContext.session() != null && invocationContext.session().id() != null) {
-      span.setAttribute("adk.session_id", invocationContext.session().id());
+      span.setAttribute(ADK_SESSION_ID, invocationContext.session().id());
     } else {
       log.trace(
           "traceCallLlm: InvocationContext session or session ID is null, cannot set"
-              + " adk.session_id");
+              + " gcp.vertex.agent.session_id");
     }
 
     if (CAPTURE_MESSAGE_CONTENT_IN_SPANS) {
       try {
         span.setAttribute(
-            "adk.llm_request",
+            ADK_LLM_REQUEST,
             JsonBaseModel.getMapper().writeValueAsString(buildLlmRequestForTrace(llmRequest)));
-        span.setAttribute("adk.llm_response", llmResponse.toJson());
+        span.setAttribute(ADK_LLM_RESPONSE, llmResponse.toJson());
       } catch (JsonProcessingException e) {
         log.warn("traceCallLlm: Failed to serialize LlmRequest or LlmResponse to JSON", e);
       }
     } else {
-      span.setAttribute("adk.llm_request", "{}");
-      span.setAttribute("adk.llm_response", "{}");
+      span.setAttribute(ADK_LLM_REQUEST, "{}");
+      span.setAttribute(ADK_LLM_RESPONSE, "{}");
     }
+    llmRequest
+        .config()
+        .ifPresent(
+            config -> {
+              config
+                  .topP()
+                  .ifPresent(topP -> span.setAttribute(GEN_AI_REQUEST_TOP_P, topP.doubleValue()));
+              config
+                  .maxOutputTokens()
+                  .ifPresent(
+                      maxTokens ->
+                          span.setAttribute(GEN_AI_REQUEST_MAX_TOKENS, maxTokens.longValue()));
+            });
+    llmResponse
+        .usageMetadata()
+        .ifPresent(
+            usage -> {
+              usage
+                  .promptTokenCount()
+                  .ifPresent(tokens -> span.setAttribute(GEN_AI_USAGE_INPUT_TOKENS, (long) tokens));
+              usage
+                  .candidatesTokenCount()
+                  .ifPresent(
+                      tokens -> span.setAttribute(GEN_AI_USAGE_OUTPUT_TOKENS, (long) tokens));
+            });
+    llmResponse
+        .finishReason()
+        .map(reason -> reason.knownEnum().name().toLowerCase(Locale.ROOT))
+        .ifPresent(
+            reason -> span.setAttribute(GEN_AI_RESPONSE_FINISH_REASONS, ImmutableList.of(reason)));
   }
 
   /**
@@ -205,29 +344,27 @@ public class Tracing {
       return;
     }
 
-    span.setAttribute("adk.invocation_id", invocationContext.invocationId());
+    span.setAttribute(ADK_INVOCATION_ID, invocationContext.invocationId());
     if (eventId != null && !eventId.isEmpty()) {
-      span.setAttribute("adk.event_id", eventId);
+      span.setAttribute(ADK_EVENT_ID, eventId);
     }
 
     if (invocationContext.session() != null && invocationContext.session().id() != null) {
-      span.setAttribute("adk.session_id", invocationContext.session().id());
+      span.setAttribute(ADK_SESSION_ID, invocationContext.session().id());
     }
-
-    try {
-      List<Map<String, Object>> dataList = new ArrayList<>();
-      if (data != null) {
-        for (Content content : data) {
-          if (content != null) {
-            dataList.add(
-                JsonBaseModel.getMapper()
-                    .convertValue(content, new TypeReference<Map<String, Object>>() {}));
-          }
-        }
+    if (CAPTURE_MESSAGE_CONTENT_IN_SPANS) {
+      try {
+        ImmutableList<Map<String, Object>> dataList =
+            Optional.ofNullable(data).orElse(ImmutableList.of()).stream()
+                .filter(content -> content != null)
+                .map(content -> JsonBaseModel.getMapper().convertValue(content, MAP_TYPE_REFERENCE))
+                .collect(toImmutableList());
+        span.setAttribute(ADK_DATA, JsonBaseModel.toJsonString(dataList));
+      } catch (IllegalStateException e) {
+        log.warn("traceSendData: Failed to serialize data to JSON", e);
       }
-      span.setAttribute("adk.data", JsonBaseModel.toJsonString(dataList));
-    } catch (IllegalStateException e) {
-      log.warn("traceSendData: Failed to serialize data to JSON", e);
+    } else {
+      span.setAttribute(ADK_DATA, "{}");
     }
   }
 

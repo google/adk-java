@@ -17,6 +17,7 @@
 package com.google.adk.agents;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 
 import com.google.adk.apps.ResumabilityConfig;
@@ -764,7 +765,7 @@ public final class InvocationContextTest {
   }
 
   @Test
-  @SuppressWarnings("deprecation") // Testing deprecated methods.
+  // Testing deprecated methods.
   public void testBranch() {
     InvocationContext context =
         InvocationContext.builder()
@@ -785,7 +786,7 @@ public final class InvocationContextTest {
   }
 
   @Test
-  @SuppressWarnings("deprecation") // Testing deprecated methods.
+  // Testing deprecated methods.
   public void testDeprecatedCreateMethods() {
     InvocationContext context1 =
         InvocationContext.builder()
@@ -855,7 +856,7 @@ public final class InvocationContextTest {
   }
 
   @Test
-  @SuppressWarnings("deprecation") // Testing deprecated methods.
+  // Testing deprecated methods.
   public void testBuilderOptionalParameters() {
     InvocationContext context =
         InvocationContext.builder()
@@ -874,7 +875,7 @@ public final class InvocationContextTest {
   }
 
   @Test
-  @SuppressWarnings("deprecation") // Testing deprecated methods.
+  // Testing deprecated methods.
   public void testDeprecatedConstructor() {
     InvocationContext context =
         new InvocationContext(
@@ -906,7 +907,7 @@ public final class InvocationContextTest {
   }
 
   @Test
-  @SuppressWarnings("deprecation") // Testing deprecated methods.
+  // Testing deprecated methods.
   public void testDeprecatedConstructor_11params() {
     InvocationContext context =
         new InvocationContext(
@@ -985,5 +986,74 @@ public final class InvocationContextTest {
     assertThat(context.agentStates()).containsEntry("agent4", agent4State);
     assertThat(context.endOfAgents()).hasSize(1);
     assertThat(context.endOfAgents()).containsEntry("agent1", true);
+  }
+
+  @Test
+  public void build_missingInvocationId_null_throwsException() {
+    InvocationContext.Builder builder =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .invocationId(null)
+            .session(session);
+
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+    assertThat(exception).hasMessageThat().isEqualTo("Invocation ID must be non-empty.");
+  }
+
+  @Test
+  public void build_missingInvocationId_empty_throwsException() {
+    InvocationContext.Builder builder =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .invocationId("")
+            .session(session);
+
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+    assertThat(exception).hasMessageThat().isEqualTo("Invocation ID must be non-empty.");
+  }
+
+  @Test
+  public void build_missingAgent_throwsException() {
+    InvocationContext.Builder builder =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .session(session);
+
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+    assertThat(exception).hasMessageThat().isEqualTo("Agent must be set.");
+  }
+
+  @Test
+  public void build_missingSession_throwsException() {
+    InvocationContext.Builder builder =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent);
+
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+    assertThat(exception).hasMessageThat().isEqualTo("Session must be set.");
+  }
+
+  @Test
+  public void build_missingSessionService_throwsException() {
+    InvocationContext.Builder builder =
+        InvocationContext.builder()
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .agent(mockAgent)
+            .session(session);
+
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+    assertThat(exception).hasMessageThat().isEqualTo("Session service must be set.");
   }
 }
