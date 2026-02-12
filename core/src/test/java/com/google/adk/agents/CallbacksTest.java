@@ -1058,6 +1058,125 @@ public final class CallbacksTest {
   }
 
   @Test
+  public void
+      handleFunctionCalls_withChainedBeforeToolCallbacks_firstModifiesArgsSecondReturnsResponse() {
+    ImmutableMap<String, Object> originalArgs = ImmutableMap.of("arg1", "val1");
+    ImmutableMap<String, Object> modifiedArgsByCb1 =
+        ImmutableMap.of("arg1", "val1", "arg2", "val2");
+    ImmutableMap<String, Object> responseFromCb2 = ImmutableMap.of("result", "from cb2");
+
+    Callbacks.BeforeToolCallbackSync cb1 =
+        (invocationContext, tool, input, toolContext) -> {
+          input.put("arg2", "val2");
+          return Optional.empty();
+        };
+
+    Callbacks.BeforeToolCallbackSync cb2 =
+        (invocationContext, tool, input, toolContext) -> {
+          if (input.equals(modifiedArgsByCb1)) {
+            return Optional.of(responseFromCb2);
+          }
+          return Optional.empty();
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+                .beforeToolCallback(ImmutableList.of(cb1, cb2))
+                .build());
+
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromText("..."),
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id("fc_id")
+                                .name("echo_tool")
+                                .args(originalArgs)
+                                .build())
+                        .build()))
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(
+                invocationContext,
+                event,
+                ImmutableMap.of("echo_tool", new TestUtils.FailingEchoTool()))
+            .blockingGet();
+
+    assertThat(getFunctionResponse(functionResponseEvent)).isEqualTo(responseFromCb2);
+  }
+
+  @Test
+  public void
+      handleFunctionCalls_withPluginAndAgentBeforeToolCallbacks_pluginModifiesArgsAgentSeesThem() {
+    ImmutableMap<String, Object> originalArgs = ImmutableMap.of("arg1", "val1");
+    ImmutableMap<String, Object> modifiedArgsByPlugin =
+        ImmutableMap.of("arg1", "val1", "arg2", "val2");
+    ImmutableMap<String, Object> responseFromAgentCb = ImmutableMap.of("result", "from agent cb");
+
+    Plugin testPlugin =
+        new Plugin() {
+          @Override
+          public String getName() {
+            return "test_plugin";
+          }
+
+          @Override
+          public Maybe<Map<String, Object>> beforeToolCallback(
+              BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext) {
+            toolArgs.put("arg2", "val2");
+            return Maybe.empty();
+          }
+        };
+
+    Callbacks.BeforeToolCallbackSync agentCb =
+        (invocationContext, tool, input, toolContext) -> {
+          if (input.equals(modifiedArgsByPlugin)) {
+            return Optional.of(responseFromAgentCb);
+          }
+          return Optional.empty();
+        };
+
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .beforeToolCallbackSync(agentCb)
+            .build();
+
+    InvocationContext invocationContext =
+        createInvocationContext(agent).toBuilder()
+            .pluginManager(new PluginManager(ImmutableList.of(testPlugin)))
+            .build();
+
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromText("..."),
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id("fc_id")
+                                .name("echo_tool")
+                                .args(originalArgs)
+                                .build())
+                        .build()))
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(
+                invocationContext,
+                event,
+                ImmutableMap.of("echo_tool", new TestUtils.FailingEchoTool()))
+            .blockingGet();
+
+    assertThat(getFunctionResponse(functionResponseEvent)).isEqualTo(responseFromAgentCb);
+  }
+
+  @Test
   public void agentRunAsync_withToolCallbacks_inspectsArgsAndReturnsResponse() {
     TestUtils.EchoTool echoTool = new TestUtils.EchoTool();
     String toolName = echoTool.declaration().get().name().get();

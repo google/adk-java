@@ -28,6 +28,7 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.Model;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -35,7 +36,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -53,7 +53,8 @@ public final class ContentsTest {
   private static final String AGENT = "agent";
   private static final String OTHER_AGENT = "other_agent";
 
-  private final Contents contentsProcessor = new Contents();
+  private static final Contents contentsProcessor = new Contents();
+  private static final InMemorySessionService sessionService = new InMemorySessionService();
 
   @Test
   public void rearrangeLatest_emptyList_returnsEmptyList() {
@@ -890,16 +891,14 @@ public final class ContentsTest {
       List<Event> events, LlmAgent.IncludeContents includeContents) {
     LlmAgent agent = LlmAgent.builder().name(AGENT).includeContents(includeContents).build();
     Session session =
-        Session.builder("test-session")
-            .appName("test-app")
-            .userId("test-user")
-            .events(new ArrayList<>(events))
-            .build();
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    session.events().addAll(events);
     InvocationContext context =
         InvocationContext.builder()
             .invocationId("test-invocation")
             .agent(agent)
             .session(session)
+            .sessionService(sessionService)
             .build();
 
     LlmRequest initialRequest = LlmRequest.builder().build();
@@ -919,16 +918,14 @@ public final class ContentsTest {
     Mockito.doReturn(model).when(agent).resolvedModel();
 
     Session session =
-        Session.builder("test-session")
-            .appName("test-app")
-            .userId("test-user")
-            .events(new ArrayList<>(events))
-            .build();
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    session.events().addAll(events);
     InvocationContext context =
         InvocationContext.builder()
             .invocationId("test-invocation")
             .agent(agent)
             .session(session)
+            .sessionService(sessionService)
             .build();
 
     LlmRequest initialRequest = LlmRequest.builder().build();

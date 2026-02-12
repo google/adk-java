@@ -23,11 +23,13 @@ import static org.junit.Assert.assertTrue;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.runner.Runner;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -68,6 +70,8 @@ public class ContextPropagationTest {
 
   private Tracer tracer;
   private Tracer originalTracer;
+  private LlmAgent agent;
+  private InMemorySessionService sessionService;
 
   @Before
   public void setup() {
@@ -75,6 +79,8 @@ public class ContextPropagationTest {
     Tracing.setTracerForTesting(
         openTelemetryRule.getOpenTelemetry().getTracer("ContextPropagationTest"));
     tracer = openTelemetryRule.getOpenTelemetry().getTracer("test");
+    agent = LlmAgent.builder().name("test_agent").description("test-description").build();
+    sessionService = new InMemorySessionService();
   }
 
   @After
@@ -371,13 +377,7 @@ public class ContextPropagationTest {
     Span span = tracer.spanBuilder("test").startSpan();
     try (Scope scope = span.makeCurrent()) {
       Tracing.traceAgentInvocation(
-          span,
-          "test-agent",
-          "test-description",
-          InvocationContext.builder()
-              .invocationId("inv-1")
-              .session(Session.builder("session-1").build())
-              .build());
+          span, "test-agent", "test-description", buildInvocationContext());
     } finally {
       span.end();
     }
@@ -388,7 +388,7 @@ public class ContextPropagationTest {
     assertEquals("invoke_agent", attrs.get(AttributeKey.stringKey("gen_ai.operation.name")));
     assertEquals("test-agent", attrs.get(AttributeKey.stringKey("gen_ai.agent.name")));
     assertEquals("test-description", attrs.get(AttributeKey.stringKey("gen_ai.agent.description")));
-    assertEquals("session-1", attrs.get(AttributeKey.stringKey("gen_ai.conversation.id")));
+    assertEquals("test-session", attrs.get(AttributeKey.stringKey("gen_ai.conversation.id")));
   }
 
   @Test
@@ -470,14 +470,7 @@ public class ContextPropagationTest {
                       .totalTokenCount(30)
                       .build())
               .build();
-      Tracing.traceCallLlm(
-          InvocationContext.builder()
-              .invocationId("inv-1")
-              .session(Session.builder("session-1").build())
-              .build(),
-          "event-1",
-          llmRequest,
-          llmResponse);
+      Tracing.traceCallLlm(buildInvocationContext(), "event-1", llmRequest, llmResponse);
     } finally {
       span.end();
     }
@@ -487,9 +480,10 @@ public class ContextPropagationTest {
     Attributes attrs = spanData.getAttributes();
     assertEquals("gcp.vertex.agent", attrs.get(AttributeKey.stringKey("gen_ai.system")));
     assertEquals("gemini-pro", attrs.get(AttributeKey.stringKey("gen_ai.request.model")));
-    assertEquals("inv-1", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.invocation_id")));
+    assertEquals(
+        "test-invocation-id", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.invocation_id")));
     assertEquals("event-1", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.event_id")));
-    assertEquals("session-1", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.session_id")));
+    assertEquals("test-session", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.session_id")));
     assertEquals(0.9d, attrs.get(AttributeKey.doubleKey("gen_ai.request.top_p")), 0.01);
     assertEquals(100L, (long) attrs.get(AttributeKey.longKey("gen_ai.request.max_tokens")));
     assertEquals(10L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.input_tokens")));
@@ -507,10 +501,7 @@ public class ContextPropagationTest {
     Span span = tracer.spanBuilder("test").startSpan();
     try (Scope scope = span.makeCurrent()) {
       Tracing.traceSendData(
-          InvocationContext.builder()
-              .invocationId("inv-1")
-              .session(Session.builder("session-1").build())
-              .build(),
+          buildInvocationContext(),
           "event-1",
           ImmutableList.of(Content.builder().role("user").parts(Part.fromText("hello")).build()));
     } finally {
@@ -520,9 +511,10 @@ public class ContextPropagationTest {
     assertEquals(1, spans.size());
     SpanData spanData = spans.get(0);
     Attributes attrs = spanData.getAttributes();
-    assertEquals("inv-1", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.invocation_id")));
+    assertEquals(
+        "test-invocation-id", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.invocation_id")));
     assertEquals("event-1", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.event_id")));
-    assertEquals("session-1", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.session_id")));
+    assertEquals("test-session", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.session_id")));
     assertTrue(attrs.get(AttributeKey.stringKey("gcp.vertex.agent.data")).contains("hello"));
   }
 
@@ -552,15 +544,7 @@ public class ContextPropagationTest {
     BaseAgent agent = new TestAgent();
     Span parentSpan = tracer.spanBuilder("parent").startSpan();
     try (Scope s = parentSpan.makeCurrent()) {
-      agent
-          .runAsync(
-              InvocationContext.builder()
-                  .invocationId("inv-1")
-                  .session(Session.builder("session-1").build())
-                  .build())
-          .test()
-          .await()
-          .assertComplete();
+      agent.runAsync(buildInvocationContext()).test().await().assertComplete();
     } finally {
       parentSpan.end();
     }
@@ -578,7 +562,7 @@ public class ContextPropagationTest {
       Session session =
           runner
               .sessionService()
-              .createSession("test-app", "user-1", null, "session-1")
+              .createSession("test-app", "test-user", null, "test-session")
               .blockingGet();
       Content newMessage = Content.fromParts(Part.fromText("hi"));
       RunConfig runConfig = RunConfig.builder().build();
@@ -605,7 +589,8 @@ public class ContextPropagationTest {
     Runner runner = Runner.builder().agent(agent).appName("test-app").build();
     Span parentSpan = tracer.spanBuilder("parent").startSpan();
     try (Scope s = parentSpan.makeCurrent()) {
-      Session session = Session.builder("session-1").userId("user-1").appName("test-app").build();
+      Session session =
+          Session.builder("test-session").userId("test-user").appName("test-app").build();
       Content newMessage = Content.fromParts(Part.fromText("hi"));
       RunConfig runConfig = RunConfig.builder().build();
       LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
@@ -645,5 +630,16 @@ public class ContextPropagationTest {
       }
     }
     throw new AssertionError("Span not found after polling: " + name);
+  }
+
+  private InvocationContext buildInvocationContext() {
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .session(session)
+        .agent(agent)
+        .invocationId("test-invocation-id")
+        .build();
   }
 }
