@@ -36,6 +36,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -43,16 +44,25 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link FunctionTool}. */
 @RunWith(JUnit4.class)
 public final class FunctionToolTest {
-  private static final ToolContext toolContext =
-      ToolContext.builder(
-              InvocationContext.builder()
-                  .agent(LlmAgent.builder().name("test-agent").build())
-                  .session(Session.builder("123").build())
-                  .sessionService(new InMemorySessionService())
-                  .invocationId("invocation-id")
-                  .build())
-          .functionCallId("functionCallId")
-          .build();
+  private LlmAgent agent;
+  private InMemorySessionService sessionService;
+  private ToolContext toolContext;
+
+  @Before
+  public void setUp() {
+    agent = LlmAgent.builder().name("test-agent").build();
+    sessionService = new InMemorySessionService();
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    InvocationContext invocationContext =
+        InvocationContext.builder()
+            .agent(agent)
+            .session(session)
+            .sessionService(sessionService)
+            .invocationId("invocation-id")
+            .build();
+    toolContext = ToolContext.builder(invocationContext).functionCallId("functionCallId").build();
+  }
 
   @Test
   public void create_withNonSerializableParameter_raisesIllegalArgumentException() {

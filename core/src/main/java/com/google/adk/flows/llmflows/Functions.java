@@ -472,8 +472,12 @@ public final class Functions {
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
 
+      HashMap<String, Object> mutableFunctionArgs = new HashMap<>(functionArgs);
+
       Maybe<Map<String, Object>> pluginResult =
-          invocationContext.pluginManager().beforeToolCallback(tool, functionArgs, toolContext);
+          invocationContext
+              .pluginManager()
+              .beforeToolCallback(tool, mutableFunctionArgs, toolContext);
 
       List<? extends BeforeToolCallback> callbacks = agent.canonicalBeforeToolCallbacks();
       if (callbacks.isEmpty()) {
@@ -486,7 +490,8 @@ public final class Functions {
                   Flowable.fromIterable(callbacks)
                       .concatMapMaybe(
                           callback ->
-                              callback.call(invocationContext, tool, functionArgs, toolContext))
+                              callback.call(
+                                  invocationContext, tool, mutableFunctionArgs, toolContext))
                       .firstElement());
 
       return pluginResult.switchIfEmpty(callbackResult);
