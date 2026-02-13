@@ -134,7 +134,7 @@ public class CallbackContext extends ReadonlyContext {
             invocationContext.session().id(),
             filename,
             artifact)
-        .doOnSuccess(unusedVersion -> this.eventActions.artifactDelta().put(filename, artifact))
+        .doOnSuccess(version -> this.eventActions.artifactDelta().put(filename, version))
         .ignoreElement();
   }
 }

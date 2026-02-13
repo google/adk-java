@@ -184,6 +184,11 @@ public class ContextPropagationTest {
     }
 
     // Verify complete hierarchy
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    // The 4 spans are: "parent", "invocation", "tool_call [testTool]", and "tool_response
+    // [testTool]".
+    assertEquals("Should have 4 spans in the hierarchy", 4, spans.size());
+
     SpanData parentSpanData = findSpanByName("parent");
     String parentTraceId = parentSpanData.getSpanContext().getTraceId();
 
@@ -311,6 +316,9 @@ public class ContextPropagationTest {
       invokeAgentSpan.end();
     }
 
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertEquals("Should have 2 spans", 2, spans.size());
+
     SpanData invokeAgentSpanData = findSpanByName("invoke_agent test-agent");
     SpanData callLlmSpanData = findSpanByName("call_llm");
 
@@ -370,6 +378,31 @@ public class ContextPropagationTest {
         parentSpanData.getSpanContext().getSpanId(),
         flowableSpanData.getParentSpanContext().getSpanId());
     assertTrue(flowableSpanData.hasEnded());
+  }
+
+  @Test
+  public void testTraceTransformer() throws InterruptedException {
+    Span parentSpan = tracer.spanBuilder("parent").startSpan();
+    try (Scope s = parentSpan.makeCurrent()) {
+      Flowable<Integer> flowable =
+          Flowable.just(1, 2, 3)
+              .map(
+                  i -> {
+                    assertTrue(Span.current().getSpanContext().isValid());
+                    return i * 2;
+                  })
+              .compose(Tracing.trace("transformer"));
+      flowable.test().await().assertComplete();
+    } finally {
+      parentSpan.end();
+    }
+
+    SpanData parentSpanData = findSpanByName("parent");
+    SpanData transformerSpanData = findSpanByName("transformer");
+    assertEquals(
+        parentSpanData.getSpanContext().getSpanId(),
+        transformerSpanData.getParentSpanContext().getSpanId());
+    assertTrue(transformerSpanData.hasEnded());
   }
 
   @Test

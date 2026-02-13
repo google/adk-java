@@ -63,7 +63,7 @@ public final class EventActionsTest {
         EventActions.builder()
             .skipSummarization(true)
             .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key1", "value1")))
-            .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact1", PART)))
+            .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact1", 1)))
             .deletedArtifactIds(ImmutableSet.of("deleted1"))
             .requestedAuthConfigs(
                 new ConcurrentHashMap<>(
@@ -75,7 +75,7 @@ public final class EventActionsTest {
     EventActions eventActions2 =
         EventActions.builder()
             .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key2", "value2")))
-            .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact2", PART)))
+            .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact2", 2)))
             .deletedArtifactIds(ImmutableSet.of("deleted2"))
             .transferToAgent("agentId")
             .escalate(true)
@@ -91,7 +91,7 @@ public final class EventActionsTest {
 
     assertThat(merged.skipSummarization()).hasValue(true);
     assertThat(merged.stateDelta()).containsExactly("key1", "value1", "key2", "value2");
-    assertThat(merged.artifactDelta()).containsExactly("artifact1", PART, "artifact2", PART);
+    assertThat(merged.artifactDelta()).containsExactly("artifact1", 1, "artifact2", 2);
     assertThat(merged.deletedArtifactIds()).containsExactly("deleted1", "deleted2");
     assertThat(merged.transferToAgent()).hasValue("agentId");
     assertThat(merged.escalate()).hasValue(true);

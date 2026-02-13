@@ -39,9 +39,7 @@ public final class SessionJsonConverterTest {
         EventActions.builder()
             .skipSummarization(true)
             .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key", "value")))
-            .artifactDelta(
-                new ConcurrentHashMap<>(
-                    ImmutableMap.of("artifact", Part.fromText("artifact_text"))))
+            .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact", 1)))
             .transferToAgent("agent")
             .escalate(true)
             .build();
@@ -80,8 +78,7 @@ public final class SessionJsonConverterTest {
     JsonNode actionsNode = jsonNode.get("actions");
     assertThat(actionsNode.get("skipSummarization").asBoolean()).isTrue();
     assertThat(actionsNode.get("stateDelta").get("key").asText()).isEqualTo("value");
-    assertThat(actionsNode.get("artifactDelta").get("artifact").get("text").asText())
-        .isEqualTo("artifact_text");
+    assertThat(actionsNode.get("artifactDelta").get("artifact").asInt()).isEqualTo(1);
     assertThat(actionsNode.get("transferAgent").asText()).isEqualTo("agent");
     assertThat(actionsNode.get("escalate").asBoolean()).isTrue();
   }
@@ -131,8 +128,7 @@ public final class SessionJsonConverterTest {
     Map<String, Object> actions = new HashMap<>();
     actions.put("skipSummarization", true);
     actions.put("stateDelta", ImmutableMap.of("key", "value"));
-    actions.put(
-        "artifactDelta", ImmutableMap.of("artifact", ImmutableMap.of("text", "artifact_text")));
+    actions.put("artifactDelta", ImmutableMap.of("artifact", 1));
     actions.put("transferAgent", "agent");
     actions.put("escalate", true);
     apiEvent.put("actions", actions);
@@ -154,7 +150,7 @@ public final class SessionJsonConverterTest {
     EventActions eventActions = event.actions();
     assertThat(eventActions.skipSummarization()).hasValue(true);
     assertThat(eventActions.stateDelta()).containsEntry("key", "value");
-    assertThat(eventActions.artifactDelta().get("artifact").text()).hasValue("artifact_text");
+    assertThat(eventActions.artifactDelta()).containsEntry("artifact", 1);
     assertThat(eventActions.transferToAgent()).hasValue("agent");
     assertThat(eventActions.escalate()).hasValue(true);
   }
@@ -383,7 +379,7 @@ public final class SessionJsonConverterTest {
     apiEvent.put("timestamp", "2023-01-01T00:00:00Z");
 
     Map<String, Object> artifactDelta = new HashMap<>();
-    artifactDelta.put("valid", ImmutableMap.of("text", "valid_text"));
+    artifactDelta.put("valid", 1);
     artifactDelta.put("invalid", "not-a-map");
 
     Map<String, Object> actions = new HashMap<>();

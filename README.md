@@ -44,7 +44,7 @@ debugging, versioning, and deployment anywhere – from your laptop to the cloud
 
 If you're using Maven, add the following to your dependencies:
 
-<!-- {x-version-start:google-adk:released} -->
+<!-- x-release-please-released-start-version -->
 
 ```xml
 <dependency>
@@ -60,7 +60,7 @@ If you're using Maven, add the following to your dependencies:
 </dependency>
 ```
 
-<!-- {x-version-end} -->
+<!-- x-release-please-released-end -->
 
 To instead use an unreleased version, you could use <https://jitpack.io/#google/adk-java/>;
 see <https://github.com/enola-dev/LearningADK#jitpack> for an example illustrating this.

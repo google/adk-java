@@ -406,15 +406,6 @@
     </pluginManagement>
     <plugins>
       <plugin>
-        <groupId>org.sonatype.central</groupId>
-        <artifactId>central-publishing-maven-plugin</artifactId>
-        <version>0.8.0</version>
-        <extensions>true</extensions>
-        <configuration>
-          <publishingServerId>central</publishingServerId>
-        </configuration>
-      </plugin>
-      <plugin>
         <groupId>com.spotify.fmt</groupId>
         <artifactId>fmt-maven-plugin</artifactId>
         <version>2.27</version>
@@ -472,6 +463,34 @@
   </build>
   <profiles>
     <profile>
+      <id>release-sonatype</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.8.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+      <distributionManagement>
+        <repository>
+          <id>central</id>
+          <name>Maven Central Repository</name>
+          <url>https://central.sonatype.com/api/v1/publisher</url>
+        </repository>
+        <snapshotRepository>
+          <id>central</id>
+          <name>Maven Central Repository Snapshots</name>
+          <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+        </snapshotRepository>
+      </distributionManagement>
+    </profile>
+    <profile>
       <id>release</id>
       <build>
         <plugins>
@@ -480,14 +499,7 @@
             <artifactId>maven-gpg-plugin</artifactId>
             <version>3.2.7</version>
             <configuration>
-              <keyname>${gpg.keyname}</keyname>
-              <passphrase>${gpg.passphrase}</passphrase>
-              <gpgArguments>
-                <arg>--batch</arg>
-                <arg>--yes</arg>
-                <arg>--pinentry-mode</arg>
-                <arg>loopback</arg>
-              </gpgArguments>
+              <signer>bc</signer>
             </configuration>
             <executions>
               <execution>
@@ -545,16 +557,4 @@
       <organizationUrl>https://www.google.com</organizationUrl>
     </developer>
   </developers>
-  <distributionManagement>
-    <repository>
-      <id>central</id>
-      <name>Maven Central Repository</name>
-      <url>https://central.sonatype.com/api/v1/publisher</url>
-    </repository>
-    <snapshotRepository>
-      <id>central</id>
-      <name>Maven Central Repository Snapshots</name>
-      <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-    </snapshotRepository>
-  </distributionManagement>
 </project>
