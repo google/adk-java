@@ -218,7 +218,7 @@ public class Runner {
   }
 
   /**
-   * Creates a new {@code Runner} with a list of plugins and resumability config.
+   * Creates a new {@code Runner} with a list of plugins.
    *
    * @deprecated Use {@link Runner.Builder} instead.
    */
