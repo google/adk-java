@@ -41,6 +41,7 @@ public class App {
   private final BaseAgent rootAgent;
   private final ImmutableList<? extends Plugin> plugins;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
+  @Nullable private final ResumabilityConfig resumabilityConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
 
   private App(
@@ -48,11 +49,13 @@ public class App {
       BaseAgent rootAgent,
       List<? extends Plugin> plugins,
       @Nullable EventsCompactionConfig eventsCompactionConfig,
+      @Nullable ResumabilityConfig resumabilityConfig,
       @Nullable ContextCacheConfig contextCacheConfig) {
     this.name = name;
     this.rootAgent = rootAgent;
     this.plugins = ImmutableList.copyOf(plugins);
     this.eventsCompactionConfig = eventsCompactionConfig;
+    this.resumabilityConfig = resumabilityConfig;
     this.contextCacheConfig = contextCacheConfig;
   }
 
@@ -74,6 +77,11 @@ public class App {
   }
 
   @Nullable
+  public ResumabilityConfig resumabilityConfig() {
+    return resumabilityConfig;
+  }
+
+  @Nullable
   public ContextCacheConfig contextCacheConfig() {
     return contextCacheConfig;
   }
@@ -84,6 +92,7 @@ public class App {
     private BaseAgent rootAgent;
     private List<? extends Plugin> plugins = ImmutableList.of();
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
+    @Nullable private ResumabilityConfig resumabilityConfig;
     @Nullable private ContextCacheConfig contextCacheConfig;
 
     @CanIgnoreReturnValue
@@ -111,6 +120,12 @@ public class App {
     }
 
     @CanIgnoreReturnValue
+    public Builder resumabilityConfig(ResumabilityConfig resumabilityConfig) {
+      this.resumabilityConfig = resumabilityConfig;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
     public Builder contextCacheConfig(ContextCacheConfig contextCacheConfig) {
       this.contextCacheConfig = contextCacheConfig;
       return this;
@@ -124,7 +139,8 @@ public class App {
         throw new IllegalStateException("Root agent must be provided.");
       }
       validateAppName(name);
-      return new App(name, rootAgent, plugins, eventsCompactionConfig, contextCacheConfig);
+      return new App(
+          name, rootAgent, plugins, eventsCompactionConfig, resumabilityConfig, contextCacheConfig);
     }
   }
 

@@ -36,6 +36,7 @@ import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmResponse;
@@ -926,6 +927,48 @@ public final class RunnerTest {
 
     assertThat(invocationSpan).isPresent();
     assertThat(invocationSpan.get().hasEnded()).isTrue();
+  }
+
+  @Test
+  public void resumabilityConfig_isResumable_isTrueInInvocationContext() {
+    ArgumentCaptor<InvocationContext> contextCaptor =
+        ArgumentCaptor.forClass(InvocationContext.class);
+    when(plugin.beforeRunCallback(contextCaptor.capture())).thenReturn(Maybe.empty());
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .resumabilityConfig(new ResumabilityConfig(true))
+                    .build())
+            .build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+    var unused =
+        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
+    assertThat(contextCaptor.getValue().isResumable()).isTrue();
+  }
+
+  @Test
+  public void resumabilityConfig_isNotResumable_isFalseInInvocationContext() {
+    ArgumentCaptor<InvocationContext> contextCaptor =
+        ArgumentCaptor.forClass(InvocationContext.class);
+    when(plugin.beforeRunCallback(contextCaptor.capture())).thenReturn(Maybe.empty());
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .resumabilityConfig(new ResumabilityConfig(false))
+                    .build())
+            .build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+    var unused =
+        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
+    assertThat(contextCaptor.getValue().isResumable()).isFalse();
   }
 
   @Test
