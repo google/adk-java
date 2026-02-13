@@ -19,6 +19,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.BaseAgentState;
 import com.google.adk.sessions.State;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.HashSet;
@@ -43,7 +44,9 @@ public class EventActions extends JsonBaseModel {
   private ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs;
   private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
   private boolean endOfAgent;
+  private ConcurrentMap<String, BaseAgentState> agentState;
   private Optional<EventCompaction> compaction;
+  private Optional<String> rewindBeforeInvocationId;
 
   /** Default constructor for Jackson. */
   public EventActions() {
@@ -57,6 +60,8 @@ public class EventActions extends JsonBaseModel {
     this.requestedToolConfirmations = new ConcurrentHashMap<>();
     this.endOfAgent = false;
     this.compaction = Optional.empty();
+    this.agentState = new ConcurrentHashMap<>();
+    this.rewindBeforeInvocationId = Optional.empty();
   }
 
   private EventActions(Builder builder) {
@@ -70,6 +75,8 @@ public class EventActions extends JsonBaseModel {
     this.requestedToolConfirmations = builder.requestedToolConfirmations;
     this.endOfAgent = builder.endOfAgent;
     this.compaction = builder.compaction;
+    this.agentState = builder.agentState;
+    this.rewindBeforeInvocationId = builder.rewindBeforeInvocationId;
   }
 
   @JsonProperty("skipSummarization")
@@ -216,6 +223,25 @@ public class EventActions extends JsonBaseModel {
     this.compaction = compaction;
   }
 
+  @JsonProperty("agentState")
+  @JsonInclude(JsonInclude.Include.NON_EMPTY)
+  public ConcurrentMap<String, BaseAgentState> agentState() {
+    return agentState;
+  }
+
+  public void setAgentState(ConcurrentMap<String, BaseAgentState> agentState) {
+    this.agentState = agentState;
+  }
+
+  @JsonProperty("rewindBeforeInvocationId")
+  public Optional<String> rewindBeforeInvocationId() {
+    return rewindBeforeInvocationId;
+  }
+
+  public void setRewindBeforeInvocationId(@Nullable String rewindBeforeInvocationId) {
+    this.rewindBeforeInvocationId = Optional.ofNullable(rewindBeforeInvocationId);
+  }
+
   public static Builder builder() {
     return new Builder();
   }
@@ -241,7 +267,9 @@ public class EventActions extends JsonBaseModel {
         && Objects.equals(requestedAuthConfigs, that.requestedAuthConfigs)
         && Objects.equals(requestedToolConfirmations, that.requestedToolConfirmations)
         && (endOfAgent == that.endOfAgent)
-        && Objects.equals(compaction, that.compaction);
+        && Objects.equals(compaction, that.compaction)
+        && Objects.equals(agentState, that.agentState)
+        && Objects.equals(rewindBeforeInvocationId, that.rewindBeforeInvocationId);
   }
 
   @Override
@@ -256,7 +284,9 @@ public class EventActions extends JsonBaseModel {
         requestedAuthConfigs,
         requestedToolConfirmations,
         endOfAgent,
-        compaction);
+        compaction,
+        agentState,
+        rewindBeforeInvocationId);
   }
 
   /** Builder for {@link EventActions}. */
@@ -271,6 +301,8 @@ public class EventActions extends JsonBaseModel {
     private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
     private boolean endOfAgent = false;
     private Optional<EventCompaction> compaction;
+    private ConcurrentMap<String, BaseAgentState> agentState;
+    private Optional<String> rewindBeforeInvocationId;
 
     public Builder() {
       this.skipSummarization = Optional.empty();
@@ -282,6 +314,8 @@ public class EventActions extends JsonBaseModel {
       this.requestedAuthConfigs = new ConcurrentHashMap<>();
       this.requestedToolConfirmations = new ConcurrentHashMap<>();
       this.compaction = Optional.empty();
+      this.agentState = new ConcurrentHashMap<>();
+      this.rewindBeforeInvocationId = Optional.empty();
     }
 
     private Builder(EventActions eventActions) {
@@ -296,6 +330,8 @@ public class EventActions extends JsonBaseModel {
           new ConcurrentHashMap<>(eventActions.requestedToolConfirmations());
       this.endOfAgent = eventActions.endOfAgent();
       this.compaction = eventActions.compaction();
+      this.agentState = new ConcurrentHashMap<>(eventActions.agentState());
+      this.rewindBeforeInvocationId = eventActions.rewindBeforeInvocationId();
     }
 
     @CanIgnoreReturnValue
@@ -381,6 +417,20 @@ public class EventActions extends JsonBaseModel {
     }
 
     @CanIgnoreReturnValue
+    @JsonProperty("agentState")
+    public Builder agentState(ConcurrentMap<String, BaseAgentState> agentState) {
+      this.agentState = agentState;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    @JsonProperty("rewindBeforeInvocationId")
+    public Builder rewindBeforeInvocationId(String rewindBeforeInvocationId) {
+      this.rewindBeforeInvocationId = Optional.ofNullable(rewindBeforeInvocationId);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
     public Builder merge(EventActions other) {
       other.skipSummarization().ifPresent(this::skipSummarization);
       this.stateDelta.putAll(other.stateDelta());
@@ -392,6 +442,8 @@ public class EventActions extends JsonBaseModel {
       this.requestedToolConfirmations.putAll(other.requestedToolConfirmations());
       this.endOfAgent = other.endOfAgent();
       other.compaction().ifPresent(this::compaction);
+      this.agentState.putAll(other.agentState());
+      other.rewindBeforeInvocationId().ifPresent(this::rewindBeforeInvocationId);
       return this;
     }
 

@@ -24,6 +24,7 @@ import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
@@ -73,6 +74,7 @@ public class Runner {
   private final BaseSessionService sessionService;
   @Nullable private final BaseMemoryService memoryService;
   private final PluginManager pluginManager;
+  private final ResumabilityConfig resumabilityConfig;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
 
@@ -136,6 +138,7 @@ public class Runner {
       BaseAgent buildAgent;
       String buildAppName;
       List<? extends Plugin> buildPlugins;
+      ResumabilityConfig buildResumabilityConfig;
       EventsCompactionConfig buildEventsCompactionConfig;
       ContextCacheConfig buildContextCacheConfig;
 
@@ -149,12 +152,17 @@ public class Runner {
         buildAgent = this.app.rootAgent();
         buildPlugins = this.app.plugins();
         buildAppName = this.appName == null ? this.app.name() : this.appName;
+        buildResumabilityConfig =
+            this.app.resumabilityConfig() != null
+                ? this.app.resumabilityConfig()
+                : new ResumabilityConfig();
         buildEventsCompactionConfig = this.app.eventsCompactionConfig();
         buildContextCacheConfig = this.app.contextCacheConfig();
       } else {
         buildAgent = this.agent;
         buildAppName = this.appName;
         buildPlugins = this.plugins;
+        buildResumabilityConfig = new ResumabilityConfig();
         buildEventsCompactionConfig = null;
         buildContextCacheConfig = null;
       }
@@ -178,6 +186,7 @@ public class Runner {
           sessionService,
           memoryService,
           buildPlugins,
+          buildResumabilityConfig,
           buildEventsCompactionConfig,
           buildContextCacheConfig);
     }
@@ -199,7 +208,14 @@ public class Runner {
       BaseArtifactService artifactService,
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService) {
-    this(agent, appName, artifactService, sessionService, memoryService, ImmutableList.of());
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        ImmutableList.of(),
+        new ResumabilityConfig());
   }
 
   /**
@@ -215,7 +231,40 @@ public class Runner {
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService,
       List<? extends Plugin> plugins) {
-    this(agent, appName, artifactService, sessionService, memoryService, plugins, null, null);
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        plugins,
+        new ResumabilityConfig());
+  }
+
+  /**
+   * Creates a new {@code Runner} with a list of plugins and resumability config.
+   *
+   * @deprecated Use {@link Runner.Builder} instead.
+   */
+  @Deprecated
+  public Runner(
+      BaseAgent agent,
+      String appName,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService,
+      @Nullable BaseMemoryService memoryService,
+      List<? extends Plugin> plugins,
+      ResumabilityConfig resumabilityConfig) {
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        plugins,
+        resumabilityConfig,
+        null,
+        null);
   }
 
   /**
@@ -231,6 +280,7 @@ public class Runner {
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService,
       List<? extends Plugin> plugins,
+      ResumabilityConfig resumabilityConfig,
       @Nullable EventsCompactionConfig eventsCompactionConfig,
       @Nullable ContextCacheConfig contextCacheConfig) {
     this.agent = agent;
@@ -239,6 +289,7 @@ public class Runner {
     this.sessionService = sessionService;
     this.memoryService = memoryService;
     this.pluginManager = new PluginManager(plugins);
+    this.resumabilityConfig = resumabilityConfig;
     this.eventsCompactionConfig = createEventsCompactionConfig(agent, eventsCompactionConfig);
     this.contextCacheConfig = contextCacheConfig;
   }
@@ -617,6 +668,7 @@ public class Runner {
         .pluginManager(this.pluginManager)
         .agent(rootAgent)
         .session(session)
+        .resumabilityConfig(this.resumabilityConfig)
         .eventsCompactionConfig(this.eventsCompactionConfig)
         .contextCacheConfig(this.contextCacheConfig)
         .agent(this.findAgentToRun(session, rootAgent));
