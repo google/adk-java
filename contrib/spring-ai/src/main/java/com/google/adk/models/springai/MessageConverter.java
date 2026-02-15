@@ -243,11 +243,7 @@ public class MessageConverter {
     }
 
     List<Message> messages = new ArrayList<>();
-    // Create UserMessage with text
-    // TODO: Media attachments support - UserMessage constructors with media are private in Spring
-    // AI 1.1.0
-    // For now, only text content is supported
-    messages.add(new UserMessage(textBuilder.toString()));
+    messages.add(UserMessage.builder().text(textBuilder.toString()).media(mediaList).build());
     messages.addAll(toolResponseMessages);
 
     return messages;
