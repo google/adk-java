@@ -1,2 +1,35 @@
+# Compiled class files
+*.class
+
+# Log files
+*.log
+
+# Package Files
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# Maven target directory
 target/
-.idea
+
+# IntelliJ IDEA files
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# VS Code files
+.vscode/settings.json
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+
+# Local documentation and plans
+docs/
+plans/

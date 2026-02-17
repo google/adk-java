@@ -15,12 +15,16 @@
  */
 package com.google.adk.events;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.google.adk.JsonBaseModel;
+import com.google.adk.sessions.State;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
-import com.google.genai.types.Part;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import javax.annotation.Nullable;
@@ -28,19 +32,45 @@ import javax.annotation.Nullable;
 /** Represents the actions attached to an event. */
 // TODO - b/414081262 make json wire camelCase
 @JsonDeserialize(builder = EventActions.Builder.class)
-public class EventActions {
+public class EventActions extends JsonBaseModel {
 
-  private Optional<Boolean> skipSummarization = Optional.empty();
-  private ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
-  private ConcurrentMap<String, Part> artifactDelta = new ConcurrentHashMap<>();
-  private Optional<String> transferToAgent = Optional.empty();
-  private Optional<Boolean> escalate = Optional.empty();
-  private ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs =
-      new ConcurrentHashMap<>();
-  private Optional<Boolean> endInvocation = Optional.empty();
+  private Optional<Boolean> skipSummarization;
+  private ConcurrentMap<String, Object> stateDelta;
+  private ConcurrentMap<String, Integer> artifactDelta;
+  private Set<String> deletedArtifactIds;
+  private Optional<String> transferToAgent;
+  private Optional<Boolean> escalate;
+  private ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs;
+  private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
+  private boolean endOfAgent;
+  private Optional<EventCompaction> compaction;
 
   /** Default constructor for Jackson. */
-  public EventActions() {}
+  public EventActions() {
+    this.skipSummarization = Optional.empty();
+    this.stateDelta = new ConcurrentHashMap<>();
+    this.artifactDelta = new ConcurrentHashMap<>();
+    this.deletedArtifactIds = new HashSet<>();
+    this.transferToAgent = Optional.empty();
+    this.escalate = Optional.empty();
+    this.requestedAuthConfigs = new ConcurrentHashMap<>();
+    this.requestedToolConfirmations = new ConcurrentHashMap<>();
+    this.endOfAgent = false;
+    this.compaction = Optional.empty();
+  }
+
+  private EventActions(Builder builder) {
+    this.skipSummarization = builder.skipSummarization;
+    this.stateDelta = builder.stateDelta;
+    this.artifactDelta = builder.artifactDelta;
+    this.deletedArtifactIds = builder.deletedArtifactIds;
+    this.transferToAgent = builder.transferToAgent;
+    this.escalate = builder.escalate;
+    this.requestedAuthConfigs = builder.requestedAuthConfigs;
+    this.requestedToolConfirmations = builder.requestedToolConfirmations;
+    this.endOfAgent = builder.endOfAgent;
+    this.compaction = builder.compaction;
+  }
 
   @JsonProperty("skipSummarization")
   public Optional<Boolean> skipSummarization() {
@@ -64,17 +94,37 @@ public class EventActions {
     return stateDelta;
   }
 
+  @Deprecated // Use stateDelta(), addState() and removeStateByKey() instead.
   public void setStateDelta(ConcurrentMap<String, Object> stateDelta) {
     this.stateDelta = stateDelta;
   }
 
+  /**
+   * Removes a key from the state delta.
+   *
+   * @param key The key to remove.
+   */
+  public void removeStateByKey(String key) {
+    stateDelta.put(key, State.REMOVED);
+  }
+
   @JsonProperty("artifactDelta")
-  public ConcurrentMap<String, Part> artifactDelta() {
+  public ConcurrentMap<String, Integer> artifactDelta() {
     return artifactDelta;
   }
 
-  public void setArtifactDelta(ConcurrentMap<String, Part> artifactDelta) {
+  public void setArtifactDelta(ConcurrentMap<String, Integer> artifactDelta) {
     this.artifactDelta = artifactDelta;
+  }
+
+  @JsonProperty("deletedArtifactIds")
+  @JsonInclude(JsonInclude.Include.NON_EMPTY)
+  public Set<String> deletedArtifactIds() {
+    return deletedArtifactIds;
+  }
+
+  public void setDeletedArtifactIds(Set<String> deletedArtifactIds) {
+    this.deletedArtifactIds = deletedArtifactIds;
   }
 
   @JsonProperty("transferToAgent")
@@ -113,17 +163,57 @@ public class EventActions {
     this.requestedAuthConfigs = requestedAuthConfigs;
   }
 
-  @JsonProperty("endInvocation")
+  @JsonProperty("requestedToolConfirmations")
+  public ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations() {
+    return requestedToolConfirmations;
+  }
+
+  public void setRequestedToolConfirmations(
+      ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations) {
+    this.requestedToolConfirmations = requestedToolConfirmations;
+  }
+
+  @JsonProperty("endOfAgent")
+  @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+  public boolean endOfAgent() {
+    return endOfAgent;
+  }
+
+  public void setEndOfAgent(boolean endOfAgent) {
+    this.endOfAgent = endOfAgent;
+  }
+
+  /**
+   * @deprecated Use {@link #endOfAgent()} instead.
+   */
+  @Deprecated
   public Optional<Boolean> endInvocation() {
-    return endInvocation;
+    return endOfAgent ? Optional.of(true) : Optional.empty();
   }
 
+  /**
+   * @deprecated Use {@link #setEndOfAgent(boolean)} instead.
+   */
+  @Deprecated
   public void setEndInvocation(Optional<Boolean> endInvocation) {
-    this.endInvocation = endInvocation;
+    this.endOfAgent = endInvocation.orElse(false);
   }
 
+  /**
+   * @deprecated Use {@link #setEndOfAgent(boolean)} instead.
+   */
+  @Deprecated
   public void setEndInvocation(boolean endInvocation) {
-    this.endInvocation = Optional.of(endInvocation);
+    this.endOfAgent = endInvocation;
+  }
+
+  @JsonProperty("compaction")
+  public Optional<EventCompaction> compaction() {
+    return compaction;
+  }
+
+  public void setCompaction(Optional<EventCompaction> compaction) {
+    this.compaction = compaction;
   }
 
   public static Builder builder() {
@@ -145,10 +235,13 @@ public class EventActions {
     return Objects.equals(skipSummarization, that.skipSummarization)
         && Objects.equals(stateDelta, that.stateDelta)
         && Objects.equals(artifactDelta, that.artifactDelta)
+        && Objects.equals(deletedArtifactIds, that.deletedArtifactIds)
         && Objects.equals(transferToAgent, that.transferToAgent)
         && Objects.equals(escalate, that.escalate)
         && Objects.equals(requestedAuthConfigs, that.requestedAuthConfigs)
-        && Objects.equals(endInvocation, that.endInvocation);
+        && Objects.equals(requestedToolConfirmations, that.requestedToolConfirmations)
+        && (endOfAgent == that.endOfAgent)
+        && Objects.equals(compaction, that.compaction);
   }
 
   @Override
@@ -157,33 +250,52 @@ public class EventActions {
         skipSummarization,
         stateDelta,
         artifactDelta,
+        deletedArtifactIds,
         transferToAgent,
         escalate,
         requestedAuthConfigs,
-        endInvocation);
+        requestedToolConfirmations,
+        endOfAgent,
+        compaction);
   }
 
   /** Builder for {@link EventActions}. */
   public static class Builder {
-    private Optional<Boolean> skipSummarization = Optional.empty();
-    private ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
-    private ConcurrentMap<String, Part> artifactDelta = new ConcurrentHashMap<>();
-    private Optional<String> transferToAgent = Optional.empty();
-    private Optional<Boolean> escalate = Optional.empty();
-    private ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs =
-        new ConcurrentHashMap<>();
-    private Optional<Boolean> endInvocation = Optional.empty();
+    private Optional<Boolean> skipSummarization;
+    private ConcurrentMap<String, Object> stateDelta;
+    private ConcurrentMap<String, Integer> artifactDelta;
+    private Set<String> deletedArtifactIds;
+    private Optional<String> transferToAgent;
+    private Optional<Boolean> escalate;
+    private ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs;
+    private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
+    private boolean endOfAgent = false;
+    private Optional<EventCompaction> compaction;
 
-    public Builder() {}
+    public Builder() {
+      this.skipSummarization = Optional.empty();
+      this.stateDelta = new ConcurrentHashMap<>();
+      this.artifactDelta = new ConcurrentHashMap<>();
+      this.deletedArtifactIds = new HashSet<>();
+      this.transferToAgent = Optional.empty();
+      this.escalate = Optional.empty();
+      this.requestedAuthConfigs = new ConcurrentHashMap<>();
+      this.requestedToolConfirmations = new ConcurrentHashMap<>();
+      this.compaction = Optional.empty();
+    }
 
     private Builder(EventActions eventActions) {
       this.skipSummarization = eventActions.skipSummarization();
       this.stateDelta = new ConcurrentHashMap<>(eventActions.stateDelta());
       this.artifactDelta = new ConcurrentHashMap<>(eventActions.artifactDelta());
+      this.deletedArtifactIds = new HashSet<>(eventActions.deletedArtifactIds());
       this.transferToAgent = eventActions.transferToAgent();
       this.escalate = eventActions.escalate();
       this.requestedAuthConfigs = new ConcurrentHashMap<>(eventActions.requestedAuthConfigs());
-      this.endInvocation = eventActions.endInvocation();
+      this.requestedToolConfirmations =
+          new ConcurrentHashMap<>(eventActions.requestedToolConfirmations());
+      this.endOfAgent = eventActions.endOfAgent();
+      this.compaction = eventActions.compaction();
     }
 
     @CanIgnoreReturnValue
@@ -202,8 +314,15 @@ public class EventActions {
 
     @CanIgnoreReturnValue
     @JsonProperty("artifactDelta")
-    public Builder artifactDelta(ConcurrentMap<String, Part> value) {
+    public Builder artifactDelta(ConcurrentMap<String, Integer> value) {
       this.artifactDelta = value;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    @JsonProperty("deletedArtifactIds")
+    public Builder deletedArtifactIds(Set<String> value) {
+      this.deletedArtifactIds = value;
       return this;
     }
 
@@ -230,48 +349,54 @@ public class EventActions {
     }
 
     @CanIgnoreReturnValue
+    @JsonProperty("requestedToolConfirmations")
+    public Builder requestedToolConfirmations(ConcurrentMap<String, ToolConfirmation> value) {
+      this.requestedToolConfirmations = value;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    @JsonProperty("endOfAgent")
+    public Builder endOfAgent(boolean endOfAgent) {
+      this.endOfAgent = endOfAgent;
+      return this;
+    }
+
+    /**
+     * @deprecated Use {@link #endOfAgent(boolean)} instead.
+     */
+    @CanIgnoreReturnValue
     @JsonProperty("endInvocation")
+    @Deprecated
     public Builder endInvocation(boolean endInvocation) {
-      this.endInvocation = Optional.of(endInvocation);
+      this.endOfAgent = endInvocation;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    @JsonProperty("compaction")
+    public Builder compaction(EventCompaction value) {
+      this.compaction = Optional.ofNullable(value);
       return this;
     }
 
     @CanIgnoreReturnValue
     public Builder merge(EventActions other) {
-      if (other.skipSummarization().isPresent()) {
-        this.skipSummarization = other.skipSummarization();
-      }
-      if (other.stateDelta() != null) {
-        this.stateDelta.putAll(other.stateDelta());
-      }
-      if (other.artifactDelta() != null) {
-        this.artifactDelta.putAll(other.artifactDelta());
-      }
-      if (other.transferToAgent().isPresent()) {
-        this.transferToAgent = other.transferToAgent();
-      }
-      if (other.escalate().isPresent()) {
-        this.escalate = other.escalate();
-      }
-      if (other.requestedAuthConfigs() != null) {
-        this.requestedAuthConfigs.putAll(other.requestedAuthConfigs());
-      }
-      if (other.endInvocation().isPresent()) {
-        this.endInvocation = other.endInvocation();
-      }
+      other.skipSummarization().ifPresent(this::skipSummarization);
+      this.stateDelta.putAll(other.stateDelta());
+      this.artifactDelta.putAll(other.artifactDelta());
+      this.deletedArtifactIds.addAll(other.deletedArtifactIds());
+      other.transferToAgent().ifPresent(this::transferToAgent);
+      other.escalate().ifPresent(this::escalate);
+      this.requestedAuthConfigs.putAll(other.requestedAuthConfigs());
+      this.requestedToolConfirmations.putAll(other.requestedToolConfirmations());
+      this.endOfAgent = other.endOfAgent();
+      other.compaction().ifPresent(this::compaction);
       return this;
     }
 
     public EventActions build() {
-      EventActions eventActions = new EventActions();
-      eventActions.setSkipSummarization(this.skipSummarization);
-      eventActions.setStateDelta(this.stateDelta);
-      eventActions.setArtifactDelta(this.artifactDelta);
-      eventActions.setTransferToAgent(this.transferToAgent);
-      eventActions.setEscalate(this.escalate);
-      eventActions.setRequestedAuthConfigs(this.requestedAuthConfigs);
-      eventActions.setEndInvocation(this.endInvocation);
-      return eventActions;
+      return new EventActions(this);
     }
   }
 }

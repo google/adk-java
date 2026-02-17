@@ -34,7 +34,7 @@ public record AdkWebCorsProperties(
 
   public AdkWebCorsProperties {
     mapping = mapping != null ? mapping : "/**";
-    origins = origins != null && !origins.isEmpty() ? origins : List.of();
+    origins = origins != null && !origins.isEmpty() ? origins : List.of("*");
     methods =
         methods != null && !methods.isEmpty()
             ? methods

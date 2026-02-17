@@ -20,7 +20,12 @@ import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.function.Supplier;
 
-/** Iterable stream of {@link Event} objects. */
+/**
+ * Iterable stream of {@link Event} objects.
+ *
+ * <p>NOTE: This class is not thread-safe. Concurrent iteration from multiple threads should be
+ * avoided or externally synchronized.
+ */
 public class EventStream implements Iterable<Event> {
 
   private final Supplier<Event> eventSupplier;

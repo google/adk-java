@@ -23,7 +23,6 @@ import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.introspect.AnnotatedMember;
 import com.fasterxml.jackson.databind.introspect.BeanPropertyDefinition;
-import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.google.adk.JsonBaseModel;
 import com.google.common.base.Strings;
 import com.google.genai.types.FunctionDeclaration;
@@ -45,9 +44,8 @@ import org.slf4j.LoggerFactory;
 /** Utility class for function calling. */
 public final class FunctionCallingUtils {
 
-  private static final ObjectMapper OBJECT_MAPPER =
-      new ObjectMapper().registerModule(new Jdk8Module());
   private static final Logger logger = LoggerFactory.getLogger(FunctionCallingUtils.class);
+  private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
 
   /** Holds the state during a single schema generation process to handle caching and recursion. */
   private static class SchemaGenerationContext {
@@ -106,14 +104,19 @@ public final class FunctionCallingUtils {
       if (ignoreParams.contains(paramName)) {
         continue;
       }
-      required.add(paramName);
+      Annotations.Schema schema = param.getAnnotation(Annotations.Schema.class);
+      if (schema == null || !schema.optional()) {
+        required.add(paramName);
+      }
       properties.put(paramName, buildSchemaFromParameter(param));
     }
     builder.parameters(
         Schema.builder().required(required).properties(properties).type("OBJECT").build());
 
     Type returnType = func.getGenericReturnType();
-    if (returnType != Void.TYPE) {
+    if (returnType == Void.TYPE || returnType == Void.class) {
+      builder.response(Schema.builder().type("NULL").build());
+    } else {
       Type actualReturnType = returnType;
       if (returnType instanceof ParameterizedType parameterizedReturnType) {
         String rawTypeName = ((Class<?>) parameterizedReturnType.getRawType()).getName();
@@ -159,7 +162,7 @@ public final class FunctionCallingUtils {
    * @throws IllegalArgumentException if a type is encountered that cannot be serialized by Jackson.
    */
   public static Schema buildSchemaFromType(Type type) {
-    return buildSchemaRecursive(OBJECT_MAPPER.constructType(type), new SchemaGenerationContext());
+    return buildSchemaRecursive(objectMapper.constructType(type), new SchemaGenerationContext());
   }
 
   /**
@@ -214,7 +217,7 @@ public final class FunctionCallingUtils {
         }
         builder.enum_(enumValues).type("STRING").format("enum");
       } else { // POJO
-        if (!OBJECT_MAPPER.canSerialize(rawClass)) {
+        if (!objectMapper.canSerialize(rawClass)) {
           throw new IllegalArgumentException(
               "Unsupported type: "
                   + rawClass.getName()
@@ -223,7 +226,7 @@ public final class FunctionCallingUtils {
                   + " directly.");
         }
         BeanDescription beanDescription =
-            OBJECT_MAPPER.getSerializationConfig().introspect(javaType);
+            objectMapper.getSerializationConfig().introspect(javaType);
         Map<String, Schema> properties = new LinkedHashMap<>();
         List<String> required = new ArrayList<>();
         for (BeanPropertyDefinition property : beanDescription.findProperties()) {

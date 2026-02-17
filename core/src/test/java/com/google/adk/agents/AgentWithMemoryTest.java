@@ -40,6 +40,9 @@ import org.junit.runners.JUnit4;
 public final class AgentWithMemoryTest {
   @Test
   public void agentRemembersUserNameWithMemoryTool() throws Exception {
+    String userId = "test-user";
+    String agentName = "test-agent";
+
     Part functionCall =
         Part.builder()
             .functionCall(
@@ -56,13 +59,13 @@ public final class AgentWithMemoryTest {
                     .content(
                         Content.builder()
                             .parts(Part.fromText("OK, I'll remember that."))
-                            .role("test-agent")
+                            .role("model")
                             .build())
                     .build(),
                 LlmResponse.builder()
                     .content(
                         Content.builder()
-                            .role("test-agent")
+                            .role("model")
                             .parts(ImmutableList.of(functionCall))
                             .build())
                     .build(),
@@ -72,30 +75,44 @@ public final class AgentWithMemoryTest {
                             // we won't actually read the name from here since that'd be
                             // cheating.
                             .parts(Part.fromText("Your name is James."))
-                            .role("test-agent")
+                            .role("model")
                             .build())
                     .build()));
 
     LlmAgent agent =
         LlmAgent.builder()
-            .name("test-agent")
+            .name(agentName)
             .model(testLlm)
             .tools(ImmutableList.of(new LoadMemoryTool()))
             .build();
 
     InMemoryRunner runner = new InMemoryRunner(agent);
-    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    String sessionId = runner.sessionService().createSession(agentName, userId).blockingGet().id();
 
     Content firstMessage = Content.fromParts(Part.fromText("My name is James"));
 
     var unused =
-        runner.runAsync(session, firstMessage, RunConfig.builder().build()).toList().blockingGet();
-    // Save the session so we can bring it up on the next request.
-    runner.memoryService().addSessionToMemory(session).blockingAwait();
+        runner
+            .runAsync(userId, sessionId, firstMessage, RunConfig.builder().build())
+            .toList()
+            .blockingGet();
+
+    // Retrieve the updated session after the first runAsync
+    Session updatedSession =
+        runner
+            .sessionService()
+            .getSession("test-agent", userId, sessionId, Optional.empty())
+            .blockingGet();
+
+    // Save the updated session to memory so we can bring it up on the next request.
+    runner.memoryService().addSessionToMemory(updatedSession).blockingAwait();
 
     Content secondMessage = Content.fromParts(Part.fromText("what is my name?"));
     unused =
-        runner.runAsync(session, secondMessage, RunConfig.builder().build()).toList().blockingGet();
+        runner
+            .runAsync(userId, updatedSession.id(), secondMessage, RunConfig.builder().build())
+            .toList()
+            .blockingGet();
 
     // Verify that the tool's response was included in the next LLM call.
     LlmRequest lastRequest = testLlm.getLastRequest();

@@ -16,10 +16,11 @@
 
 package com.google.adk.agents;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.collect.ImmutableList;
+import java.util.List;
 
 /**
- * Base configuration for all agents.
+ * Base configuration for all agents with subagent support.
  *
  * <p>TODO: Config agent features are not yet ready for public use.
  */
@@ -27,8 +28,86 @@ public class BaseAgentConfig {
   private String name;
   private String description = "";
   private String agentClass;
+  private ImmutableList<AgentRefConfig> subAgents = ImmutableList.of();
 
-  @JsonProperty(value = "name", required = true)
+  // Callback configuration (names resolved via ComponentRegistry)
+  private ImmutableList<CallbackRef> beforeAgentCallbacks = ImmutableList.of();
+  private ImmutableList<CallbackRef> afterAgentCallbacks = ImmutableList.of();
+
+  /** Reference to a callback stored in the ComponentRegistry. */
+  public static class CallbackRef {
+    private String name;
+
+    public CallbackRef() {}
+
+    public CallbackRef(String name) {
+      this.name = name;
+    }
+
+    public String name() {
+      return name;
+    }
+
+    public void setName(String name) {
+      this.name = name;
+    }
+  }
+
+  /**
+   * Configuration for referencing other agents (subagents). Supports both config-based references
+   * (YAML files) and programmatic references (via code registry).
+   */
+  public static class AgentRefConfig {
+    private String configPath;
+    private String code;
+
+    public AgentRefConfig() {}
+
+    /**
+     * Constructor for config-based agent reference.
+     *
+     * @param configPath The path to the subagent's config file
+     */
+    public AgentRefConfig(String configPath) {
+      this.configPath = configPath;
+    }
+
+    public String configPath() {
+      return configPath;
+    }
+
+    public void setConfigPath(String configPath) {
+      this.configPath = configPath;
+    }
+
+    public String code() {
+      return code;
+    }
+
+    public void setCode(String code) {
+      this.code = code;
+    }
+  }
+
+  public BaseAgentConfig() {}
+
+  public BaseAgentConfig(String agentClass) {
+    this.agentClass = agentClass;
+  }
+
+  /**
+   * Constructor with basic fields.
+   *
+   * @param name The agent name
+   * @param description The agent description
+   * @param agentClass The agent class name
+   */
+  public BaseAgentConfig(String name, String description, String agentClass) {
+    this.name = name;
+    this.description = description;
+    this.agentClass = agentClass;
+  }
+
   public String name() {
     return name;
   }
@@ -37,7 +116,6 @@ public class BaseAgentConfig {
     this.name = name;
   }
 
-  @JsonProperty("description")
   public String description() {
     return description;
   }
@@ -46,12 +124,41 @@ public class BaseAgentConfig {
     this.description = description;
   }
 
-  @JsonProperty("agent_class")
+  public void setAgentClass(String agentClass) {
+    this.agentClass = agentClass;
+  }
+
   public String agentClass() {
     return agentClass;
   }
 
-  public void setAgentClass(String agentClass) {
-    this.agentClass = agentClass;
+  public ImmutableList<AgentRefConfig> subAgents() {
+    return subAgents;
+  }
+
+  public void setSubAgents(List<AgentRefConfig> subAgents) {
+    this.subAgents = subAgents == null ? ImmutableList.of() : ImmutableList.copyOf(subAgents);
+  }
+
+  public ImmutableList<CallbackRef> beforeAgentCallbacks() {
+    return beforeAgentCallbacks;
+  }
+
+  public void setBeforeAgentCallbacks(List<CallbackRef> beforeAgentCallbacks) {
+    this.beforeAgentCallbacks =
+        beforeAgentCallbacks == null
+            ? ImmutableList.of()
+            : ImmutableList.copyOf(beforeAgentCallbacks);
+  }
+
+  public ImmutableList<CallbackRef> afterAgentCallbacks() {
+    return afterAgentCallbacks;
+  }
+
+  public void setAfterAgentCallbacks(List<CallbackRef> afterAgentCallbacks) {
+    this.afterAgentCallbacks =
+        afterAgentCallbacks == null
+            ? ImmutableList.of()
+            : ImmutableList.copyOf(afterAgentCallbacks);
   }
 }

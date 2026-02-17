@@ -10,6 +10,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.artifacts.ListArtifactsResponse;
+import com.google.adk.events.ToolConfirmation;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import io.reactivex.rxjava3.core.Single;
@@ -79,5 +80,52 @@ public final class ToolContextTest {
     List<String> filenames = toolContext.listArtifacts().blockingGet();
 
     assertThat(filenames).isEmpty();
+  }
+
+  @Test
+  public void requestConfirmation_noFunctionCallId_throwsException() {
+    ToolContext toolContext = ToolContext.builder(mockInvocationContext).build();
+    IllegalStateException exception =
+        assertThrows(
+            IllegalStateException.class, () -> toolContext.requestConfirmation(null, null));
+    assertThat(exception).hasMessageThat().isEqualTo("function_call_id is not set.");
+  }
+
+  @Test
+  public void requestConfirmation_withHintAndPayload_setsToolConfirmation() {
+    ToolContext toolContext =
+        ToolContext.builder(mockInvocationContext).functionCallId("testId").build();
+    toolContext.requestConfirmation("testHint", "testPayload");
+    assertThat(toolContext.actions().requestedToolConfirmations())
+        .containsExactly(
+            "testId", ToolConfirmation.builder().hint("testHint").payload("testPayload").build());
+  }
+
+  @Test
+  public void requestConfirmation_withHint_setsToolConfirmation() {
+    ToolContext toolContext =
+        ToolContext.builder(mockInvocationContext).functionCallId("testId").build();
+    toolContext.requestConfirmation("testHint");
+    assertThat(toolContext.actions().requestedToolConfirmations())
+        .containsExactly(
+            "testId", ToolConfirmation.builder().hint("testHint").payload(null).build());
+  }
+
+  @Test
+  public void requestConfirmation_noHintOrPayload_setsToolConfirmation() {
+    ToolContext toolContext =
+        ToolContext.builder(mockInvocationContext).functionCallId("testId").build();
+    toolContext.requestConfirmation();
+    assertThat(toolContext.actions().requestedToolConfirmations())
+        .containsExactly("testId", ToolConfirmation.builder().hint(null).payload(null).build());
+  }
+
+  @Test
+  public void requestConfirmation_nullHint_setsToolConfirmation() {
+    ToolContext toolContext =
+        ToolContext.builder(mockInvocationContext).functionCallId("testId").build();
+    toolContext.requestConfirmation(null);
+    assertThat(toolContext.actions().requestedToolConfirmations())
+        .containsExactly("testId", ToolConfirmation.builder().hint(null).payload(null).build());
   }
 }

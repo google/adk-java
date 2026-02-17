@@ -16,6 +16,7 @@
 
 package com.google.adk.sessions;
 
+import com.fasterxml.jackson.annotation.JsonValue;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -32,8 +33,8 @@ public final class State implements ConcurrentMap<String, Object> {
   public static final String USER_PREFIX = "user:";
   public static final String TEMP_PREFIX = "temp:";
 
-  // Sentinel object to mark removed entries in the delta map
-  private static final Object REMOVED = new Object();
+  /** Sentinel object to mark removed entries in the delta map. */
+  public static final Object REMOVED = RemovedSentinel.INSTANCE;
 
   private final ConcurrentMap<String, Object> state;
   private final ConcurrentMap<String, Object> delta;
@@ -167,5 +168,18 @@ public final class State implements ConcurrentMap<String, Object> {
 
   public boolean hasDelta() {
     return !delta.isEmpty();
+  }
+
+  private static final class RemovedSentinel {
+    public static final RemovedSentinel INSTANCE = new RemovedSentinel();
+
+    private RemovedSentinel() {
+      // Enforce singleton.
+    }
+
+    @JsonValue
+    public String toJson() {
+      return "__ADK_SENTINEL_REMOVED__";
+    }
   }
 }

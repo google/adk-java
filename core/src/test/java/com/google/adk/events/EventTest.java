@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.adk.events;
 
 import static com.google.common.truth.Truth.assertThat;
@@ -8,6 +24,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
@@ -28,9 +45,7 @@ public final class EventTest {
       EventActions.builder()
           .skipSummarization(true)
           .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key", "value")))
-          .artifactDelta(
-              new ConcurrentHashMap<>(
-                  ImmutableMap.of("artifact_key", Part.builder().text("artifact_value").build())))
+          .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact_key", 1)))
           .transferToAgent("agent_id")
           .escalate(true)
           .requestedAuthConfigs(
@@ -51,6 +66,14 @@ public final class EventTest {
           .turnComplete(true)
           .errorCode(new FinishReason("error_code"))
           .errorMessage("error_message")
+          .finishReason(new FinishReason("finish_reason"))
+          .usageMetadata(
+              GenerateContentResponseUsageMetadata.builder()
+                  .promptTokenCount(10)
+                  .candidatesTokenCount(20)
+                  .totalTokenCount(30)
+                  .build())
+          .avgLogprobs(0.5)
           .interrupted(true)
           .timestamp(123456789L)
           .build();
@@ -64,6 +87,15 @@ public final class EventTest {
     assertThat(EVENT.turnComplete().get()).isTrue();
     assertThat(EVENT.errorCode()).hasValue(new FinishReason("error_code"));
     assertThat(EVENT.errorMessage()).hasValue("error_message");
+    assertThat(EVENT.finishReason()).hasValue(new FinishReason("finish_reason"));
+    assertThat(EVENT.usageMetadata())
+        .hasValue(
+            GenerateContentResponseUsageMetadata.builder()
+                .promptTokenCount(10)
+                .candidatesTokenCount(20)
+                .totalTokenCount(30)
+                .build());
+    assertThat(EVENT.avgLogprobs()).hasValue(0.5);
     assertThat(EVENT.interrupted()).hasValue(true);
     assertThat(EVENT.timestamp()).isEqualTo(123456789L);
     assertThat(EVENT.actions()).isEqualTo(EVENT_ACTIONS);
@@ -156,5 +188,68 @@ public final class EventTest {
     String json = EVENT.toJson();
     Event deserializedEvent = Event.fromJson(json);
     assertThat(deserializedEvent).isEqualTo(EVENT);
+  }
+
+  @Test
+  public void finalResponse_returnsTrueIfNoToolCalls() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromText("hello")))
+            .build();
+    assertThat(event.finalResponse()).isTrue();
+  }
+
+  @Test
+  public void finalResponse_returnsFalseIfToolCalls() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromFunctionCall("tool", ImmutableMap.of("k", "v"))))
+            .build();
+    assertThat(event.finalResponse()).isFalse();
+  }
+
+  @Test
+  public void finalResponse_isTrueForEventWithTextContent() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromText("hello")))
+            .longRunningToolIds(ImmutableSet.of("tool1"))
+            .build();
+    assertThat(event.finalResponse()).isTrue();
+  }
+
+  @Test
+  public void finalResponse_isFalseForEventWithToolCallAndLongRunningToolId() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromFunctionCall("tool", ImmutableMap.of("k", "v"))))
+            .longRunningToolIds(ImmutableSet.of("tool1"))
+            .build();
+    assertThat(event.finalResponse()).isFalse();
+  }
+
+  @Test
+  public void finalResponse_returnsTrueIfSkipSummarization() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromFunctionCall("tool", ImmutableMap.of("k", "v"))))
+            .actions(EventActions.builder().skipSummarization(true).build())
+            .build();
+    assertThat(event.finalResponse()).isTrue();
   }
 }

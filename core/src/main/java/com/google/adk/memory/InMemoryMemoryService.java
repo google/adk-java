@@ -70,9 +70,11 @@ public final class InMemoryMemoryService implements BaseMemoryService {
               session.events().stream()
                   .filter(
                       event ->
-                          event.content().isPresent()
-                              && event.content().get().parts().isPresent()
-                              && !event.content().get().parts().get().isEmpty())
+                          event
+                              .content()
+                              .flatMap(c -> c.parts())
+                              .filter(parts -> !parts.isEmpty())
+                              .isPresent())
                   .collect(toImmutableList());
           userSessions.put(session.id(), nonEmptyEvents);
         });

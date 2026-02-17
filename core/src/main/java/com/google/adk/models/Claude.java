@@ -121,18 +121,19 @@ public class Claude extends BaseLlm {
       }
     }
 
-    var message =
-        this.anthropicClient
-            .messages()
-            .create(
-                MessageCreateParams.builder()
-                    .model(llmRequest.model().orElse(model()))
-                    .system(systemText)
-                    .messages(messages)
-                    .tools(tools)
-                    .toolChoice(toolChoice)
-                    .maxTokens(this.maxTokens)
-                    .build());
+    MessageCreateParams.Builder paramsBuilder =
+        MessageCreateParams.builder()
+            .model(llmRequest.model().orElse(model()))
+            .system(systemText)
+            .messages(messages)
+            .maxTokens(this.maxTokens);
+
+    if (toolChoice != null) {
+      paramsBuilder.tools(tools);
+      paramsBuilder.toolChoice(toolChoice);
+    }
+
+    var message = this.anthropicClient.messages().create(paramsBuilder.build());
 
     logger.debug("Claude response: {}", message);
 

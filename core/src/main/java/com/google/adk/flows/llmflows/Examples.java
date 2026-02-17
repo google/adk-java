@@ -21,6 +21,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.examples.ExampleUtils;
 import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
+import com.google.genai.types.Content;
 import io.reactivex.rxjava3.core.Single;
 
 /** {@link RequestProcessor} that populates examples in LLM request. */
@@ -38,9 +39,12 @@ public final class Examples implements RequestProcessor {
     LlmRequest.Builder builder = request.toBuilder();
 
     String query =
-        context.userContent().isPresent()
-            ? context.userContent().get().parts().get().get(0).text().orElse("")
-            : "";
+        context
+            .userContent()
+            .flatMap(Content::parts)
+            .filter(parts -> !parts.isEmpty())
+            .map(parts -> parts.get(0).text().orElse(""))
+            .orElse("");
     agent
         .exampleProvider()
         .ifPresent(

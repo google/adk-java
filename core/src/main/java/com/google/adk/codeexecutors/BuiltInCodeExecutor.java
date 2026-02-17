@@ -45,10 +45,9 @@ public class BuiltInCodeExecutor extends BaseCodeExecutor {
     LlmRequest llmRequest = llmRequestBuilder.build();
     if (ModelNameUtils.isGemini2Model(llmRequest.model().orElse(null))) {
       GenerateContentConfig.Builder configBuilder =
-          llmRequest.config().map(c -> c.toBuilder()).orElse(GenerateContentConfig.builder());
-      ImmutableList.Builder<Tool> toolsBuilder =
-          ImmutableList.<Tool>builder()
-              .addAll(configBuilder.build().tools().orElse(ImmutableList.<Tool>of()));
+          llmRequest.config().map(c -> c.toBuilder()).orElseGet(GenerateContentConfig::builder);
+      ImmutableList.Builder<Tool> toolsBuilder = ImmutableList.<Tool>builder();
+      llmRequest.config().ifPresent(c -> c.tools().ifPresent(toolsBuilder::addAll));
       toolsBuilder.add(Tool.builder().codeExecution(ToolCodeExecution.builder().build()).build());
       configBuilder.tools(toolsBuilder.build());
       llmRequestBuilder.config(configBuilder.build());

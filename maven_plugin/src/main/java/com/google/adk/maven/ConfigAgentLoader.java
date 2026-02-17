@@ -20,6 +20,7 @@ import static java.util.stream.Collectors.toList;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.ConfigAgentUtils;
+import com.google.adk.web.AgentLoader;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
@@ -61,7 +62,7 @@ import org.slf4j.LoggerFactory;
  * <p>TODO: Config agent features are not yet ready for public use.
  */
 @ThreadSafe
-class ConfigAgentLoader implements AgentLoader {
+public class ConfigAgentLoader implements AgentLoader {
   private static final Logger logger = LoggerFactory.getLogger(ConfigAgentLoader.class);
   private static final String YAML_CONFIG_FILENAME = "root_agent.yaml";
 
@@ -139,6 +140,25 @@ class ConfigAgentLoader implements AgentLoader {
 
     logger.info("Initial scan for YAML agents in: {}", sourcePath);
 
+    // First, check if the current directory itself contains a root_agent.yaml
+    Path currentDirYamlPath = sourcePath.resolve(YAML_CONFIG_FILENAME);
+    if (Files.exists(currentDirYamlPath) && Files.isRegularFile(currentDirYamlPath)) {
+      String agentName = sourcePath.getFileName().toString();
+      logger.debug("Discovering YAML agent config in current directory: {}", currentDirYamlPath);
+
+      // Create a memoized supplier that will load the agent only when requested
+      agentSuppliers.put(agentName, Suppliers.memoize(() -> loadAgentFromPath(currentDirYamlPath)));
+
+      // Register with watcher if hot-reloading is enabled
+      if (hotReloadingEnabled && watcher != null) {
+        watcher.watch(sourcePath, agentDirPath -> updateAgentSupplier(agentDirPath));
+      }
+
+      logger.info("Discovered YAML agent '{}' from: {}", agentName, currentDirYamlPath);
+      return;
+    }
+
+    // Otherwise, scan subdirectories for agents
     try (Stream<Path> entries = Files.list(sourcePath)) {
       for (Path agentDir : entries.collect(toList())) {
         if (Files.isDirectory(agentDir)) {

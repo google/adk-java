@@ -37,8 +37,8 @@ jobs:
             ${{ runner.os }}-maven-${{ matrix.java-version }}-
             ${{ runner.os }}-maven-
 
-      - name: Compile and test (all) modules with Java ${{ matrix.java-version }}
-        run: ./mvnw clean test
+      - name: Package and test (all) modules with Java ${{ matrix.java-version }}
+        run: ./mvnw -Prelease clean package
 
       - name: Detected wrongly formatted files
         run: git status && git diff --exit-code

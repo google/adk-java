@@ -117,10 +117,13 @@ public final class LoadArtifactsTool extends BaseTool {
     try {
       String instructions =
           String.format(
-              "You have a list of artifacts:\n  %s\n\nWhen the user asks questions about"
-                  + " any of the artifacts, you should call the `load_artifacts` function"
-                  + " to load the artifact. Do not generate any text other than the"
-                  + " function call.",
+              "You have a list of artifacts:\n"
+                  + "  %s\n\n"
+                  + "When the user asks questions about any of the artifacts, you should call the"
+                  + " `load_artifacts` function to load the artifact. Do not generate any text"
+                  + " other than the function call. Whenever you are asked about artifacts, you"
+                  + " should first load it. You must always load an artifact to access its"
+                  + " content, even if it has been loaded before.",
               JsonBaseModel.getMapper().writeValueAsString(artifactNamesList));
       llmRequestBuilder.appendInstructions(ImmutableList.of(instructions));
     } catch (JsonProcessingException e) {

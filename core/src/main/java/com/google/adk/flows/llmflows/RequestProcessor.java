@@ -22,14 +22,27 @@ import com.google.adk.models.LlmRequest;
 import com.google.auto.value.AutoValue;
 import io.reactivex.rxjava3.core.Single;
 
+/** Interface for processing LLM requests. */
 public interface RequestProcessor {
 
+  /** Result of request processing. */
   @AutoValue
   public abstract static class RequestProcessingResult {
+    /**
+     * Updated LLM request.
+     *
+     * <p>This is the LLM request that will be used to generate the LLM response.
+     */
     public abstract LlmRequest updatedRequest();
 
+    /**
+     * Events generated during processing.
+     *
+     * <p>These events are not necessarily part of the LLM request.
+     */
     public abstract Iterable<Event> events();
 
+    /** Creates a new {@link RequestProcessingResult}. */
     public static RequestProcessingResult create(
         LlmRequest updatedRequest, Iterable<Event> events) {
       return new AutoValue_RequestProcessor_RequestProcessingResult(updatedRequest, events);

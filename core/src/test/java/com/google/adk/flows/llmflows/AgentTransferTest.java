@@ -29,6 +29,7 @@ import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.events.Event;
+import com.google.adk.models.LlmRequest;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
@@ -53,11 +54,11 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public final class AgentTransferTest {
   public static Part createTransferCallPart(String agentName) {
-    return Part.fromFunctionCall("transferToAgent", ImmutableMap.of("agentName", agentName));
+    return Part.fromFunctionCall("transfer_to_agent", ImmutableMap.of("agent_name", agentName));
   }
 
   public static Part createTransferResponsePart() {
-    return Part.fromFunctionResponse("transferToAgent", ImmutableMap.<String, Object>of());
+    return Part.fromFunctionResponse("transfer_to_agent", ImmutableMap.<String, Object>of());
   }
 
   // Helper tool for testing LoopAgent
@@ -121,8 +122,8 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1: response1")
         .inOrder();
 
@@ -161,8 +162,8 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1: response1")
         .inOrder();
 
@@ -208,10 +209,10 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
-            "sub_agent_1: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1_1})",
-            "sub_agent_1: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
+            "sub_agent_1: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1_1})",
+            "sub_agent_1: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1_1: response1")
         .inOrder();
 
@@ -265,8 +266,8 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1_1: response1",
             "sub_agent_1_2: response2")
         .inOrder();
@@ -330,11 +331,12 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1_1: response1",
-            "sub_agent_1_2: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1_2_1})",
-            "sub_agent_1_2: FunctionResponse(name=transferToAgent, response={})",
+            "sub_agent_1_2: FunctionCall(name=transfer_to_agent,"
+                + " args={agent_name=sub_agent_1_2_1})",
+            "sub_agent_1_2: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1_2_1: response2",
             "sub_agent_1_3: response3")
         .inOrder();
@@ -396,8 +398,8 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1_1: response1",
             "sub_agent_1_2: response2",
             "sub_agent_1_1: response3",
@@ -408,6 +410,85 @@ public final class AgentTransferTest {
     actualEvents = runRunner(runner, invocationContext);
 
     assertThat(simplifyEvents(actualEvents)).containsExactly("root_agent: response5");
+  }
+
+  @Test
+  public void testLegacyTransferToAgent() {
+    Content transferCallContent =
+        Content.fromParts(
+            Part.fromFunctionCall("transferToAgent", ImmutableMap.of("agentName", "sub_agent_1")));
+    Content response1 = Content.fromParts(Part.fromText("response1"));
+    Content response2 = Content.fromParts(Part.fromText("response2"));
+
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(createLlmResponse(transferCallContent)),
+            Flowable.just(createLlmResponse(response1)),
+            Flowable.just(createLlmResponse(response2)));
+
+    LlmAgent subAgent1 = createTestAgentBuilder(testLlm).name("sub_agent_1").build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(rootAgent);
+
+    Runner runner = getRunnerAndCreateSession(rootAgent, invocationContext.session());
+    List<Event> actualEvents = runRunner(runner, invocationContext);
+
+    assertThat(simplifyEvents(actualEvents))
+        .containsExactly(
+            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "sub_agent_1: response1")
+        .inOrder();
+
+    actualEvents = runRunner(runner, invocationContext);
+
+    assertThat(simplifyEvents(actualEvents)).containsExactly("sub_agent_1: response2");
+  }
+
+  @Test
+  public void testAgentTransferDoesNotExposeLegacyTransferToAgent() {
+    Content transferCallContent =
+        Content.fromParts(
+            Part.fromFunctionCall("transferToAgent", ImmutableMap.of("agentName", "sub_agent_1")));
+    Content response1 = Content.fromParts(Part.fromText("response1"));
+    Content response2 = Content.fromParts(Part.fromText("response2"));
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(createLlmResponse(transferCallContent)),
+            Flowable.just(createLlmResponse(response1)),
+            Flowable.just(createLlmResponse(response2)));
+    LlmAgent subAgent1 = createTestAgentBuilder(testLlm).name("sub_agent_1").build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(rootAgent);
+    AgentTransfer processor = new AgentTransfer();
+    LlmRequest request = LlmRequest.builder().build();
+
+    var processed = processor.processRequest(invocationContext, request);
+
+    assertThat(processed.blockingGet().updatedRequest().config().get().tools()).isPresent();
+    assertThat(processed.blockingGet().updatedRequest().config().get().tools().get()).hasSize(1);
+    assertThat(
+            processed
+                .blockingGet()
+                .updatedRequest()
+                .config()
+                .get()
+                .tools()
+                .get()
+                .get(0)
+                .functionDeclarations()
+                .get()
+                .get(0)
+                .name())
+        .hasValue("transfer_to_agent");
   }
 
   private Runner getRunnerAndCreateSession(LlmAgent agent, Session session) {

@@ -1,7 +1,22 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.adk.tools.applicationintegrationtoolset;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
-import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -9,16 +24,15 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
-import com.google.auth.oauth2.GoogleCredentials;
+import com.google.auth.Credentials;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Streams;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Single;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -28,94 +42,28 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Application Integration Tool */
 public class IntegrationConnectorTool extends BaseTool {
 
+  private static final Logger logger = LoggerFactory.getLogger(IntegrationConnectorTool.class);
+
   private final String openApiSpec;
   private final String pathUrl;
-  private final HttpExecutor httpExecutor;
   private final String connectionName;
   private final String serviceName;
   private final String host;
+  private final String serviceAccountJson;
+  private final HttpClient httpClient;
+  private final CredentialsHelper credentialsHelper;
+
   private String entity;
   private String operation;
   private String action;
-  private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-  interface HttpExecutor {
-    <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler)
-        throws IOException, InterruptedException;
-
-    String getToken() throws IOException;
-
-    public HttpExecutor createExecutor(String serviceAccountJson);
-  }
-
-  static class DefaultHttpExecutor implements HttpExecutor {
-    private final HttpClient client = HttpClient.newHttpClient();
-    private final String serviceAccountJson;
-
-    /** Default constructor for when no service account is specified. */
-    DefaultHttpExecutor() {
-      this(null);
-    }
-
-    /**
-     * Constructor that accepts an optional service account JSON string.
-     *
-     * @param serviceAccountJson The service account key as a JSON string, or null.
-     */
-    DefaultHttpExecutor(@Nullable String serviceAccountJson) {
-      this.serviceAccountJson = serviceAccountJson;
-    }
-
-    @Override
-    public <T> HttpResponse<T> send(
-        HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler)
-        throws IOException, InterruptedException {
-      return client.send(request, responseBodyHandler);
-    }
-
-    @Override
-    public String getToken() throws IOException {
-      GoogleCredentials credentials;
-
-      if (this.serviceAccountJson != null && !this.serviceAccountJson.trim().isEmpty()) {
-        try (InputStream is = new ByteArrayInputStream(this.serviceAccountJson.getBytes(UTF_8))) {
-          credentials =
-              GoogleCredentials.fromStream(is)
-                  .createScoped("https://www.googleapis.com/auth/cloud-platform");
-        } catch (IOException e) {
-          throw new IOException("Failed to load credentials from service_account_json.", e);
-        }
-      } else {
-        try {
-          credentials =
-              GoogleCredentials.getApplicationDefault()
-                  .createScoped("https://www.googleapis.com/auth/cloud-platform");
-        } catch (IOException e) {
-          throw new IOException(
-              "Please provide a service account or configure Application Default Credentials. To"
-                  + " set up ADC, see"
-                  + " https://cloud.google.com/docs/authentication/external/set-up-adc.",
-              e);
-        }
-      }
-
-      credentials.refreshIfExpired();
-      return credentials.getAccessToken().getTokenValue();
-    }
-
-    @Override
-    public HttpExecutor createExecutor(String serviceAccountJson) {
-      if (isNullOrEmpty(serviceAccountJson)) {
-        return new DefaultHttpExecutor();
-      } else {
-        return new DefaultHttpExecutor(serviceAccountJson);
-      }
-    }
-  }
+  private static final ObjectMapper objectMapper = new ObjectMapper();
 
   private static final ImmutableList<String> EXCLUDE_FIELDS =
       ImmutableList.of("connectionName", "serviceName", "host", "entity", "operation", "action");
@@ -130,16 +78,7 @@ public class IntegrationConnectorTool extends BaseTool {
       String toolName,
       String toolDescription,
       String serviceAccountJson) {
-    this(
-        openApiSpec,
-        pathUrl,
-        toolName,
-        toolDescription,
-        null,
-        null,
-        null,
-        serviceAccountJson,
-        new DefaultHttpExecutor().createExecutor(serviceAccountJson));
+    this(openApiSpec, pathUrl, toolName, toolDescription, null, null, null, serviceAccountJson);
   }
 
   /**
@@ -164,7 +103,8 @@ public class IntegrationConnectorTool extends BaseTool {
         serviceName,
         host,
         serviceAccountJson,
-        new DefaultHttpExecutor().createExecutor(serviceAccountJson));
+        HttpClient.newHttpClient(),
+        new GoogleCredentialsHelper());
   }
 
   IntegrationConnectorTool(
@@ -176,17 +116,20 @@ public class IntegrationConnectorTool extends BaseTool {
       @Nullable String serviceName,
       @Nullable String host,
       @Nullable String serviceAccountJson,
-      HttpExecutor httpExecutor) {
+      HttpClient httpClient,
+      CredentialsHelper credentialsHelper) {
     super(toolName, toolDescription);
     this.openApiSpec = openApiSpec;
     this.pathUrl = pathUrl;
     this.connectionName = connectionName;
     this.serviceName = serviceName;
     this.host = host;
-    this.httpExecutor = httpExecutor;
+    this.serviceAccountJson = serviceAccountJson;
+    this.httpClient = Preconditions.checkNotNull(httpClient);
+    this.credentialsHelper = Preconditions.checkNotNull(credentialsHelper);
   }
 
-  Schema toGeminiSchema(String openApiSchema, String operationId) throws Exception {
+  Schema toGeminiSchema(String openApiSchema, String operationId) throws IOException {
     String resolvedSchemaString = getResolvedRequestSchemaByOperationId(openApiSchema, operationId);
     return Schema.fromJson(resolvedSchemaString);
   }
@@ -205,8 +148,8 @@ public class IntegrationConnectorTool extends BaseTool {
               .parameters(parametersSchema)
               .build();
       return Optional.of(declaration);
-    } catch (Exception e) {
-      System.err.println("Failed to get OpenAPI spec: " + e.getMessage());
+    } catch (IOException e) {
+      logger.error("Failed to get OpenAPI spec", e);
       return Optional.empty();
     }
   }
@@ -232,33 +175,36 @@ public class IntegrationConnectorTool extends BaseTool {
           try {
             String response = executeIntegration(args);
             return ImmutableMap.of("result", response);
-          } catch (Exception e) {
-            System.err.println("Failed to execute integration: " + e.getMessage());
+          } catch (IOException | InterruptedException e) {
+            logger.error("Failed to execute integration", e);
             return ImmutableMap.of("error", e.getMessage());
           }
         });
   }
 
-  private String executeIntegration(Map<String, Object> args) throws Exception {
+  private String executeIntegration(Map<String, Object> args)
+      throws IOException, InterruptedException {
     String url = String.format("https://integrations.googleapis.com%s", this.pathUrl);
     String jsonRequestBody;
     try {
-      jsonRequestBody = OBJECT_MAPPER.writeValueAsString(args);
+      jsonRequestBody = objectMapper.writeValueAsString(args);
     } catch (IOException e) {
-      throw new Exception("Error converting args to JSON: " + e.getMessage(), e);
+      throw new IOException("Error converting args to JSON: " + e.getMessage(), e);
     }
-    HttpRequest request =
+    Credentials credentials = credentialsHelper.getGoogleCredentials(this.serviceAccountJson);
+    HttpRequest.Builder requestBuilder =
         HttpRequest.newBuilder()
             .uri(URI.create(url))
-            .header("Authorization", "Bearer " + httpExecutor.getToken())
             .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(jsonRequestBody))
-            .build();
+            .POST(HttpRequest.BodyPublishers.ofString(jsonRequestBody));
+
+    requestBuilder = CredentialsHelper.populateHeaders(requestBuilder, credentials);
+
     HttpResponse<String> response =
-        httpExecutor.send(request, HttpResponse.BodyHandlers.ofString());
+        httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
 
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
-      throw new Exception(
+      throw new IOException(
           "Error executing integration. Status: "
               + response.statusCode()
               + " , Response: "
@@ -267,14 +213,14 @@ public class IntegrationConnectorTool extends BaseTool {
     return response.body();
   }
 
-  String getOperationIdFromPathUrl(String openApiSchemaString, String pathUrl) throws Exception {
-    JsonNode topLevelNode = OBJECT_MAPPER.readTree(openApiSchemaString);
+  String getOperationIdFromPathUrl(String openApiSchemaString, String pathUrl) throws IOException {
+    JsonNode topLevelNode = objectMapper.readTree(openApiSchemaString);
     JsonNode specNode = topLevelNode.path("openApiSpec");
     if (specNode.isMissingNode() || !specNode.isTextual()) {
       throw new IllegalArgumentException(
           "Failed to get OpenApiSpec, please check the project and region for the integration.");
     }
-    JsonNode rootNode = OBJECT_MAPPER.readTree(specNode.asText());
+    JsonNode rootNode = objectMapper.readTree(specNode.asText());
     JsonNode paths = rootNode.path("paths");
 
     // Iterate through each path in the OpenAPI spec.
@@ -309,27 +255,27 @@ public class IntegrationConnectorTool extends BaseTool {
         }
       }
     }
-    throw new Exception("Could not find operationId for pathUrl: " + pathUrl);
+    throw new IOException("Could not find operationId for pathUrl: " + pathUrl);
   }
 
   private String getResolvedRequestSchemaByOperationId(
-      String openApiSchemaString, String operationId) throws Exception {
-    JsonNode topLevelNode = OBJECT_MAPPER.readTree(openApiSchemaString);
+      String openApiSchemaString, String operationId) throws IOException {
+    JsonNode topLevelNode = objectMapper.readTree(openApiSchemaString);
     JsonNode specNode = topLevelNode.path("openApiSpec");
     if (specNode.isMissingNode() || !specNode.isTextual()) {
       throw new IllegalArgumentException(
           "Failed to get OpenApiSpec, please check the project and region for the integration.");
     }
-    JsonNode rootNode = OBJECT_MAPPER.readTree(specNode.asText());
+    JsonNode rootNode = objectMapper.readTree(specNode.asText());
     JsonNode operationNode = findOperationNodeById(rootNode, operationId);
     if (operationNode == null) {
-      throw new Exception("Could not find operation with operationId: " + operationId);
+      throw new IOException("Could not find operation with operationId: " + operationId);
     }
     JsonNode requestSchemaNode =
         operationNode.path("requestBody").path("content").path("application/json").path("schema");
 
     if (requestSchemaNode.isMissingNode()) {
-      throw new Exception("Could not find request body schema for operationId: " + operationId);
+      throw new IOException("Could not find request body schema for operationId: " + operationId);
     }
 
     JsonNode resolvedSchema = resolveRefs(requestSchemaNode, rootNode);
@@ -365,7 +311,7 @@ public class IntegrationConnectorTool extends BaseTool {
         }
       }
     }
-    return OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(resolvedSchema);
+    return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(resolvedSchema);
   }
 
   private @Nullable JsonNode findOperationNodeById(JsonNode rootNode, String operationId) {
@@ -397,7 +343,7 @@ public class IntegrationConnectorTool extends BaseTool {
         }
         return resolveRefs(referencedNode, rootNode);
       } else {
-        ObjectNode newObjectNode = OBJECT_MAPPER.createObjectNode();
+        ObjectNode newObjectNode = objectMapper.createObjectNode();
         Iterator<Map.Entry<String, JsonNode>> fields = currentNode.fields();
         while (fields.hasNext()) {
           Map.Entry<String, JsonNode> field = fields.next();
@@ -410,13 +356,13 @@ public class IntegrationConnectorTool extends BaseTool {
   }
 
   private String getOperationDescription(String openApiSchemaString, String operationId)
-      throws Exception {
-    JsonNode topLevelNode = OBJECT_MAPPER.readTree(openApiSchemaString);
+      throws IOException {
+    JsonNode topLevelNode = objectMapper.readTree(openApiSchemaString);
     JsonNode specNode = topLevelNode.path("openApiSpec");
     if (specNode.isMissingNode() || !specNode.isTextual()) {
       return "";
     }
-    JsonNode rootNode = OBJECT_MAPPER.readTree(specNode.asText());
+    JsonNode rootNode = objectMapper.readTree(specNode.asText());
     JsonNode operationNode = findOperationNodeById(rootNode, operationId);
     if (operationNode == null) {
       return "";

@@ -21,6 +21,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.EventActions;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
@@ -53,48 +54,73 @@ public final class AgentTransfer implements RequestProcessor {
         request.toBuilder()
             .appendInstructions(
                 ImmutableList.of(buildTargetAgentsInstructions(agent, transferTargets)));
-    Method transferToAgentMethod;
-    try {
-      transferToAgentMethod =
-          AgentTransfer.class.getMethod("transferToAgent", String.class, ToolContext.class);
-    } catch (NoSuchMethodException e) {
-      throw new IllegalStateException(e);
-    }
-    FunctionTool agentTransferTool = FunctionTool.create(transferToAgentMethod);
+
+    // Note: this tool is not exposed to the LLM in GenerateContent request. It is there only to
+    // serve as a backwards-compatible instance for users who depend on the exact name of
+    // "transferToAgent".
+    builder.appendTools(ImmutableList.of(createTransferToAgentTool("legacyTransferToAgent")));
+
+    FunctionTool agentTransferTool = createTransferToAgentTool("transferToAgent");
     agentTransferTool.processLlmRequest(builder, ToolContext.builder(context).build());
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
   }
 
+  private FunctionTool createTransferToAgentTool(String methodName) {
+    Method transferToAgentMethod;
+    try {
+      transferToAgentMethod =
+          AgentTransfer.class.getMethod(methodName, String.class, ToolContext.class);
+    } catch (NoSuchMethodException e) {
+      throw new IllegalStateException(e);
+    }
+    return FunctionTool.create(transferToAgentMethod);
+  }
+
   /** Builds a string with the target agent’s name and description. */
   private String buildTargetAgentsInfo(BaseAgent targetAgent) {
     return String.format(
-        "Agent name: %s\nAgent description: %s", targetAgent.name(), targetAgent.description());
+        "\nAgent name: %s\nAgent description: %s", targetAgent.name(), targetAgent.description());
   }
 
   /** Builds LLM instructions about when and how to transfer to another agent. */
   private String buildTargetAgentsInstructions(LlmAgent agent, List<BaseAgent> transferTargets) {
     StringBuilder sb = new StringBuilder();
-    sb.append("You have a list of other agents to transfer to:\n");
+    sb.append("\nYou have a list of other agents to transfer to:");
+    sb.append("\n\n");
+    List<String> agentNames = new ArrayList<>();
     for (BaseAgent targetAgent : transferTargets) {
+      agentNames.add("`" + targetAgent.name() + "`");
       sb.append(buildTargetAgentsInfo(targetAgent));
-      sb.append("\n");
+      sb.append("\n\n");
     }
     sb.append(
-        "If you are the best to answer the question according to your description, you can answer"
-            + " it.\n");
-    sb.append(
-        "If another agent is better for answering the question according to its description, call"
-            + " `transferToAgent` function to transfer the question to that agent. When"
-            + " transferring, do not generate any text other than the function call.\n");
-    if (agent.parentAgent() != null) {
-      sb.append("Your parent agent is ");
-      sb.append(agent.parentAgent().name());
+        """
+
+        If you are the best to answer the question according to your description, you
+        can answer it.
+
+        If another agent is better for answering the question according to its
+        description, call `transfer_to_agent` function to transfer the
+        question to that agent. When transferring, do not generate any text other than
+        the function call.
+
+        **NOTE**: the only available agents for `transfer_to_agent` function are\
+        """);
+    sb.append(" ");
+    agentNames.sort(String::compareTo);
+    sb.append(String.join(", ", agentNames));
+    sb.append(".\n");
+
+    if (agent.parentAgent() != null && !agent.disallowTransferToParent()) {
       sb.append(
-          ".If neither the other agents nor you are best for answering the question according to"
-              + " the descriptions, transfer to your parent agent. If you don't have parent agent,"
-              + " try answer by yourself.\n");
+          "\n"
+              + "If neither you nor the other agents are best for the question, transfer to your"
+              + " parent agent ");
+      sb.append(agent.parentAgent().name());
+      sb.append(".\n");
     }
+
     return sb.toString();
   }
 
@@ -124,9 +150,37 @@ public final class AgentTransfer implements RequestProcessor {
     return transferTargets;
   }
 
-  /** Marks the target agent for transfer using the tool context. */
-  public static void transferToAgent(String agentName, ToolContext toolContext) {
+  @Schema(
+      name = "transfer_to_agent",
+      description =
+          """
+          Transfer the question to another agent.
+
+            This tool hands off control to another agent when it's more suitable to
+            answer the user's question according to the agent's description.
+
+            Args:
+              agent_name: the agent name to transfer to.
+            \
+          """)
+  public static void transferToAgent(
+      @Schema(name = "agent_name") String agentName,
+      @Schema(optional = true) ToolContext toolContext) {
     EventActions eventActions = toolContext.eventActions();
     toolContext.setActions(eventActions.toBuilder().transferToAgent(agentName).build());
+  }
+
+  /**
+   * Backwards compatible transferToAgent that uses camel-case naming instead of the ADK's
+   * snake_case convention.
+   *
+   * <p>It exists only to support users who already use literal "transferToAgent" function call to
+   * instruct ADK to transfer the question to another agent.
+   */
+  @Schema(name = "transferToAgent")
+  public static void legacyTransferToAgent(
+      @Schema(name = "agentName") String agentName,
+      @Schema(optional = true) ToolContext toolContext) {
+    transferToAgent(agentName, toolContext);
   }
 }

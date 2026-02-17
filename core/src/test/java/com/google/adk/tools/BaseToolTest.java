@@ -10,6 +10,7 @@ import com.google.genai.types.GoogleSearch;
 import com.google.genai.types.GoogleSearchRetrieval;
 import com.google.genai.types.Tool;
 import com.google.genai.types.ToolCodeExecution;
+import com.google.genai.types.UrlContext;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Map;
@@ -158,6 +159,35 @@ public final class BaseToolTest {
     assertThat(updatedLlmRequest.config().get().tools().get())
         .containsExactly(
             Tool.builder().googleSearchRetrieval(GoogleSearchRetrieval.builder().build()).build());
+  }
+
+  @Test
+  public void processLlmRequestWithUrlContextToolAddsToolToConfig() {
+    FunctionDeclaration functionDeclaration =
+        FunctionDeclaration.builder().name("test_function").build();
+    UrlContextTool urlContextTool = new UrlContextTool();
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .config(
+                GenerateContentConfig.builder()
+                    .tools(
+                        ImmutableList.of(
+                            Tool.builder()
+                                .functionDeclarations(ImmutableList.of(functionDeclaration))
+                                .build()))
+                    .build())
+            .model("gemini-2")
+            .build();
+    LlmRequest.Builder llmRequestBuilder = llmRequest.toBuilder();
+    Completable unused =
+        urlContextTool.processLlmRequest(llmRequestBuilder, /* toolContext= */ null);
+    LlmRequest updatedLlmRequest = llmRequestBuilder.build();
+    assertThat(updatedLlmRequest.config()).isPresent();
+    assertThat(updatedLlmRequest.config().get().tools()).isPresent();
+    assertThat(updatedLlmRequest.config().get().tools().get())
+        .containsExactly(
+            Tool.builder().functionDeclarations(ImmutableList.of(functionDeclaration)).build(),
+            Tool.builder().urlContext(UrlContext.builder().build()).build());
   }
 
   @Test

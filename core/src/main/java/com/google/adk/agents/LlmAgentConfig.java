@@ -16,8 +16,9 @@
 
 package com.google.adk.agents;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.adk.agents.LlmAgent.IncludeContents;
 import com.google.adk.tools.BaseTool.ToolConfig;
+import com.google.genai.types.GenerateContentConfig;
 import java.util.List;
 
 /**
@@ -32,14 +33,20 @@ public class LlmAgentConfig extends BaseAgentConfig {
   private Boolean disallowTransferToPeers;
   private String outputKey;
   private List<ToolConfig> tools;
+  private IncludeContents includeContents;
+  private GenerateContentConfig generateContentConfig;
+
+  // Callback configuration (names resolved via ComponentRegistry)
+  private List<CallbackRef> beforeModelCallbacks;
+  private List<CallbackRef> afterModelCallbacks;
+  private List<CallbackRef> beforeToolCallbacks;
+  private List<CallbackRef> afterToolCallbacks;
 
   public LlmAgentConfig() {
-    super();
-    setAgentClass("LlmAgent");
+    super("LlmAgent");
   }
 
-  // Non-standard accessors with JsonProperty annotations
-  @JsonProperty("model")
+  // Accessors
   public String model() {
     return model;
   }
@@ -48,7 +55,6 @@ public class LlmAgentConfig extends BaseAgentConfig {
     this.model = model;
   }
 
-  @JsonProperty(value = "instruction", required = true)
   public String instruction() {
     return instruction;
   }
@@ -57,7 +63,6 @@ public class LlmAgentConfig extends BaseAgentConfig {
     this.instruction = instruction;
   }
 
-  @JsonProperty("disallow_transfer_to_parent")
   public Boolean disallowTransferToParent() {
     return disallowTransferToParent;
   }
@@ -66,7 +71,6 @@ public class LlmAgentConfig extends BaseAgentConfig {
     this.disallowTransferToParent = disallowTransferToParent;
   }
 
-  @JsonProperty("disallow_transfer_to_peers")
   public Boolean disallowTransferToPeers() {
     return disallowTransferToPeers;
   }
@@ -75,7 +79,6 @@ public class LlmAgentConfig extends BaseAgentConfig {
     this.disallowTransferToPeers = disallowTransferToPeers;
   }
 
-  @JsonProperty("output_key")
   public String outputKey() {
     return outputKey;
   }
@@ -84,12 +87,59 @@ public class LlmAgentConfig extends BaseAgentConfig {
     this.outputKey = outputKey;
   }
 
-  @JsonProperty("tools")
   public List<ToolConfig> tools() {
     return tools;
   }
 
   public void setTools(List<ToolConfig> tools) {
     this.tools = tools;
+  }
+
+  public IncludeContents includeContents() {
+    return includeContents;
+  }
+
+  public void setIncludeContents(IncludeContents includeContents) {
+    this.includeContents = includeContents;
+  }
+
+  public GenerateContentConfig generateContentConfig() {
+    return generateContentConfig;
+  }
+
+  public void setGenerateContentConfig(GenerateContentConfig generateContentConfig) {
+    this.generateContentConfig = generateContentConfig;
+  }
+
+  public List<CallbackRef> beforeModelCallbacks() {
+    return beforeModelCallbacks;
+  }
+
+  public void setBeforeModelCallbacks(List<CallbackRef> beforeModelCallbacks) {
+    this.beforeModelCallbacks = beforeModelCallbacks;
+  }
+
+  public List<CallbackRef> afterModelCallbacks() {
+    return afterModelCallbacks;
+  }
+
+  public void setAfterModelCallbacks(List<CallbackRef> afterModelCallbacks) {
+    this.afterModelCallbacks = afterModelCallbacks;
+  }
+
+  public List<CallbackRef> beforeToolCallbacks() {
+    return beforeToolCallbacks;
+  }
+
+  public void setBeforeToolCallbacks(List<CallbackRef> beforeToolCallbacks) {
+    this.beforeToolCallbacks = beforeToolCallbacks;
+  }
+
+  public List<CallbackRef> afterToolCallbacks() {
+    return afterToolCallbacks;
+  }
+
+  public void setAfterToolCallbacks(List<CallbackRef> afterToolCallbacks) {
+    this.afterToolCallbacks = afterToolCallbacks;
   }
 }

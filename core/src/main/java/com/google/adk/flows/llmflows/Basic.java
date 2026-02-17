@@ -48,11 +48,16 @@ public final class Basic implements RequestProcessor {
         .ifPresent(liveConnectConfigBuilder::speechConfig);
     Optional.ofNullable(context.runConfig().outputAudioTranscription())
         .ifPresent(liveConnectConfigBuilder::outputAudioTranscription);
+    Optional.ofNullable(context.runConfig().inputAudioTranscription())
+        .ifPresent(liveConnectConfigBuilder::inputAudioTranscription);
 
     LlmRequest.Builder builder =
         request.toBuilder()
             .model(modelName)
-            .config(agent.generateContentConfig().orElse(GenerateContentConfig.builder().build()))
+            .config(
+                agent
+                    .generateContentConfig()
+                    .orElseGet(() -> GenerateContentConfig.builder().build()))
             .liveConnectConfig(liveConnectConfigBuilder.build());
 
     agent.outputSchema().ifPresent(builder::outputSchema);

@@ -18,8 +18,8 @@ package com.example;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.maven.AgentLoader;
 import com.google.adk.tools.GoogleSearchTool;
+import com.google.adk.web.AgentLoader;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;

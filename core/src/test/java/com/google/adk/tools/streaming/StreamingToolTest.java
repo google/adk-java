@@ -38,6 +38,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.Test;
@@ -46,6 +47,9 @@ import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public final class StreamingToolTest {
+
+  private static final RunConfig BIDI_STREAMING_RUN_CONFIG =
+      RunConfig.builder().setStreamingMode(StreamingMode.BIDI).build();
 
   public static final class StreamingTools {
     public static Flowable<ImmutableMap<String, Object>> monitorStockPrice(
@@ -129,10 +133,7 @@ public final class StreamingToolTest {
 
     Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
     List<Event> resEvents =
-        runner
-            .runLive(session, liveRequestQueue, RunConfig.builder().build())
-            .toList()
-            .blockingGet();
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
 
     assertThat(resEvents).isNotNull();
     assertThat(resEvents).isNotEmpty();
@@ -214,10 +215,7 @@ public final class StreamingToolTest {
 
     Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
     List<Event> resEvents =
-        runner
-            .runLive(session, liveRequestQueue, RunConfig.builder().build())
-            .toList()
-            .blockingGet();
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
 
     assertThat(resEvents).isNotNull();
     assertThat(resEvents).isNotEmpty();
@@ -300,13 +298,11 @@ public final class StreamingToolTest {
 
     // Run the agent and collect events.
     List<Event> resEvents =
-        runner
-            .runLive(
-                session,
-                liveRequestQueue,
-                RunConfig.builder().setStreamingMode(StreamingMode.BIDI).build())
-            .toList()
-            .blockingGet();
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
+
+    // Wait for the tool to send its 3 results back to the LLM
+    assertThat(testLlm.waitForStreamingToolResults("monitorVideoStream", 3, Duration.ofSeconds(20)))
+        .isTrue();
     // Assert that the function call was made.
     boolean functionCallFound =
         resEvents.stream()
@@ -404,10 +400,7 @@ public final class StreamingToolTest {
 
     Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
     List<Event> resEvents =
-        runner
-            .runLive(session, liveRequestQueue, RunConfig.builder().build())
-            .toList()
-            .blockingGet();
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
 
     assertThat(resEvents).isNotNull();
     assertThat(resEvents.size()).isAtLeast(1);
@@ -497,13 +490,7 @@ public final class StreamingToolTest {
     Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
 
     List<Event> resEvents =
-        runner
-            .runLive(
-                session,
-                liveRequestQueue,
-                RunConfig.builder().setStreamingMode(StreamingMode.BIDI).build())
-            .toList()
-            .blockingGet();
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
 
     assertThat(resEvents).isNotNull();
     assertThat(resEvents).isNotEmpty();

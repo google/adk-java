@@ -40,6 +40,28 @@ public interface BaseArtifactService {
       String appName, String userId, String sessionId, String filename, Part artifact);
 
   /**
+   * Saves an artifact and returns it with fileData if available.
+   *
+   * <p>Implementations should override this default method for efficiency, as the default performs
+   * two I/O operations (save then load).
+   *
+   * @param appName the app name
+   * @param userId the user ID
+   * @param sessionId the session ID
+   * @param filename the filename
+   * @param artifact the artifact to save
+   * @return the saved artifact with fileData if available.
+   */
+  default Single<Part> saveAndReloadArtifact(
+      String appName, String userId, String sessionId, String filename, Part artifact) {
+    return saveArtifact(appName, userId, sessionId, filename, artifact)
+        .flatMap(
+            version ->
+                loadArtifact(appName, userId, sessionId, filename, Optional.of(version))
+                    .toSingle());
+  }
+
+  /**
    * Gets an artifact.
    *
    * @param appName the app name

@@ -110,7 +110,7 @@ public class VertexAiRagRetrieval extends BaseRetrievalTool {
     if (useVertexAi
         && (llmRequest.model().isPresent() && llmRequest.model().get().startsWith("gemini-2"))) {
       GenerateContentConfig config =
-          llmRequest.config().orElse(GenerateContentConfig.builder().build());
+          llmRequest.config().orElseGet(() -> GenerateContentConfig.builder().build());
       ImmutableList.Builder<Tool> toolsBuilder = ImmutableList.builder();
       if (config.tools().isPresent()) {
         toolsBuilder.addAll(config.tools().get());

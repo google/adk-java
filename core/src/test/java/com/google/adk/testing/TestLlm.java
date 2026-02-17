@@ -31,6 +31,8 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -38,6 +40,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
@@ -228,6 +231,36 @@ public final class TestLlm extends BaseLlm {
   /** Returns an immutable list of all {@link LiveRequest}s sent to the live connection. */
   public ImmutableList<LiveRequest> getLiveRequestHistory() {
     return ImmutableList.copyOf(liveRequestHistory);
+  }
+
+  public boolean waitForStreamingToolResults(String toolName, int expectedCount, Duration timeout) {
+    Instant deadline = Instant.now().plus(timeout);
+    String prefix = "Function " + toolName + " returned:";
+
+    Predicate<LiveRequest> isStreamingToolResult =
+        req ->
+            req.content()
+                .filter(
+                    content ->
+                        content.role().orElse("").equals("user")
+                            && content.text() != null
+                            && content.text().startsWith(prefix))
+                .isPresent();
+
+    long currentCount = 0;
+    while (Instant.now().isBefore(deadline)) {
+      currentCount = getLiveRequestHistory().stream().filter(isStreamingToolResult).count();
+      if (currentCount >= expectedCount) {
+        return true;
+      }
+      try {
+        Thread.sleep(200);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+    }
+    return false;
   }
 
   /** A test implementation of {@link BaseLlmConnection} for {@link TestLlm}. */

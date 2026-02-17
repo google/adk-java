@@ -13,17 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.google.adk.agents;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
-import com.google.common.collect.ImmutableList;
-import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
-import java.util.ArrayList;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A shell agent that runs its sub-agents in parallel in isolated manner.
@@ -33,6 +33,8 @@ import java.util.List;
  * for review by a subsequent evaluation agent.
  */
 public class ParallelAgent extends BaseAgent {
+
+  private static final Logger logger = LoggerFactory.getLogger(ParallelAgent.class);
 
   /**
    * Constructor for ParallelAgent.
@@ -54,62 +56,9 @@ public class ParallelAgent extends BaseAgent {
   }
 
   /** Builder for {@link ParallelAgent}. */
-  public static class Builder {
-    private String name;
-    private String description;
-    private List<? extends BaseAgent> subAgents;
-    private ImmutableList<Callbacks.BeforeAgentCallback> beforeAgentCallback;
-    private ImmutableList<Callbacks.AfterAgentCallback> afterAgentCallback;
+  public static class Builder extends BaseAgent.Builder<Builder> {
 
-    @CanIgnoreReturnValue
-    public Builder name(String name) {
-      this.name = name;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder description(String description) {
-      this.description = description;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder subAgents(List<? extends BaseAgent> subAgents) {
-      this.subAgents = subAgents;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder subAgents(BaseAgent... subAgents) {
-      this.subAgents = ImmutableList.copyOf(subAgents);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder beforeAgentCallback(Callbacks.BeforeAgentCallback beforeAgentCallback) {
-      this.beforeAgentCallback = ImmutableList.of(beforeAgentCallback);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder beforeAgentCallback(
-        List<Callbacks.BeforeAgentCallbackBase> beforeAgentCallback) {
-      this.beforeAgentCallback = CallbackUtil.getBeforeAgentCallbacks(beforeAgentCallback);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder afterAgentCallback(Callbacks.AfterAgentCallback afterAgentCallback) {
-      this.afterAgentCallback = ImmutableList.of(afterAgentCallback);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder afterAgentCallback(List<Callbacks.AfterAgentCallbackBase> afterAgentCallback) {
-      this.afterAgentCallback = CallbackUtil.getAfterAgentCallbacks(afterAgentCallback);
-      return this;
-    }
-
+    @Override
     public ParallelAgent build() {
       return new ParallelAgent(
           name, description, subAgents, beforeAgentCallback, afterAgentCallback);
@@ -121,20 +70,46 @@ public class ParallelAgent extends BaseAgent {
   }
 
   /**
+   * Creates a ParallelAgent from configuration.
+   *
+   * @param config the agent configuration
+   * @param configAbsPath The absolute path to the agent config file.
+   * @return the configured ParallelAgent
+   * @throws ConfigurationException if the configuration is invalid
+   */
+  public static ParallelAgent fromConfig(ParallelAgentConfig config, String configAbsPath)
+      throws ConfigurationException {
+    logger.debug("Creating ParallelAgent from config: {}", config.name());
+
+    Builder builder = ParallelAgent.builder();
+    ConfigAgentUtils.resolveAndSetCommonAgentFields(builder, config, configAbsPath);
+
+    // Build and return the agent
+    ParallelAgent agent = builder.build();
+    logger.info(
+        "Successfully created ParallelAgent: {} with {} subagents",
+        agent.name(),
+        agent.subAgents() != null ? agent.subAgents().size() : 0);
+
+    return agent;
+  }
+
+  /**
    * Sets the branch for the current agent in the invocation context.
    *
    * <p>Appends the agent name to the current branch, or sets it if undefined.
    *
    * @param currentAgent Current agent.
    * @param invocationContext Invocation context to update.
+   * @return A new invocation context with branch set.
    */
-  private static void setBranchForCurrentAgent(
+  private static InvocationContext setBranchForCurrentAgent(
       BaseAgent currentAgent, InvocationContext invocationContext) {
     String branch = invocationContext.branch().orElse(null);
     if (isNullOrEmpty(branch)) {
-      invocationContext.branch(currentAgent.name());
+      return invocationContext.toBuilder().branch(currentAgent.name()).build();
     } else {
-      invocationContext.branch(branch + "." + currentAgent.name());
+      return invocationContext.toBuilder().branch(branch + "." + currentAgent.name()).build();
     }
   }
 
@@ -148,18 +123,16 @@ public class ParallelAgent extends BaseAgent {
    */
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    setBranchForCurrentAgent(this, invocationContext);
-
     List<? extends BaseAgent> currentSubAgents = subAgents();
     if (currentSubAgents == null || currentSubAgents.isEmpty()) {
       return Flowable.empty();
     }
 
-    List<Flowable<Event>> agentFlowables = new ArrayList<>();
-    for (BaseAgent subAgent : currentSubAgents) {
-      agentFlowables.add(subAgent.runAsync(invocationContext));
-    }
-    return Flowable.merge(agentFlowables);
+    var updatedInvocationContext = setBranchForCurrentAgent(this, invocationContext);
+    return Flowable.merge(
+        currentSubAgents.stream()
+            .map(subAgent -> subAgent.runAsync(updatedInvocationContext))
+            .collect(toImmutableList()));
   }
 
   /**

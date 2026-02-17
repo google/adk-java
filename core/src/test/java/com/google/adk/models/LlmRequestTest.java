@@ -120,9 +120,9 @@ public final class LlmRequestTest {
     assertThat(request.config()).isPresent();
     Content systemInstruction = request.config().get().systemInstruction().get();
     assertThat(systemInstruction.role()).hasValue("system");
-    assertThat(systemInstruction.parts().get()).hasSize(2);
-    assertThat(systemInstruction.parts().get().get(0).text()).hasValue(initialInstructionText);
-    assertThat(systemInstruction.parts().get().get(1).text()).hasValue(newInstructionText);
+    assertThat(systemInstruction.parts().get()).hasSize(1);
+    assertThat(systemInstruction.parts().get().get(0).text())
+        .hasValue(initialInstructionText + "\n\n" + newInstructionText);
 
     assertThat(request.liveConnectConfig().systemInstruction()).isPresent();
     Content liveSystemInstruction = request.liveConnectConfig().systemInstruction().get();
@@ -154,10 +154,9 @@ public final class LlmRequestTest {
     assertThat(request.liveConnectConfig().systemInstruction()).isPresent();
     Content liveSystemInstruction = request.liveConnectConfig().systemInstruction().get();
     assertThat(liveSystemInstruction.role()).hasValue("system"); // Role preserved
-    assertThat(liveSystemInstruction.parts().get()).hasSize(2);
+    assertThat(liveSystemInstruction.parts().get()).hasSize(1);
     assertThat(liveSystemInstruction.parts().get().get(0).text())
-        .hasValue(initialLiveInstructionText);
-    assertThat(liveSystemInstruction.parts().get().get(1).text()).hasValue(newInstructionText);
+        .hasValue(initialLiveInstructionText + "\n\n" + newInstructionText);
 
     // Assertions for main config (should get the new instruction with default role)
     assertThat(request.config()).isPresent();
@@ -196,16 +195,16 @@ public final class LlmRequestTest {
 
     assertThat(request.config()).isPresent();
     Content systemInstruction = request.config().get().systemInstruction().get();
-    assertThat(systemInstruction.parts().get()).hasSize(2);
-    assertThat(systemInstruction.parts().get().get(0).text()).hasValue(instruction1);
-    assertThat(systemInstruction.parts().get().get(1).text()).hasValue(instruction2);
+    assertThat(systemInstruction.parts().get()).hasSize(1);
+    assertThat(systemInstruction.parts().get().get(0).text())
+        .hasValue(instruction1 + "\n\n" + instruction2);
 
     assertThat(request.liveConnectConfig().systemInstruction()).isPresent();
     Content liveSystemInstruction = request.liveConnectConfig().systemInstruction().get();
     assertThat(liveSystemInstruction.role()).hasValue("user");
-    assertThat(liveSystemInstruction.parts().get()).hasSize(2);
-    assertThat(liveSystemInstruction.parts().get().get(0).text()).hasValue(instruction1);
-    assertThat(liveSystemInstruction.parts().get().get(1).text()).hasValue(instruction2);
+    assertThat(liveSystemInstruction.parts().get()).hasSize(1);
+    assertThat(liveSystemInstruction.parts().get().get(0).text())
+        .hasValue(instruction1 + "\n\n" + instruction2);
   }
 
   @Test
@@ -306,7 +305,7 @@ public final class LlmRequestTest {
             .appendInstructions(ImmutableList.of(instruction1, instruction2))
             .build();
     assertThat(request.getSystemInstructions())
-        .containsExactly(instruction1, instruction2)
+        .containsExactly(instruction1 + "\n\n" + instruction2)
         .inOrder();
   }
 }

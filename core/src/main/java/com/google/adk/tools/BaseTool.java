@@ -18,11 +18,15 @@ package com.google.adk.tools;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.fasterxml.jackson.annotation.JsonAnyGetter;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.DoNotCall;
 import com.google.genai.types.FunctionDeclaration;
@@ -36,12 +40,15 @@ import java.util.Map;
 import java.util.Optional;
 import javax.annotation.Nonnull;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** The base class for all ADK tools. */
 public abstract class BaseTool {
   private final String name;
   private final String description;
   private final boolean isLongRunning;
+  private final HashMap<String, Object> customMetadata;
 
   protected BaseTool(@Nonnull String name, @Nonnull String description) {
     this(name, description, /* isLongRunning= */ false);
@@ -51,6 +58,7 @@ public abstract class BaseTool {
     this.name = name;
     this.description = description;
     this.isLongRunning = isLongRunning;
+    customMetadata = new HashMap<>();
   }
 
   public String name() {
@@ -68,6 +76,16 @@ public abstract class BaseTool {
   /** Gets the {@link FunctionDeclaration} representation of this tool. */
   public Optional<FunctionDeclaration> declaration() {
     return Optional.empty();
+  }
+
+  /** Returns a read-only view of the tool metadata. */
+  public ImmutableMap<String, Object> customMetadata() {
+    return ImmutableMap.copyOf(customMetadata);
+  }
+
+  /** Sets custom metadata to the tool associated with a key. */
+  public void setCustomMetadata(String key, Object value) {
+    customMetadata.put(key, value);
   }
 
   /** Calls a tool. */
@@ -111,7 +129,7 @@ public abstract class BaseTool {
                       .addAll(
                           toolWithFunctionDeclarations
                               .functionDeclarations()
-                              .orElse(ImmutableList.of()))
+                              .orElseGet(ImmutableList::of))
                       .add(declaration().get())
                       .build())
               .build();
@@ -126,7 +144,7 @@ public abstract class BaseTool {
         llmRequest
             .config()
             .map(GenerateContentConfig::toBuilder)
-            .orElse(GenerateContentConfig.builder())
+            .orElseGet(GenerateContentConfig::builder)
             .tools(newTools)
             .build();
     LiveConnectConfig liveConnectConfig =
@@ -184,6 +202,8 @@ public abstract class BaseTool {
   // TODO implement this class
   public static class ToolArgsConfig extends JsonBaseModel {
 
+    private static final Logger log = LoggerFactory.getLogger(ToolArgsConfig.class);
+
     @JsonIgnore private final Map<String, Object> additionalProperties = new HashMap<>();
 
     public boolean isEmpty() {
@@ -192,6 +212,43 @@ public abstract class BaseTool {
 
     public int size() {
       return additionalProperties.size();
+    }
+
+    @CanIgnoreReturnValue
+    public ToolArgsConfig put(String key, Object value) {
+      additionalProperties.put(key, value);
+      return this;
+    }
+
+    public <T> Optional<T> getOrEmpty(String key, TypeReference<T> typeReference) {
+      if (!additionalProperties.containsKey(key)) {
+        return Optional.empty();
+      }
+      try {
+        return Optional.of(
+            JsonBaseModel.getMapper().convertValue(additionalProperties.get(key), typeReference));
+      } catch (IllegalArgumentException e) {
+        log.debug("Could not convert key {} into type: {}", key, e);
+        return Optional.empty();
+      }
+    }
+
+    public <T> T getOrDefault(String key, T defaultValue) {
+      if (!additionalProperties.containsKey(key)) {
+        return defaultValue;
+      }
+      return JsonBaseModel.getMapper()
+          .convertValue(additionalProperties.get(key), new TypeReference<T>() {});
+    }
+
+    @JsonAnyGetter
+    public Map<String, Object> getAdditionalProperties() {
+      return additionalProperties;
+    }
+
+    @JsonAnySetter
+    public void setAdditionalProperty(String key, Object value) {
+      additionalProperties.put(key, value);
     }
   }
 

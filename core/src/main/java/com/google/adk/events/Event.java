@@ -30,6 +30,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
 import java.time.Instant;
 import java.util.List;
@@ -54,9 +55,13 @@ public class Event extends JsonBaseModel {
   private Optional<Boolean> turnComplete = Optional.empty();
   private Optional<FinishReason> errorCode = Optional.empty();
   private Optional<String> errorMessage = Optional.empty();
+  private Optional<FinishReason> finishReason = Optional.empty();
+  private Optional<GenerateContentResponseUsageMetadata> usageMetadata = Optional.empty();
+  private Optional<Double> avgLogprobs = Optional.empty();
   private Optional<Boolean> interrupted = Optional.empty();
   private Optional<String> branch = Optional.empty();
   private Optional<GroundingMetadata> groundingMetadata = Optional.empty();
+  private Optional<String> modelVersion = Optional.empty();
   private long timestamp;
 
   private Event() {}
@@ -153,8 +158,17 @@ public class Event extends JsonBaseModel {
     return errorCode;
   }
 
+  @JsonProperty("finishReason")
+  public Optional<FinishReason> finishReason() {
+    return finishReason;
+  }
+
   public void setErrorCode(Optional<FinishReason> errorCode) {
     this.errorCode = errorCode;
+  }
+
+  public void setFinishReason(Optional<FinishReason> finishReason) {
+    this.finishReason = finishReason;
   }
 
   @JsonProperty("errorMessage")
@@ -164,6 +178,24 @@ public class Event extends JsonBaseModel {
 
   public void setErrorMessage(Optional<String> errorMessage) {
     this.errorMessage = errorMessage;
+  }
+
+  @JsonProperty("usageMetadata")
+  public Optional<GenerateContentResponseUsageMetadata> usageMetadata() {
+    return usageMetadata;
+  }
+
+  public void setUsageMetadata(Optional<GenerateContentResponseUsageMetadata> usageMetadata) {
+    this.usageMetadata = usageMetadata;
+  }
+
+  @JsonProperty("avgLogprobs")
+  public Optional<Double> avgLogprobs() {
+    return avgLogprobs;
+  }
+
+  public void setAvgLogprobs(Optional<Double> avgLogprobs) {
+    this.avgLogprobs = avgLogprobs;
   }
 
   @JsonProperty("interrupted")
@@ -210,6 +242,16 @@ public class Event extends JsonBaseModel {
     this.groundingMetadata = groundingMetadata;
   }
 
+  /** The model version used to generate the response. */
+  @JsonProperty("modelVersion")
+  public Optional<String> modelVersion() {
+    return modelVersion;
+  }
+
+  public void setModelVersion(Optional<String> modelVersion) {
+    this.modelVersion = modelVersion;
+  }
+
   /** The timestamp of the event. */
   @JsonProperty("timestamp")
   public long timestamp() {
@@ -252,8 +294,7 @@ public class Event extends JsonBaseModel {
   /** Returns true if this is a final response. */
   @JsonIgnore
   public final boolean finalResponse() {
-    if (actions().skipSummarization().orElse(false)
-        || (longRunningToolIds().isPresent() && !longRunningToolIds().get().isEmpty())) {
+    if (actions().skipSummarization().orElse(false)) {
       return true;
     }
     return functionCalls().isEmpty()
@@ -299,9 +340,13 @@ public class Event extends JsonBaseModel {
     private Optional<Boolean> turnComplete = Optional.empty();
     private Optional<FinishReason> errorCode = Optional.empty();
     private Optional<String> errorMessage = Optional.empty();
+    private Optional<FinishReason> finishReason = Optional.empty();
+    private Optional<GenerateContentResponseUsageMetadata> usageMetadata = Optional.empty();
+    private Optional<Double> avgLogprobs = Optional.empty();
     private Optional<Boolean> interrupted = Optional.empty();
     private Optional<String> branch = Optional.empty();
     private Optional<GroundingMetadata> groundingMetadata = Optional.empty();
+    private Optional<String> modelVersion = Optional.empty();
     private Optional<Long> timestamp = Optional.empty();
 
     @JsonCreator
@@ -420,6 +465,45 @@ public class Event extends JsonBaseModel {
     }
 
     @CanIgnoreReturnValue
+    @JsonProperty("finishReason")
+    public Builder finishReason(@Nullable FinishReason value) {
+      this.finishReason = Optional.ofNullable(value);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder finishReason(Optional<FinishReason> value) {
+      this.finishReason = value;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    @JsonProperty("usageMetadata")
+    public Builder usageMetadata(@Nullable GenerateContentResponseUsageMetadata value) {
+      this.usageMetadata = Optional.ofNullable(value);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder usageMetadata(Optional<GenerateContentResponseUsageMetadata> value) {
+      this.usageMetadata = value;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    @JsonProperty("avgLogprobs")
+    public Builder avgLogprobs(@Nullable Double value) {
+      this.avgLogprobs = Optional.ofNullable(value);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder avgLogprobs(Optional<Double> value) {
+      this.avgLogprobs = value;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
     @JsonProperty("interrupted")
     public Builder interrupted(@Nullable Boolean value) {
       this.interrupted = Optional.ofNullable(value);
@@ -485,6 +569,23 @@ public class Event extends JsonBaseModel {
       return groundingMetadata;
     }
 
+    @CanIgnoreReturnValue
+    @JsonProperty("modelVersion")
+    public Builder modelVersion(@Nullable String value) {
+      this.modelVersion = Optional.ofNullable(value);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder modelVersion(Optional<String> value) {
+      this.modelVersion = value;
+      return this;
+    }
+
+    Optional<String> modelVersion() {
+      return modelVersion;
+    }
+
     public Event build() {
       Event event = new Event();
       event.setId(id);
@@ -496,12 +597,15 @@ public class Event extends JsonBaseModel {
       event.setTurnComplete(turnComplete);
       event.setErrorCode(errorCode);
       event.setErrorMessage(errorMessage);
+      event.setFinishReason(finishReason);
+      event.setUsageMetadata(usageMetadata);
+      event.setAvgLogprobs(avgLogprobs);
       event.setInterrupted(interrupted);
       event.branch(branch);
       event.setGroundingMetadata(groundingMetadata);
-
-      event.setActions(actions().orElse(EventActions.builder().build()));
-      event.setTimestamp(timestamp().orElse(Instant.now().toEpochMilli()));
+      event.setModelVersion(modelVersion);
+      event.setActions(actions().orElseGet(() -> EventActions.builder().build()));
+      event.setTimestamp(timestamp().orElseGet(() -> Instant.now().toEpochMilli()));
       return event;
     }
   }
@@ -529,9 +633,13 @@ public class Event extends JsonBaseModel {
             .turnComplete(this.turnComplete)
             .errorCode(this.errorCode)
             .errorMessage(this.errorMessage)
+            .finishReason(this.finishReason)
+            .usageMetadata(this.usageMetadata)
+            .avgLogprobs(this.avgLogprobs)
             .interrupted(this.interrupted)
             .branch(this.branch)
-            .groundingMetadata(this.groundingMetadata);
+            .groundingMetadata(this.groundingMetadata)
+            .modelVersion(this.modelVersion);
     if (this.timestamp != 0) {
       builder.timestamp(this.timestamp);
     }
@@ -557,9 +665,13 @@ public class Event extends JsonBaseModel {
         && Objects.equals(turnComplete, other.turnComplete)
         && Objects.equals(errorCode, other.errorCode)
         && Objects.equals(errorMessage, other.errorMessage)
+        && Objects.equals(finishReason, other.finishReason)
+        && Objects.equals(usageMetadata, other.usageMetadata)
+        && Objects.equals(avgLogprobs, other.avgLogprobs)
         && Objects.equals(interrupted, other.interrupted)
         && Objects.equals(branch, other.branch)
-        && Objects.equals(groundingMetadata, other.groundingMetadata);
+        && Objects.equals(groundingMetadata, other.groundingMetadata)
+        && Objects.equals(modelVersion, other.modelVersion);
   }
 
   @Override
@@ -580,9 +692,13 @@ public class Event extends JsonBaseModel {
         turnComplete,
         errorCode,
         errorMessage,
+        finishReason,
+        usageMetadata,
+        avgLogprobs,
         interrupted,
         branch,
         groundingMetadata,
+        modelVersion,
         timestamp);
   }
 }

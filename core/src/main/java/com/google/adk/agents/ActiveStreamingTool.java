@@ -40,40 +40,24 @@ public class ActiveStreamingTool {
 
   public ActiveStreamingTool() {}
 
-  /**
-   * Returns the active task of this streaming tool.
-   *
-   * @return The active task.
-   */
+  /** Returns the active task of this streaming tool. */
   @Nullable
   public Disposable task() {
     return task;
   }
 
-  /**
-   * Sets the active task of this streaming tool.
-   *
-   * @param task The new active task.
-   */
+  /** Sets the active task of this streaming tool. */
   public void task(@Nullable Disposable task) {
     this.task = task;
   }
 
-  /**
-   * Returns the active stream of this streaming tool.
-   *
-   * @return The active stream.
-   */
+  /** Returns the active stream of this streaming tool. */
   @Nullable
   public LiveRequestQueue stream() {
     return stream;
   }
 
-  /**
-   * Sets the active stream of this streaming tool.
-   *
-   * @param stream The new active stream.
-   */
+  /** Sets the active stream of this streaming tool. */
   public void stream(@Nullable LiveRequestQueue stream) {
     this.stream = stream;
   }

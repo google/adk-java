@@ -224,13 +224,11 @@ public class LangChain4j extends BaseLlm {
                       .mode()
                       .ifPresent(
                           functionMode -> {
-                            if (functionMode
-                                .knownEnum()
-                                .equals(FunctionCallingConfigMode.Known.AUTO)) {
+                            if (FunctionCallingConfigMode.Known.AUTO.equals(
+                                functionMode.knownEnum())) {
                               requestBuilder.toolChoice(ToolChoice.AUTO);
-                            } else if (functionMode
-                                .knownEnum()
-                                .equals(FunctionCallingConfigMode.Known.ANY)) {
+                            } else if (FunctionCallingConfigMode.Known.ANY.equals(
+                                functionMode.knownEnum())) {
                               // TODO check if it's the correct
                               // mapping
                               requestBuilder.toolChoice(ToolChoice.REQUIRED);
@@ -246,9 +244,8 @@ public class LangChain4j extends BaseLlm {
                                                             toolSpecification.name()))
                                                 .toList());
                                       });
-                            } else if (functionMode
-                                .knownEnum()
-                                .equals(FunctionCallingConfigMode.Known.NONE)) {
+                            } else if (FunctionCallingConfigMode.Known.NONE.equals(
+                                functionMode.knownEnum())) {
                               requestBuilder.toolSpecifications(List.of());
                             }
                           });
@@ -349,7 +346,7 @@ public class LangChain4j extends BaseLlm {
                       .mimeType(mimeType)
                       .build());
         } else if (mimeType.startsWith("text/")
-            || mimeType.equals("application/json")
+            || "application/json".equals(mimeType)
             || mimeType.endsWith("+json")
             || mimeType.endsWith("+xml")) {
           // TODO are there missing text based mime types?
@@ -454,7 +451,7 @@ public class LangChain4j extends BaseLlm {
   }
 
   private JsonObjectSchema toParameters(Schema schema) {
-    if (schema.type().isPresent() && schema.type().get().knownEnum().equals(Type.Known.OBJECT)) {
+    if (schema.type().isPresent() && Type.Known.OBJECT.equals(schema.type().get().knownEnum())) {
       return JsonObjectSchema.builder()
           .addProperties(toProperties(schema))
           .required(schema.required().orElse(List.of()))
@@ -490,7 +487,7 @@ public class LangChain4j extends BaseLlm {
                 .items(toJsonSchemaElement(schema.items().orElseThrow()))
                 .build();
         case OBJECT -> toParameters(schema);
-        case TYPE_UNSPECIFIED ->
+        default ->
             throw new UnsupportedFeatureException(
                 "LangChain4jLlm does not support schema of type: " + type);
       };
