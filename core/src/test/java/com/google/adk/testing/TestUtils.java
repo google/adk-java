@@ -41,6 +41,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
@@ -251,6 +252,13 @@ public final class TestUtils {
             .role("model")
             .build();
     return createLlmResponse(content);
+  }
+
+  public static GenerateContentResponseUsageMetadata.Builder
+      createGenerateContentResponseUsageMetadata() {
+    return GenerateContentResponseUsageMetadata.builder()
+        .promptTokenCount(10)
+        .candidatesTokenCount(20);
   }
 
   public static class EchoTool extends BaseTool {
