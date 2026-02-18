@@ -611,7 +611,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
     if (updatedResponse.content().isEmpty()
         && updatedResponse.errorCode().isEmpty()
         && !updatedResponse.interrupted().orElse(false)
-        && !updatedResponse.turnComplete().orElse(false)) {
+        && !updatedResponse.turnComplete().orElse(false)
+        && updatedResponse.usageMetadata().isEmpty()) {
       return processorEvents;
     }
 

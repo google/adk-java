@@ -17,6 +17,7 @@
 package com.google.adk.flows.llmflows;
 
 import static com.google.adk.testing.TestUtils.assertEqualIgnoringFunctionIds;
+import static com.google.adk.testing.TestUtils.createGenerateContentResponseUsageMetadata;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgent;
@@ -574,5 +575,33 @@ public final class BaseLlmFlowTest {
     public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
       return Single.just(response);
     }
+  }
+
+  @Test
+  public void postprocess_noResponseProcessors_onlyUsageMetadata_returnsEvent() {
+    GenerateContentResponseUsageMetadata usageMetadata =
+        createGenerateContentResponseUsageMetadata().build();
+    LlmResponse llmResponse = LlmResponse.builder().usageMetadata(usageMetadata).build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(createTestLlm(llmResponse)));
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    Event baseEvent =
+        Event.builder()
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .build();
+
+    List<Event> events =
+        baseLlmFlow
+            .postprocess(invocationContext, baseEvent, LlmRequest.builder().build(), llmResponse)
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(1);
+    Event event = getOnlyElement(events);
+    assertThat(event.content()).isEmpty();
+    assertThat(event.usageMetadata()).hasValue(usageMetadata);
+    assertThat(event.author()).isEqualTo(invocationContext.agent().name());
+    assertThat(event.invocationId()).isEqualTo(invocationContext.invocationId());
   }
 }
