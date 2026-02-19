@@ -1,24 +1,21 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<?xml version="1.0" encoding="UTF-8"?><project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-
   <parent>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-parent</artifactId>
-    <version>0.5.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <version>0.5.1-SNAPSHOT</version>
+    <!-- {x-version-update:google-adk:current} -->
     <relativePath>../..</relativePath>
   </parent>
-
   <artifactId>google-adk-samples</artifactId>
   <packaging>pom</packaging>
-
   <name>Google ADK Samples</name>
   <description>Aggregator for sample applications.</description>
-
   <modules>
     <module>a2a_basic</module>
     <module>configagent</module>
     <module>helloworld</module>
     <module>mcpfilesystem</module>
+    <module>stale-agent</module>
   </modules>
 </project>
