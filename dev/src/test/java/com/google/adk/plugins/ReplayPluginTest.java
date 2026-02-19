@@ -59,8 +59,7 @@ class ReplayPluginTest {
   void setUp() {
     plugin = new ReplayPlugin();
     mockSession = mock(Session.class);
-    sessionState = new ConcurrentHashMap<>();
-    state = new State(sessionState);
+    state = new State();
 
     when(mockSession.state()).thenReturn(sessionState);
   }

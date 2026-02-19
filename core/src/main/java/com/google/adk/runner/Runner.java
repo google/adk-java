@@ -58,6 +58,7 @@ import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -337,7 +338,9 @@ public class Runner {
     // Add state delta if provided
     if (stateDelta != null && !stateDelta.isEmpty()) {
       eventBuilder.actions(
-          EventActions.builder().stateDelta(new ConcurrentHashMap<>(stateDelta)).build());
+          EventActions.builder()
+              .stateDelta(stateDelta == null ? new HashMap<>() : new HashMap<>(stateDelta))
+              .build());
     }
 
     return this.sessionService.appendEvent(session, eventBuilder.build());

@@ -16,36 +16,54 @@
 
 package com.google.adk.sessions;
 
-import com.fasterxml.jackson.annotation.JsonValue;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import javax.annotation.Nullable;
 
 /** A {@link State} object that also keeps track of the changes to the state. */
-@SuppressWarnings("ShouldNotSubclass")
-public final class State implements ConcurrentMap<String, Object> {
+@SuppressWarnings("ShouldNotSubclass") // Implementing Map is the desired interface for State.
+public final class State implements Map<String, Object> {
 
   public static final String APP_PREFIX = "app:";
   public static final String USER_PREFIX = "user:";
   public static final String TEMP_PREFIX = "temp:";
 
   /** Sentinel object to mark removed entries in the delta map. */
-  public static final Object REMOVED = RemovedSentinel.INSTANCE;
+  public static final Object REMOVED = null;
 
-  private final ConcurrentMap<String, Object> state;
-  private final ConcurrentMap<String, Object> delta;
+  /** The underlying state map. A Map that supports null values as "removed". */
+  private final Map<String, Object> state;
 
-  public State(ConcurrentMap<String, Object> state) {
-    this(state, new ConcurrentHashMap<>());
+  /** The delta map. A Map that supports null values as "removed". */
+  private final Map<String, Object> delta;
+
+  public State() {
+    this(null, null);
   }
 
-  public State(ConcurrentMap<String, Object> state, ConcurrentMap<String, Object> delta) {
-    this.state = Objects.requireNonNull(state);
-    this.delta = delta;
+  public State(@Nullable Map<String, Object> state) {
+    this(state, null);
+  }
+
+  /**
+   * Creates a {@link State} object with the given state and delta maps.
+   *
+   * @param state the underlying state map. The Map needs to accept null values.
+   * @param delta the delta map. The Map needs to accept null values.
+   */
+  public State(@Nullable Map<String, Object> state, @Nullable Map<String, Object> delta) {
+    this.state = Optional.ofNullable(state).orElseGet(State::createSynchronizedHashMap);
+    this.delta = Optional.ofNullable(delta).orElseGet(State::createSynchronizedHashMap);
+  }
+
+  /** Creates a new synchronized {@link HashMap}. */
+  private static Map<String, Object> createSynchronizedHashMap() {
+    return Collections.synchronizedMap(new HashMap<>());
   }
 
   @Override
@@ -124,7 +142,7 @@ public final class State implements ConcurrentMap<String, Object> {
   @Override
   public Object remove(Object key) {
     if (state.containsKey(key)) {
-      delta.put((String) key, REMOVED);
+      delta.put((String) key, null);
     }
     return state.remove(key);
   }
@@ -133,7 +151,7 @@ public final class State implements ConcurrentMap<String, Object> {
   public boolean remove(Object key, Object value) {
     boolean removed = state.remove(key, value);
     if (removed) {
-      delta.put((String) key, REMOVED);
+      delta.put((String) key, null);
     }
     return removed;
   }
@@ -168,18 +186,5 @@ public final class State implements ConcurrentMap<String, Object> {
 
   public boolean hasDelta() {
     return !delta.isEmpty();
-  }
-
-  private static final class RemovedSentinel {
-    public static final RemovedSentinel INSTANCE = new RemovedSentinel();
-
-    private RemovedSentinel() {
-      // Enforce singleton.
-    }
-
-    @JsonValue
-    public String toJson() {
-      return "__ADK_SENTINEL_REMOVED__";
-    }
   }
 }

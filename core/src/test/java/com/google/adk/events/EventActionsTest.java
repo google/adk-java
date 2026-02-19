@@ -18,11 +18,11 @@ package com.google.adk.events;
 
 import static com.google.common.truth.Truth.assertThat;
 
-import com.google.adk.sessions.State;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -44,11 +44,13 @@ public final class EventActionsTest {
 
   @Test
   public void toBuilder_createsBuilderWithSameValues() {
+    Map<String, Integer> artifactDelta = new HashMap<>();
+    artifactDelta.put("d1", null);
     EventActions eventActionsWithSkipSummarization =
         EventActions.builder()
             .skipSummarization(true)
             .compaction(COMPACTION)
-            .deletedArtifactIds(ImmutableSet.of("d1"))
+            .artifactDelta(artifactDelta)
             .build();
 
     EventActions eventActionsAfterRebuild = eventActionsWithSkipSummarization.toBuilder().build();
@@ -59,12 +61,14 @@ public final class EventActionsTest {
 
   @Test
   public void merge_mergesAllFields() {
+    Map<String, Integer> artifactDelta1 = new HashMap<>();
+    artifactDelta1.put("artifact1", 1);
+    artifactDelta1.put("deleted1", null);
     EventActions eventActions1 =
         EventActions.builder()
             .skipSummarization(true)
-            .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key1", "value1")))
-            .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact1", 1)))
-            .deletedArtifactIds(ImmutableSet.of("deleted1"))
+            .stateDelta(new HashMap<>(ImmutableMap.of("key1", "value1")))
+            .artifactDelta(artifactDelta1)
             .requestedAuthConfigs(
                 new ConcurrentHashMap<>(
                     ImmutableMap.of("config1", new ConcurrentHashMap<>(ImmutableMap.of("k", "v")))))
@@ -72,18 +76,18 @@ public final class EventActionsTest {
                 new ConcurrentHashMap<>(ImmutableMap.of("tool1", TOOL_CONFIRMATION)))
             .compaction(COMPACTION)
             .build();
+    Map<String, Integer> artifactDelta2 = new HashMap<>();
+    artifactDelta2.put("artifact2", 2);
+    artifactDelta2.put("deleted2", null);
     EventActions eventActions2 =
         EventActions.builder()
-            .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key2", "value2")))
-            .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact2", 2)))
-            .deletedArtifactIds(ImmutableSet.of("deleted2"))
+            .stateDelta(new HashMap<>(ImmutableMap.of("key2", "value2")))
+            .artifactDelta(artifactDelta2)
             .transferToAgent("agentId")
             .escalate(true)
             .requestedAuthConfigs(
-                new ConcurrentHashMap<>(
-                    ImmutableMap.of("config2", new ConcurrentHashMap<>(ImmutableMap.of("k", "v")))))
-            .requestedToolConfirmations(
-                new ConcurrentHashMap<>(ImmutableMap.of("tool2", TOOL_CONFIRMATION)))
+                new HashMap<>(ImmutableMap.of("config2", new HashMap<>(ImmutableMap.of("k", "v")))))
+            .requestedToolConfirmations(new HashMap<>(ImmutableMap.of("tool2", TOOL_CONFIRMATION)))
             .endOfAgent(true)
             .build();
 
@@ -91,16 +95,13 @@ public final class EventActionsTest {
 
     assertThat(merged.skipSummarization()).hasValue(true);
     assertThat(merged.stateDelta()).containsExactly("key1", "value1", "key2", "value2");
-    assertThat(merged.artifactDelta()).containsExactly("artifact1", 1, "artifact2", 2);
-    assertThat(merged.deletedArtifactIds()).containsExactly("deleted1", "deleted2");
+    assertThat(merged.artifactDelta())
+        .containsExactly("artifact1", 1, "artifact2", 2, "deleted1", null, "deleted2", null);
     assertThat(merged.transferToAgent()).hasValue("agentId");
     assertThat(merged.escalate()).hasValue(true);
     assertThat(merged.requestedAuthConfigs())
         .containsExactly(
-            "config1",
-            new ConcurrentHashMap<>(ImmutableMap.of("k", "v")),
-            "config2",
-            new ConcurrentHashMap<>(ImmutableMap.of("k", "v")));
+            "config1", ImmutableMap.of("k", "v"), "config2", ImmutableMap.of("k", "v"));
     assertThat(merged.requestedToolConfirmations())
         .containsExactly("tool1", TOOL_CONFIRMATION, "tool2", TOOL_CONFIRMATION);
     assertThat(merged.endOfAgent()).isTrue();
@@ -111,23 +112,8 @@ public final class EventActionsTest {
   public void removeStateByKey_marksKeyAsRemoved() {
     EventActions eventActions = new EventActions();
     eventActions.stateDelta().put("key1", "value1");
-    eventActions.removeStateByKey("key1");
+    eventActions.stateDelta().put("key1", null);
 
-    assertThat(eventActions.stateDelta()).containsExactly("key1", State.REMOVED);
-  }
-
-  @Test
-  public void jsonSerialization_works() throws Exception {
-    EventActions eventActions =
-        EventActions.builder()
-            .deletedArtifactIds(ImmutableSet.of("d1", "d2"))
-            .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("k", "v")))
-            .build();
-
-    String json = eventActions.toJson();
-    EventActions deserialized = EventActions.fromJsonString(json, EventActions.class);
-
-    assertThat(deserialized).isEqualTo(eventActions);
-    assertThat(deserialized.deletedArtifactIds()).containsExactly("d1", "d2");
+    assertThat(eventActions.stateDelta()).containsExactly("key1", null);
   }
 }

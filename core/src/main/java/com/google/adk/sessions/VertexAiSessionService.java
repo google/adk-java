@@ -33,10 +33,10 @@ import io.reactivex.rxjava3.core.Single;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -76,6 +76,15 @@ public final class VertexAiSessionService implements BaseSessionService {
       String userId,
       @Nullable ConcurrentMap<String, Object> state,
       @Nullable String sessionId) {
+    return createSession(appName, userId, (Map<String, Object>) state, sessionId);
+  }
+
+  @Override
+  public Single<Session> createSession(
+      String appName,
+      String userId,
+      @Nullable Map<String, Object> state,
+      @Nullable String sessionId) {
 
     String reasoningEngineId = parseReasoningEngineId(appName);
     return client
@@ -93,20 +102,20 @@ public final class VertexAiSessionService implements BaseSessionService {
             .map(name -> Iterables.getLast(Splitter.on('/').splitToList(name.asText())))
             .orElse(fallbackSessionId);
     Instant updateTimestamp = Instant.parse(getSessionResponseMap.get("updateTime").asText());
-    ConcurrentMap<String, Object> sessionState = null;
+    Map<String, Object> sessionState = null;
     if (getSessionResponseMap != null && getSessionResponseMap.has("sessionState")) {
       JsonNode sessionStateNode = getSessionResponseMap.get("sessionState");
       if (sessionStateNode != null) {
         sessionState =
             objectMapper.convertValue(
-                sessionStateNode, new TypeReference<ConcurrentMap<String, Object>>() {});
+                sessionStateNode, new TypeReference<Map<String, Object>>() {});
       }
     }
     return Session.builder(sessId)
         .appName(appName)
         .userId(userId)
         .lastUpdateTime(updateTimestamp)
-        .state(sessionState == null ? new ConcurrentHashMap<>() : sessionState)
+        .state(sessionState == null ? new HashMap<>() : sessionState)
         .build();
   }
 
@@ -140,10 +149,10 @@ public final class VertexAiSessionService implements BaseSessionService {
               .userId(userId)
               .state(
                   apiSession.get("sessionState") == null
-                      ? new ConcurrentHashMap<>()
+                      ? new HashMap<>()
                       : objectMapper.convertValue(
                           apiSession.get("sessionState"),
-                          new TypeReference<ConcurrentMap<String, Object>>() {}))
+                          new TypeReference<Map<String, Object>>() {}))
               .lastUpdateTime(updateTimestamp)
               .build();
       sessions.add(session);
@@ -168,8 +177,7 @@ public final class VertexAiSessionService implements BaseSessionService {
     return ListEventsResponse.builder()
         .events(
             objectMapper
-                .convertValue(
-                    sessionEventsNode, new TypeReference<List<ConcurrentMap<String, Object>>>() {})
+                .convertValue(sessionEventsNode, new TypeReference<List<Map<String, Object>>>() {})
                 .stream()
                 .map(SessionJsonConverter::fromApiEvent)
                 .collect(toCollection(ArrayList::new)))
@@ -193,12 +201,12 @@ public final class VertexAiSessionService implements BaseSessionService {
                       .map(updateTime -> Instant.parse(updateTime.asText()))
                       .orElse(null);
 
-              ConcurrentMap<String, Object> sessionState = new ConcurrentHashMap<>();
+              Map<String, Object> sessionState = new HashMap<>();
               if (getSessionResponseMap != null && getSessionResponseMap.has("sessionState")) {
                 sessionState.putAll(
                     objectMapper.convertValue(
                         getSessionResponseMap.get("sessionState"),
-                        new TypeReference<ConcurrentMap<String, Object>>() {}));
+                        new TypeReference<Map<String, Object>>() {}));
               }
 
               return listEvents(appName, userId, sessionId)

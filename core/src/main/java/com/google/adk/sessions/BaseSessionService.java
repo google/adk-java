@@ -23,8 +23,10 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import javax.annotation.Nullable;
 
@@ -47,12 +49,35 @@ public interface BaseSessionService {
    *     service should generate a unique ID.
    * @return The newly created {@link Session} instance.
    * @throws SessionException if creation fails.
+   * @deprecated Use {@link #createSession(String, String, Map, String)} instead.
    */
+  @Deprecated
   Single<Session> createSession(
       String appName,
       String userId,
       @Nullable ConcurrentMap<String, Object> state,
       @Nullable String sessionId);
+
+  /**
+   * Creates a new session with the specified parameters.
+   *
+   * @param appName The name of the application associated with the session.
+   * @param userId The identifier for the user associated with the session.
+   * @param state An optional map representing the initial state of the session. Can be null or
+   *     empty.
+   * @param sessionId An optional client-provided identifier for the session. If empty or null, the
+   *     service should generate a unique ID.
+   * @return The newly created {@link Session} instance.
+   * @throws SessionException if creation fails.
+   */
+  default Single<Session> createSession(
+      String appName,
+      String userId,
+      @Nullable Map<String, Object> state,
+      @Nullable String sessionId) {
+    return createSession(
+        appName, userId, state == null ? null : new ConcurrentHashMap<>(state), sessionId);
+  }
 
   /**
    * Creates a new session with the specified application name and user ID, using a default state
@@ -165,9 +190,9 @@ public interface BaseSessionService {
 
     EventActions actions = event.actions();
     if (actions != null) {
-      ConcurrentMap<String, Object> stateDelta = actions.stateDelta();
+      Map<String, Object> stateDelta = actions.stateDelta();
       if (stateDelta != null && !stateDelta.isEmpty()) {
-        ConcurrentMap<String, Object> sessionState = session.state();
+        Map<String, Object> sessionState = session.state();
         if (sessionState != null) {
           stateDelta.forEach(
               (key, value) -> {

@@ -28,6 +28,7 @@ import io.reactivex.rxjava3.core.Single;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -71,6 +72,15 @@ public final class InMemorySessionService implements BaseSessionService {
       String userId,
       @Nullable ConcurrentMap<String, Object> state,
       @Nullable String sessionId) {
+    return createSession(appName, userId, (Map<String, Object>) state, sessionId);
+  }
+
+  @Override
+  public Single<Session> createSession(
+      String appName,
+      String userId,
+      @Nullable Map<String, Object> state,
+      @Nullable String sessionId) {
     Objects.requireNonNull(appName, "appName cannot be null");
     Objects.requireNonNull(userId, "userId cannot be null");
 
@@ -81,8 +91,7 @@ public final class InMemorySessionService implements BaseSessionService {
             .orElseGet(() -> UUID.randomUUID().toString());
 
     // Ensure state map and events list are mutable for the new session
-    ConcurrentMap<String, Object> initialState =
-        (state == null) ? new ConcurrentHashMap<>() : new ConcurrentHashMap<>(state);
+    Map<String, Object> initialState = (state == null) ? new HashMap<>() : new HashMap<>(state);
     List<Event> initialEvents = new ArrayList<>();
 
     // Assuming Session constructor or setters allow setting these mutable collections
@@ -95,10 +104,7 @@ public final class InMemorySessionService implements BaseSessionService {
             .lastUpdateTime(Instant.now())
             .build();
 
-    sessions
-        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
-        .put(resolvedSessionId, newSession);
+    getUserSessionsMap(appName, userId).put(resolvedSessionId, newSession);
 
     // Create a mutable copy for the return value
     Session returnCopy = copySession(newSession);
@@ -114,11 +120,7 @@ public final class InMemorySessionService implements BaseSessionService {
     Objects.requireNonNull(sessionId, "sessionId cannot be null");
     Objects.requireNonNull(configOpt, "configOpt cannot be null");
 
-    Session storedSession =
-        sessions
-            .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-            .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
-            .get(sessionId);
+    Session storedSession = getUserSessionsMap(appName, userId).get(sessionId);
 
     if (storedSession == null) {
       return Maybe.empty();
@@ -165,10 +167,9 @@ public final class InMemorySessionService implements BaseSessionService {
     Objects.requireNonNull(appName, "appName cannot be null");
     Objects.requireNonNull(userId, "userId cannot be null");
 
-    Map<String, Session> userSessionsMap =
-        sessions.computeIfAbsent(appName, unused -> new ConcurrentHashMap<>()).get(userId);
+    Map<String, Session> userSessionsMap = getUserSessionsMap(appName, userId);
 
-    if (userSessionsMap == null || userSessionsMap.isEmpty()) {
+    if (userSessionsMap.isEmpty()) {
       return Single.just(ListSessionsResponse.builder().build());
     }
 
@@ -185,13 +186,7 @@ public final class InMemorySessionService implements BaseSessionService {
     Objects.requireNonNull(userId, "userId cannot be null");
     Objects.requireNonNull(sessionId, "sessionId cannot be null");
 
-    ConcurrentMap<String, ConcurrentMap<String, Session>> appSessionsMap = sessions.get(appName);
-    if (appSessionsMap != null) {
-      ConcurrentMap<String, Session> userSessionsMap = appSessionsMap.get(userId);
-      if (userSessionsMap != null) {
-        userSessionsMap.remove(sessionId);
-      }
-    }
+    getUserSessionsMap(appName, userId).remove(sessionId);
     return Completable.complete();
   }
 
@@ -201,11 +196,7 @@ public final class InMemorySessionService implements BaseSessionService {
     Objects.requireNonNull(userId, "userId cannot be null");
     Objects.requireNonNull(sessionId, "sessionId cannot be null");
 
-    Session storedSession =
-        sessions
-            .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-            .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
-            .get(sessionId);
+    Session storedSession = getUserSessionsMap(appName, userId).get(sessionId);
 
     if (storedSession == null) {
       return Single.just(ListEventsResponse.builder().build());
@@ -237,30 +228,21 @@ public final class InMemorySessionService implements BaseSessionService {
             (key, value) -> {
               if (key.startsWith(State.APP_PREFIX)) {
                 String appStateKey = key.substring(State.APP_PREFIX.length());
-                if (value == State.REMOVED) {
-                  appState
-                      .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-                      .remove(appStateKey);
+                ConcurrentMap<String, Object> currentAppState = getAppStateMap(appName);
+                if (value == null) {
+                  currentAppState.remove(appStateKey);
                 } else {
-                  appState
-                      .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-                      .put(appStateKey, value);
+                  currentAppState.put(appStateKey, value);
                 }
               } else if (key.startsWith(State.USER_PREFIX)) {
                 String userStateKey = key.substring(State.USER_PREFIX.length());
-                if (value == State.REMOVED) {
-                  userState
-                      .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-                      .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
-                      .remove(userStateKey);
+                if (value == null) {
+                  getUserStateMap(appName, userId).remove(userStateKey);
                 } else {
-                  userState
-                      .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-                      .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
-                      .put(userStateKey, value);
+                  getUserStateMap(appName, userId).put(userStateKey, value);
                 }
               } else {
-                if (value == State.REMOVED) {
+                if (value == null) {
                   session.state().remove(key);
                 } else {
                   session.state().put(key, value);
@@ -274,10 +256,7 @@ public final class InMemorySessionService implements BaseSessionService {
     session.lastUpdateTime(getInstantFromEvent(event));
 
     // --- Update the session stored in this service ---
-    sessions
-        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
-        .put(sessionId, session);
+    getUserSessionsMap(appName, userId).put(sessionId, session);
 
     mergeWithGlobalState(appName, userId, session);
 
@@ -304,7 +283,7 @@ public final class InMemorySessionService implements BaseSessionService {
     return Session.builder(original.id())
         .appName(original.appName())
         .userId(original.userId())
-        .state(new ConcurrentHashMap<>(original.state()))
+        .state(new HashMap<>(original.state()))
         .events(new ArrayList<>(original.events()))
         .lastUpdateTime(original.lastUpdateTime())
         .build();
@@ -324,13 +303,10 @@ public final class InMemorySessionService implements BaseSessionService {
     Map<String, Object> sessionState = session.state();
 
     // Merge App State directly into the session's state map
-    appState
-        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+    getAppStateMap(appName)
         .forEach((key, value) -> sessionState.put(State.APP_PREFIX + key, value));
 
-    userState
-        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
+    getUserStateMap(appName, userId)
         .forEach((key, value) -> sessionState.put(State.USER_PREFIX + key, value));
 
     return session;
@@ -354,5 +330,21 @@ public final class InMemorySessionService implements BaseSessionService {
         .peek(s -> s.events().clear())
         .map(s -> mergeWithGlobalState(appName, userId, s))
         .collect(toCollection(ArrayList::new));
+  }
+
+  private ConcurrentMap<String, Object> getAppStateMap(String appName) {
+    return appState.computeIfAbsent(appName, unused -> new ConcurrentHashMap<>());
+  }
+
+  private ConcurrentMap<String, Object> getUserStateMap(String appName, String userId) {
+    return userState
+        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>());
+  }
+
+  private ConcurrentMap<String, Session> getUserSessionsMap(String appName, String userId) {
+    return sessions
+        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>());
   }
 }

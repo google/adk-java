@@ -20,9 +20,9 @@ import static com.google.common.truth.Truth.assertThat;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import io.reactivex.rxjava3.core.Single;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -84,10 +84,10 @@ public final class InMemorySessionServiceTest {
 
     Session session =
         sessionService
-            .createSession("app-name", "user-id", new ConcurrentHashMap<>(), "session-1")
+            .createSession("app-name", "user-id", new HashMap<>(), "session-1")
             .blockingGet();
 
-    ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
+    Map<String, Object> stateDelta = new HashMap<>();
     stateDelta.put("sessionKey", "sessionValue");
     stateDelta.put("_app_appKey", "appValue");
     stateDelta.put("_user_userKey", "userValue");
@@ -130,11 +130,9 @@ public final class InMemorySessionServiceTest {
   public void appendEvent_updatesSessionState() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session =
-        sessionService
-            .createSession("app", "user", new ConcurrentHashMap<>(), "session1")
-            .blockingGet();
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
 
-    ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
+    Map<String, Object> stateDelta = new HashMap<>();
     stateDelta.put("sessionKey", "sessionValue");
     stateDelta.put("_app_appKey", "appValue");
     stateDelta.put("_user_userKey", "userValue");
@@ -167,11 +165,9 @@ public final class InMemorySessionServiceTest {
   public void appendEvent_removesState() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session =
-        sessionService
-            .createSession("app", "user", new ConcurrentHashMap<>(), "session1")
-            .blockingGet();
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
 
-    ConcurrentMap<String, Object> stateDeltaAdd = new ConcurrentHashMap<>();
+    Map<String, Object> stateDeltaAdd = new HashMap<>();
     stateDeltaAdd.put("sessionKey", "sessionValue");
     stateDeltaAdd.put("_app_appKey", "appValue");
     stateDeltaAdd.put("_user_userKey", "userValue");
@@ -193,11 +189,11 @@ public final class InMemorySessionServiceTest {
     assertThat(retrievedSessionAdd.state()).containsEntry("temp:tempKey", "tempValue");
 
     // Prepare and append event to remove state
-    ConcurrentMap<String, Object> stateDeltaRemove = new ConcurrentHashMap<>();
-    stateDeltaRemove.put("sessionKey", State.REMOVED);
-    stateDeltaRemove.put("_app_appKey", State.REMOVED);
-    stateDeltaRemove.put("_user_userKey", State.REMOVED);
-    stateDeltaRemove.put("temp:tempKey", State.REMOVED);
+    Map<String, Object> stateDeltaRemove = new HashMap<>();
+    stateDeltaRemove.put("sessionKey", null);
+    stateDeltaRemove.put("_app_appKey", null);
+    stateDeltaRemove.put("_user_userKey", null);
+    stateDeltaRemove.put("temp:tempKey", null);
 
     Event eventRemove =
         Event.builder()
@@ -221,12 +217,10 @@ public final class InMemorySessionServiceTest {
   public void sequentialAgents_shareTempState() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session =
-        sessionService
-            .createSession("app", "user", new ConcurrentHashMap<>(), "session1")
-            .blockingGet();
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
 
     // Agent 1 writes to temp state
-    ConcurrentMap<String, Object> stateDelta1 = new ConcurrentHashMap<>();
+    Map<String, Object> stateDelta1 = new HashMap<>();
     stateDelta1.put("temp:agent1_output", "data");
     Event event1 =
         Event.builder().actions(EventActions.builder().stateDelta(stateDelta1).build()).build();
@@ -237,9 +231,9 @@ public final class InMemorySessionServiceTest {
 
     // Agent 2 reads "agent1_output", processes it, writes "agent2_output", and removes
     // "agent1_output"
-    ConcurrentMap<String, Object> stateDelta2 = new ConcurrentHashMap<>();
+    Map<String, Object> stateDelta2 = new HashMap<>();
     stateDelta2.put("temp:agent2_output", "processed_data");
-    stateDelta2.put("temp:agent1_output", State.REMOVED);
+    stateDelta2.put("temp:agent1_output", null);
     Event event2 =
         Event.builder().actions(EventActions.builder().stateDelta(stateDelta2).build()).build();
     unused = sessionService.appendEvent(session, event2).blockingGet();

@@ -104,7 +104,7 @@ public class VertexAiSessionServiceTest {
       ]
       """;
 
-  @SuppressWarnings("unchecked")
+  @SuppressWarnings("unchecked") // Casting raw Object from JSON Map to Map<String, Object>.
   private static Session getMockSession() throws Exception {
     Map<String, Object> sessionJson =
         mapper.readValue(MOCK_SESSION_STRING_1, new TypeReference<Map<String, Object>>() {});
@@ -341,13 +341,12 @@ public class VertexAiSessionServiceTest {
   @Test
   public void appendEvent_withStateRemoved_updatesSessionState() {
     String userId = "userB";
-    ConcurrentMap<String, Object> initialState =
-        new ConcurrentHashMap<>(ImmutableMap.of("key1", "value1", "key2", "value2"));
+    ImmutableMap<String, Object> initialState = ImmutableMap.of("key1", "value1", "key2", "value2");
     Session session =
         vertexAiSessionService.createSession("987", userId, initialState, null).blockingGet();
 
-    ConcurrentMap<String, Object> stateDelta =
-        new ConcurrentHashMap<>(ImmutableMap.of("key2", State.REMOVED));
+    Map<String, Object> stateDelta = new HashMap<>();
+    stateDelta.put("key2", null);
     Event event =
         Event.builder()
             .invocationId("456")

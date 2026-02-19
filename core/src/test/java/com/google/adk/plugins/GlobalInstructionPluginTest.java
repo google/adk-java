@@ -44,7 +44,7 @@ public class GlobalInstructionPluginTest {
   @Rule public MockitoRule mockitoRule = MockitoJUnit.rule();
   @Mock private CallbackContext mockCallbackContext;
   @Mock private InvocationContext mockInvocationContext;
-  private final State state = new State(new ConcurrentHashMap<>());
+  private final State state = new State();
   private final Session session = Session.builder("session_id").state(state).build();
   @Mock private BaseArtifactService mockArtifactService;
 

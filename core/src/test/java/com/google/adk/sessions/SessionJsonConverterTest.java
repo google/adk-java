@@ -23,8 +23,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -38,8 +36,8 @@ public final class SessionJsonConverterTest {
     EventActions actions =
         EventActions.builder()
             .skipSummarization(true)
-            .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key", "value")))
-            .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact", 1)))
+            .stateDelta(new HashMap<>(ImmutableMap.of("key", "value")))
+            .artifactDelta(new HashMap<>(ImmutableMap.of("artifact", 1)))
             .transferToAgent("agent")
             .escalate(true)
             .build();
@@ -174,10 +172,10 @@ public final class SessionJsonConverterTest {
 
   @Test
   public void convertEventToJson_complexActions_success() throws JsonProcessingException {
-    ConcurrentMap<String, ConcurrentMap<String, Object>> authConfigs = new ConcurrentHashMap<>();
-    authConfigs.put("auth1", new ConcurrentHashMap<>(ImmutableMap.of("param1", "value1")));
+    Map<String, Map<String, Object>> authConfigs = new HashMap<>();
+    authConfigs.put("auth1", new HashMap<>(ImmutableMap.of("param1", "value1")));
 
-    ConcurrentMap<String, ToolConfirmation> toolConfirmations = new ConcurrentHashMap<>();
+    Map<String, ToolConfirmation> toolConfirmations = new HashMap<>();
     toolConfirmations.put(
         "tool1", ToolConfirmation.builder().hint("hint1").confirmed(true).build());
 
@@ -225,6 +223,7 @@ public final class SessionJsonConverterTest {
   }
 
   @Test
+  // Testing conversion of raw Map following a known schema.
   public void fromApiEvent_complexActions_success() {
     Map<String, Object> apiEvent = new HashMap<>();
     apiEvent.put("name", "sessions/123/events/456");
@@ -333,11 +332,10 @@ public final class SessionJsonConverterTest {
 
   @Test
   public void convertEventToJson_withStateRemoved_success() throws JsonProcessingException {
-    EventActions actions =
-        EventActions.builder()
-            .stateDelta(
-                new ConcurrentHashMap<>(ImmutableMap.of("key1", "value1", "key2", State.REMOVED)))
-            .build();
+    HashMap<String, Object> stateDelta = new HashMap<>();
+    stateDelta.put("key1", "value1");
+    stateDelta.put("key2", null);
+    EventActions actions = EventActions.builder().stateDelta(stateDelta).build();
 
     Event event =
         Event.builder()
@@ -422,6 +420,6 @@ public final class SessionJsonConverterTest {
 
     EventActions eventActions = event.actions();
     assertThat(eventActions.stateDelta()).containsEntry("key1", "value1");
-    assertThat(eventActions.stateDelta()).containsEntry("key2", State.REMOVED);
+    assertThat(eventActions.stateDelta()).containsEntry("key2", null);
   }
 }

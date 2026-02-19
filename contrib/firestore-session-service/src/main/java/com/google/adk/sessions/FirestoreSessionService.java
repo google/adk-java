@@ -46,7 +46,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
@@ -85,10 +84,19 @@ public class FirestoreSessionService implements BaseSessionService {
         .collection(SESSION_COLLECTION_NAME);
   }
 
+  @Override
+  public Single<Session> createSession(
+      String appName,
+      String userId,
+      @Nullable ConcurrentMap<String, Object> state,
+      @Nullable String sessionId) {
+    return createSession(appName, userId, (Map<String, Object>) state, sessionId);
+  }
+
   /** Creates a new session in Firestore. */
   @Override
   public Single<Session> createSession(
-      String appName, String userId, ConcurrentMap<String, Object> state, String sessionId) {
+      String appName, String userId, Map<String, Object> state, String sessionId) {
     return Single.fromCallable(
         () -> {
           Objects.requireNonNull(appName, "appName cannot be null");
@@ -100,21 +108,17 @@ public class FirestoreSessionService implements BaseSessionService {
                   .filter(s -> !s.isEmpty())
                   .orElseGet(() -> UUID.randomUUID().toString());
 
-          ConcurrentMap<String, Object> initialState =
-              (state == null) ? new ConcurrentHashMap<>() : new ConcurrentHashMap<>(state);
           logger.info(
               "Creating session for userId: {} with sessionId: {} and initial state: {}",
               userId,
               resolvedSessionId,
-              initialState);
-          List<Event> initialEvents = new ArrayList<>();
+              state);
           Instant now = Instant.now();
           Session newSession =
               Session.builder(resolvedSessionId)
                   .appName(appName)
                   .userId(userId)
-                  .state(initialState)
-                  .events(initialEvents)
+                  .state(state)
                   .lastUpdateTime(now)
                   .build();
 
@@ -200,8 +204,7 @@ public class FirestoreSessionService implements BaseSessionService {
                       })
                   .map(
                       events -> {
-                        ConcurrentMap<String, Object> state =
-                            new ConcurrentHashMap<>((Map<String, Object>) data.get(STATE_KEY));
+                        Map<String, Object> state = (Map<String, Object>) data.get(STATE_KEY);
                         return Session.builder((String) data.get(ID_KEY))
                             .appName((String) data.get(APP_NAME_KEY))
                             .userId((String) data.get(USER_ID_KEY))
@@ -451,8 +454,6 @@ public class FirestoreSessionService implements BaseSessionService {
                       .appName((String) data.get(APP_NAME_KEY))
                       .userId((String) data.get(USER_ID_KEY))
                       .lastUpdateTime(Instant.parse((String) data.get(UPDATE_TIME_KEY)))
-                      .state(new ConcurrentHashMap<>()) // Empty state
-                      .events(new ArrayList<>()) // Empty events
                       .build();
               sessions.add(session);
             }
