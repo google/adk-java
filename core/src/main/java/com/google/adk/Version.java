@@ -22,7 +22,7 @@ package com.google.adk;
  */
 public final class Version {
   // Don't touch this, release-please should keep it up to date.
-  public static final String JAVA_ADK_VERSION = "0.5.0"; // x-release-please-released-version
+  public static final String JAVA_ADK_VERSION = "0.6.0"; // x-release-please-released-version
 
   private Version() {}
 }
