@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 Google LLC
+ * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,10 @@
  * limitations under the License.
  */
 
-package com.google.adk;
+package com.google.adk.tools.computeruse;
 
-/**
- * Tracks the current ADK version. Useful for tracking headers. Kept as a string literal to avoid
- * coupling with the build system.
- */
-public final class Version {
-  // Don't touch this, release-please should keep it up to date.
-  public static final String JAVA_ADK_VERSION = "0.6.0"; // x-release-please-released-version
-
-  private Version() {}
+/** Enum for computer environments. */
+public enum ComputerEnvironment {
+  ENVIRONMENT_UNSPECIFIED,
+  ENVIRONMENT_BROWSER
 }
