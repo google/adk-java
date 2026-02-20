@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/google/adk-java/compare/v0.6.0...v0.7.0) (2026-02-19)
+
+
+### Features
+
+* Add ComputerUse tool ([d733a48](https://github.com/google/adk-java/commit/d733a480a7a787cb7c32fd3470ab978ca3eb574c))
+
+
+### Documentation
+
+* Update a parameter name in a comment ([5262d4a](https://github.com/google/adk-java/commit/5262d4ae3eca533e1a695e6e2e71c5845055ed5d))
+
 ## [0.6.0](https://github.com/google/adk-java/compare/v0.5.0...v0.6.0) (2026-02-19)
 
 
