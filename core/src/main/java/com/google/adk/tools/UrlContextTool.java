@@ -25,8 +25,8 @@ import io.reactivex.rxjava3.core.Completable;
 import java.util.List;
 
 /**
- * A built-in tool that is automatically invoked by Gemini 2 models to retrieve information from the
- * given URLs.
+ * A built-in tool that is automatically invoked by Gemini 2 and 3 models to retrieve information
+ * from the given URLs.
  *
  * <p>This tool operates internally within the model and does not require or perform local code
  * execution.
