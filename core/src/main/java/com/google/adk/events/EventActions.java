@@ -22,6 +22,7 @@ import com.google.adk.JsonBaseModel;
 import com.google.adk.sessions.State;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -383,7 +384,7 @@ public class EventActions extends JsonBaseModel {
     @CanIgnoreReturnValue
     public Builder merge(EventActions other) {
       other.skipSummarization().ifPresent(this::skipSummarization);
-      this.stateDelta.putAll(other.stateDelta());
+      other.stateDelta().forEach((key, value) -> stateDelta.merge(key, value, Builder::deepMerge));
       this.artifactDelta.putAll(other.artifactDelta());
       this.deletedArtifactIds.addAll(other.deletedArtifactIds());
       other.transferToAgent().ifPresent(this::transferToAgent);
@@ -393,6 +394,34 @@ public class EventActions extends JsonBaseModel {
       this.endOfAgent = other.endOfAgent();
       other.compaction().ifPresent(this::compaction);
       return this;
+    }
+
+    private static Object deepMerge(Object target, Object source) {
+      if (!(target instanceof Map) || !(source instanceof Map)) {
+        // If one of them is not a map, the source value overwrites the target.
+        return source;
+      }
+
+      Map<?, ?> targetMap = (Map<?, ?>) target;
+      Map<?, ?> sourceMap = (Map<?, ?>) source;
+
+      if (!targetMap.isEmpty() && !sourceMap.isEmpty()) {
+        Object targetKey = targetMap.keySet().iterator().next();
+        Object sourceKey = sourceMap.keySet().iterator().next();
+        if (targetKey != null
+            && sourceKey != null
+            && !targetKey.getClass().equals(sourceKey.getClass())) {
+          throw new IllegalArgumentException(
+              String.format(
+                  "Cannot merge maps with different key types: %s vs %s",
+                  targetKey.getClass().getName(), sourceKey.getClass().getName()));
+        }
+      }
+
+      // Create a new map to prevent UnsupportedOperationException from immutable maps
+      Map<Object, Object> mergedMap = new ConcurrentHashMap<>(targetMap);
+      sourceMap.forEach((key, value) -> mergedMap.merge(key, value, Builder::deepMerge));
+      return mergedMap;
     }
 
     public EventActions build() {
