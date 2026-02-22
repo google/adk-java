@@ -686,6 +686,7 @@ public final class Functions {
 
     return Optional.of(
         Event.builder()
+            .id(Event.generateEventId())
             .invocationId(invocationContext.invocationId())
             .author(invocationContext.agent().name())
             .branch(invocationContext.branch())
