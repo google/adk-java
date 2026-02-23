@@ -62,7 +62,7 @@ public final class UrlContextTool extends BaseTool {
     updatedToolsBuilder.addAll(existingTools);
 
     String model = llmRequestBuilder.build().model().get();
-    if (model != null && model.startsWith("gemini-2")) {
+    if (model != null && (model.startsWith("gemini-2") || model.startsWith("gemini-3"))) {
       updatedToolsBuilder.add(Tool.builder().urlContext(UrlContext.builder().build()).build());
       configBuilder.tools(updatedToolsBuilder.build());
     } else {

@@ -152,7 +152,7 @@ public class ComputerUseToolset implements BaseToolset {
   /**
    * Configures the computer use tool in the LLM request if it is not already configured.
    *
-   * @param env The environment to configure the computer use tool for.
+   * @param computerEnvironment The environment to configure the computer use tool for.
    * @param llmRequestBuilder The LLM request builder to add the computer use tool to.
    */
   private static void configureComputerUseIfNeeded(
