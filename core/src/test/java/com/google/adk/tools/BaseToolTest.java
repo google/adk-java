@@ -6,6 +6,7 @@ import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.GoogleMaps;
 import com.google.genai.types.GoogleSearch;
 import com.google.genai.types.GoogleSearchRetrieval;
 import com.google.genai.types.Tool;
@@ -206,5 +207,23 @@ public final class BaseToolTest {
     assertThat(updatedLlmRequest.config().get().tools()).isPresent();
     assertThat(updatedLlmRequest.config().get().tools().get())
         .containsExactly(Tool.builder().codeExecution(ToolCodeExecution.builder().build()).build());
+  }
+
+  @Test
+  public void processLlmRequestWithGoogleMapsToolAddsToolToConfig() {
+    GoogleMapsTool googleMapsTool = new GoogleMapsTool();
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .config(GenerateContentConfig.builder().build())
+            .model("gemini-2")
+            .build();
+    LlmRequest.Builder llmRequestBuilder = llmRequest.toBuilder();
+    Completable unused =
+        googleMapsTool.processLlmRequest(llmRequestBuilder, /* toolContext= */ null);
+    LlmRequest updatedLlmRequest = llmRequestBuilder.build();
+    assertThat(updatedLlmRequest.config()).isPresent();
+    assertThat(updatedLlmRequest.config().get().tools()).isPresent();
+    assertThat(updatedLlmRequest.config().get().tools().get())
+        .containsExactly(Tool.builder().googleMaps(GoogleMaps.builder().build()).build());
   }
 }
