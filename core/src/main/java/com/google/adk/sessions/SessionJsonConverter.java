@@ -37,8 +37,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -99,7 +97,7 @@ final class SessionJsonConverter {
       Map<String, Object> actionsJson = new HashMap<>();
       EventActions actions = event.actions();
       actions.skipSummarization().ifPresent(v -> actionsJson.put("skipSummarization", v));
-      actionsJson.put("stateDelta", stateDeltaToJson(actions.stateDelta()));
+      actionsJson.put("stateDelta", actions.stateDelta());
       putIfNotEmpty(actionsJson, "artifactDelta", actions.artifactDelta());
       actions
           .transferToAgent()
@@ -168,9 +166,7 @@ final class SessionJsonConverter {
       eventActionsBuilder.stateDelta(stateDeltaFromJson(actionsMap.get("stateDelta")));
       Object artifactDelta = actionsMap.get("artifactDelta");
       eventActionsBuilder.artifactDelta(
-          artifactDelta != null
-              ? convertToArtifactDeltaMap(artifactDelta)
-              : new ConcurrentHashMap<>());
+          artifactDelta != null ? convertToArtifactDeltaMap(artifactDelta) : new HashMap<>());
       String transferAgent = (String) actionsMap.get("transferAgent");
       if (transferAgent == null) {
         transferAgent = (String) actionsMap.get("transferToAgent");
@@ -186,12 +182,12 @@ final class SessionJsonConverter {
       }
       eventActionsBuilder.requestedAuthConfigs(
           Optional.ofNullable(actionsMap.get("requestedAuthConfigs"))
-              .map(SessionJsonConverter::asConcurrentMapOfConcurrentMaps)
-              .orElse(new ConcurrentHashMap<>()));
+              .map(value -> (Map<String, Map<String, Object>>) value)
+              .orElse(new HashMap<>()));
       eventActionsBuilder.requestedToolConfirmations(
           Optional.ofNullable(actionsMap.get("requestedToolConfirmations"))
-              .map(SessionJsonConverter::asConcurrentMapOfToolConfirmations)
-              .orElse(new ConcurrentHashMap<>()));
+              .map(SessionJsonConverter::asMapOfToolConfirmations)
+              .orElse(new HashMap<>()));
     }
 
     Event event =
@@ -247,29 +243,11 @@ final class SessionJsonConverter {
   }
 
   @SuppressWarnings("unchecked") // stateDeltaFromMap is a Map<String, Object> from JSON.
-  private static ConcurrentMap<String, Object> stateDeltaFromJson(Object stateDeltaFromMap) {
+  private static Map<String, Object> stateDeltaFromJson(Object stateDeltaFromMap) {
     if (stateDeltaFromMap == null) {
-      return new ConcurrentHashMap<>();
+      return new HashMap<>();
     }
-    return ((Map<String, Object>) stateDeltaFromMap)
-        .entrySet().stream()
-            .collect(
-                ConcurrentHashMap::new,
-                (map, entry) ->
-                    map.put(
-                        entry.getKey(),
-                        entry.getValue() == null ? State.REMOVED : entry.getValue()),
-                ConcurrentHashMap::putAll);
-  }
-
-  private static Map<String, Object> stateDeltaToJson(Map<String, Object> stateDelta) {
-    return stateDelta.entrySet().stream()
-        .collect(
-            HashMap::new,
-            (map, entry) ->
-                map.put(
-                    entry.getKey(), entry.getValue() == State.REMOVED ? null : entry.getValue()),
-            HashMap::putAll);
+    return (Map<String, Object>) stateDeltaFromMap;
   }
 
   /**
@@ -291,18 +269,18 @@ final class SessionJsonConverter {
   }
 
   /**
-   * Converts a raw object from "artifactDelta" into a {@link ConcurrentMap} of {@link String} to
-   * {@link Part}.
+   * Converts a raw object from "artifactDelta" into a {@link Map} of {@link String} to {@link
+   * Integer}.
    *
-   * @param artifactDeltaObj The raw object from which to parse the artifact delta.
-   * @return A {@link ConcurrentMap} representing the artifact delta.
+   * @param artifactDeltaObj The raw object from which to parse the artifact deltas.
+   * @return A {@link Map} representing the artifact deltas.
    */
-  @SuppressWarnings("unchecked")
-  private static ConcurrentMap<String, Integer> convertToArtifactDeltaMap(Object artifactDeltaObj) {
+  @SuppressWarnings("unchecked") // artifactDeltaObj is a Map<String, Object> from JSON.
+  private static Map<String, Integer> convertToArtifactDeltaMap(Object artifactDeltaObj) {
     if (!(artifactDeltaObj instanceof Map)) {
-      return new ConcurrentHashMap<>();
+      return new HashMap<>();
     }
-    ConcurrentMap<String, Integer> artifactDeltaMap = new ConcurrentHashMap<>();
+    HashMap<String, Integer> artifactDeltaMap = new HashMap<>();
     Map<String, Object> rawMap = (Map<String, Object>) artifactDeltaObj;
     for (Map.Entry<String, Object> entry : rawMap.entrySet()) {
       try {
@@ -316,34 +294,17 @@ final class SessionJsonConverter {
     return artifactDeltaMap;
   }
 
-  /**
-   * Converts a nested map into a {@link ConcurrentMap} of {@link ConcurrentMap}s.
-   *
-   * @return thread-safe nested map.
-   */
   @SuppressWarnings("unchecked") // Parsing raw Map from JSON following a known schema.
-  private static ConcurrentMap<String, ConcurrentMap<String, Object>>
-      asConcurrentMapOfConcurrentMaps(Object value) {
-    return ((Map<String, Map<String, Object>>) value)
-        .entrySet().stream()
-            .collect(
-                ConcurrentHashMap::new,
-                (map, entry) -> map.put(entry.getKey(), new ConcurrentHashMap<>(entry.getValue())),
-                ConcurrentHashMap::putAll);
-  }
-
-  @SuppressWarnings("unchecked") // Parsing raw Map from JSON following a known schema.
-  private static ConcurrentMap<String, ToolConfirmation> asConcurrentMapOfToolConfirmations(
-      Object value) {
+  private static Map<String, ToolConfirmation> asMapOfToolConfirmations(Object value) {
     return ((Map<String, Object>) value)
         .entrySet().stream()
             .collect(
-                ConcurrentHashMap::new,
+                HashMap::new,
                 (map, entry) ->
                     map.put(
                         entry.getKey(),
                         objectMapper.convertValue(entry.getValue(), ToolConfirmation.class)),
-                ConcurrentHashMap::putAll);
+                HashMap::putAll);
   }
 
   private static void putIfNotEmpty(Map<String, Object> map, String key, Map<?, ?> values) {
