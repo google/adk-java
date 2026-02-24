@@ -16,12 +16,12 @@
 
 package com.google.adk.maven;
 
-import autovalue.shaded.com.google.common.collect.ImmutableList;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.utils.ComponentRegistry;
 import com.google.adk.web.AdkWebServer;
 import com.google.adk.web.AgentLoader;
 import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.MalformedURLException;

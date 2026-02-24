@@ -27,10 +27,12 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
-import com.google.adk.memory.InMemoryMemoryService;
+import com.google.adk.events.EventCompaction;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.Session;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
@@ -39,6 +41,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
@@ -53,22 +56,32 @@ public final class TestUtils {
 
   public static InvocationContext createInvocationContext(BaseAgent agent, RunConfig runConfig) {
     InMemorySessionService sessionService = new InMemorySessionService();
-    return new InvocationContext(
-        sessionService,
-        new InMemoryArtifactService(),
-        new InMemoryMemoryService(),
-        /* liveRequestQueue= */ Optional.empty(),
-        /* branch= */ Optional.empty(),
-        "invocationId",
-        agent,
-        sessionService.createSession("test-app", "test-user").blockingGet(),
-        Optional.of(Content.fromParts(Part.fromText("user content"))),
-        runConfig,
-        /* endInvocation= */ false);
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .artifactService(new InMemoryArtifactService())
+        .invocationId("invocationId")
+        .agent(agent)
+        .session(sessionService.createSession("test-app", "test-user").blockingGet())
+        .userContent(Content.fromParts(Part.fromText("user content")))
+        .runConfig(runConfig)
+        .build();
   }
 
   public static InvocationContext createInvocationContext(BaseAgent agent) {
     return createInvocationContext(agent, RunConfig.builder().build());
+  }
+
+  public static InvocationContext createInvocationContext(
+      BaseAgent agent, BaseSessionService sessionService, Session session) {
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .artifactService(new InMemoryArtifactService())
+        .invocationId("invocationId")
+        .agent(agent)
+        .session(session)
+        .userContent(Content.fromParts(Part.fromText("user content")))
+        .runConfig(RunConfig.builder().build())
+        .build();
   }
 
   public static Event createEvent(String id) {
@@ -86,16 +99,23 @@ public final class TestUtils {
         .build();
   }
 
-  public static ImmutableList<Object> simplifyEvents(List<Event> events) {
+  public static ImmutableList<String> simplifyEvents(List<Event> events) {
     return events.stream()
         .map(event -> event.author() + ": " + formatEventContent(event))
         .collect(toImmutableList());
   }
 
   private static String formatEventContent(Event event) {
-    return event
-        .content()
-        .flatMap(content -> content.parts())
+    return formatContent(
+        event
+            .content()
+            .or(() -> event.actions().compaction().map(EventCompaction::compactedContent))
+            .orElse(Content.builder().build()));
+  }
+
+  public static String formatContent(Content content) {
+    return content
+        .parts()
         .map(
             parts -> {
               if (parts.size() == 1) {
@@ -216,6 +236,29 @@ public final class TestUtils {
 
   public static LlmResponse createLlmResponse(Content content) {
     return LlmResponse.builder().content(content).build();
+  }
+
+  public static LlmResponse createTextLlmResponse(String text) {
+    return createLlmResponse(Content.builder().role("model").parts(Part.fromText(text)).build());
+  }
+
+  public static LlmResponse createFunctionCallLlmResponse(
+      String id, String functionName, Map<String, Object> args) {
+    Content content =
+        Content.builder()
+            .parts(
+                Part.builder()
+                    .functionCall(FunctionCall.builder().id(id).name(functionName).args(args)))
+            .role("model")
+            .build();
+    return createLlmResponse(content);
+  }
+
+  public static GenerateContentResponseUsageMetadata.Builder
+      createGenerateContentResponseUsageMetadata() {
+    return GenerateContentResponseUsageMetadata.builder()
+        .promptTokenCount(10)
+        .candidatesTokenCount(20);
   }
 
   public static class EchoTool extends BaseTool {

@@ -20,6 +20,7 @@ import static java.util.stream.Collectors.joining;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.JsonBaseModel;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -27,9 +28,13 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Utility class for examples. */
 public final class ExampleUtils {
+
+  private static final Logger logger = LoggerFactory.getLogger(ExampleUtils.class);
 
   // Constant parts of the example string
   private static final String EXAMPLES_INTRO =
@@ -50,7 +55,7 @@ public final class ExampleUtils {
   private static final String FUNCTION_RESPONSE_PREFIX = "```tool_outputs\n";
   private static final String FUNCTION_RESPONSE_SUFFIX = "\n```\n";
 
-  private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+  private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
 
   /**
    * Converts a list of examples into a formatted few-shot prompt string.
@@ -140,15 +145,17 @@ public final class ExampleUtils {
       Object responseMap = response.response().orElse(ImmutableMap.of());
       builder
           .append(FUNCTION_RESPONSE_PREFIX)
-          .append(OBJECT_MAPPER.writeValueAsString(responseMap))
+          .append(objectMapper.writeValueAsString(responseMap))
           .append(FUNCTION_RESPONSE_SUFFIX);
     } catch (JsonProcessingException e) {
+      logger.error("Failed to serialize function response", e);
       builder.append(FUNCTION_RESPONSE_PREFIX).append(FUNCTION_RESPONSE_SUFFIX);
     }
   }
 
   /**
-   * Builds a formatted few-shot example string for the given query.
+   * Builds a formatted few-shot example string for the given query. The string can be used for
+   * system instructions (i.e., the method name means "Build Example System Instructions").
    *
    * @param exampleProvider Source of examples.
    * @param query User query.

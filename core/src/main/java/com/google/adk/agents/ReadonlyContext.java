@@ -39,6 +39,11 @@ public class ReadonlyContext {
     return invocationContext.userContent();
   }
 
+  /** Returns the invocation context. */
+  public InvocationContext invocationContext() {
+    return invocationContext;
+  }
+
   /** Returns the ID of the current invocation. */
   public String invocationId() {
     return invocationContext.invocationId();

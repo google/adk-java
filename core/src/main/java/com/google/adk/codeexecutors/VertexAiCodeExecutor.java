@@ -37,8 +37,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A code executor that uses Vertex Code Interpreter Extension to execute code.
@@ -51,7 +51,7 @@ import java.util.logging.Logger;
  * setup.
  */
 public final class VertexAiCodeExecutor extends BaseCodeExecutor {
-  private static final Logger logger = Logger.getLogger(VertexAiCodeExecutor.class.getName());
+  private static final Logger logger = LoggerFactory.getLogger(VertexAiCodeExecutor.class);
 
   private static final ImmutableList<String> SUPPORTED_IMAGE_TYPES =
       ImmutableList.of("png", "jpg", "jpeg");
@@ -108,7 +108,8 @@ public final class VertexAiCodeExecutor extends BaseCodeExecutor {
           + "{df_info}\"\"\")";
 
   private final String resourceName;
-  private final ExtensionExecutionServiceClient codeInterpreterExtension;
+  private ExtensionExecutionServiceClient codeInterpreterExtension;
+  private final Object extensionClientLock = new Object();
 
   /**
    * Initializes the VertexAiCodeExecutor.
@@ -123,26 +124,11 @@ public final class VertexAiCodeExecutor extends BaseCodeExecutor {
     }
 
     if (resolvedResourceName == null || resolvedResourceName.isEmpty()) {
-      logger.warning(
+      logger.warn(
           "No resource name found for Vertex AI Code Interpreter. It will not be available.");
       this.resourceName = null;
-      this.codeInterpreterExtension = null;
     } else {
       this.resourceName = resolvedResourceName;
-      try {
-        String[] parts = this.resourceName.split("/");
-        if (parts.length < 4 || !parts[2].equals("locations")) {
-          throw new IllegalArgumentException("Invalid resource name format: " + this.resourceName);
-        }
-        String location = parts[3];
-        String endpoint = String.format("%s-aiplatform.googleapis.com:443", location);
-        ExtensionExecutionServiceSettings settings =
-            ExtensionExecutionServiceSettings.newBuilder().setEndpoint(endpoint).build();
-        this.codeInterpreterExtension = ExtensionExecutionServiceClient.create(settings);
-      } catch (IOException e) {
-        logger.log(Level.SEVERE, "Failed to create ExtensionExecutionServiceClient", e);
-        throw new IllegalStateException("Failed to create ExtensionExecutionServiceClient", e);
-      }
     }
   }
 
@@ -188,9 +174,9 @@ public final class VertexAiCodeExecutor extends BaseCodeExecutor {
 
   private Map<String, Object> executeCodeInterpreter(
       String code, List<File> inputFiles, Optional<String> sessionId) {
+    ExtensionExecutionServiceClient codeInterpreterExtension = getCodeInterpreterExtension();
     if (codeInterpreterExtension == null) {
-      logger.warning(
-          "Vertex AI Code Interpreter execution is not available. Returning empty result.");
+      logger.warn("Vertex AI Code Interpreter execution is not available. Returning empty result.");
       return ImmutableMap.of(
           "execution_result", "", "execution_error", "", "output_files", new ArrayList<>());
     }
@@ -231,7 +217,7 @@ public final class VertexAiCodeExecutor extends BaseCodeExecutor {
       ObjectMapper mapper = new ObjectMapper();
       return mapper.readValue(jsonOutput, new TypeReference<Map<String, Object>>() {});
     } catch (IOException e) {
-      logger.log(Level.SEVERE, "Failed to parse JSON from code interpreter: " + jsonOutput, e);
+      logger.error("Failed to parse JSON from code interpreter: " + jsonOutput, e);
       return ImmutableMap.of(
           "execution_result",
           "",
@@ -239,6 +225,31 @@ public final class VertexAiCodeExecutor extends BaseCodeExecutor {
           "Failed to parse extension response: " + e.getMessage(),
           "output_files",
           new ArrayList<>());
+    }
+  }
+
+  private ExtensionExecutionServiceClient getCodeInterpreterExtension() {
+    if (this.resourceName == null) {
+      return null;
+    }
+    synchronized (extensionClientLock) {
+      if (this.codeInterpreterExtension == null) {
+        try {
+          String[] parts = this.resourceName.split("/");
+          if (parts.length < 4 || !parts[2].equals("locations")) {
+            throw new IllegalArgumentException(
+                "Invalid resource name format: " + this.resourceName);
+          }
+          String location = parts[3];
+          String endpoint = String.format("%s-aiplatform.googleapis.com:443", location);
+          ExtensionExecutionServiceSettings settings =
+              ExtensionExecutionServiceSettings.newBuilder().setEndpoint(endpoint).build();
+          this.codeInterpreterExtension = ExtensionExecutionServiceClient.create(settings);
+        } catch (IOException e) {
+          throw new IllegalStateException("Failed to create ExtensionExecutionServiceClient", e);
+        }
+      }
+      return this.codeInterpreterExtension;
     }
   }
 

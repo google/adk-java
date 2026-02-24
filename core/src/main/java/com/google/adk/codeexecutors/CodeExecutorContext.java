@@ -89,7 +89,8 @@ public class CodeExecutorContext {
    * @return A list of processed file names in the code executor context.
    */
   public List<String> getProcessedFileNames() {
-    return (List<String>) this.context.getOrDefault(PROCESSED_FILE_NAMES_KEY, new ArrayList<>());
+    return (List<String>)
+        this.context.computeIfAbsent(PROCESSED_FILE_NAMES_KEY, unused -> new ArrayList<>());
   }
 
   /**
@@ -100,7 +101,7 @@ public class CodeExecutorContext {
   public void addProcessedFileNames(List<String> fileNames) {
     List<String> processedFileNames =
         (List<String>)
-            this.context.computeIfAbsent(PROCESSED_FILE_NAMES_KEY, k -> new ArrayList<>());
+            this.context.computeIfAbsent(PROCESSED_FILE_NAMES_KEY, unused -> new ArrayList<>());
     processedFileNames.addAll(fileNames);
   }
 
@@ -126,7 +127,7 @@ public class CodeExecutorContext {
   public void addInputFiles(List<File> inputFiles) {
     List<Map<String, Object>> fileMaps =
         (List<Map<String, Object>>)
-            this.sessionState.computeIfAbsent(INPUT_FILE_KEY, k -> new ArrayList<>());
+            this.sessionState.computeIfAbsent(INPUT_FILE_KEY, unused -> new ArrayList<>());
     for (File inputFile : inputFiles) {
       fileMaps.add(
           objectMapper.convertValue(inputFile, new TypeReference<Map<String, Object>>() {}));
@@ -166,7 +167,7 @@ public class CodeExecutorContext {
   public void incrementErrorCount(String invocationId) {
     Map<String, Integer> errorCounts =
         (Map<String, Integer>)
-            this.sessionState.computeIfAbsent(ERROR_COUNT_KEY, k -> new HashMap<>());
+            this.sessionState.computeIfAbsent(ERROR_COUNT_KEY, unused -> new HashMap<>());
     errorCounts.put(invocationId, getErrorCount(invocationId) + 1);
   }
 
@@ -176,9 +177,6 @@ public class CodeExecutorContext {
    * @param invocationId The invocation ID to reset the error count for.
    */
   public void resetErrorCount(String invocationId) {
-    if (!this.sessionState.containsKey(ERROR_COUNT_KEY)) {
-      return;
-    }
     Map<String, Integer> errorCounts =
         (Map<String, Integer>) this.sessionState.get(ERROR_COUNT_KEY);
     if (errorCounts != null) {
@@ -198,9 +196,10 @@ public class CodeExecutorContext {
       String invocationId, String code, String resultStdout, String resultStderr) {
     Map<String, List<Map<String, Object>>> codeExecutionResults =
         (Map<String, List<Map<String, Object>>>)
-            this.sessionState.computeIfAbsent(CODE_EXECUTION_RESULTS_KEY, k -> new HashMap<>());
+            this.sessionState.computeIfAbsent(
+                CODE_EXECUTION_RESULTS_KEY, unused -> new HashMap<>());
     List<Map<String, Object>> resultsForInvocation =
-        codeExecutionResults.computeIfAbsent(invocationId, k -> new ArrayList<>());
+        codeExecutionResults.computeIfAbsent(invocationId, unused -> new ArrayList<>());
     Map<String, Object> newResult = new HashMap<>();
     newResult.put("code", code);
     newResult.put("result_stdout", resultStdout);
@@ -210,6 +209,7 @@ public class CodeExecutorContext {
   }
 
   private Map<String, Object> getCodeExecutorContext(Map<String, Object> sessionState) {
-    return (Map<String, Object>) sessionState.computeIfAbsent(CONTEXT_KEY, k -> new HashMap<>());
+    return (Map<String, Object>)
+        sessionState.computeIfAbsent(CONTEXT_KEY, unused -> new HashMap<>());
   }
 }

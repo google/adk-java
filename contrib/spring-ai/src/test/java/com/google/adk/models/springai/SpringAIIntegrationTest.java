@@ -123,7 +123,8 @@ class SpringAIIntegrationTest {
               // Subsequent calls - provide final answer
               message =
                   new AssistantMessage(
-                      "The weather in Paris is beautiful and sunny with temperatures from 10°C in the morning up to 24°C in the afternoon.");
+                      "The weather in Paris is beautiful and sunny with temperatures from 10°C in"
+                          + " the morning up to 24°C in the afternoon.");
             }
 
             Generation generation = new Generation(message);

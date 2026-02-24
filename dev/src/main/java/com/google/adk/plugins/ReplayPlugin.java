@@ -71,7 +71,7 @@ public class ReplayPlugin extends BasePlugin {
 
   @Override
   public Maybe<LlmResponse> beforeModelCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
     if (!isReplayModeOn(callbackContext)) {
       return Maybe.empty();
     }
@@ -131,7 +131,7 @@ public class ReplayPlugin extends BasePlugin {
         .toolResponse()
         .flatMap(fr -> fr.response().map(resp -> (Map<String, Object>) resp))
         .map(Maybe::just)
-        .orElse(Maybe.empty());
+        .orElseGet(() -> Maybe.empty());
   }
 
   @Override
@@ -261,7 +261,7 @@ public class ReplayPlugin extends BasePlugin {
   }
 
   private LlmRecording verifyAndGetNextLlmRecordingForAgent(
-      InvocationReplayState state, String agentName, LlmRequest llmRequest) {
+      InvocationReplayState state, String agentName, LlmRequest.Builder llmRequest) {
     int currentAgentIndex = state.getAgentReplayIndex(agentName);
     Recording expectedRecording = getNextRecordingForAgent(state, agentName);
 
@@ -278,7 +278,7 @@ public class ReplayPlugin extends BasePlugin {
     // Strict verification of LLM request
     if (llmRecording.llmRequest().isPresent()) {
       verifyLlmRequestMatch(
-          llmRecording.llmRequest().get(), llmRequest, agentName, currentAgentIndex);
+          llmRecording.llmRequest().get(), llmRequest.build(), agentName, currentAgentIndex);
     }
 
     return llmRecording;

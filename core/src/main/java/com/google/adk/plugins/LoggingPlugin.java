@@ -133,7 +133,7 @@ public class LoggingPlugin extends BasePlugin {
     return Maybe.fromAction(
         () -> {
           log("🤖 AGENT STARTING");
-          log("   Agent Name: " + agent.name());
+          log("   Agent Name: " + callbackContext.agentName());
           log("   Invocation ID: " + callbackContext.invocationId());
           callbackContext.branch().ifPresent(branch -> log("   Branch: " + branch));
         });
@@ -144,21 +144,22 @@ public class LoggingPlugin extends BasePlugin {
     return Maybe.fromAction(
         () -> {
           log("🤖 AGENT COMPLETED");
-          log("   Agent Name: " + agent.name());
+          log("   Agent Name: " + callbackContext.agentName());
           log("   Invocation ID: " + callbackContext.invocationId());
         });
   }
 
   @Override
   public Maybe<LlmResponse> beforeModelCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
     return Maybe.fromAction(
         () -> {
+          LlmRequest request = llmRequest.build();
           log("🧠 LLM REQUEST");
-          log("   Model: " + llmRequest.model().orElse("default"));
+          log("   Model: " + request.model().orElse("default"));
           log("   Agent: " + callbackContext.agentName());
 
-          llmRequest
+          request
               .getFirstSystemInstruction()
               .ifPresent(
                   sysInstruction -> {
@@ -170,8 +171,8 @@ public class LoggingPlugin extends BasePlugin {
                     log("   System Instruction: '" + truncatedInstruction + "'");
                   });
 
-          if (!llmRequest.tools().isEmpty()) {
-            String toolNames = String.join(", ", llmRequest.tools().keySet());
+          if (!request.tools().isEmpty()) {
+            String toolNames = String.join(", ", request.tools().keySet());
             log("   Available Tools: [" + toolNames + "]");
           }
         });
@@ -187,7 +188,7 @@ public class LoggingPlugin extends BasePlugin {
 
           if (llmResponse.errorCode().isPresent()) {
             log("   ❌ ERROR - Code: " + llmResponse.errorCode().get());
-            llmResponse.errorMessage().ifPresent(msg -> log("   Error Message: " + msg));
+            log("   Error Message: " + llmResponse.errorMessage().orElse("None"));
           } else {
             log("   Content: " + formatContent(llmResponse.content()));
             llmResponse.partial().ifPresent(partial -> log("   Partial: " + partial));
@@ -211,7 +212,7 @@ public class LoggingPlugin extends BasePlugin {
 
   @Override
   public Maybe<LlmResponse> onModelErrorCallback(
-      CallbackContext callbackContext, LlmRequest llmRequest, Throwable error) {
+      CallbackContext callbackContext, LlmRequest.Builder llmRequest, Throwable error) {
     return Maybe.fromAction(
         () -> {
           log("🧠 LLM ERROR");
@@ -229,7 +230,7 @@ public class LoggingPlugin extends BasePlugin {
           log("🔧 TOOL STARTING");
           log("   Tool Name: " + tool.name());
           log("   Agent: " + toolContext.agentName());
-          toolContext.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
+          log("   Function Call ID: " + toolContext.functionCallId().orElse("None"));
           log("   Arguments: " + formatArgs(toolArgs));
         });
   }
@@ -245,7 +246,7 @@ public class LoggingPlugin extends BasePlugin {
           log("🔧 TOOL COMPLETED");
           log("   Tool Name: " + tool.name());
           log("   Agent: " + toolContext.agentName());
-          toolContext.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
+          log("   Function Call ID: " + toolContext.functionCallId().orElse("None"));
           log("   Result: " + formatArgs(result));
         });
   }
@@ -258,10 +259,9 @@ public class LoggingPlugin extends BasePlugin {
           log("🔧 TOOL ERROR");
           log("   Tool Name: " + tool.name());
           log("   Agent: " + toolContext.agentName());
-          toolContext.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
+          log("   Function Call ID: " + toolContext.functionCallId().orElse("None"));
           log("   Arguments: " + formatArgs(toolArgs));
           log("   Error: " + error.getMessage());
-          logger.error("[{}] Tool Error", name, error);
         });
   }
 
@@ -273,30 +273,36 @@ public class LoggingPlugin extends BasePlugin {
     if (content.parts().isEmpty() || content.parts().get().isEmpty()) {
       return "None";
     }
-
-    String combinedText =
-        content.parts().get().stream()
-            .map(part -> part.text().orElse(""))
-            .collect(joining("\n"))
-            .trim();
-
-    if (combinedText.length() > MAX_CONTENT_LENGTH) {
-      return combinedText.substring(0, MAX_CONTENT_LENGTH) + "...";
-    }
-    return combinedText;
+    return content.parts().get().stream()
+        .map(
+            part -> {
+              if (part.text().isPresent()) {
+                String text = part.text().get().trim();
+                if (text.length() > MAX_CONTENT_LENGTH) {
+                  text = text.substring(0, MAX_CONTENT_LENGTH) + "...";
+                }
+                return String.format("text: '%s'", text);
+              } else if (part.functionCall().isPresent()) {
+                return String.format("function_call: %s", part.functionCall().get().name());
+              } else if (part.functionResponse().isPresent()) {
+                return String.format("function_response: %s", part.functionResponse().get().name());
+              } else if (part.codeExecutionResult().isPresent()) {
+                return "code_execution_result";
+              } else {
+                return "other_part";
+              }
+            })
+        .collect(joining("\n"));
   }
 
   private String formatArgs(Map<String, Object> args) {
     if (args == null || args.isEmpty()) {
       return "{}";
     }
-    String argsStr =
-        args.entrySet().stream()
-            .map(entry -> entry.getKey() + "=" + entry.getValue())
-            .collect(joining(", "));
-    if (argsStr.length() > MAX_ARGS_LENGTH) {
-      return "{" + argsStr.substring(0, MAX_ARGS_LENGTH) + "...}";
+    String formatted = args.toString();
+    if (formatted.length() > MAX_ARGS_LENGTH) {
+      formatted = formatted.substring(0, MAX_ARGS_LENGTH) + "...}";
     }
-    return "{" + argsStr + "}";
+    return formatted;
   }
 }

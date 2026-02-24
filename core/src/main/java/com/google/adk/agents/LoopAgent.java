@@ -16,12 +16,14 @@
 
 package com.google.adk.agents;
 
+import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
-import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * An agent that runs its sub-agents sequentially in a loop.
@@ -30,6 +32,7 @@ import java.util.Optional;
  * reached (if specified).
  */
 public class LoopAgent extends BaseAgent {
+  private static final Logger logger = LoggerFactory.getLogger(LoopAgent.class);
 
   private final Optional<Integer> maxIterations;
 
@@ -56,37 +59,8 @@ public class LoopAgent extends BaseAgent {
   }
 
   /** Builder for {@link LoopAgent}. */
-  public static class Builder {
-    private String name;
-    private String description;
-    private List<? extends BaseAgent> subAgents;
+  public static class Builder extends BaseAgent.Builder<Builder> {
     private Optional<Integer> maxIterations = Optional.empty();
-    private ImmutableList<Callbacks.BeforeAgentCallback> beforeAgentCallback;
-    private ImmutableList<Callbacks.AfterAgentCallback> afterAgentCallback;
-
-    @CanIgnoreReturnValue
-    public Builder name(String name) {
-      this.name = name;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder description(String description) {
-      this.description = description;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder subAgents(List<? extends BaseAgent> subAgents) {
-      this.subAgents = subAgents;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder subAgents(BaseAgent... subAgents) {
-      this.subAgents = ImmutableList.copyOf(subAgents);
-      return this;
-    }
 
     @CanIgnoreReturnValue
     public Builder maxIterations(int maxIterations) {
@@ -100,31 +74,7 @@ public class LoopAgent extends BaseAgent {
       return this;
     }
 
-    @CanIgnoreReturnValue
-    public Builder beforeAgentCallback(Callbacks.BeforeAgentCallback beforeAgentCallback) {
-      this.beforeAgentCallback = ImmutableList.of(beforeAgentCallback);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder beforeAgentCallback(
-        List<Callbacks.BeforeAgentCallbackBase> beforeAgentCallback) {
-      this.beforeAgentCallback = CallbackUtil.getBeforeAgentCallbacks(beforeAgentCallback);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder afterAgentCallback(Callbacks.AfterAgentCallback afterAgentCallback) {
-      this.afterAgentCallback = ImmutableList.of(afterAgentCallback);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder afterAgentCallback(List<Callbacks.AfterAgentCallbackBase> afterAgentCallback) {
-      this.afterAgentCallback = CallbackUtil.getAfterAgentCallbacks(afterAgentCallback);
-      return this;
-    }
-
+    @Override
     public LoopAgent build() {
       // TODO(b/410859954): Add validation for required fields like name.
       return new LoopAgent(
@@ -134,6 +84,35 @@ public class LoopAgent extends BaseAgent {
 
   public static Builder builder() {
     return new Builder();
+  }
+
+  /**
+   * Creates a LoopAgent from configuration.
+   *
+   * @param config The agent configuration.
+   * @param configAbsPath The absolute path to the agent config file.
+   * @return the configured LoopAgent
+   * @throws ConfigurationException if the configuration is invalid
+   */
+  public static LoopAgent fromConfig(LoopAgentConfig config, String configAbsPath)
+      throws ConfigurationException {
+    logger.debug("Creating LoopAgent from config: {}", config.name());
+
+    Builder builder = builder();
+    ConfigAgentUtils.resolveAndSetCommonAgentFields(builder, config, configAbsPath);
+
+    if (config.maxIterations() != null) {
+      builder.maxIterations(config.maxIterations());
+    }
+
+    // Build and return the agent
+    LoopAgent agent = builder.build();
+    logger.info(
+        "Successfully created LoopAgent: {} with {} subagents",
+        agent.name(),
+        agent.subAgents() != null ? agent.subAgents().size() : 0);
+
+    return agent;
   }
 
   @Override

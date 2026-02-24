@@ -5,7 +5,7 @@
     <parent>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-parent</artifactId>
-        <version>0.4.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <version>0.6.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -52,6 +52,10 @@
             <groupId>com.google.adk</groupId>
             <artifactId>google-adk-dev</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
         </dependency>
 
         <!-- Spring Boot Dependencies -->

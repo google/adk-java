@@ -258,8 +258,8 @@ public final class ConfigAgentUtilsTest {
 
     assertThat(agent).isInstanceOf(LlmAgent.class);
     LlmAgent llmAgent = (LlmAgent) agent;
-    assertThat(llmAgent.tools()).hasSize(1);
-    assertThat(llmAgent.tools().get(0).name()).isEqualTo("google_search");
+    assertThat(llmAgent.tools().blockingGet()).hasSize(1);
+    assertThat(llmAgent.tools().blockingGet().get(0).name()).isEqualTo("google_search");
   }
 
   @Test
@@ -784,7 +784,7 @@ public final class ConfigAgentUtilsTest {
     assertThat(llmAgent.outputKey()).hasValue("testOutput");
     assertThat(llmAgent.disallowTransferToParent()).isTrue();
     assertThat(llmAgent.disallowTransferToPeers()).isFalse();
-    assertThat(llmAgent.tools()).hasSize(1);
+    assertThat(llmAgent.tools().blockingGet()).hasSize(1);
     assertThat(llmAgent.model()).isPresent();
   }
 
@@ -1161,20 +1161,25 @@ public final class ConfigAgentUtilsTest {
 
     String pfx = "test.callbacks.";
     registry.register(
-        pfx + "before_agent_1", (Callbacks.BeforeAgentCallback) (ctx) -> Maybe.empty());
+        pfx + "before_agent_1", (Callbacks.BeforeAgentCallback) (unusedCtx) -> Maybe.empty());
     registry.register(
-        pfx + "before_agent_2", (Callbacks.BeforeAgentCallback) (ctx) -> Maybe.empty());
-    registry.register(pfx + "after_agent_1", (Callbacks.AfterAgentCallback) (ctx) -> Maybe.empty());
+        pfx + "before_agent_2", (Callbacks.BeforeAgentCallback) (unusedCtx) -> Maybe.empty());
     registry.register(
-        pfx + "before_model_1", (Callbacks.BeforeModelCallback) (ctx, req) -> Maybe.empty());
+        pfx + "after_agent_1", (Callbacks.AfterAgentCallback) (unusedCtx) -> Maybe.empty());
     registry.register(
-        pfx + "after_model_1", (Callbacks.AfterModelCallback) (ctx, resp) -> Maybe.empty());
+        pfx + "before_model_1",
+        (Callbacks.BeforeModelCallback) (unusedCtx, unusedReq) -> Maybe.empty());
+    registry.register(
+        pfx + "after_model_1",
+        (Callbacks.AfterModelCallback) (unusedCtx, unusedResp) -> Maybe.empty());
     registry.register(
         pfx + "before_tool_1",
-        (Callbacks.BeforeToolCallback) (inv, tool, args, toolCtx) -> Maybe.empty());
+        (Callbacks.BeforeToolCallback)
+            (unusedInv, unusedTool, unusedArgs, unusedToolCtx) -> Maybe.empty());
     registry.register(
         pfx + "after_tool_1",
-        (Callbacks.AfterToolCallback) (inv, tool, args, toolCtx, resp) -> Maybe.empty());
+        (Callbacks.AfterToolCallback)
+            (unusedInv, unusedTool, unusedArgs, unusedToolCtx, unusedResp) -> Maybe.empty());
 
     File configFile = tempFolder.newFile("with_callbacks.yaml");
     Files.writeString(
@@ -1204,20 +1209,14 @@ public final class ConfigAgentUtilsTest {
     assertThat(agent).isInstanceOf(LlmAgent.class);
     LlmAgent llm = (LlmAgent) agent;
 
-    assertThat(agent.beforeAgentCallback()).isPresent();
-    assertThat(agent.beforeAgentCallback().get()).hasSize(2);
-    assertThat(agent.afterAgentCallback()).isPresent();
-    assertThat(agent.afterAgentCallback().get()).hasSize(1);
+    assertThat(agent.beforeAgentCallback()).hasSize(2);
+    assertThat(agent.afterAgentCallback()).hasSize(1);
 
-    assertThat(llm.beforeModelCallback()).isPresent();
-    assertThat(llm.beforeModelCallback().get()).hasSize(1);
-    assertThat(llm.afterModelCallback()).isPresent();
-    assertThat(llm.afterModelCallback().get()).hasSize(1);
+    assertThat(llm.beforeModelCallback()).hasSize(1);
+    assertThat(llm.afterModelCallback()).hasSize(1);
 
-    assertThat(llm.beforeToolCallback()).isPresent();
-    assertThat(llm.beforeToolCallback().get()).hasSize(1);
-    assertThat(llm.afterToolCallback()).isPresent();
-    assertThat(llm.afterToolCallback().get()).hasSize(1);
+    assertThat(llm.beforeToolCallback()).hasSize(1);
+    assertThat(llm.afterToolCallback()).hasSize(1);
   }
 
   @Test
@@ -1380,5 +1379,35 @@ public final class ConfigAgentUtilsTest {
 
     callbackRef.setName("updated-name");
     assertThat(callbackRef.name()).isEqualTo("updated-name");
+  }
+
+  @Test
+  public void fromConfig_validYamlLoopAgent_createsLoopAgent()
+      throws IOException, ConfigurationException {
+    File subAgentFile = tempFolder.newFile("sub_agent.yaml");
+    Files.writeString(
+        subAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: sub_agent
+        description: A test subagent
+        instruction: You are a helpful subagent
+        """);
+
+    File configFile = tempFolder.newFile("loop_agent.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: testLoopAgent
+        description: A test loop agent
+        agent_class: LoopAgent
+        max_iterations: 5
+        sub_agents:
+          - config_path: sub_agent.yaml
+        """);
+    String configPath = configFile.getAbsolutePath();
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configPath);
+    assertThat(agent).isNotNull();
+    assertThat(agent).isInstanceOf(LoopAgent.class);
   }
 }

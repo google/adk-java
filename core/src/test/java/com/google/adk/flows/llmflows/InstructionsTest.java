@@ -25,7 +25,6 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Instruction;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.sessions.InMemorySessionService;
@@ -62,14 +61,13 @@ public final class InstructionsTest {
   }
 
   private InvocationContext createContext(BaseAgent agent, Session session) {
-    return InvocationContext.create(
-        sessionService,
-        mockArtifactService,
-        "test-invocation-id",
-        agent,
-        session,
-        null,
-        RunConfig.builder().build());
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .artifactService(mockArtifactService)
+        .invocationId("test-invocation-id")
+        .agent(agent)
+        .session(session)
+        .build();
   }
 
   private Session createSession() {

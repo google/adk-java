@@ -109,7 +109,7 @@ public abstract class LlmRequest extends JsonBaseModel {
                     .map(Part::text)
                     .flatMap(Optional::stream)
                     .collect(toImmutableList()))
-        .orElse(ImmutableList.of());
+        .orElseGet(ImmutableList::of);
   }
 
   public static Builder builder() {
@@ -223,7 +223,8 @@ public abstract class LlmRequest extends JsonBaseModel {
      */
     @CanIgnoreReturnValue
     public final Builder outputSchema(Schema schema) {
-      GenerateContentConfig config = config().orElse(GenerateContentConfig.builder().build());
+      GenerateContentConfig config =
+          config().orElseGet(() -> GenerateContentConfig.builder().build());
       return config(
           config.toBuilder().responseSchema(schema).responseMimeType("application/json").build());
     }

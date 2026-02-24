@@ -62,7 +62,7 @@ import org.slf4j.LoggerFactory;
  * <p>TODO: Config agent features are not yet ready for public use.
  */
 @ThreadSafe
-class ConfigAgentLoader implements AgentLoader {
+public class ConfigAgentLoader implements AgentLoader {
   private static final Logger logger = LoggerFactory.getLogger(ConfigAgentLoader.class);
   private static final String YAML_CONFIG_FILENAME = "root_agent.yaml";
 

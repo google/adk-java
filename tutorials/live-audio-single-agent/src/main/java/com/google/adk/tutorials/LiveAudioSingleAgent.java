@@ -30,13 +30,12 @@ public class LiveAudioSingleAgent {
           .model("gemini-2.0-flash-live-001")
           .description("A helpful weather assistant that provides weather information.")
           .instruction(
-              "You are a friendly weather assistant. When users ask about weather, "
-                  + "you MUST call the getWeather tool with the location name. "
-                  + "Extract the location from the user's question. "
-                  + "ALWAYS use the getWeather tool to get accurate information - never make up weather data. "
-                  + "After getting the tool result, provide a friendly and descriptive response. "
-                  + "For general conversation or greetings, respond naturally and helpfully. "
-                  + "Do NOT use code execution for anything.")
+              "You are a friendly weather assistant. When users ask about weather, you MUST call"
+                  + " the getWeather tool with the location name. Extract the location from the"
+                  + " user's question. ALWAYS use the getWeather tool to get accurate information -"
+                  + " never make up weather data. After getting the tool result, provide a friendly"
+                  + " and descriptive response. For general conversation or greetings, respond"
+                  + " naturally and helpfully. Do NOT use code execution for anything.")
           .tools(FunctionTool.create(LiveAudioSingleAgent.class, "getWeather"))
           .build();
 
@@ -89,16 +88,17 @@ public class LiveAudioSingleAgent {
 
     String normalizedLocation = location.toLowerCase().trim();
 
-    return weatherData.getOrDefault(
+    return weatherData.computeIfAbsent(
         normalizedLocation,
-        Map.of(
-            "status",
-            "error",
-            "report",
-            String.format(
-                "Weather information for '%s' is not available. Try New York, London, Tokyo, or"
-                    + " Sydney.",
-                location)));
+        unused ->
+            Map.of(
+                "status",
+                "error",
+                "report",
+                String.format(
+                    "Weather information for '%s' is not available. Try New York, London, Tokyo,"
+                        + " or Sydney.",
+                    location)));
   }
 
   public static void main(String[] args) {

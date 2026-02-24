@@ -24,6 +24,7 @@ import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
+import com.google.common.primitives.Booleans;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.spec.McpSchema.ListToolsResult;
@@ -285,11 +286,22 @@ public class McpToolset implements BaseToolset {
 
   /** Configuration class for MCPToolset. */
   public static class McpToolsetConfig extends JsonBaseModel {
+
+    private StdioConnectionParameters stdioConnectionParams;
+
     private StdioServerParameters stdioServerParams;
 
     private SseServerParameters sseServerParams;
 
     private List<String> toolFilter;
+
+    public StdioConnectionParameters stdioConnectionParams() {
+      return stdioConnectionParams;
+    }
+
+    public void setStdioConnectionParams(StdioConnectionParameters stdioConnectionParams) {
+      this.stdioConnectionParams = stdioConnectionParams;
+    }
 
     public StdioServerParameters stdioServerParams() {
       return stdioServerParams;
@@ -337,23 +349,26 @@ public class McpToolset implements BaseToolset {
           mapper.convertValue(config.args(), McpToolsetConfig.class);
 
       // Validate that exactly one parameter type is set
-      if ((mcpToolsetConfig.stdioServerParams() != null)
-          == (mcpToolsetConfig.sseServerParams() != null)) {
+      if (Booleans.countTrue(
+              mcpToolsetConfig.stdioServerParams() != null,
+              mcpToolsetConfig.sseServerParams() != null,
+              mcpToolsetConfig.stdioConnectionParams() != null)
+          != 1) {
         throw new ConfigurationException(
-            "Exactly one of stdioServerParams or sseServerParams must be set for McpToolset");
+            "Exactly one of stdioConnectionParams, stdioServerParams or sseServerParams must be set"
+                + " for McpToolset");
       }
 
       // Convert tool filter to Optional<Object>
-      Optional<Object> toolFilter =
-          Optional.ofNullable(mcpToolsetConfig.toolFilter()).map(filter -> filter);
+      Optional<Object> toolFilter = Optional.ofNullable(mcpToolsetConfig.toolFilter());
 
-      // Create McpToolset with appropriate connection parameters
-      if (mcpToolsetConfig.stdioServerParams() != null) {
-        return new McpToolset(
-            mcpToolsetConfig.stdioServerParams().toServerParameters(), mapper, toolFilter);
-      } else {
-        return new McpToolset(mcpToolsetConfig.sseServerParams(), mapper, toolFilter);
-      }
+      Object connectionParameters =
+          Optional.<Object>ofNullable(mcpToolsetConfig.stdioConnectionParams())
+              .or(() -> Optional.ofNullable(mcpToolsetConfig.sseServerParams()))
+              .orElse(mcpToolsetConfig.stdioConnectionParams());
+
+      // Create McpToolset with McpSessionManager having appropriate connection parameters
+      return new McpToolset(new McpSessionManager(connectionParameters), mapper, toolFilter);
     } catch (IllegalArgumentException e) {
       throw new ConfigurationException("Failed to parse McpToolsetConfig from ToolArgsConfig", e);
     }

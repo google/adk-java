@@ -23,21 +23,13 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.agents.LoopAgent;
-import com.google.adk.agents.ParallelAgent;
-import com.google.adk.agents.SequentialAgent;
-import com.google.adk.tools.AgentTool;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
-import com.google.adk.tools.ExitLoopTool;
-import com.google.adk.tools.GoogleSearchTool;
-import com.google.adk.tools.LoadArtifactsTool;
-import com.google.adk.tools.mcp.McpToolset;
 import java.util.Map;
 import java.util.Optional;
+import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import javax.annotation.Nonnull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,6 +54,8 @@ import org.slf4j.LoggerFactory;
  *   <li>"google_search" - GoogleSearchTool instance
  *   <li>"code_execution" - BuiltInCodeExecutionTool instance
  *   <li>"exit_loop" - ExitLoopTool instance
+ *   <li>"url_context" - UrlContextTool instance
+ *   <li>"google_maps_grounding" - GoogleMapsTool instance
  * </ul>
  *
  * <p>Example usage:
@@ -97,21 +91,23 @@ public class ComponentRegistry {
 
   /** Initializes the registry with base pre-wired ADK instances. */
   private void initializePreWiredEntries() {
-    registerAdkAgentClass(LlmAgent.class);
-    registerAdkAgentClass(LoopAgent.class);
-    registerAdkAgentClass(ParallelAgent.class);
-    registerAdkAgentClass(SequentialAgent.class);
+    // Core components are registered first.
+    AdkComponentProvider coreProvider = new CoreAdkComponentProvider();
+    registerProvider(coreProvider);
 
-    registerAdkToolInstance("google_search", GoogleSearchTool.INSTANCE);
-    registerAdkToolInstance("load_artifacts", LoadArtifactsTool.INSTANCE);
-    registerAdkToolInstance("exit_loop", ExitLoopTool.INSTANCE);
-
-    registerAdkToolClass(AgentTool.class);
-
-    registerAdkToolsetClass(McpToolset.class);
-    // TODO: add all python tools that also exist in Java.
-
+    ServiceLoader<AdkComponentProvider> loader = ServiceLoader.load(AdkComponentProvider.class);
+    for (AdkComponentProvider provider : loader) {
+      registerProvider(provider);
+    }
     logger.debug("Initialized base pre-wired entries in ComponentRegistry");
+  }
+
+  private void registerProvider(AdkComponentProvider provider) {
+    provider.getAgentClasses().forEach(this::registerAdkAgentClass);
+    provider.getToolClasses().forEach(this::registerAdkToolClass);
+    provider.getToolsetClasses().forEach(this::registerAdkToolsetClass);
+    provider.getToolInstances().forEach(this::registerAdkToolInstance);
+    logger.info("Registered components from " + provider.getClass().getName());
   }
 
   private void registerAdkAgentClass(Class<? extends BaseAgent> agentClass) {
@@ -120,19 +116,20 @@ public class ComponentRegistry {
     registry.put("google.adk.agents." + agentClass.getSimpleName(), agentClass);
   }
 
-  private void registerAdkToolInstance(String name, @Nonnull Object toolInstance) {
+  private void registerAdkToolInstance(String name, BaseTool toolInstance) {
     registry.put(name, toolInstance);
     // For python compatibility, also register the name used in ADK Python.
     registry.put("google.adk.tools." + name, toolInstance);
   }
 
-  private void registerAdkToolClass(@Nonnull Class<?> toolClass) {
+  private void registerAdkToolClass(Class<? extends BaseTool> toolClass) {
     registry.put(toolClass.getName(), toolClass);
     // For python compatibility, also register the name used in ADK Python.
     registry.put("google.adk.tools." + toolClass.getSimpleName(), toolClass);
+    registry.put(toolClass.getSimpleName(), toolClass);
   }
 
-  private void registerAdkToolsetClass(@Nonnull Class<? extends BaseToolset> toolsetClass) {
+  private void registerAdkToolsetClass(Class<? extends BaseToolset> toolsetClass) {
     registry.put(toolsetClass.getName(), toolsetClass);
     // For python compatibility, also register the name used in ADK Python.
     registry.put("google.adk.tools." + toolsetClass.getSimpleName(), toolsetClass);

@@ -1,6 +1,0 @@
-releaseType: maven
-handleGHRelease: true
-bumpMinorPreMajor: true
-extraFiles:
-  - core/src/main/java/com/google/adk/Version.java
-  - README.md

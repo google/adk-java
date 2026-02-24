@@ -16,9 +16,12 @@
 
 package com.google.adk.runner;
 
+import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
+import static com.google.adk.testing.TestUtils.createTestAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -28,23 +31,29 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.google.adk.Telemetry;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
+import com.google.adk.apps.App;
 import com.google.adk.events.Event;
+import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.sessions.Session;
+import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.adk.telemetry.Tracing;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.testing.TestUtils.FailingEchoTool;
+import com.google.adk.tools.FunctionTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
@@ -56,6 +65,7 @@ import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.After;
 import org.junit.Before;
@@ -73,9 +83,8 @@ public final class RunnerTest {
   private final Content pluginContent = createContent("from plugin");
   private final TestLlm testLlm = createTestLlm(createLlmResponse(createContent("from llm")));
   private final LlmAgent agent = createTestAgentBuilder(testLlm).build();
-  private final Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of(plugin));
-  private final Session session =
-      runner.sessionService().createSession("test", "user").blockingGet();
+  private Runner runner;
+  private Session session;
   private Tracer originalTracer;
 
   private final FailingEchoTool failingEchoTool = new FailingEchoTool();
@@ -108,13 +117,129 @@ public final class RunnerTest {
 
   @Before
   public void setUp() {
-    this.originalTracer = Telemetry.getTracer();
-    Telemetry.setTracerForTesting(openTelemetryRule.getOpenTelemetry().getTracer("RunnerTest"));
+    this.originalTracer = Tracing.getTracer();
+    Tracing.setTracerForTesting(openTelemetryRule.getOpenTelemetry().getTracer("RunnerTest"));
+    this.runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
+    this.session = runner.sessionService().createSession("test", "user").blockingGet();
   }
 
   @After
   public void tearDown() {
-    Telemetry.setTracerForTesting(originalTracer);
+    Tracing.setTracerForTesting(originalTracer);
+  }
+
+  @Test
+  public void eventsCompaction_enabled() {
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(createContent("llm 1")),
+            createLlmResponse(createContent("summary 1")),
+            createLlmResponse(createContent("llm 2")),
+            createLlmResponse(createContent("summary 2")));
+    LlmAgent agent = createTestAgent(testLlm);
+
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name(this.runner.appName())
+                    .rootAgent(agent)
+                    .eventsCompactionConfig(new EventsCompactionConfig(1, 0))
+                    .build())
+            .sessionService(this.runner.sessionService())
+            .build();
+    var events =
+        runner.runAsync("user", session.id(), createContent("user 1")).toList().blockingGet();
+    assertThat(simplifyEvents(events)).containsExactly("test agent: llm 1");
+
+    events = runner.runAsync("user", session.id(), createContent("user 2")).toList().blockingGet();
+    assertThat(simplifyEvents(events)).containsExactly("test agent: llm 2");
+
+    Session updatedSession =
+        runner
+            .sessionService()
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(simplifyEvents(updatedSession.events()))
+        .containsExactly(
+            "user: user 1",
+            "test agent: llm 1",
+            "user: summary 1",
+            "user: user 2",
+            "test agent: llm 2",
+            "user: summary 2");
+  }
+
+  @Test
+  public void eventsCompaction_withNullOverlap_doesNotCompact() {
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(createContent("llm 1")), createLlmResponse(createContent("llm 2")));
+    LlmAgent agent = createTestAgent(testLlm);
+
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name(this.runner.appName())
+                    .rootAgent(agent)
+                    .eventsCompactionConfig(new EventsCompactionConfig(1, null, null, null, null))
+                    .build())
+            .sessionService(this.runner.sessionService())
+            .build();
+
+    var unused1 =
+        runner.runAsync("user", session.id(), createContent("user 1")).toList().blockingGet();
+    var unused2 =
+        runner.runAsync("user", session.id(), createContent("user 2")).toList().blockingGet();
+
+    Session updatedSession =
+        runner
+            .sessionService()
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(simplifyEvents(updatedSession.events()))
+        .containsExactly("user: user 1", "test agent: llm 1", "user: user 2", "test agent: llm 2");
+  }
+
+  @Test
+  public void eventsCompaction_withNullInterval_doesNotCompact() {
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(createContent("llm 1")), createLlmResponse(createContent("llm 2")));
+    LlmAgent agent = createTestAgent(testLlm);
+
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name(this.runner.appName())
+                    .rootAgent(agent)
+                    .eventsCompactionConfig(new EventsCompactionConfig(null, 0, null, null, null))
+                    .build())
+            .sessionService(this.runner.sessionService())
+            .build();
+
+    var unused1 =
+        runner.runAsync("user", session.id(), createContent("user 1")).toList().blockingGet();
+    var unused2 =
+        runner.runAsync("user", session.id(), createContent("user 2")).toList().blockingGet();
+
+    Session updatedSession =
+        runner
+            .sessionService()
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(simplifyEvents(updatedSession.events()))
+        .containsExactly("user: user 1", "test agent: llm 1", "user: user 2", "test agent: llm 2");
   }
 
   @Test
@@ -156,7 +281,15 @@ public final class RunnerTest {
     BasePlugin plugin2 = mockPlugin("test2");
     when(plugin2.beforeRunCallback(any())).thenReturn(Maybe.empty());
 
-    Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of(plugin1, plugin2));
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin1, plugin2))
+                    .build())
+            .build();
     Session session = runner.sessionService().createSession("test", "user").blockingGet();
     var events =
         runner
@@ -268,7 +401,15 @@ public final class RunnerTest {
     TestLlm failingTestLlm = createTestLlm(Flowable.error(exception));
     LlmAgent agent = createTestAgentBuilder(failingTestLlm).build();
 
-    Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of(plugin));
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
     Session session = runner.sessionService().createSession("test", "user").blockingGet();
     var events =
         runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
@@ -286,7 +427,15 @@ public final class RunnerTest {
     TestLlm failingTestLlm = createTestLlm(Flowable.error(exception));
     LlmAgent agent = createTestAgentBuilder(failingTestLlm).build();
 
-    Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of(plugin));
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
     Session session = runner.sessionService().createSession("test", "user").blockingGet();
     runner.runAsync("user", session.id(), createContent("from user")).test().assertError(exception);
 
@@ -304,7 +453,15 @@ public final class RunnerTest {
             .tools(ImmutableList.of(failingEchoTool))
             .build();
 
-    Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of(plugin));
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
     Session session = runner.sessionService().createSession("test", "user").blockingGet();
     var events =
         runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
@@ -327,7 +484,15 @@ public final class RunnerTest {
     LlmAgent agent =
         createTestAgentBuilder(testLlmWithFunctionCall).tools(ImmutableList.of(echoTool)).build();
 
-    Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of(plugin));
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
     Session session = runner.sessionService().createSession("test", "user").blockingGet();
     var events =
         runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
@@ -352,7 +517,15 @@ public final class RunnerTest {
             .tools(ImmutableList.of(failingEchoTool))
             .build();
 
-    Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of(plugin));
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
     Session session = runner.sessionService().createSession("test", "user").blockingGet();
     var events =
         runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
@@ -374,7 +547,15 @@ public final class RunnerTest {
             .tools(ImmutableList.of(failingEchoTool))
             .build();
 
-    Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of(plugin));
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
     Session session = runner.sessionService().createSession("test", "user").blockingGet();
     runner
         .runAsync("user", session.id(), createContent("from user"))
@@ -663,7 +844,8 @@ public final class RunnerTest {
   public void runLive_withToolExecution() throws Exception {
     LlmAgent agentWithTool =
         createTestAgentBuilder(testLlmWithFunctionCall).tools(ImmutableList.of(echoTool)).build();
-    Runner runnerWithTool = new InMemoryRunner(agentWithTool, "test", ImmutableList.of());
+    Runner runnerWithTool =
+        Runner.builder().app(App.builder().name("test").rootAgent(agentWithTool).build()).build();
     Session sessionWithTool =
         runnerWithTool.sessionService().createSession("test", "user").blockingGet();
     LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
@@ -690,7 +872,8 @@ public final class RunnerTest {
     Exception exception = new Exception("LLM test error");
     TestLlm failingTestLlm = createTestLlm(Flowable.error(exception));
     LlmAgent agent = createTestAgentBuilder(failingTestLlm).build();
-    Runner runner = new InMemoryRunner(agent, "test", ImmutableList.of());
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(agent).build()).build();
     Session session = runner.sessionService().createSession("test", "user").blockingGet();
     LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
     TestSubscriber<Event> testSubscriber =
@@ -710,7 +893,9 @@ public final class RunnerTest {
             .tools(ImmutableList.of(failingEchoTool))
             .build();
     Runner runnerWithFailingTool =
-        new InMemoryRunner(agentWithFailingTool, "test", ImmutableList.of());
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agentWithFailingTool).build())
+            .build();
     Session sessionWithFailingTool =
         runnerWithFailingTool.sessionService().createSession("test", "user").blockingGet();
     LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
@@ -741,5 +926,170 @@ public final class RunnerTest {
 
     assertThat(invocationSpan).isPresent();
     assertThat(invocationSpan.get().hasEnded()).isTrue();
+  }
+
+  @Test
+  public void runAsync_withoutSessionAndAutoCreateSessionTrue_createsSession() {
+    RunConfig runConfig = RunConfig.builder().setAutoCreateSession(true).build();
+    String newSessionId = UUID.randomUUID().toString();
+
+    var events =
+        runner
+            .runAsync("user", newSessionId, createContent("from user"), runConfig)
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+    assertThat(
+            runner
+                .sessionService()
+                .getSession("test", "user", newSessionId, Optional.empty())
+                .blockingGet())
+        .isNotNull();
+  }
+
+  @Test
+  public void runAsync_withoutSessionAndAutoCreateSessionFalse_throwsException() {
+    RunConfig runConfig = RunConfig.builder().setAutoCreateSession(false).build();
+    String newSessionId = UUID.randomUUID().toString();
+
+    runner
+        .runAsync("user", newSessionId, createContent("from user"), runConfig)
+        .test()
+        .assertError(IllegalArgumentException.class);
+  }
+
+  @Test
+  public void runLive_withoutSessionAndAutoCreateSessionTrue_createsSession() throws Exception {
+    RunConfig runConfig = RunConfig.builder().setAutoCreateSession(true).build();
+    String newSessionId = UUID.randomUUID().toString();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive("user", newSessionId, liveRequestQueue, runConfig).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+    assertThat(
+            runner
+                .sessionService()
+                .getSession("test", "user", newSessionId, Optional.empty())
+                .blockingGet())
+        .isNotNull();
+  }
+
+  @Test
+  public void runLive_withoutSessionAndAutoCreateSessionFalse_throwsException() {
+    RunConfig runConfig = RunConfig.builder().setAutoCreateSession(false).build();
+    String newSessionId = UUID.randomUUID().toString();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    runner
+        .runLive("user", newSessionId, liveRequestQueue, runConfig)
+        .test()
+        .assertError(IllegalArgumentException.class);
+  }
+
+  @Test
+  public void runAsync_withToolConfirmation() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("Response after observing tool needs confirmation."),
+            createTextLlmResponse("Response after user confirmed."));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .tools(FunctionTool.create(Tools.class, "echoTool", /* requireConfirmation= */ true))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(agent).build()).build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> eventsBeforeConfirmation =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
+            .toList()
+            .blockingGet();
+    FunctionCall askUserConfirmationFunctionCall =
+        Iterables.getOnlyElement(
+            eventsBeforeConfirmation.stream()
+                .map(Functions::getAskUserConfirmationFunctionCalls)
+                .filter(functionCalls -> !functionCalls.isEmpty())
+                .findFirst()
+                .get());
+    List<Event> eventsAfterConfirmation =
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                Content.fromParts(
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .id(askUserConfirmationFunctionCall.id().get())
+                                .name(askUserConfirmationFunctionCall.name().get())
+                                .response(ImmutableMap.of("confirmed", true)))
+                        .build()))
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(eventsBeforeConfirmation))
+        .containsExactly(
+            "test agent: FunctionCall(name=echoTool, args={message=hello})",
+            "test agent: FunctionCall(name=adk_request_confirmation,"
+                + " args={originalFunctionCall=FunctionCall{id=Optional[tool_call_id],"
+                + " args=Optional[{message=hello}], name=Optional[echoTool],"
+                + " partialArgs=Optional.empty, willContinue=Optional.empty},"
+                + " toolConfirmation=ToolConfirmation{hint=Please approve or reject the tool call"
+                + " echoTool() by responding with a FunctionResponse with an expected"
+                + " ToolConfirmation payload., confirmed=false, payload=null}})",
+            "test agent: FunctionResponse(name=echoTool, response={error=This tool call requires"
+                + " confirmation, please approve or reject.})",
+            "test agent: Response after observing tool needs confirmation.")
+        .inOrder();
+    assertThat(simplifyEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "test agent: FunctionResponse(name=echoTool, response={message=hello})",
+            "test agent: Response after user confirmed.")
+        .inOrder();
+    assertThat(testLlm.getLastRequest().contents().stream().map(TestUtils::formatContent))
+        .containsExactly(
+            "from user",
+            "FunctionCall(name=echoTool, args={message=hello})",
+            "FunctionResponse(name=echoTool, response={message=hello})")
+        .inOrder();
+  }
+
+  @Test
+  public void close_closesPluginsAndCodeExecutors() {
+    BasePlugin plugin = mockPlugin("close_test_plugin");
+    when(plugin.close()).thenReturn(Completable.complete());
+    LlmAgent agentWithCodeExecutor = createTestAgentBuilder(testLlm).build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agentWithCodeExecutor)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
+
+    runner.close().blockingAwait();
+
+    verify(plugin).close();
+  }
+
+  public static class Tools {
+    private Tools() {}
+
+    public static ImmutableMap<String, Object> echoTool(String message) {
+      return ImmutableMap.of("message", message);
+    }
   }
 }

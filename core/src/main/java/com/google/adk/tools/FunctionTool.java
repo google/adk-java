@@ -44,7 +44,7 @@ import org.slf4j.LoggerFactory;
 public class FunctionTool extends BaseTool {
 
   private static final Logger logger = LoggerFactory.getLogger(FunctionTool.class);
-  private static final ObjectMapper OBJECT_MAPPER = JsonBaseModel.getMapper();
+  private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
 
   private final @Nullable Object instance;
   private final Method func;
@@ -56,6 +56,11 @@ public class FunctionTool extends BaseTool {
   }
 
   public static FunctionTool create(Object instance, Method func, boolean requireConfirmation) {
+    return create(instance, func, requireConfirmation, false);
+  }
+
+  public static FunctionTool create(
+      Object instance, Method func, boolean requireConfirmation, boolean isLongRunning) {
     if (!areParametersAnnotatedWithSchema(func) && wasCompiledWithDefaultParameterNames(func)) {
       logger.error(
           """
@@ -72,7 +77,7 @@ public class FunctionTool extends BaseTool {
               func.getDeclaringClass().getName(), instance.getClass().getName()));
     }
     return new FunctionTool(
-        instance, func, /* isLongRunning= */ false, /* requireConfirmation= */ requireConfirmation);
+        instance, func, isLongRunning, /* requireConfirmation= */ requireConfirmation);
   }
 
   public static FunctionTool create(Method func) {
@@ -80,6 +85,11 @@ public class FunctionTool extends BaseTool {
   }
 
   public static FunctionTool create(Method func, boolean requireConfirmation) {
+    return create(func, requireConfirmation, false);
+  }
+
+  public static FunctionTool create(
+      Method func, boolean requireConfirmation, boolean isLongRunning) {
     if (!areParametersAnnotatedWithSchema(func) && wasCompiledWithDefaultParameterNames(func)) {
       logger.error(
           """
@@ -91,7 +101,7 @@ public class FunctionTool extends BaseTool {
     if (!Modifier.isStatic(func.getModifiers())) {
       throw new IllegalArgumentException("The method provided must be static.");
     }
-    return new FunctionTool(null, func, /* isLongRunning= */ false, requireConfirmation);
+    return new FunctionTool(null, func, isLongRunning, requireConfirmation);
   }
 
   public static FunctionTool create(Class<?> cls, String methodName) {
@@ -99,9 +109,14 @@ public class FunctionTool extends BaseTool {
   }
 
   public static FunctionTool create(Class<?> cls, String methodName, boolean requireConfirmation) {
+    return create(cls, methodName, requireConfirmation, false);
+  }
+
+  public static FunctionTool create(
+      Class<?> cls, String methodName, boolean requireConfirmation, boolean isLongRunning) {
     for (Method method : cls.getMethods()) {
       if (method.getName().equals(methodName) && Modifier.isStatic(method.getModifiers())) {
-        return create(null, method, requireConfirmation);
+        return create(null, method, requireConfirmation, isLongRunning);
       }
     }
     throw new IllegalArgumentException(
@@ -114,10 +129,15 @@ public class FunctionTool extends BaseTool {
 
   public static FunctionTool create(
       Object instance, String methodName, boolean requireConfirmation) {
+    return create(instance, methodName, requireConfirmation, false);
+  }
+
+  public static FunctionTool create(
+      Object instance, String methodName, boolean requireConfirmation, boolean isLongRunning) {
     Class<?> cls = instance.getClass();
     for (Method method : cls.getMethods()) {
       if (method.getName().equals(methodName) && !Modifier.isStatic(method.getModifiers())) {
-        return create(instance, method, requireConfirmation);
+        return create(instance, method, requireConfirmation, isLongRunning);
       }
     }
     throw new IllegalArgumentException(
@@ -185,6 +205,17 @@ public class FunctionTool extends BaseTool {
     return func;
   }
 
+  /** Returns the underlying function's {@link Object} instance if present. */
+  @Nullable
+  Object instance() {
+    return instance;
+  }
+
+  /** Returns whether the function requires confirmation */
+  boolean requireConfirmation() {
+    return requireConfirmation;
+  }
+
   /** Returns true if the wrapped function returns a Flowable and can be used for streaming. */
   public boolean isStreaming() {
     Type returnType = func.getGenericReturnType();
@@ -230,16 +261,21 @@ public class FunctionTool extends BaseTool {
     } else if (result instanceof Maybe) {
       return ((Maybe<?>) result)
           .map(
-              data ->
-                  OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}));
+              data -> objectMapper.convertValue(data, new TypeReference<Map<String, Object>>() {}));
     } else if (result instanceof Single) {
       return ((Single<?>) result)
-          .map(
-              data -> OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}))
+          .map(data -> objectMapper.convertValue(data, new TypeReference<Map<String, Object>>() {}))
           .toMaybe();
     } else {
-      return Maybe.just(
-          OBJECT_MAPPER.convertValue(result, new TypeReference<Map<String, Object>>() {}));
+      try {
+        return Maybe.just(
+            objectMapper.convertValue(result, new TypeReference<Map<String, Object>>() {}));
+      } catch (IllegalArgumentException e) {
+        // Conversion to map failed, in this case we follow
+        // https://google.github.io/adk-docs/tools-custom/function-tools/#return-type and return
+        // the { "result": $result }
+        return Maybe.just(ImmutableMap.of("result", result));
+      }
     }
   }
 
@@ -308,7 +344,7 @@ public class FunctionTool extends BaseTool {
           continue;
         }
       } else if (argValue instanceof Map) {
-        arguments[i] = OBJECT_MAPPER.convertValue(argValue, paramType);
+        arguments[i] = objectMapper.convertValue(argValue, paramType);
         continue;
       }
       arguments[i] = castValue(argValue, paramType);
@@ -345,7 +381,7 @@ public class FunctionTool extends BaseTool {
           || cls == String.class) {
         list.add(castValue(value, cls));
       } else {
-        list.add(OBJECT_MAPPER.convertValue(value, type));
+        list.add(objectMapper.convertValue(value, type));
       }
     }
     return list;
@@ -396,6 +432,6 @@ public class FunctionTool extends BaseTool {
         return value;
       }
     }
-    return OBJECT_MAPPER.convertValue(value, type);
+    return objectMapper.convertValue(value, type);
   }
 }

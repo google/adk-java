@@ -128,7 +128,7 @@ public final class CodeExecutionUtils {
    * @return The extracted code if found.
    */
   public static Optional<String> extractCodeAndTruncateContent(
-      Content.Builder contentBuilder, List<List<String>> codeBlockDelimiters) {
+      Content.Builder contentBuilder, List<? extends List<String>> codeBlockDelimiters) {
     Content content = contentBuilder.build();
     if (content.parts().isEmpty() || content.parts().get().isEmpty()) {
       return Optional.empty();

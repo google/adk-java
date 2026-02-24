@@ -5,13 +5,16 @@
     <parent>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-samples</artifactId>
-        <version>0.4.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <version>0.6.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
         <relativePath>..</relativePath>
     </parent>
 
     <groupId>com.google.adk.samples</groupId>
     <artifactId>configagent-samples</artifactId>
     <packaging>jar</packaging>
+
+    <name>Config Agent Samples</name>
+    <description>Samples for Config Agent.</description>
 
     <properties>
         <maven.compiler.source>11</maven.compiler.source>

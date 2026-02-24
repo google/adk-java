@@ -16,11 +16,11 @@
 package com.google.adk.agents;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
 import io.reactivex.rxjava3.core.Flowable;
-import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -101,14 +101,15 @@ public class ParallelAgent extends BaseAgent {
    *
    * @param currentAgent Current agent.
    * @param invocationContext Invocation context to update.
+   * @return A new invocation context with branch set.
    */
-  private static void setBranchForCurrentAgent(
+  private static InvocationContext setBranchForCurrentAgent(
       BaseAgent currentAgent, InvocationContext invocationContext) {
     String branch = invocationContext.branch().orElse(null);
     if (isNullOrEmpty(branch)) {
-      invocationContext.branch(currentAgent.name());
+      return invocationContext.toBuilder().branch(currentAgent.name()).build();
     } else {
-      invocationContext.branch(branch + "." + currentAgent.name());
+      return invocationContext.toBuilder().branch(branch + "." + currentAgent.name()).build();
     }
   }
 
@@ -122,18 +123,16 @@ public class ParallelAgent extends BaseAgent {
    */
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    setBranchForCurrentAgent(this, invocationContext);
-
     List<? extends BaseAgent> currentSubAgents = subAgents();
     if (currentSubAgents == null || currentSubAgents.isEmpty()) {
       return Flowable.empty();
     }
 
-    List<Flowable<Event>> agentFlowables = new ArrayList<>();
-    for (BaseAgent subAgent : currentSubAgents) {
-      agentFlowables.add(subAgent.runAsync(invocationContext));
-    }
-    return Flowable.merge(agentFlowables);
+    var updatedInvocationContext = setBranchForCurrentAgent(this, invocationContext);
+    return Flowable.merge(
+        currentSubAgents.stream()
+            .map(subAgent -> subAgent.runAsync(updatedInvocationContext))
+            .collect(toImmutableList()));
   }
 
   /**

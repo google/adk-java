@@ -16,15 +16,22 @@
 
 package com.google.adk.examples;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.google.adk.JsonBaseModel;
 import com.google.auto.value.AutoValue;
 import com.google.genai.types.Content;
 import java.util.List;
 
 /** Represents an few-shot example. */
 @AutoValue
-public abstract class Example {
+@JsonDeserialize(builder = Example.Builder.class)
+public abstract class Example extends JsonBaseModel {
+  @JsonProperty("input")
   public abstract Content input();
 
+  @JsonProperty("output")
   public abstract List<Content> output();
 
   public static Builder builder() {
@@ -36,9 +43,16 @@ public abstract class Example {
   /** Builder for constructing {@link Example} instances. */
   @AutoValue.Builder
   public abstract static class Builder {
+    @JsonProperty("input")
     public abstract Builder input(Content input);
 
+    @JsonProperty("output")
     public abstract Builder output(List<Content> output);
+
+    @JsonCreator
+    private static Builder create() {
+      return builder();
+    }
 
     public abstract Example build();
   }

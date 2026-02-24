@@ -337,4 +337,32 @@ public class VertexAiSessionServiceTest {
                 .events())
         .isEmpty();
   }
+
+  @Test
+  public void appendEvent_withStateRemoved_updatesSessionState() {
+    String userId = "userB";
+    ConcurrentMap<String, Object> initialState =
+        new ConcurrentHashMap<>(ImmutableMap.of("key1", "value1", "key2", "value2"));
+    Session session =
+        vertexAiSessionService.createSession("987", userId, initialState, null).blockingGet();
+
+    ConcurrentMap<String, Object> stateDelta =
+        new ConcurrentHashMap<>(ImmutableMap.of("key2", State.REMOVED));
+    Event event =
+        Event.builder()
+            .invocationId("456")
+            .author(userId)
+            .timestamp(Instant.parse("2024-12-12T12:12:12.123456Z").toEpochMilli())
+            .actions(EventActions.builder().stateDelta(stateDelta).build())
+            .build();
+    var unused = vertexAiSessionService.appendEvent(session, event).blockingGet();
+
+    Session updatedSession =
+        vertexAiSessionService
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+
+    assertThat(updatedSession.state()).containsExactly("key1", "value1");
+    assertThat(updatedSession.state()).doesNotContainKey("key2");
+  }
 }

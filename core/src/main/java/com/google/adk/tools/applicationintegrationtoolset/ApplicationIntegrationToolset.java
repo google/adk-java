@@ -8,9 +8,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
-import com.google.adk.tools.applicationintegrationtoolset.IntegrationConnectorTool.DefaultHttpExecutor;
-import com.google.adk.tools.applicationintegrationtoolset.IntegrationConnectorTool.HttpExecutor;
 import io.reactivex.rxjava3.core.Flowable;
+import java.net.http.HttpClient;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -29,8 +28,9 @@ public class ApplicationIntegrationToolset implements BaseToolset {
   String serviceAccountJson;
   @Nullable String toolNamePrefix;
   @Nullable String toolInstructions;
-  public static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
-  HttpExecutor httpExecutor;
+  public static final ObjectMapper objectMapper = new ObjectMapper();
+  private final HttpClient httpClient;
+  private final CredentialsHelper credentialsHelper;
 
   /**
    * ApplicationIntegrationToolset generates tools from a given Application Integration resource.
@@ -85,7 +85,8 @@ public class ApplicationIntegrationToolset implements BaseToolset {
         serviceAccountJson,
         toolNamePrefix,
         toolInstructions,
-        new DefaultHttpExecutor().createExecutor(serviceAccountJson));
+        HttpClient.newHttpClient(),
+        new GoogleCredentialsHelper());
   }
 
   ApplicationIntegrationToolset(
@@ -99,7 +100,8 @@ public class ApplicationIntegrationToolset implements BaseToolset {
       String serviceAccountJson,
       String toolNamePrefix,
       String toolInstructions,
-      HttpExecutor httpExecutor) {
+      HttpClient httpClient,
+      CredentialsHelper credentialsHelper) {
     this.project = project;
     this.location = location;
     this.integration = integration;
@@ -110,18 +112,19 @@ public class ApplicationIntegrationToolset implements BaseToolset {
     this.serviceAccountJson = serviceAccountJson;
     this.toolNamePrefix = toolNamePrefix;
     this.toolInstructions = toolInstructions;
-    this.httpExecutor = httpExecutor;
+    this.httpClient = httpClient;
+    this.credentialsHelper = credentialsHelper;
   }
 
   List<String> getPathUrl(String openApiSchemaString) throws Exception {
     List<String> pathUrls = new ArrayList<>();
-    JsonNode topLevelNode = OBJECT_MAPPER.readTree(openApiSchemaString);
+    JsonNode topLevelNode = objectMapper.readTree(openApiSchemaString);
     JsonNode specNode = topLevelNode.path("openApiSpec");
     if (specNode.isMissingNode() || !specNode.isTextual()) {
       throw new IllegalArgumentException(
           "Failed to get OpenApiSpec, please check the project and region for the integration.");
     }
-    JsonNode rootNode = OBJECT_MAPPER.readTree(specNode.asText());
+    JsonNode rootNode = objectMapper.readTree(specNode.asText());
     JsonNode pathsNode = rootNode.path("paths");
     Iterator<Map.Entry<String, JsonNode>> paths = pathsNode.fields();
     while (paths.hasNext()) {
@@ -145,7 +148,9 @@ public class ApplicationIntegrationToolset implements BaseToolset {
               null,
               null,
               null,
-              this.httpExecutor);
+              this.serviceAccountJson,
+              this.httpClient,
+              this.credentialsHelper);
       openApiSchemaString = integrationClient.generateOpenApiSpec();
       List<String> pathUrls = getPathUrl(openApiSchemaString);
       for (String pathUrl : pathUrls) {
@@ -161,7 +166,8 @@ public class ApplicationIntegrationToolset implements BaseToolset {
                   null,
                   null,
                   this.serviceAccountJson,
-                  this.httpExecutor));
+                  this.httpClient,
+                  this.credentialsHelper));
         }
       }
     } else if (!isNullOrEmpty(this.connection)
@@ -175,20 +181,29 @@ public class ApplicationIntegrationToolset implements BaseToolset {
               this.connection,
               this.entityOperations,
               this.actions,
-              this.httpExecutor);
-      ObjectNode parentOpenApiSpec = OBJECT_MAPPER.createObjectNode();
+              this.serviceAccountJson,
+              this.httpClient,
+              this.credentialsHelper);
+      ObjectNode parentOpenApiSpec = objectMapper.createObjectNode();
       ObjectNode openApiSpec =
           integrationClient.getOpenApiSpecForConnection(toolNamePrefix, toolInstructions);
-      String openApiSpecString = OBJECT_MAPPER.writeValueAsString(openApiSpec);
+      String openApiSpecString = objectMapper.writeValueAsString(openApiSpec);
       parentOpenApiSpec.put("openApiSpec", openApiSpecString);
-      openApiSchemaString = OBJECT_MAPPER.writeValueAsString(parentOpenApiSpec);
+      openApiSchemaString = objectMapper.writeValueAsString(parentOpenApiSpec);
       List<String> pathUrls = getPathUrl(openApiSchemaString);
       for (String pathUrl : pathUrls) {
         String toolName = integrationClient.getOperationIdFromPathUrl(openApiSchemaString, pathUrl);
         if (!isNullOrEmpty(toolName)) {
           ConnectionsClient connectionsClient =
               new ConnectionsClient(
-                  this.project, this.location, this.connection, this.httpExecutor, OBJECT_MAPPER);
+                  this.project,
+                  this.location,
+                  this.connection,
+                  this.serviceAccountJson,
+                  this.httpClient,
+                  this.credentialsHelper,
+                  objectMapper);
+
           ConnectionsClient.ConnectionDetails connectionDetails =
               connectionsClient.getConnectionDetails();
 
@@ -202,7 +217,8 @@ public class ApplicationIntegrationToolset implements BaseToolset {
                   connectionDetails.serviceName,
                   connectionDetails.host,
                   this.serviceAccountJson,
-                  this.httpExecutor));
+                  this.httpClient,
+                  this.credentialsHelper));
         }
       }
     } else {

@@ -49,7 +49,7 @@ abstract class ApiClient {
     checkNotNull(customHttpOptions, "customHttpOptions cannot be null");
 
     try {
-      this.apiKey = Optional.of(apiKey.orElse(System.getenv("GOOGLE_API_KEY")));
+      this.apiKey = Optional.of(apiKey.orElseGet(() -> System.getenv("GOOGLE_API_KEY")));
     } catch (NullPointerException e) {
       throw new IllegalArgumentException(
           "API key must either be provided or set in the environment variable" + " GOOGLE_API_KEY.",
@@ -81,7 +81,7 @@ abstract class ApiClient {
     checkNotNull(customHttpOptions, "customHttpOptions cannot be null");
 
     try {
-      this.project = Optional.of(project.orElse(System.getenv("GOOGLE_CLOUD_PROJECT")));
+      this.project = Optional.of(project.orElseGet(() -> System.getenv("GOOGLE_CLOUD_PROJECT")));
     } catch (NullPointerException e) {
       throw new IllegalArgumentException(
           "Project must either be provided or set in the environment variable"

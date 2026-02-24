@@ -69,8 +69,8 @@ public class LoggingPluginTest {
           .actions(EventActions.builder().build())
           .longRunningToolIds(Optional.empty())
           .build();
-  private final LlmRequest llmRequest =
-      LlmRequest.builder().model("default").contents(ImmutableList.of()).build();
+  private final LlmRequest.Builder llmRequestBuilder =
+      LlmRequest.builder().model("default").contents(ImmutableList.of());
   private final LlmResponse llmResponse = LlmResponse.builder().build();
   private final ImmutableMap<String, Object> toolArgs = ImmutableMap.of();
   private final ImmutableMap<String, Object> toolResult = ImmutableMap.of();
@@ -87,7 +87,7 @@ public class LoggingPluginTest {
 
     when(mockCallbackContext.invocationId()).thenReturn("invocation_id");
     when(mockCallbackContext.agentName()).thenReturn("agent_name");
-    when(mockCallbackContext.branch()).thenReturn(Optional.empty());
+    when(mockCallbackContext.invocationContext()).thenReturn(mockInvocationContext);
 
     when(mockTool.name()).thenReturn("tool_name");
     when(mockToolContext.agentName()).thenReturn("agent_name");
@@ -175,7 +175,10 @@ public class LoggingPluginTest {
 
   @Test
   public void beforeModelCallback_runsWithoutError() {
-    loggingPlugin.beforeModelCallback(mockCallbackContext, llmRequest).test().assertComplete();
+    loggingPlugin
+        .beforeModelCallback(mockCallbackContext, llmRequestBuilder)
+        .test()
+        .assertComplete();
   }
 
   @Test
@@ -184,8 +187,7 @@ public class LoggingPluginTest {
         .beforeModelCallback(
             mockCallbackContext,
             LlmRequest.builder()
-                .appendInstructions(ImmutableList.of("all work and no play".repeat(1000)))
-                .build())
+                .appendInstructions(ImmutableList.of("all work and no play".repeat(1000))))
         .test()
         .assertComplete();
   }
@@ -194,8 +196,7 @@ public class LoggingPluginTest {
   public void beforeModelCallback_tools() {
     loggingPlugin
         .beforeModelCallback(
-            mockCallbackContext,
-            LlmRequest.builder().appendTools(ImmutableList.of(mockTool)).build())
+            mockCallbackContext, LlmRequest.builder().appendTools(ImmutableList.of(mockTool)))
         .test()
         .assertComplete();
   }
@@ -231,7 +232,7 @@ public class LoggingPluginTest {
   @Test
   public void onModelErrorCallback_runsWithoutError() {
     loggingPlugin
-        .onModelErrorCallback(mockCallbackContext, llmRequest, throwable)
+        .onModelErrorCallback(mockCallbackContext, llmRequestBuilder, throwable)
         .test()
         .assertComplete();
   }

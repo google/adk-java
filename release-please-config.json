@@ -1,0 +1,11 @@
+{
+  "packages": {
+    ".": {}
+  },
+  "include-component-in-tag": false,
+  "release-type": "maven",
+  "extra-files": [
+    "core/src/main/java/com/google/adk/Version.java",
+    "README.md"
+  ]
+}

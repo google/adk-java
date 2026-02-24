@@ -22,7 +22,6 @@ import static java.util.stream.Collectors.toCollection;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.codeexecutors.BaseCodeExecutor;
 import com.google.adk.codeexecutors.BuiltInCodeExecutor;
 import com.google.adk.codeexecutors.CodeExecutionUtils;
 import com.google.adk.codeexecutors.CodeExecutionUtils.CodeExecutionInput;
@@ -108,12 +107,12 @@ public final class CodeExecution {
     public Single<RequestProcessor.RequestProcessingResult> processRequest(
         InvocationContext invocationContext, LlmRequest llmRequest) {
       if (!(invocationContext.agent() instanceof LlmAgent llmAgent)
-          || llmAgent.codeExecutor() == null) {
+          || llmAgent.codeExecutor().isEmpty()) {
         return Single.just(
             RequestProcessor.RequestProcessingResult.create(llmRequest, ImmutableList.of()));
       }
 
-      if (llmAgent.codeExecutor() instanceof BuiltInCodeExecutor builtInCodeExecutor) {
+      if (llmAgent.codeExecutor().get() instanceof BuiltInCodeExecutor builtInCodeExecutor) {
         var llmRequestBuilder = llmRequest.toBuilder();
         builtInCodeExecutor.processLlmRequest(llmRequestBuilder);
         LlmRequest updatedLlmRequest = llmRequestBuilder.build();
@@ -124,21 +123,27 @@ public final class CodeExecution {
       Flowable<Event> preprocessorEvents = runPreProcessor(invocationContext, llmRequest);
 
       // Convert the code execution parts to text parts.
-      if (llmAgent.codeExecutor() != null) {
-        BaseCodeExecutor baseCodeExecutor = llmAgent.codeExecutor();
-        List<Content> updatedContents = new ArrayList<>();
-        for (Content content : llmRequest.contents()) {
-          List<String> delimiters =
-              !baseCodeExecutor.codeBlockDelimiters().isEmpty()
-                  ? baseCodeExecutor.codeBlockDelimiters().get(0)
-                  : ImmutableList.of("", "");
-          updatedContents.add(
-              CodeExecutionUtils.convertCodeExecutionParts(
-                  content, delimiters, baseCodeExecutor.executionResultDelimiters()));
-        }
-        llmRequest = llmRequest.toBuilder().contents(updatedContents).build();
-      }
-      final LlmRequest finalLlmRequest = llmRequest;
+      final LlmRequest finalLlmRequest =
+          llmAgent
+              .codeExecutor()
+              .map(
+                  baseCodeExecutor -> {
+                    List<String> delimiters =
+                        !baseCodeExecutor.codeBlockDelimiters().isEmpty()
+                            ? baseCodeExecutor.codeBlockDelimiters().get(0)
+                            : ImmutableList.of("", "");
+                    ImmutableList<Content> updatedContents =
+                        llmRequest.contents().stream()
+                            .map(
+                                content ->
+                                    CodeExecutionUtils.convertCodeExecutionParts(
+                                        content,
+                                        delimiters,
+                                        baseCodeExecutor.executionResultDelimiters()))
+                            .collect(toImmutableList());
+                    return llmRequest.toBuilder().contents(updatedContents).build();
+                  })
+              .orElse(llmRequest);
       return preprocessorEvents
           .toList()
           .map(
@@ -173,10 +178,11 @@ public final class CodeExecution {
       return Flowable.empty();
     }
 
-    var codeExecutor = llmAgent.codeExecutor();
-    if (codeExecutor == null) {
+    var codeExecutorOptional = llmAgent.codeExecutor();
+    if (codeExecutorOptional.isEmpty()) {
       return Flowable.empty();
     }
+    var codeExecutor = codeExecutorOptional.get();
 
     if (codeExecutor instanceof BuiltInCodeExecutor) {
       return Flowable.empty();
@@ -254,7 +260,9 @@ public final class CodeExecution {
                           llmRequest
                               .contents()
                               .add(
-                                  executionResultEvent.content().orElse(Content.builder().build())))
+                                  executionResultEvent
+                                      .content()
+                                      .orElseGet(() -> Content.builder().build())))
                   .map(executionResultEvent -> ImmutableList.of(codeEvent, executionResultEvent))
                   .flatMap(Flowable::fromIterable);
             });
@@ -266,10 +274,11 @@ public final class CodeExecution {
     if (!(invocationContext.agent() instanceof LlmAgent llmAgent)) {
       return Flowable.empty();
     }
-    var codeExecutor = llmAgent.codeExecutor();
-    if (codeExecutor == null) {
+    var codeExecutorOptional = llmAgent.codeExecutor();
+    if (codeExecutorOptional.isEmpty()) {
       return Flowable.empty();
     }
+    var codeExecutor = codeExecutorOptional.get();
     if (llmResponse.content().isEmpty()) {
       return Flowable.empty();
     }
@@ -385,8 +394,8 @@ public final class CodeExecution {
   private static Optional<String> getOrSetExecutionId(
       InvocationContext invocationContext, CodeExecutorContext codeExecutorContext) {
     if (!(invocationContext.agent() instanceof LlmAgent llmAgent)
-        || llmAgent.codeExecutor() == null
-        || !llmAgent.codeExecutor().stateful()) {
+        || llmAgent.codeExecutor().isEmpty()
+        || !llmAgent.codeExecutor().get().stateful()) {
       return Optional.empty();
     }
 
@@ -439,11 +448,9 @@ public final class CodeExecution {
         .toList()
         .map(
             versions -> {
-              ConcurrentMap<String, Part> artifactDelta = new ConcurrentHashMap<>();
+              ConcurrentMap<String, Integer> artifactDelta = new ConcurrentHashMap<>();
               for (int i = 0; i < versions.size(); i++) {
-                artifactDelta.put(
-                    codeExecutionResult.outputFiles().get(i).name(),
-                    Part.fromText(String.valueOf(versions.get(i))));
+                artifactDelta.put(codeExecutionResult.outputFiles().get(i).name(), versions.get(i));
               }
               eventActionsBuilder.artifactDelta(artifactDelta);
               return Event.builder()

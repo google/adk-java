@@ -133,9 +133,9 @@ class OpenAiApiIntegrationTest {
             .model(new SpringAI(openAiModel, GPT_MODEL))
             .instruction(
                 """
-            You are a helpful assistant.
-            When asked about weather, use the getWeatherInfo function to get current conditions.
-            """)
+                You are a helpful assistant.
+                When asked about weather, use the getWeatherInfo function to get current conditions.
+                """)
             .tools(FunctionTool.create(WeatherTools.class, "getWeatherInfo"))
             .build();
 

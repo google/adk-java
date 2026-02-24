@@ -19,7 +19,7 @@ package com.google.adk.runner;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.memory.InMemoryMemoryService;
-import com.google.adk.plugins.BasePlugin;
+import com.google.adk.plugins.Plugin;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.common.collect.ImmutableList;
 import java.util.List;
@@ -37,7 +37,7 @@ public class InMemoryRunner extends Runner {
     this(agent, appName, ImmutableList.of());
   }
 
-  public InMemoryRunner(BaseAgent agent, String appName, List<BasePlugin> plugins) {
+  public InMemoryRunner(BaseAgent agent, String appName, List<? extends Plugin> plugins) {
     super(
         agent,
         appName,

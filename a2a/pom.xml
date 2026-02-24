@@ -5,7 +5,7 @@
   <parent>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-parent</artifactId>
-    <version>0.4.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <version>0.6.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   </parent>
 
   <artifactId>google-adk-a2a</artifactId>
@@ -16,7 +16,7 @@
   <properties>
     <java.version>17</java.version>
     <maven.compiler.release>${java.version}</maven.compiler.release>
-    <a2a.sdk.version>0.3.0.Beta1</a2a.sdk.version>
+    <a2a.sdk.version>0.3.2.Final</a2a.sdk.version>
     <google.adk.version>${project.version}</google.adk.version>
     <guava.version>33.0.0-jre</guava.version>
     <jackson.version>2.19.0</jackson.version>
@@ -87,6 +87,11 @@
     <dependency>
       <groupId>io.github.a2asdk</groupId>
       <artifactId>a2a-java-sdk-http-client</artifactId>
+      <version>${a2a.sdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.a2asdk</groupId>
+      <artifactId>a2a-java-sdk-client</artifactId>
       <version>${a2a.sdk.version}</version>
     </dependency>
     <dependency>

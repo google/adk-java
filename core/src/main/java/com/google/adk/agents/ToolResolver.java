@@ -74,7 +74,7 @@ final class ToolResolver {
         String toolName = toolConfig.name().trim();
 
         // First try to resolve as a toolset
-        BaseToolset toolset = resolveToolsetFromClass(toolName, toolConfig.args());
+        BaseToolset toolset = resolveToolsetFromClass(toolName, toolConfig.args(), configAbsPath);
         if (toolset != null) {
           resolvedItems.add(toolset);
           logger.debug("Successfully resolved toolset from class: {}", toolName);
@@ -90,7 +90,7 @@ final class ToolResolver {
         }
 
         // Option 2: Try to resolve as a tool class (with or without args)
-        BaseTool toolFromClass = resolveToolFromClass(toolName, toolConfig.args());
+        BaseTool toolFromClass = resolveToolFromClass(toolName, toolConfig.args(), configAbsPath);
         if (toolFromClass != null) {
           resolvedItems.add(toolFromClass);
           logger.debug("Successfully resolved tool from class: {}", toolName);
@@ -99,7 +99,7 @@ final class ToolResolver {
 
         throw new ConfigurationException("Tool or toolset not found: " + toolName);
 
-      } catch (Exception e) {
+      } catch (RuntimeException e) {
         String errorMsg = "Failed to resolve tool or toolset: " + toolConfig.name();
         logger.error(errorMsg, e);
         throw new ConfigurationException(errorMsg, e);
@@ -147,7 +147,7 @@ final class ToolResolver {
         }
 
         // Option 2: Try to resolve as a tool class (with or without args)
-        BaseTool toolFromClass = resolveToolFromClass(toolName, toolConfig.args());
+        BaseTool toolFromClass = resolveToolFromClass(toolName, toolConfig.args(), configAbsPath);
         if (toolFromClass != null) {
           resolvedTools.add(toolFromClass);
           logger.debug("Successfully resolved tool from class: {}", toolName);
@@ -156,7 +156,7 @@ final class ToolResolver {
 
         throw new ConfigurationException("Tool not found: " + toolName);
 
-      } catch (Exception e) {
+      } catch (RuntimeException e) {
         String errorMsg = "Failed to resolve tool: " + toolConfig.name();
         logger.error(errorMsg, e);
         throw new ConfigurationException(errorMsg, e);
@@ -198,7 +198,7 @@ final class ToolResolver {
           logger.debug("Resolved and registered tool instance via reflection: {}", toolName);
           return tool;
         }
-      } catch (Exception e) {
+      } catch (ReflectiveOperationException | RuntimeException e) {
         logger.debug("Failed to resolve instance via reflection: {}", toolName, e);
       }
     }
@@ -237,7 +237,7 @@ final class ToolResolver {
           logger.debug("Resolved and registered toolset instance via reflection: {}", toolsetName);
           return toolset;
         }
-      } catch (Exception e) {
+      } catch (ReflectiveOperationException | RuntimeException e) {
         logger.debug("Failed to resolve toolset instance via reflection: {}", toolsetName, e);
       }
     }
@@ -258,8 +258,8 @@ final class ToolResolver {
    * @throws ConfigurationException if toolset instantiation fails.
    */
   @Nullable
-  static BaseToolset resolveToolsetFromClass(String className, ToolArgsConfig args)
-      throws ConfigurationException {
+  static BaseToolset resolveToolsetFromClass(
+      String className, ToolArgsConfig args, String configAbsPath) throws ConfigurationException {
     ComponentRegistry registry = ComponentRegistry.getInstance();
 
     // First try registry for class
@@ -332,10 +332,11 @@ final class ToolResolver {
    *
    * @param toolsetName The toolset name in format "com.example.MyToolsetClass.INSTANCE".
    * @return The resolved toolset instance, or {@code null} if not found or not a BaseToolset.
-   * @throws Exception if the class cannot be loaded or field access fails.
+   * @throws ReflectiveOperationException if the class cannot be loaded or field access fails.
    */
   @Nullable
-  static BaseToolset resolveToolsetInstanceViaReflection(String toolsetName) throws Exception {
+  static BaseToolset resolveToolsetInstanceViaReflection(String toolsetName)
+      throws ReflectiveOperationException {
     int lastDotIndex = toolsetName.lastIndexOf('.');
     if (lastDotIndex == -1) {
       return null;
@@ -383,7 +384,7 @@ final class ToolResolver {
    *     instantiation via the factory method or constructor fails.
    */
   @Nullable
-  static BaseTool resolveToolFromClass(String className, ToolArgsConfig args)
+  static BaseTool resolveToolFromClass(String className, ToolArgsConfig args, String configAbsPath)
       throws ConfigurationException {
     ComponentRegistry registry = ComponentRegistry.getInstance();
 
@@ -416,15 +417,16 @@ final class ToolResolver {
     // If args provided and not empty, try fromConfig method first
     if (args != null && !args.isEmpty()) {
       try {
-        Method fromConfigMethod = toolClass.getMethod("fromConfig", ToolArgsConfig.class);
-        Object instance = fromConfigMethod.invoke(null, args);
+        Method fromConfigMethod =
+            toolClass.getMethod("fromConfig", ToolArgsConfig.class, String.class);
+        Object instance = fromConfigMethod.invoke(null, args, configAbsPath);
         if (instance instanceof BaseTool baseTool) {
           return baseTool;
         }
       } catch (NoSuchMethodException e) {
         throw new ConfigurationException(
             "Class " + className + " does not have fromConfig method but args were provided.", e);
-      } catch (Exception e) {
+      } catch (ReflectiveOperationException | RuntimeException e) {
         logger.error("Error calling fromConfig on class {}", className, e);
         throw new ConfigurationException("Error creating tool from class " + className, e);
       }
@@ -439,7 +441,7 @@ final class ToolResolver {
       throw new ConfigurationException(
           "Class " + className + " does not have a default constructor and no args were provided.",
           e);
-    } catch (Exception e) {
+    } catch (ReflectiveOperationException | RuntimeException e) {
       logger.error("Error calling default constructor on class {}", className, e);
       throw new ConfigurationException(
           "Error creating tool from class " + className + " using default constructor", e);
@@ -475,11 +477,12 @@ final class ToolResolver {
    * @param toolName The fully qualified name of a static field holding a tool instance.
    * @return The {@link BaseTool} instance, or {@code null} if {@code toolName} is not in the
    *     expected format, or if the field is not found, not static, or not of type {@link BaseTool}.
-   * @throws Exception if the class specified in {@code toolName} cannot be loaded, or if there is a
-   *     security manager preventing reflection, or if accessing the field causes an exception.
+   * @throws ReflectiveOperationException if the class specified in {@code toolName} cannot be
+   *     loaded, or if accessing the field causes an exception.
    */
   @Nullable
-  static BaseTool resolveInstanceViaReflection(String toolName) throws Exception {
+  static BaseTool resolveInstanceViaReflection(String toolName)
+      throws ReflectiveOperationException {
     int lastDotIndex = toolName.lastIndexOf('.');
     if (lastDotIndex == -1) {
       return null;

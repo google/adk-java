@@ -1,7 +1,10 @@
-package com.google.adk.a2a;
+package com.google.adk.a2a.converters;
+
+import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
+import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.a2a.spec.Message;
@@ -16,50 +19,35 @@ import org.slf4j.LoggerFactory;
 /**
  * Converter for ADK Events to A2A Messages.
  *
- * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
- *     not use in production code.
+ * <p>**EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do not
+ * use in production code.
  */
 public final class EventConverter {
   private static final Logger logger = LoggerFactory.getLogger(EventConverter.class);
 
   private EventConverter() {}
 
+  /**
+   * Aggregation mode for converting events to A2A messages.
+   *
+   * <p>AS_IS: Parts are aggregated as-is.
+   *
+   * <p>EXTERNAL_HANDOFF: Parts are aggregated as-is, except for function responses, which are
+   * converted to text parts with the function name and response map.
+   */
   public enum AggregationMode {
     AS_IS,
     EXTERNAL_HANDOFF
   }
 
-  public static Optional<Message> convertEventToA2AMessage(Event event) {
-    if (event == null) {
-      logger.warn("Cannot convert null event to A2A message.");
-      return Optional.empty();
+  public static ImmutableList<io.a2a.spec.Part<?>> contentToParts(Optional<Content> content) {
+    if (content.isPresent() && content.get().parts().isPresent()) {
+      return content.get().parts().get().stream()
+          .map(PartConverter::fromGenaiPart)
+          .flatMap(Optional::stream)
+          .collect(toImmutableList());
     }
-
-    List<io.a2a.spec.Part<?>> a2aParts = new ArrayList<>();
-    Optional<Content> contentOpt = event.content();
-
-    if (contentOpt.isPresent() && contentOpt.get().parts().isPresent()) {
-      for (Part part : contentOpt.get().parts().get()) {
-        PartConverter.fromGenaiPart(part).ifPresent(a2aParts::add);
-      }
-    }
-
-    if (a2aParts.isEmpty()) {
-      logger.warn("No convertible content found in event.");
-      return Optional.empty();
-    }
-
-    Message.Builder builder =
-        new Message.Builder()
-            .messageId(event.id() != null ? event.id() : UUID.randomUUID().toString())
-            .parts(a2aParts)
-            .role(event.author().equals("user") ? Message.Role.USER : Message.Role.AGENT);
-    event
-        .content()
-        .flatMap(Content::role)
-        .ifPresent(
-            role -> builder.role(role.equals("user") ? Message.Role.USER : Message.Role.AGENT));
-    return Optional.of(builder.build());
+    return ImmutableList.of();
   }
 
   public static Optional<Message> convertEventsToA2AMessage(InvocationContext context) {

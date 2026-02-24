@@ -61,6 +61,7 @@ public class Event extends JsonBaseModel {
   private Optional<Boolean> interrupted = Optional.empty();
   private Optional<String> branch = Optional.empty();
   private Optional<GroundingMetadata> groundingMetadata = Optional.empty();
+  private Optional<String> modelVersion = Optional.empty();
   private long timestamp;
 
   private Event() {}
@@ -241,6 +242,16 @@ public class Event extends JsonBaseModel {
     this.groundingMetadata = groundingMetadata;
   }
 
+  /** The model version used to generate the response. */
+  @JsonProperty("modelVersion")
+  public Optional<String> modelVersion() {
+    return modelVersion;
+  }
+
+  public void setModelVersion(Optional<String> modelVersion) {
+    this.modelVersion = modelVersion;
+  }
+
   /** The timestamp of the event. */
   @JsonProperty("timestamp")
   public long timestamp() {
@@ -283,8 +294,7 @@ public class Event extends JsonBaseModel {
   /** Returns true if this is a final response. */
   @JsonIgnore
   public final boolean finalResponse() {
-    if (actions().skipSummarization().orElse(false)
-        || (longRunningToolIds().isPresent() && !longRunningToolIds().get().isEmpty())) {
+    if (actions().skipSummarization().orElse(false)) {
       return true;
     }
     return functionCalls().isEmpty()
@@ -336,6 +346,7 @@ public class Event extends JsonBaseModel {
     private Optional<Boolean> interrupted = Optional.empty();
     private Optional<String> branch = Optional.empty();
     private Optional<GroundingMetadata> groundingMetadata = Optional.empty();
+    private Optional<String> modelVersion = Optional.empty();
     private Optional<Long> timestamp = Optional.empty();
 
     @JsonCreator
@@ -558,6 +569,23 @@ public class Event extends JsonBaseModel {
       return groundingMetadata;
     }
 
+    @CanIgnoreReturnValue
+    @JsonProperty("modelVersion")
+    public Builder modelVersion(@Nullable String value) {
+      this.modelVersion = Optional.ofNullable(value);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder modelVersion(Optional<String> value) {
+      this.modelVersion = value;
+      return this;
+    }
+
+    Optional<String> modelVersion() {
+      return modelVersion;
+    }
+
     public Event build() {
       Event event = new Event();
       event.setId(id);
@@ -575,8 +603,9 @@ public class Event extends JsonBaseModel {
       event.setInterrupted(interrupted);
       event.branch(branch);
       event.setGroundingMetadata(groundingMetadata);
-      event.setActions(actions().orElse(EventActions.builder().build()));
-      event.setTimestamp(timestamp().orElse(Instant.now().toEpochMilli()));
+      event.setModelVersion(modelVersion);
+      event.setActions(actions().orElseGet(() -> EventActions.builder().build()));
+      event.setTimestamp(timestamp().orElseGet(() -> Instant.now().toEpochMilli()));
       return event;
     }
   }
@@ -609,7 +638,8 @@ public class Event extends JsonBaseModel {
             .avgLogprobs(this.avgLogprobs)
             .interrupted(this.interrupted)
             .branch(this.branch)
-            .groundingMetadata(this.groundingMetadata);
+            .groundingMetadata(this.groundingMetadata)
+            .modelVersion(this.modelVersion);
     if (this.timestamp != 0) {
       builder.timestamp(this.timestamp);
     }
@@ -640,7 +670,8 @@ public class Event extends JsonBaseModel {
         && Objects.equals(avgLogprobs, other.avgLogprobs)
         && Objects.equals(interrupted, other.interrupted)
         && Objects.equals(branch, other.branch)
-        && Objects.equals(groundingMetadata, other.groundingMetadata);
+        && Objects.equals(groundingMetadata, other.groundingMetadata)
+        && Objects.equals(modelVersion, other.modelVersion);
   }
 
   @Override
@@ -667,6 +698,7 @@ public class Event extends JsonBaseModel {
         interrupted,
         branch,
         groundingMetadata,
+        modelVersion,
         timestamp);
   }
 }

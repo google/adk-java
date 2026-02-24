@@ -68,12 +68,13 @@ public class CityTimeWeather {
                         + ZonedDateTime.now(ZoneId.of(zid))
                             .format(DateTimeFormatter.ofPattern("HH:mm"))
                         + "."))
-        .orElse(
-            Map.of(
-                "status",
-                "error",
-                "report",
-                "Sorry, I don't have timezone information for " + city + "."));
+        .orElseGet(
+            () ->
+                Map.of(
+                    "status",
+                    "error",
+                    "report",
+                    "Sorry, I don't have timezone information for " + city + "."));
   }
 
   public static Map<String, String> getWeather(

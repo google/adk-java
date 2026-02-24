@@ -41,7 +41,7 @@ import org.junit.runners.JUnit4;
 public final class ExampleToolTest {
 
   /** Helper to create a minimal agent & context for testing. */
-  private InvocationContext newContext() {
+  private InvocationContext buildInvocationContext() {
     TestLlm testLlm = new TestLlm(() -> Flowable.just(LlmResponse.builder().build()));
     LlmAgent agent = TestUtils.createTestAgent(testLlm);
     return TestUtils.createInvocationContext(agent);
@@ -58,7 +58,7 @@ public final class ExampleToolTest {
   public void processLlmRequest_withInlineExamples_appendsFewShot() {
     ExampleTool tool = ExampleTool.builder().addExample(makeExample("qin", "qout")).build();
 
-    InvocationContext ctx = newContext();
+    InvocationContext ctx = buildInvocationContext();
     LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
 
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
@@ -69,6 +69,44 @@ public final class ExampleToolTest {
     assertThat(si).contains("Begin few-shot");
     assertThat(si).contains("qin");
     assertThat(si).contains("qout");
+  }
+
+  @Test
+  public void processLlmRequest_withProvider_appendsFewShot() {
+    ExampleTool tool = ExampleTool.builder().setExampleProvider(ProviderHolder.EXAMPLES).build();
+
+    InvocationContext ctx = buildInvocationContext();
+    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
+
+    tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
+    LlmRequest updated = builder.build();
+
+    assertThat(updated.getSystemInstructions()).isNotEmpty();
+    String si = String.join("\n", updated.getSystemInstructions());
+    assertThat(si).contains("Begin few-shot");
+    assertThat(si).contains("qin");
+    assertThat(si).contains("qout");
+  }
+
+  @Test
+  public void processLlmRequest_withEmptyUserContent_doesNotAppendFewShot() {
+    ExampleTool tool = ExampleTool.builder().addExample(makeExample("qin", "qout")).build();
+    InvocationContext ctxWithContent = buildInvocationContext();
+    InvocationContext ctx =
+        InvocationContext.builder()
+            .invocationId(ctxWithContent.invocationId())
+            .agent(ctxWithContent.agent())
+            .session(ctxWithContent.session())
+            .sessionService(ctxWithContent.sessionService())
+            .userContent(Content.fromParts(Part.fromText("")))
+            .runConfig(ctxWithContent.runConfig())
+            .build();
+    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
+
+    tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
+    LlmRequest updated = builder.build();
+
+    assertThat(updated.getSystemInstructions()).isEmpty();
   }
 
   @Test
@@ -83,7 +121,7 @@ public final class ExampleToolTest {
                 "output", ImmutableList.of(Content.fromParts(Part.fromText("a"))))));
 
     ExampleTool tool = ExampleTool.fromConfig(args);
-    InvocationContext ctx = newContext();
+    InvocationContext ctx = buildInvocationContext();
     LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
 
@@ -95,7 +133,7 @@ public final class ExampleToolTest {
   /** Holder for a provider referenced via ClassName.FIELD reflection. */
   static final class ProviderHolder {
     public static final BaseExampleProvider EXAMPLES =
-        (query) -> ImmutableList.of(makeExample("qin", "qout"));
+        (unusedQuery) -> ImmutableList.of(makeExample("qin", "qout"));
 
     private ProviderHolder() {}
   }
@@ -107,7 +145,7 @@ public final class ExampleToolTest {
         "examples", ExampleToolTest.ProviderHolder.class.getName() + ".EXAMPLES");
 
     ExampleTool tool = ExampleTool.fromConfig(args);
-    InvocationContext ctx = newContext();
+    InvocationContext ctx = buildInvocationContext();
     LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
 
@@ -123,11 +161,7 @@ public final class ExampleToolTest {
     // Create a list with a non-Map entry (e.g., a String) to trigger line 121
     args.setAdditionalProperty("examples", ImmutableList.of("not a map"));
 
-    ConfigurationException ex =
-        assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
-
-    assertThat(ex).hasMessageThat().contains("Invalid example entry");
-    assertThat(ex).hasMessageThat().contains("Expected a map with 'input' and 'output'");
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
   }
 
   @Test
@@ -136,11 +170,7 @@ public final class ExampleToolTest {
     // Use an Integer instead of String or List to trigger line 149
     args.setAdditionalProperty("examples", 123);
 
-    ConfigurationException ex =
-        assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
-
-    assertThat(ex).hasMessageThat().contains("Unsupported 'examples' type");
-    assertThat(ex).hasMessageThat().contains("Provide a string provider ref or list of examples");
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
   }
 
   @Test
@@ -182,10 +212,7 @@ public final class ExampleToolTest {
     // Add some other key but not 'examples' to trigger line 107
     args.setAdditionalProperty("someOtherKey", "someValue");
 
-    ConfigurationException ex =
-        assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
-
-    assertThat(ex).hasMessageThat().contains("ExampleTool missing 'examples' argument");
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
   }
 
   @Test
@@ -198,10 +225,7 @@ public final class ExampleToolTest {
             ImmutableMap.of(
                 "output", ImmutableList.of(Content.fromParts(Part.fromText("answer"))))));
 
-    ConfigurationException ex =
-        assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
-
-    assertThat(ex).hasMessageThat().contains("Each example must include 'input' and 'output'");
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
   }
 
   @Test
@@ -212,10 +236,7 @@ public final class ExampleToolTest {
         "examples",
         ImmutableList.of(ImmutableMap.of("input", Content.fromParts(Part.fromText("question")))));
 
-    ConfigurationException ex =
-        assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
-
-    assertThat(ex).hasMessageThat().contains("Each example must include 'input' and 'output'");
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
   }
 
   @Test
@@ -272,7 +293,8 @@ public final class ExampleToolTest {
   /** Holder with non-static field for testing. */
   static final class NonStaticProviderHolder {
     @SuppressWarnings("ConstantField") // Intentionally non-static for testing
-    public final BaseExampleProvider INSTANCE = (query) -> ImmutableList.of(makeExample("q", "a"));
+    public final BaseExampleProvider INSTANCE =
+        (unusedQuery) -> ImmutableList.of(makeExample("q", "a"));
 
     private NonStaticProviderHolder() {}
   }

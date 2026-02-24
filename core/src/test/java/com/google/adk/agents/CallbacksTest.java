@@ -24,18 +24,25 @@ import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
+import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.plugins.Plugin;
+import com.google.adk.plugins.PluginManager;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.List;
@@ -54,7 +61,7 @@ public final class CallbacksTest {
     TestLlm testLlm = createTestLlm(createLlmResponse(modelContent));
     LlmAgent agent =
         createTestAgentBuilder(testLlm)
-            .beforeAgentCallback(context -> Maybe.just(beforeAgentContent))
+            .beforeAgentCallback(unusedContext -> Maybe.just(beforeAgentContent))
             .build();
     InvocationContext invocationContext = createInvocationContext(agent);
 
@@ -71,7 +78,7 @@ public final class CallbacksTest {
     TestLlm testLlm = createTestLlm(createLlmResponse(modelContent));
     LlmAgent agent =
         createTestAgentBuilder(testLlm)
-            .afterAgentCallback(context -> Maybe.just(afterAgentContent))
+            .afterAgentCallback(unusedContext -> Maybe.just(afterAgentContent))
             .build();
     InvocationContext invocationContext = createInvocationContext(agent);
 
@@ -89,7 +96,7 @@ public final class CallbacksTest {
     LlmAgent agent =
         createTestAgentBuilder(testLlm)
             .beforeAgentCallback(
-                callbackContext ->
+                unusedCallbackContext ->
                     // No state modification, no content returned
                     Maybe.empty())
             .build();
@@ -202,10 +209,10 @@ public final class CallbacksTest {
     LlmAgent agent =
         createTestAgentBuilder(testLlm)
             .beforeAgentCallback(
-                callbackContext ->
+                unusedCallbackContext ->
                     Maybe.<Content>empty().delay(10, MILLISECONDS, Schedulers.computation()))
             .afterAgentCallback(
-                callbackContext ->
+                unusedCallbackContext ->
                     Maybe.just(Content.fromParts(Part.fromText("async after agent content")))
                         .delay(10, MILLISECONDS, Schedulers.computation()))
             .build();
@@ -228,9 +235,9 @@ public final class CallbacksTest {
 
     LlmAgent agent =
         createTestAgentBuilder(testLlm)
-            .beforeAgentCallbackSync(callbackContext -> Optional.empty())
+            .beforeAgentCallbackSync(unusedCallbackContext -> Optional.empty())
             .afterAgentCallbackSync(
-                callbackContext ->
+                unusedCallbackContext ->
                     Optional.of(Content.fromParts(Part.fromText("sync after agent content"))))
             .build();
     InvocationContext invocationContext = createInvocationContext(agent);
@@ -400,7 +407,7 @@ public final class CallbacksTest {
     LlmAgent agent =
         createTestAgentBuilder(testLlm)
             .beforeModelCallback(
-                (context, request) ->
+                (unusedContext, unusedRequest) ->
                     Maybe.just(LlmResponse.builder().content(callbackContent).build()))
             .build();
     InvocationContext invocationContext = createInvocationContext(agent);
@@ -418,7 +425,7 @@ public final class CallbacksTest {
     LlmAgent agent =
         createTestAgentBuilder(testLlm)
             .beforeModelCallback(
-                (context, requestBuilder) -> {
+                (unusedContext, requestBuilder) -> {
                   requestBuilder.contents(
                       ImmutableList.of(Content.fromParts(Part.fromText("Modified request"))));
                   return Maybe.empty();
@@ -441,7 +448,7 @@ public final class CallbacksTest {
     LlmAgent agent =
         createTestAgentBuilder(testLlm)
             .afterModelCallback(
-                (context, response) ->
+                (unusedContext, response) ->
                     Maybe.just(addPartToResponse(response, textPartFromCallback)))
             .build();
     InvocationContext invocationContext = createInvocationContext(agent);
@@ -463,7 +470,7 @@ public final class CallbacksTest {
     LlmAgent agent =
         createTestAgentBuilder(testLlm)
             .beforeModelCallback(
-                (callbackContext, request) -> {
+                (callbackContext, unusedRequest) -> {
                   assertThat(callbackContext.invocationId()).isNotEmpty();
                   assertThat(callbackContext.agentName()).isEqualTo("test agent");
                   return Maybe.empty();
@@ -498,18 +505,20 @@ public final class CallbacksTest {
         createTestAgentBuilder(testLlm)
             .beforeModelCallback(
                 ImmutableList.of(
-                    (Callbacks.BeforeModelCallbackSync) (context, request) -> Optional.empty(),
+                    (Callbacks.BeforeModelCallbackSync)
+                        (unusedContext, unusedRequest) -> Optional.empty(),
                     (Callbacks.BeforeModelCallback)
-                        (context, request) ->
+                        (unusedContext, unusedRequest) ->
                             Maybe.just(
                                 LlmResponse.builder()
                                     .content(contentFromSecondBeforeCallback)
                                     .build())))
             .afterModelCallback(
                 ImmutableList.of(
-                    (Callbacks.AfterModelCallbackSync) (context, response) -> Optional.empty(),
+                    (Callbacks.AfterModelCallbackSync)
+                        (unusedContext, unusedResponse) -> Optional.empty(),
                     (Callbacks.AfterModelCallback)
-                        (context, response) ->
+                        (unusedContext, unusedResponse) ->
                             Maybe.just(
                                 LlmResponse.builder()
                                     .content(contentFromSecondAfterCallback)
@@ -535,13 +544,16 @@ public final class CallbacksTest {
         createTestAgentBuilder(testLlm)
             .beforeModelCallback(
                 ImmutableList.of(
-                    (Callbacks.BeforeModelCallbackSync) (context, request) -> Optional.empty(),
-                    (Callbacks.BeforeModelCallback) (context, request) -> Maybe.empty()))
+                    (Callbacks.BeforeModelCallbackSync)
+                        (unusedContext, unusedRequest) -> Optional.empty(),
+                    (Callbacks.BeforeModelCallback)
+                        (unusedContext, unusedRequest) -> Maybe.empty()))
             .afterModelCallback(
                 ImmutableList.of(
-                    (Callbacks.AfterModelCallbackSync) (context, response) -> Optional.empty(),
+                    (Callbacks.AfterModelCallbackSync)
+                        (unusedContext, unusedResponse) -> Optional.empty(),
                     (Callbacks.AfterModelCallback)
-                        (context, response) ->
+                        (unusedContext, unusedResponse) ->
                             Maybe.just(
                                 LlmResponse.builder()
                                     .content(contentFromSecondAfterCallback)
@@ -577,7 +589,7 @@ public final class CallbacksTest {
         createInvocationContext(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
                 .beforeToolCallback(
-                    (invocationContext1, tool, args, toolContext) ->
+                    (unusedInvocationContext1, unusedTool, unusedArgs, unusedToolContext) ->
                         Maybe.just(beforeToolCallbackResult))
                 .build());
     Event event =
@@ -620,7 +632,9 @@ public final class CallbacksTest {
     InvocationContext invocationContext =
         createInvocationContext(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
-                .beforeToolCallback((invocationContext1, tool, args, toolContext) -> Maybe.empty())
+                .beforeToolCallback(
+                    (unusedInvocationContext1, unusedTool, unusedArgs, unusedToolContext) ->
+                        Maybe.empty())
                 .build());
     Event event =
         createEvent("event").toBuilder()
@@ -663,7 +677,7 @@ public final class CallbacksTest {
         createInvocationContext(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
                 .beforeToolCallbackSync(
-                    (invocationContext1, tool, args, toolContext) ->
+                    (unusedInvocationContext1, unusedTool, unusedArgs, unusedToolContext) ->
                         Optional.of(beforeToolCallbackResult))
                 .build());
     Event event =
@@ -707,7 +721,8 @@ public final class CallbacksTest {
         createInvocationContext(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
                 .beforeToolCallbackSync(
-                    (invocationContext1, tool, args, toolContext) -> Optional.empty())
+                    (unusedInvocationContext1, unusedTool, unusedArgs, unusedToolContext) ->
+                        Optional.empty())
                 .build());
     Event event =
         createEvent("event").toBuilder()
@@ -748,7 +763,11 @@ public final class CallbacksTest {
         createInvocationContext(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
                 .afterToolCallback(
-                    (invocationContext1, tool, args, toolContext, response) ->
+                    (unusedInvocationContext1,
+                        unusedTool,
+                        unusedArgs,
+                        unusedToolContext,
+                        response) ->
                         Maybe.just(
                             ImmutableMap.<String, Object>of(
                                 "after_tool_callback_result", response)))
@@ -795,7 +814,11 @@ public final class CallbacksTest {
         createInvocationContext(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
                 .afterToolCallback(
-                    (invocationContext1, tool, args, toolContext, response) -> Maybe.empty())
+                    (unusedInvocationContext1,
+                        unusedTool,
+                        unusedArgs,
+                        unusedToolContext,
+                        unusedResponse) -> Maybe.empty())
                 .build());
     Event event =
         createEvent("event").toBuilder()
@@ -836,7 +859,11 @@ public final class CallbacksTest {
         createInvocationContext(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
                 .afterToolCallbackSync(
-                    (invocationContext1, tool, args, toolContext, response) ->
+                    (unusedInvocationContext1,
+                        unusedTool,
+                        unusedArgs,
+                        unusedToolContext,
+                        response) ->
                         Optional.of(
                             ImmutableMap.<String, Object>of(
                                 "after_tool_callback_result", response)))
@@ -883,7 +910,11 @@ public final class CallbacksTest {
         createInvocationContext(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
                 .afterToolCallbackSync(
-                    (invocationContext1, tool, args, toolContext, response) -> Optional.empty())
+                    (unusedInvocationContext1,
+                        unusedTool,
+                        unusedArgs,
+                        unusedToolContext,
+                        unusedResponse) -> Optional.empty())
                 .build());
     Event event =
         createEvent("event").toBuilder()
@@ -925,12 +956,16 @@ public final class CallbacksTest {
         createInvocationContext(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
                 .beforeToolCallback(
-                    (invocationContext1, tool, args, toolContext) ->
+                    (unusedInvocationContext1, unusedTool, unusedArgs, unusedToolContext) ->
                         Maybe.just(
                             ImmutableMap.<String, Object>of(
                                 "before_tool_callback_result", "value")))
                 .afterToolCallback(
-                    (invocationContext1, tool, args, toolContext, response) ->
+                    (unusedInvocationContext1,
+                        unusedTool,
+                        unusedArgs,
+                        unusedToolContext,
+                        response) ->
                         Maybe.just(
                             ImmutableMap.<String, Object>of(
                                 "after_tool_callback_result", response)))
@@ -983,10 +1018,10 @@ public final class CallbacksTest {
         ImmutableMap.of("ac2_response_key", "ac2_response_value");
 
     Callbacks.BeforeToolCallbackSync bc1 =
-        (invCtx, toolName, args, currentToolCtx) -> Optional.empty();
+        (unusedInvCtx, unusedToolName, unusedArgs, unusedCurrentToolCtx) -> Optional.empty();
 
     Callbacks.BeforeToolCallbackSync bc2 =
-        (invCtx, toolName, args, currentToolCtx) -> {
+        (unusedInvCtx, unusedToolName, unusedArgs, currentToolCtx) -> {
           currentToolCtx.state().putAll(stateAddedByBc2);
           return Optional.empty();
         };
@@ -994,10 +1029,12 @@ public final class CallbacksTest {
     TestUtils.EchoTool echoTool = new TestUtils.EchoTool();
 
     Callbacks.AfterToolCallbackSync ac1 =
-        (invCtx, toolName, args, currentToolCtx, responseFromTool) -> Optional.empty();
+        (unusedInvCtx, unusedToolName, unusedArgs, unusedCurrentToolCtx, unusedResponseFromTool) ->
+            Optional.empty();
 
     Callbacks.AfterToolCallbackSync ac2 =
-        (invCtx, toolName, args, currentToolCtx, responseFromTool) -> Optional.of(responseFromAc2);
+        (unusedInvCtx, unusedToolName, unusedArgs, unusedCurrentToolCtx, unusedResponseFromTool) ->
+            Optional.of(responseFromAc2);
 
     InvocationContext invocationContext =
         createInvocationContext(
@@ -1021,6 +1058,125 @@ public final class CallbacksTest {
   }
 
   @Test
+  public void
+      handleFunctionCalls_withChainedBeforeToolCallbacks_firstModifiesArgsSecondReturnsResponse() {
+    ImmutableMap<String, Object> originalArgs = ImmutableMap.of("arg1", "val1");
+    ImmutableMap<String, Object> modifiedArgsByCb1 =
+        ImmutableMap.of("arg1", "val1", "arg2", "val2");
+    ImmutableMap<String, Object> responseFromCb2 = ImmutableMap.of("result", "from cb2");
+
+    Callbacks.BeforeToolCallbackSync cb1 =
+        (invocationContext, tool, input, toolContext) -> {
+          input.put("arg2", "val2");
+          return Optional.empty();
+        };
+
+    Callbacks.BeforeToolCallbackSync cb2 =
+        (invocationContext, tool, input, toolContext) -> {
+          if (input.equals(modifiedArgsByCb1)) {
+            return Optional.of(responseFromCb2);
+          }
+          return Optional.empty();
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+                .beforeToolCallback(ImmutableList.of(cb1, cb2))
+                .build());
+
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromText("..."),
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id("fc_id")
+                                .name("echo_tool")
+                                .args(originalArgs)
+                                .build())
+                        .build()))
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(
+                invocationContext,
+                event,
+                ImmutableMap.of("echo_tool", new TestUtils.FailingEchoTool()))
+            .blockingGet();
+
+    assertThat(getFunctionResponse(functionResponseEvent)).isEqualTo(responseFromCb2);
+  }
+
+  @Test
+  public void
+      handleFunctionCalls_withPluginAndAgentBeforeToolCallbacks_pluginModifiesArgsAgentSeesThem() {
+    ImmutableMap<String, Object> originalArgs = ImmutableMap.of("arg1", "val1");
+    ImmutableMap<String, Object> modifiedArgsByPlugin =
+        ImmutableMap.of("arg1", "val1", "arg2", "val2");
+    ImmutableMap<String, Object> responseFromAgentCb = ImmutableMap.of("result", "from agent cb");
+
+    Plugin testPlugin =
+        new Plugin() {
+          @Override
+          public String getName() {
+            return "test_plugin";
+          }
+
+          @Override
+          public Maybe<Map<String, Object>> beforeToolCallback(
+              BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext) {
+            toolArgs.put("arg2", "val2");
+            return Maybe.empty();
+          }
+        };
+
+    Callbacks.BeforeToolCallbackSync agentCb =
+        (invocationContext, tool, input, toolContext) -> {
+          if (input.equals(modifiedArgsByPlugin)) {
+            return Optional.of(responseFromAgentCb);
+          }
+          return Optional.empty();
+        };
+
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .beforeToolCallbackSync(agentCb)
+            .build();
+
+    InvocationContext invocationContext =
+        createInvocationContext(agent).toBuilder()
+            .pluginManager(new PluginManager(ImmutableList.of(testPlugin)))
+            .build();
+
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromText("..."),
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id("fc_id")
+                                .name("echo_tool")
+                                .args(originalArgs)
+                                .build())
+                        .build()))
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(
+                invocationContext,
+                event,
+                ImmutableMap.of("echo_tool", new TestUtils.FailingEchoTool()))
+            .blockingGet();
+
+    assertThat(getFunctionResponse(functionResponseEvent)).isEqualTo(responseFromAgentCb);
+  }
+
+  @Test
   public void agentRunAsync_withToolCallbacks_inspectsArgsAndReturnsResponse() {
     TestUtils.EchoTool echoTool = new TestUtils.EchoTool();
     String toolName = echoTool.declaration().get().name().get();
@@ -1040,13 +1196,13 @@ public final class CallbacksTest {
         ImmutableMap.of("final_wrapper", "wrapped_value_from_after_callback");
 
     Callbacks.BeforeToolCallback beforeToolCb =
-        (invCtx, tName, args, toolCtx) -> {
+        (unusedInvCtx, unusedTName, args, unusedToolCtx) -> {
           assertThat(args).isEqualTo(functionArgs);
           return Maybe.empty();
         };
 
     Callbacks.AfterToolCallback afterToolCb =
-        (invCtx, tName, args, toolCtx, toolResponse) -> {
+        (unusedInvCtx, unusedTName, args, unusedToolCtx, toolResponse) -> {
           assertThat(args).isEqualTo(functionArgs);
           assertThat(toolResponse).isEqualTo(ImmutableMap.of("result", functionArgs));
           return Maybe.just(responseFromAfterToolCallback);
@@ -1100,6 +1256,336 @@ public final class CallbacksTest {
         .get()
         .response()
         .get();
+  }
+
+  @Test
+  public void testRun_withMultipleOnModelErrorCallbacks_firstReturnsResponse() {
+    Exception modelError = new RuntimeException("Model failed");
+    Content overrideContent1 = Content.fromParts(Part.fromText("Override 1"));
+    Content overrideContent2 = Content.fromParts(Part.fromText("Override 2"));
+    TestLlm testLlm = createTestLlm(Flowable.error(modelError));
+
+    Callbacks.OnModelErrorCallback cb1 = (unusedCtx, unusedReq, unusedErr) -> Maybe.empty();
+    Callbacks.OnModelErrorCallback cb2 =
+        (unusedCtx, unusedReq, unusedErr) ->
+            Maybe.just(LlmResponse.builder().content(overrideContent1).build());
+    Callbacks.OnModelErrorCallback cb3 =
+        (unusedCtx, unusedReq, unusedErr) ->
+            Maybe.just(LlmResponse.builder().content(overrideContent2).build());
+
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .onModelErrorCallback(ImmutableList.of(cb1, cb2, cb3))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).content()).hasValue(overrideContent1);
+  }
+
+  @Test
+  public void testRun_withOnModelErrorCallback_returnsEmpty_propagatesError() {
+    Exception modelError = new RuntimeException("Model failed");
+    TestLlm testLlm = createTestLlm(Flowable.error(modelError));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .onModelErrorCallback((unusedContext, unusedRequest, unusedError) -> Maybe.empty())
+            .build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    assertThrows(RuntimeException.class, () -> agent.runAsync(invocationContext).blockingFirst());
+  }
+
+  @Test
+  public void testRun_withPluginAndAgentOnModelErrorCallback_pluginTakesPrecedence() {
+    Exception modelError = new RuntimeException("Model failed");
+    Content pluginOverride = Content.fromParts(Part.fromText("Plugin override"));
+    Content agentOverride = Content.fromParts(Part.fromText("Agent override"));
+    TestLlm testLlm = createTestLlm(Flowable.error(modelError));
+
+    Plugin testPlugin =
+        new Plugin() {
+          @Override
+          public String getName() {
+            return "test_plugin";
+          }
+
+          @Override
+          public Maybe<LlmResponse> onModelErrorCallback(
+              CallbackContext unusedCtx, LlmRequest.Builder unusedReq, Throwable unusedErr) {
+            return Maybe.just(LlmResponse.builder().content(pluginOverride).build());
+          }
+        };
+
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .onModelErrorCallback(
+                (unusedCtx, unusedReq, unusedErr) ->
+                    Maybe.just(LlmResponse.builder().content(agentOverride).build()))
+            .build();
+
+    InvocationContext invocationContext =
+        createInvocationContext(agent).toBuilder()
+            .pluginManager(new PluginManager(ImmutableList.of(testPlugin)))
+            .build();
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).content()).hasValue(pluginOverride);
+  }
+
+  @Test
+  public void testRun_withOnModelErrorCallback_returnsOverrideResponse() {
+    Exception modelError = new RuntimeException("Model failed");
+    Content overrideContent = Content.fromParts(Part.fromText("Override error response"));
+    TestLlm testLlm = createTestLlm(Flowable.error(modelError));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .onModelErrorCallback(
+                (unusedContext, unusedRequest, error) -> {
+                  assertThat(error).isEqualTo(modelError);
+                  return Maybe.just(LlmResponse.builder().content(overrideContent).build());
+                })
+            .build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).content()).hasValue(overrideContent);
+  }
+
+  @Test
+  public void testRun_withOnModelErrorCallbackSync_returnsOverrideResponse() {
+    Exception modelError = new RuntimeException("Model failed");
+    Content overrideContent = Content.fromParts(Part.fromText("Sync override error response"));
+    TestLlm testLlm = createTestLlm(Flowable.error(modelError));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .onModelErrorCallbackSync(
+                (unusedContext, unusedRequest, error) -> {
+                  assertThat(error).isEqualTo(modelError);
+                  return Optional.of(LlmResponse.builder().content(overrideContent).build());
+                })
+            .build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).content()).hasValue(overrideContent);
+  }
+
+  @Test
+  public void testRun_withMultipleOnToolErrorCallbacks_firstReturnsResult() {
+    ImmutableMap<String, Object> overrideResult1 = ImmutableMap.of("result", "Override 1");
+    ImmutableMap<String, Object> overrideResult2 = ImmutableMap.of("result", "Override 2");
+
+    TestUtils.EchoTool echoTool = new TestUtils.EchoTool();
+    String toolName = echoTool.declaration().get().name().get();
+    ImmutableMap<String, Object> functionArgs = ImmutableMap.of("message", "hello");
+
+    Content llmFunctionCallContent =
+        Content.builder()
+            .role("model")
+            .parts(ImmutableList.of(Part.fromFunctionCall(toolName, functionArgs)))
+            .build();
+    Content llmFinalContent = Content.fromParts(Part.fromText("final response"));
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(llmFunctionCallContent), createLlmResponse(llmFinalContent));
+
+    Callbacks.OnToolErrorCallback cb1 =
+        (unusedCtx, unusedTool, unusedArgs, unusedTCtx, unusedErr) -> Maybe.empty();
+    Callbacks.OnToolErrorCallback cb2 =
+        (unusedCtx, unusedTool, unusedArgs, unusedTCtx, unusedErr) -> Maybe.just(overrideResult1);
+    Callbacks.OnToolErrorCallback cb3 =
+        (unusedCtx, unusedTool, unusedArgs, unusedTCtx, unusedErr) -> Maybe.just(overrideResult2);
+
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .tools(ImmutableList.of(new TestUtils.FailingEchoTool()))
+            .onToolErrorCallback(ImmutableList.of(cb1, cb2, cb3))
+            .build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    // 0: function call
+    // 1: function response (the overridden one)
+    var functionResponse = getFunctionResponse(events.get(1));
+    assertThat(functionResponse).isEqualTo(overrideResult1);
+  }
+
+  @Test
+  public void testRun_withOnToolErrorCallback_returnsEmpty_propagatesError() {
+    TestUtils.EchoTool echoTool = new TestUtils.EchoTool();
+    String toolName = echoTool.declaration().get().name().get();
+    Content llmFunctionCallContent =
+        Content.builder()
+            .role("model")
+            .parts(ImmutableList.of(Part.fromFunctionCall(toolName, ImmutableMap.of())))
+            .build();
+    Content llmFinalContent = Content.fromParts(Part.fromText("final response"));
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(llmFunctionCallContent), createLlmResponse(llmFinalContent));
+
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .tools(ImmutableList.of(new TestUtils.FailingEchoTool()))
+            .onToolErrorCallback(
+                (unusedCtx, unusedTool, unusedArgs, unusedTCtx, unusedError) -> Maybe.empty())
+            .build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    assertThrows(RuntimeException.class, () -> agent.runAsync(invocationContext).blockingLast());
+  }
+
+  @Test
+  public void testRun_withPluginAndAgentOnToolErrorCallback_pluginTakesPrecedence() {
+    ImmutableMap<String, Object> pluginResult = ImmutableMap.of("result", "Plugin result");
+    ImmutableMap<String, Object> agentResult = ImmutableMap.of("result", "Agent result");
+
+    TestUtils.EchoTool echoTool = new TestUtils.EchoTool();
+    String toolName = echoTool.declaration().get().name().get();
+    Content llmFunctionCallContent =
+        Content.builder()
+            .role("model")
+            .parts(ImmutableList.of(Part.fromFunctionCall(toolName, ImmutableMap.of())))
+            .build();
+    Content llmFinalContent = Content.fromParts(Part.fromText("final response"));
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(llmFunctionCallContent), createLlmResponse(llmFinalContent));
+
+    Plugin testPlugin =
+        new Plugin() {
+          @Override
+          public String getName() {
+            return "test_plugin";
+          }
+
+          @Override
+          public Maybe<Map<String, Object>> onToolErrorCallback(
+              BaseTool unusedTool,
+              Map<String, Object> unusedArgs,
+              ToolContext unusedCtx,
+              Throwable unusedErr) {
+            return Maybe.just(pluginResult);
+          }
+        };
+
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .tools(ImmutableList.of(new TestUtils.FailingEchoTool()))
+            .onToolErrorCallback(
+                (unusedCtx, unusedTool, unusedArgs, unusedTCtx, unusedErr) ->
+                    Maybe.just(agentResult))
+            .build();
+
+    InvocationContext invocationContext =
+        createInvocationContext(agent).toBuilder()
+            .pluginManager(new PluginManager(ImmutableList.of(testPlugin)))
+            .build();
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    var functionResponse = getFunctionResponse(events.get(1));
+    assertThat(functionResponse).isEqualTo(pluginResult);
+  }
+
+  @Test
+  public void testRun_withOnToolErrorCallback_returnsOverrideResult() {
+    ImmutableMap<String, Object> overrideResult = ImmutableMap.of("result", "Override tool result");
+
+    TestUtils.EchoTool echoTool = new TestUtils.EchoTool();
+    String toolName = echoTool.declaration().get().name().get();
+    ImmutableMap<String, Object> functionArgs = ImmutableMap.of("message", "hello");
+
+    Content llmFunctionCallContent =
+        Content.builder()
+            .role("model")
+            .parts(ImmutableList.of(Part.fromFunctionCall(toolName, functionArgs)))
+            .build();
+    Content llmTextContent =
+        Content.builder().role("model").parts(ImmutableList.of(Part.fromText("hi there"))).build();
+
+    // Model returns function call, then later returns text
+    TestLlm testLlm =
+        createTestLlm(createLlmResponse(llmFunctionCallContent), createLlmResponse(llmTextContent));
+
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .tools(ImmutableList.of(new TestUtils.FailingEchoTool()))
+            .onToolErrorCallback(
+                (unusedInvCtx, unusedTool, args, unusedToolCtx, unusedError) -> {
+                  assertThat(args).isEqualTo(functionArgs);
+                  return Maybe.just(overrideResult);
+                })
+            .build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(3);
+    // 0: function call
+    // 1: function response (the overridden one)
+    var functionResponse = getFunctionResponse(events.get(1));
+    assertThat(functionResponse).isEqualTo(overrideResult);
+    // 2: final model response
+    assertThat(events.get(2).content()).hasValue(llmTextContent);
+  }
+
+  @Test
+  public void testRun_withOnToolErrorCallbackSync_returnsOverrideResult() {
+    Exception unusedToolError = new RuntimeException("Tool failed");
+    ImmutableMap<String, Object> overrideResult =
+        ImmutableMap.of("result", "Sync override tool result");
+
+    TestUtils.EchoTool echoTool = new TestUtils.EchoTool();
+    String toolName = echoTool.declaration().get().name().get();
+    ImmutableMap<String, Object> functionArgs = ImmutableMap.of("message", "hello");
+
+    Content llmFunctionCallContent =
+        Content.builder()
+            .role("model")
+            .parts(ImmutableList.of(Part.fromFunctionCall(toolName, functionArgs)))
+            .build();
+    Content llmTextContent =
+        Content.builder().role("model").parts(ImmutableList.of(Part.fromText("hi there"))).build();
+
+    // Model returns function call, then later returns text
+    TestLlm testLlm =
+        createTestLlm(createLlmResponse(llmFunctionCallContent), createLlmResponse(llmTextContent));
+
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .tools(ImmutableList.of(new TestUtils.FailingEchoTool()))
+            .onToolErrorCallbackSync(
+                (unusedInvCtx, unusedTool, args, unusedToolCtx, unusedError) -> {
+                  assertThat(args).isEqualTo(functionArgs);
+                  return Optional.of(overrideResult);
+                })
+            .build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(3);
+    // 0: function call
+    // 1: function response (the overridden one)
+    var functionResponse = getFunctionResponse(events.get(1));
+    assertThat(functionResponse).isEqualTo(overrideResult);
+    // 2: final model response
+    assertThat(events.get(2).content()).hasValue(llmTextContent);
   }
 
   private static FunctionCall getFunctionCall(Event functionCallEvent) {

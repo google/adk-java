@@ -55,8 +55,8 @@ public class PluginManagerTest {
   @Rule public MockitoRule mockitoRule = MockitoJUnit.rule();
 
   private final PluginManager pluginManager = new PluginManager();
-  @Mock private BasePlugin plugin1;
-  @Mock private BasePlugin plugin2;
+  @Mock private Plugin plugin1;
+  @Mock private Plugin plugin2;
   @Mock private InvocationContext mockInvocationContext;
   private final Content content = Content.builder().build();
   private final Session session = Session.builder("session_id").build();
@@ -92,25 +92,25 @@ public class PluginManagerTest {
   }
 
   @Test
-  public void runOnUserMessageCallback_noPlugins() {
-    pluginManager.runOnUserMessageCallback(mockInvocationContext, content).test().assertResult();
+  public void onUserMessageCallback_noPlugins() {
+    pluginManager.onUserMessageCallback(mockInvocationContext, content).test().assertResult();
   }
 
   @Test
-  public void runOnUserMessageCallback_allReturnEmpty() {
+  public void onUserMessageCallback_allReturnEmpty() {
     when(plugin1.onUserMessageCallback(any(), any())).thenReturn(Maybe.empty());
     when(plugin2.onUserMessageCallback(any(), any())).thenReturn(Maybe.empty());
     pluginManager.registerPlugin(plugin1);
     pluginManager.registerPlugin(plugin2);
 
-    pluginManager.runOnUserMessageCallback(mockInvocationContext, content).test().assertResult();
+    pluginManager.onUserMessageCallback(mockInvocationContext, content).test().assertResult();
 
     verify(plugin1).onUserMessageCallback(mockInvocationContext, content);
     verify(plugin2).onUserMessageCallback(mockInvocationContext, content);
   }
 
   @Test
-  public void runOnUserMessageCallback_plugin1ReturnsValue_earlyExit() {
+  public void onUserMessageCallback_plugin1ReturnsValue_earlyExit() {
     Content expectedContent = Content.builder().build();
     when(plugin1.onUserMessageCallback(any(), any())).thenReturn(Maybe.just(expectedContent));
     when(plugin2.onUserMessageCallback(any(), any())).thenReturn(Maybe.empty());
@@ -118,7 +118,7 @@ public class PluginManagerTest {
     pluginManager.registerPlugin(plugin2);
 
     pluginManager
-        .runOnUserMessageCallback(mockInvocationContext, content)
+        .onUserMessageCallback(mockInvocationContext, content)
         .test()
         .assertResult(expectedContent);
 
@@ -127,7 +127,7 @@ public class PluginManagerTest {
   }
 
   @Test
-  public void runOnUserMessageCallback_pluginOrderRespected() {
+  public void onUserMessageCallback_pluginOrderRespected() {
     Content expectedContent = Content.builder().build();
     when(plugin1.onUserMessageCallback(any(), any())).thenReturn(Maybe.empty());
     when(plugin2.onUserMessageCallback(any(), any())).thenReturn(Maybe.just(expectedContent));
@@ -135,7 +135,7 @@ public class PluginManagerTest {
     pluginManager.registerPlugin(plugin2);
 
     pluginManager
-        .runOnUserMessageCallback(mockInvocationContext, content)
+        .onUserMessageCallback(mockInvocationContext, content)
         .test()
         .assertResult(expectedContent);
 
@@ -145,33 +145,33 @@ public class PluginManagerTest {
   }
 
   @Test
-  public void runAfterRunCallback_allComplete() {
+  public void afterRunCallback_allComplete() {
     when(plugin1.afterRunCallback(any())).thenReturn(Completable.complete());
     when(plugin2.afterRunCallback(any())).thenReturn(Completable.complete());
     pluginManager.registerPlugin(plugin1);
     pluginManager.registerPlugin(plugin2);
 
-    pluginManager.runAfterRunCallback(mockInvocationContext).test().assertResult();
+    pluginManager.afterRunCallback(mockInvocationContext).test().assertResult();
 
     verify(plugin1).afterRunCallback(mockInvocationContext);
     verify(plugin2).afterRunCallback(mockInvocationContext);
   }
 
   @Test
-  public void runAfterRunCallback_plugin1Fails() {
+  public void afterRunCallback_plugin1Fails() {
     RuntimeException testException = new RuntimeException("Test");
     when(plugin1.afterRunCallback(any())).thenReturn(Completable.error(testException));
     pluginManager.registerPlugin(plugin1);
     pluginManager.registerPlugin(plugin2);
 
-    pluginManager.runAfterRunCallback(mockInvocationContext).test().assertError(testException);
+    pluginManager.afterRunCallback(mockInvocationContext).test().assertError(testException);
 
     verify(plugin1).afterRunCallback(mockInvocationContext);
     verify(plugin2, never()).afterRunCallback(any());
   }
 
   @Test
-  public void runBeforeAgentCallback_plugin2ReturnsValue() {
+  public void beforeAgentCallback_plugin2ReturnsValue() {
     BaseAgent mockAgent = mock(BaseAgent.class);
     CallbackContext mockCallbackContext = mock(CallbackContext.class);
     Content expectedContent = Content.builder().build();
@@ -182,7 +182,7 @@ public class PluginManagerTest {
     pluginManager.registerPlugin(plugin2);
 
     pluginManager
-        .runBeforeAgentCallback(mockAgent, mockCallbackContext)
+        .beforeAgentCallback(mockAgent, mockCallbackContext)
         .test()
         .assertResult(expectedContent);
 
@@ -191,33 +191,30 @@ public class PluginManagerTest {
   }
 
   @Test
-  public void runBeforeRunCallback_singlePlugin() {
+  public void beforeRunCallback_singlePlugin() {
     Content expectedContent = Content.builder().build();
 
     when(plugin1.beforeRunCallback(any())).thenReturn(Maybe.just(expectedContent));
     pluginManager.registerPlugin(plugin1);
 
-    pluginManager.runBeforeRunCallback(mockInvocationContext).test().assertResult(expectedContent);
+    pluginManager.beforeRunCallback(mockInvocationContext).test().assertResult(expectedContent);
 
     verify(plugin1).beforeRunCallback(mockInvocationContext);
   }
 
   @Test
-  public void runOnEventCallback_singlePlugin() {
+  public void onEventCallback_singlePlugin() {
     Event mockEvent = mock(Event.class);
     when(plugin1.onEventCallback(any(), any())).thenReturn(Maybe.just(mockEvent));
     pluginManager.registerPlugin(plugin1);
 
-    pluginManager
-        .runOnEventCallback(mockInvocationContext, mockEvent)
-        .test()
-        .assertResult(mockEvent);
+    pluginManager.onEventCallback(mockInvocationContext, mockEvent).test().assertResult(mockEvent);
 
     verify(plugin1).onEventCallback(mockInvocationContext, mockEvent);
   }
 
   @Test
-  public void runAfterAgentCallback_singlePlugin() {
+  public void afterAgentCallback_singlePlugin() {
     BaseAgent mockAgent = mock(BaseAgent.class);
     CallbackContext mockCallbackContext = mock(CallbackContext.class);
     Content expectedContent = Content.builder().build();
@@ -226,7 +223,7 @@ public class PluginManagerTest {
     pluginManager.registerPlugin(plugin1);
 
     pluginManager
-        .runAfterAgentCallback(mockAgent, mockCallbackContext)
+        .afterAgentCallback(mockAgent, mockCallbackContext)
         .test()
         .assertResult(expectedContent);
 
@@ -234,24 +231,24 @@ public class PluginManagerTest {
   }
 
   @Test
-  public void runBeforeModelCallback_singlePlugin() {
+  public void beforeModelCallback_singlePlugin() {
     CallbackContext mockCallbackContext = mock(CallbackContext.class);
-    LlmRequest llmRequest = LlmRequest.builder().build();
+    LlmRequest.Builder llmRequestBuilder = LlmRequest.builder();
     LlmResponse llmResponse = LlmResponse.builder().build();
 
     when(plugin1.beforeModelCallback(any(), any())).thenReturn(Maybe.just(llmResponse));
     pluginManager.registerPlugin(plugin1);
 
     pluginManager
-        .runBeforeModelCallback(mockCallbackContext, llmRequest)
+        .beforeModelCallback(mockCallbackContext, llmRequestBuilder)
         .test()
         .assertResult(llmResponse);
 
-    verify(plugin1).beforeModelCallback(mockCallbackContext, llmRequest);
+    verify(plugin1).beforeModelCallback(mockCallbackContext, llmRequestBuilder);
   }
 
   @Test
-  public void runAfterModelCallback_singlePlugin() {
+  public void afterModelCallback_singlePlugin() {
     CallbackContext mockCallbackContext = mock(CallbackContext.class);
     LlmResponse llmResponse = LlmResponse.builder().build();
 
@@ -259,7 +256,7 @@ public class PluginManagerTest {
     pluginManager.registerPlugin(plugin1);
 
     pluginManager
-        .runAfterModelCallback(mockCallbackContext, llmResponse)
+        .afterModelCallback(mockCallbackContext, llmResponse)
         .test()
         .assertResult(llmResponse);
 
@@ -267,9 +264,9 @@ public class PluginManagerTest {
   }
 
   @Test
-  public void runOnModelErrorCallback_singlePlugin() {
+  public void onModelErrorCallback_singlePlugin() {
     CallbackContext mockCallbackContext = mock(CallbackContext.class);
-    LlmRequest llmRequest = LlmRequest.builder().build();
+    LlmRequest.Builder llmRequestBuilder = LlmRequest.builder();
     Throwable mockThrowable = mock(Throwable.class);
     LlmResponse llmResponse = LlmResponse.builder().build();
 
@@ -277,15 +274,15 @@ public class PluginManagerTest {
     pluginManager.registerPlugin(plugin1);
 
     pluginManager
-        .runOnModelErrorCallback(mockCallbackContext, llmRequest, mockThrowable)
+        .onModelErrorCallback(mockCallbackContext, llmRequestBuilder, mockThrowable)
         .test()
         .assertResult(llmResponse);
 
-    verify(plugin1).onModelErrorCallback(mockCallbackContext, llmRequest, mockThrowable);
+    verify(plugin1).onModelErrorCallback(mockCallbackContext, llmRequestBuilder, mockThrowable);
   }
 
   @Test
-  public void runBeforeToolCallback_singlePlugin() {
+  public void beforeToolCallback_singlePlugin() {
     BaseTool mockTool = mock(BaseTool.class);
     ImmutableMap<String, Object> toolArgs = ImmutableMap.of();
     ToolContext mockToolContext = mock(ToolContext.class);
@@ -294,7 +291,7 @@ public class PluginManagerTest {
     pluginManager.registerPlugin(plugin1);
 
     pluginManager
-        .runBeforeToolCallback(mockTool, toolArgs, mockToolContext)
+        .beforeToolCallback(mockTool, toolArgs, mockToolContext)
         .test()
         .assertResult(toolArgs);
 
@@ -302,7 +299,7 @@ public class PluginManagerTest {
   }
 
   @Test
-  public void runAfterToolCallback_singlePlugin() {
+  public void afterToolCallback_singlePlugin() {
     BaseTool mockTool = mock(BaseTool.class);
     ImmutableMap<String, Object> toolArgs = ImmutableMap.of();
     ToolContext mockToolContext = mock(ToolContext.class);
@@ -312,7 +309,7 @@ public class PluginManagerTest {
     pluginManager.registerPlugin(plugin1);
 
     pluginManager
-        .runAfterToolCallback(mockTool, toolArgs, mockToolContext, result)
+        .afterToolCallback(mockTool, toolArgs, mockToolContext, result)
         .test()
         .assertResult(result);
 
@@ -320,7 +317,7 @@ public class PluginManagerTest {
   }
 
   @Test
-  public void runOnToolErrorCallback_singlePlugin() {
+  public void onToolErrorCallback_singlePlugin() {
     BaseTool mockTool = mock(BaseTool.class);
     ImmutableMap<String, Object> toolArgs = ImmutableMap.of();
     ToolContext mockToolContext = mock(ToolContext.class);
@@ -330,10 +327,37 @@ public class PluginManagerTest {
     when(plugin1.onToolErrorCallback(any(), any(), any(), any())).thenReturn(Maybe.just(result));
     pluginManager.registerPlugin(plugin1);
     pluginManager
-        .runOnToolErrorCallback(mockTool, toolArgs, mockToolContext, mockThrowable)
+        .onToolErrorCallback(mockTool, toolArgs, mockToolContext, mockThrowable)
         .test()
         .assertResult(result);
 
     verify(plugin1).onToolErrorCallback(mockTool, toolArgs, mockToolContext, mockThrowable);
+  }
+
+  @Test
+  public void close_allComplete() {
+    when(plugin1.close()).thenReturn(Completable.complete());
+    when(plugin2.close()).thenReturn(Completable.complete());
+    pluginManager.registerPlugin(plugin1);
+    pluginManager.registerPlugin(plugin2);
+
+    pluginManager.close().test().assertResult();
+
+    verify(plugin1).close();
+    verify(plugin2).close();
+  }
+
+  @Test
+  public void close_plugin1Fails() {
+    RuntimeException testException = new RuntimeException("Test");
+    when(plugin1.close()).thenReturn(Completable.error(testException));
+    when(plugin2.close()).thenReturn(Completable.complete());
+    pluginManager.registerPlugin(plugin1);
+    pluginManager.registerPlugin(plugin2);
+
+    pluginManager.close().test().assertError(testException);
+
+    verify(plugin1).close();
+    verify(plugin2).close();
   }
 }

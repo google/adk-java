@@ -54,17 +54,27 @@ public final class AgentTransfer implements RequestProcessor {
         request.toBuilder()
             .appendInstructions(
                 ImmutableList.of(buildTargetAgentsInstructions(agent, transferTargets)));
-    Method transferToAgentMethod;
-    try {
-      transferToAgentMethod =
-          AgentTransfer.class.getMethod("transferToAgent", String.class, ToolContext.class);
-    } catch (NoSuchMethodException e) {
-      throw new IllegalStateException(e);
-    }
-    FunctionTool agentTransferTool = FunctionTool.create(transferToAgentMethod);
+
+    // Note: this tool is not exposed to the LLM in GenerateContent request. It is there only to
+    // serve as a backwards-compatible instance for users who depend on the exact name of
+    // "transferToAgent".
+    builder.appendTools(ImmutableList.of(createTransferToAgentTool("legacyTransferToAgent")));
+
+    FunctionTool agentTransferTool = createTransferToAgentTool("transferToAgent");
     agentTransferTool.processLlmRequest(builder, ToolContext.builder(context).build());
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
+  }
+
+  private FunctionTool createTransferToAgentTool(String methodName) {
+    Method transferToAgentMethod;
+    try {
+      transferToAgentMethod =
+          AgentTransfer.class.getMethod(methodName, String.class, ToolContext.class);
+    } catch (NoSuchMethodException e) {
+      throw new IllegalStateException(e);
+    }
+    return FunctionTool.create(transferToAgentMethod);
   }
 
   /** Builds a string with the target agent’s name and description. */
@@ -158,5 +168,19 @@ public final class AgentTransfer implements RequestProcessor {
       @Schema(optional = true) ToolContext toolContext) {
     EventActions eventActions = toolContext.eventActions();
     toolContext.setActions(eventActions.toBuilder().transferToAgent(agentName).build());
+  }
+
+  /**
+   * Backwards compatible transferToAgent that uses camel-case naming instead of the ADK's
+   * snake_case convention.
+   *
+   * <p>It exists only to support users who already use literal "transferToAgent" function call to
+   * instruct ADK to transfer the question to another agent.
+   */
+  @Schema(name = "transferToAgent")
+  public static void legacyTransferToAgent(
+      @Schema(name = "agentName") String agentName,
+      @Schema(optional = true) ToolContext toolContext) {
+    transferToAgent(agentName, toolContext);
   }
 }

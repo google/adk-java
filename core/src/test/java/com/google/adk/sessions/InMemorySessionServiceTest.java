@@ -82,13 +82,33 @@ public final class InMemorySessionServiceTest {
   public void lifecycle_listSessions() {
     InMemorySessionService sessionService = new InMemorySessionService();
 
-    Session session = sessionService.createSession("app-name", "user-id").blockingGet();
+    Session session =
+        sessionService
+            .createSession("app-name", "user-id", new ConcurrentHashMap<>(), "session-1")
+            .blockingGet();
+
+    ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
+    stateDelta.put("sessionKey", "sessionValue");
+    stateDelta.put("_app_appKey", "appValue");
+    stateDelta.put("_user_userKey", "userValue");
+    stateDelta.put("temp:tempKey", "tempValue");
+
+    Event event =
+        Event.builder().actions(EventActions.builder().stateDelta(stateDelta).build()).build();
+
+    var unused = sessionService.appendEvent(session, event).blockingGet();
 
     ListSessionsResponse response =
         sessionService.listSessions(session.appName(), session.userId()).blockingGet();
+    Session listedSession = response.sessions().get(0);
 
     assertThat(response.sessions()).hasSize(1);
-    assertThat(response.sessions().get(0).id()).isEqualTo(session.id());
+    assertThat(listedSession.id()).isEqualTo(session.id());
+    assertThat(listedSession.events()).isEmpty();
+    assertThat(listedSession.state()).containsEntry("sessionKey", "sessionValue");
+    assertThat(listedSession.state()).containsEntry("_app_appKey", "appValue");
+    assertThat(listedSession.state()).containsEntry("_user_userKey", "userValue");
+    assertThat(listedSession.state()).containsEntry("temp:tempKey", "tempValue");
   }
 
   @Test
@@ -118,6 +138,7 @@ public final class InMemorySessionServiceTest {
     stateDelta.put("sessionKey", "sessionValue");
     stateDelta.put("_app_appKey", "appValue");
     stateDelta.put("_user_userKey", "userValue");
+    stateDelta.put("temp:tempKey", "tempValue");
 
     Event event =
         Event.builder().actions(EventActions.builder().stateDelta(stateDelta).build()).build();
@@ -129,6 +150,7 @@ public final class InMemorySessionServiceTest {
     assertThat(session.state()).containsEntry("sessionKey", "sessionValue");
     assertThat(session.state()).containsEntry("_app_appKey", "appValue");
     assertThat(session.state()).containsEntry("_user_userKey", "userValue");
+    assertThat(session.state()).containsEntry("temp:tempKey", "tempValue");
 
     // getSession should return session with merged state.
     Session retrievedSession =
@@ -138,5 +160,96 @@ public final class InMemorySessionServiceTest {
     assertThat(retrievedSession.state()).containsEntry("sessionKey", "sessionValue");
     assertThat(retrievedSession.state()).containsEntry("_app_appKey", "appValue");
     assertThat(retrievedSession.state()).containsEntry("_user_userKey", "userValue");
+    assertThat(retrievedSession.state()).containsEntry("temp:tempKey", "tempValue");
+  }
+
+  @Test
+  public void appendEvent_removesState() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session =
+        sessionService
+            .createSession("app", "user", new ConcurrentHashMap<>(), "session1")
+            .blockingGet();
+
+    ConcurrentMap<String, Object> stateDeltaAdd = new ConcurrentHashMap<>();
+    stateDeltaAdd.put("sessionKey", "sessionValue");
+    stateDeltaAdd.put("_app_appKey", "appValue");
+    stateDeltaAdd.put("_user_userKey", "userValue");
+    stateDeltaAdd.put("temp:tempKey", "tempValue");
+
+    Event eventAdd =
+        Event.builder().actions(EventActions.builder().stateDelta(stateDeltaAdd).build()).build();
+
+    var unused = sessionService.appendEvent(session, eventAdd).blockingGet();
+
+    // Verify state is added
+    Session retrievedSessionAdd =
+        sessionService
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(retrievedSessionAdd.state()).containsEntry("sessionKey", "sessionValue");
+    assertThat(retrievedSessionAdd.state()).containsEntry("_app_appKey", "appValue");
+    assertThat(retrievedSessionAdd.state()).containsEntry("_user_userKey", "userValue");
+    assertThat(retrievedSessionAdd.state()).containsEntry("temp:tempKey", "tempValue");
+
+    // Prepare and append event to remove state
+    ConcurrentMap<String, Object> stateDeltaRemove = new ConcurrentHashMap<>();
+    stateDeltaRemove.put("sessionKey", State.REMOVED);
+    stateDeltaRemove.put("_app_appKey", State.REMOVED);
+    stateDeltaRemove.put("_user_userKey", State.REMOVED);
+    stateDeltaRemove.put("temp:tempKey", State.REMOVED);
+
+    Event eventRemove =
+        Event.builder()
+            .actions(EventActions.builder().stateDelta(stateDeltaRemove).build())
+            .build();
+
+    unused = sessionService.appendEvent(session, eventRemove).blockingGet();
+
+    // Verify state is removed
+    Session retrievedSessionRemove =
+        sessionService
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(retrievedSessionRemove.state()).doesNotContainKey("sessionKey");
+    assertThat(retrievedSessionRemove.state()).doesNotContainKey("_app_appKey");
+    assertThat(retrievedSessionRemove.state()).doesNotContainKey("_user_userKey");
+    assertThat(retrievedSessionRemove.state()).doesNotContainKey("temp:tempKey");
+  }
+
+  @Test
+  public void sequentialAgents_shareTempState() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session =
+        sessionService
+            .createSession("app", "user", new ConcurrentHashMap<>(), "session1")
+            .blockingGet();
+
+    // Agent 1 writes to temp state
+    ConcurrentMap<String, Object> stateDelta1 = new ConcurrentHashMap<>();
+    stateDelta1.put("temp:agent1_output", "data");
+    Event event1 =
+        Event.builder().actions(EventActions.builder().stateDelta(stateDelta1).build()).build();
+    var unused = sessionService.appendEvent(session, event1).blockingGet();
+
+    // Verify agent 1 output is in session state
+    assertThat(session.state()).containsEntry("temp:agent1_output", "data");
+
+    // Agent 2 reads "agent1_output", processes it, writes "agent2_output", and removes
+    // "agent1_output"
+    ConcurrentMap<String, Object> stateDelta2 = new ConcurrentHashMap<>();
+    stateDelta2.put("temp:agent2_output", "processed_data");
+    stateDelta2.put("temp:agent1_output", State.REMOVED);
+    Event event2 =
+        Event.builder().actions(EventActions.builder().stateDelta(stateDelta2).build()).build();
+    unused = sessionService.appendEvent(session, event2).blockingGet();
+
+    // Verify final state after agent 2 processing
+    Session retrievedSession =
+        sessionService
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(retrievedSession.state()).doesNotContainKey("temp:agent1_output");
+    assertThat(retrievedSession.state()).containsEntry("temp:agent2_output", "processed_data");
   }
 }

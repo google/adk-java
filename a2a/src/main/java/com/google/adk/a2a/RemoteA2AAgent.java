@@ -1,30 +1,31 @@
 package com.google.adk.a2a;
 
-import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.base.Strings.nullToEmpty;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.a2a.common.A2AClientError;
+import com.google.adk.a2a.converters.EventConverter;
+import com.google.adk.a2a.converters.ResponseConverter;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
-import com.google.common.io.Resources;
+import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import io.a2a.client.Client;
+import io.a2a.client.ClientEvent;
+import io.a2a.client.TaskEvent;
+import io.a2a.client.TaskUpdateEvent;
+import io.a2a.spec.A2AClientException;
 import io.a2a.spec.AgentCard;
-import io.a2a.spec.EventKind;
 import io.a2a.spec.Message;
-import io.a2a.spec.MessageSendParams;
-import io.a2a.spec.SendMessageRequest;
-import io.a2a.spec.SendMessageResponse;
-import io.a2a.spec.Task;
-import io.a2a.spec.TaskStatus;
+import io.a2a.spec.TaskState;
+import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Flowable;
-import java.io.IOException;
-import java.net.URL;
+import io.reactivex.rxjava3.core.FlowableEmitter;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import org.jspecify.annotations.Nullable;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiConsumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,28 +48,17 @@ import org.slf4j.LoggerFactory;
  *   <li>Session state management across requests
  * </ul>
  *
- * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
- *     not use in production code.
+ * <p>**EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do not
+ * use in production code.
  */
 public class RemoteA2AAgent extends BaseAgent {
 
   private static final Logger logger = LoggerFactory.getLogger(RemoteA2AAgent.class);
 
-  private Optional<AgentCard> agentCard;
-  private final Optional<String> agentCardSource;
-  private Optional<A2AClient> a2aClient;
-  private Optional<String> rpcUrl = Optional.empty();
+  private final AgentCard agentCard;
+  private final Client a2aClient;
   private String description;
-  private boolean isResolved = false;
-
-  public RemoteA2AAgent() {
-    // Initialize with empty values - will be configured later
-    super("", "", null, null, null);
-    this.agentCard = Optional.empty();
-    this.agentCardSource = Optional.empty();
-    this.a2aClient = Optional.empty();
-    this.description = "";
-  }
+  private final boolean streaming;
 
   // Internal constructor used by builder
   private RemoteA2AAgent(Builder builder) {
@@ -79,32 +69,29 @@ public class RemoteA2AAgent extends BaseAgent {
         builder.beforeAgentCallback,
         builder.afterAgentCallback);
 
-    if (builder.agentCardOrSource == null) {
-      throw new IllegalArgumentException("agentCardOrSource cannot be null");
-    }
-
-    if (builder.agentCardOrSource instanceof AgentCard) {
-      this.agentCard = Optional.of((AgentCard) builder.agentCardOrSource);
-      this.agentCardSource = Optional.empty();
-      this.description = builder.description;
-      // If builder description is empty, use the one from AgentCard
-      if (this.description.isEmpty() && this.agentCard.get().description() != null) {
-        this.description = this.agentCard.get().description();
-      }
-    } else if (builder.agentCardOrSource instanceof String) {
-      this.agentCard = Optional.empty();
-      String source = (String) builder.agentCardOrSource;
-      if (source.trim().isEmpty()) {
-        throw new IllegalArgumentException("agentCard string cannot be empty");
-      }
-      this.agentCardSource = Optional.of(source.trim());
-    } else {
-      throw new TypeError(
-          "agentCard must be AgentCard, URL string, or file path string, got "
-              + builder.agentCardOrSource.getClass());
+    if (builder.a2aClient == null) {
+      throw new IllegalArgumentException("a2aClient cannot be null");
     }
 
     this.a2aClient = builder.a2aClient;
+    if (builder.agentCard != null) {
+      this.agentCard = builder.agentCard;
+    } else {
+      try {
+        this.agentCard = this.a2aClient.getAgentCard();
+      } catch (A2AClientException e) {
+        throw new AgentCardResolutionError("Failed to resolve agent card", e);
+      }
+    }
+    if (this.agentCard == null) {
+      throw new IllegalArgumentException("agentCard cannot be null");
+    }
+    this.description = nullToEmpty(builder.description);
+    // If builder description is empty, use the one from AgentCard
+    if (this.description.isEmpty() && this.agentCard.description() != null) {
+      this.description = this.agentCard.description();
+    }
+    this.streaming = this.agentCard.capabilities().streaming();
   }
 
   public static Builder builder() {
@@ -114,9 +101,9 @@ public class RemoteA2AAgent extends BaseAgent {
   /** Builder for {@link RemoteA2AAgent}. */
   public static class Builder {
     private String name;
-    private Object agentCardOrSource;
+    private AgentCard agentCard;
+    private Client a2aClient;
     private String description = "";
-    private Optional<A2AClient> a2aClient = Optional.empty();
     private List<? extends BaseAgent> subAgents;
     private List<Callbacks.BeforeAgentCallback> beforeAgentCallback;
     private List<Callbacks.AfterAgentCallback> afterAgentCallback;
@@ -128,20 +115,14 @@ public class RemoteA2AAgent extends BaseAgent {
     }
 
     @CanIgnoreReturnValue
-    public Builder agentCardOrSource(Object agentCardOrSource) {
-      this.agentCardOrSource = agentCardOrSource;
+    public Builder agentCard(AgentCard agentCard) {
+      this.agentCard = agentCard;
       return this;
     }
 
     @CanIgnoreReturnValue
     public Builder description(String description) {
       this.description = description;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder a2aClient(@Nullable A2AClient a2aClient) {
-      this.a2aClient = Optional.ofNullable(a2aClient);
       return this;
     }
 
@@ -163,73 +144,19 @@ public class RemoteA2AAgent extends BaseAgent {
       return this;
     }
 
+    @CanIgnoreReturnValue
+    public Builder a2aClient(Client a2aClient) {
+      this.a2aClient = a2aClient;
+      return this;
+    }
+
     public RemoteA2AAgent build() {
       return new RemoteA2AAgent(this);
     }
   }
 
-  public Optional<String> rpcUrl() {
-    return rpcUrl;
-  }
-
-  private void ensureResolved() {
-    // This method is similar to getClientFromAgentCardUrl in the A2A Java SDK. It is called at
-    // runtime not constructor time.
-    if (isResolved) {
-      return;
-    }
-
-    try {
-      // Resolve agent card if needed
-      if (agentCard.isEmpty()) {
-        if (agentCardSource.isPresent()) {
-          String source = agentCardSource.get();
-          this.agentCard = Optional.of(resolveAgentCard(source));
-        } else {
-          // This case should not happen based on constructor logic
-        }
-      }
-
-      // Set RPC URL
-      this.rpcUrl = Optional.of(this.agentCard.get().url());
-
-      // Update description if empty
-      if (this.description == null && this.agentCard.get().description() != null) {
-        this.description = this.agentCard.get().description();
-      }
-
-      if (this.a2aClient.isEmpty() && this.agentCard.isPresent()) {
-        this.a2aClient = Optional.of(new A2AClient(this.agentCard.get()));
-      }
-      this.isResolved = true;
-
-    } catch (Exception e) {
-      throw new AgentCardResolutionError(
-          "Failed to initialize remote A2A agent " + name() + ": " + e, e);
-    }
-  }
-
-  private AgentCard resolveAgentCard(String source) throws IOException {
-    ObjectMapper objectMapper = new ObjectMapper();
-    try {
-      URL resourceUrl = Resources.getResource(source);
-      agentCard = Optional.of(objectMapper.readValue(resourceUrl, AgentCard.class));
-      return agentCard.get();
-    } catch (IllegalArgumentException e) {
-      throw new IOException(
-          "Failed to find AgentCard resource: "
-              + source
-              + ". Check if the resource exists and is included in the build.",
-          e);
-    } catch (Exception e) {
-      throw new IOException("Failed to load AgentCard from resource: " + source, e);
-    }
-  }
-
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    ensureResolved();
-
     // Construct A2A Message from the last ADK event
     List<Event> sessionEvents = invocationContext.session().events();
 
@@ -246,80 +173,77 @@ public class RemoteA2AAgent extends BaseAgent {
     }
 
     Message originalMessage = a2aMessageOpt.get();
-    String sessionId = invocationContext.session().id();
-    String inboundContextId = originalMessage.getContextId();
 
-    if (!isNullOrEmpty(inboundContextId) && !sessionId.equals(inboundContextId)) {
-      logger.warn("Inbound context id differs from active session; using session id instead.");
+    return Flowable.create(
+        emitter -> {
+          FlowableEmitter<Event> flowableEmitter = emitter.serialize();
+          AtomicBoolean done = new AtomicBoolean(false);
+          ImmutableList<BiConsumer<ClientEvent, AgentCard>> consumers =
+              ImmutableList.of(
+                  (event, unused) ->
+                      handleClientEvent(event, flowableEmitter, invocationContext, done));
+          a2aClient.sendMessage(
+              originalMessage, consumers, e -> handleClientError(e, flowableEmitter, done), null);
+        },
+        BackpressureStrategy.BUFFER);
+  }
+
+  private void handleClientError(Throwable e, FlowableEmitter<Event> emitter, AtomicBoolean done) {
+    // Mark the flow as done if it is already cancelled.
+    done.compareAndSet(false, emitter.isCancelled());
+
+    // If the flow is already done, stop processing and exit the consumer.
+    if (done.get()) {
+      return;
+    }
+    // If the error is raised, complete the flow with an error.
+    if (!done.getAndSet(true)) {
+      emitter.tryOnError(new A2AClientError("Failed to communicate with the remote agent", e));
+    }
+  }
+
+  private void handleClientEvent(
+      ClientEvent clientEvent,
+      FlowableEmitter<Event> emitter,
+      InvocationContext invocationContext,
+      AtomicBoolean done) {
+    // Mark the flow as done if it is already cancelled.
+    done.compareAndSet(false, emitter.isCancelled());
+
+    // If the flow is already done, stop processing and exit the consumer.
+    if (done.get()) {
+      return;
     }
 
-    Message a2aMessage = new Message.Builder(originalMessage).contextId(sessionId).build();
+    Optional<Event> event = ResponseConverter.clientEventToEvent(clientEvent, invocationContext);
+    if (event.isPresent()) {
+      emitter.onNext(event.get());
+    }
 
-    Map<String, Object> metadata =
-        originalMessage.getMetadata() == null ? Map.of() : originalMessage.getMetadata();
+    // For non-streaming communication, complete the flow; for streaming, wait until the client
+    // marks the completion.
+    if (isCompleted(clientEvent) || !streaming) {
+      // Only complete the flow once.
+      if (!done.getAndSet(true)) {
+        emitter.onComplete();
+      }
+    }
+  }
 
-    MessageSendParams params = new MessageSendParams(a2aMessage, null, metadata);
-    SendMessageRequest request = new SendMessageRequest(invocationContext.invocationId(), params);
-
-    return a2aClient
-        .get()
-        .sendMessage(request)
-        .flatMap(
-            response -> {
-              String responseContextId = extractContextId(response);
-              List<Event> events =
-                  ResponseConverter.sendMessageResponseToEvents(
-                      response,
-                      invocationContext.invocationId(),
-                      invocationContext.branch().orElse(null));
-
-              if (events.isEmpty()) {
-                logger.warn("No events converted from A2A response");
-                // Return a default event to indicate the agent executed
-                return Flowable.just(
-                    Event.builder()
-                        .author(name())
-                        .invocationId(invocationContext.invocationId())
-                        .branch(invocationContext.branch().orElse(null))
-                        .build());
-              }
-
-              return Flowable.fromIterable(events);
-            });
+  private static boolean isCompleted(ClientEvent event) {
+    TaskState executionState = TaskState.UNKNOWN;
+    if (event instanceof TaskEvent taskEvent) {
+      executionState = taskEvent.getTask().getStatus().state();
+    } else if (event instanceof TaskUpdateEvent updateEvent) {
+      executionState = updateEvent.getTask().getStatus().state();
+    }
+    return executionState.equals(TaskState.COMPLETED);
   }
 
   @Override
   protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
     throw new UnsupportedOperationException(
-        "_run_live_impl for " + getClass() + " via A2A is not implemented.");
-  }
-
-  private static String extractContextId(SendMessageResponse response) {
-    if (response == null) {
-      return "";
-    }
-
-    EventKind result = response.getResult();
-    if (result instanceof Message message) {
-      String contextId = nullToEmpty(message.getContextId());
-      if (!contextId.isEmpty()) {
-        return contextId;
-      }
-    }
-    if (result instanceof Task task) {
-      String contextId = nullToEmpty(task.getContextId());
-      if (!contextId.isEmpty()) {
-        return contextId;
-      }
-      TaskStatus status = task.getStatus();
-      if (status != null && status.message() != null) {
-        String statusContext = nullToEmpty(status.message().getContextId());
-        if (!statusContext.isEmpty()) {
-          return statusContext;
-        }
-      }
-    }
-    return "";
+        "runLiveImpl for " + getClass() + " via A2A is not implemented.");
   }
 
   /** Exception thrown when the agent card cannot be resolved. */
@@ -329,17 +253,6 @@ public class RemoteA2AAgent extends BaseAgent {
     }
 
     public AgentCardResolutionError(String message, Throwable cause) {
-      super(message, cause);
-    }
-  }
-
-  /** Exception thrown when the A2A client encounters an error. */
-  public static class A2AClientError extends RuntimeException {
-    public A2AClientError(String message) {
-      super(message);
-    }
-
-    public A2AClientError(String message, Throwable cause) {
       super(message, cause);
     }
   }

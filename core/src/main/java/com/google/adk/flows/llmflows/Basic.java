@@ -54,7 +54,10 @@ public final class Basic implements RequestProcessor {
     LlmRequest.Builder builder =
         request.toBuilder()
             .model(modelName)
-            .config(agent.generateContentConfig().orElse(GenerateContentConfig.builder().build()))
+            .config(
+                agent
+                    .generateContentConfig()
+                    .orElseGet(() -> GenerateContentConfig.builder().build()))
             .liveConnectConfig(liveConnectConfigBuilder.build());
 
     agent.outputSchema().ifPresent(builder::outputSchema);

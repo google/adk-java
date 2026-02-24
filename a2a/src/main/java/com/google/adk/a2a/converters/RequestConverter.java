@@ -1,7 +1,8 @@
-package com.google.adk.a2a;
+package com.google.adk.a2a.converters;
 
 import com.google.adk.events.Event;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import io.a2a.spec.DataPart;
 import io.a2a.spec.Message;
@@ -19,8 +20,8 @@ import org.slf4j.LoggerFactory;
  * rfe Converter for A2A Messages to ADK Events. This is used on the A2A service side to convert
  * incoming A2A requests to ADK Events.
  *
- * @apiNote **EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do
- *     not use in production code.
+ * <p>**EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do not
+ * use in production code.
  */
 public final class RequestConverter {
   private static final Logger logger = LoggerFactory.getLogger(RequestConverter.class);
@@ -159,16 +160,17 @@ public final class RequestConverter {
 
   private static String extractAuthorFromMetadata(Part<?> a2aPart) {
     if (a2aPart instanceof DataPart dataPart) {
-      Map<String, Object> metadata = Optional.ofNullable(dataPart.getMetadata()).orElse(Map.of());
+      Map<String, Object> metadata =
+          Optional.ofNullable(dataPart.getMetadata()).orElse(ImmutableMap.of());
       String type =
           metadata.getOrDefault(PartConverter.A2A_DATA_PART_METADATA_TYPE_KEY, "").toString();
-      if (PartConverter.A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL.equals(type)) {
+      if (type.equals(PartConverter.A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL)) {
         return "model";
       }
-      if (PartConverter.A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE.equals(type)) {
+      if (type.equals(PartConverter.A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE)) {
         return "user";
       }
-      Map<String, Object> data = Optional.ofNullable(dataPart.getData()).orElse(Map.of());
+      Map<String, Object> data = Optional.ofNullable(dataPart.getData()).orElse(ImmutableMap.of());
       if (data.containsKey("args")) {
         return "model";
       }
@@ -192,15 +194,5 @@ public final class RequestConverter {
         .content(Content.builder().role(role).parts(new ArrayList<>(parts)).build())
         .timestamp(Instant.now().toEpochMilli())
         .build();
-  }
-
-  /**
-   * Convert an A2A Part to a GenAI Part.
-   *
-   * @param a2aPart The A2A Part to convert.
-   * @return Optional containing the converted GenAI Part, or empty if conversion fails.
-   */
-  private static Optional<com.google.genai.types.Part> convertA2aPartToGenAiPart(Part<?> a2aPart) {
-    return PartConverter.toGenaiPart(a2aPart);
   }
 }

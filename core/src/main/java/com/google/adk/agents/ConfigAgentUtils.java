@@ -25,6 +25,7 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.google.adk.utils.ComponentRegistry;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -46,6 +47,14 @@ import org.slf4j.LoggerFactory;
 public final class ConfigAgentUtils {
 
   private static final Logger logger = LoggerFactory.getLogger(ConfigAgentUtils.class);
+
+  private static final ImmutableMap<Class<? extends BaseAgent>, Class<? extends BaseAgentConfig>>
+      AGENT_TO_CONFIG_CLASS =
+          ImmutableMap.of(
+              LlmAgent.class, LlmAgentConfig.class,
+              SequentialAgent.class, SequentialAgentConfig.class,
+              ParallelAgent.class, ParallelAgentConfig.class,
+              LoopAgent.class, LoopAgentConfig.class);
 
   private ConfigAgentUtils() {}
 
@@ -294,27 +303,7 @@ public final class ConfigAgentUtils {
    */
   private static Class<? extends BaseAgentConfig> getConfigClassForAgent(
       Class<? extends BaseAgent> agentClass) {
-
-    if (agentClass == LlmAgent.class) {
-      return LlmAgentConfig.class;
-    }
-
-    if (agentClass == SequentialAgent.class) {
-      return SequentialAgentConfig.class;
-    }
-
-    if (agentClass == ParallelAgent.class) {
-      return ParallelAgentConfig.class;
-    }
-
-    // TODO: Add more agent class to config class mappings as needed
-    // Example:
-    // if (agentClass == CustomAgent.class) {
-    //   return CustomAgentConfig.class;
-    // }
-
-    // Default fallback to BaseAgentConfig
-    return BaseAgentConfig.class;
+    return AGENT_TO_CONFIG_CLASS.getOrDefault(agentClass, BaseAgentConfig.class);
   }
 
   /** Exception thrown when configuration is invalid. */

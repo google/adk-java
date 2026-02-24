@@ -1,6 +1,5 @@
 package com.example.a2a_basic;
 
-import com.google.adk.a2a.A2AClient;
 import com.google.adk.a2a.RemoteA2AAgent;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
@@ -8,11 +7,14 @@ import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.a2a.client.Client;
+import io.a2a.client.config.ClientConfig;
+import io.a2a.client.http.A2ACardResolver;
 import io.a2a.client.http.JdkA2AHttpClient;
-import io.a2a.spec.AgentCapabilities;
+import io.a2a.client.transport.jsonrpc.JSONRPCTransport;
+import io.a2a.client.transport.jsonrpc.JSONRPCTransportConfig;
 import io.a2a.spec.AgentCard;
 import java.util.ArrayList;
-import java.util.List;
 import java.util.Random;
 
 /** Provides local roll logic plus a remote A2A agent for the demo. */
@@ -60,24 +62,23 @@ public final class A2AAgent {
   }
 
   private static BaseAgent createRemoteAgent(String primeAgentBaseUrl) {
-    AgentCapabilities capabilities = new AgentCapabilities.Builder().build();
-    AgentCard agentCard =
-        new AgentCard.Builder()
-            .name("prime_agent")
-            .description("Stub agent metadata used for third-party A2A demo")
-            .url(primeAgentBaseUrl)
-            .version("1.0.0")
-            .capabilities(capabilities)
-            .defaultInputModes(List.of("text"))
-            .defaultOutputModes(List.of("text"))
-            .skills(List.of())
-            .security(List.of())
+    String agentCardUrl = primeAgentBaseUrl + "/.well-known/agent-card.json";
+    AgentCard publicAgentCard =
+        new A2ACardResolver(new JdkA2AHttpClient(), primeAgentBaseUrl, agentCardUrl).getAgentCard();
+
+    Client a2aClient =
+        Client.builder(publicAgentCard)
+            .withTransport(JSONRPCTransport.class, new JSONRPCTransportConfig())
+            .clientConfig(
+                new ClientConfig.Builder()
+                    .setStreaming(publicAgentCard.capabilities().streaming())
+                    .build())
             .build();
-    A2AClient client = new A2AClient(agentCard, new JdkA2AHttpClient(), /* defaultHeaders= */ null);
+
     return RemoteA2AAgent.builder()
-        .name(agentCard.name())
-        .agentCardOrSource(agentCard)
-        .a2aClient(client)
+        .name(publicAgentCard.name())
+        .a2aClient(a2aClient)
+        .agentCard(publicAgentCard)
         .build();
   }
 

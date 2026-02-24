@@ -10,10 +10,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.tools.applicationintegrationtoolset.ConnectionsClient.ActionSchema;
 import com.google.adk.tools.applicationintegrationtoolset.ConnectionsClient.ConnectionDetails;
 import com.google.adk.tools.applicationintegrationtoolset.ConnectionsClient.EntitySchemaAndOperations;
-import com.google.adk.tools.applicationintegrationtoolset.IntegrationConnectorTool.HttpExecutor;
+import com.google.auth.Credentials;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.io.IOException;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Map;
@@ -31,8 +32,10 @@ public class ConnectionsClientTest {
 
   @Rule public final MockitoRule mockito = MockitoJUnit.rule();
 
-  @Mock private HttpExecutor mockHttpExecutor;
+  @Mock private HttpClient mockHttpClient;
   @Mock private HttpResponse<String> mockHttpResponse;
+  @Mock private CredentialsHelper mockCredentialsHelper;
+  @Mock private Credentials mockCredentials;
 
   private ConnectionsClient client;
   private final ObjectMapper objectMapper = new ObjectMapper();
@@ -43,8 +46,16 @@ public class ConnectionsClientTest {
 
   @Before
   public void setUp() throws IOException {
-    client = new ConnectionsClient(PROJECT, LOCATION, CONNECTION, mockHttpExecutor, objectMapper);
-    when(mockHttpExecutor.getToken()).thenReturn("fake-test-token");
+    when(mockCredentialsHelper.getGoogleCredentials(any())).thenReturn(mockCredentials);
+    client =
+        new ConnectionsClient(
+            PROJECT,
+            LOCATION,
+            CONNECTION,
+            null,
+            mockHttpClient,
+            mockCredentialsHelper,
+            objectMapper);
   }
 
   @Test
@@ -57,7 +68,7 @@ public class ConnectionsClientTest {
 
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn(mockJsonResponse);
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(HttpRequest.class), any());
 
     ConnectionDetails details = client.getConnectionDetails();
 
@@ -80,7 +91,7 @@ public class ConnectionsClientTest {
         .thenReturn(initialCallResponse)
         .thenReturn(firstPollResponse)
         .thenReturn(finalPollResponse);
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(HttpRequest.class), any());
 
     EntitySchemaAndOperations result = client.getEntitySchemaAndOperations("Issue");
 
@@ -93,7 +104,7 @@ public class ConnectionsClientTest {
   public void getEntitySchemaAndOperations_noOperationId_throwsIOException() throws Exception {
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn("{}");
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(), any());
 
     IOException e =
         assertThrows(IOException.class, () -> client.getEntitySchemaAndOperations("InvalidEntity"));
@@ -113,7 +124,7 @@ public class ConnectionsClientTest {
 
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn(initialCallResponse).thenReturn(finalPollResponse);
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(HttpRequest.class), any());
 
     ActionSchema result = client.getActionSchema("TestAction");
 
@@ -128,7 +139,7 @@ public class ConnectionsClientTest {
   public void getActionSchema_noOperationId_throwsIOException() throws Exception {
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn("{}");
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(), any());
 
     IOException e = assertThrows(IOException.class, () -> client.getActionSchema("InvalidAction"));
     assertThat(e)
@@ -141,7 +152,7 @@ public class ConnectionsClientTest {
   public void executeApiCall_on403_throwsSecurityException() throws Exception {
     when(mockHttpResponse.statusCode()).thenReturn(403);
     when(mockHttpResponse.body()).thenReturn("Permission Denied Error");
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(), any());
 
     SecurityException e =
         assertThrows(SecurityException.class, () -> client.getConnectionDetails());
@@ -154,7 +165,7 @@ public class ConnectionsClientTest {
   public void executeApiCall_on404_throwsIllegalArgumentException() throws Exception {
     when(mockHttpResponse.statusCode()).thenReturn(404);
     when(mockHttpResponse.body()).thenReturn("Not Found Error");
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(), any());
 
     IllegalArgumentException e =
         assertThrows(IllegalArgumentException.class, () -> client.getConnectionDetails());

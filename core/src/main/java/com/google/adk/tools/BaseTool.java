@@ -21,6 +21,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.models.LlmRequest;
@@ -39,6 +40,8 @@ import java.util.Map;
 import java.util.Optional;
 import javax.annotation.Nonnull;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** The base class for all ADK tools. */
 public abstract class BaseTool {
@@ -126,7 +129,7 @@ public abstract class BaseTool {
                       .addAll(
                           toolWithFunctionDeclarations
                               .functionDeclarations()
-                              .orElse(ImmutableList.of()))
+                              .orElseGet(ImmutableList::of))
                       .add(declaration().get())
                       .build())
               .build();
@@ -141,7 +144,7 @@ public abstract class BaseTool {
         llmRequest
             .config()
             .map(GenerateContentConfig::toBuilder)
-            .orElse(GenerateContentConfig.builder())
+            .orElseGet(GenerateContentConfig::builder)
             .tools(newTools)
             .build();
     LiveConnectConfig liveConnectConfig =
@@ -199,6 +202,8 @@ public abstract class BaseTool {
   // TODO implement this class
   public static class ToolArgsConfig extends JsonBaseModel {
 
+    private static final Logger log = LoggerFactory.getLogger(ToolArgsConfig.class);
+
     @JsonIgnore private final Map<String, Object> additionalProperties = new HashMap<>();
 
     public boolean isEmpty() {
@@ -215,8 +220,25 @@ public abstract class BaseTool {
       return this;
     }
 
-    public Object get(String key) {
-      return additionalProperties.get(key);
+    public <T> Optional<T> getOrEmpty(String key, TypeReference<T> typeReference) {
+      if (!additionalProperties.containsKey(key)) {
+        return Optional.empty();
+      }
+      try {
+        return Optional.of(
+            JsonBaseModel.getMapper().convertValue(additionalProperties.get(key), typeReference));
+      } catch (IllegalArgumentException e) {
+        log.debug("Could not convert key {} into type: {}", key, e);
+        return Optional.empty();
+      }
+    }
+
+    public <T> T getOrDefault(String key, T defaultValue) {
+      if (!additionalProperties.containsKey(key)) {
+        return defaultValue;
+      }
+      return JsonBaseModel.getMapper()
+          .convertValue(additionalProperties.get(key), new TypeReference<T>() {});
     }
 
     @JsonAnyGetter

@@ -48,6 +48,9 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public final class StreamingToolTest {
 
+  private static final RunConfig BIDI_STREAMING_RUN_CONFIG =
+      RunConfig.builder().setStreamingMode(StreamingMode.BIDI).build();
+
   public static final class StreamingTools {
     public static Flowable<ImmutableMap<String, Object>> monitorStockPrice(
         @Schema(name = "stockSymbol") String stockSymbol) {
@@ -130,10 +133,7 @@ public final class StreamingToolTest {
 
     Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
     List<Event> resEvents =
-        runner
-            .runLive(session, liveRequestQueue, RunConfig.builder().build())
-            .toList()
-            .blockingGet();
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
 
     assertThat(resEvents).isNotNull();
     assertThat(resEvents).isNotEmpty();
@@ -215,10 +215,7 @@ public final class StreamingToolTest {
 
     Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
     List<Event> resEvents =
-        runner
-            .runLive(session, liveRequestQueue, RunConfig.builder().build())
-            .toList()
-            .blockingGet();
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
 
     assertThat(resEvents).isNotNull();
     assertThat(resEvents).isNotEmpty();
@@ -301,13 +298,7 @@ public final class StreamingToolTest {
 
     // Run the agent and collect events.
     List<Event> resEvents =
-        runner
-            .runLive(
-                session,
-                liveRequestQueue,
-                RunConfig.builder().setStreamingMode(StreamingMode.BIDI).build())
-            .toList()
-            .blockingGet();
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
 
     // Wait for the tool to send its 3 results back to the LLM
     assertThat(testLlm.waitForStreamingToolResults("monitorVideoStream", 3, Duration.ofSeconds(20)))
@@ -409,10 +400,7 @@ public final class StreamingToolTest {
 
     Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
     List<Event> resEvents =
-        runner
-            .runLive(session, liveRequestQueue, RunConfig.builder().build())
-            .toList()
-            .blockingGet();
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
 
     assertThat(resEvents).isNotNull();
     assertThat(resEvents.size()).isAtLeast(1);
@@ -502,13 +490,7 @@ public final class StreamingToolTest {
     Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
 
     List<Event> resEvents =
-        runner
-            .runLive(
-                session,
-                liveRequestQueue,
-                RunConfig.builder().setStreamingMode(StreamingMode.BIDI).build())
-            .toList()
-            .blockingGet();
+        runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
 
     assertThat(resEvents).isNotNull();
     assertThat(resEvents).isNotEmpty();

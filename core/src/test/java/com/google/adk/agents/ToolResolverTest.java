@@ -215,7 +215,7 @@ public final class ToolResolverTest {
     BaseTool.ToolArgsConfig args =
         new BaseTool.ToolArgsConfig().put("key1", "value1").put("key2", 42).put("key3", true);
 
-    BaseTool resolved = ToolResolver.resolveToolFromClass(className, args);
+    BaseTool resolved = ToolResolver.resolveToolFromClass(className, args, "/unused/config.yaml");
 
     assertThat(resolved).isNotNull();
     assertThat(resolved).isInstanceOf(TestToolWithFromConfig.class);
@@ -226,7 +226,7 @@ public final class ToolResolverTest {
     String className = TestToolWithDefaultConstructor.class.getName();
 
     // Test resolving tool from class with default constructor (no args)
-    BaseTool resolved = ToolResolver.resolveToolFromClass(className, null);
+    BaseTool resolved = ToolResolver.resolveToolFromClass(className, null, "/unused/config.yaml");
 
     assertThat(resolved).isNotNull();
     assertThat(resolved).isInstanceOf(TestToolWithDefaultConstructor.class);
@@ -239,7 +239,8 @@ public final class ToolResolverTest {
 
     ConfigurationException exception =
         assertThrows(
-            ConfigurationException.class, () -> ToolResolver.resolveToolFromClass(className, args));
+            ConfigurationException.class,
+            () -> ToolResolver.resolveToolFromClass(className, args, "/unused/config.yaml"));
 
     assertThat(exception)
         .hasMessageThat()
@@ -252,7 +253,8 @@ public final class ToolResolverTest {
 
     ConfigurationException exception =
         assertThrows(
-            ConfigurationException.class, () -> ToolResolver.resolveToolFromClass(className, null));
+            ConfigurationException.class,
+            () -> ToolResolver.resolveToolFromClass(className, null, "/unused/config.yaml"));
 
     assertThat(exception).hasMessageThat().contains("does not have a default constructor");
   }
@@ -289,7 +291,7 @@ public final class ToolResolverTest {
             ConfigurationException.class,
             () -> ToolResolver.resolveTools(toolConfigs, "/test/path"));
 
-    assertThat(exception).hasMessageThat().contains("Failed to resolve tool: non.existent.Tool");
+    assertThat(exception).hasMessageThat().contains("Tool not found: non.existent.Tool");
   }
 
   /** A test tool with multiple methods annotated with @Schema. */
@@ -366,7 +368,8 @@ public final class ToolResolverTest {
       super("test_tool_from_config", "Test tool from config: " + param);
     }
 
-    public static TestToolWithFromConfig fromConfig(BaseTool.ToolArgsConfig args) {
+    public static TestToolWithFromConfig fromConfig(
+        BaseTool.ToolArgsConfig args, String configAbsPath) {
       return new TestToolWithFromConfig("test_param");
     }
 

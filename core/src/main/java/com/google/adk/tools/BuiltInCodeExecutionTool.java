@@ -31,6 +31,7 @@ import java.util.List;
  * execution.
  */
 public final class BuiltInCodeExecutionTool extends BaseTool {
+  public static final BuiltInCodeExecutionTool INSTANCE = new BuiltInCodeExecutionTool();
 
   public BuiltInCodeExecutionTool() {
     super("code_execution", "code_execution");
@@ -50,7 +51,7 @@ public final class BuiltInCodeExecutionTool extends BaseTool {
             .build()
             .config()
             .map(GenerateContentConfig::toBuilder)
-            .orElse(GenerateContentConfig.builder());
+            .orElseGet(GenerateContentConfig::builder);
 
     List<Tool> existingTools = configBuilder.build().tools().orElse(ImmutableList.of());
     ImmutableList.Builder<Tool> updatedToolsBuilder = ImmutableList.builder();

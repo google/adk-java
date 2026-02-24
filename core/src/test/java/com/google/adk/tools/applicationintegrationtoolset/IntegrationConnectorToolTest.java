@@ -8,13 +8,15 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import com.google.adk.tools.ToolContext;
-import com.google.adk.tools.applicationintegrationtoolset.IntegrationConnectorTool.HttpExecutor;
+import com.google.auth.Credentials;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import io.reactivex.rxjava3.observers.TestObserver;
+import java.io.IOException;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.HashMap;
@@ -34,16 +36,16 @@ public final class IntegrationConnectorToolTest {
 
   @Rule public final MockitoRule mockito = MockitoJUnit.rule();
 
-  @Mock private HttpExecutor mockHttpExecutor;
+  @Mock private HttpClient mockHttpClient;
   @Mock private HttpResponse<String> mockHttpResponse;
   @Mock private ToolContext mockToolContext;
+  @Mock private CredentialsHelper mockCredentialsHelper;
+  @Mock private Credentials mockCredentials;
 
   private IntegrationConnectorTool integrationTool;
   private IntegrationConnectorTool connectorTool;
   private IntegrationConnectorTool connectorToolWithAction;
   private IntegrationConnectorTool connectorToolWithServiceAccount;
-  private static final String MOCK_ACCESS_TOKEN = "test-token";
-  private static final String MOCK_ACCESS_TOKEN_2 = "test-token-2";
   private static final String MOCK_SERVICE_ACCOUNT_JSON =
       "{\"type\": \"service_account\",\"project_id\": \"test-project\",\"private_key_data\":"
           + " \"test-private-key-data\",\"client_email\": \"test-client-email\",\"client_id\":"
@@ -84,7 +86,9 @@ public final class IntegrationConnectorToolTest {
           + " ,\\\"x-operation\\\":\\\"EXECUTE_ACTION\\\",\\\"requestBody\\\":{\\\"required\\\":true,\\\"content\\\":{\\\"application/json\\\":{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/ActionRequest\\\"}}}}}}},\\\"components\\\":{\\\"schemas\\\":{\\\"ActionRequest\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"connectionName\\\",\\\"action\\\",\\\"operation\\\"],\\\"properties\\\":{\\\"connectionName\\\":{\\\"type\\\":\\\"string\\\"},\\\"serviceName\\\":{\\\"type\\\":\\\"string\\\"},\\\"host\\\":{\\\"type\\\":\\\"string\\\"},\\\"action\\\":{\\\"type\\\":\\\"string\\\"},\\\"operation\\\":{\\\"type\\\":\\\"string\\\"}}}}}}\"}";
 
   @Before
-  public void setUp() {
+  public void setUp() throws IOException {
+    when(mockCredentialsHelper.getGoogleCredentials(any())).thenReturn(mockCredentials);
+
     integrationTool =
         new IntegrationConnectorTool(
             MOCK_INTEGRATION_OPEN_API_SPEC,
@@ -95,7 +99,8 @@ public final class IntegrationConnectorToolTest {
             null,
             null,
             null,
-            mockHttpExecutor);
+            mockHttpClient,
+            mockCredentialsHelper);
 
     connectorTool =
         new IntegrationConnectorTool(
@@ -107,7 +112,8 @@ public final class IntegrationConnectorToolTest {
             "test-service",
             "test-host",
             null,
-            mockHttpExecutor);
+            mockHttpClient,
+            mockCredentialsHelper);
 
     connectorToolWithAction =
         new IntegrationConnectorTool(
@@ -119,7 +125,8 @@ public final class IntegrationConnectorToolTest {
             "test-service-action",
             "test-host-action",
             null,
-            mockHttpExecutor);
+            mockHttpClient,
+            mockCredentialsHelper);
 
     connectorToolWithServiceAccount =
         new IntegrationConnectorTool(
@@ -131,7 +138,8 @@ public final class IntegrationConnectorToolTest {
             "test-service-action",
             "test-host-action",
             MOCK_SERVICE_ACCOUNT_JSON,
-            mockHttpExecutor);
+            mockHttpClient,
+            mockCredentialsHelper);
   }
 
   @Test
@@ -193,7 +201,8 @@ public final class IntegrationConnectorToolTest {
             null,
             null,
             null,
-            mockHttpExecutor);
+            mockHttpClient,
+            mockCredentialsHelper);
 
     Optional<FunctionDeclaration> declarationOpt = badTool.declaration();
 
@@ -207,11 +216,10 @@ public final class IntegrationConnectorToolTest {
     Map<String, Object> inputArgs = new HashMap<>(ImmutableMap.of("username", "testuser"));
     IntegrationConnectorTool spyTool = spy(integrationTool);
 
-    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn(expectedResponse);
 
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(HttpRequest.class), any());
 
     spyTool
         .runAsync(inputArgs, mockToolContext)
@@ -229,10 +237,9 @@ public final class IntegrationConnectorToolTest {
 
     Map<String, Object> inputArgs = new HashMap<>();
 
-    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn(expectedResponse);
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(), any());
 
     TestObserver<Map<String, Object>> testObserver =
         spyTool.runAsync(inputArgs, mockToolContext).test();
@@ -254,10 +261,10 @@ public final class IntegrationConnectorToolTest {
 
     Map<String, Object> inputArgs = new HashMap<>();
 
-    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn(expectedResponse);
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(), any());
+
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(), any());
 
     TestObserver<Map<String, Object>> testObserver =
         spyTool.runAsync(inputArgs, mockToolContext).test();
@@ -277,12 +284,11 @@ public final class IntegrationConnectorToolTest {
     String errorResponse = "{\"error\":{\"message\":\"Permission denied.\"}}";
     Map<String, Object> inputArgs = new HashMap<>(ImmutableMap.of("username", "testuser"));
     IntegrationConnectorTool spyTool = spy(connectorToolWithServiceAccount);
-    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
 
     when(mockHttpResponse.statusCode()).thenReturn(403);
     when(mockHttpResponse.body()).thenReturn(errorResponse);
 
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(HttpRequest.class), any());
 
     String expectedErrorMessage =
         "Error executing integration. Status: 403 , Response: " + errorResponse;
@@ -303,10 +309,9 @@ public final class IntegrationConnectorToolTest {
     Map<String, Object> inputArgs = new HashMap<>();
     inputArgs.put("payload", "data");
 
-    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN_2);
     when(mockHttpResponse.statusCode()).thenReturn(200);
     when(mockHttpResponse.body()).thenReturn(expectedResponse);
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(), any());
 
     TestObserver<Map<String, Object>> testObserver =
         spyTool.runAsync(inputArgs, mockToolContext).test();
@@ -327,12 +332,11 @@ public final class IntegrationConnectorToolTest {
     String errorResponse = "{\"error\":{\"message\":\"Permission denied.\"}}";
     Map<String, Object> inputArgs = new HashMap<>(ImmutableMap.of("username", "testuser"));
     IntegrationConnectorTool spyTool = spy(integrationTool);
-    when(mockHttpExecutor.getToken()).thenReturn(MOCK_ACCESS_TOKEN);
 
     when(mockHttpResponse.statusCode()).thenReturn(403);
     when(mockHttpResponse.body()).thenReturn(errorResponse);
 
-    doReturn(mockHttpResponse).when(mockHttpExecutor).send(any(HttpRequest.class), any());
+    doReturn(mockHttpResponse).when(mockHttpClient).send(any(HttpRequest.class), any());
 
     String expectedErrorMessage =
         "Error executing integration. Status: 403 , Response: " + errorResponse;

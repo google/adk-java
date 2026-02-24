@@ -164,7 +164,8 @@ public class FirestoreSessionService implements BaseSessionService {
               }
 
               // Fetch events based on config
-              GetSessionConfig config = configOpt.orElse(GetSessionConfig.builder().build());
+              GetSessionConfig config =
+                  configOpt.orElseGet(() -> GetSessionConfig.builder().build());
               CollectionReference eventsCollection =
                   document.getReference().collection(EVENTS_SUBCOLLECTION_NAME);
               Query eventsQuery = eventsCollection.orderBy(TIMESTAMP_KEY);

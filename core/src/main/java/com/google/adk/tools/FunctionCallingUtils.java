@@ -45,7 +45,7 @@ import org.slf4j.LoggerFactory;
 public final class FunctionCallingUtils {
 
   private static final Logger logger = LoggerFactory.getLogger(FunctionCallingUtils.class);
-  private static final ObjectMapper OBJECT_MAPPER = JsonBaseModel.getMapper();
+  private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
 
   /** Holds the state during a single schema generation process to handle caching and recursion. */
   private static class SchemaGenerationContext {
@@ -162,7 +162,7 @@ public final class FunctionCallingUtils {
    * @throws IllegalArgumentException if a type is encountered that cannot be serialized by Jackson.
    */
   public static Schema buildSchemaFromType(Type type) {
-    return buildSchemaRecursive(OBJECT_MAPPER.constructType(type), new SchemaGenerationContext());
+    return buildSchemaRecursive(objectMapper.constructType(type), new SchemaGenerationContext());
   }
 
   /**
@@ -217,7 +217,7 @@ public final class FunctionCallingUtils {
         }
         builder.enum_(enumValues).type("STRING").format("enum");
       } else { // POJO
-        if (!OBJECT_MAPPER.canSerialize(rawClass)) {
+        if (!objectMapper.canSerialize(rawClass)) {
           throw new IllegalArgumentException(
               "Unsupported type: "
                   + rawClass.getName()
@@ -226,7 +226,7 @@ public final class FunctionCallingUtils {
                   + " directly.");
         }
         BeanDescription beanDescription =
-            OBJECT_MAPPER.getSerializationConfig().introspect(javaType);
+            objectMapper.getSerializationConfig().introspect(javaType);
         Map<String, Schema> properties = new LinkedHashMap<>();
         List<String> required = new ArrayList<>();
         for (BeanPropertyDefinition property : beanDescription.findProperties()) {
