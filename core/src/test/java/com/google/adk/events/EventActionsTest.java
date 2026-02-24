@@ -17,12 +17,14 @@
 package com.google.adk.events;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.sessions.State;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -129,5 +131,38 @@ public final class EventActionsTest {
 
     assertThat(deserialized).isEqualTo(eventActions);
     assertThat(deserialized.deletedArtifactIds()).containsExactly("d1", "d2");
+  }
+
+  @Test
+  @SuppressWarnings("unchecked") // the nested map is known to be Map<String, Object>
+  public void merge_deeplyMergesStateDelta() {
+    EventActions eventActions1 = EventActions.builder().build();
+    eventActions1.stateDelta().put("a", 1);
+    eventActions1.stateDelta().put("b", ImmutableMap.of("nested1", 10, "nested2", 20));
+    eventActions1.stateDelta().put("c", 100);
+    EventActions eventActions2 = EventActions.builder().build();
+    eventActions2.stateDelta().put("a", 2);
+    eventActions2.stateDelta().put("b", ImmutableMap.of("nested2", 22, "nested3", 30));
+    eventActions2.stateDelta().put("d", 200);
+
+    EventActions merged = eventActions1.toBuilder().merge(eventActions2).build();
+
+    assertThat(merged.stateDelta().keySet()).containsExactly("a", "b", "c", "d");
+    assertThat(merged.stateDelta()).containsEntry("a", 2);
+    assertThat((Map<String, Object>) merged.stateDelta().get("b"))
+        .containsExactly("nested1", 10, "nested2", 22, "nested3", 30);
+    assertThat(merged.stateDelta()).containsEntry("c", 100);
+    assertThat(merged.stateDelta()).containsEntry("d", 200);
+  }
+
+  @Test
+  public void merge_failsOnMismatchedKeyTypesNestedInStateDelta() {
+    EventActions eventActions1 = EventActions.builder().build();
+    eventActions1.stateDelta().put("nested", ImmutableMap.of("a", 1));
+    EventActions eventActions2 = EventActions.builder().build();
+    eventActions2.stateDelta().put("nested", ImmutableMap.of(1, 2));
+
+    assertThrows(
+        IllegalArgumentException.class, () -> eventActions1.toBuilder().merge(eventActions2));
   }
 }
