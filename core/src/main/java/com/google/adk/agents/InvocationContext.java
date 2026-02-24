@@ -16,9 +16,9 @@
 
 package com.google.adk.agents;
 
-import com.google.adk.apps.ResumabilityConfig;
+import static com.google.common.base.Strings.isNullOrEmpty;
+
 import com.google.adk.artifacts.BaseArtifactService;
-import com.google.adk.events.Event;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
 import com.google.adk.plugins.Plugin;
@@ -26,11 +26,9 @@ import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
-import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.InlineMe;
 import com.google.genai.types.Content;
-import com.google.genai.types.FunctionCall;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -51,11 +49,10 @@ public class InvocationContext {
   private final Session session;
   private final Optional<Content> userContent;
   private final RunConfig runConfig;
-  private final Map<String, BaseAgentState> agentStates;
-  private final Map<String, Boolean> endOfAgents;
-  private final ResumabilityConfig resumabilityConfig;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
+  @Nullable private final ContextCacheConfig contextCacheConfig;
   private final InvocationCostManager invocationCostManager;
+  private final Map<String, Object> callbackContextData;
 
   private Optional<String> branch;
   private BaseAgent agent;
@@ -75,11 +72,10 @@ public class InvocationContext {
     this.userContent = builder.userContent;
     this.runConfig = builder.runConfig;
     this.endInvocation = builder.endInvocation;
-    this.agentStates = builder.agentStates;
-    this.endOfAgents = builder.endOfAgents;
-    this.resumabilityConfig = builder.resumabilityConfig;
     this.eventsCompactionConfig = builder.eventsCompactionConfig;
+    this.contextCacheConfig = builder.contextCacheConfig;
     this.invocationCostManager = builder.invocationCostManager;
+    this.callbackContextData = new ConcurrentHashMap<>(builder.callbackContextData);
   }
 
   /**
@@ -260,10 +256,7 @@ public class InvocationContext {
   /**
    * Sets the [branch] ID for the current invocation. A branch represents a fork in the conversation
    * history.
-   *
-   * @deprecated Use {@link #toBuilder()} and {@link Builder#branch(String)} instead.
    */
-  @Deprecated(forRemoval = true)
   public void branch(@Nullable String branch) {
     this.branch = Optional.ofNullable(branch);
   }
@@ -306,14 +299,12 @@ public class InvocationContext {
     return runConfig;
   }
 
-  /** Returns agent-specific state saved within this invocation. */
-  public Map<String, BaseAgentState> agentStates() {
-    return agentStates;
-  }
-
-  /** Returns map of agents that ended during this invocation. */
-  public Map<String, Boolean> endOfAgents() {
-    return endOfAgents;
+  /**
+   * Returns a map for storing temporary context data that can be shared between different parts of
+   * the invocation (e.g., before/on/after model callbacks).
+   */
+  public Map<String, Object> callbackContextData() {
+    return callbackContextData;
   }
 
   /**
@@ -354,31 +345,14 @@ public class InvocationContext {
     this.invocationCostManager.incrementAndEnforceLlmCallsLimit(this.runConfig);
   }
 
-  /** Returns whether the current invocation is resumable. */
-  public boolean isResumable() {
-    return resumabilityConfig.isResumable();
-  }
-
   /** Returns the events compaction configuration for the current agent run. */
   public Optional<EventsCompactionConfig> eventsCompactionConfig() {
     return Optional.ofNullable(eventsCompactionConfig);
   }
 
-  /** Returns whether to pause the invocation right after this [event]. */
-  public boolean shouldPauseInvocation(Event event) {
-    if (!isResumable()) {
-      return false;
-    }
-
-    var longRunningToolIds = event.longRunningToolIds().orElse(ImmutableSet.of());
-    if (longRunningToolIds.isEmpty()) {
-      return false;
-    }
-
-    return event.functionCalls().stream()
-        .map(FunctionCall::id)
-        .flatMap(Optional::stream)
-        .anyMatch(functionCallId -> longRunningToolIds.contains(functionCallId));
+  /** Returns the context cache configuration for the current agent run. */
+  public Optional<ContextCacheConfig> contextCacheConfig() {
+    return Optional.ofNullable(contextCacheConfig);
   }
 
   private static class InvocationCostManager {
@@ -432,11 +406,10 @@ public class InvocationContext {
       this.userContent = context.userContent;
       this.runConfig = context.runConfig;
       this.endInvocation = context.endInvocation;
-      this.agentStates = new ConcurrentHashMap<>(context.agentStates);
-      this.endOfAgents = new ConcurrentHashMap<>(context.endOfAgents);
-      this.resumabilityConfig = context.resumabilityConfig;
       this.eventsCompactionConfig = context.eventsCompactionConfig;
+      this.contextCacheConfig = context.contextCacheConfig;
       this.invocationCostManager = context.invocationCostManager;
+      this.callbackContextData = new ConcurrentHashMap<>(context.callbackContextData);
     }
 
     private BaseSessionService sessionService;
@@ -452,11 +425,10 @@ public class InvocationContext {
     private Optional<Content> userContent = Optional.empty();
     private RunConfig runConfig = RunConfig.builder().build();
     private boolean endInvocation = false;
-    private Map<String, BaseAgentState> agentStates = new ConcurrentHashMap<>();
-    private Map<String, Boolean> endOfAgents = new ConcurrentHashMap<>();
-    private ResumabilityConfig resumabilityConfig = new ResumabilityConfig();
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
+    @Nullable private ContextCacheConfig contextCacheConfig;
     private InvocationCostManager invocationCostManager = new InvocationCostManager();
+    private Map<String, Object> callbackContextData = new ConcurrentHashMap<>();
 
     /**
      * Sets the session service for managing session state.
@@ -645,42 +617,6 @@ public class InvocationContext {
     }
 
     /**
-     * Sets agent-specific state saved within this invocation.
-     *
-     * @param agentStates agent-specific state saved within this invocation.
-     * @return this builder instance for chaining.
-     */
-    @CanIgnoreReturnValue
-    public Builder agentStates(Map<String, BaseAgentState> agentStates) {
-      this.agentStates = agentStates;
-      return this;
-    }
-
-    /**
-     * Sets agent end-of-invocation status.
-     *
-     * @param endOfAgents agent end-of-invocation status.
-     * @return this builder instance for chaining.
-     */
-    @CanIgnoreReturnValue
-    public Builder endOfAgents(Map<String, Boolean> endOfAgents) {
-      this.endOfAgents = endOfAgents;
-      return this;
-    }
-
-    /**
-     * Sets the resumability configuration for the current agent run.
-     *
-     * @param resumabilityConfig the resumability configuration.
-     * @return this builder instance for chaining.
-     */
-    @CanIgnoreReturnValue
-    public Builder resumabilityConfig(ResumabilityConfig resumabilityConfig) {
-      this.resumabilityConfig = resumabilityConfig;
-      return this;
-    }
-
-    /**
      * Sets the events compaction configuration for the current agent run.
      *
      * @param eventsCompactionConfig the events compaction configuration.
@@ -693,13 +629,58 @@ public class InvocationContext {
     }
 
     /**
+     * Sets the context cache configuration for the current agent run.
+     *
+     * @param contextCacheConfig the context cache configuration.
+     * @return this builder instance for chaining.
+     */
+    @CanIgnoreReturnValue
+    public Builder contextCacheConfig(@Nullable ContextCacheConfig contextCacheConfig) {
+      this.contextCacheConfig = contextCacheConfig;
+      return this;
+    }
+
+    /**
+     * Sets the callback context data for the invocation.
+     *
+     * @param callbackContextData the callback context data.
+     * @return this builder instance for chaining.
+     */
+    @CanIgnoreReturnValue
+    public Builder callbackContextData(Map<String, Object> callbackContextData) {
+      this.callbackContextData = callbackContextData;
+      return this;
+    }
+
+    /**
      * Builds the {@link InvocationContext} instance.
      *
      * @throws IllegalStateException if any required parameters are missing.
      */
-    // TODO: b/462183912 - Add validation for required parameters.
     public InvocationContext build() {
+      validate(this);
       return new InvocationContext(this);
+    }
+  }
+
+  /**
+   * Validates the required parameters fields: invocationId, agent, session, and sessionService.
+   *
+   * @param builder the builder to validate.
+   * @throws IllegalStateException if any required parameters are missing.
+   */
+  private static void validate(Builder builder) {
+    if (isNullOrEmpty(builder.invocationId)) {
+      throw new IllegalStateException("Invocation ID must be non-empty.");
+    }
+    if (builder.agent == null) {
+      throw new IllegalStateException("Agent must be set.");
+    }
+    if (builder.session == null) {
+      throw new IllegalStateException("Session must be set.");
+    }
+    if (builder.sessionService == null) {
+      throw new IllegalStateException("Session service must be set.");
     }
   }
 
@@ -724,11 +705,10 @@ public class InvocationContext {
         && Objects.equals(session, that.session)
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
-        && Objects.equals(agentStates, that.agentStates)
-        && Objects.equals(endOfAgents, that.endOfAgents)
-        && Objects.equals(resumabilityConfig, that.resumabilityConfig)
         && Objects.equals(eventsCompactionConfig, that.eventsCompactionConfig)
-        && Objects.equals(invocationCostManager, that.invocationCostManager);
+        && Objects.equals(contextCacheConfig, that.contextCacheConfig)
+        && Objects.equals(invocationCostManager, that.invocationCostManager)
+        && Objects.equals(callbackContextData, that.callbackContextData);
   }
 
   @Override
@@ -747,10 +727,9 @@ public class InvocationContext {
         userContent,
         runConfig,
         endInvocation,
-        agentStates,
-        endOfAgents,
-        resumabilityConfig,
         eventsCompactionConfig,
-        invocationCostManager);
+        contextCacheConfig,
+        invocationCostManager,
+        callbackContextData);
   }
 }

@@ -17,23 +17,23 @@
 package com.google.adk.agents;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 
-import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
-import com.google.adk.events.Event;
 import com.google.adk.memory.BaseMemoryService;
+import com.google.adk.models.LlmCallsLimitExceededException;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
+import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
-import com.google.genai.types.FunctionCall;
-import com.google.genai.types.Part;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -145,7 +145,7 @@ public final class InvocationContextTest {
   }
 
   @Test
-  public void testCopyOf() {
+  public void testToBuilder() {
     InvocationContext originalContext =
         InvocationContext.builder()
             .sessionService(mockSessionService)
@@ -178,6 +178,24 @@ public final class InvocationContextTest {
     assertThat(copiedContext.endInvocation()).isEqualTo(originalContext.endInvocation());
     assertThat(copiedContext.activeStreamingTools())
         .isEqualTo(originalContext.activeStreamingTools());
+    assertThat(copiedContext.callbackContextData())
+        .isEqualTo(originalContext.callbackContextData());
+  }
+
+  @Test
+  public void testBuildWithCallbackContextData() {
+    ConcurrentHashMap<String, Object> data = new ConcurrentHashMap<>();
+    data.put("key", "value");
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .callbackContextData(data)
+            .build();
+
+    assertThat(context.callbackContextData()).isEqualTo(data);
   }
 
   @Test
@@ -404,6 +422,22 @@ public final class InvocationContextTest {
     assertThat(context.equals(contextWithDiffAgent)).isFalse();
     assertThat(context.equals(contextWithUserContentEmpty)).isFalse();
     assertThat(context.equals(contextWithLiveQueuePresent)).isFalse();
+
+    InvocationContext contextWithDiffCallbackContextData =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(userContent)
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .callbackContextData(new ConcurrentHashMap<>(ImmutableMap.of("key", "value")))
+            .build();
+    assertThat(context.equals(contextWithDiffCallbackContextData)).isFalse();
   }
 
   @Test
@@ -453,155 +487,343 @@ public final class InvocationContextTest {
 
     assertThat(context).isNotEqualTo(contextWithDiffSessionService);
     assertThat(context).isNotEqualTo(contextWithDiffInvocationId);
+
+    InvocationContext contextWithDiffCallbackContextData =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .memoryService(mockMemoryService)
+            .pluginManager(pluginManager)
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(userContent)
+            .runConfig(runConfig)
+            .endInvocation(false)
+            .callbackContextData(new ConcurrentHashMap<>(ImmutableMap.of("key", "value")))
+            .build();
+    assertThat(context.hashCode()).isNotEqualTo(contextWithDiffCallbackContextData.hashCode());
   }
 
   @Test
-  public void isResumable_whenResumabilityConfigIsNotResumable_isFalse() {
+  public void incrementLlmCallsCount_whenLimitNotExceeded_doesNotThrow() throws Exception {
     InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .runConfig(RunConfig.builder().setMaxLlmCalls(2).build())
+            .build();
+
+    context.incrementLlmCallsCount();
+    context.incrementLlmCallsCount();
+    // No exception thrown
+  }
+
+  @Test
+  public void incrementLlmCallsCount_whenLimitExceeded_throwsException() throws Exception {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .runConfig(RunConfig.builder().setMaxLlmCalls(1).build())
+            .build();
+
+    context.incrementLlmCallsCount();
+    LlmCallsLimitExceededException thrown =
+        Assert.assertThrows(
+            LlmCallsLimitExceededException.class, () -> context.incrementLlmCallsCount());
+    assertThat(thrown).hasMessageThat().contains("limit of 1 exceeded");
+  }
+
+  @Test
+  public void incrementLlmCallsCount_whenNoLimit_doesNotThrow() throws Exception {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .runConfig(RunConfig.builder().setMaxLlmCalls(0).build())
+            .build();
+
+    for (int i = 0; i < 100; i++) {
+      context.incrementLlmCallsCount();
+    }
+  }
+
+  @Test
+  public void testSessionGetters() {
+    Session sessionWithDetails =
+        Session.builder("test-id").appName("test-app").userId("test-user").build();
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(sessionWithDetails)
+            .build();
+
+    assertThat(context.appName()).isEqualTo("test-app");
+    assertThat(context.userId()).isEqualTo("test-user");
+  }
+
+  @Test
+  public void testSetEndInvocation() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .build();
+
+    assertThat(context.endInvocation()).isFalse();
+    context.setEndInvocation(true);
+    assertThat(context.endInvocation()).isTrue();
+  }
+
+  @Test
+  // Testing deprecated methods.
+  public void testBranch() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .branch("test-branch")
+            .build();
+
+    assertThat(context.branch()).hasValue("test-branch");
+
+    context.branch("new-branch");
+    assertThat(context.branch()).hasValue("new-branch");
+
+    context.branch(null);
+    assertThat(context.branch()).isEmpty();
+  }
+
+  @Test
+  // Testing deprecated methods.
+  public void testDeprecatedCreateMethods() {
+    InvocationContext context1 =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .invocationId(testInvocationId)
+            .agent(mockAgent)
+            .session(session)
+            .userContent(Optional.ofNullable(userContent))
+            .runConfig(runConfig)
+            .build();
+
+    assertThat(context1.sessionService()).isEqualTo(mockSessionService);
+    assertThat(context1.artifactService()).isEqualTo(mockArtifactService);
+    assertThat(context1.invocationId()).isEqualTo(testInvocationId);
+    assertThat(context1.agent()).isEqualTo(mockAgent);
+    assertThat(context1.session()).isEqualTo(session);
+    assertThat(context1.userContent()).hasValue(userContent);
+    assertThat(context1.runConfig()).isEqualTo(runConfig);
+
+    InvocationContext context2 =
+        InvocationContext.create(
+            mockSessionService,
+            mockArtifactService,
+            mockAgent,
+            session,
+            liveRequestQueue,
+            runConfig);
+
+    assertThat(context2.sessionService()).isEqualTo(mockSessionService);
+    assertThat(context2.artifactService()).isEqualTo(mockArtifactService);
+    assertThat(context2.agent()).isEqualTo(mockAgent);
+    assertThat(context2.session()).isEqualTo(session);
+    assertThat(context2.liveRequestQueue()).hasValue(liveRequestQueue);
+    assertThat(context2.runConfig()).isEqualTo(runConfig);
+  }
+
+  @Test
+  public void testActiveStreamingTools() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .build();
+
+    assertThat(context.activeStreamingTools()).isEmpty();
+    ActiveStreamingTool tool = new ActiveStreamingTool(new LiveRequestQueue());
+    context.activeStreamingTools().put("tool1", tool);
+    assertThat(context.activeStreamingTools()).containsEntry("tool1", tool);
+  }
+
+  @Test
+  public void testEventsCompactionConfig() {
+    EventsCompactionConfig config = new EventsCompactionConfig(5, 2);
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .eventsCompactionConfig(config)
+            .build();
+
+    assertThat(context.eventsCompactionConfig()).hasValue(config);
+  }
+
+  @Test
+  // Testing deprecated methods.
+  public void testBuilderOptionalParameters() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .liveRequestQueue(Optional.of(liveRequestQueue))
+            .branch(Optional.of("test-branch"))
+            .userContent(Optional.of(userContent))
+            .build();
+
+    assertThat(context.liveRequestQueue()).hasValue(liveRequestQueue);
+    assertThat(context.branch()).hasValue("test-branch");
+    assertThat(context.userContent()).hasValue(userContent);
+  }
+
+  @Test
+  // Testing deprecated methods.
+  public void testDeprecatedConstructor() {
+    InvocationContext context =
+        new InvocationContext(
+            mockSessionService,
+            mockArtifactService,
+            mockMemoryService,
+            pluginManager,
+            Optional.of(liveRequestQueue),
+            Optional.of("test-branch"),
+            testInvocationId,
+            mockAgent,
+            session,
+            Optional.of(userContent),
+            runConfig,
+            true);
+
+    assertThat(context.sessionService()).isEqualTo(mockSessionService);
+    assertThat(context.artifactService()).isEqualTo(mockArtifactService);
+    assertThat(context.memoryService()).isEqualTo(mockMemoryService);
+    assertThat(context.pluginManager()).isEqualTo(pluginManager);
+    assertThat(context.liveRequestQueue()).hasValue(liveRequestQueue);
+    assertThat(context.branch()).hasValue("test-branch");
+    assertThat(context.invocationId()).isEqualTo(testInvocationId);
+    assertThat(context.agent()).isEqualTo(mockAgent);
+    assertThat(context.session()).isEqualTo(session);
+    assertThat(context.userContent()).hasValue(userContent);
+    assertThat(context.runConfig()).isEqualTo(runConfig);
+    assertThat(context.endInvocation()).isTrue();
+  }
+
+  @Test
+  // Testing deprecated methods.
+  public void testDeprecatedConstructor_11params() {
+    InvocationContext context =
+        new InvocationContext(
+            mockSessionService,
+            mockArtifactService,
+            mockMemoryService,
+            Optional.of(liveRequestQueue),
+            Optional.of("test-branch"),
+            testInvocationId,
+            mockAgent,
+            session,
+            Optional.of(userContent),
+            runConfig,
+            true);
+
+    assertThat(context.sessionService()).isEqualTo(mockSessionService);
+    assertThat(context.artifactService()).isEqualTo(mockArtifactService);
+    assertThat(context.memoryService()).isEqualTo(mockMemoryService);
+    assertThat(context.liveRequestQueue()).hasValue(liveRequestQueue);
+    assertThat(context.branch()).hasValue("test-branch");
+    assertThat(context.invocationId()).isEqualTo(testInvocationId);
+    assertThat(context.agent()).isEqualTo(mockAgent);
+    assertThat(context.session()).isEqualTo(session);
+    assertThat(context.userContent()).hasValue(userContent);
+    assertThat(context.runConfig()).isEqualTo(runConfig);
+    assertThat(context.endInvocation()).isTrue();
+  }
+
+  @Test
+  public void build_missingInvocationId_null_throwsException() {
+    InvocationContext.Builder builder =
         InvocationContext.builder()
             .sessionService(mockSessionService)
             .artifactService(mockArtifactService)
             .memoryService(mockMemoryService)
             .agent(mockAgent)
-            .session(session)
-            .resumabilityConfig(new ResumabilityConfig(false))
-            .build();
-    assertThat(context.isResumable()).isFalse();
+            .invocationId(null)
+            .session(session);
+
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+    assertThat(exception).hasMessageThat().isEqualTo("Invocation ID must be non-empty.");
   }
 
   @Test
-  public void isResumable_whenResumabilityConfigIsResumable_isTrue() {
-    InvocationContext context =
+  public void build_missingInvocationId_empty_throwsException() {
+    InvocationContext.Builder builder =
         InvocationContext.builder()
             .sessionService(mockSessionService)
             .artifactService(mockArtifactService)
             .memoryService(mockMemoryService)
             .agent(mockAgent)
-            .session(session)
-            .resumabilityConfig(new ResumabilityConfig(true))
-            .build();
-    assertThat(context.isResumable()).isTrue();
+            .invocationId("")
+            .session(session);
+
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+    assertThat(exception).hasMessageThat().isEqualTo("Invocation ID must be non-empty.");
   }
 
   @Test
-  public void shouldPauseInvocation_whenNotResumable_isFalse() {
-    InvocationContext context =
+  public void build_missingAgent_throwsException() {
+    InvocationContext.Builder builder =
         InvocationContext.builder()
             .sessionService(mockSessionService)
             .artifactService(mockArtifactService)
             .memoryService(mockMemoryService)
-            .agent(mockAgent)
-            .session(session)
-            .resumabilityConfig(new ResumabilityConfig(false))
-            .build();
-    Event event =
-        Event.builder()
-            .longRunningToolIds(Optional.of(ImmutableSet.of("fc1")))
-            .content(
-                Content.builder()
-                    .parts(
-                        ImmutableList.of(
-                            Part.builder()
-                                .functionCall(
-                                    FunctionCall.builder().name("tool1").id("fc1").build())
-                                .build()))
-                    .build())
-            .build();
-    assertThat(context.shouldPauseInvocation(event)).isFalse();
+            .session(session);
+
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+    assertThat(exception).hasMessageThat().isEqualTo("Agent must be set.");
   }
 
   @Test
-  public void shouldPauseInvocation_whenResumableAndNoLongRunningToolIds_isFalse() {
-    InvocationContext context =
+  public void build_missingSession_throwsException() {
+    InvocationContext.Builder builder =
         InvocationContext.builder()
             .sessionService(mockSessionService)
             .artifactService(mockArtifactService)
             .memoryService(mockMemoryService)
-            .agent(mockAgent)
-            .session(session)
-            .resumabilityConfig(new ResumabilityConfig(true))
-            .build();
-    Event event =
-        Event.builder()
-            .content(
-                Content.builder()
-                    .parts(
-                        ImmutableList.of(
-                            Part.builder()
-                                .functionCall(
-                                    FunctionCall.builder().name("tool1").id("fc1").build())
-                                .build()))
-                    .build())
-            .build();
-    assertThat(context.shouldPauseInvocation(event)).isFalse();
+            .agent(mockAgent);
+
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+    assertThat(exception).hasMessageThat().isEqualTo("Session must be set.");
   }
 
   @Test
-  public void shouldPauseInvocation_whenResumableAndNoFunctionCalls_isFalse() {
-    InvocationContext context =
+  public void build_missingSessionService_throwsException() {
+    InvocationContext.Builder builder =
         InvocationContext.builder()
-            .sessionService(mockSessionService)
             .artifactService(mockArtifactService)
             .memoryService(mockMemoryService)
             .agent(mockAgent)
-            .session(session)
-            .resumabilityConfig(new ResumabilityConfig(true))
-            .build();
-    Event event = Event.builder().longRunningToolIds(Optional.of(ImmutableSet.of("fc1"))).build();
-    assertThat(context.shouldPauseInvocation(event)).isFalse();
-  }
+            .session(session);
 
-  @Test
-  public void shouldPauseInvocation_whenResumableAndNoMatchingFunctionCallId_isFalse() {
-    InvocationContext context =
-        InvocationContext.builder()
-            .sessionService(mockSessionService)
-            .artifactService(mockArtifactService)
-            .memoryService(mockMemoryService)
-            .agent(mockAgent)
-            .session(session)
-            .resumabilityConfig(new ResumabilityConfig(true))
-            .build();
-    Event event =
-        Event.builder()
-            .longRunningToolIds(Optional.of(ImmutableSet.of("fc2")))
-            .content(
-                Content.builder()
-                    .parts(
-                        ImmutableList.of(
-                            Part.builder()
-                                .functionCall(
-                                    FunctionCall.builder().name("tool1").id("fc1").build())
-                                .build()))
-                    .build())
-            .build();
-    assertThat(context.shouldPauseInvocation(event)).isFalse();
-  }
-
-  @Test
-  public void shouldPauseInvocation_whenResumableAndMatchingFunctionCallId_isTrue() {
-    InvocationContext context =
-        InvocationContext.builder()
-            .sessionService(mockSessionService)
-            .artifactService(mockArtifactService)
-            .memoryService(mockMemoryService)
-            .agent(mockAgent)
-            .session(session)
-            .resumabilityConfig(new ResumabilityConfig(true))
-            .build();
-    Event event =
-        Event.builder()
-            .longRunningToolIds(Optional.of(ImmutableSet.of("fc1")))
-            .content(
-                Content.builder()
-                    .parts(
-                        ImmutableList.of(
-                            Part.builder()
-                                .functionCall(
-                                    FunctionCall.builder().name("tool1").id("fc1").build())
-                                .build()))
-                    .build())
-            .build();
-    assertThat(context.shouldPauseInvocation(event)).isTrue();
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+    assertThat(exception).hasMessageThat().isEqualTo("Session service must be set.");
   }
 }

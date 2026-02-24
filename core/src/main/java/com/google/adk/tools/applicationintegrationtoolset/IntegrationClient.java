@@ -148,7 +148,7 @@ public class IntegrationClient {
     }
   }
 
-  String generateOpenApiSpec() throws Exception {
+  String generateOpenApiSpec() throws IOException, InterruptedException {
     String url =
         String.format(
             "https://%s-integrations.googleapis.com/v1/projects/%s/locations/%s:generateOpenApiSpec",
@@ -179,7 +179,7 @@ public class IntegrationClient {
         httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
 
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
-      throw new Exception("Error fetching OpenAPI spec. Status: " + response.statusCode());
+      throw new IOException("Error fetching OpenAPI spec. Status: " + response.statusCode());
     }
     return response.body();
   }
@@ -343,7 +343,7 @@ public class IntegrationClient {
     return connectorSpec;
   }
 
-  String getOperationIdFromPathUrl(String openApiSchemaString, String pathUrl) throws Exception {
+  String getOperationIdFromPathUrl(String openApiSchemaString, String pathUrl) throws IOException {
     JsonNode topLevelNode = objectMapper.readTree(openApiSchemaString);
     JsonNode specNode = topLevelNode.path("openApiSpec");
     if (specNode.isMissingNode() || !specNode.isTextual()) {
@@ -372,7 +372,7 @@ public class IntegrationClient {
         }
       }
     }
-    throw new Exception("Could not find operationId for pathUrl: " + pathUrl);
+    throw new IOException("Could not find operationId for pathUrl: " + pathUrl);
   }
 
   ConnectionsClient createConnectionsClient() {

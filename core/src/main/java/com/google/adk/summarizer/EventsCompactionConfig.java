@@ -27,11 +27,28 @@ import javax.annotation.Nullable;
  *     compacted range. This creates an overlap between consecutive compacted summaries, maintaining
  *     context.
  * @param summarizer An event summarizer to use for compaction.
+ * @param tokenThreshold The number of tokens above which compaction will be triggered. If null, no
+ *     token limit will be enforced. It will trigger compaction within the invocation.
+ * @param eventRetentionSize The maximum number of events to retain and preserve from compaction. If
+ *     null, no event retention limit will be enforced.
  */
 public record EventsCompactionConfig(
-    int compactionInterval, int overlapSize, @Nullable BaseEventSummarizer summarizer) {
+    @Nullable Integer compactionInterval,
+    @Nullable Integer overlapSize,
+    @Nullable BaseEventSummarizer summarizer,
+    @Nullable Integer tokenThreshold,
+    @Nullable Integer eventRetentionSize) {
 
   public EventsCompactionConfig(int compactionInterval, int overlapSize) {
-    this(compactionInterval, overlapSize, null);
+    this(compactionInterval, overlapSize, null, null, null);
+  }
+
+  public EventsCompactionConfig(
+      int compactionInterval, int overlapSize, @Nullable BaseEventSummarizer summarizer) {
+    this(compactionInterval, overlapSize, summarizer, null, null);
+  }
+
+  public boolean hasSlidingWindowCompactionConfig() {
+    return compactionInterval != null && compactionInterval > 0 && overlapSize != null;
   }
 }

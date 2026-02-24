@@ -163,7 +163,7 @@ public final class ResponseConverter {
    * empty optional if the event should be ignored (e.g. if the event is not a final update for
    * TaskArtifactUpdateEvent or if the message is empty for TaskStatusUpdateEvent).
    *
-   * @throws an {@link IllegalArgumentException} if the event type is not supported.
+   * @throws IllegalArgumentException if the event type is not supported.
    */
   public static Optional<Event> clientEventToEvent(
       ClientEvent event, InvocationContext invocationContext) {
@@ -182,7 +182,7 @@ public final class ResponseConverter {
    * the event is not a final update for TaskArtifactUpdateEvent or if the message is empty for
    * TaskStatusUpdateEvent.
    *
-   * @throws an {@link IllegalArgumentException} if the task update type is not supported.
+   * @throws IllegalArgumentException if the task update type is not supported.
    */
   private static Optional<Event> handleTaskUpdate(
       TaskUpdateEvent event, InvocationContext context) {

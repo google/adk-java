@@ -18,6 +18,7 @@ package com.google.adk.artifacts;
 
 import static java.util.Collections.max;
 
+import com.google.auto.value.AutoValue;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
@@ -27,11 +28,12 @@ import com.google.cloud.storage.StorageException;
 import com.google.common.base.Splitter;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Streams;
+import com.google.genai.types.FileData;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -108,34 +110,8 @@ public final class GcsArtifactService implements BaseArtifactService {
   @Override
   public Single<Integer> saveArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact) {
-    return listVersions(appName, userId, sessionId, filename)
-        .map(versions -> versions.isEmpty() ? 0 : max(versions) + 1)
-        .map(
-            nextVersion -> {
-              String blobName = getBlobName(appName, userId, sessionId, filename, nextVersion);
-              BlobId blobId = BlobId.of(bucketName, blobName);
-
-              BlobInfo blobInfo =
-                  BlobInfo.newBuilder(blobId)
-                      .setContentType(artifact.inlineData().get().mimeType().orElse(null))
-                      .build();
-
-              try {
-                byte[] dataToSave =
-                    artifact
-                        .inlineData()
-                        .get()
-                        .data()
-                        .orElseThrow(
-                            () ->
-                                new IllegalArgumentException(
-                                    "Saveable artifact data must be non-empty."));
-                storageClient.create(blobInfo, dataToSave);
-                return nextVersion;
-              } catch (StorageException e) {
-                throw new VerifyException("Failed to save artifact to GCS", e);
-              }
-            });
+    return saveArtifactAndReturnBlob(appName, userId, sessionId, filename, artifact)
+        .map(SaveResult::version);
   }
 
   /**
@@ -159,22 +135,25 @@ public final class GcsArtifactService implements BaseArtifactService {
                     .flatMapMaybe(
                         versions -> versions.isEmpty() ? Maybe.empty() : Maybe.just(max(versions))))
         .flatMap(
-            versionToLoad -> {
-              String blobName = getBlobName(appName, userId, sessionId, filename, versionToLoad);
-              BlobId blobId = BlobId.of(bucketName, blobName);
+            versionToLoad ->
+                Maybe.fromCallable(
+                    () -> {
+                      String blobName =
+                          getBlobName(appName, userId, sessionId, filename, versionToLoad);
+                      BlobId blobId = BlobId.of(bucketName, blobName);
 
-              try {
-                Blob blob = storageClient.get(blobId);
-                if (blob == null || !blob.exists()) {
-                  return Maybe.empty();
-                }
-                byte[] data = blob.getContent();
-                String mimeType = blob.getContentType();
-                return Maybe.just(Part.fromBytes(data, mimeType));
-              } catch (StorageException e) {
-                return Maybe.empty();
-              }
-            });
+                      try {
+                        Blob blob = storageClient.get(blobId);
+                        if (blob == null || !blob.exists()) {
+                          return null;
+                        }
+                        byte[] data = blob.getContent();
+                        String mimeType = blob.getContentType();
+                        return Part.fromBytes(data, mimeType);
+                      } catch (StorageException e) {
+                        return null;
+                      }
+                    }));
   }
 
   /**
@@ -188,34 +167,38 @@ public final class GcsArtifactService implements BaseArtifactService {
   @Override
   public Single<ListArtifactsResponse> listArtifactKeys(
       String appName, String userId, String sessionId) {
-    Set<String> filenames = new HashSet<>();
+    return Single.fromCallable(
+        () -> {
+          Set<String> filenames = new HashSet<>();
 
-    // List session-specific files
-    String sessionPrefix = String.format("%s/%s/%s/", appName, userId, sessionId);
-    try {
-      for (Blob blob :
-          storageClient.list(bucketName, BlobListOption.prefix(sessionPrefix)).iterateAll()) {
-        List<String> parts = Splitter.on('/').splitToList(blob.getName());
-        filenames.add(parts.get(3)); // appName/userId/sessionId/filename/version
-      }
-    } catch (StorageException e) {
-      throw new VerifyException("Failed to list session artifacts from GCS", e);
-    }
+          // List session-specific files
+          String sessionPrefix = String.format("%s/%s/%s/", appName, userId, sessionId);
+          try {
+            for (Blob blob :
+                storageClient.list(bucketName, BlobListOption.prefix(sessionPrefix)).iterateAll()) {
+              List<String> parts = Splitter.on('/').splitToList(blob.getName());
+              filenames.add(parts.get(3)); // appName/userId/sessionId/filename/version
+            }
+          } catch (StorageException e) {
+            throw new VerifyException("Failed to list session artifacts from GCS", e);
+          }
 
-    // List user-namespace files
-    String userPrefix = String.format("%s/%s/user/", appName, userId);
-    try {
-      for (Blob blob :
-          storageClient.list(bucketName, BlobListOption.prefix(userPrefix)).iterateAll()) {
-        List<String> parts = Splitter.on('/').splitToList(blob.getName());
-        filenames.add(parts.get(3)); // appName/userId/user/filename/version
-      }
-    } catch (StorageException e) {
-      throw new VerifyException("Failed to list user artifacts from GCS", e);
-    }
+          // List user-namespace files
+          String userPrefix = String.format("%s/%s/user/", appName, userId);
+          try {
+            for (Blob blob :
+                storageClient.list(bucketName, BlobListOption.prefix(userPrefix)).iterateAll()) {
+              List<String> parts = Splitter.on('/').splitToList(blob.getName());
+              filenames.add(parts.get(3)); // appName/userId/user/filename/version
+            }
+          } catch (StorageException e) {
+            throw new VerifyException("Failed to list user artifacts from GCS", e);
+          }
 
-    return Single.just(
-        ListArtifactsResponse.builder().filenames(ImmutableList.sortedCopyOf(filenames)).build());
+          return ListArtifactsResponse.builder()
+              .filenames(ImmutableList.sortedCopyOf(filenames))
+              .build();
+        });
   }
 
   /**
@@ -230,22 +213,30 @@ public final class GcsArtifactService implements BaseArtifactService {
   @Override
   public Completable deleteArtifact(
       String appName, String userId, String sessionId, String filename) {
-    ImmutableList<Integer> versions =
-        listVersions(appName, userId, sessionId, filename).blockingGet();
-    List<BlobId> blobIdsToDelete = new ArrayList<>();
-    for (int version : versions) {
-      String blobName = getBlobName(appName, userId, sessionId, filename, version);
-      blobIdsToDelete.add(BlobId.of(bucketName, blobName));
-    }
+    return listVersions(appName, userId, sessionId, filename)
+        .flatMapCompletable(
+            versions -> {
+              if (versions.isEmpty()) {
+                return Completable.complete();
+              }
+              ImmutableList<BlobId> blobIdsToDelete =
+                  versions.stream()
+                      .map(
+                          version ->
+                              BlobId.of(
+                                  bucketName,
+                                  getBlobName(appName, userId, sessionId, filename, version)))
+                      .collect(ImmutableList.toImmutableList());
 
-    if (!blobIdsToDelete.isEmpty()) {
-      try {
-        var unused = storageClient.delete(blobIdsToDelete);
-      } catch (StorageException e) {
-        throw new VerifyException("Failed to delete artifact versions from GCS", e);
-      }
-    }
-    return Completable.complete();
+              return Completable.fromAction(
+                  () -> {
+                    try {
+                      var unused = storageClient.delete(blobIdsToDelete);
+                    } catch (StorageException e) {
+                      throw new VerifyException("Failed to delete artifact versions from GCS", e);
+                    }
+                  });
+            });
   }
 
   /**
@@ -260,19 +251,103 @@ public final class GcsArtifactService implements BaseArtifactService {
   @Override
   public Single<ImmutableList<Integer>> listVersions(
       String appName, String userId, String sessionId, String filename) {
-    String prefix = getBlobPrefix(appName, userId, sessionId, filename);
-    List<Integer> versions = new ArrayList<>();
-    try {
-      for (Blob blob : storageClient.list(bucketName, BlobListOption.prefix(prefix)).iterateAll()) {
-        String name = blob.getName();
-        int versionDelimiterIndex = name.lastIndexOf('/'); // immediately before the version number
-        if (versionDelimiterIndex != -1 && versionDelimiterIndex < name.length() - 1) {
-          versions.add(Integer.parseInt(name.substring(versionDelimiterIndex + 1)));
-        }
-      }
-      return Single.just(ImmutableList.sortedCopyOf(versions));
-    } catch (StorageException e) {
-      return Single.just(ImmutableList.of());
+    return Single.fromCallable(
+        () -> {
+          String prefix = getBlobPrefix(appName, userId, sessionId, filename);
+          try {
+            return Streams.stream(
+                    storageClient.list(bucketName, BlobListOption.prefix(prefix)).iterateAll())
+                .map(Blob::getName)
+                .map(
+                    name -> {
+                      int versionDelimiterIndex = name.lastIndexOf('/');
+                      return versionDelimiterIndex != -1
+                              && versionDelimiterIndex < name.length() - 1
+                          ? Optional.of(name.substring(versionDelimiterIndex + 1))
+                          : Optional.<String>empty();
+                    })
+                .flatMap(Optional::stream)
+                .map(Integer::parseInt)
+                .sorted()
+                .collect(ImmutableList.toImmutableList());
+          } catch (StorageException e) {
+            return ImmutableList.of();
+          }
+        });
+  }
+
+  @Override
+  public Single<Part> saveAndReloadArtifact(
+      String appName, String userId, String sessionId, String filename, Part artifact) {
+    return saveArtifactAndReturnBlob(appName, userId, sessionId, filename, artifact)
+        .flatMap(
+            blob -> {
+              Blob savedBlob = blob.blob();
+              String resultMimeType =
+                  Optional.ofNullable(savedBlob.getContentType())
+                      .or(
+                          () ->
+                              artifact.inlineData().flatMap(com.google.genai.types.Blob::mimeType))
+                      .orElse("application/octet-stream");
+              return Single.just(
+                  Part.builder()
+                      .fileData(
+                          FileData.builder()
+                              .fileUri("gs://" + savedBlob.getBucket() + "/" + savedBlob.getName())
+                              .mimeType(resultMimeType)
+                              .build())
+                      .build());
+            });
+  }
+
+  @AutoValue
+  abstract static class SaveResult {
+    static SaveResult create(Blob blob, int version) {
+      return new AutoValue_GcsArtifactService_SaveResult(blob, version);
     }
+
+    abstract Blob blob();
+
+    abstract int version();
+  }
+
+  private Single<SaveResult> saveArtifactAndReturnBlob(
+      String appName, String userId, String sessionId, String filename, Part artifact) {
+    return listVersions(appName, userId, sessionId, filename)
+        .map(versions -> versions.isEmpty() ? 0 : max(versions) + 1)
+        .flatMap(
+            nextVersion ->
+                Single.fromCallable(
+                    () -> {
+                      if (artifact.inlineData().isEmpty()) {
+                        throw new IllegalArgumentException(
+                            "Saveable artifact must have inline data.");
+                      }
+
+                      String blobName =
+                          getBlobName(appName, userId, sessionId, filename, nextVersion);
+                      BlobId blobId = BlobId.of(bucketName, blobName);
+
+                      BlobInfo blobInfo =
+                          BlobInfo.newBuilder(blobId)
+                              .setContentType(artifact.inlineData().get().mimeType().orElse(null))
+                              .build();
+
+                      try {
+                        byte[] dataToSave =
+                            artifact
+                                .inlineData()
+                                .get()
+                                .data()
+                                .orElseThrow(
+                                    () ->
+                                        new IllegalArgumentException(
+                                            "Saveable artifact data must be non-empty."));
+                        Blob blob = storageClient.create(blobInfo, dataToSave);
+                        return SaveResult.create(blob, nextVersion);
+                      } catch (StorageException e) {
+                        throw new VerifyException("Failed to save artifact to GCS", e);
+                      }
+                    }));
   }
 }

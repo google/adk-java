@@ -36,7 +36,6 @@ import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
-import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmResponse;
@@ -177,6 +176,70 @@ public final class RunnerTest {
             "user: user 2",
             "test agent: llm 2",
             "user: summary 2");
+  }
+
+  @Test
+  public void eventsCompaction_withNullOverlap_doesNotCompact() {
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(createContent("llm 1")), createLlmResponse(createContent("llm 2")));
+    LlmAgent agent = createTestAgent(testLlm);
+
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name(this.runner.appName())
+                    .rootAgent(agent)
+                    .eventsCompactionConfig(new EventsCompactionConfig(1, null, null, null, null))
+                    .build())
+            .sessionService(this.runner.sessionService())
+            .build();
+
+    var unused1 =
+        runner.runAsync("user", session.id(), createContent("user 1")).toList().blockingGet();
+    var unused2 =
+        runner.runAsync("user", session.id(), createContent("user 2")).toList().blockingGet();
+
+    Session updatedSession =
+        runner
+            .sessionService()
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(simplifyEvents(updatedSession.events()))
+        .containsExactly("user: user 1", "test agent: llm 1", "user: user 2", "test agent: llm 2");
+  }
+
+  @Test
+  public void eventsCompaction_withNullInterval_doesNotCompact() {
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(createContent("llm 1")), createLlmResponse(createContent("llm 2")));
+    LlmAgent agent = createTestAgent(testLlm);
+
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name(this.runner.appName())
+                    .rootAgent(agent)
+                    .eventsCompactionConfig(new EventsCompactionConfig(null, 0, null, null, null))
+                    .build())
+            .sessionService(this.runner.sessionService())
+            .build();
+
+    var unused1 =
+        runner.runAsync("user", session.id(), createContent("user 1")).toList().blockingGet();
+    var unused2 =
+        runner.runAsync("user", session.id(), createContent("user 2")).toList().blockingGet();
+
+    Session updatedSession =
+        runner
+            .sessionService()
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(simplifyEvents(updatedSession.events()))
+        .containsExactly("user: user 1", "test agent: llm 1", "user: user 2", "test agent: llm 2");
   }
 
   @Test
@@ -866,48 +929,6 @@ public final class RunnerTest {
   }
 
   @Test
-  public void resumabilityConfig_isResumable_isTrueInInvocationContext() {
-    ArgumentCaptor<InvocationContext> contextCaptor =
-        ArgumentCaptor.forClass(InvocationContext.class);
-    when(plugin.beforeRunCallback(contextCaptor.capture())).thenReturn(Maybe.empty());
-    Runner runner =
-        Runner.builder()
-            .app(
-                App.builder()
-                    .name("test")
-                    .rootAgent(agent)
-                    .plugins(ImmutableList.of(plugin))
-                    .resumabilityConfig(new ResumabilityConfig(true))
-                    .build())
-            .build();
-    Session session = runner.sessionService().createSession("test", "user").blockingGet();
-    var unused =
-        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
-    assertThat(contextCaptor.getValue().isResumable()).isTrue();
-  }
-
-  @Test
-  public void resumabilityConfig_isNotResumable_isFalseInInvocationContext() {
-    ArgumentCaptor<InvocationContext> contextCaptor =
-        ArgumentCaptor.forClass(InvocationContext.class);
-    when(plugin.beforeRunCallback(contextCaptor.capture())).thenReturn(Maybe.empty());
-    Runner runner =
-        Runner.builder()
-            .app(
-                App.builder()
-                    .name("test")
-                    .rootAgent(agent)
-                    .plugins(ImmutableList.of(plugin))
-                    .resumabilityConfig(new ResumabilityConfig(false))
-                    .build())
-            .build();
-    Session session = runner.sessionService().createSession("test", "user").blockingGet();
-    var unused =
-        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
-    assertThat(contextCaptor.getValue().isResumable()).isFalse();
-  }
-
-  @Test
   public void runAsync_withoutSessionAndAutoCreateSessionTrue_createsSession() {
     RunConfig runConfig = RunConfig.builder().setAutoCreateSession(true).build();
     String newSessionId = UUID.randomUUID().toString();
@@ -1042,6 +1063,26 @@ public final class RunnerTest {
             "FunctionCall(name=echoTool, args={message=hello})",
             "FunctionResponse(name=echoTool, response={message=hello})")
         .inOrder();
+  }
+
+  @Test
+  public void close_closesPluginsAndCodeExecutors() {
+    BasePlugin plugin = mockPlugin("close_test_plugin");
+    when(plugin.close()).thenReturn(Completable.complete());
+    LlmAgent agentWithCodeExecutor = createTestAgentBuilder(testLlm).build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agentWithCodeExecutor)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
+
+    runner.close().blockingAwait();
+
+    verify(plugin).close();
   }
 
   public static class Tools {

@@ -31,6 +31,7 @@ public class CallbackContext extends ReadonlyContext {
 
   protected EventActions eventActions;
   private final State state;
+  private final String eventId;
 
   /**
    * Initializes callback context.
@@ -39,9 +40,22 @@ public class CallbackContext extends ReadonlyContext {
    * @param eventActions Callback event actions.
    */
   public CallbackContext(InvocationContext invocationContext, EventActions eventActions) {
+    this(invocationContext, eventActions, null);
+  }
+
+  /**
+   * Initializes callback context.
+   *
+   * @param invocationContext Current invocation context.
+   * @param eventActions Callback event actions.
+   * @param eventId The ID of the event associated with this context.
+   */
+  public CallbackContext(
+      InvocationContext invocationContext, EventActions eventActions, String eventId) {
     super(invocationContext);
     this.eventActions = eventActions != null ? eventActions : EventActions.builder().build();
     this.state = new State(invocationContext.session().state(), this.eventActions.stateDelta());
+    this.eventId = eventId;
   }
 
   /** Returns the delta-aware state of the current callback. */
@@ -53,6 +67,11 @@ public class CallbackContext extends ReadonlyContext {
   /** Returns the EventActions associated with this context. */
   public EventActions eventActions() {
     return eventActions;
+  }
+
+  /** Returns the ID of the event associated with this context. */
+  public String eventId() {
+    return eventId;
   }
 
   /**
@@ -73,14 +92,20 @@ public class CallbackContext extends ReadonlyContext {
         .map(ListArtifactsResponse::filenames);
   }
 
+  /** Loads the latest version of an artifact from the service. */
+  public Maybe<Part> loadArtifact(String filename) {
+    return loadArtifact(filename, Optional.empty());
+  }
+
+  /** Loads a specific version of an artifact from the service. */
+  public Maybe<Part> loadArtifact(String filename, int version) {
+    return loadArtifact(filename, Optional.of(version));
+  }
+
   /**
-   * Loads an artifact from the artifact service associated with the current session.
-   *
-   * @param filename Artifact file name.
-   * @param version Artifact version (optional).
-   * @return loaded part, or empty if not found.
-   * @throws IllegalStateException if the artifact service is not initialized.
+   * @deprecated Use {@link #loadArtifact(String)} or {@link #loadArtifact(String, int)} instead.
    */
+  @Deprecated
   public Maybe<Part> loadArtifact(String filename, Optional<Integer> version) {
     if (invocationContext.artifactService() == null) {
       throw new IllegalStateException("Artifact service is not initialized.");
@@ -115,7 +140,7 @@ public class CallbackContext extends ReadonlyContext {
             invocationContext.session().id(),
             filename,
             artifact)
-        .doOnSuccess(unusedVersion -> this.eventActions.artifactDelta().put(filename, artifact))
+        .doOnSuccess(version -> this.eventActions.artifactDelta().put(filename, version))
         .ignoreElement();
   }
 }

@@ -27,6 +27,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.plugins.PluginManager;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils.EchoTool;
@@ -60,6 +61,7 @@ public class RequestConfirmationLlmRequestProcessorTest {
               Optional.of(ORIGINAL_FUNCTION_CALL_ARGS)));
   private static final FunctionCall FUNCTION_CALL =
       FunctionCall.builder().id(FUNCTION_CALL_ID).name(ECHO_TOOL_NAME).args(ARGS).build();
+  private static final InMemorySessionService sessionService = new InMemorySessionService();
 
   private static final Event REQUEST_CONFIRMATION_EVENT =
       Event.builder()
@@ -93,7 +95,7 @@ public class RequestConfirmationLlmRequestProcessorTest {
             .events(ImmutableList.of(REQUEST_CONFIRMATION_EVENT, USER_CONFIRMATION_EVENT))
             .build();
 
-    InvocationContext context = createInvocationContext(agent, session);
+    InvocationContext context = buildInvocationContext(agent, session);
 
     RequestProcessor.RequestProcessingResult result =
         processor.processRequest(context, LlmRequest.builder().build()).blockingGet();
@@ -132,7 +134,7 @@ public class RequestConfirmationLlmRequestProcessorTest {
                     REQUEST_CONFIRMATION_EVENT, USER_CONFIRMATION_EVENT, toolResponseEvent))
             .build();
 
-    InvocationContext context = createInvocationContext(agent, session);
+    InvocationContext context = buildInvocationContext(agent, session);
 
     RequestProcessor.RequestProcessingResult result =
         processor.processRequest(context, LlmRequest.builder().build()).blockingGet();
@@ -149,7 +151,7 @@ public class RequestConfirmationLlmRequestProcessorTest {
     assertThat(
             processor
                 .processRequest(
-                    createInvocationContext(agent, session), LlmRequest.builder().build())
+                    buildInvocationContext(agent, session), LlmRequest.builder().build())
                 .blockingGet()
                 .events())
         .isEmpty();
@@ -164,18 +166,19 @@ public class RequestConfirmationLlmRequestProcessorTest {
     assertThat(
             processor
                 .processRequest(
-                    createInvocationContext(agent, session), LlmRequest.builder().build())
+                    buildInvocationContext(agent, session), LlmRequest.builder().build())
                 .blockingGet()
                 .events())
         .isEmpty();
   }
 
-  private static InvocationContext createInvocationContext(LlmAgent agent, Session session) {
+  private static InvocationContext buildInvocationContext(LlmAgent agent, Session session) {
     return InvocationContext.builder()
         .pluginManager(new PluginManager())
         .invocationId(InvocationContext.newInvocationContextId())
         .agent(agent)
         .session(session)
+        .sessionService(sessionService)
         .build();
   }
 

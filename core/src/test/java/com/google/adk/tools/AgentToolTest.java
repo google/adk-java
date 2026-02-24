@@ -21,11 +21,14 @@ import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.SequentialAgent;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.utils.ComponentRegistry;
@@ -38,6 +41,7 @@ import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.Map;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -45,6 +49,13 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link AgentTool}. */
 @RunWith(JUnit4.class)
 public final class AgentToolTest {
+
+  private InMemorySessionService sessionService;
+
+  @Before
+  public void setUp() {
+    sessionService = new InMemorySessionService();
+  }
 
   @Test
   public void fromConfig_withRegisteredAgent_returnsAgentTool() throws Exception {
@@ -451,12 +462,217 @@ public final class AgentToolTest {
     assertThat(toolContext.state()).containsEntry("test_key", "test_value");
   }
 
-  private static ToolContext createToolContext(LlmAgent agent) {
+  @Test
+  public void call_withSkipSummarizationAndStateDelta_propagatesStateAndSetsSkipSummarization()
+      throws Exception {
+    AfterAgentCallback afterAgentCallback =
+        (callbackContext) -> {
+          callbackContext.state().put("test_key", "test_value");
+          return Maybe.empty();
+        };
+    TestLlm testLlm =
+        createTestLlm(
+            LlmResponse.builder()
+                .content(Content.fromParts(Part.fromText("test response")))
+                .build());
+    LlmAgent testAgent =
+        createTestAgentBuilder(testLlm)
+            .name("agent name")
+            .description("agent description")
+            .afterAgentCallback(afterAgentCallback)
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent, /* skipSummarization= */ true);
+    ToolContext toolContext = createToolContext(testAgent);
+
+    assertThat(toolContext.state()).doesNotContainKey("test_key");
+
+    Map<String, Object> unused =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    // Verify that stateDelta is propagated to the ToolContext's EventActions, otherwise
+    // Function.buildResponseEvent() will not include it in the response event.
+    assertThat(toolContext.actions().stateDelta()).containsEntry("test_key", "test_value");
+    assertThat(toolContext.actions().skipSummarization()).hasValue(true);
+  }
+
+  @Test
+  public void
+      declaration_sequentialAgentWithFirstSubAgentInputSchema_returnsDeclarationWithSchema() {
+    Schema inputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "query",
+                    Schema.builder().type("STRING").build(),
+                    "language",
+                    Schema.builder().type("STRING").build()))
+            .required(ImmutableList.of("query", "language"))
+            .build();
+    LlmAgent firstAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("first_agent")
+            .inputSchema(inputSchema)
+            .build();
+    LlmAgent secondAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("second_agent")
+            .build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder()
+            .name("sequence")
+            .description("Process the query through multiple steps")
+            .subAgents(ImmutableList.of(firstAgent, secondAgent))
+            .build();
+    AgentTool agentTool = AgentTool.create(sequentialAgent);
+
+    FunctionDeclaration declaration = agentTool.declaration().get();
+
+    assertThat(declaration.name().get()).isEqualTo("sequence");
+    assertThat(declaration.description().get())
+        .isEqualTo("Process the query through multiple steps");
+    assertThat(declaration.parameters().get()).isEqualTo(inputSchema);
+  }
+
+  @Test
+  public void declaration_sequentialAgentWithoutInputSchema_fallsBackToRequest() {
+    LlmAgent firstAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("first_agent")
+            .build();
+    LlmAgent secondAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("second_agent")
+            .build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder()
+            .name("sequence")
+            .description("Process the query through multiple steps")
+            .subAgents(ImmutableList.of(firstAgent, secondAgent))
+            .build();
+    AgentTool agentTool = AgentTool.create(sequentialAgent);
+
+    FunctionDeclaration declaration = agentTool.declaration().get();
+
+    assertThat(declaration.name().get()).isEqualTo("sequence");
+    assertThat(declaration.description().get())
+        .isEqualTo("Process the query through multiple steps");
+    assertThat(declaration.parameters().get())
+        .isEqualTo(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(ImmutableMap.of("request", Schema.builder().type("STRING").build()))
+                .required(ImmutableList.of("request"))
+                .build());
+  }
+
+  @Test
+  public void call_sequentialAgentWithLastSubAgentOutputSchema_successful() throws Exception {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "is_valid",
+                    Schema.builder().type("BOOLEAN").build(),
+                    "message",
+                    Schema.builder().type("STRING").build()))
+            .required(ImmutableList.of("is_valid", "message"))
+            .build();
+    LlmAgent firstAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("first_agent")
+            .build();
+    LlmAgent secondAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    LlmResponse.builder()
+                        .content(
+                            Content.fromParts(
+                                Part.fromText(
+                                    "{\"is_valid\": true, " + "\"message\": \"success\"}")))
+                        .build()))
+            .name("second_agent")
+            .outputSchema(outputSchema)
+            .build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder()
+            .name("sequence")
+            .description("Process the query through multiple steps")
+            .subAgents(ImmutableList.of(firstAgent, secondAgent))
+            .build();
+    AgentTool agentTool = AgentTool.create(sequentialAgent);
+    ToolContext toolContext = createToolContext(sequentialAgent);
+
+    Map<String, Object> result =
+        agentTool.runAsync(ImmutableMap.of("request", "test"), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("is_valid", true, "message", "success");
+  }
+
+  @Test
+  public void declaration_nestedSequentialAgentInputSchema_returnsDeclarationWithSchema() {
+    Schema inputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("deep_query", Schema.builder().type("STRING").build()))
+            .required(ImmutableList.of("deep_query"))
+            .build();
+    LlmAgent innerAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("inner_agent")
+            .inputSchema(inputSchema)
+            .build();
+    SequentialAgent innerSequence =
+        SequentialAgent.builder()
+            .name("inner_sequence")
+            .subAgents(ImmutableList.of(innerAgent))
+            .build();
+    SequentialAgent outerSequence =
+        SequentialAgent.builder()
+            .name("outer_sequence")
+            .description("Nested sequence")
+            .subAgents(ImmutableList.of(innerSequence))
+            .build();
+    AgentTool agentTool = AgentTool.create(outerSequence);
+
+    FunctionDeclaration declaration = agentTool.declaration().get();
+
+    assertThat(declaration.name().get()).isEqualTo("outer_sequence");
+    assertThat(declaration.parameters().get()).isEqualTo(inputSchema);
+  }
+
+  @Test
+  public void declaration_emptySequentialAgent_fallsBackToRequest() {
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder()
+            .name("empty_sequence")
+            .description("An empty sequence")
+            .subAgents(ImmutableList.of())
+            .build();
+    AgentTool agentTool = AgentTool.create(sequentialAgent);
+
+    FunctionDeclaration declaration = agentTool.declaration().get();
+
+    assertThat(declaration.name().get()).isEqualTo("empty_sequence");
+    assertThat(declaration.parameters().get())
+        .isEqualTo(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(ImmutableMap.of("request", Schema.builder().type("STRING").build()))
+                .required(ImmutableList.of("request"))
+                .build());
+  }
+
+  private ToolContext createToolContext(BaseAgent agent) {
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
     return ToolContext.builder(
             InvocationContext.builder()
                 .invocationId(InvocationContext.newInvocationContextId())
                 .agent(agent)
-                .session(Session.builder("123").build())
+                .session(session)
+                .sessionService(sessionService)
                 .build())
         .build();
   }

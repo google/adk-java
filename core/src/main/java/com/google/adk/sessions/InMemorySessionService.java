@@ -259,7 +259,7 @@ public final class InMemorySessionService implements BaseSessionService {
                       .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
                       .put(userStateKey, value);
                 }
-              } else if (!key.startsWith(State.TEMP_PREFIX)) {
+              } else {
                 if (value == State.REMOVED) {
                   session.state().remove(key);
                 } else {

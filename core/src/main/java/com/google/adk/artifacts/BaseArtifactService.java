@@ -40,15 +40,41 @@ public interface BaseArtifactService {
       String appName, String userId, String sessionId, String filename, Part artifact);
 
   /**
-   * Gets an artifact.
+   * Saves an artifact and returns it with fileData if available.
+   *
+   * <p>Implementations should override this default method for efficiency, as the default performs
+   * two I/O operations (save then load).
    *
    * @param appName the app name
    * @param userId the user ID
    * @param sessionId the session ID
    * @param filename the filename
-   * @param version Optional version number. If null, loads the latest version.
-   * @return the artifact or empty if not found
+   * @param artifact the artifact to save
+   * @return the saved artifact with fileData if available.
    */
+  default Single<Part> saveAndReloadArtifact(
+      String appName, String userId, String sessionId, String filename, Part artifact) {
+    return saveArtifact(appName, userId, sessionId, filename, artifact)
+        .flatMap(version -> loadArtifact(appName, userId, sessionId, filename, version).toSingle());
+  }
+
+  /** Loads the latest version of an artifact from the service. */
+  default Maybe<Part> loadArtifact(
+      String appName, String userId, String sessionId, String filename) {
+    return loadArtifact(appName, userId, sessionId, filename, Optional.empty());
+  }
+
+  /** Loads a specific version of an artifact from the service. */
+  default Maybe<Part> loadArtifact(
+      String appName, String userId, String sessionId, String filename, int version) {
+    return loadArtifact(appName, userId, sessionId, filename, Optional.of(version));
+  }
+
+  /**
+   * @deprecated Use {@link #loadArtifact(String, String, String, String)} or {@link
+   *     #loadArtifact(String, String, String, String, int)} instead.
+   */
+  @Deprecated
   Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, Optional<Integer> version);
 

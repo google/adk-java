@@ -17,6 +17,7 @@
 package com.google.adk.agents;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.AudioTranscriptionConfig;
@@ -113,5 +114,12 @@ public final class RunConfigTest {
     assertThat(runConfig.outputAudioTranscription()).isNull();
     assertThat(runConfig.streamingMode()).isEqualTo(RunConfig.StreamingMode.BIDI);
     assertThat(runConfig.responseModalities()).containsExactly(new Modality(Modality.Known.AUDIO));
+  }
+
+  @Test
+  public void testMaxLlmCalls_integerMaxValue_throwsIllegalArgumentException() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> RunConfig.builder().setMaxLlmCalls(Integer.MAX_VALUE).build());
   }
 }

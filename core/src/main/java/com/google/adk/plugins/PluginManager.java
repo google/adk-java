@@ -41,26 +41,19 @@ import org.slf4j.LoggerFactory;
  * <p>The PluginManager is an internal class that orchestrates the invocation of plugin callbacks at
  * key points in the SDK's execution lifecycle.
  */
-public class PluginManager implements Plugin {
+public class PluginManager extends BasePlugin {
   private static final Logger logger = LoggerFactory.getLogger(PluginManager.class);
-  private final List<Plugin> plugins;
+  private final List<Plugin> plugins = new ArrayList<>();
 
   public PluginManager(List<? extends Plugin> plugins) {
-    this.plugins = new ArrayList<>();
+    super("PluginManager");
     if (plugins != null) {
-      for (var plugin : plugins) {
-        this.registerPlugin(plugin);
-      }
+      plugins.forEach(this::registerPlugin);
     }
   }
 
   public PluginManager() {
     this(null);
-  }
-
-  @Override
-  public String getName() {
-    return "PluginManager";
   }
 
   /**
@@ -130,6 +123,19 @@ public class PluginManager implements Plugin {
                                 "[{}] Error during callback 'afterRunCallback'",
                                 plugin.getName(),
                                 e)));
+  }
+
+  @Override
+  public Completable close() {
+    return Flowable.fromIterable(plugins)
+        .concatMapCompletableDelayError(
+            plugin ->
+                plugin
+                    .close()
+                    .doOnError(
+                        e ->
+                            logger.error(
+                                "[{}] Error during callback 'close'", plugin.getName(), e)));
   }
 
   public Maybe<Event> runOnEventCallback(InvocationContext invocationContext, Event event) {
@@ -259,7 +265,7 @@ public class PluginManager implements Plugin {
                 callbackExecutor
                     .apply(plugin)
                     .doOnSuccess(
-                        r ->
+                        unused ->
                             logger.debug(
                                 "Plugin '{}' returned a value for callback '{}', exiting "
                                     + "early.",

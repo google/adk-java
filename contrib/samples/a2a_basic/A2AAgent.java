@@ -1,8 +1,5 @@
 package com.example.a2a_basic;
 
-import java.util.ArrayList;
-import java.util.Random;
-
 import com.google.adk.a2a.RemoteA2AAgent;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
@@ -10,7 +7,6 @@ import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-
 import io.a2a.client.Client;
 import io.a2a.client.config.ClientConfig;
 import io.a2a.client.http.A2ACardResolver;
@@ -18,6 +14,8 @@ import io.a2a.client.http.JdkA2AHttpClient;
 import io.a2a.client.transport.jsonrpc.JSONRPCTransport;
 import io.a2a.client.transport.jsonrpc.JSONRPCTransportConfig;
 import io.a2a.spec.AgentCard;
+import java.util.ArrayList;
+import java.util.Random;
 
 /** Provides local roll logic plus a remote A2A agent for the demo. */
 public final class A2AAgent {

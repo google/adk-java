@@ -6,7 +6,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.tools.ToolContext;
 import com.google.cloud.aiplatform.v1.RagContexts;
@@ -25,6 +27,7 @@ import com.google.genai.types.Tool;
 import com.google.genai.types.VertexRagStore;
 import com.google.genai.types.VertexRagStoreRagResource;
 import java.util.Map;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -38,6 +41,15 @@ public final class VertexAiRagRetrievalTest {
 
   @Rule public final MockitoRule mockito = MockitoJUnit.rule();
   @Mock private VertexRagServiceClient vertexRagServiceClient;
+
+  private InMemorySessionService sessionService;
+  private LlmAgent agent;
+
+  @Before
+  public void setUp() {
+    sessionService = new InMemorySessionService();
+    agent = LlmAgent.builder().name("test-agent").build();
+  }
 
   @Test
   public void runAsync_withResults_returnsContexts() throws Exception {
@@ -53,11 +65,7 @@ public final class VertexAiRagRetrievalTest {
             ragResources,
             vectorDistanceThreshold);
     String query = "test query";
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
+    ToolContext toolContext = buildToolContext();
     RetrieveContextsRequest expectedRequest =
         RetrieveContextsRequest.newBuilder()
             .setParent("projects/test-project/locations/us-central1")
@@ -97,11 +105,7 @@ public final class VertexAiRagRetrievalTest {
             ragResources,
             vectorDistanceThreshold);
     String query = "test query";
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
+    ToolContext toolContext = buildToolContext();
     RetrieveContextsRequest expectedRequest =
         RetrieveContextsRequest.newBuilder()
             .setParent("projects/test-project/locations/us-central1")
@@ -143,11 +147,7 @@ public final class VertexAiRagRetrievalTest {
             ragResources,
             vectorDistanceThreshold);
     LlmRequest.Builder llmRequestBuilder = LlmRequest.builder().model("gemini-2-pro");
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
+    ToolContext toolContext = buildToolContext();
 
     tool.processLlmRequest(llmRequestBuilder, toolContext).blockingAwait();
 
@@ -209,11 +209,7 @@ public final class VertexAiRagRetrievalTest {
             ragResources,
             vectorDistanceThreshold);
     LlmRequest.Builder llmRequestBuilder = LlmRequest.builder().model("gemini-1-pro");
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.builder().session(Session.builder("123").build()).build())
-            .functionCallId("functionCallId")
-            .build();
+    ToolContext toolContext = buildToolContext();
     GenerateContentConfig initialConfig = GenerateContentConfig.builder().build();
     llmRequestBuilder.config(initialConfig);
 
@@ -240,5 +236,18 @@ public final class VertexAiRagRetrievalTest {
                                     .build())
                             .build()))
                 .build());
+  }
+
+  private ToolContext buildToolContext() {
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    return ToolContext.builder(
+            InvocationContext.builder()
+                .invocationId(InvocationContext.newInvocationContextId())
+                .agent(agent)
+                .session(session)
+                .sessionService(sessionService)
+                .build())
+        .build();
   }
 }

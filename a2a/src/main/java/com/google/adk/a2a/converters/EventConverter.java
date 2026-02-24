@@ -1,7 +1,10 @@
 package com.google.adk.a2a.converters;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
+import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.a2a.spec.Message;
@@ -35,6 +38,16 @@ public final class EventConverter {
   public enum AggregationMode {
     AS_IS,
     EXTERNAL_HANDOFF
+  }
+
+  public static ImmutableList<io.a2a.spec.Part<?>> contentToParts(Optional<Content> content) {
+    if (content.isPresent() && content.get().parts().isPresent()) {
+      return content.get().parts().get().stream()
+          .map(PartConverter::fromGenaiPart)
+          .flatMap(Optional::stream)
+          .collect(toImmutableList());
+    }
+    return ImmutableList.of();
   }
 
   public static Optional<Message> convertEventsToA2AMessage(InvocationContext context) {

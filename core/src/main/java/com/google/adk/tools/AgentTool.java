@@ -37,6 +37,7 @@ import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Single;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -83,15 +84,42 @@ public class AgentTool extends BaseTool {
     return agent;
   }
 
+  private Optional<Schema> getInputSchema(BaseAgent agent) {
+    BaseAgent currentAgent = agent;
+    while (true) {
+      if (currentAgent instanceof LlmAgent llmAgent) {
+        return llmAgent.inputSchema();
+      }
+      List<? extends BaseAgent> subAgents = currentAgent.subAgents();
+      if (subAgents == null || subAgents.isEmpty()) {
+        return Optional.empty();
+      }
+      // For composite agents, check the first sub-agent.
+      currentAgent = subAgents.get(0);
+    }
+  }
+
+  private Optional<Schema> getOutputSchema(BaseAgent agent) {
+    BaseAgent currentAgent = agent;
+    while (true) {
+      if (currentAgent instanceof LlmAgent llmAgent) {
+        return llmAgent.outputSchema();
+      }
+      List<? extends BaseAgent> subAgents = currentAgent.subAgents();
+      if (subAgents == null || subAgents.isEmpty()) {
+        return Optional.empty();
+      }
+      // For composite agents, check the last sub-agent.
+      currentAgent = subAgents.get(subAgents.size() - 1);
+    }
+  }
+
   @Override
   public Optional<FunctionDeclaration> declaration() {
     FunctionDeclaration.Builder builder =
         FunctionDeclaration.builder().description(this.description()).name(this.name());
 
-    Optional<Schema> agentInputSchema = Optional.empty();
-    if (agent instanceof LlmAgent llmAgent) {
-      agentInputSchema = llmAgent.inputSchema();
-    }
+    Optional<Schema> agentInputSchema = getInputSchema(agent);
 
     if (agentInputSchema.isPresent()) {
       builder.parameters(agentInputSchema.get());
@@ -110,13 +138,11 @@ public class AgentTool extends BaseTool {
   public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
 
     if (this.skipSummarization) {
-      toolContext.setActions(toolContext.actions().toBuilder().skipSummarization(true).build());
+      // Mutate EventActions in-place to ensure object references are maintained.
+      toolContext.actions().setSkipSummarization(true);
     }
 
-    Optional<Schema> agentInputSchema = Optional.empty();
-    if (agent instanceof LlmAgent llmAgent) {
-      agentInputSchema = llmAgent.inputSchema();
-    }
+    Optional<Schema> agentInputSchema = getInputSchema(agent);
 
     final Content content;
     if (agentInputSchema.isPresent()) {
@@ -163,10 +189,7 @@ public class AgentTool extends BaseTool {
               }
               String output = outputText.get();
 
-              Optional<Schema> agentOutputSchema = Optional.empty();
-              if (agent instanceof LlmAgent llmAgent) {
-                agentOutputSchema = llmAgent.outputSchema();
-              }
+              Optional<Schema> agentOutputSchema = getOutputSchema(agent);
 
               if (agentOutputSchema.isPresent()) {
                 return SchemaUtils.validateOutputSchema(output, agentOutputSchema.get());

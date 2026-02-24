@@ -17,6 +17,7 @@
 package com.google.adk.agents;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.util.Objects.requireNonNullElse;
 import static java.util.stream.Collectors.joining;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -61,6 +62,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
@@ -103,12 +105,12 @@ public class LlmAgent extends BaseAgent {
   private final Optional<Integer> maxSteps;
   private final boolean disallowTransferToParent;
   private final boolean disallowTransferToPeers;
-  private final Optional<List<? extends BeforeModelCallback>> beforeModelCallback;
-  private final Optional<List<? extends AfterModelCallback>> afterModelCallback;
-  private final Optional<List<? extends OnModelErrorCallback>> onModelErrorCallback;
-  private final Optional<List<? extends BeforeToolCallback>> beforeToolCallback;
-  private final Optional<List<? extends AfterToolCallback>> afterToolCallback;
-  private final Optional<List<? extends OnToolErrorCallback>> onToolErrorCallback;
+  private final ImmutableList<? extends BeforeModelCallback> beforeModelCallback;
+  private final ImmutableList<? extends AfterModelCallback> afterModelCallback;
+  private final ImmutableList<? extends OnModelErrorCallback> onModelErrorCallback;
+  private final ImmutableList<? extends BeforeToolCallback> beforeToolCallback;
+  private final ImmutableList<? extends AfterToolCallback> afterToolCallback;
+  private final ImmutableList<? extends OnToolErrorCallback> onToolErrorCallback;
   private final Optional<Schema> inputSchema;
   private final Optional<Schema> outputSchema;
   private final Optional<Executor> executor;
@@ -126,29 +128,28 @@ public class LlmAgent extends BaseAgent {
         builder.beforeAgentCallback,
         builder.afterAgentCallback);
     this.model = Optional.ofNullable(builder.model);
-    this.instruction =
-        builder.instruction == null ? new Instruction.Static("") : builder.instruction;
+    this.instruction = requireNonNullElse(builder.instruction, new Instruction.Static(""));
     this.globalInstruction =
-        builder.globalInstruction == null ? new Instruction.Static("") : builder.globalInstruction;
+        requireNonNullElse(builder.globalInstruction, new Instruction.Static(""));
     this.generateContentConfig = Optional.ofNullable(builder.generateContentConfig);
     this.exampleProvider = Optional.ofNullable(builder.exampleProvider);
-    this.includeContents =
-        builder.includeContents != null ? builder.includeContents : IncludeContents.DEFAULT;
+    this.includeContents = requireNonNullElse(builder.includeContents, IncludeContents.DEFAULT);
     this.planning = builder.planning != null && builder.planning;
     this.maxSteps = Optional.ofNullable(builder.maxSteps);
     this.disallowTransferToParent = builder.disallowTransferToParent;
     this.disallowTransferToPeers = builder.disallowTransferToPeers;
-    this.beforeModelCallback = Optional.ofNullable(builder.beforeModelCallback);
-    this.afterModelCallback = Optional.ofNullable(builder.afterModelCallback);
-    this.onModelErrorCallback = Optional.ofNullable(builder.onModelErrorCallback);
-    this.beforeToolCallback = Optional.ofNullable(builder.beforeToolCallback);
-    this.afterToolCallback = Optional.ofNullable(builder.afterToolCallback);
-    this.onToolErrorCallback = Optional.ofNullable(builder.onToolErrorCallback);
+    this.beforeModelCallback = requireNonNullElse(builder.beforeModelCallback, ImmutableList.of());
+    this.afterModelCallback = requireNonNullElse(builder.afterModelCallback, ImmutableList.of());
+    this.onModelErrorCallback =
+        requireNonNullElse(builder.onModelErrorCallback, ImmutableList.of());
+    this.beforeToolCallback = requireNonNullElse(builder.beforeToolCallback, ImmutableList.of());
+    this.afterToolCallback = requireNonNullElse(builder.afterToolCallback, ImmutableList.of());
+    this.onToolErrorCallback = requireNonNullElse(builder.onToolErrorCallback, ImmutableList.of());
     this.inputSchema = Optional.ofNullable(builder.inputSchema);
     this.outputSchema = Optional.ofNullable(builder.outputSchema);
     this.executor = Optional.ofNullable(builder.executor);
     this.outputKey = Optional.ofNullable(builder.outputKey);
-    this.toolsUnion = builder.toolsUnion != null ? builder.toolsUnion : ImmutableList.of();
+    this.toolsUnion = requireNonNullElse(builder.toolsUnion, ImmutableList.of());
     this.toolsets = extractToolsets(this.toolsUnion);
     this.codeExecutor = Optional.ofNullable(builder.codeExecutor);
 
@@ -755,20 +756,35 @@ public class LlmAgent extends BaseAgent {
   }
 
   /**
+   * @deprecated Use {@link #canonicalTools(ReadonlyContext)} instead.
+   */
+  @Deprecated
+  public Flowable<BaseTool> canonicalTools(Optional<ReadonlyContext> context) {
+    return canonicalTools(context.orElse(null));
+  }
+
+  /**
    * Constructs the list of tools for this agent based on the {@link #tools} field.
    *
-   * <p>This method is only for use by Agent Development Kit.
+   * @return The resolved list of tools as a {@link Single} wrapped list of {@link BaseTool}.
+   */
+  public Flowable<BaseTool> canonicalTools() {
+    return canonicalTools((ReadonlyContext) null);
+  }
+
+  /**
+   * Constructs the list of tools for this agent based on the {@link #tools} field.
    *
    * @param context The context to retrieve the session state.
    * @return The resolved list of tools as a {@link Single} wrapped list of {@link BaseTool}.
    */
-  public Flowable<BaseTool> canonicalTools(Optional<ReadonlyContext> context) {
+  public Flowable<BaseTool> canonicalTools(@Nullable ReadonlyContext context) {
     List<Flowable<BaseTool>> toolFlowables = new ArrayList<>();
     for (Object toolOrToolset : toolsUnion) {
       if (toolOrToolset instanceof BaseTool baseTool) {
         toolFlowables.add(Flowable.just(baseTool));
       } else if (toolOrToolset instanceof BaseToolset baseToolset) {
-        toolFlowables.add(baseToolset.getTools(context.orElse(null)));
+        toolFlowables.add(baseToolset.getTools(context));
       } else {
         throw new IllegalArgumentException(
             "Object in tools list is not of a supported type: "
@@ -776,16 +792,6 @@ public class LlmAgent extends BaseAgent {
       }
     }
     return Flowable.concat(toolFlowables);
-  }
-
-  /** Overload of canonicalTools that defaults to an empty context. */
-  public Flowable<BaseTool> canonicalTools() {
-    return canonicalTools(Optional.empty());
-  }
-
-  /** Convenience overload of canonicalTools that accepts a non-optional ReadonlyContext. */
-  public Flowable<BaseTool> canonicalTools(ReadonlyContext context) {
-    return canonicalTools(Optional.ofNullable(context));
   }
 
   public Instruction instruction() {
@@ -841,27 +847,27 @@ public class LlmAgent extends BaseAgent {
     return disallowTransferToPeers;
   }
 
-  public Optional<List<? extends BeforeModelCallback>> beforeModelCallback() {
+  public List<? extends BeforeModelCallback> beforeModelCallback() {
     return beforeModelCallback;
   }
 
-  public Optional<List<? extends AfterModelCallback>> afterModelCallback() {
+  public List<? extends AfterModelCallback> afterModelCallback() {
     return afterModelCallback;
   }
 
-  public Optional<List<? extends BeforeToolCallback>> beforeToolCallback() {
+  public List<? extends BeforeToolCallback> beforeToolCallback() {
     return beforeToolCallback;
   }
 
-  public Optional<List<? extends AfterToolCallback>> afterToolCallback() {
+  public List<? extends AfterToolCallback> afterToolCallback() {
     return afterToolCallback;
   }
 
-  public Optional<List<? extends OnModelErrorCallback>> onModelErrorCallback() {
+  public List<? extends OnModelErrorCallback> onModelErrorCallback() {
     return onModelErrorCallback;
   }
 
-  public Optional<List<? extends OnToolErrorCallback>> onToolErrorCallback() {
+  public List<? extends OnToolErrorCallback> onToolErrorCallback() {
     return onToolErrorCallback;
   }
 
@@ -871,7 +877,7 @@ public class LlmAgent extends BaseAgent {
    * <p>This method is only for use by Agent Development Kit.
    */
   public List<? extends BeforeModelCallback> canonicalBeforeModelCallbacks() {
-    return beforeModelCallback.orElse(ImmutableList.of());
+    return beforeModelCallback;
   }
 
   /**
@@ -880,7 +886,7 @@ public class LlmAgent extends BaseAgent {
    * <p>This method is only for use by Agent Development Kit.
    */
   public List<? extends AfterModelCallback> canonicalAfterModelCallbacks() {
-    return afterModelCallback.orElse(ImmutableList.of());
+    return afterModelCallback;
   }
 
   /**
@@ -889,7 +895,7 @@ public class LlmAgent extends BaseAgent {
    * <p>This method is only for use by Agent Development Kit.
    */
   public List<? extends OnModelErrorCallback> canonicalOnModelErrorCallbacks() {
-    return onModelErrorCallback.orElse(ImmutableList.of());
+    return onModelErrorCallback;
   }
 
   /**
@@ -898,7 +904,7 @@ public class LlmAgent extends BaseAgent {
    * <p>This method is only for use by Agent Development Kit.
    */
   public List<? extends BeforeToolCallback> canonicalBeforeToolCallbacks() {
-    return beforeToolCallback.orElse(ImmutableList.of());
+    return beforeToolCallback;
   }
 
   /**
@@ -907,7 +913,7 @@ public class LlmAgent extends BaseAgent {
    * <p>This method is only for use by Agent Development Kit.
    */
   public List<? extends AfterToolCallback> canonicalAfterToolCallbacks() {
-    return afterToolCallback.orElse(ImmutableList.of());
+    return afterToolCallback;
   }
 
   /**
@@ -916,7 +922,7 @@ public class LlmAgent extends BaseAgent {
    * <p>This method is only for use by Agent Development Kit.
    */
   public List<? extends OnToolErrorCallback> canonicalOnToolErrorCallbacks() {
-    return onToolErrorCallback.orElse(ImmutableList.of());
+    return onToolErrorCallback;
   }
 
   public Optional<Schema> inputSchema() {
@@ -935,9 +941,8 @@ public class LlmAgent extends BaseAgent {
     return outputKey;
   }
 
-  @Nullable
-  public BaseCodeExecutor codeExecutor() {
-    return codeExecutor.orElse(null);
+  public Optional<BaseCodeExecutor> codeExecutor() {
+    return codeExecutor;
   }
 
   public Model resolvedModel() {
@@ -1054,6 +1059,26 @@ public class LlmAgent extends BaseAgent {
         agent.subAgents() != null ? agent.subAgents().size() : 0);
 
     return agent;
+  }
+
+  @Override
+  public Completable close() {
+    List<Completable> completables = new ArrayList<>();
+    toolsets()
+        .forEach(
+            toolset ->
+                completables.add(
+                    Completable.fromAction(
+                        () -> {
+                          try {
+                            toolset.close();
+                          } catch (Exception e) {
+                            logger.error("Failed to close toolset", e);
+                            throw e;
+                          }
+                        })));
+    completables.add(super.close());
+    return Completable.mergeDelayError(completables);
   }
 
   private static void setCallbacksFromConfig(LlmAgentConfig config, Builder builder)

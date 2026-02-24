@@ -16,6 +16,7 @@
 package com.google.adk.artifacts;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -28,9 +29,12 @@ import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.Storage.BlobListOption;
+import com.google.cloud.storage.StorageException;
+import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -40,6 +44,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
@@ -76,6 +81,7 @@ public class GcsArtifactServiceTest {
     when(blob.exists()).thenReturn(true);
     BlobId blobId = BlobId.of(BUCKET_NAME, name);
     when(blob.getBlobId()).thenReturn(blobId);
+    when(blob.getBucket()).thenReturn(BUCKET_NAME);
     return blob;
   }
 
@@ -89,6 +95,8 @@ public class GcsArtifactServiceTest {
         BlobInfo.newBuilder(expectedBlobId).setContentType("application/octet-stream").build();
 
     when(mockBlobPage.iterateAll()).thenReturn(ImmutableList.of());
+    Blob savedBlob = mockBlob(expectedBlobName, "application/octet-stream", new byte[] {1, 2, 3});
+    when(mockStorage.create(eq(expectedBlobInfo), eq(new byte[] {1, 2, 3}))).thenReturn(savedBlob);
 
     int version =
         service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact).blockingGet();
@@ -109,6 +117,8 @@ public class GcsArtifactServiceTest {
 
     Blob blobV0 = mockBlob(blobNameV0, "text/plain", new byte[] {1});
     when(mockBlobPage.iterateAll()).thenReturn(Collections.singletonList(blobV0));
+    Blob savedBlob = mockBlob(expectedBlobNameV1, "image/png", new byte[] {4, 5});
+    when(mockStorage.create(eq(expectedBlobInfoV1), eq(new byte[] {4, 5}))).thenReturn(savedBlob);
 
     int version =
         service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact).blockingGet();
@@ -126,6 +136,8 @@ public class GcsArtifactServiceTest {
         BlobInfo.newBuilder(expectedBlobId).setContentType("application/json").build();
 
     when(mockBlobPage.iterateAll()).thenReturn(ImmutableList.of());
+    Blob savedBlob = mockBlob(expectedBlobName, "application/json", new byte[] {1, 2, 3});
+    when(mockStorage.create(eq(expectedBlobInfo), eq(new byte[] {1, 2, 3}))).thenReturn(savedBlob);
 
     int version =
         service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, USER_FILENAME, artifact).blockingGet();
@@ -225,8 +237,10 @@ public class GcsArtifactServiceTest {
     String sessionPrefix = String.format("%s/%s/%s/", APP_NAME, USER_ID, SESSION_ID);
     String userPrefix = String.format("%s/%s/user/", APP_NAME, USER_ID);
 
+    // Mocking generic Page class requires unchecked suppression.
     @SuppressWarnings("unchecked")
     Page<Blob> mockSessionPage = mock(Page.class);
+    // Mocking generic Page class requires unchecked suppression.
     @SuppressWarnings("unchecked")
     Page<Blob> mockUserPage = mock(Page.class);
     when(mockStorage.list(BUCKET_NAME, BlobListOption.prefix(sessionPrefix)))
@@ -254,8 +268,10 @@ public class GcsArtifactServiceTest {
     Blob blobS2V0 = mockBlob(sessionPrefix + sessionFile2 + "/0", "text/log", new byte[0]);
     Blob blobU1V0 = mockBlob(userPrefix + userFile1 + "/0", "app/json", new byte[0]);
 
+    // Mocking generic Page class requires unchecked suppression.
     @SuppressWarnings("unchecked")
     Page<Blob> mockSessionPage = mock(Page.class);
+    // Mocking generic Page class requires unchecked suppression.
     @SuppressWarnings("unchecked")
     Page<Blob> mockUserPage = mock(Page.class);
     when(mockStorage.list(BUCKET_NAME, BlobListOption.prefix(sessionPrefix)))
@@ -330,7 +346,173 @@ public class GcsArtifactServiceTest {
     assertThat(versions).isEmpty();
   }
 
+  @Test
+  public void saveAndReloadArtifact_savesAndReturnsFileData() {
+    Part artifact = Part.fromBytes(new byte[] {1, 2, 3}, "application/octet-stream");
+    String expectedBlobName =
+        String.format("%s/%s/%s/%s/0", APP_NAME, USER_ID, SESSION_ID, FILENAME);
+    BlobId expectedBlobId = BlobId.of(BUCKET_NAME, expectedBlobName);
+    BlobInfo expectedBlobInfo =
+        BlobInfo.newBuilder(expectedBlobId).setContentType("application/octet-stream").build();
+
+    when(mockBlobPage.iterateAll()).thenReturn(ImmutableList.of());
+    Blob savedBlob = mockBlob(expectedBlobName, "application/octet-stream", new byte[] {1, 2, 3});
+    when(mockStorage.create(eq(expectedBlobInfo), eq(new byte[] {1, 2, 3}))).thenReturn(savedBlob);
+
+    Optional<Part> result =
+        asOptional(
+            service.saveAndReloadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact));
+
+    assertThat(result).isPresent();
+    assertThat(result.get().fileData()).isPresent();
+    assertThat(result.get().fileData().get().fileUri())
+        .hasValue("gs://" + BUCKET_NAME + "/" + expectedBlobName);
+    assertThat(result.get().fileData().get().mimeType()).hasValue("application/octet-stream");
+    verify(mockStorage).create(eq(expectedBlobInfo), eq(new byte[] {1, 2, 3}));
+  }
+
+  @Test
+  public void save_noInlineData_throwsException() {
+    Part artifact = Part.builder().build(); // No inline data
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact).blockingGet());
+  }
+
+  @Test
+  public void save_storageException_throwsVerifyException() {
+    Part artifact = Part.fromBytes(new byte[] {1}, "text/plain");
+    when(mockBlobPage.iterateAll()).thenReturn(ImmutableList.of());
+    when(mockStorage.create(any(BlobInfo.class), any(byte[].class)))
+        .thenThrow(new StorageException(500, "Induced error"));
+
+    assertThrows(
+        VerifyException.class,
+        () ->
+            service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact).blockingGet());
+  }
+
+  @Test
+  public void load_storageException_returnsEmpty() {
+    String blobNameV0 = String.format("%s/%s/%s/%s/0", APP_NAME, USER_ID, SESSION_ID, FILENAME);
+    BlobId blobIdV0 = BlobId.of(BUCKET_NAME, blobNameV0);
+    when(mockStorage.get(blobIdV0)).thenThrow(new StorageException(500, "Induced error"));
+
+    Optional<Part> loadedArtifact =
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, Optional.of(0)));
+
+    assertThat(loadedArtifact).isEmpty();
+  }
+
+  @Test
+  public void list_sessionStorageException_throwsVerifyException() {
+    String sessionPrefix = String.format("%s/%s/%s/", APP_NAME, USER_ID, SESSION_ID);
+    when(mockStorage.list(BUCKET_NAME, BlobListOption.prefix(sessionPrefix)))
+        .thenThrow(new StorageException(500, "Induced error"));
+
+    assertThrows(
+        VerifyException.class,
+        () -> service.listArtifactKeys(APP_NAME, USER_ID, SESSION_ID).blockingGet());
+  }
+
+  @Test
+  public void list_userStorageException_throwsVerifyException() {
+    String sessionPrefix = String.format("%s/%s/%s/", APP_NAME, USER_ID, SESSION_ID);
+    String userPrefix = String.format("%s/%s/user/", APP_NAME, USER_ID);
+
+    // Mocking generic Page class requires unchecked suppression.
+    @SuppressWarnings("unchecked")
+    Page<Blob> mockSessionPage = mock(Page.class);
+    when(mockStorage.list(BUCKET_NAME, BlobListOption.prefix(sessionPrefix)))
+        .thenReturn(mockSessionPage);
+    when(mockSessionPage.iterateAll()).thenReturn(ImmutableList.of());
+
+    when(mockStorage.list(BUCKET_NAME, BlobListOption.prefix(userPrefix)))
+        .thenThrow(new StorageException(500, "Induced error"));
+
+    assertThrows(
+        VerifyException.class,
+        () -> service.listArtifactKeys(APP_NAME, USER_ID, SESSION_ID).blockingGet());
+  }
+
+  @Test
+  public void delete_storageException_throwsVerifyException() {
+    String blobNameV0 = String.format("%s/%s/%s/%s/0", APP_NAME, USER_ID, SESSION_ID, FILENAME);
+    Blob blobV0 = mockBlob(blobNameV0, "text/plain", new byte[] {1});
+
+    when(mockBlobPage.iterateAll()).thenReturn(Collections.singletonList(blobV0));
+    when(mockStorage.delete(ArgumentMatchers.<Iterable<BlobId>>any()))
+        .thenThrow(new StorageException(500, "Induced error"));
+
+    assertThrows(
+        VerifyException.class,
+        () -> service.deleteArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME).blockingAwait());
+  }
+
+  @Test
+  public void listVersions_storageException_returnsEmptyList() {
+    String prefix = String.format("%s/%s/%s/%s/", APP_NAME, USER_ID, SESSION_ID, FILENAME);
+    when(mockStorage.list(BUCKET_NAME, BlobListOption.prefix(prefix)))
+        .thenThrow(new StorageException(500, "Induced error"));
+
+    ImmutableList<Integer> versions =
+        service.listVersions(APP_NAME, USER_ID, SESSION_ID, FILENAME).blockingGet();
+
+    assertThat(versions).isEmpty();
+  }
+
+  @Test
+  public void saveAndReload_noContentTypeAnywhere_defaultsToOctetStream() {
+    // Artifact with no mime type
+    Part artifact =
+        Part.builder()
+            .inlineData(com.google.genai.types.Blob.builder().data(new byte[] {1}).build())
+            .build();
+    String expectedBlobName =
+        String.format("%s/%s/%s/%s/0", APP_NAME, USER_ID, SESSION_ID, FILENAME);
+
+    when(mockBlobPage.iterateAll()).thenReturn(ImmutableList.of());
+    Blob savedBlob = mock(Blob.class);
+    when(savedBlob.getName()).thenReturn(expectedBlobName);
+    when(savedBlob.getBucket()).thenReturn(BUCKET_NAME);
+    when(savedBlob.getContentType()).thenReturn(null);
+    when(mockStorage.create(any(BlobInfo.class), any(byte[].class))).thenReturn(savedBlob);
+
+    Part result =
+        service
+            .saveAndReloadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact)
+            .blockingGet();
+
+    assertThat(result.fileData().get().mimeType()).hasValue("application/octet-stream");
+  }
+
+  @Test
+  public void saveAndReload_blobMissingContentType_usesArtifactContentType() {
+    Part artifact = Part.fromBytes(new byte[] {1}, "application/pdf");
+    String expectedBlobName =
+        String.format("%s/%s/%s/%s/0", APP_NAME, USER_ID, SESSION_ID, FILENAME);
+
+    when(mockBlobPage.iterateAll()).thenReturn(ImmutableList.of());
+    Blob savedBlob = mock(Blob.class);
+    when(savedBlob.getName()).thenReturn(expectedBlobName);
+    when(savedBlob.getBucket()).thenReturn(BUCKET_NAME);
+    when(savedBlob.getContentType()).thenReturn(null);
+    when(mockStorage.create(any(BlobInfo.class), any(byte[].class))).thenReturn(savedBlob);
+
+    Part result =
+        service
+            .saveAndReloadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact)
+            .blockingGet();
+
+    assertThat(result.fileData().get().mimeType()).hasValue("application/pdf");
+  }
+
   private static <T> Optional<T> asOptional(Maybe<T> maybe) {
     return maybe.map(Optional::of).defaultIfEmpty(Optional.empty()).blockingGet();
+  }
+
+  private static <T> Optional<T> asOptional(Single<T> single) {
+    return Optional.of(single.blockingGet());
   }
 }

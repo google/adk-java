@@ -134,6 +134,9 @@ public abstract class RunConfig {
 
     public RunConfig build() {
       RunConfig runConfig = autoBuild();
+      if (runConfig.maxLlmCalls() == Integer.MAX_VALUE) {
+        throw new IllegalArgumentException("maxLlmCalls should be less than Integer.MAX_VALUE.");
+      }
       if (runConfig.maxLlmCalls() < 0) {
         logger.warn(
             "maxLlmCalls is negative. This will result in no enforcement on total"

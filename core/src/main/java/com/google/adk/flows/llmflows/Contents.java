@@ -38,7 +38,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.ListIterator;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -175,9 +174,18 @@ public final class Contents implements RequestProcessor {
 
   /**
    * Filters events that are covered by compaction events by identifying compacted ranges and
-   * filters out events that are covered by compaction summaries
+   * filters out events that are covered by compaction summaries. Also filters out redundant
+   * compaction events (i.e., those fully covered by a later compaction event).
    *
-   * <p>Example of input
+   * <p>Compaction events are inserted into the stream relative to the events they cover.
+   * Specifically, a compaction event is placed immediately before the first retained event that
+   * follows the compaction range (or at the end of the covered range if no events are retained).
+   * This ensures a logical flow of "Summary of History" -> "Recent/Retained Events".
+   *
+   * <p><b>Case 1: Sliding Window + Retention</b>
+   *
+   * <p>Compaction events have some overlap but do not fully cover each other. Therefore, all
+   * compaction events are preserved, as well as the final retained events.
    *
    * <pre>
    * [
@@ -185,7 +193,7 @@ public final class Contents implements RequestProcessor {
    *   event_2(timestamp=2),
    *   compaction_1(event_1, event_2, timestamp=3, content=summary_1_2, startTime=1, endTime=2),
    *   event_3(timestamp=4),
-   *   compaction_2(event_2, event_3, timestamp=5, content=summary_2_3, startTime=2, endTime=3),
+   *   compaction_2(event_2, event_3, timestamp=5, content=summary_2_3, startTime=2, endTime=4),
    *   event_4(timestamp=6)
    * ]
    * </pre>
@@ -200,48 +208,121 @@ public final class Contents implements RequestProcessor {
    * ]
    * </pre>
    *
-   * Compaction events are always strictly in order based on event timestamp.
+   * <p><b>Case 2: Rolling Summary + Retention</b>
+   *
+   * <p>The newer compaction event fully covers the older one. Therefore, the older compaction event
+   * is removed, leaving only the latest summary and the final retained events.
+   *
+   * <pre>
+   * [
+   *   event_1(timestamp=1),
+   *   event_2(timestamp=2),
+   *   event_3(timestamp=3),
+   *   event_4(timestamp=4),
+   *   compaction_1(event_1, timestamp=5, content=summary_1, startTime=1, endTime=1),
+   *   event_6(timestamp=6),
+   *   event_7(timestamp=7),
+   *   compaction_2(compaction_1, event_2, event_3, timestamp=8, content=summary_1_3, startTime=1, endTime=3),
+   *   event_9(timestamp=9)
+   * ]
+   * </pre>
+   *
+   * Will result in the following events output
+   *
+   * <pre>
+   * [
+   *   compaction_2,
+   *   event_4,
+   *   event_6,
+   *   event_7,
+   *   event_9
+   * ]
+   * </pre>
    *
    * @param events the list of event to filter.
    * @return a new list with compaction applied.
    */
   private List<Event> processCompactionEvent(List<Event> events) {
-    List<Event> result = new ArrayList<>();
-    ListIterator<Event> iter = events.listIterator(events.size());
-    Long lastCompactionStartTime = null;
-    Long lastCompactionEndTime = null;
-
-    while (iter.hasPrevious()) {
-      Event event = iter.previous();
-      EventCompaction compaction = event.actions().compaction().orElse(null);
-      if (compaction == null) {
-        if (lastCompactionStartTime == null
-            || event.timestamp() < lastCompactionStartTime
-            || (lastCompactionEndTime != null && event.timestamp() > lastCompactionEndTime)) {
-          result.add(event);
-        }
-        continue;
+    // Step 1: Split events into compaction events and regular events.
+    List<Event> compactionEvents = new ArrayList<>();
+    List<Event> regularEvents = new ArrayList<>();
+    for (Event event : events) {
+      if (event.actions().compaction().isPresent()) {
+        compactionEvents.add(event);
+      } else {
+        regularEvents.add(event);
       }
-      // Create a new event for the compaction event in the result.
-      result.add(
-          Event.builder()
-              .timestamp(compaction.endTimestamp())
-              .author("model")
-              .content(compaction.compactedContent())
-              .branch(event.branch())
-              .invocationId(event.invocationId())
-              .actions(event.actions())
-              .build());
-      lastCompactionStartTime =
-          lastCompactionStartTime == null
-              ? compaction.startTimestamp()
-              : Long.min(lastCompactionStartTime, compaction.startTimestamp());
-      lastCompactionEndTime =
-          lastCompactionEndTime == null
-              ? compaction.endTimestamp()
-              : Long.max(lastCompactionEndTime, compaction.endTimestamp());
+    }
+
+    // Step 2: Remove redundant compaction events (overlapping ones).
+    compactionEvents = removeOverlappingCompactions(compactionEvents);
+
+    // Step 3: Merge regular events and compaction events based on timestamps.
+    // We iterate backwards from the latest to the earliest event.
+    List<Event> result = new ArrayList<>();
+    int c = compactionEvents.size() - 1;
+    int e = regularEvents.size() - 1;
+    while (e >= 0 && c >= 0) {
+      Event event = regularEvents.get(e);
+      EventCompaction compaction = compactionEvents.get(c).actions().compaction().get();
+
+      if (event.timestamp() >= compaction.startTimestamp()
+          && event.timestamp() <= compaction.endTimestamp()) {
+        // If the event is covered by compaction, skip it.
+        e--;
+      } else if (event.timestamp() > compaction.endTimestamp()) {
+        // If the event is after compaction, keep it.
+        result.add(event);
+        e--;
+      } else {
+        // Otherwise the event is before the compaction, let's move to the next compaction event;
+        result.add(createCompactionEvent(compactionEvents.get(c)));
+        c--;
+      }
+    }
+    // Flush any remaining compactions.
+    while (c >= 0) {
+      result.add(createCompactionEvent(compactionEvents.get(c)));
+      c--;
+    }
+    // Flush any remaining regular events.
+    while (e >= 0) {
+      result.add(regularEvents.get(e));
+      e--;
     }
     return Lists.reverse(result);
+  }
+
+  private static List<Event> removeOverlappingCompactions(List<Event> events) {
+    List<Event> result = new ArrayList<>();
+    // Iterate backwards to prioritize later compactions
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event current = events.get(i);
+      EventCompaction c = current.actions().compaction().get();
+
+      // Check if this compaction is covered by the last compaction we've already kept.
+      boolean covered = false;
+      if (!result.isEmpty()) {
+        EventCompaction lastKept = Iterables.getLast(result).actions().compaction().get();
+        covered =
+            c.startTimestamp() >= lastKept.startTimestamp()
+                && c.endTimestamp() <= lastKept.endTimestamp();
+      }
+
+      if (!covered) {
+        result.add(current);
+      }
+    }
+    return Lists.reverse(result);
+  }
+
+  private static Event createCompactionEvent(Event event) {
+    EventCompaction compaction = event.actions().compaction().get();
+    return event.toBuilder()
+        .timestamp(compaction.endTimestamp())
+        .author("model")
+        .content(compaction.compactedContent())
+        .build();
   }
 
   /** Whether the event is a reply from another agent. */
@@ -483,8 +564,7 @@ public final class Contents implements RequestProcessor {
     for (int i = 0; i < events.size(); i++) {
       Event event = events.get(i);
 
-      // Skip response events that will be processed via responseEventsBuffer
-      if (processedResponseIndices.contains(i)) {
+      if (!event.functionResponses().isEmpty()) {
         continue;
       }
 

@@ -30,7 +30,9 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.Session;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
@@ -39,6 +41,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
@@ -66,6 +69,19 @@ public final class TestUtils {
 
   public static InvocationContext createInvocationContext(BaseAgent agent) {
     return createInvocationContext(agent, RunConfig.builder().build());
+  }
+
+  public static InvocationContext createInvocationContext(
+      BaseAgent agent, BaseSessionService sessionService, Session session) {
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .artifactService(new InMemoryArtifactService())
+        .invocationId("invocationId")
+        .agent(agent)
+        .session(session)
+        .userContent(Content.fromParts(Part.fromText("user content")))
+        .runConfig(RunConfig.builder().build())
+        .build();
   }
 
   public static Event createEvent(String id) {
@@ -236,6 +252,13 @@ public final class TestUtils {
             .role("model")
             .build();
     return createLlmResponse(content);
+  }
+
+  public static GenerateContentResponseUsageMetadata.Builder
+      createGenerateContentResponseUsageMetadata() {
+    return GenerateContentResponseUsageMetadata.builder()
+        .promptTokenCount(10)
+        .candidatesTokenCount(20);
   }
 
   public static class EchoTool extends BaseTool {
