@@ -170,9 +170,7 @@ public class McpAsyncToolset implements BaseToolset {
         .map(
             tools ->
                 tools.stream()
-                    .filter(
-                        tool ->
-                            isToolSelected(tool, toolFilter, Optional.ofNullable(readonlyContext)))
+                    .filter(tool -> isToolSelected(tool, toolFilter.orElse(null), readonlyContext))
                     .toList())
         .onErrorResumeNext(
             err -> {
