@@ -47,6 +47,13 @@ public final class PartConverter {
       "code_execution_result";
   public static final String A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = "executable_code";
 
+  public static Optional<TextPart> toTextPart(io.a2a.spec.Part<?> part) {
+    if (part instanceof TextPart textPart) {
+      return Optional.of(textPart);
+    }
+    return Optional.empty();
+  }
+
   /** Convert an A2A JSON part into a Google GenAI part representation. */
   public static Optional<com.google.genai.types.Part> toGenaiPart(io.a2a.spec.Part<?> a2aPart) {
     if (a2aPart == null) {
