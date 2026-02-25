@@ -23,7 +23,6 @@
     <rxjava.version>3.1.5</rxjava.version>
     <jspecify.version>1.0.0</jspecify.version>
     <slf4j.version>2.0.17</slf4j.version>
-    <errorprone.version>2.38.0</errorprone.version>
     <truth.version>1.4.4</truth.version>
     <junit4.version>4.13.2</junit4.version>
   </properties>
@@ -42,7 +41,6 @@
     <dependency>
       <groupId>com.google.errorprone</groupId>
       <artifactId>error_prone_annotations</artifactId>
-      <version>${errorprone.version}</version>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>

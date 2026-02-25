@@ -46,7 +46,7 @@
     <spring-boot.version>3.4.1</spring-boot.version>
     <otel.version>1.49.0</otel.version>
     <mcp.version>0.14.0</mcp.version>
-    <errorprone.version>2.38.0</errorprone.version>
+    <errorprone.version>2.47.0</errorprone.version>
     <google.genai.version>1.32.0</google.genai.version>
     <protobuf.version>4.32.0</protobuf.version>
     <junit.version>5.11.4</junit.version>
