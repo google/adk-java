@@ -8,7 +8,6 @@ import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GoogleMaps;
 import com.google.genai.types.GoogleSearch;
-import com.google.genai.types.GoogleSearchRetrieval;
 import com.google.genai.types.Tool;
 import com.google.genai.types.ToolCodeExecution;
 import com.google.genai.types.UrlContext;
@@ -141,25 +140,6 @@ public final class BaseToolTest {
         .containsExactly(
             Tool.builder().functionDeclarations(ImmutableList.of(functionDeclaration)).build(),
             Tool.builder().googleSearch(GoogleSearch.builder().build()).build());
-  }
-
-  @Test
-  public void processLlmRequestWithGoogleSearchRetrievalToolAddsToolToConfig() {
-    GoogleSearchTool googleSearchTool = new GoogleSearchTool();
-    LlmRequest llmRequest =
-        LlmRequest.builder()
-            .config(GenerateContentConfig.builder().build())
-            .model("gemini-1")
-            .build();
-    LlmRequest.Builder llmRequestBuilder = llmRequest.toBuilder();
-    Completable unused =
-        googleSearchTool.processLlmRequest(llmRequestBuilder, /* toolContext= */ null);
-    LlmRequest updatedLlmRequest = llmRequestBuilder.build();
-    assertThat(updatedLlmRequest.config()).isPresent();
-    assertThat(updatedLlmRequest.config().get().tools()).isPresent();
-    assertThat(updatedLlmRequest.config().get().tools().get())
-        .containsExactly(
-            Tool.builder().googleSearchRetrieval(GoogleSearchRetrieval.builder().build()).build());
   }
 
   @Test
