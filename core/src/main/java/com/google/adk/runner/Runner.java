@@ -672,18 +672,6 @@ public class Runner {
   }
 
   /**
-   * Runs the agent asynchronously with a default user ID.
-   *
-   * @return stream of generated events.
-   */
-  @Deprecated(since = "0.5.0", forRemoval = true)
-  public Flowable<Event> runWithSessionId(
-      String sessionId, Content newMessage, RunConfig runConfig) {
-    // TODO(b/410859954): Add user_id to getter or method signature. Assuming "tmp-user" for now.
-    return this.runAsync("tmp-user", sessionId, newMessage, runConfig);
-  }
-
-  /**
    * Checks if the agent and its parent chain allow transfer up the tree.
    *
    * @return true if transferable, false otherwise.
