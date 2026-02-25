@@ -80,7 +80,11 @@ class SpringAIIntegrationTest {
 
     List<Event> events =
         runner
-            .runAsync(session, userMessage, com.google.adk.agents.RunConfig.builder().build())
+            .runAsync(
+                session.userId(),
+                session.id(),
+                userMessage,
+                com.google.adk.agents.RunConfig.builder().build())
             .toList()
             .blockingGet();
 
@@ -159,7 +163,11 @@ class SpringAIIntegrationTest {
 
     List<Event> events =
         runner
-            .runAsync(session, userMessage, com.google.adk.agents.RunConfig.builder().build())
+            .runAsync(
+                session.userId(),
+                session.id(),
+                userMessage,
+                com.google.adk.agents.RunConfig.builder().build())
             .toList()
             .blockingGet();
 
@@ -228,7 +236,8 @@ class SpringAIIntegrationTest {
     List<Event> events =
         runner
             .runAsync(
-                session,
+                session.userId(),
+                session.id(),
                 userMessage,
                 com.google.adk.agents.RunConfig.builder()
                     .setStreamingMode(com.google.adk.agents.RunConfig.StreamingMode.SSE)

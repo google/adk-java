@@ -46,7 +46,8 @@ public class TestUtils {
       allEvents.addAll(
           runner
               .runAsync(
-                  session,
+                  session.userId(),
+                  session.id(),
                   messageContent,
                   RunConfig.builder()
                       .setStreamingMode(
@@ -73,7 +74,10 @@ public class TestUtils {
 
     for (Content content : contents) {
       List<Event> batchEvents =
-          runner.runAsync(session, content, RunConfig.builder().build()).toList().blockingGet();
+          runner
+              .runAsync(session.userId(), session.id(), content, RunConfig.builder().build())
+              .toList()
+              .blockingGet();
       events.addAll(batchEvents);
     }
 
@@ -96,7 +100,8 @@ public class TestUtils {
       List<Event> batchEvents =
           runner
               .runAsync(
-                  session,
+                  session.userId(),
+                  session.id(),
                   content,
                   RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.SSE).build())
               .toList()
