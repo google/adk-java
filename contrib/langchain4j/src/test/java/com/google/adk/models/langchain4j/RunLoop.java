@@ -53,7 +53,8 @@ public class RunLoop {
       allEvents.addAll(
           runner
               .runAsync(
-                  session,
+                  session.userId(),
+                  session.id(),
                   messageContent,
                   RunConfig.builder()
                       .setStreamingMode(

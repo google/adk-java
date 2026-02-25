@@ -25,6 +25,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 public class TestUtils {
 
@@ -32,7 +33,11 @@ public class TestUtils {
     ArrayList<Event> allEvents = new ArrayList<>();
 
     Runner runner = new InMemoryRunner(agent, agent.name());
-    Session session = runner.sessionService().createSession(agent.name(), "user132").blockingGet();
+    Session session =
+        runner
+            .sessionService()
+            .createSession(agent.name(), "user132-" + UUID.randomUUID())
+            .blockingGet();
 
     for (Object message : messages) {
       Content messageContent = null;
@@ -46,7 +51,8 @@ public class TestUtils {
       allEvents.addAll(
           runner
               .runAsync(
-                  session,
+                  session.userId(),
+                  session.id(),
                   messageContent,
                   RunConfig.builder()
                       .setStreamingMode(
@@ -67,13 +73,20 @@ public class TestUtils {
     }
 
     Runner runner = new InMemoryRunner(agent);
-    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    Session session =
+        runner
+            .sessionService()
+            .createSession("test-app", "test-user-" + UUID.randomUUID())
+            .blockingGet();
 
     List<Event> events = new ArrayList<>();
 
     for (Content content : contents) {
       List<Event> batchEvents =
-          runner.runAsync(session, content, RunConfig.builder().build()).toList().blockingGet();
+          runner
+              .runAsync(session.userId(), session.id(), content, RunConfig.builder().build())
+              .toList()
+              .blockingGet();
       events.addAll(batchEvents);
     }
 
@@ -88,7 +101,11 @@ public class TestUtils {
     }
 
     Runner runner = new InMemoryRunner(agent);
-    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    Session session =
+        runner
+            .sessionService()
+            .createSession("test-app", "test-user-" + UUID.randomUUID())
+            .blockingGet();
 
     List<Event> events = new ArrayList<>();
 
@@ -96,7 +113,8 @@ public class TestUtils {
       List<Event> batchEvents =
           runner
               .runAsync(
-                  session,
+                  session.userId(),
+                  session.id(),
                   content,
                   RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.SSE).build())
               .toList()
