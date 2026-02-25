@@ -31,6 +31,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.Map;
+import java.util.Objects;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -57,11 +58,11 @@ public class ApigeeLlmTest {
   @Test
   public void build_withValidModelStrings_succeeds() {
     String[] validModelStrings = {
-      "apigee/gemini-1.5-flash",
-      "apigee/v1/gemini-1.5-flash",
-      "apigee/vertex_ai/gemini-1.5-flash",
-      "apigee/gemini/v1/gemini-1.5-flash",
-      "apigee/vertex_ai/v1beta/gemini-1.5-flash"
+      "apigee/whatever-model",
+      "apigee/v1/whatever-model",
+      "apigee/vertex_ai/whatever-model",
+      "apigee/gemini/v1/whatever-model",
+      "apigee/vertex_ai/v1beta/whatever-model"
     };
 
     for (String modelName : validModelStrings) {
@@ -93,18 +94,18 @@ public class ApigeeLlmTest {
   public void generateContent_stripsApigeePrefixAndSendsToDelegate() {
     when(mockGeminiDelegate.generateContent(any(), anyBoolean())).thenReturn(Flowable.empty());
 
-    ApigeeLlm llm = new ApigeeLlm("apigee/gemini/v1/gemini-1.5-flash", mockGeminiDelegate);
+    ApigeeLlm llm = new ApigeeLlm("apigee/gemini/v1/whatever-model", mockGeminiDelegate);
 
     LlmRequest request =
         LlmRequest.builder()
-            .model("apigee/gemini/v1/gemini-1.5-flash")
+            .model("apigee/gemini/v1/whatever-model")
             .contents(ImmutableList.of(Content.builder().parts(Part.fromText("hi")).build()))
             .build();
     llm.generateContent(request, true).test().assertNoErrors();
 
     ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
     verify(mockGeminiDelegate).generateContent(requestCaptor.capture(), eq(true));
-    assertThat(requestCaptor.getValue().model()).hasValue("gemini-1.5-flash");
+    assertThat(requestCaptor.getValue().model()).hasValue("whatever-model");
   }
 
   // Add a test to verify the vertexAI flag is set correctly.
@@ -112,7 +113,7 @@ public class ApigeeLlmTest {
   public void generateContent_setsVertexAiFlagCorrectly_withVertexAi() {
     ApigeeLlm llm =
         ApigeeLlm.builder()
-            .modelName("apigee/vertex_ai/gemini-1.5-flash")
+            .modelName("apigee/vertex_ai/whatever-model")
             .proxyUrl(PROXY_URL)
             .build();
     assertThat(llm.getApiClient().vertexAI()).isTrue();
@@ -122,8 +123,10 @@ public class ApigeeLlmTest {
   public void generateContent_setsVertexAiFlagCorrectly_withOrWithoutVertexAi() {
 
     ApigeeLlm llm =
-        ApigeeLlm.builder().modelName("apigee/gemini-1.5-flash").proxyUrl(PROXY_URL).build();
-    if (System.getenv("GOOGLE_GENAI_USE_VERTEXAI") != null) {
+        ApigeeLlm.builder().modelName("apigee/whatever-model").proxyUrl(PROXY_URL).build();
+    String useVertexAi = System.getenv("GOOGLE_GENAI_USE_VERTEXAI");
+
+    if (Objects.equals(useVertexAi, "true") || Objects.equals(useVertexAi, "1")) {
       assertThat(llm.getApiClient().vertexAI()).isTrue();
     } else {
       assertThat(llm.getApiClient().vertexAI()).isFalse();
@@ -133,7 +136,7 @@ public class ApigeeLlmTest {
   @Test
   public void generateContent_setsVertexAiFlagCorrectly_withGemini() {
     ApigeeLlm llm =
-        ApigeeLlm.builder().modelName("apigee/gemini/gemini-1.5-flash").proxyUrl(PROXY_URL).build();
+        ApigeeLlm.builder().modelName("apigee/gemini/whatever-model").proxyUrl(PROXY_URL).build();
     assertThat(llm.getApiClient().vertexAI()).isFalse();
   }
 
@@ -142,11 +145,11 @@ public class ApigeeLlmTest {
   public void generateContent_setsApiVersionCorrectly() {
     ImmutableMap<String, String> modelToApiVersion =
         ImmutableMap.of(
-            "apigee/gemini-1.5-flash", "",
-            "apigee/v1/gemini-1.5-flash", "v1",
-            "apigee/vertex_ai/gemini-1.5-flash", "",
-            "apigee/gemini/v1/gemini-1.5-flash", "v1",
-            "apigee/vertex_ai/v1beta/gemini-1.5-flash", "v1beta");
+            "apigee/whatever-model", "",
+            "apigee/v1/whatever-model", "v1",
+            "apigee/vertex_ai/whatever-model", "",
+            "apigee/gemini/v1/whatever-model", "v1",
+            "apigee/vertex_ai/v1beta/whatever-model", "v1beta");
 
     for (Map.Entry<String, String> entry : modelToApiVersion.entrySet()) {
       String modelName = entry.getKey();
@@ -165,7 +168,7 @@ public class ApigeeLlmTest {
     ImmutableMap<String, String> customHeaders = ImmutableMap.of("X-Test-Header", "TestValue");
     ApigeeLlm llm =
         ApigeeLlm.builder()
-            .modelName("apigee/gemini-1.5-flash")
+            .modelName("apigee/whatever-model")
             .proxyUrl(PROXY_URL)
             .customHeaders(customHeaders)
             .build();
@@ -192,14 +195,14 @@ public class ApigeeLlmTest {
   public void build_withoutProxyUrl_readsFromEnvironment() {
     String envProxyUrl = System.getenv("APIGEE_PROXY_URL");
     if (envProxyUrl != null) {
-      ApigeeLlm llm = ApigeeLlm.builder().modelName("apigee/gemini-1.5-flash").build();
+      ApigeeLlm llm = ApigeeLlm.builder().modelName("apigee/whatever-model").build();
       assertThat(llm.getHttpOptions().baseUrl()).hasValue(envProxyUrl);
     } else {
       assertThrows(
           IllegalArgumentException.class,
-          () -> ApigeeLlm.builder().modelName("apigee/gemini-1.5-flash").build());
+          () -> ApigeeLlm.builder().modelName("apigee/whatever-model").build());
       ApigeeLlm llm =
-          ApigeeLlm.builder().proxyUrl(PROXY_URL).modelName("apigee/gemini-1.5-flash").build();
+          ApigeeLlm.builder().proxyUrl(PROXY_URL).modelName("apigee/whatever-model").build();
       assertThat(llm.getHttpOptions().baseUrl()).hasValue(PROXY_URL);
     }
   }

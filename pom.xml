@@ -46,7 +46,7 @@
     <spring-boot.version>3.4.1</spring-boot.version>
     <otel.version>1.49.0</otel.version>
     <mcp.version>0.14.0</mcp.version>
-    <errorprone.version>2.38.0</errorprone.version>
+    <errorprone.version>2.47.0</errorprone.version>
     <google.genai.version>1.32.0</google.genai.version>
     <protobuf.version>4.32.0</protobuf.version>
     <junit.version>5.11.4</junit.version>
@@ -65,7 +65,7 @@
     <rxjava.version>3.1.5</rxjava.version>
     <reactor-core.version>3.7.0</reactor-core.version>
     <wiremock.version>2.35.1</wiremock.version>
-    <assertj.version>3.27.3</assertj.version>
+    <assertj.version>3.27.7</assertj.version>
     <anthropic.version>1.4.0</anthropic.version>
     <maven-plugin-tools.version>3.9.0</maven-plugin-tools.version>
     <httpclient5.version>5.4.3</httpclient5.version>

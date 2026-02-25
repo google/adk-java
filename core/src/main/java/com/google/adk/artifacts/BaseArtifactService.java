@@ -55,22 +55,26 @@ public interface BaseArtifactService {
   default Single<Part> saveAndReloadArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact) {
     return saveArtifact(appName, userId, sessionId, filename, artifact)
-        .flatMap(
-            version ->
-                loadArtifact(appName, userId, sessionId, filename, Optional.of(version))
-                    .toSingle());
+        .flatMap(version -> loadArtifact(appName, userId, sessionId, filename, version).toSingle());
+  }
+
+  /** Loads the latest version of an artifact from the service. */
+  default Maybe<Part> loadArtifact(
+      String appName, String userId, String sessionId, String filename) {
+    return loadArtifact(appName, userId, sessionId, filename, Optional.empty());
+  }
+
+  /** Loads a specific version of an artifact from the service. */
+  default Maybe<Part> loadArtifact(
+      String appName, String userId, String sessionId, String filename, int version) {
+    return loadArtifact(appName, userId, sessionId, filename, Optional.of(version));
   }
 
   /**
-   * Gets an artifact.
-   *
-   * @param appName the app name
-   * @param userId the user ID
-   * @param sessionId the session ID
-   * @param filename the filename
-   * @param version Optional version number. If null, loads the latest version.
-   * @return the artifact or empty if not found
+   * @deprecated Use {@link #loadArtifact(String, String, String, String)} or {@link
+   *     #loadArtifact(String, String, String, String, int)} instead.
    */
+  @Deprecated
   Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, Optional<Integer> version);
 

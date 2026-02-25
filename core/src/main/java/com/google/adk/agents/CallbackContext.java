@@ -92,14 +92,20 @@ public class CallbackContext extends ReadonlyContext {
         .map(ListArtifactsResponse::filenames);
   }
 
+  /** Loads the latest version of an artifact from the service. */
+  public Maybe<Part> loadArtifact(String filename) {
+    return loadArtifact(filename, Optional.empty());
+  }
+
+  /** Loads a specific version of an artifact from the service. */
+  public Maybe<Part> loadArtifact(String filename, int version) {
+    return loadArtifact(filename, Optional.of(version));
+  }
+
   /**
-   * Loads an artifact from the artifact service associated with the current session.
-   *
-   * @param filename Artifact file name.
-   * @param version Artifact version (optional).
-   * @return loaded part, or empty if not found.
-   * @throws IllegalStateException if the artifact service is not initialized.
+   * @deprecated Use {@link #loadArtifact(String)} or {@link #loadArtifact(String, int)} instead.
    */
+  @Deprecated
   public Maybe<Part> loadArtifact(String filename, Optional<Integer> version) {
     if (invocationContext.artifactService() == null) {
       throw new IllegalStateException("Artifact service is not initialized.");

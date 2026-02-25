@@ -197,13 +197,28 @@ public final class ResponseConverter {
     }
     if (updateEvent instanceof TaskStatusUpdateEvent statusEvent) {
       var status = statusEvent.getStatus();
-      return Optional.ofNullable(status.message())
-          .map(
-              value ->
-                  messageToEvent(
-                      value,
-                      context,
-                      PENDING_STATES.contains(event.getTask().getStatus().state())));
+      var taskState = event.getTask().getStatus().state();
+
+      Optional<Event> messageEvent =
+          Optional.ofNullable(status.message())
+              .map(
+                  value -> {
+                    if (taskState == TaskState.FAILED) {
+                      return messageToFailedEvent(value, context);
+                    }
+                    return messageToEvent(value, context, PENDING_STATES.contains(taskState));
+                  });
+
+      if (statusEvent.isFinal()) {
+        return messageEvent
+            .map(Event::toBuilder)
+            .or(() -> Optional.of(remoteAgentEventBuilder(context)))
+            .map(builder -> builder.turnComplete(true))
+            .map(builder -> builder.partial(false))
+            .map(Event.Builder::build);
+      } else {
+        return messageEvent;
+      }
     }
     throw new IllegalArgumentException(
         "Unsupported TaskUpdateEvent type: " + updateEvent.getClass());
@@ -214,6 +229,16 @@ public final class ResponseConverter {
     return remoteAgentEventBuilder(invocationContext)
         .content(fromModelParts(PartConverter.toGenaiParts(message.getParts())))
         .build();
+  }
+
+  /** Converts an A2A message for a failed task to ADK event filling in the error message. */
+  public static Event messageToFailedEvent(Message message, InvocationContext invocationContext) {
+    Event.Builder builder = remoteAgentEventBuilder(invocationContext);
+    Optional.ofNullable(Iterables.getFirst(message.getParts(), null))
+        .flatMap(PartConverter::toTextPart)
+        .ifPresent(textPart -> builder.errorMessage(textPart.getText()));
+
+    return builder.build();
   }
 
   /**
