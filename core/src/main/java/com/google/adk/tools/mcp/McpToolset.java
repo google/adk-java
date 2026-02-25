@@ -90,7 +90,7 @@ public class McpToolset implements BaseToolset {
    *
    * @param connectionParams The local server connection parameters to the MCP server.
    * @param objectMapper An ObjectMapper instance for parsing schemas.
-   * @param toolFilter An Optional containing either a ToolPredicate or a List of tool names.
+   * @param toolFilter An Optional containing either a ToolPredicate or a Collection of tool names.
    */
   public McpToolset(
       ServerParameters connectionParams, ObjectMapper objectMapper, Optional<Object> toolFilter) {
