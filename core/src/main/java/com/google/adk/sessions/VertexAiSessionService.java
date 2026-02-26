@@ -76,6 +76,15 @@ public final class VertexAiSessionService implements BaseSessionService {
       String userId,
       @Nullable ConcurrentMap<String, Object> state,
       @Nullable String sessionId) {
+    return createSession(appName, userId, (Map<String, Object>) state, sessionId);
+  }
+
+  @Override
+  public Single<Session> createSession(
+      String appName,
+      String userId,
+      @Nullable Map<String, Object> state,
+      @Nullable String sessionId) {
 
     String reasoningEngineId = parseReasoningEngineId(appName);
     return client
