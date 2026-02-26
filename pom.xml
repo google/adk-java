@@ -58,7 +58,7 @@
     <graphviz.version>0.18.1</graphviz.version>
     <ecj.version>3.41.0</ecj.version>
     <maven.version>3.9.0</maven.version>
-    <langchain4j.version>1.8.0</langchain4j.version>
+    <langchain4j.version>1.11.0</langchain4j.version>
     <slf4j.version>2.0.17</slf4j.version>
     <truth.version>1.4.5</truth.version>
     <jspecify.version>1.0.0</jspecify.version>
