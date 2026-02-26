@@ -312,7 +312,8 @@ public final class ResponseConverterTest {
   }
 
   @Test
-  public void clientEventToEvent_withTaskArtifactUpdateEvent_withLastChunkFalse_returnsNull() {
+  public void
+      clientEventToEvent_withTaskArtifactUpdateEvent_withLastChunkFalse_returnsHandlingPartialEvent() {
     io.a2a.spec.Part<?> a2aPart = new TextPart("Artifact content");
     Artifact artifact =
         new Artifact.Builder().artifactId("artifact-1").parts(ImmutableList.of(a2aPart)).build();
@@ -324,6 +325,7 @@ public final class ResponseConverterTest {
     TaskArtifactUpdateEvent updateEvent =
         new TaskArtifactUpdateEvent.Builder()
             .lastChunk(false)
+            .append(false)
             .contextId("context-1")
             .artifact(artifact)
             .taskId("task-id-1")
@@ -331,7 +333,9 @@ public final class ResponseConverterTest {
     TaskUpdateEvent event = new TaskUpdateEvent(task, updateEvent);
 
     Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
-    assertThat(optionalEvent).isEmpty();
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.partial().orElse(false)).isTrue();
   }
 
   @Test

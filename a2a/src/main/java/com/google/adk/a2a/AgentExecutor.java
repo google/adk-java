@@ -13,9 +13,9 @@ import com.google.adk.runner.Runner;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
 import io.a2a.server.agentexecution.RequestContext;
 import io.a2a.server.events.EventQueue;
 import io.a2a.server.tasks.TaskUpdater;
@@ -26,6 +26,7 @@ import io.a2a.spec.TextPart;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.disposables.Disposable;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,6 +43,18 @@ import org.slf4j.LoggerFactory;
  */
 public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor {
 
+  /**
+   * Output mode for the agent executor.
+   *
+   * <p>ARTIFACT_PER_RUN: The agent executor will return one artifact per run.
+   *
+   * <p>ARTIFACT_PER_EVENT: The agent executor will return one artifact per event.
+   */
+  public enum OutputMode {
+    ARTIFACT_PER_RUN,
+    ARTIFACT_PER_EVENT
+  }
+
   private static final Logger logger = LoggerFactory.getLogger(AgentExecutor.class);
   private static final String USER_ID_PREFIX = "A2A_USER_";
   private static final RunConfig DEFAULT_RUN_CONFIG =
@@ -50,6 +63,7 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
   private final Map<String, Disposable> activeTasks = new ConcurrentHashMap<>();
   private final Runner.Builder runnerBuilder;
   private final RunConfig runConfig;
+  private final OutputMode outputMode;
 
   private AgentExecutor(
       App app,
@@ -59,7 +73,8 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
       BaseSessionService sessionService,
       BaseMemoryService memoryService,
       List<? extends Plugin> plugins,
-      RunConfig runConfig) {
+      RunConfig runConfig,
+      OutputMode outputMode) {
     this.runnerBuilder =
         Runner.builder()
             .agent(agent)
@@ -74,6 +89,7 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     // Check that the runner is configured correctly and can be built.
     var unused = runnerBuilder.build();
     this.runConfig = runConfig == null ? DEFAULT_RUN_CONFIG : runConfig;
+    this.outputMode = outputMode == null ? OutputMode.ARTIFACT_PER_RUN : outputMode;
   }
 
   /** Builder for {@link AgentExecutor}. */
@@ -86,6 +102,7 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     private BaseMemoryService memoryService;
     private List<? extends Plugin> plugins = ImmutableList.of();
     private RunConfig runConfig;
+    private OutputMode outputMode;
 
     @CanIgnoreReturnValue
     public Builder app(App app) {
@@ -136,9 +153,23 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     }
 
     @CanIgnoreReturnValue
+    public Builder outputMode(OutputMode outputMode) {
+      this.outputMode = outputMode;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
     public AgentExecutor build() {
       return new AgentExecutor(
-          app, agent, appName, artifactService, sessionService, memoryService, plugins, runConfig);
+          app,
+          agent,
+          appName,
+          artifactService,
+          sessionService,
+          memoryService,
+          plugins,
+          runConfig,
+          outputMode);
     }
   }
 
@@ -169,7 +200,7 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
       throw new IllegalStateException(String.format("Task %s already running", ctx.getTaskId()));
     }
 
-    EventProcessor p = new EventProcessor();
+    EventProcessor p = new EventProcessor(outputMode);
     Content content = PartConverter.messageToContent(message);
     Runner runner = runnerBuilder.build();
 
@@ -229,13 +260,15 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
 
   // Processor that will process all events related to the one runner invocation.
   private static class EventProcessor {
+    private final String runArtifactId;
+    private final OutputMode outputMode;
+    private final Map<String, String> lastAgentPartialArtifact = new ConcurrentHashMap<>();
 
     // All artifacts related to the invocation should have the same artifact id.
-    private EventProcessor() {
-      artifactId = UUID.randomUUID().toString();
+    private EventProcessor(OutputMode outputMode) {
+      this.runArtifactId = UUID.randomUUID().toString();
+      this.outputMode = outputMode;
     }
-
-    private final String artifactId;
 
     private void process(Event event, TaskUpdater updater) {
       if (event.errorCode().isPresent()) {
@@ -256,7 +289,41 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
             });
       }
 
-      updater.addArtifact(parts, artifactId, null, ImmutableMap.of());
+      Map<String, Object> metadata = new HashMap<>();
+      if (event.customMetadata().isPresent()) {
+        for (CustomMetadata cm : event.customMetadata().get()) {
+          if (cm.key().isPresent() && cm.stringValue().isPresent()) {
+            metadata.put(cm.key().get(), cm.stringValue().get());
+          }
+        }
+      }
+
+      Boolean append = false;
+      Boolean lastChunk = null;
+      String artifactId = runArtifactId;
+
+      if (outputMode == OutputMode.ARTIFACT_PER_EVENT) {
+        String author = event.author();
+        boolean isPartial = event.partial().orElse(false);
+
+        if (lastAgentPartialArtifact.containsKey(author)) {
+          artifactId = lastAgentPartialArtifact.get(author);
+          append = isPartial;
+        } else {
+          artifactId = UUID.randomUUID().toString();
+          append = isPartial;
+        }
+
+        lastChunk = !isPartial;
+
+        if (isPartial) {
+          lastAgentPartialArtifact.put(author, artifactId);
+        } else {
+          lastAgentPartialArtifact.remove(author);
+        }
+      }
+
+      updater.addArtifact(parts, artifactId, null, metadata, append, lastChunk);
     }
   }
 }

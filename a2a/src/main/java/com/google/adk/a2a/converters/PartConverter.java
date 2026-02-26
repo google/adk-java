@@ -7,10 +7,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Blob;
+import com.google.genai.types.CodeExecutionResult;
 import com.google.genai.types.Content;
+import com.google.genai.types.ExecutableCode;
 import com.google.genai.types.FileData;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.Language;
+import com.google.genai.types.Outcome;
 import com.google.genai.types.Part;
 import io.a2a.spec.DataPart;
 import io.a2a.spec.FileContent;
@@ -46,6 +50,14 @@ public final class PartConverter {
   public static final String A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT =
       "code_execution_result";
   public static final String A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = "executable_code";
+  public static final String LANGUAGE_KEY = "language";
+  public static final String OUTCOME_KEY = "outcome";
+  public static final String CODE_KEY = "code";
+  public static final String OUTPUT_KEY = "output";
+  public static final String NAME_KEY = "name";
+  public static final String ARGS_KEY = "args";
+  public static final String RESPONSE_KEY = "response";
+  public static final String ID_KEY = "id";
 
   public static Optional<TextPart> toTextPart(io.a2a.spec.Part<?> part) {
     if (part instanceof TextPart textPart) {
@@ -102,6 +114,10 @@ public final class PartConverter {
       return createDataPartFromFunctionCall(part.functionCall().get());
     } else if (part.functionResponse().isPresent()) {
       return createDataPartFromFunctionResponse(part.functionResponse().get());
+    } else if (part.executableCode().isPresent()) {
+      return createDataPartFromExecutableCode(part.executableCode().get());
+    } else if (part.codeExecutionResult().isPresent()) {
+      return createDataPartFromCodeExecutionResult(part.codeExecutionResult().get());
     }
 
     logger.warn("Cannot convert unsupported part for Google GenAI part: " + part);
@@ -153,11 +169,11 @@ public final class PartConverter {
 
     String metadataType = metadata.getOrDefault(A2A_DATA_PART_METADATA_TYPE_KEY, "").toString();
 
-    if ((data.containsKey("name") && data.containsKey("args"))
+    if ((data.containsKey(NAME_KEY) && data.containsKey(ARGS_KEY))
         || metadataType.equals(A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL)) {
-      String functionName = String.valueOf(data.getOrDefault("name", ""));
-      String functionId = String.valueOf(data.getOrDefault("id", ""));
-      Map<String, Object> args = coerceToMap(data.get("args"));
+      String functionName = String.valueOf(data.getOrDefault(NAME_KEY, null));
+      String functionId = String.valueOf(data.getOrDefault(ID_KEY, null));
+      Map<String, Object> args = coerceToMap(data.get(ARGS_KEY));
       return Optional.of(
           com.google.genai.types.Part.builder()
               .functionCall(
@@ -165,11 +181,11 @@ public final class PartConverter {
               .build());
     }
 
-    if ((data.containsKey("name") && data.containsKey("response"))
+    if ((data.containsKey(NAME_KEY) && data.containsKey(RESPONSE_KEY))
         || metadataType.equals(A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE)) {
-      String functionName = String.valueOf(data.getOrDefault("name", ""));
-      String functionId = String.valueOf(data.getOrDefault("id", ""));
-      Map<String, Object> response = coerceToMap(data.get("response"));
+      String functionName = String.valueOf(data.getOrDefault(NAME_KEY, ""));
+      String functionId = String.valueOf(data.getOrDefault(ID_KEY, ""));
+      Map<String, Object> response = coerceToMap(data.get(RESPONSE_KEY));
       return Optional.of(
           com.google.genai.types.Part.builder()
               .functionResponse(
@@ -177,6 +193,35 @@ public final class PartConverter {
                       .name(functionName)
                       .id(functionId)
                       .response(response)
+                      .build())
+              .build());
+    }
+
+    if ((data.containsKey(CODE_KEY) && data.containsKey(LANGUAGE_KEY))
+        || metadataType.equals(A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE)) {
+      String code = String.valueOf(data.getOrDefault(CODE_KEY, ""));
+      String language =
+          String.valueOf(
+              data.getOrDefault(LANGUAGE_KEY, Language.Known.LANGUAGE_UNSPECIFIED.toString())
+                  .toString());
+      return Optional.of(
+          com.google.genai.types.Part.builder()
+              .executableCode(
+                  ExecutableCode.builder().code(code).language(new Language(language)).build())
+              .build());
+    }
+
+    if ((data.containsKey(OUTCOME_KEY) && data.containsKey(OUTPUT_KEY))
+        || metadataType.equals(A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT)) {
+      String outcome =
+          String.valueOf(data.getOrDefault(OUTCOME_KEY, Outcome.Known.OUTCOME_OK).toString());
+      String output = String.valueOf(data.getOrDefault(OUTPUT_KEY, ""));
+      return Optional.of(
+          com.google.genai.types.Part.builder()
+              .codeExecutionResult(
+                  CodeExecutionResult.builder()
+                      .outcome(new Outcome(outcome))
+                      .output(output)
                       .build())
               .build());
     }
@@ -208,9 +253,9 @@ public final class PartConverter {
    */
   private static Optional<DataPart> createDataPartFromFunctionCall(FunctionCall functionCall) {
     Map<String, Object> data = new HashMap<>();
-    data.put("name", functionCall.name().orElse(""));
-    data.put("id", functionCall.id().orElse(""));
-    data.put("args", functionCall.args().orElse(ImmutableMap.of()));
+    data.put(NAME_KEY, functionCall.name().orElse(""));
+    data.put(ID_KEY, functionCall.id().orElse(""));
+    data.put(ARGS_KEY, functionCall.args().orElse(ImmutableMap.of()));
 
     ImmutableMap<String, Object> metadata =
         ImmutableMap.of(A2A_DATA_PART_METADATA_TYPE_KEY, A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL);
@@ -227,13 +272,49 @@ public final class PartConverter {
   private static Optional<DataPart> createDataPartFromFunctionResponse(
       FunctionResponse functionResponse) {
     Map<String, Object> data = new HashMap<>();
-    data.put("name", functionResponse.name().orElse(""));
-    data.put("id", functionResponse.id().orElse(""));
-    data.put("response", functionResponse.response().orElse(ImmutableMap.of()));
+    data.put(NAME_KEY, functionResponse.name().orElse(""));
+    data.put(ID_KEY, functionResponse.id().orElse(""));
+    data.put(RESPONSE_KEY, functionResponse.response().orElse(ImmutableMap.of()));
 
     ImmutableMap<String, Object> metadata =
         ImmutableMap.of(
             A2A_DATA_PART_METADATA_TYPE_KEY, A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE);
+
+    return Optional.of(new DataPart(data, metadata));
+  }
+
+  private static Optional<DataPart> createDataPartFromExecutableCode(
+      ExecutableCode executableCode) {
+    Map<String, Object> data = new HashMap<>();
+    data.put(CODE_KEY, executableCode.code().orElse(""));
+    data.put(
+        LANGUAGE_KEY,
+        executableCode
+            .language()
+            .map(Language::toString)
+            .orElse(Language.Known.LANGUAGE_UNSPECIFIED.toString()));
+
+    ImmutableMap<String, Object> metadata =
+        ImmutableMap.of(
+            A2A_DATA_PART_METADATA_TYPE_KEY, A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE);
+
+    return Optional.of(new DataPart(data, metadata));
+  }
+
+  private static Optional<DataPart> createDataPartFromCodeExecutionResult(
+      CodeExecutionResult result) {
+    Map<String, Object> data = new HashMap<>();
+    data.put(
+        OUTCOME_KEY,
+        result
+            .outcome()
+            .map(Outcome::toString)
+            .orElse(new Outcome(Outcome.Known.OUTCOME_UNSPECIFIED).toString()));
+    data.put(OUTPUT_KEY, result.output().orElse(null));
+
+    ImmutableMap<String, Object> metadata =
+        ImmutableMap.of(
+            A2A_DATA_PART_METADATA_TYPE_KEY, A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT);
 
     return Optional.of(new DataPart(data, metadata));
   }
@@ -267,7 +348,10 @@ public final class PartConverter {
       return Optional.of(new FilePart(new FileWithBytes(mime, name, encoded), new HashMap<>()));
     }
 
-    if (part.functionCall().isPresent() || part.functionResponse().isPresent()) {
+    if (part.functionCall().isPresent()
+        || part.functionResponse().isPresent()
+        || part.executableCode().isPresent()
+        || part.codeExecutionResult().isPresent()) {
       return convertGenaiPartToA2aPart(part).map(data -> data);
     }
 
