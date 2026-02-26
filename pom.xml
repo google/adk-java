@@ -42,7 +42,7 @@
     <maven.compiler.release>${java.version}</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-    <auto-value.version>1.11.0</auto-value.version>
+    <auto-value.version>1.11.1</auto-value.version>
     <spring-boot.version>3.4.1</spring-boot.version>
     <otel.version>1.49.0</otel.version>
     <mcp.version>0.14.0</mcp.version>

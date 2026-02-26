@@ -36,7 +36,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <java.version>17</java.version>
-        <auto-value.version>1.11.0</auto-value.version>
+        <auto-value.version>1.11.1</auto-value.version>
         <exec.mainClass>com.example.mcpfilesystem.McpFilesystemRun</exec.mainClass>
         <google-adk.version>${project.parent.version}</google-adk.version>
     </properties>
