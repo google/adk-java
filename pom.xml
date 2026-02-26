@@ -60,7 +60,7 @@
     <maven.version>3.9.0</maven.version>
     <langchain4j.version>1.8.0</langchain4j.version>
     <slf4j.version>2.0.17</slf4j.version>
-    <truth.version>1.4.4</truth.version>
+    <truth.version>1.4.5</truth.version>
     <jspecify.version>1.0.0</jspecify.version>
     <rxjava.version>3.1.5</rxjava.version>
     <reactor-core.version>3.7.0</reactor-core.version>
