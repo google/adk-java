@@ -25,6 +25,7 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -54,7 +55,7 @@ public final class Session extends JsonBaseModel {
     private String appName;
     private String userId;
     private State state = new State(new ConcurrentHashMap<>());
-    private List<Event> events = new ArrayList<>();
+    private List<Event> events = Collections.synchronizedList(new ArrayList<>());
     private Instant lastUpdateTime = Instant.EPOCH;
 
     public Builder(String id) {
@@ -101,7 +102,7 @@ public final class Session extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("events")
     public Builder events(List<Event> events) {
-      this.events = events;
+      this.events = Collections.synchronizedList(events);
       return this;
     }
 
