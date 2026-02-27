@@ -17,6 +17,7 @@
 
   <modules>
     <module>a2a_basic</module>
+    <module>a2a_server</module>
     <module>configagent</module>
     <module>helloworld</module>
     <module>mcpfilesystem</module>
