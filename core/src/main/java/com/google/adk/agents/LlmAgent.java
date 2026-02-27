@@ -970,7 +970,10 @@ public class LlmAgent extends BaseAgent {
       Model currentModel = this.model.get();
 
       if (currentModel.model().isPresent()) {
-        return currentModel;
+        String modelName = currentModel.model().get().model();
+        BaseLlm resolvedLlm = currentModel.model().get();
+
+        return Model.builder().modelName(modelName).model(resolvedLlm).build();
       }
 
       if (currentModel.modelName().isPresent()) {

@@ -20,7 +20,7 @@
     <parent>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-samples</artifactId>
-        <version>0.6.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <version>0.7.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
         <relativePath>..</relativePath>
     </parent>
 
@@ -36,7 +36,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <java.version>17</java.version>
-        <auto-value.version>1.11.0</auto-value.version>
+        <auto-value.version>1.11.1</auto-value.version>
         <!-- Main class for exec-maven-plugin -->
         <exec.mainClass>com.example.helloworld.HelloWorldRun</exec.mainClass>
         <google-adk.version>${project.version}</google-adk.version>

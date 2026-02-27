@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.7.0](https://github.com/google/adk-java/compare/v0.6.0...v0.7.0) (2026-02-27)
+
+
+### Features
+
+* Add ComputerUse tool ([d733a48](https://github.com/google/adk-java/commit/d733a480a7a787cb7c32fd3470ab978ca3eb574c))
+* add the AgentExecutor config ([e0f7137](https://github.com/google/adk-java/commit/e0f7137253c9bd929fe3ea899e32f4b61f994986))
+* drop gemini-1 support in GoogleSearchTool ([15255b4](https://github.com/google/adk-java/commit/15255b48285819c7d3aedb4470e91f37d1bcfaf4))
+* Extend url_context support to Gemini 3 in Java ADK ([2c9d4dd](https://github.com/google/adk-java/commit/2c9d4dd5eafe8efe3a2fb099b58e2d0f1d9cad98))
+* Extend url_context support to Gemini 3 in Java ADK ([5f5869f](https://github.com/google/adk-java/commit/5f5869f67200831dcbb7ac10ad0d7f44410bc096))
+* Handle final and error TaskStatusUpdateEvents ([746e857](https://github.com/google/adk-java/commit/746e857d97c6f356ffe5c20be0ccae85d5a8f989))
+* remove model restrictions in BuiltInCodeExecutionTool ([1a593a9](https://github.com/google/adk-java/commit/1a593a996607904eed24b64bc63eecd7708710af))
+* Update AgentExecutor so it builds new runner on execute and there is no need to pass the runner instance ([7218295](https://github.com/google/adk-java/commit/72182958586e59ccb3d7490cd207ec2837c5b577))
+
+
+### Bug Fixes
+
+* change Session events list to a threadsafe implementation by default ([0b5ac92](https://github.com/google/adk-java/commit/0b5ac9214926200c3d65d64d8c10489847c29291))
+* deep-merge stateDelta maps when merging EventActions ([ff07474](https://github.com/google/adk-java/commit/ff07474035baec910f0c3fa83b7b1646d8409ffd))
+* drop explicit gemini-1 model version check in GoogleMapsTool ([7953503](https://github.com/google/adk-java/commit/7953503e61c547e40a1e1abbece73a99910766c1))
+* LlmAgent model name resolution and improve Gemini-3 model detection logic ([313ce85](https://github.com/google/adk-java/commit/313ce8590982346bb8ac631b4bf88da76fb849a4))
+* make a mutable copy of function args for the beforeToolCallback invocations ([64d3a77](https://github.com/google/adk-java/commit/64d3a775d68610d20c084678ffdc559cd467e627))
+
+
+### Documentation
+
+* Update a parameter name in a comment ([5262d4a](https://github.com/google/adk-java/commit/5262d4ae3eca533e1a695e6e2e71c5845055ed5d))
+
 ## [0.6.0](https://github.com/google/adk-java/compare/v0.5.0...v0.6.0) (2026-02-19)
 
 

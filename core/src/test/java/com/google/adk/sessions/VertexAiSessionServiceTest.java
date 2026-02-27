@@ -167,8 +167,7 @@ public class VertexAiSessionServiceTest {
 
   @Test
   public void createSession_success() throws Exception {
-    ConcurrentMap<String, Object> sessionStateMap =
-        new ConcurrentHashMap<>(ImmutableMap.of("new_key", "new_value"));
+    Map<String, Object> sessionStateMap = new HashMap<>(ImmutableMap.of("new_key", "new_value"));
     Single<Session> sessionSingle =
         vertexAiSessionService.createSession("123", "test_user", sessionStateMap, null);
     Session createdSession = sessionSingle.blockingGet();
@@ -190,8 +189,7 @@ public class VertexAiSessionServiceTest {
 
   @Test
   public void createSession_getSession_success() throws Exception {
-    ConcurrentMap<String, Object> sessionStateMap =
-        new ConcurrentHashMap<>(ImmutableMap.of("new_key", "new_value"));
+    Map<String, Object> sessionStateMap = new HashMap<>(ImmutableMap.of("new_key", "new_value"));
     Single<Session> sessionSingle =
         vertexAiSessionService.createSession("789", "test_user", sessionStateMap, null);
     Session createdSession = sessionSingle.blockingGet();
@@ -252,8 +250,7 @@ public class VertexAiSessionServiceTest {
 
   @Test
   public void createSessionAndGetSession_success() throws Exception {
-    ConcurrentMap<String, Object> sessionStateMap =
-        new ConcurrentHashMap<>(ImmutableMap.of("key", "value"));
+    Map<String, Object> sessionStateMap = new HashMap<>(ImmutableMap.of("key", "value"));
     Single<Session> sessionSingle =
         vertexAiSessionService.createSession("123", "user", sessionStateMap, null);
     Session createdSession = sessionSingle.blockingGet();
@@ -341,8 +338,8 @@ public class VertexAiSessionServiceTest {
   @Test
   public void appendEvent_withStateRemoved_updatesSessionState() {
     String userId = "userB";
-    ConcurrentMap<String, Object> initialState =
-        new ConcurrentHashMap<>(ImmutableMap.of("key1", "value1", "key2", "value2"));
+    Map<String, Object> initialState =
+        new HashMap<>(ImmutableMap.of("key1", "value1", "key2", "value2"));
     Session session =
         vertexAiSessionService.createSession("987", userId, initialState, null).blockingGet();
 

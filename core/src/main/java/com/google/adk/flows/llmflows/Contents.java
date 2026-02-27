@@ -559,7 +559,7 @@ public final class Contents implements RequestProcessor {
 
     // Gemini 3 requires function calls to be grouped first and only then function responses:
     // FC1 FC2 FR1 FR2
-    boolean shouldBufferResponseEvents = modelName.startsWith("gemini-3-");
+    boolean shouldBufferResponseEvents = modelName.contains("gemini-3-");
 
     for (int i = 0; i < events.size(); i++) {
       Event event = events.get(i);
