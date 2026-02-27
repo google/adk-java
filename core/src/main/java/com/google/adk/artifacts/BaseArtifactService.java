@@ -16,6 +16,7 @@
 
 package com.google.adk.artifacts;
 
+import com.google.adk.sessions.SessionKey;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
@@ -39,6 +40,11 @@ public interface BaseArtifactService {
   Single<Integer> saveArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact);
 
+  default Single<Integer> saveArtifact(SessionKey sessionKey, String filename, Part artifact) {
+    return saveArtifact(
+        sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, artifact);
+  }
+
   /**
    * Saves an artifact and returns it with fileData if available.
    *
@@ -58,16 +64,31 @@ public interface BaseArtifactService {
         .flatMap(version -> loadArtifact(appName, userId, sessionId, filename, version).toSingle());
   }
 
+  default Single<Part> saveAndReloadArtifact(
+      SessionKey sessionKey, String filename, Part artifact) {
+    return saveAndReloadArtifact(
+        sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, artifact);
+  }
+
   /** Loads the latest version of an artifact from the service. */
   default Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename) {
     return loadArtifact(appName, userId, sessionId, filename, Optional.empty());
   }
 
+  default Maybe<Part> loadArtifact(SessionKey sessionKey, String filename) {
+    return loadArtifact(sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename);
+  }
+
   /** Loads a specific version of an artifact from the service. */
   default Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, int version) {
     return loadArtifact(appName, userId, sessionId, filename, Optional.of(version));
+  }
+
+  default Maybe<Part> loadArtifact(SessionKey sessionKey, String filename, int version) {
+    return loadArtifact(
+        sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, version);
   }
 
   /**
@@ -77,6 +98,12 @@ public interface BaseArtifactService {
   @Deprecated
   Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, Optional<Integer> version);
+
+  default Maybe<Part> loadArtifact(
+      SessionKey sessionKey, String filename, Optional<Integer> version) {
+    return loadArtifact(
+        sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, version);
+  }
 
   /**
    * Lists all the artifact filenames within a session.
@@ -88,6 +115,10 @@ public interface BaseArtifactService {
    */
   Single<ListArtifactsResponse> listArtifactKeys(String appName, String userId, String sessionId);
 
+  default Single<ListArtifactsResponse> listArtifactKeys(SessionKey sessionKey) {
+    return listArtifactKeys(sessionKey.appName(), sessionKey.userId(), sessionKey.id());
+  }
+
   /**
    * Deletes an artifact.
    *
@@ -97,6 +128,10 @@ public interface BaseArtifactService {
    * @param filename the filename
    */
   Completable deleteArtifact(String appName, String userId, String sessionId, String filename);
+
+  default Completable deleteArtifact(SessionKey sessionKey, String filename) {
+    return deleteArtifact(sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename);
+  }
 
   /**
    * Lists all the versions (as revision IDs) of an artifact.
@@ -109,4 +144,8 @@ public interface BaseArtifactService {
    */
   Single<ImmutableList<Integer>> listVersions(
       String appName, String userId, String sessionId, String filename);
+
+  default Single<ImmutableList<Integer>> listVersions(SessionKey sessionKey, String filename) {
+    return listVersions(sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename);
+  }
 }

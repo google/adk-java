@@ -79,6 +79,18 @@ public interface BaseSessionService {
   }
 
   /**
+   * Creates a new session with the specified parameters.
+   *
+   * @param sessionKey The session key containing appName, userId and sessionId.
+   * @param state An optional map representing the initial state of the session. Can be null or
+   *     empty.
+   */
+  default Single<Session> createSession(
+      SessionKey sessionKey, @Nullable Map<String, Object> state) {
+    return createSession(sessionKey.appName(), sessionKey.userId(), state, sessionKey.id());
+  }
+
+  /**
    * Creates a new session with the specified application name and user ID, using a default state
    * (null) and allowing the service to generate a unique session ID.
    *
@@ -92,6 +104,10 @@ public interface BaseSessionService {
    */
   default Single<Session> createSession(String appName, String userId) {
     return createSession(appName, userId, null, null);
+  }
+
+  default Single<Session> createSession(SessionKey sessionKey) {
+    return createSession(sessionKey.appName(), sessionKey.userId(), null, sessionKey.id());
   }
 
   /**
@@ -110,6 +126,11 @@ public interface BaseSessionService {
   Maybe<Session> getSession(
       String appName, String userId, String sessionId, Optional<GetSessionConfig> config);
 
+  default Maybe<Session> getSession(SessionKey sessionKey, @Nullable GetSessionConfig config) {
+    return getSession(
+        sessionKey.appName(), sessionKey.userId(), sessionKey.id(), Optional.ofNullable(config));
+  }
+
   /**
    * Lists sessions associated with a specific application and user.
    *
@@ -123,6 +144,10 @@ public interface BaseSessionService {
    */
   Single<ListSessionsResponse> listSessions(String appName, String userId);
 
+  default Single<ListSessionsResponse> listSessions(SessionKey sessionKey) {
+    return listSessions(sessionKey.appName(), sessionKey.userId());
+  }
+
   /**
    * Deletes a specific session.
    *
@@ -133,6 +158,10 @@ public interface BaseSessionService {
    * @throws SessionException for other deletion errors.
    */
   Completable deleteSession(String appName, String userId, String sessionId);
+
+  default Completable deleteSession(SessionKey sessionKey) {
+    return deleteSession(sessionKey.appName(), sessionKey.userId(), sessionKey.id());
+  }
 
   /**
    * Lists the events within a specific session. Supports pagination via the response object.
@@ -146,6 +175,10 @@ public interface BaseSessionService {
    * @throws SessionException for other listing errors.
    */
   Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId);
+
+  default Single<ListEventsResponse> listEvents(SessionKey sessionKey) {
+    return listEvents(sessionKey.appName(), sessionKey.userId(), sessionKey.id());
+  }
 
   /**
    * Closes a session. This is currently a placeholder and may involve finalizing session state or
@@ -190,20 +223,18 @@ public interface BaseSessionService {
     EventActions actions = event.actions();
     if (actions != null) {
       Map<String, Object> stateDelta = actions.stateDelta();
-      if (stateDelta != null && !stateDelta.isEmpty()) {
-        Map<String, Object> sessionState = session.state();
-        if (sessionState != null) {
-          stateDelta.forEach(
-              (key, value) -> {
-                if (!key.startsWith(State.TEMP_PREFIX)) {
-                  if (value == State.REMOVED) {
-                    sessionState.remove(key);
-                  } else {
-                    sessionState.put(key, value);
-                  }
+      Map<String, Object> sessionState = session.state();
+      if (stateDelta != null && !stateDelta.isEmpty() && sessionState != null) {
+        stateDelta.forEach(
+            (key, value) -> {
+              if (!key.startsWith(State.TEMP_PREFIX)) {
+                if (value == State.REMOVED) {
+                  sessionState.remove(key);
+                } else {
+                  sessionState.put(key, value);
                 }
-              });
-        }
+              }
+            });
       }
     }
 

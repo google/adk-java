@@ -49,6 +49,10 @@ public final class Session extends JsonBaseModel {
     return new Builder(id);
   }
 
+  public static Builder builder(SessionKey sessionKey) {
+    return new Builder(sessionKey);
+  }
+
   /** Builder for {@link Session}. */
   public static final class Builder {
     private String id;
@@ -62,6 +66,12 @@ public final class Session extends JsonBaseModel {
       this.id = id;
     }
 
+    public Builder(SessionKey sessionKey) {
+      this.id = sessionKey.id();
+      this.appName = sessionKey.appName();
+      this.userId = sessionKey.userId();
+    }
+
     @JsonCreator
     private Builder() {}
 
@@ -69,6 +79,14 @@ public final class Session extends JsonBaseModel {
     @JsonProperty("id")
     public Builder id(String id) {
       this.id = id;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder sessionKey(SessionKey sessionKey) {
+      this.id = sessionKey.id();
+      this.appName = sessionKey.appName();
+      this.userId = sessionKey.userId();
       return this;
     }
 
@@ -128,6 +146,10 @@ public final class Session extends JsonBaseModel {
       }
       return new Session(appName, userId, id, state, events, lastUpdateTime);
     }
+  }
+
+  public SessionKey sessionKey() {
+    return new SessionKey(appName, userId, id);
   }
 
   @JsonProperty("id")
