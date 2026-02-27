@@ -50,13 +50,13 @@ If you're using Maven, add the following to your dependencies:
 <dependency>
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk</artifactId>
-  <version>0.7.0</version>
+  <version>0.8.0</version>
 </dependency>
 <!-- Dev UI -->
 <dependency>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-dev</artifactId>
-    <version>0.7.0</version>
+    <version>0.8.0</version>
 </dependency>
 ```
 

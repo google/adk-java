@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/google/adk-java/compare/v0.7.0...v0.8.0) (2026-02-27)
+
+
+### Features
+
+* add example on how to expose agent via A2A protocol ([e3ea378](https://github.com/google/adk-java/commit/e3ea378051e5c4e5e5031657467145779e42db55))
+
 ## [0.7.0](https://github.com/google/adk-java/compare/v0.6.0...v0.7.0) (2026-02-27)
 
 
