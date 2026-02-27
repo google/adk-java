@@ -47,7 +47,7 @@
     <otel.version>1.59.0</otel.version>
     <mcp.version>0.14.0</mcp.version>
     <errorprone.version>2.47.0</errorprone.version>
-    <google.genai.version>1.32.0</google.genai.version>
+    <google.genai.version>1.41.0</google.genai.version>
     <protobuf.version>4.33.5</protobuf.version>
     <junit.version>5.11.4</junit.version>
     <mockito.version>5.20.0</mockito.version>
