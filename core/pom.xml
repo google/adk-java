@@ -205,10 +205,29 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <executions>
           <execution>
+            <!-- run all tests with standard env -->
             <id>basic</id>
             <goals>
               <goal>test</goal>
             </goals>
+            <configuration>
+              <environmentVariables>
+                <GOOGLE_GENAI_USE_VERTEXAI>false</GOOGLE_GENAI_USE_VERTEXAI>
+              </environmentVariables>
+            </configuration>
+          </execution>
+          <execution>
+            <id>vertex-ai-rag-retrieval</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <environmentVariables>
+                <GOOGLE_GENAI_USE_VERTEXAI>true</GOOGLE_GENAI_USE_VERTEXAI>
+              </environmentVariables>
+              <!-- run a second variant of the following tests -->
+              <test>VertexAiRagRetrievalTest#processLlmRequest_gemini2Model_addVertexRagStoreToConfig, VertexAiRagRetrievalTest#processLlmRequest_otherModel_doNotAddVertexRagStoreToConfig</test>
+            </configuration>
           </execution>
           <execution>
             <id>apigee-llm</id>
