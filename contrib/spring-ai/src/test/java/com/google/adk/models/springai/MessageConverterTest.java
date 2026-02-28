@@ -60,7 +60,9 @@ class MessageConverterTest {
     assertThat(prompt.getInstructions()).hasSize(1);
     Message message = prompt.getInstructions().get(0);
     assertThat(message).isInstanceOf(UserMessage.class);
-    assertThat(((UserMessage) message).getText()).isEqualTo("Hello, how are you?");
+    UserMessage userMessage = (UserMessage) message;
+    assertThat(userMessage.getText()).isEqualTo("Hello, how are you?");
+    assertThat(userMessage.getMedia()).isEmpty();
   }
 
   @Test
@@ -443,5 +445,150 @@ class MessageConverterTest {
     Message secondMessage = prompt.getInstructions().get(1);
     assertThat(secondMessage).isInstanceOf(UserMessage.class);
     assertThat(((UserMessage) secondMessage).getText()).isEqualTo("Hello world");
+  }
+
+  @Test
+  void testUserMessageWithInlineMediaData() {
+    // Test conversion of ADK Content with inline media (image bytes) to Spring AI UserMessage
+    byte[] imageData = "fake-image-data".getBytes();
+    String mimeType = "image/png";
+
+    Content userContent =
+        Content.builder()
+            .role("user")
+            .parts(
+                List.of(
+                    Part.fromText("What's in this image?"),
+                    Part.builder()
+                        .inlineData(
+                            com.google.genai.types.Blob.builder()
+                                .mimeType(mimeType)
+                                .data(imageData)
+                                .build())
+                        .build()))
+            .build();
+
+    LlmRequest request = LlmRequest.builder().contents(List.of(userContent)).build();
+
+    Prompt prompt = messageConverter.toLlmPrompt(request);
+
+    assertThat(prompt.getInstructions()).hasSize(1);
+    Message message = prompt.getInstructions().get(0);
+    assertThat(message).isInstanceOf(UserMessage.class);
+
+    UserMessage userMessage = (UserMessage) message;
+    assertThat(userMessage.getText()).isEqualTo("What's in this image?");
+    assertThat(userMessage.getMedia()).hasSize(1);
+    org.springframework.ai.content.Media media = userMessage.getMedia().get(0);
+    assertThat(media.getMimeType().toString()).isEqualTo(mimeType);
+    assertThat(media.getData()).isInstanceOf(byte[].class);
+    byte[] actualData = (byte[]) media.getData();
+    assertThat(actualData).isEqualTo(imageData);
+  }
+
+  @Test
+  void testUserMessageWithFileMediaData() {
+    // Test conversion of ADK Content with file-based media (URI) to Spring AI UserMessage
+    String fileUri = "gs://bucket/image.jpg";
+    String mimeType = "image/jpeg";
+
+    Content userContent =
+        Content.builder()
+            .role("user")
+            .parts(
+                List.of(
+                    Part.fromText("Analyze this image"),
+                    Part.builder()
+                        .fileData(
+                            com.google.genai.types.FileData.builder()
+                                .mimeType(mimeType)
+                                .fileUri(fileUri)
+                                .build())
+                        .build()))
+            .build();
+
+    LlmRequest request = LlmRequest.builder().contents(List.of(userContent)).build();
+
+    Prompt prompt = messageConverter.toLlmPrompt(request);
+
+    assertThat(prompt.getInstructions()).hasSize(1);
+    Message message = prompt.getInstructions().get(0);
+    assertThat(message).isInstanceOf(UserMessage.class);
+
+    UserMessage userMessage = (UserMessage) message;
+    assertThat(userMessage.getText()).isEqualTo("Analyze this image");
+    assertThat(userMessage.getMedia()).hasSize(1);
+    org.springframework.ai.content.Media media = userMessage.getMedia().get(0);
+    assertThat(media.getMimeType().toString()).isEqualTo(mimeType);
+    assertThat(media.getData()).isInstanceOf(String.class);
+    String actualUri = (String) media.getData();
+    assertThat(actualUri).isEqualTo(fileUri);
+  }
+
+  @Test
+  void testUserMessageWithMultipleMediaAttachments() {
+    // Test conversion with multiple media attachments
+    byte[] image1 = "image1-data".getBytes();
+    byte[] image2 = "image2-data".getBytes();
+
+    Content userContent =
+        Content.builder()
+            .role("user")
+            .parts(
+                List.of(
+                    Part.fromText("Compare these images"),
+                    Part.builder()
+                        .inlineData(
+                            com.google.genai.types.Blob.builder()
+                                .mimeType("image/png")
+                                .data(image1)
+                                .build())
+                        .build(),
+                    Part.builder()
+                        .inlineData(
+                            com.google.genai.types.Blob.builder()
+                                .mimeType("image/jpeg")
+                                .data(image2)
+                                .build())
+                        .build()))
+            .build();
+
+    LlmRequest request = LlmRequest.builder().contents(List.of(userContent)).build();
+
+    Prompt prompt = messageConverter.toLlmPrompt(request);
+
+    assertThat(prompt.getInstructions()).hasSize(1);
+    UserMessage userMessage = (UserMessage) prompt.getInstructions().get(0);
+    assertThat(userMessage.getText()).isEqualTo("Compare these images");
+    assertThat(userMessage.getMedia()).hasSize(2);
+  }
+
+  @Test
+  void testUserMessageWithMediaOnly() {
+    // Test conversion with media but no text
+    byte[] imageData = "image-only".getBytes();
+
+    Content userContent =
+        Content.builder()
+            .role("user")
+            .parts(
+                List.of(
+                    Part.builder()
+                        .inlineData(
+                            com.google.genai.types.Blob.builder()
+                                .mimeType("image/png")
+                                .data(imageData)
+                                .build())
+                        .build()))
+            .build();
+
+    LlmRequest request = LlmRequest.builder().contents(List.of(userContent)).build();
+
+    Prompt prompt = messageConverter.toLlmPrompt(request);
+
+    assertThat(prompt.getInstructions()).hasSize(1);
+    UserMessage userMessage = (UserMessage) prompt.getInstructions().get(0);
+    assertThat(userMessage.getText()).isEmpty();
+    assertThat(userMessage.getMedia()).hasSize(1);
   }
 }
