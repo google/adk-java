@@ -26,6 +26,8 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
 import com.google.adk.testing.TestUtils;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -34,6 +36,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -394,5 +397,53 @@ public final class FunctionsTest {
             .build();
     ImmutableList<FunctionCall> result = Functions.getAskUserConfirmationFunctionCalls(event);
     assertThat(result).containsExactly(confirmationCall1, confirmationCall2);
+  }
+
+  @Test
+  public void generateRequestConfirmationEvent_generatesNonNullEventId() {
+    InvocationContext invocationContext = createInvocationContext(createRootAgent());
+    String functionCallId = "function_call_123";
+
+    // Create a function call event with a function call that has an ID
+    Event functionCallEvent =
+        Event.builder()
+            .id("event1")
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id(functionCallId)
+                                .name("some_tool")
+                                .args(ImmutableMap.of())
+                                .build())
+                        .build()))
+            .build();
+
+    // Create a function response event with requestedToolConfirmations
+    ConcurrentHashMap<String, ToolConfirmation> toolConfirmations = new ConcurrentHashMap<>();
+    toolConfirmations.put(functionCallId, ToolConfirmation.builder().build());
+
+    EventActions actionsWithConfirmation =
+        EventActions.builder().requestedToolConfirmations(toolConfirmations).build();
+
+    Event functionResponseEvent =
+        Event.builder()
+            .id("event2")
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .content(Content.fromParts(Part.fromText("response")))
+            .actions(actionsWithConfirmation)
+            .build();
+
+    Optional<Event> result =
+        Functions.generateRequestConfirmationEvent(
+            invocationContext, functionCallEvent, functionResponseEvent);
+
+    assertThat(result).isPresent();
+    assertThat(result.get().id()).isNotNull();
+    assertThat(result.get().id()).isNotEmpty();
   }
 }
