@@ -192,13 +192,16 @@ public final class InMemorySessionService implements BaseSessionService {
     Objects.requireNonNull(userId, "userId cannot be null");
     Objects.requireNonNull(sessionId, "sessionId cannot be null");
 
-    ConcurrentMap<String, ConcurrentMap<String, Session>> appSessionsMap = sessions.get(appName);
-    if (appSessionsMap != null) {
-      ConcurrentMap<String, Session> userSessionsMap = appSessionsMap.get(userId);
-      if (userSessionsMap != null) {
-        userSessionsMap.remove(sessionId);
-      }
-    }
+    sessions.computeIfPresent(appName, (app, appSessionsMap) -> {
+        appSessionsMap.computeIfPresent(userId, (user, userSessionsMap) -> {
+            userSessionsMap.remove(sessionId);
+            // If userSessionsMap is now empty, return null to automatically remove the userId key
+            return userSessionsMap.isEmpty() ? null : userSessionsMap;
+        });
+        // If appSessionsMap is now empty, return null to automatically remove the appName key
+        return appSessionsMap.isEmpty() ? null : appSessionsMap;
+    });
+
     return Completable.complete();
   }
 
