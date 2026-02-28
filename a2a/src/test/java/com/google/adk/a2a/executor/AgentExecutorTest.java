@@ -1,4 +1,4 @@
-package com.google.adk.a2a;
+package com.google.adk.a2a.executor;
 
 import static org.junit.Assert.assertThrows;
 
@@ -32,6 +32,7 @@ public final class AgentExecutorTest {
             .app(App.builder().name("test_app").rootAgent(testAgent).build())
             .sessionService(new InMemorySessionService())
             .artifactService(new InMemoryArtifactService())
+            .agentExecutorConfig(AgentExecutorConfig.builder().build())
             .build();
   }
 
@@ -44,6 +45,7 @@ public final class AgentExecutorTest {
               .agent(testAgent)
               .app(App.builder().name("test_app").rootAgent(testAgent).build())
               .sessionService(new InMemorySessionService())
+              .agentExecutorConfig(AgentExecutorConfig.builder().build())
               .artifactService(new InMemoryArtifactService())
               .build();
         });
@@ -55,6 +57,20 @@ public final class AgentExecutorTest {
         IllegalStateException.class,
         () -> {
           new AgentExecutor.Builder()
+              .sessionService(new InMemorySessionService())
+              .artifactService(new InMemoryArtifactService())
+              .agentExecutorConfig(AgentExecutorConfig.builder().build())
+              .build();
+        });
+  }
+
+  @Test
+  public void createAgentExecutor_noAgentExecutorConfig_throwsException() {
+    assertThrows(
+        NullPointerException.class,
+        () -> {
+          new AgentExecutor.Builder()
+              .app(App.builder().name("test_app").rootAgent(testAgent).build())
               .sessionService(new InMemorySessionService())
               .artifactService(new InMemoryArtifactService())
               .build();

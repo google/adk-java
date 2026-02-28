@@ -253,7 +253,8 @@ public final class Functions {
                             functionCall.id().map(toolConfirmations::get).orElse(null))
                         .build();
 
-                Map<String, Object> functionArgs = functionCall.args().orElse(new HashMap<>());
+                Map<String, Object> functionArgs =
+                    functionCall.args().map(HashMap::new).orElse(new HashMap<>());
 
                 Maybe<Map<String, Object>> maybeFunctionResult =
                     maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
@@ -482,12 +483,8 @@ public final class Functions {
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
 
-      HashMap<String, Object> mutableFunctionArgs = new HashMap<>(functionArgs);
-
       Maybe<Map<String, Object>> pluginResult =
-          invocationContext
-              .pluginManager()
-              .beforeToolCallback(tool, mutableFunctionArgs, toolContext);
+          invocationContext.pluginManager().beforeToolCallback(tool, functionArgs, toolContext);
 
       List<? extends BeforeToolCallback> callbacks = agent.canonicalBeforeToolCallbacks();
       if (callbacks.isEmpty()) {
@@ -500,8 +497,7 @@ public final class Functions {
                   Flowable.fromIterable(callbacks)
                       .concatMapMaybe(
                           callback ->
-                              callback.call(
-                                  invocationContext, tool, mutableFunctionArgs, toolContext))
+                              callback.call(invocationContext, tool, functionArgs, toolContext))
                       .firstElement());
 
       return pluginResult.switchIfEmpty(callbackResult);

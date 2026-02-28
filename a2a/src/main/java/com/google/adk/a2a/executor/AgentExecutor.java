@@ -1,9 +1,10 @@
-package com.google.adk.a2a;
+package com.google.adk.a2a.executor;
+
+import static java.util.Objects.requireNonNull;
 
 import com.google.adk.a2a.converters.EventConverter;
 import com.google.adk.a2a.converters.PartConverter;
 import com.google.adk.agents.BaseAgent;
-import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
@@ -44,12 +45,10 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
 
   private static final Logger logger = LoggerFactory.getLogger(AgentExecutor.class);
   private static final String USER_ID_PREFIX = "A2A_USER_";
-  private static final RunConfig DEFAULT_RUN_CONFIG =
-      RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.NONE).setMaxLlmCalls(20).build();
 
   private final Map<String, Disposable> activeTasks = new ConcurrentHashMap<>();
   private final Runner.Builder runnerBuilder;
-  private final RunConfig runConfig;
+  private final AgentExecutorConfig agentExecutorConfig;
 
   private AgentExecutor(
       App app,
@@ -59,7 +58,10 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
       BaseSessionService sessionService,
       BaseMemoryService memoryService,
       List<? extends Plugin> plugins,
-      RunConfig runConfig) {
+      AgentExecutorConfig agentExecutorConfig) {
+    requireNonNull(agentExecutorConfig);
+    this.agentExecutorConfig = agentExecutorConfig;
+
     this.runnerBuilder =
         Runner.builder()
             .agent(agent)
@@ -73,7 +75,6 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     }
     // Check that the runner is configured correctly and can be built.
     var unused = runnerBuilder.build();
-    this.runConfig = runConfig == null ? DEFAULT_RUN_CONFIG : runConfig;
   }
 
   /** Builder for {@link AgentExecutor}. */
@@ -85,7 +86,13 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     private BaseSessionService sessionService;
     private BaseMemoryService memoryService;
     private List<? extends Plugin> plugins = ImmutableList.of();
-    private RunConfig runConfig;
+    private AgentExecutorConfig agentExecutorConfig;
+
+    @CanIgnoreReturnValue
+    public Builder agentExecutorConfig(AgentExecutorConfig agentExecutorConfig) {
+      this.agentExecutorConfig = agentExecutorConfig;
+      return this;
+    }
 
     @CanIgnoreReturnValue
     public Builder app(App app) {
@@ -130,15 +137,16 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     }
 
     @CanIgnoreReturnValue
-    public Builder runConfig(RunConfig runConfig) {
-      this.runConfig = runConfig;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
     public AgentExecutor build() {
       return new AgentExecutor(
-          app, agent, appName, artifactService, sessionService, memoryService, plugins, runConfig);
+          app,
+          agent,
+          appName,
+          artifactService,
+          sessionService,
+          memoryService,
+          plugins,
+          agentExecutorConfig);
     }
   }
 
@@ -178,7 +186,8 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
             .flatMapPublisher(
                 session -> {
                   updater.startWork();
-                  return runner.runAsync(getUserId(ctx), session.id(), content, runConfig);
+                  return runner.runAsync(
+                      getUserId(ctx), session.id(), content, agentExecutorConfig.runConfig());
                 })
             .subscribe(
                 event -> {
