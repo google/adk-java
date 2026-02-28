@@ -1,0 +1,28 @@
+{
+  "name": "Java 17",
+  "image": "mcr.microsoft.com/devcontainers/java:1-17-bullseye",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/git-lfs:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "extension-pack-for-java",
+        "redhat.vscode-xml",
+        "rangav.vscode-thunder-client"
+      ],
+      "settings": {
+        "java.jdt.download.server": "latest",
+        "java.help.firstView": "none",
+        "java.showBuildStatusOnStart": "notification",
+        "java.configuration.updateBuildConfiguration": "interactive",
+        "java.autobuild.enabled": true,
+        "terminal.integrated.focusOnOutput": false
+      }
+    }
+  },
+  "remoteUser": "vscode",
+  "forwardPorts": [8000, 8080, 8081, 8082],
+  "postCreateCommand": "git config --global credential.helper '!gh auth git-credential' && git config --global lfs.locksverify false"
+}
