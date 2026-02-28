@@ -5,7 +5,7 @@
   <parent>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-parent</artifactId>
-    <version>0.6.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <version>0.7.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
     <relativePath>../..</relativePath>
   </parent>
 
@@ -17,6 +17,7 @@
 
   <modules>
     <module>a2a_basic</module>
+    <module>a2a_server</module>
     <module>configagent</module>
     <module>helloworld</module>
     <module>mcpfilesystem</module>

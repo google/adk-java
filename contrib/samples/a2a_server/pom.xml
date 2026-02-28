@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.google.adk</groupId>
+    <artifactId>google-adk-samples</artifactId>
+    <version>0.7.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <relativePath>..</relativePath>
+  </parent>
+
+  <artifactId>google-adk-sample-a2a-agent</artifactId>
+  <packaging>jar</packaging>
+
+  <name>Google ADK - Sample - A2A Agent Server</name>
+  <description>Demonstrates exposing ADK agent via A2A.</description>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <java.version>17</java.version>
+    <google-adk.version>${project.version}</google-adk.version>
+    <google-adk-a2a.version>${project.version}</google-adk-a2a.version>
+    <a2a.sdk.version>0.3.0.Beta1</a2a.sdk.version>
+    <quarkus.platform.version>3.30.6</quarkus.platform.version>
+    <flogger.version>0.8</flogger.version>
+  </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-bom</artifactId>
+                <version>${quarkus.platform.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.github.a2asdk</groupId>
+      <artifactId>a2a-java-sdk-reference-jsonrpc</artifactId>
+      <version>${a2a.sdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.quarkus</groupId>
+      <artifactId>quarkus-resteasy-jackson</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>com.fasterxml.jackson.datatype</groupId>
+        <artifactId>jackson-datatype-jsr310</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.google.adk</groupId>
+      <artifactId>google-adk</artifactId>
+      <version>${google-adk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.adk</groupId>
+      <artifactId>google-adk-a2a</artifactId>
+      <version>${google-adk-a2a.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>io.github.a2asdk</groupId>
+      <artifactId>a2a-java-sdk-spec</artifactId>
+      <version>${a2a.sdk.version}</version>
+    </dependency>
+
+    <dependency>
+        <groupId>io.quarkus</groupId>
+        <artifactId>quarkus-arc</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.quarkus</groupId>
+        <artifactId>quarkus-reactive-routes</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.quarkus</groupId>
+        <artifactId>quarkus-jackson</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>io.github.a2asdk</groupId>
+      <artifactId>a2a-java-sdk-client</artifactId>
+      <version>${a2a.sdk.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.google.flogger</groupId>
+      <artifactId>flogger</artifactId>
+      <version>${flogger.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.google.flogger</groupId>
+      <artifactId>google-extensions</artifactId>
+      <version>${flogger.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.google.flogger</groupId>
+      <artifactId>flogger-system-backend</artifactId>
+      <version>${flogger.version}</version>
+    </dependency>
+    
+  </dependencies>
+
+  <build>
+    <resources>
+        <resource>
+            <directory>src/main/java</directory>
+            <includes>
+                <include>**/*.json</include>
+            </includes>
+        </resource>
+        <resource>
+            <directory>src/main/resources</directory>
+        </resource>
+    </resources>
+        <plugins>
+            <plugin>
+              <groupId>io.quarkus</groupId>
+                  <artifactId>quarkus-maven-plugin</artifactId>
+                  <version>${quarkus.platform.version}</version> 
+                  <extensions>true</extensions>
+                  <executions>
+                      <execution>
+                          <goals>
+                              <goal>build</goal>
+                              <goal>generate-code</goal>
+                              <goal>generate-code-tests</goal>
+                          </goals>
+                      </execution>
+                  </executions>
+              </plugin>
+        </plugins>
+    </build>
+</project>
