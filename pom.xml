@@ -52,7 +52,7 @@
     <junit.version>5.11.4</junit.version>
     <mockito.version>5.20.0</mockito.version>
     <java-websocket.version>1.6.0</java-websocket.version>
-    <jackson.version>2.19.0</jackson.version>
+    <jackson.version>2.21.1</jackson.version>
     <okhttp.version>4.12.0</okhttp.version>
     <docker-java.version>3.3.6</docker-java.version>
     <graphviz.version>0.18.1</graphviz.version>
