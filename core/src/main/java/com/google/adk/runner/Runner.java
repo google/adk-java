@@ -35,6 +35,7 @@ import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.sessions.SessionKey;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.summarizer.LlmEventSummarizer;
 import com.google.adk.summarizer.SlidingWindowEventCompactor;
@@ -384,6 +385,25 @@ public class Runner {
   }
 
   /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
+  public Flowable<Event> runAsync(
+      SessionKey sessionKey,
+      Content newMessage,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta) {
+    return runAsync(sessionKey.userId(), sessionKey.id(), newMessage, runConfig, stateDelta);
+  }
+
+  /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
+  public Flowable<Event> runAsync(SessionKey sessionKey, Content newMessage, RunConfig runConfig) {
+    return runAsync(sessionKey, newMessage, runConfig, /* stateDelta= */ null);
+  }
+
+  /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
+  public Flowable<Event> runAsync(SessionKey sessionKey, Content newMessage) {
+    return runAsync(sessionKey, newMessage, RunConfig.builder().build());
+  }
+
+  /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
   public Flowable<Event> runAsync(String userId, String sessionId, Content newMessage) {
     return runAsync(userId, sessionId, newMessage, RunConfig.builder().build());
   }
@@ -669,6 +689,17 @@ public class Runner {
                           String.format("Session not found: %s for user %s", sessionId, userId)));
                 }))
         .flatMapPublisher(session -> this.runLive(session, liveRequestQueue, runConfig));
+  }
+
+  /**
+   * Retrieves the session and runs the agent in live mode.
+   *
+   * @return stream of events from the agent.
+   * @throws IllegalArgumentException if the session is not found.
+   */
+  public Flowable<Event> runLive(
+      SessionKey sessionKey, LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
+    return runLive(sessionKey.userId(), sessionKey.id(), liveRequestQueue, runConfig);
   }
 
   /**

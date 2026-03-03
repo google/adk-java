@@ -41,6 +41,7 @@ import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.sessions.Session;
+import com.google.adk.sessions.SessionKey;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.telemetry.Tracing;
 import com.google.adk.testing.TestLlm;
@@ -579,6 +580,14 @@ public final class RunnerTest {
   }
 
   @Test
+  public void runAsync_withSessionKey_success() {
+    var events =
+        runner.runAsync(session.sessionKey(), createContent("from user")).toList().blockingGet();
+
+    assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+  }
+
+  @Test
   public void runAsync_withStateDelta_mergesStateIntoSession() {
     ImmutableMap<String, Object> stateDelta = ImmutableMap.of("key1", "value1", "key2", 42);
 
@@ -587,6 +596,32 @@ public final class RunnerTest {
             .runAsync(
                 "user",
                 session.id(),
+                createContent("test message"),
+                RunConfig.builder().build(),
+                stateDelta)
+            .toList()
+            .blockingGet();
+
+    // Verify agent runs successfully
+    assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+
+    // Verify state was merged into session
+    Session finalSession =
+        runner
+            .sessionService()
+            .getSession("test", "user", session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(finalSession.state()).containsAtLeastEntriesIn(stateDelta);
+  }
+
+  @Test
+  public void runAsync_withSessionKeyAndStateDelta_mergesStateIntoSession() {
+    ImmutableMap<String, Object> stateDelta = ImmutableMap.of("key1", "value1", "key2", 42);
+
+    var events =
+        runner
+            .runAsync(
+                session.sessionKey(),
                 createContent("test message"),
                 RunConfig.builder().build(),
                 stateDelta)
@@ -841,6 +876,20 @@ public final class RunnerTest {
   }
 
   @Test
+  public void runLive_withSessionKey_success() throws Exception {
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session.sessionKey(), liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+  }
+
+  @Test
   public void runLive_withToolExecution() throws Exception {
     LlmAgent agentWithTool =
         createTestAgentBuilder(testLlmWithFunctionCall).tools(ImmutableList.of(echoTool)).build();
@@ -949,12 +998,35 @@ public final class RunnerTest {
   }
 
   @Test
+  public void runAsync_withoutSessionAndAutoCreateSessionTrue_withSessionKey_createsSession() {
+    RunConfig runConfig = RunConfig.builder().setAutoCreateSession(true).build();
+    SessionKey sessionKey = new SessionKey("test", "user", UUID.randomUUID().toString());
+
+    var events =
+        runner.runAsync(sessionKey, createContent("from user"), runConfig).toList().blockingGet();
+
+    assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+    assertThat(runner.sessionService().getSession(sessionKey, null).blockingGet()).isNotNull();
+  }
+
+  @Test
   public void runAsync_withoutSessionAndAutoCreateSessionFalse_throwsException() {
     RunConfig runConfig = RunConfig.builder().setAutoCreateSession(false).build();
     String newSessionId = UUID.randomUUID().toString();
 
     runner
         .runAsync("user", newSessionId, createContent("from user"), runConfig)
+        .test()
+        .assertError(IllegalArgumentException.class);
+  }
+
+  @Test
+  public void runAsync_withoutSessionAndAutoCreateSessionFalse_withSessionKey_throwsException() {
+    RunConfig runConfig = RunConfig.builder().setAutoCreateSession(false).build();
+    SessionKey sessionKey = new SessionKey("test", "user", UUID.randomUUID().toString());
+
+    runner
+        .runAsync(sessionKey, createContent("from user"), runConfig)
         .test()
         .assertError(IllegalArgumentException.class);
   }
@@ -983,6 +1055,25 @@ public final class RunnerTest {
   }
 
   @Test
+  public void runLive_withoutSessionAndAutoCreateSessionTrue_withSessionKey_createsSession()
+      throws Exception {
+    RunConfig runConfig = RunConfig.builder().setAutoCreateSession(true).build();
+    SessionKey sessionKey = new SessionKey("test", "user", UUID.randomUUID().toString());
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(sessionKey, liveRequestQueue, runConfig).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+    assertThat(runner.sessionService().getSession(sessionKey, null).blockingGet()).isNotNull();
+  }
+
+  @Test
   public void runLive_withoutSessionAndAutoCreateSessionFalse_throwsException() {
     RunConfig runConfig = RunConfig.builder().setAutoCreateSession(false).build();
     String newSessionId = UUID.randomUUID().toString();
@@ -990,6 +1081,18 @@ public final class RunnerTest {
 
     runner
         .runLive("user", newSessionId, liveRequestQueue, runConfig)
+        .test()
+        .assertError(IllegalArgumentException.class);
+  }
+
+  @Test
+  public void runLive_withoutSessionAndAutoCreateSessionFalse_withSessionKey_throwsException() {
+    RunConfig runConfig = RunConfig.builder().setAutoCreateSession(false).build();
+    SessionKey sessionKey = new SessionKey("test", "user", UUID.randomUUID().toString());
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    runner
+        .runLive(sessionKey, liveRequestQueue, runConfig)
         .test()
         .assertError(IllegalArgumentException.class);
   }
