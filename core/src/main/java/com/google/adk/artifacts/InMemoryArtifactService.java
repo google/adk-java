@@ -129,10 +129,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   public Single<Part> saveAndReloadArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact) {
     return saveArtifact(appName, userId, sessionId, filename, artifact)
-        .flatMap(
-            version ->
-                loadArtifact(appName, userId, sessionId, filename, Optional.of(version))
-                    .toSingle());
+        .flatMap(version -> loadArtifact(appName, userId, sessionId, filename, version).toSingle());
   }
 
   private Map<String, List<Part>> getArtifactsMap(String appName, String userId, String sessionId) {

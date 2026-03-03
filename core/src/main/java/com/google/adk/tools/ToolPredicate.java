@@ -18,6 +18,7 @@ package com.google.adk.tools;
 
 import com.google.adk.agents.ReadonlyContext;
 import java.util.Optional;
+import javax.annotation.Nullable;
 
 /**
  * Functional interface to decide whether a tool should be exposed to the LLM based on the current
@@ -31,6 +32,19 @@ public interface ToolPredicate {
    * @param tool The tool to check.
    * @param readonlyContext The current context.
    * @return true if the tool should be selected, false otherwise.
+   * @deprecated Use {@link #test(BaseTool, ReadonlyContext)} instead.
    */
+  @Deprecated
   boolean test(BaseTool tool, Optional<ReadonlyContext> readonlyContext);
+
+  /**
+   * Decides if the given tool is selected.
+   *
+   * @param tool The tool to check.
+   * @param readonlyContext The current context.
+   * @return true if the tool should be selected, false otherwise.
+   */
+  default boolean test(BaseTool tool, @Nullable ReadonlyContext readonlyContext) {
+    return test(tool, Optional.ofNullable(readonlyContext));
+  }
 }

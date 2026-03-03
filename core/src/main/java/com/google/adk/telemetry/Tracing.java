@@ -19,26 +19,44 @@ package com.google.adk.telemetry;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.CompletableSource;
+import io.reactivex.rxjava3.core.CompletableTransformer;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.FlowableTransformer;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.MaybeSource;
+import io.reactivex.rxjava3.core.MaybeTransformer;
+import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.core.SingleSource;
+import io.reactivex.rxjava3.core.SingleTransformer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
+import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,8 +70,56 @@ public class Tracing {
 
   private static final Logger log = LoggerFactory.getLogger(Tracing.class);
 
+  private static final AttributeKey<List<String>> GEN_AI_RESPONSE_FINISH_REASONS =
+      AttributeKey.stringArrayKey("gen_ai.response.finish_reasons");
+
+  private static final AttributeKey<String> GEN_AI_OPERATION_NAME =
+      AttributeKey.stringKey("gen_ai.operation.name");
+  private static final AttributeKey<String> GEN_AI_AGENT_DESCRIPTION =
+      AttributeKey.stringKey("gen_ai.agent.description");
+  private static final AttributeKey<String> GEN_AI_AGENT_NAME =
+      AttributeKey.stringKey("gen_ai.agent.name");
+  private static final AttributeKey<String> GEN_AI_CONVERSATION_ID =
+      AttributeKey.stringKey("gen_ai.conversation.id");
+  private static final AttributeKey<String> GEN_AI_SYSTEM = AttributeKey.stringKey("gen_ai.system");
+  private static final AttributeKey<String> GEN_AI_TOOL_CALL_ID =
+      AttributeKey.stringKey("gen_ai.tool_call.id");
+  private static final AttributeKey<String> GEN_AI_TOOL_DESCRIPTION =
+      AttributeKey.stringKey("gen_ai.tool.description");
+  private static final AttributeKey<String> GEN_AI_TOOL_NAME =
+      AttributeKey.stringKey("gen_ai.tool.name");
+  private static final AttributeKey<String> GEN_AI_TOOL_TYPE =
+      AttributeKey.stringKey("gen_ai.tool.type");
+  private static final AttributeKey<String> GEN_AI_REQUEST_MODEL =
+      AttributeKey.stringKey("gen_ai.request.model");
+  private static final AttributeKey<Double> GEN_AI_REQUEST_TOP_P =
+      AttributeKey.doubleKey("gen_ai.request.top_p");
+  private static final AttributeKey<Long> GEN_AI_REQUEST_MAX_TOKENS =
+      AttributeKey.longKey("gen_ai.request.max_tokens");
+  private static final AttributeKey<Long> GEN_AI_USAGE_INPUT_TOKENS =
+      AttributeKey.longKey("gen_ai.usage.input_tokens");
+  private static final AttributeKey<Long> GEN_AI_USAGE_OUTPUT_TOKENS =
+      AttributeKey.longKey("gen_ai.usage.output_tokens");
+
+  private static final AttributeKey<String> ADK_TOOL_CALL_ARGS =
+      AttributeKey.stringKey("gcp.vertex.agent.tool_call_args");
+  private static final AttributeKey<String> ADK_LLM_REQUEST =
+      AttributeKey.stringKey("gcp.vertex.agent.llm_request");
+  private static final AttributeKey<String> ADK_LLM_RESPONSE =
+      AttributeKey.stringKey("gcp.vertex.agent.llm_response");
+  private static final AttributeKey<String> ADK_INVOCATION_ID =
+      AttributeKey.stringKey("gcp.vertex.agent.invocation_id");
+  private static final AttributeKey<String> ADK_EVENT_ID =
+      AttributeKey.stringKey("gcp.vertex.agent.event_id");
+  private static final AttributeKey<String> ADK_TOOL_RESPONSE =
+      AttributeKey.stringKey("gcp.vertex.agent.tool_response");
+  private static final AttributeKey<String> ADK_SESSION_ID =
+      AttributeKey.stringKey("gcp.vertex.agent.session_id");
+  private static final AttributeKey<String> ADK_DATA =
+      AttributeKey.stringKey("gcp.vertex.agent.data");
+
   @SuppressWarnings("NonFinalStaticField")
-  private static Tracer tracer = GlobalOpenTelemetry.getTracer("com.google.adk");
+  private static Tracer tracer = GlobalOpenTelemetry.getTracer("gcp.vertex.agent");
 
   private static final boolean CAPTURE_MESSAGE_CONTENT_IN_SPANS =
       Boolean.parseBoolean(
@@ -61,9 +127,76 @@ public class Tracing {
 
   private Tracing() {}
 
+  private static Optional<Span> getValidCurrentSpan(String methodName) {
+    Span span = Span.current();
+    if (!span.getSpanContext().isValid()) {
+      log.trace("{}: No valid span in current context.", methodName);
+      return Optional.empty();
+    }
+    return Optional.of(span);
+  }
+
+  private static void setInvocationAttributes(
+      Span span, InvocationContext invocationContext, String eventId) {
+    span.setAttribute(ADK_INVOCATION_ID, invocationContext.invocationId());
+    if (eventId != null && !eventId.isEmpty()) {
+      span.setAttribute(ADK_EVENT_ID, eventId);
+    }
+
+    if (invocationContext.session() != null && invocationContext.session().id() != null) {
+      span.setAttribute(ADK_SESSION_ID, invocationContext.session().id());
+    } else {
+      log.trace(
+          "InvocationContext session or session ID is null, cannot set {}",
+          ADK_SESSION_ID.getKey());
+    }
+  }
+
+  private static void setToolExecutionAttributes(Span span) {
+    span.setAttribute(GEN_AI_OPERATION_NAME, "execute_tool");
+    span.setAttribute(ADK_LLM_REQUEST, "{}");
+    span.setAttribute(ADK_LLM_RESPONSE, "{}");
+  }
+
+  private static void setJsonAttribute(Span span, AttributeKey<String> key, Object value) {
+    if (!CAPTURE_MESSAGE_CONTENT_IN_SPANS) {
+      span.setAttribute(key, "{}");
+      return;
+    }
+    try {
+      String json =
+          (value instanceof String stringValue)
+              ? stringValue
+              : JsonBaseModel.getMapper().writeValueAsString(value);
+      span.setAttribute(key, json);
+    } catch (JsonProcessingException | RuntimeException e) {
+      log.warn("Failed to serialize {} to JSON", key.getKey(), e);
+      span.setAttribute(key, "{\"error\": \"serialization failed\"}");
+    }
+  }
+
   /** Sets the OpenTelemetry instance to be used for tracing. This is for testing purposes only. */
   public static void setTracerForTesting(Tracer tracer) {
     Tracing.tracer = tracer;
+  }
+
+  /**
+   * Sets span attributes immediately available on agent invocation according to OTEL semconv
+   * version 1.37.
+   *
+   * @param span Span on which attributes are set.
+   * @param agentName Agent name from which attributes are gathered.
+   * @param agentDescription Agent description from which attributes are gathered.
+   * @param invocationContext InvocationContext from which attributes are gathered.
+   */
+  public static void traceAgentInvocation(
+      Span span, String agentName, String agentDescription, InvocationContext invocationContext) {
+    span.setAttribute(GEN_AI_OPERATION_NAME, "invoke_agent");
+    span.setAttribute(GEN_AI_AGENT_DESCRIPTION, agentDescription);
+    span.setAttribute(GEN_AI_AGENT_NAME, agentName);
+    if (invocationContext.session() != null && invocationContext.session().id() != null) {
+      span.setAttribute(GEN_AI_CONVERSATION_ID, invocationContext.session().id());
+    }
   }
 
   /**
@@ -71,47 +204,54 @@ public class Tracing {
    *
    * @param args The arguments to the tool call.
    */
-  public static void traceToolCall(Map<String, Object> args) {
-    Span span = Span.current();
-    if (span == null || !span.getSpanContext().isValid()) {
-      log.trace("traceToolCall: No valid span in current context.");
-      return;
-    }
+  public static void traceToolCall(
+      String toolName, String toolDescription, String toolType, Map<String, Object> args) {
+    getValidCurrentSpan("traceToolCall")
+        .ifPresent(
+            span -> {
+              setToolExecutionAttributes(span);
+              span.setAttribute(GEN_AI_TOOL_NAME, toolName);
+              span.setAttribute(GEN_AI_TOOL_DESCRIPTION, toolDescription);
+              span.setAttribute(GEN_AI_TOOL_TYPE, toolType);
 
-    span.setAttribute("gen_ai.system", "com.google.adk");
-    try {
-      span.setAttribute("adk.tool_call_args", JsonBaseModel.getMapper().writeValueAsString(args));
-    } catch (JsonProcessingException e) {
-      log.warn("traceToolCall: Failed to serialize tool call args to JSON", e);
-    }
+              setJsonAttribute(span, ADK_TOOL_CALL_ARGS, args);
+            });
   }
 
   /**
    * Traces tool response event.
    *
-   * @param invocationContext The invocation context for the current agent run.
    * @param eventId The ID of the event.
    * @param functionResponseEvent The function response event.
    */
-  public static void traceToolResponse(
-      InvocationContext invocationContext, String eventId, Event functionResponseEvent) {
-    Span span = Span.current();
-    if (span == null || !span.getSpanContext().isValid()) {
-      log.trace("traceToolResponse: No valid span in current context.");
-      return;
-    }
+  public static void traceToolResponse(String eventId, Event functionResponseEvent) {
+    getValidCurrentSpan("traceToolResponse")
+        .ifPresent(
+            span -> {
+              setToolExecutionAttributes(span);
+              span.setAttribute(ADK_EVENT_ID, eventId);
 
-    span.setAttribute("gen_ai.system", "com.google.adk");
-    span.setAttribute("adk.invocation_id", invocationContext.invocationId());
-    span.setAttribute("adk.event_id", eventId);
-    span.setAttribute("adk.tool_response", functionResponseEvent.toJson());
+              FunctionResponse functionResponse =
+                  functionResponseEvent.functionResponses().stream().findFirst().orElse(null);
 
-    // Setting empty llm request and response (as the AdkDevServer UI expects these)
-    span.setAttribute("adk.llm_request", "{}");
-    span.setAttribute("adk.llm_response", "{}");
-    if (invocationContext.session() != null && invocationContext.session().id() != null) {
-      span.setAttribute("adk.session_id", invocationContext.session().id());
-    }
+              String toolCallId = "<not specified>";
+              Object toolResponse = "<not specified>";
+              if (functionResponse != null) {
+                toolCallId = functionResponse.id().orElse(toolCallId);
+                if (functionResponse.response().isPresent()) {
+                  toolResponse = functionResponse.response().get();
+                }
+              }
+
+              span.setAttribute(GEN_AI_TOOL_CALL_ID, toolCallId);
+
+              Object finalToolResponse =
+                  (toolResponse instanceof Map)
+                      ? toolResponse
+                      : ImmutableMap.of("result", toolResponse);
+
+              setJsonAttribute(span, ADK_TOOL_RESPONSE, finalToolResponse);
+            });
   }
 
   /**
@@ -156,38 +296,58 @@ public class Tracing {
       String eventId,
       LlmRequest llmRequest,
       LlmResponse llmResponse) {
-    Span span = Span.current();
-    if (span == null || !span.getSpanContext().isValid()) {
-      log.trace("traceCallLlm: No valid span in current context.");
-      return;
-    }
+    getValidCurrentSpan("traceCallLlm")
+        .ifPresent(
+            span -> {
+              span.setAttribute(GEN_AI_SYSTEM, "gcp.vertex.agent");
+              llmRequest
+                  .model()
+                  .ifPresent(modelName -> span.setAttribute(GEN_AI_REQUEST_MODEL, modelName));
 
-    span.setAttribute("gen_ai.system", "com.google.adk");
-    llmRequest.model().ifPresent(modelName -> span.setAttribute("gen_ai.request.model", modelName));
-    span.setAttribute("adk.invocation_id", invocationContext.invocationId());
-    span.setAttribute("adk.event_id", eventId);
+              setInvocationAttributes(span, invocationContext, eventId);
 
-    if (invocationContext.session() != null && invocationContext.session().id() != null) {
-      span.setAttribute("adk.session_id", invocationContext.session().id());
-    } else {
-      log.trace(
-          "traceCallLlm: InvocationContext session or session ID is null, cannot set"
-              + " adk.session_id");
-    }
+              setJsonAttribute(span, ADK_LLM_REQUEST, buildLlmRequestForTrace(llmRequest));
+              setJsonAttribute(span, ADK_LLM_RESPONSE, llmResponse);
 
-    if (CAPTURE_MESSAGE_CONTENT_IN_SPANS) {
-      try {
-        span.setAttribute(
-            "adk.llm_request",
-            JsonBaseModel.getMapper().writeValueAsString(buildLlmRequestForTrace(llmRequest)));
-        span.setAttribute("adk.llm_response", llmResponse.toJson());
-      } catch (JsonProcessingException e) {
-        log.warn("traceCallLlm: Failed to serialize LlmRequest or LlmResponse to JSON", e);
-      }
-    } else {
-      span.setAttribute("adk.llm_request", "{}");
-      span.setAttribute("adk.llm_response", "{}");
-    }
+              llmRequest
+                  .config()
+                  .ifPresent(
+                      config -> {
+                        config
+                            .topP()
+                            .ifPresent(
+                                topP ->
+                                    span.setAttribute(GEN_AI_REQUEST_TOP_P, topP.doubleValue()));
+                        config
+                            .maxOutputTokens()
+                            .ifPresent(
+                                maxTokens ->
+                                    span.setAttribute(
+                                        GEN_AI_REQUEST_MAX_TOKENS, maxTokens.longValue()));
+                      });
+              llmResponse
+                  .usageMetadata()
+                  .ifPresent(
+                      usage -> {
+                        usage
+                            .promptTokenCount()
+                            .ifPresent(
+                                tokens ->
+                                    span.setAttribute(GEN_AI_USAGE_INPUT_TOKENS, (long) tokens));
+                        usage
+                            .candidatesTokenCount()
+                            .ifPresent(
+                                tokens ->
+                                    span.setAttribute(GEN_AI_USAGE_OUTPUT_TOKENS, (long) tokens));
+                      });
+              llmResponse
+                  .finishReason()
+                  .map(reason -> reason.knownEnum().name().toLowerCase(Locale.ROOT))
+                  .ifPresent(
+                      reason ->
+                          span.setAttribute(
+                              GEN_AI_RESPONSE_FINISH_REASONS, ImmutableList.of(reason)));
+            });
   }
 
   /**
@@ -199,36 +359,17 @@ public class Tracing {
    */
   public static void traceSendData(
       InvocationContext invocationContext, String eventId, List<Content> data) {
-    Span span = Span.current();
-    if (span == null || !span.getSpanContext().isValid()) {
-      log.trace("traceSendData: No valid span in current context.");
-      return;
-    }
+    getValidCurrentSpan("traceSendData")
+        .ifPresent(
+            span -> {
+              setInvocationAttributes(span, invocationContext, eventId);
 
-    span.setAttribute("adk.invocation_id", invocationContext.invocationId());
-    if (eventId != null && !eventId.isEmpty()) {
-      span.setAttribute("adk.event_id", eventId);
-    }
-
-    if (invocationContext.session() != null && invocationContext.session().id() != null) {
-      span.setAttribute("adk.session_id", invocationContext.session().id());
-    }
-
-    try {
-      List<Map<String, Object>> dataList = new ArrayList<>();
-      if (data != null) {
-        for (Content content : data) {
-          if (content != null) {
-            dataList.add(
-                JsonBaseModel.getMapper()
-                    .convertValue(content, new TypeReference<Map<String, Object>>() {}));
-          }
-        }
-      }
-      span.setAttribute("adk.data", JsonBaseModel.toJsonString(dataList));
-    } catch (IllegalStateException e) {
-      log.warn("traceSendData: Failed to serialize data to JSON", e);
-    }
+              ImmutableList<Content> safeData =
+                  Optional.ofNullable(data).orElse(ImmutableList.of()).stream()
+                      .filter(Objects::nonNull)
+                      .collect(toImmutableList());
+              setJsonAttribute(span, ADK_DATA, safeData);
+            });
   }
 
   /**
@@ -272,5 +413,143 @@ public class Tracing {
               scope.close();
               span.end();
             });
+  }
+
+  /**
+   * Returns a transformer that traces the execution of an RxJava stream.
+   *
+   * @param spanName The name of the span to create.
+   * @param <T> The type of the stream.
+   * @return A TracerProvider that can be used with .compose().
+   */
+  public static <T> TracerProvider<T> trace(String spanName) {
+    return new TracerProvider<>(spanName);
+  }
+
+  /**
+   * Returns a transformer that traces the execution of an RxJava stream with an explicit parent
+   * context.
+   *
+   * @param spanName The name of the span to create.
+   * @param parentContext The explicit parent context for the span.
+   * @param <T> The type of the stream.
+   * @return A TracerProvider that can be used with .compose().
+   */
+  public static <T> TracerProvider<T> trace(String spanName, Context parentContext) {
+    return new TracerProvider<T>(spanName).setParent(parentContext);
+  }
+
+  /**
+   * Returns a transformer that traces an agent invocation.
+   *
+   * @param spanName The name of the span to create.
+   * @param agentName The name of the agent.
+   * @param agentDescription The description of the agent.
+   * @param invocationContext The invocation context.
+   * @param <T> The type of the stream.
+   * @return A TracerProvider configured for agent invocation.
+   */
+  public static <T> TracerProvider<T> traceAgent(
+      String spanName,
+      String agentName,
+      String agentDescription,
+      InvocationContext invocationContext) {
+    return new TracerProvider<T>(spanName)
+        .configure(
+            span -> traceAgentInvocation(span, agentName, agentDescription, invocationContext));
+  }
+
+  /**
+   * A transformer that manages an OpenTelemetry span and scope for RxJava streams.
+   *
+   * @param <T> The type of the stream.
+   */
+  public static final class TracerProvider<T>
+      implements FlowableTransformer<T, T>,
+          SingleTransformer<T, T>,
+          MaybeTransformer<T, T>,
+          CompletableTransformer {
+    private final String spanName;
+    private Context explicitParentContext;
+    private final List<Consumer<Span>> spanConfigurers = new ArrayList<>();
+
+    private TracerProvider(String spanName) {
+      this.spanName = spanName;
+    }
+
+    /** Configures the span created by this transformer. */
+    @CanIgnoreReturnValue
+    public TracerProvider<T> configure(Consumer<Span> configurer) {
+      spanConfigurers.add(configurer);
+      return this;
+    }
+
+    /** Sets an explicit parent context for the span created by this transformer. */
+    @CanIgnoreReturnValue
+    public TracerProvider<T> setParent(Context parentContext) {
+      this.explicitParentContext = parentContext;
+      return this;
+    }
+
+    private Context getParentContext() {
+      return explicitParentContext != null ? explicitParentContext : Context.current();
+    }
+
+    private final class TracingLifecycle {
+      private Span span;
+      private Scope scope;
+
+      @SuppressWarnings("MustBeClosedChecker")
+      void start() {
+        span = tracer.spanBuilder(spanName).setParent(getParentContext()).startSpan();
+        spanConfigurers.forEach(c -> c.accept(span));
+        scope = span.makeCurrent();
+      }
+
+      void end() {
+        if (scope != null) {
+          scope.close();
+        }
+        if (span != null) {
+          span.end();
+        }
+      }
+    }
+
+    @Override
+    public Publisher<T> apply(Flowable<T> upstream) {
+      return Flowable.defer(
+          () -> {
+            TracingLifecycle lifecycle = new TracingLifecycle();
+            return upstream.doOnSubscribe(s -> lifecycle.start()).doFinally(lifecycle::end);
+          });
+    }
+
+    @Override
+    public SingleSource<T> apply(Single<T> upstream) {
+      return Single.defer(
+          () -> {
+            TracingLifecycle lifecycle = new TracingLifecycle();
+            return upstream.doOnSubscribe(s -> lifecycle.start()).doFinally(lifecycle::end);
+          });
+    }
+
+    @Override
+    public MaybeSource<T> apply(Maybe<T> upstream) {
+      return Maybe.defer(
+          () -> {
+            TracingLifecycle lifecycle = new TracingLifecycle();
+            return upstream.doOnSubscribe(s -> lifecycle.start()).doFinally(lifecycle::end);
+          });
+    }
+
+    @Override
+    public CompletableSource apply(Completable upstream) {
+      return Completable.defer(
+          () -> {
+            TracingLifecycle lifecycle = new TracingLifecycle();
+            return upstream.doOnSubscribe(s -> lifecycle.start()).doFinally(lifecycle::end);
+          });
+    }
   }
 }

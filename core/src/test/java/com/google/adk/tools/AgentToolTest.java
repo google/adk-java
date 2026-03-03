@@ -28,6 +28,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.utils.ComponentRegistry;
@@ -40,6 +41,7 @@ import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.Map;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -47,6 +49,13 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link AgentTool}. */
 @RunWith(JUnit4.class)
 public final class AgentToolTest {
+
+  private InMemorySessionService sessionService;
+
+  @Before
+  public void setUp() {
+    sessionService = new InMemorySessionService();
+  }
 
   @Test
   public void fromConfig_withRegisteredAgent_returnsAgentTool() throws Exception {
@@ -655,12 +664,15 @@ public final class AgentToolTest {
                 .build());
   }
 
-  private static ToolContext createToolContext(BaseAgent agent) {
+  private ToolContext createToolContext(BaseAgent agent) {
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
     return ToolContext.builder(
             InvocationContext.builder()
                 .invocationId(InvocationContext.newInvocationContextId())
                 .agent(agent)
-                .session(Session.builder("123").build())
+                .session(session)
+                .sessionService(sessionService)
                 .build())
         .build();
   }

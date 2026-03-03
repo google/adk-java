@@ -406,6 +406,11 @@ public final class Contents implements RequestProcessor {
    * @return A new list of events with the appropriate rearrangement.
    */
   private static List<Event> rearrangeEventsForLatestFunctionResponse(List<Event> events) {
+    if (events.size() < 2) {
+      // No need to process, since there is no function_call.
+      return events;
+    }
+
     // TODO: b/412663475 - Handle parallel function calls within the same event. Currently, this
     // throws an error.
     if (events.isEmpty() || Iterables.getLast(events).functionResponses().isEmpty()) {
@@ -559,13 +564,12 @@ public final class Contents implements RequestProcessor {
 
     // Gemini 3 requires function calls to be grouped first and only then function responses:
     // FC1 FC2 FR1 FR2
-    boolean shouldBufferResponseEvents = modelName.startsWith("gemini-3-");
+    boolean shouldBufferResponseEvents = modelName.contains("gemini-3-");
 
     for (int i = 0; i < events.size(); i++) {
       Event event = events.get(i);
 
-      // Skip response events that will be processed via responseEventsBuffer
-      if (processedResponseIndices.contains(i)) {
+      if (!event.functionResponses().isEmpty()) {
         continue;
       }
 

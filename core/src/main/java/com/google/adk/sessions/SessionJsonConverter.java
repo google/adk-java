@@ -29,7 +29,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
-import com.google.genai.types.Part;
 import java.io.UncheckedIOException;
 import java.time.Instant;
 import java.util.Collection;
@@ -109,7 +108,9 @@ final class SessionJsonConverter {
                 actionsJson.put("transferAgent", v);
               });
       actions.escalate().ifPresent(v -> actionsJson.put("escalate", v));
-      actions.endInvocation().ifPresent(v -> actionsJson.put("endOfAgent", v));
+      if (actions.endOfAgent()) {
+        actionsJson.put("endOfAgent", actions.endOfAgent());
+      }
       putIfNotEmpty(actionsJson, "requestedAuthConfigs", actions.requestedAuthConfigs());
       putIfNotEmpty(
           actionsJson, "requestedToolConfirmations", actions.requestedToolConfirmations());
@@ -182,7 +183,6 @@ final class SessionJsonConverter {
       Boolean endOfAgent = (Boolean) actionsMap.get("endOfAgent");
       if (endOfAgent != null) {
         eventActionsBuilder.endOfAgent(endOfAgent);
-        eventActionsBuilder.endInvocation(endOfAgent);
       }
       eventActionsBuilder.requestedAuthConfigs(
           Optional.ofNullable(actionsMap.get("requestedAuthConfigs"))
@@ -298,18 +298,19 @@ final class SessionJsonConverter {
    * @return A {@link ConcurrentMap} representing the artifact delta.
    */
   @SuppressWarnings("unchecked")
-  private static ConcurrentMap<String, Part> convertToArtifactDeltaMap(Object artifactDeltaObj) {
+  private static ConcurrentMap<String, Integer> convertToArtifactDeltaMap(Object artifactDeltaObj) {
     if (!(artifactDeltaObj instanceof Map)) {
       return new ConcurrentHashMap<>();
     }
-    ConcurrentMap<String, Part> artifactDeltaMap = new ConcurrentHashMap<>();
-    Map<String, Map<String, Object>> rawMap = (Map<String, Map<String, Object>>) artifactDeltaObj;
-    for (Map.Entry<String, Map<String, Object>> entry : rawMap.entrySet()) {
+    ConcurrentMap<String, Integer> artifactDeltaMap = new ConcurrentHashMap<>();
+    Map<String, Object> rawMap = (Map<String, Object>) artifactDeltaObj;
+    for (Map.Entry<String, Object> entry : rawMap.entrySet()) {
       try {
-        Part part = objectMapper.convertValue(entry.getValue(), Part.class);
-        artifactDeltaMap.put(entry.getKey(), part);
+        Integer value = objectMapper.convertValue(entry.getValue(), Integer.class);
+        artifactDeltaMap.put(entry.getKey(), value);
       } catch (IllegalArgumentException e) {
-        logger.warn("Error converting artifactDelta value to Part for key: {}", entry.getKey(), e);
+        logger.warn(
+            "Error converting artifactDelta value to Integer for key: {}", entry.getKey(), e);
       }
     }
     return artifactDeltaMap;

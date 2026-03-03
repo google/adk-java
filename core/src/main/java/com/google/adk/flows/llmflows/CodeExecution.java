@@ -448,11 +448,9 @@ public final class CodeExecution {
         .toList()
         .map(
             versions -> {
-              ConcurrentMap<String, Part> artifactDelta = new ConcurrentHashMap<>();
+              ConcurrentMap<String, Integer> artifactDelta = new ConcurrentHashMap<>();
               for (int i = 0; i < versions.size(); i++) {
-                artifactDelta.put(
-                    codeExecutionResult.outputFiles().get(i).name(),
-                    Part.fromText(String.valueOf(versions.get(i))));
+                artifactDelta.put(codeExecutionResult.outputFiles().get(i).name(), versions.get(i));
               }
               eventActionsBuilder.artifactDelta(artifactDelta);
               return Event.builder()

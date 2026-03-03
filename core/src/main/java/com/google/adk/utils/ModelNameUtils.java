@@ -16,15 +16,23 @@
 
 package com.google.adk.utils;
 
+import com.google.common.base.Strings;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class ModelNameUtils {
+  private static final String GEMINI_PREFIX = "gemini-";
   private static final Pattern GEMINI_2_PATTERN = Pattern.compile("^gemini-2\\..*");
+  private static final String GEMINI_CLASS = "com.google.adk.models.Gemini";
   private static final Pattern PATH_PATTERN =
       Pattern.compile("^projects/[^/]+/locations/[^/]+/publishers/[^/]+/models/(.+)$");
   private static final Pattern APIGEE_PATTERN =
       Pattern.compile("^apigee/(?:[^/]+/)?(?:[^/]+/)?(.+)$");
+
+  public static boolean isGeminiModel(String modelString) {
+    return extractModelName(Strings.nullToEmpty(modelString)).startsWith(GEMINI_PREFIX);
+  }
 
   public static boolean isGemini2Model(String modelString) {
     if (modelString == null) {
@@ -32,6 +40,29 @@ public final class ModelNameUtils {
     }
     String modelName = extractModelName(modelString);
     return GEMINI_2_PATTERN.matcher(modelName).matches();
+  }
+
+  /**
+   * Checks whether an object is an instance of {@link com.google.adk.models.Gemini}, by searching
+   * through its class hierarchy for a class whose name equals the hardcoded String name of Gemini
+   * class.
+   *
+   * <p>This method can be used where the "real" instanceof check is not possible because the Gemini
+   * type is not known at compile time.
+   *
+   * @param o The object to check.
+   * @return true if object's class is {@link com.google.adk.models.Gemini}, false otherwise.
+   */
+  public static boolean isInstanceOfGemini(Object o) {
+    if (o == null) {
+      return false;
+    }
+    for (Class<?> clazz = o.getClass(); clazz != null; clazz = clazz.getSuperclass()) {
+      if (Objects.equals(clazz.getName(), GEMINI_CLASS)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

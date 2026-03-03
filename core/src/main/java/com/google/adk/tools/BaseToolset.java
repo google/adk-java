@@ -20,6 +20,7 @@ import com.google.adk.agents.ReadonlyContext;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import java.util.Optional;
+import javax.annotation.Nullable;
 
 /** Base interface for toolsets. */
 public interface BaseToolset extends AutoCloseable {
@@ -43,28 +44,35 @@ public interface BaseToolset extends AutoCloseable {
   void close() throws Exception;
 
   /**
-   * Helper method to be used by implementers that returns true if the given tool is in the provided
-   * list of tools of if testing against the given ToolPredicate returns true (otherwise false).
+   * Checks if a tool should be selected based on a filter.
    *
    * @param tool The tool to check.
-   * @param toolFilter An Optional containing either a ToolPredicate or a List of tool names.
-   * @param readonlyContext The current context.
-   * @return true if the tool is selected.
+   * @param toolFilter A ToolPredicate, a List of tool names, or null.
+   * @param readonlyContext The context for checking the tool, or null.
    */
   default boolean isToolSelected(
-      BaseTool tool, Optional<Object> toolFilter, Optional<ReadonlyContext> readonlyContext) {
-    if (toolFilter.isEmpty()) {
+      BaseTool tool, @Nullable Object toolFilter, @Nullable ReadonlyContext readonlyContext) {
+    if (toolFilter == null) {
       return true;
     }
-    Object filter = toolFilter.get();
-    if (filter instanceof ToolPredicate toolPredicate) {
+
+    if (toolFilter instanceof ToolPredicate toolPredicate) {
       return toolPredicate.test(tool, readonlyContext);
     }
-    if (filter instanceof List) {
-      @SuppressWarnings("unchecked")
-      List<String> toolNames = (List<String>) filter;
+
+    if (toolFilter instanceof List<?> toolNames) {
       return toolNames.contains(tool.name());
     }
+
     return false;
+  }
+
+  /**
+   * @deprecated Use {@link #isToolSelected(BaseTool, Object, ReadonlyContext)} instead.
+   */
+  @Deprecated
+  default boolean isToolSelected(
+      BaseTool tool, Optional<Object> toolFilter, Optional<ReadonlyContext> readonlyContext) {
+    return isToolSelected(tool, toolFilter.orElse(null), readonlyContext.orElse(null));
   }
 }

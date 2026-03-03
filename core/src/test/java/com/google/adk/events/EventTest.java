@@ -45,9 +45,7 @@ public final class EventTest {
       EventActions.builder()
           .skipSummarization(true)
           .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key", "value")))
-          .artifactDelta(
-              new ConcurrentHashMap<>(
-                  ImmutableMap.of("artifact_key", Part.builder().text("artifact_value").build())))
+          .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact_key", 1)))
           .transferToAgent("agent_id")
           .escalate(true)
           .requestedAuthConfigs(

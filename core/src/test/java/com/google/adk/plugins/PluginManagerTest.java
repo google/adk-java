@@ -333,4 +333,31 @@ public class PluginManagerTest {
 
     verify(plugin1).onToolErrorCallback(mockTool, toolArgs, mockToolContext, mockThrowable);
   }
+
+  @Test
+  public void close_allComplete() {
+    when(plugin1.close()).thenReturn(Completable.complete());
+    when(plugin2.close()).thenReturn(Completable.complete());
+    pluginManager.registerPlugin(plugin1);
+    pluginManager.registerPlugin(plugin2);
+
+    pluginManager.close().test().assertResult();
+
+    verify(plugin1).close();
+    verify(plugin2).close();
+  }
+
+  @Test
+  public void close_plugin1Fails() {
+    RuntimeException testException = new RuntimeException("Test");
+    when(plugin1.close()).thenReturn(Completable.error(testException));
+    when(plugin2.close()).thenReturn(Completable.complete());
+    pluginManager.registerPlugin(plugin1);
+    pluginManager.registerPlugin(plugin2);
+
+    pluginManager.close().test().assertError(testException);
+
+    verify(plugin1).close();
+    verify(plugin2).close();
+  }
 }

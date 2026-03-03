@@ -13,6 +13,7 @@ import io.a2a.client.ClientEvent;
 import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskEvent;
 import io.a2a.client.TaskUpdateEvent;
+import io.a2a.spec.Artifact;
 import io.a2a.spec.EventKind;
 import io.a2a.spec.JSONRPCError;
 import io.a2a.spec.Message;
@@ -163,7 +164,7 @@ public final class ResponseConverter {
    * empty optional if the event should be ignored (e.g. if the event is not a final update for
    * TaskArtifactUpdateEvent or if the message is empty for TaskStatusUpdateEvent).
    *
-   * @throws an {@link IllegalArgumentException} if the event type is not supported.
+   * @throws IllegalArgumentException if the event type is not supported.
    */
   public static Optional<Event> clientEventToEvent(
       ClientEvent event, InvocationContext invocationContext) {
@@ -182,31 +183,59 @@ public final class ResponseConverter {
    * the event is not a final update for TaskArtifactUpdateEvent or if the message is empty for
    * TaskStatusUpdateEvent.
    *
-   * @throws an {@link IllegalArgumentException} if the task update type is not supported.
+   * @throws IllegalArgumentException if the task update type is not supported.
    */
   private static Optional<Event> handleTaskUpdate(
       TaskUpdateEvent event, InvocationContext context) {
     var updateEvent = event.getUpdateEvent();
 
     if (updateEvent instanceof TaskArtifactUpdateEvent artifactEvent) {
-      if (Objects.equals(artifactEvent.isAppend(), false)
-          || Objects.equals(artifactEvent.isLastChunk(), true)) {
-        return Optional.of(taskToEvent(event.getTask(), context));
-      }
-      return Optional.empty();
+      boolean isAppend = Objects.equals(artifactEvent.isAppend(), true);
+      boolean isLastChunk = Objects.equals(artifactEvent.isLastChunk(), true);
+
+      Event eventPart = artifactToEvent(artifactEvent.getArtifact(), context);
+      eventPart.setPartial(Optional.of(isAppend || !isLastChunk));
+      // append=true, lastChunk=false: emit as partial, update aggregation
+      // append=false, lastChunk=false: emit as partial, reset aggregation
+      // append=true, lastChunk=true: emit as partial, update aggregation and emit as non-partial
+      // append=false, lastChunk=true: emit as non-partial, drop aggregation
+      return Optional.of(eventPart);
     }
+
     if (updateEvent instanceof TaskStatusUpdateEvent statusEvent) {
       var status = statusEvent.getStatus();
-      return Optional.ofNullable(status.message())
-          .map(
-              value ->
-                  messageToEvent(
-                      value,
-                      context,
-                      PENDING_STATES.contains(event.getTask().getStatus().state())));
+      var taskState = event.getTask().getStatus().state();
+
+      Optional<Event> messageEvent =
+          Optional.ofNullable(status.message())
+              .map(
+                  value -> {
+                    if (taskState == TaskState.FAILED) {
+                      return messageToFailedEvent(value, context);
+                    }
+                    return messageToEvent(value, context, PENDING_STATES.contains(taskState));
+                  });
+
+      if (statusEvent.isFinal()) {
+        return messageEvent
+            .map(Event::toBuilder)
+            .or(() -> Optional.of(remoteAgentEventBuilder(context)))
+            .map(builder -> builder.turnComplete(true))
+            .map(builder -> builder.partial(false))
+            .map(Event.Builder::build);
+      } else {
+        return messageEvent;
+      }
     }
     throw new IllegalArgumentException(
         "Unsupported TaskUpdateEvent type: " + updateEvent.getClass());
+  }
+
+  /** Converts an artifact to an ADK event. */
+  public static Event artifactToEvent(Artifact artifact, InvocationContext invocationContext) {
+    Message message =
+        new Message.Builder().role(Message.Role.AGENT).parts(artifact.parts()).build();
+    return messageToEvent(message, invocationContext);
   }
 
   /** Converts an A2A message back to ADK events. */
@@ -214,6 +243,16 @@ public final class ResponseConverter {
     return remoteAgentEventBuilder(invocationContext)
         .content(fromModelParts(PartConverter.toGenaiParts(message.getParts())))
         .build();
+  }
+
+  /** Converts an A2A message for a failed task to ADK event filling in the error message. */
+  public static Event messageToFailedEvent(Message message, InvocationContext invocationContext) {
+    Event.Builder builder = remoteAgentEventBuilder(invocationContext);
+    Optional.ofNullable(Iterables.getFirst(message.getParts(), null))
+        .flatMap(PartConverter::toTextPart)
+        .ifPresent(textPart -> builder.errorMessage(textPart.getText()));
+
+    return builder.build();
   }
 
   /**

@@ -27,6 +27,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -61,6 +62,7 @@ public class Event extends JsonBaseModel {
   private Optional<Boolean> interrupted = Optional.empty();
   private Optional<String> branch = Optional.empty();
   private Optional<GroundingMetadata> groundingMetadata = Optional.empty();
+  private Optional<List<CustomMetadata>> customMetadata = Optional.empty();
   private Optional<String> modelVersion = Optional.empty();
   private long timestamp;
 
@@ -242,6 +244,16 @@ public class Event extends JsonBaseModel {
     this.groundingMetadata = groundingMetadata;
   }
 
+  /** The custom metadata of the event. */
+  @JsonProperty("customMetadata")
+  public Optional<List<CustomMetadata>> customMetadata() {
+    return customMetadata;
+  }
+
+  public void setCustomMetadata(@Nullable List<CustomMetadata> customMetadata) {
+    this.customMetadata = Optional.ofNullable(customMetadata);
+  }
+
   /** The model version used to generate the response. */
   @JsonProperty("modelVersion")
   public Optional<String> modelVersion() {
@@ -346,6 +358,7 @@ public class Event extends JsonBaseModel {
     private Optional<Boolean> interrupted = Optional.empty();
     private Optional<String> branch = Optional.empty();
     private Optional<GroundingMetadata> groundingMetadata = Optional.empty();
+    private Optional<List<CustomMetadata>> customMetadata = Optional.empty();
     private Optional<String> modelVersion = Optional.empty();
     private Optional<Long> timestamp = Optional.empty();
 
@@ -570,6 +583,17 @@ public class Event extends JsonBaseModel {
     }
 
     @CanIgnoreReturnValue
+    @JsonProperty("customMetadata")
+    public Builder customMetadata(@Nullable List<CustomMetadata> value) {
+      this.customMetadata = Optional.ofNullable(value);
+      return this;
+    }
+
+    Optional<List<CustomMetadata>> customMetadata() {
+      return customMetadata;
+    }
+
+    @CanIgnoreReturnValue
     @JsonProperty("modelVersion")
     public Builder modelVersion(@Nullable String value) {
       this.modelVersion = Optional.ofNullable(value);
@@ -603,6 +627,7 @@ public class Event extends JsonBaseModel {
       event.setInterrupted(interrupted);
       event.branch(branch);
       event.setGroundingMetadata(groundingMetadata);
+      event.setCustomMetadata(customMetadata.orElse(null));
       event.setModelVersion(modelVersion);
       event.setActions(actions().orElseGet(() -> EventActions.builder().build()));
       event.setTimestamp(timestamp().orElseGet(() -> Instant.now().toEpochMilli()));
@@ -639,6 +664,7 @@ public class Event extends JsonBaseModel {
             .interrupted(this.interrupted)
             .branch(this.branch)
             .groundingMetadata(this.groundingMetadata)
+            .customMetadata(this.customMetadata.orElse(null))
             .modelVersion(this.modelVersion);
     if (this.timestamp != 0) {
       builder.timestamp(this.timestamp);
@@ -671,6 +697,7 @@ public class Event extends JsonBaseModel {
         && Objects.equals(interrupted, other.interrupted)
         && Objects.equals(branch, other.branch)
         && Objects.equals(groundingMetadata, other.groundingMetadata)
+        && Objects.equals(customMetadata, other.customMetadata)
         && Objects.equals(modelVersion, other.modelVersion);
   }
 
@@ -698,6 +725,7 @@ public class Event extends JsonBaseModel {
         interrupted,
         branch,
         groundingMetadata,
+        customMetadata,
         modelVersion,
         timestamp);
   }

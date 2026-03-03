@@ -73,35 +73,10 @@ public final class TailRetentionEventCompactor implements EventCompactor {
     logger.debug("Running tail retention event compaction for session {}", session.id());
 
     return Maybe.just(session.events())
-        .filter(this::shouldCompact)
-        .flatMap(events -> getCompactionEvents(events))
+        .flatMap(this::getCompactionEvents)
         .flatMap(summarizer::summarizeEvents)
         .flatMapSingle(e -> sessionService.appendEvent(session, e))
         .ignoreElement();
-  }
-
-  private boolean shouldCompact(List<Event> events) {
-    int count = getLatestPromptTokenCount(events).orElse(0);
-
-    // TODO b/480013930 - Add a way to estimate the prompt token if the usage metadata is not
-    // available.
-    if (count <= tokenThreshold) {
-      logger.debug(
-          "Skipping compaction. Prompt token count {} is within threshold {}",
-          count,
-          tokenThreshold);
-      return false;
-    }
-    return true;
-  }
-
-  private Optional<Integer> getLatestPromptTokenCount(List<Event> events) {
-    return Lists.reverse(events).stream()
-        .map(Event::usageMetadata)
-        .flatMap(Optional::stream)
-        .map(GenerateContentResponseUsageMetadata::promptTokenCount)
-        .flatMap(Optional::stream)
-        .findFirst();
   }
 
   /**
@@ -161,8 +136,19 @@ public final class TailRetentionEventCompactor implements EventCompactor {
    *       together. The new compaction event will cover the range from the start of the included
    *       compaction event (C2, T=1) to the end of the new events (E4, T=4).
    * </ol>
+   *
+   * @param events The list of events to process.
    */
   private Maybe<List<Event>> getCompactionEvents(List<Event> events) {
+    Optional<Integer> count = getLatestPromptTokenCount(events);
+    if (count.isPresent() && count.get() <= tokenThreshold) {
+      logger.debug(
+          "Skipping compaction. Prompt token count {} is within threshold {}",
+          count.get(),
+          tokenThreshold);
+      return Maybe.empty();
+    }
+
     long compactionEndTimestamp = Long.MIN_VALUE;
     Event lastCompactionEvent = null;
     List<Event> eventsToSummarize = new ArrayList<>();
@@ -195,11 +181,6 @@ public final class TailRetentionEventCompactor implements EventCompactor {
       }
     }
 
-    // If there are not enough events to summarize, we can return early.
-    if (eventsToSummarize.size() <= retentionSize) {
-      return Maybe.empty();
-    }
-
     // Add the last compaction event to the list of events to summarize.
     // This is to ensure that the last compaction event is included in the summary.
     if (lastCompactionEvent != null) {
@@ -214,12 +195,44 @@ public final class TailRetentionEventCompactor implements EventCompactor {
 
     Collections.reverse(eventsToSummarize);
 
+    if (count.isEmpty()) {
+      int estimatedCount = estimateTokenCount(eventsToSummarize);
+      if (estimatedCount <= tokenThreshold) {
+        logger.debug(
+            "Skipping compaction. Estimated prompt token count {} is within threshold {}",
+            estimatedCount,
+            tokenThreshold);
+        return Maybe.empty();
+      }
+    }
+
+    // If there are not enough events to summarize, we can return early.
+    if (eventsToSummarize.size() <= retentionSize) {
+      return Maybe.empty();
+    }
+
     // Apply retention: keep the most recent 'retentionSize' events out of the summary.
     // We do this by removing them from the list of events to be summarized.
     eventsToSummarize
         .subList(eventsToSummarize.size() - retentionSize, eventsToSummarize.size())
         .clear();
     return Maybe.just(eventsToSummarize);
+  }
+
+  private int estimateTokenCount(List<Event> events) {
+    // A common rule of thumb is that one token roughly corresponds to 4 characters of text for
+    // common English text.
+    // See https://platform.openai.com/tokenizer
+    return events.stream().mapToInt(event -> event.stringifyContent().length()).sum() / 4;
+  }
+
+  private Optional<Integer> getLatestPromptTokenCount(List<Event> events) {
+    return Lists.reverse(events).stream()
+        .map(Event::usageMetadata)
+        .flatMap(Optional::stream)
+        .map(GenerateContentResponseUsageMetadata::promptTokenCount)
+        .flatMap(Optional::stream)
+        .findFirst();
   }
 
   private static boolean isCompactEvent(Event event) {

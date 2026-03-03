@@ -41,7 +41,7 @@ import org.junit.runners.JUnit4;
 public final class ExampleToolTest {
 
   /** Helper to create a minimal agent & context for testing. */
-  private InvocationContext newContext() {
+  private InvocationContext buildInvocationContext() {
     TestLlm testLlm = new TestLlm(() -> Flowable.just(LlmResponse.builder().build()));
     LlmAgent agent = TestUtils.createTestAgent(testLlm);
     return TestUtils.createInvocationContext(agent);
@@ -58,7 +58,7 @@ public final class ExampleToolTest {
   public void processLlmRequest_withInlineExamples_appendsFewShot() {
     ExampleTool tool = ExampleTool.builder().addExample(makeExample("qin", "qout")).build();
 
-    InvocationContext ctx = newContext();
+    InvocationContext ctx = buildInvocationContext();
     LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
 
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
@@ -75,7 +75,7 @@ public final class ExampleToolTest {
   public void processLlmRequest_withProvider_appendsFewShot() {
     ExampleTool tool = ExampleTool.builder().setExampleProvider(ProviderHolder.EXAMPLES).build();
 
-    InvocationContext ctx = newContext();
+    InvocationContext ctx = buildInvocationContext();
     LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
 
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
@@ -91,12 +91,13 @@ public final class ExampleToolTest {
   @Test
   public void processLlmRequest_withEmptyUserContent_doesNotAppendFewShot() {
     ExampleTool tool = ExampleTool.builder().addExample(makeExample("qin", "qout")).build();
-    InvocationContext ctxWithContent = newContext();
+    InvocationContext ctxWithContent = buildInvocationContext();
     InvocationContext ctx =
         InvocationContext.builder()
             .invocationId(ctxWithContent.invocationId())
             .agent(ctxWithContent.agent())
             .session(ctxWithContent.session())
+            .sessionService(ctxWithContent.sessionService())
             .userContent(Content.fromParts(Part.fromText("")))
             .runConfig(ctxWithContent.runConfig())
             .build();
@@ -120,7 +121,7 @@ public final class ExampleToolTest {
                 "output", ImmutableList.of(Content.fromParts(Part.fromText("a"))))));
 
     ExampleTool tool = ExampleTool.fromConfig(args);
-    InvocationContext ctx = newContext();
+    InvocationContext ctx = buildInvocationContext();
     LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
 
@@ -144,7 +145,7 @@ public final class ExampleToolTest {
         "examples", ExampleToolTest.ProviderHolder.class.getName() + ".EXAMPLES");
 
     ExampleTool tool = ExampleTool.fromConfig(args);
-    InvocationContext ctx = newContext();
+    InvocationContext ctx = buildInvocationContext();
     LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
 

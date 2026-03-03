@@ -62,6 +62,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
@@ -755,20 +756,35 @@ public class LlmAgent extends BaseAgent {
   }
 
   /**
+   * @deprecated Use {@link #canonicalTools(ReadonlyContext)} instead.
+   */
+  @Deprecated
+  public Flowable<BaseTool> canonicalTools(Optional<ReadonlyContext> context) {
+    return canonicalTools(context.orElse(null));
+  }
+
+  /**
    * Constructs the list of tools for this agent based on the {@link #tools} field.
    *
-   * <p>This method is only for use by Agent Development Kit.
+   * @return The resolved list of tools as a {@link Single} wrapped list of {@link BaseTool}.
+   */
+  public Flowable<BaseTool> canonicalTools() {
+    return canonicalTools((ReadonlyContext) null);
+  }
+
+  /**
+   * Constructs the list of tools for this agent based on the {@link #tools} field.
    *
    * @param context The context to retrieve the session state.
    * @return The resolved list of tools as a {@link Single} wrapped list of {@link BaseTool}.
    */
-  public Flowable<BaseTool> canonicalTools(Optional<ReadonlyContext> context) {
+  public Flowable<BaseTool> canonicalTools(@Nullable ReadonlyContext context) {
     List<Flowable<BaseTool>> toolFlowables = new ArrayList<>();
     for (Object toolOrToolset : toolsUnion) {
       if (toolOrToolset instanceof BaseTool baseTool) {
         toolFlowables.add(Flowable.just(baseTool));
       } else if (toolOrToolset instanceof BaseToolset baseToolset) {
-        toolFlowables.add(baseToolset.getTools(context.orElse(null)));
+        toolFlowables.add(baseToolset.getTools(context));
       } else {
         throw new IllegalArgumentException(
             "Object in tools list is not of a supported type: "
@@ -776,16 +792,6 @@ public class LlmAgent extends BaseAgent {
       }
     }
     return Flowable.concat(toolFlowables);
-  }
-
-  /** Overload of canonicalTools that defaults to an empty context. */
-  public Flowable<BaseTool> canonicalTools() {
-    return canonicalTools(Optional.empty());
-  }
-
-  /** Convenience overload of canonicalTools that accepts a non-optional ReadonlyContext. */
-  public Flowable<BaseTool> canonicalTools(ReadonlyContext context) {
-    return canonicalTools(Optional.ofNullable(context));
   }
 
   public Instruction instruction() {
@@ -964,7 +970,10 @@ public class LlmAgent extends BaseAgent {
       Model currentModel = this.model.get();
 
       if (currentModel.model().isPresent()) {
-        return currentModel;
+        String modelName = currentModel.model().get().model();
+        BaseLlm resolvedLlm = currentModel.model().get();
+
+        return Model.builder().modelName(modelName).model(resolvedLlm).build();
       }
 
       if (currentModel.modelName().isPresent()) {
@@ -1053,6 +1062,26 @@ public class LlmAgent extends BaseAgent {
         agent.subAgents() != null ? agent.subAgents().size() : 0);
 
     return agent;
+  }
+
+  @Override
+  public Completable close() {
+    List<Completable> completables = new ArrayList<>();
+    toolsets()
+        .forEach(
+            toolset ->
+                completables.add(
+                    Completable.fromAction(
+                        () -> {
+                          try {
+                            toolset.close();
+                          } catch (Exception e) {
+                            logger.error("Failed to close toolset", e);
+                            throw e;
+                          }
+                        })));
+    completables.add(super.close());
+    return Completable.mergeDelayError(completables);
   }
 
   private static void setCallbacksFromConfig(LlmAgentConfig config, Builder builder)

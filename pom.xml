@@ -12,14 +12,12 @@
  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  See the License for the specific language governing permissions and
  limitations under the License. -->
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk-parent</artifactId>
-  <version>0.5.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+  <version>0.7.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   <packaging>pom</packaging>
 
   <name>Google Agent Development Kit Maven Parent POM</name>
@@ -37,7 +35,6 @@
     <module>tutorials/city-time-weather</module>
     <module>tutorials/live-audio-single-agent</module>
     <module>a2a</module>
-    <module>a2a/webservice</module>
   </modules>
 
   <properties>
@@ -45,13 +42,16 @@
     <maven.compiler.release>${java.version}</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-    <auto-value.version>1.11.0</auto-value.version>
+    <auto-value.version>1.11.1</auto-value.version>
     <spring-boot.version>3.4.1</spring-boot.version>
-    <otel.version>1.49.0</otel.version>
+    <!-- otel.version capped at 1.51.0 to avoid conflicts with google
+         cloud libraries. Once they update their otel dependencies we
+         can consider updating ours here as well -->
+    <otel.version>1.51.0</otel.version>
     <mcp.version>0.14.0</mcp.version>
-    <errorprone.version>2.38.0</errorprone.version>
-    <google.genai.version>1.32.0</google.genai.version>
-    <protobuf.version>4.32.0</protobuf.version>
+    <errorprone.version>2.47.0</errorprone.version>
+    <google.genai.version>1.41.0</google.genai.version>
+    <protobuf.version>4.33.5</protobuf.version>
     <junit.version>5.11.4</junit.version>
     <mockito.version>5.20.0</mockito.version>
     <java-websocket.version>1.6.0</java-websocket.version>
@@ -61,17 +61,17 @@
     <graphviz.version>0.18.1</graphviz.version>
     <ecj.version>3.41.0</ecj.version>
     <maven.version>3.9.0</maven.version>
-    <langchain4j.version>1.8.0</langchain4j.version>
+    <langchain4j.version>1.11.0</langchain4j.version>
     <slf4j.version>2.0.17</slf4j.version>
-    <truth.version>1.4.4</truth.version>
+    <truth.version>1.4.5</truth.version>
     <jspecify.version>1.0.0</jspecify.version>
-    <rxjava.version>3.1.5</rxjava.version>
+    <rxjava.version>3.1.12</rxjava.version>
     <reactor-core.version>3.7.0</reactor-core.version>
     <wiremock.version>2.35.1</wiremock.version>
-    <assertj.version>3.27.3</assertj.version>
+    <assertj.version>3.27.7</assertj.version>
     <anthropic.version>1.4.0</anthropic.version>
     <maven-plugin-tools.version>3.9.0</maven-plugin-tools.version>
-    <httpclient5.version>5.4.3</httpclient5.version>
+    <httpclient5.version>5.6</httpclient5.version>
   </properties>
 
   <dependencyManagement>
@@ -80,7 +80,7 @@
       <dependency>
         <groupId>com.google.cloud</groupId>
         <artifactId>libraries-bom</artifactId>
-        <version>26.53.0</version>
+        <version>26.76.0</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -324,8 +324,7 @@
           </dependencies>
           <configuration>
             <reportFormat>plain</reportFormat>
-            <statelessTestsetInfoReporter
-              implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter" />
+            <statelessTestsetInfoReporter implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter"/>
             <includes>
               <include>**/*Test.java</include>
             </includes>
@@ -407,15 +406,6 @@
     </pluginManagement>
     <plugins>
       <plugin>
-        <groupId>org.sonatype.central</groupId>
-        <artifactId>central-publishing-maven-plugin</artifactId>
-        <version>0.8.0</version>
-        <extensions>true</extensions>
-        <configuration>
-          <publishingServerId>central</publishingServerId>
-        </configuration>
-      </plugin>
-      <plugin>
         <groupId>com.spotify.fmt</groupId>
         <artifactId>fmt-maven-plugin</artifactId>
         <version>2.27</version>
@@ -473,6 +463,34 @@
   </build>
   <profiles>
     <profile>
+      <id>release-sonatype</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.8.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+      <distributionManagement>
+        <repository>
+          <id>central</id>
+          <name>Maven Central Repository</name>
+          <url>https://central.sonatype.com/api/v1/publisher</url>
+        </repository>
+        <snapshotRepository>
+          <id>central</id>
+          <name>Maven Central Repository Snapshots</name>
+          <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+        </snapshotRepository>
+      </distributionManagement>
+    </profile>
+    <profile>
       <id>release</id>
       <build>
         <plugins>
@@ -481,14 +499,7 @@
             <artifactId>maven-gpg-plugin</artifactId>
             <version>3.2.7</version>
             <configuration>
-              <keyname>${gpg.keyname}</keyname>
-              <passphrase>${gpg.passphrase}</passphrase>
-              <gpgArguments>
-                <arg>--batch</arg>
-                <arg>--yes</arg>
-                <arg>--pinentry-mode</arg>
-                <arg>loopback</arg>
-              </gpgArguments>
+              <signer>bc</signer>
             </configuration>
             <executions>
               <execution>
@@ -546,16 +557,4 @@
       <organizationUrl>https://www.google.com</organizationUrl>
     </developer>
   </developers>
-  <distributionManagement>
-    <repository>
-      <id>central</id>
-      <name>Maven Central Repository</name>
-      <url>https://central.sonatype.com/api/v1/publisher</url>
-    </repository>
-    <snapshotRepository>
-      <id>central</id>
-      <name>Maven Central Repository Snapshots</name>
-      <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-    </snapshotRepository>
-  </distributionManagement>
 </project>

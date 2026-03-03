@@ -26,7 +26,7 @@ import java.util.List;
 import java.util.function.Supplier;
 
 /** A test agent that returns events from a supplier. */
-public final class TestBaseAgent extends BaseAgent {
+public class TestBaseAgent extends BaseAgent {
   private final Supplier<Flowable<Event>> eventSupplier;
   private int invocationCount = 0;
   private InvocationContext lastInvocationContext;

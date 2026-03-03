@@ -62,6 +62,10 @@ public final class ResponseConverterTest {
     return new Task.Builder().id("task-1").contextId("context-1");
   }
 
+  private static TaskStatusUpdateEvent.Builder testTaskStatusUpdateEvent() {
+    return new TaskStatusUpdateEvent.Builder().taskId("task-1").contextId("context-1");
+  }
+
   @Test
   public void eventsToMessage_withNullEvents_returnsEmptyAgentMessage() {
     Message message = ResponseConverter.eventsToMessage(null, "context-1", "task-1");
@@ -308,7 +312,8 @@ public final class ResponseConverterTest {
   }
 
   @Test
-  public void clientEventToEvent_withTaskArtifactUpdateEvent_withLastChunkFalse_returnsNull() {
+  public void
+      clientEventToEvent_withTaskArtifactUpdateEvent_withLastChunkFalse_returnsHandlingPartialEvent() {
     io.a2a.spec.Part<?> a2aPart = new TextPart("Artifact content");
     Artifact artifact =
         new Artifact.Builder().artifactId("artifact-1").parts(ImmutableList.of(a2aPart)).build();
@@ -320,6 +325,7 @@ public final class ResponseConverterTest {
     TaskArtifactUpdateEvent updateEvent =
         new TaskArtifactUpdateEvent.Builder()
             .lastChunk(false)
+            .append(false)
             .contextId("context-1")
             .artifact(artifact)
             .taskId("task-id-1")
@@ -327,7 +333,75 @@ public final class ResponseConverterTest {
     TaskUpdateEvent event = new TaskUpdateEvent(task, updateEvent);
 
     Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.partial().orElse(false)).isTrue();
+  }
+
+  @Test
+  public void clientEventToEvent_withFinalTaskStatusUpdateEvent_withMessage_returnsEvent() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Final status message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.COMPLETED, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        testTaskStatusUpdateEvent().isFinal(true).status(status).build();
+
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.content().get().parts().get().get(0).text())
+        .hasValue("Final status message");
+    assertThat(resultEvent.content().get().parts().get().get(0).thought()).hasValue(false);
+    assertThat(resultEvent.partial().orElse(false)).isFalse();
+    assertThat(resultEvent.turnComplete()).hasValue(true);
+  }
+
+  @Test
+  public void clientEventToEvent_withFinalTaskStatusUpdateEvent_withoutMessage_returnsEvent() {
+    TaskStatus status = new TaskStatus(TaskState.COMPLETED, null, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent("task-id-1", status, "context-1", true, null);
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.turnComplete()).hasValue(true);
+  }
+
+  @Test
+  public void clientEventToEvent_withNonFinalTaskStatusUpdateEvent_withoutMessage_returnsEmpty() {
+    TaskStatus status = new TaskStatus(TaskState.WORKING, null, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent("task-id-1", status, "context-1", false, null);
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
     assertThat(optionalEvent).isEmpty();
+  }
+
+  @Test
+  public void clientEventToEvent_withFailedTaskStatusUpdateEvent_returnsErrorEvent() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Task failed")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.FAILED, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent("task-id-1", status, "context-1", true, null);
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.errorMessage()).hasValue("Task failed");
+    assertThat(resultEvent.turnComplete()).hasValue(true);
   }
 
   private static final class TestAgent extends BaseAgent {

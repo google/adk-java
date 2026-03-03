@@ -125,6 +125,19 @@ public class PluginManager extends BasePlugin {
                                 e)));
   }
 
+  @Override
+  public Completable close() {
+    return Flowable.fromIterable(plugins)
+        .concatMapCompletableDelayError(
+            plugin ->
+                plugin
+                    .close()
+                    .doOnError(
+                        e ->
+                            logger.error(
+                                "[{}] Error during callback 'close'", plugin.getName(), e)));
+  }
+
   public Maybe<Event> runOnEventCallback(InvocationContext invocationContext, Event event) {
     return onEventCallback(invocationContext, event);
   }
