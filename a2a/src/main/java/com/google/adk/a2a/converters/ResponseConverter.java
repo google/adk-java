@@ -13,6 +13,7 @@ import io.a2a.client.ClientEvent;
 import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskEvent;
 import io.a2a.client.TaskUpdateEvent;
+import io.a2a.spec.Artifact;
 import io.a2a.spec.EventKind;
 import io.a2a.spec.JSONRPCError;
 import io.a2a.spec.Message;
@@ -189,12 +190,18 @@ public final class ResponseConverter {
     var updateEvent = event.getUpdateEvent();
 
     if (updateEvent instanceof TaskArtifactUpdateEvent artifactEvent) {
-      if (Objects.equals(artifactEvent.isAppend(), false)
-          || Objects.equals(artifactEvent.isLastChunk(), true)) {
-        return Optional.of(taskToEvent(event.getTask(), context));
-      }
-      return Optional.empty();
+      boolean isAppend = Objects.equals(artifactEvent.isAppend(), true);
+      boolean isLastChunk = Objects.equals(artifactEvent.isLastChunk(), true);
+
+      Event eventPart = artifactToEvent(artifactEvent.getArtifact(), context);
+      eventPart.setPartial(Optional.of(isAppend || !isLastChunk));
+      // append=true, lastChunk=false: emit as partial, update aggregation
+      // append=false, lastChunk=false: emit as partial, reset aggregation
+      // append=true, lastChunk=true: emit as partial, update aggregation and emit as non-partial
+      // append=false, lastChunk=true: emit as non-partial, drop aggregation
+      return Optional.of(eventPart);
     }
+
     if (updateEvent instanceof TaskStatusUpdateEvent statusEvent) {
       var status = statusEvent.getStatus();
       var taskState = event.getTask().getStatus().state();
@@ -222,6 +229,13 @@ public final class ResponseConverter {
     }
     throw new IllegalArgumentException(
         "Unsupported TaskUpdateEvent type: " + updateEvent.getClass());
+  }
+
+  /** Converts an artifact to an ADK event. */
+  public static Event artifactToEvent(Artifact artifact, InvocationContext invocationContext) {
+    Message message =
+        new Message.Builder().role(Message.Role.AGENT).parts(artifact.parts()).build();
+    return messageToEvent(message, invocationContext);
   }
 
   /** Converts an A2A message back to ADK events. */

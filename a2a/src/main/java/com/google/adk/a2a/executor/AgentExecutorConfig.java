@@ -12,10 +12,24 @@ import org.jspecify.annotations.Nullable;
 @AutoValue
 public abstract class AgentExecutorConfig {
 
+  /**
+   * Output mode for the agent executor.
+   *
+   * <p>ARTIFACT_PER_RUN: The agent executor will return one artifact per run.
+   *
+   * <p>ARTIFACT_PER_EVENT: The agent executor will return one artifact per event.
+   */
+  public enum OutputMode {
+    ARTIFACT_PER_RUN,
+    ARTIFACT_PER_EVENT
+  }
+
   private static final RunConfig DEFAULT_RUN_CONFIG =
       RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.NONE).setMaxLlmCalls(20).build();
 
   public abstract RunConfig runConfig();
+
+  public abstract OutputMode outputMode();
 
   public abstract @Nullable BeforeExecuteCallback beforeExecuteCallback();
 
@@ -26,7 +40,9 @@ public abstract class AgentExecutorConfig {
   public abstract Builder toBuilder();
 
   public static Builder builder() {
-    return new AutoValue_AgentExecutorConfig.Builder().runConfig(DEFAULT_RUN_CONFIG);
+    return new AutoValue_AgentExecutorConfig.Builder()
+        .runConfig(DEFAULT_RUN_CONFIG)
+        .outputMode(OutputMode.ARTIFACT_PER_RUN);
   }
 
   /** Builder for {@link AgentExecutorConfig}. */
@@ -34,6 +50,9 @@ public abstract class AgentExecutorConfig {
   public abstract static class Builder {
     @CanIgnoreReturnValue
     public abstract Builder runConfig(RunConfig runConfig);
+
+    @CanIgnoreReturnValue
+    public abstract Builder outputMode(OutputMode outputMode);
 
     @CanIgnoreReturnValue
     public abstract Builder beforeExecuteCallback(BeforeExecuteCallback beforeExecuteCallback);

@@ -406,6 +406,11 @@ public final class Contents implements RequestProcessor {
    * @return A new list of events with the appropriate rearrangement.
    */
   private static List<Event> rearrangeEventsForLatestFunctionResponse(List<Event> events) {
+    if (events.size() < 2) {
+      // No need to process, since there is no function_call.
+      return events;
+    }
+
     // TODO: b/412663475 - Handle parallel function calls within the same event. Currently, this
     // throws an error.
     if (events.isEmpty() || Iterables.getLast(events).functionResponses().isEmpty()) {

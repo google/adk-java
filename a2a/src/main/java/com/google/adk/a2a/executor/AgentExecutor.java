@@ -14,9 +14,9 @@ import com.google.adk.runner.Runner;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
 import io.a2a.server.agentexecution.RequestContext;
 import io.a2a.server.events.EventQueue;
 import io.a2a.server.tasks.TaskUpdater;
@@ -27,6 +27,7 @@ import io.a2a.spec.TextPart;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.disposables.Disposable;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -177,7 +178,7 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
       throw new IllegalStateException(String.format("Task %s already running", ctx.getTaskId()));
     }
 
-    EventProcessor p = new EventProcessor();
+    EventProcessor p = new EventProcessor(agentExecutorConfig.outputMode());
     Content content = PartConverter.messageToContent(message);
     Runner runner = runnerBuilder.build();
 
@@ -238,13 +239,15 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
 
   // Processor that will process all events related to the one runner invocation.
   private static class EventProcessor {
+    private final String runArtifactId;
+    private final AgentExecutorConfig.OutputMode outputMode;
+    private final Map<String, String> lastAgentPartialArtifact = new ConcurrentHashMap<>();
 
     // All artifacts related to the invocation should have the same artifact id.
-    private EventProcessor() {
-      artifactId = UUID.randomUUID().toString();
+    private EventProcessor(AgentExecutorConfig.OutputMode outputMode) {
+      this.runArtifactId = UUID.randomUUID().toString();
+      this.outputMode = outputMode;
     }
-
-    private final String artifactId;
 
     private void process(Event event, TaskUpdater updater) {
       if (event.errorCode().isPresent()) {
@@ -265,7 +268,41 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
             });
       }
 
-      updater.addArtifact(parts, artifactId, null, ImmutableMap.of());
+      Map<String, Object> metadata = new HashMap<>();
+      if (event.customMetadata().isPresent()) {
+        for (CustomMetadata cm : event.customMetadata().get()) {
+          if (cm.key().isPresent() && cm.stringValue().isPresent()) {
+            metadata.put(cm.key().get(), cm.stringValue().get());
+          }
+        }
+      }
+
+      Boolean append = true;
+      Boolean lastChunk = false;
+      String artifactId = runArtifactId;
+
+      if (outputMode == AgentExecutorConfig.OutputMode.ARTIFACT_PER_EVENT) {
+        String author = event.author();
+        boolean isPartial = event.partial().orElse(false);
+
+        if (lastAgentPartialArtifact.containsKey(author)) {
+          artifactId = lastAgentPartialArtifact.get(author);
+          append = isPartial;
+        } else {
+          artifactId = UUID.randomUUID().toString();
+          append = isPartial;
+        }
+
+        lastChunk = !isPartial;
+
+        if (isPartial) {
+          lastAgentPartialArtifact.put(author, artifactId);
+        } else {
+          lastAgentPartialArtifact.remove(author);
+        }
+      }
+
+      updater.addArtifact(parts, artifactId, null, metadata, append, lastChunk);
     }
   }
 }

@@ -25,6 +25,7 @@ import com.google.auto.value.AutoValue;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponsePromptFeedback;
@@ -58,6 +59,14 @@ public abstract class LlmResponse extends JsonBaseModel {
    */
   @JsonProperty("groundingMetadata")
   public abstract Optional<GroundingMetadata> groundingMetadata();
+
+  /**
+   * Returns the custom metadata of the response, if available.
+   *
+   * @return An {@link Optional} containing a list of {@link CustomMetadata} or empty.
+   */
+  @JsonProperty("customMetadata")
+  public abstract Optional<List<CustomMetadata>> customMetadata();
 
   /**
    * Indicates whether the text content is part of a unfinished text stream.
@@ -132,6 +141,9 @@ public abstract class LlmResponse extends JsonBaseModel {
     public abstract Builder groundingMetadata(@Nullable GroundingMetadata groundingMetadata);
 
     public abstract Builder groundingMetadata(Optional<GroundingMetadata> groundingMetadata);
+
+    @JsonProperty("customMetadata")
+    public abstract Builder customMetadata(@Nullable List<CustomMetadata> customMetadata);
 
     @JsonProperty("partial")
     public abstract Builder partial(@Nullable Boolean partial);
