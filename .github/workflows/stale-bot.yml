@@ -1,0 +1,56 @@
+
+name: ADK Stale Issue Auditor (Java)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # This runs at 6:00 AM UTC (10 PM PST)
+    - cron: '0 6 * * *'
+
+jobs:
+  audit-stale-issues:
+
+    if: github.repository == 'google/adk-java'
+    
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn clean compile
+
+      - name: Run Auditor Agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          STALE_HOURS_THRESHOLD: ${{ secrets.STALE_HOURS_THRESHOLD }}
+          CLOSE_HOURS_AFTER_STALE_THRESHOLD: ${{ secrets.CLOSE_HOURS_AFTER_STALE_THRESHOLD }}
+
+          GRAPHQL_COMMENT_LIMIT: ${{ secrets.GRAPHQL_COMMENT_LIMIT }}
+          GRAPHQL_EDIT_LIMIT: ${{ secrets.GRAPHQL_EDIT_LIMIT }}
+          GRAPHQL_TIMELINE_LIMIT: ${{ secrets.GRAPHQL_TIMELINE_LIMIT }}
+
+          SLEEP_BETWEEN_CHUNKS: ${{ secrets.SLEEP_BETWEEN_CHUNKS }}
+          
+          OWNER: ${{ github.repository_owner }}
+          REPO: adk-java
+          CONCURRENCY_LIMIT: 3
+          LLM_MODEL_NAME: "gemini-2.5-flash"
+
+          JAVA_TOOL_OPTIONS: "-Djava.util.logging.SimpleFormatter.format='%1$tF %1$tT %4$s %2$s %5$s%6$s%n'"
+
+        run: mvn compile exec:java@run-stale-bot -pl :stale-agent
