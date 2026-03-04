@@ -16,6 +16,8 @@
 
 package com.google.adk.summarizer;
 
+import com.google.auto.value.AutoBuilder;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import javax.annotation.Nullable;
 
 /**
@@ -38,6 +40,35 @@ public record EventsCompactionConfig(
     @Nullable BaseEventSummarizer summarizer,
     @Nullable Integer tokenThreshold,
     @Nullable Integer eventRetentionSize) {
+
+  public static Builder builder() {
+    return new AutoBuilder_EventsCompactionConfig_Builder();
+  }
+
+  public Builder toBuilder() {
+    return new AutoBuilder_EventsCompactionConfig_Builder(this);
+  }
+
+  /** Builder for {@link EventsCompactionConfig}. */
+  @AutoBuilder
+  public abstract static class Builder {
+    @CanIgnoreReturnValue
+    public abstract Builder compactionInterval(@Nullable Integer compactionInterval);
+
+    @CanIgnoreReturnValue
+    public abstract Builder overlapSize(@Nullable Integer overlapSize);
+
+    @CanIgnoreReturnValue
+    public abstract Builder summarizer(@Nullable BaseEventSummarizer summarizer);
+
+    @CanIgnoreReturnValue
+    public abstract Builder tokenThreshold(@Nullable Integer tokenThreshold);
+
+    @CanIgnoreReturnValue
+    public abstract Builder eventRetentionSize(@Nullable Integer eventRetentionSize);
+
+    public abstract EventsCompactionConfig build();
+  }
 
   public EventsCompactionConfig(int compactionInterval, int overlapSize) {
     this(compactionInterval, overlapSize, null, null, null);

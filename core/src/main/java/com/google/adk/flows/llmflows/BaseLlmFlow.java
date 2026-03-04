@@ -577,13 +577,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                   .get()
                                   .content(event.content().get());
                             }
-                            if (functionResponses.stream()
-                                    .anyMatch(
-                                        functionResponse ->
-                                            functionResponse
-                                                .name()
-                                                .orElse("")
-                                                .equals("transferToAgent"))
+                            if (event.actions().transferToAgent().isPresent()
                                 || event.actions().endInvocation().orElse(false)) {
                               sendTask.dispose();
                               connection.close();
