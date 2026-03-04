@@ -43,7 +43,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
     <auto-value.version>1.11.1</auto-value.version>
-    <spring-boot.version>3.4.1</spring-boot.version>
+    <spring-boot.version>4.0.2</spring-boot.version>
     <!-- otel.version capped at 1.51.0 to avoid conflicts with google
          cloud libraries. Once they update their otel dependencies we
          can consider updating ours here as well -->
@@ -55,7 +55,7 @@
     <junit.version>5.11.4</junit.version>
     <mockito.version>5.20.0</mockito.version>
     <java-websocket.version>1.6.0</java-websocket.version>
-    <jackson.version>2.19.0</jackson.version>
+    <jackson.version>2.20.2</jackson.version>
     <okhttp.version>4.12.0</okhttp.version>
     <docker-java.version>3.3.6</docker-java.version>
     <graphviz.version>0.18.1</graphviz.version>
@@ -77,6 +77,13 @@
   <dependencyManagement>
     <dependencies>
       <!-- BOMs for dependency management -->
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
       <dependency>
         <groupId>com.google.cloud</groupId>
         <artifactId>libraries-bom</artifactId>
@@ -158,36 +165,6 @@
         <groupId>com.google.errorprone</groupId>
         <artifactId>error_prone_annotations</artifactId>
         <version>${errorprone.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>com.fasterxml.jackson.core</groupId>
-        <artifactId>jackson-core</artifactId>
-        <version>${jackson.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>com.fasterxml.jackson.core</groupId>
-        <artifactId>jackson-annotations</artifactId>
-        <version>${jackson.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>com.fasterxml.jackson.core</groupId>
-        <artifactId>jackson-databind</artifactId>
-        <version>${jackson.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>com.fasterxml.jackson.datatype</groupId>
-        <artifactId>jackson-datatype-jdk8</artifactId>
-        <version>${jackson.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>com.fasterxml.jackson.datatype</groupId>
-        <artifactId>jackson-datatype-jsr310</artifactId>
-        <version>${jackson.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>com.fasterxml.jackson.dataformat</groupId>
-        <artifactId>jackson-dataformat-yaml</artifactId>
-        <version>${jackson.version}</version>
       </dependency>
       <dependency>
         <groupId>com.google.protobuf</groupId>
