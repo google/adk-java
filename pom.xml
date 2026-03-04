@@ -41,6 +41,7 @@
     <java.version>17</java.version>
     <maven.compiler.release>${java.version}</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.checkstyle.plugin.version>3.6.0</maven.checkstyle.plugin.version>
 
     <auto-value.version>1.11.1</auto-value.version>
     <spring-boot.version>4.0.2</spring-boot.version>
@@ -69,7 +70,7 @@
     <reactor-core.version>3.7.0</reactor-core.version>
     <wiremock.version>2.35.1</wiremock.version>
     <assertj.version>3.27.7</assertj.version>
-    <anthropic.version>1.4.0</anthropic.version>
+    <anthropic.version>2.15.0</anthropic.version>
     <maven-plugin-tools.version>3.9.0</maven-plugin-tools.version>
     <httpclient5.version>5.6</httpclient5.version>
   </properties>
@@ -119,6 +120,13 @@
         <type>pom</type>
         <scope>import</scope>
       </dependency>
+      <dependency>
+        <groupId>com.squareup.okhttp3</groupId>
+        <artifactId>okhttp-bom</artifactId>
+        <version>${okhttp.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
 
       <!-- Direct dependencies -->
       <dependency>
@@ -150,11 +158,6 @@
         <groupId>com.google.genai</groupId>
         <artifactId>google-genai</artifactId>
         <version>${google.genai.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>com.squareup.okhttp3</groupId>
-        <artifactId>okhttp</artifactId>
-        <version>${okhttp.version}</version>
       </dependency>
       <dependency>
         <groupId>com.google.auto.value</groupId>
@@ -264,6 +267,11 @@
     </extensions>
     <pluginManagement>
       <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-checkstyle-plugin</artifactId>
+          <version>${maven.checkstyle.plugin.version}</version>
+        </plugin>
         <plugin>
           <artifactId>maven-clean-plugin</artifactId>
           <version>3.1.0</version>
@@ -439,6 +447,40 @@
     </plugins>
   </build>
   <profiles>
+    <profile>
+      <id>illegal-optional-check</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-checkstyle-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>illegal-optional-check</id>
+                <goals>
+                  <goal>check</goal>
+                </goals>
+                <phase>compile</phase>
+                <configuration>
+                  <checkstyleRules>
+                    <module name="Checker">
+                      <module name="TreeWalker">
+                        <module name="SuppressWarningsHolder" />
+                        <module name="IllegalType">
+                          <property name="illegalClassNames" value="java.util.Optional" />
+                          <property name="tokens" value="PARAMETER_DEF" />
+                        </module>
+                      </module>
+                      <module name="SuppressWarningsFilter" />
+                    </module>
+                  </checkstyleRules>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
     <profile>
       <id>release-sonatype</id>
       <build>

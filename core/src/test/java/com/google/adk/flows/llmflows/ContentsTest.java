@@ -754,6 +754,32 @@ public final class ContentsTest {
         .containsExactly("C1", "C2", "E4", "E5");
   }
 
+  @Test
+  public void processRequest_notEmptyContent() {
+    Event e =
+        Event.builder()
+            .id("e1")
+            .author(AGENT)
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder().text("").thought(true).build(),
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder()
+                                        .name("test-tool")
+                                        .id("test-call-id")
+                                        .build())
+                                .thought(false)
+                                .build()))
+                    .build())
+            .build();
+    List<Content> contents = runContentsProcessor(ImmutableList.of(e));
+    assertThat(contents).containsExactly(e.content().get());
+  }
+
   private static Event createUserEvent(String id, String text) {
     return Event.builder()
         .id(id)
