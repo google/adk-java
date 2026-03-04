@@ -163,8 +163,8 @@ public final class InMemorySessionService implements BaseSessionService {
   }
 
   // Helper to get event timestamp as epoch seconds
-  private long getEventTimestampEpochSeconds(Event event) {
-    return event.timestamp() / 1000L;
+  private double getEventTimestampEpochSeconds(Event event) {
+    return event.timestamp() / 1000.0;
   }
 
   @Override
