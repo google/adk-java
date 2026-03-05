@@ -169,7 +169,36 @@ public final class Contents implements RequestProcessor {
         || content.role().get().isEmpty()
         || content.parts().isEmpty()
         || content.parts().get().isEmpty()
-        || content.parts().get().get(0).text().map(String::isEmpty).orElse(false));
+        || content.parts().get().stream().allMatch(this::isPartInvisible));
+  }
+
+  /**
+   * Returns whether a part is invisible for LLM context.
+   *
+   * <p>A part is invisible if:
+   *
+   * <ul>
+   *   <li>It has no meaningful content (text, inline_data, file_data, function_call,
+   *       function_response, executable_code, or code_execution_result), OR
+   *   <li>It is marked as a thought AND does not contain function_call or function_response
+   * </ul>
+   *
+   * <p>Function calls and responses are never invisible, even if marked as thought, because they
+   * represent actions that need to be executed or results that need to be processed.
+   *
+   * @param part the part to check.
+   * @return {@code true} if the part is invisible, {@code false} otherwise.
+   */
+  private boolean isPartInvisible(Part part) {
+    if (part.functionCall().isPresent() || part.functionResponse().isPresent()) {
+      return false;
+    }
+    return part.thought().orElse(false)
+        || !(part.text().isPresent()
+            || part.inlineData().isPresent()
+            || part.fileData().isPresent()
+            || part.codeExecutionResult().isPresent()
+            || part.executableCode().isPresent());
   }
 
   /**
@@ -564,7 +593,7 @@ public final class Contents implements RequestProcessor {
 
     // Gemini 3 requires function calls to be grouped first and only then function responses:
     // FC1 FC2 FR1 FR2
-    boolean shouldBufferResponseEvents = modelName.contains("gemini-3-");
+    boolean shouldBufferResponseEvents = modelName.contains("gemini-3");
 
     for (int i = 0; i < events.size(); i++) {
       Event event = events.get(i);
