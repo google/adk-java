@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/google/adk-java/compare/v0.8.0...v1.0.0) (2026-03-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove methods with Optional params from VertexCredential.Builder
+
+### Features
+
+* remove methods with Optional params from VertexCredential.Builder ([0b9057c](https://github.com/google/adk-java/commit/0b9057c9ccab98ea58597ec55b8168e32ac7c9a6))
+
 ## [0.8.0](https://github.com/google/adk-java/compare/v0.7.0...v0.8.0) (2026-03-06)
 
 
