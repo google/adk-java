@@ -245,6 +245,12 @@ public class FunctionTool extends BaseTool {
 
   @Override
   public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+    return runMaybeAsync(args, toolContext).defaultIfEmpty(ImmutableMap.<String, Object>of());
+  }
+
+  @Override
+  public Maybe<Map<String, Object>> runMaybeAsync(
+      Map<String, Object> args, ToolContext toolContext) {
     try {
       if (requireConfirmation) {
         if (toolContext.toolConfirmation().isEmpty()) {
@@ -253,17 +259,20 @@ public class FunctionTool extends BaseTool {
                   "Please approve or reject the tool call %s() by responding with a"
                       + " FunctionResponse with an expected ToolConfirmation payload.",
                   name()));
-          return Single.just(
+          return Maybe.just(
               ImmutableMap.of(
                   "error", "This tool call requires confirmation, please approve or reject."));
         } else if (!toolContext.toolConfirmation().get().confirmed()) {
-          return Single.just(ImmutableMap.of("error", "This tool call is rejected."));
+          return Maybe.just(ImmutableMap.of("error", "This tool call is rejected."));
         }
       }
-      return this.call(args, toolContext).defaultIfEmpty(ImmutableMap.of());
+      Maybe<Map<String, Object>> functionResult = this.call(args, toolContext);
+      return longRunning()
+          ? functionResult
+          : functionResult.switchIfEmpty(Maybe.just(ImmutableMap.<String, Object>of()));
     } catch (Exception e) {
       logger.error("Exception occurred while calling function tool: " + func.getName(), e);
-      return Single.just(
+      return Maybe.just(
           ImmutableMap.of("status", "error", "message", "An internal error occurred."));
     }
   }

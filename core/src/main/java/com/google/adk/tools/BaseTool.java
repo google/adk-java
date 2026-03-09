@@ -34,6 +34,7 @@ import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.Tool;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.HashMap;
 import java.util.Map;
@@ -48,6 +49,8 @@ public abstract class BaseTool {
   private final String name;
   private final String description;
   private final boolean isLongRunning;
+  private final boolean overridesRunAsync;
+  private final boolean overridesRunMaybeAsync;
   private final HashMap<String, Object> customMetadata;
 
   protected BaseTool(@Nonnull String name, @Nonnull String description) {
@@ -58,6 +61,8 @@ public abstract class BaseTool {
     this.name = name;
     this.description = description;
     this.isLongRunning = isLongRunning;
+    overridesRunAsync = overridesMethod("runAsync");
+    overridesRunMaybeAsync = overridesMethod("runMaybeAsync");
     customMetadata = new HashMap<>();
   }
 
@@ -90,6 +95,24 @@ public abstract class BaseTool {
 
   /** Calls a tool. */
   public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+    if (overridesRunMaybeAsync) {
+      return runMaybeAsync(args, toolContext).defaultIfEmpty(ImmutableMap.<String, Object>of());
+    }
+    throw new UnsupportedOperationException("This method is not implemented.");
+  }
+
+  /**
+   * Calls a tool and optionally returns a function response.
+   *
+   * <p>Override this method for long-running tools that may end the current invocation without
+   * emitting a function response event. This default implementation delegates to {@link
+   * #runAsync(Map, ToolContext)} for backwards compatibility.
+   */
+  public Maybe<Map<String, Object>> runMaybeAsync(
+      Map<String, Object> args, ToolContext toolContext) {
+    if (overridesRunAsync && !overridesRunMaybeAsync) {
+      return runAsync(args, toolContext).toMaybe();
+    }
     throw new UnsupportedOperationException("This method is not implemented.");
   }
 
@@ -178,6 +201,15 @@ public abstract class BaseTool {
                     .filter(t -> t.functionDeclarations().isEmpty())
                     .collect(toImmutableList()))
         .orElse(ImmutableList.of());
+  }
+
+  private boolean overridesMethod(String methodName) {
+    try {
+      return getClass().getMethod(methodName, Map.class, ToolContext.class).getDeclaringClass()
+          != BaseTool.class;
+    } catch (NoSuchMethodException e) {
+      throw new IllegalStateException("Missing tool method: " + methodName, e);
+    }
   }
 
   /**

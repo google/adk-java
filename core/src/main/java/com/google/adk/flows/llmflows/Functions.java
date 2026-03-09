@@ -586,8 +586,7 @@ public final class Functions {
 
   private static Maybe<Map<String, Object>> callTool(
       BaseTool tool, Map<String, Object> args, ToolContext toolContext, Context parentContext) {
-    return tool.runAsync(args, toolContext)
-        .toMaybe()
+    return tool.runMaybeAsync(args, toolContext)
         .doOnSubscribe(
             d ->
                 Tracing.traceToolCall(
