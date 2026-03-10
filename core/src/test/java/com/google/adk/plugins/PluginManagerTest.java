@@ -37,8 +37,12 @@ import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -142,6 +146,87 @@ public class PluginManagerTest {
     InOrder inOrder = inOrder(plugin1, plugin2);
     inOrder.verify(plugin1).onUserMessageCallback(mockInvocationContext, content);
     inOrder.verify(plugin2).onUserMessageCallback(mockInvocationContext, content);
+  }
+
+  @Test
+  public void contextPropagation_runMaybeCallbacks() throws Exception {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+
+    Content expectedContent = Content.builder().build();
+    when(plugin1.onUserMessageCallback(any(), any()))
+        .thenReturn(Maybe.just(expectedContent).subscribeOn(Schedulers.computation()));
+    pluginManager.registerPlugin(plugin1);
+
+    Maybe<Content> resultMaybe;
+    try (Scope scope = testContext.makeCurrent()) {
+      resultMaybe = pluginManager.onUserMessageCallback(mockInvocationContext, content);
+    }
+
+    // Assert downstream operators have the propagated context
+    resultMaybe
+        .doOnSuccess(
+            result -> {
+              assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+            })
+        .test()
+        .await()
+        .assertResult(expectedContent);
+
+    verify(plugin1).onUserMessageCallback(mockInvocationContext, content);
+  }
+
+  @Test
+  public void contextPropagation_afterRunCallback() throws Exception {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+
+    when(plugin1.afterRunCallback(any()))
+        .thenReturn(Completable.complete().subscribeOn(Schedulers.computation()));
+    pluginManager.registerPlugin(plugin1);
+
+    Completable resultCompletable;
+    try (Scope scope = testContext.makeCurrent()) {
+      resultCompletable = pluginManager.afterRunCallback(mockInvocationContext);
+    }
+
+    // Assert downstream operators have the propagated context
+    resultCompletable
+        .doOnComplete(
+            () -> {
+              assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+            })
+        .test()
+        .await()
+        .assertResult();
+
+    verify(plugin1).afterRunCallback(mockInvocationContext);
+  }
+
+  @Test
+  public void contextPropagation_close() throws Exception {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+
+    when(plugin1.close()).thenReturn(Completable.complete().subscribeOn(Schedulers.computation()));
+    pluginManager.registerPlugin(plugin1);
+
+    Completable resultCompletable;
+    try (Scope scope = testContext.makeCurrent()) {
+      resultCompletable = pluginManager.close();
+    }
+
+    // Assert downstream operators have the propagated context
+    resultCompletable
+        .doOnComplete(
+            () -> {
+              assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+            })
+        .test()
+        .await()
+        .assertResult();
+
+    verify(plugin1).close();
   }
 
   @Test
