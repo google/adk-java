@@ -236,7 +236,7 @@ public interface BaseSessionService {
         stateDelta.forEach(
             (key, value) -> {
               if (!key.startsWith(State.TEMP_PREFIX)) {
-                if (value == State.REMOVED) {
+                if (State.isRemoved(value)) {
                   sessionState.remove(key);
                 } else {
                   sessionState.put(key, value);

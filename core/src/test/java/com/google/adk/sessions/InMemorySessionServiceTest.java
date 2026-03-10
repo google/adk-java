@@ -27,6 +27,7 @@ import java.util.concurrent.ConcurrentMap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import org.mockito.Mockito;
 
 /** Unit tests for {@link InMemorySessionService}. */
 @RunWith(JUnit4.class)
@@ -215,6 +216,55 @@ public final class InMemorySessionServiceTest {
   }
 
   @Test
+  public void appendEvent_removesStateFromJsonDeserializedSentinel() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+
+    ConcurrentMap<String, Object> stateDeltaAdd = new ConcurrentHashMap<>();
+    stateDeltaAdd.put("sessionKey", "sessionValue");
+    stateDeltaAdd.put("_app_appKey", "appValue");
+    stateDeltaAdd.put("_user_userKey", "userValue");
+
+    Event eventAdd =
+        Event.builder().actions(EventActions.builder().stateDelta(stateDeltaAdd).build()).build();
+
+    var unused = sessionService.appendEvent(session, eventAdd).blockingGet();
+
+    // Verify state is added
+    Session retrievedSessionAdd =
+        sessionService
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(retrievedSessionAdd.state()).containsEntry("sessionKey", "sessionValue");
+    assertThat(retrievedSessionAdd.state()).containsEntry("_app_appKey", "appValue");
+    assertThat(retrievedSessionAdd.state()).containsEntry("_user_userKey", "userValue");
+
+    // Prepare and append event to remove state using the String representation of the sentinel
+    // to simulate Jackson JSON deserialization.
+    ConcurrentMap<String, Object> stateDeltaRemove = new ConcurrentHashMap<>();
+    stateDeltaRemove.put("sessionKey", State.REMOVED_SENTINEL_STRING);
+    stateDeltaRemove.put("_app_appKey", State.REMOVED_SENTINEL_STRING);
+    stateDeltaRemove.put("_user_userKey", State.REMOVED_SENTINEL_STRING);
+
+    Event eventRemove =
+        Event.builder()
+            .actions(EventActions.builder().stateDelta(stateDeltaRemove).build())
+            .build();
+
+    unused = sessionService.appendEvent(session, eventRemove).blockingGet();
+
+    // Verify state is removed despite being a String instead of the State.REMOVED object
+    Session retrievedSessionRemove =
+        sessionService
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(retrievedSessionRemove.state()).doesNotContainKey("sessionKey");
+    assertThat(retrievedSessionRemove.state()).doesNotContainKey("_app_appKey");
+    assertThat(retrievedSessionRemove.state()).doesNotContainKey("_user_userKey");
+  }
+
+  @Test
   public void sequentialAgents_shareTempState() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session =
@@ -246,5 +296,109 @@ public final class InMemorySessionServiceTest {
             .blockingGet();
     assertThat(retrievedSession.state()).doesNotContainKey("temp:agent1_output");
     assertThat(retrievedSession.state()).containsEntry("temp:agent2_output", "processed_data");
+  }
+
+  @Test
+  public void mergeGlobalState_removesSentinels() throws Exception {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+    session.state().put(State.APP_PREFIX + "appKey", "appValue");
+    session.state().put(State.USER_PREFIX + "userKey", "userValue");
+
+    // Use reflection to directly put REMOVED sentinel into appState and userState
+    java.lang.reflect.Field appStateField =
+        InMemorySessionService.class.getDeclaredField("appState");
+    appStateField.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    ConcurrentMap<String, ConcurrentMap<String, Object>> appState =
+        (ConcurrentMap<String, ConcurrentMap<String, Object>>) appStateField.get(sessionService);
+    appState.computeIfAbsent("app", k -> new ConcurrentHashMap<>()).put("appKey", State.REMOVED);
+
+    java.lang.reflect.Field userStateField =
+        InMemorySessionService.class.getDeclaredField("userState");
+    userStateField.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    ConcurrentMap<String, ConcurrentMap<String, ConcurrentMap<String, Object>>> userState =
+        (ConcurrentMap<String, ConcurrentMap<String, ConcurrentMap<String, Object>>>)
+            userStateField.get(sessionService);
+    userState
+        .computeIfAbsent("app", k -> new ConcurrentHashMap<>())
+        .computeIfAbsent("user", k -> new ConcurrentHashMap<>())
+        .put("userKey", State.REMOVED);
+
+    // Call getSession to trigger mergeWithGlobalState
+    Session retrievedSession =
+        sessionService
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+
+    assertThat(retrievedSession.state()).doesNotContainKey(State.APP_PREFIX + "appKey");
+    assertThat(retrievedSession.state()).doesNotContainKey(State.USER_PREFIX + "userKey");
+  }
+
+  @Test
+  public void appendEvent_withNullState_throwsNpeOnRemoval() throws Exception {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+
+    java.lang.reflect.Field stateField = Session.class.getDeclaredField("state");
+    stateField.setAccessible(true);
+    stateField.set(session, null);
+
+    ConcurrentMap<String, Object> stateDeltaRemove = new ConcurrentHashMap<>();
+    stateDeltaRemove.put("sessionKey", State.REMOVED);
+    Event eventRemove =
+        Event.builder()
+            .actions(EventActions.builder().stateDelta(stateDeltaRemove).build())
+            .build();
+
+    org.junit.Assert.assertThrows(
+        NullPointerException.class,
+        () -> {
+          sessionService.appendEvent(session, eventRemove).blockingGet();
+        });
+  }
+
+  @Test
+  public void mergeGlobalState_withNullState_throwsNpeOnRemoval() throws Exception {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+
+    // Inject REMOVED sentinel into appState and userState
+    java.lang.reflect.Field appStateField =
+        InMemorySessionService.class.getDeclaredField("appState");
+    appStateField.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    ConcurrentMap<String, ConcurrentMap<String, Object>> appState =
+        (ConcurrentMap<String, ConcurrentMap<String, Object>>) appStateField.get(sessionService);
+    appState.computeIfAbsent("app", k -> new ConcurrentHashMap<>()).put("appKey", State.REMOVED);
+
+    java.lang.reflect.Field userStateField =
+        InMemorySessionService.class.getDeclaredField("userState");
+    userStateField.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    ConcurrentMap<String, ConcurrentMap<String, ConcurrentMap<String, Object>>> userState =
+        (ConcurrentMap<String, ConcurrentMap<String, ConcurrentMap<String, Object>>>)
+            userStateField.get(sessionService);
+    userState
+        .computeIfAbsent("app", k -> new ConcurrentHashMap<>())
+        .computeIfAbsent("user", k -> new ConcurrentHashMap<>())
+        .put("userKey", State.REMOVED);
+
+    // Set session state to null AFTER injecting global state
+    java.lang.reflect.Field stateField = Session.class.getDeclaredField("state");
+    stateField.setAccessible(true);
+    stateField.set(session, null);
+
+    Event emptyEvent = Event.builder().build();
+
+    org.junit.Assert.assertThrows(
+        NullPointerException.class,
+        () -> {
+          sessionService.appendEvent(session, emptyEvent).blockingGet();
+        });
   }
 }

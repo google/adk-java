@@ -244,7 +244,7 @@ public final class InMemorySessionService implements BaseSessionService {
             (key, value) -> {
               if (key.startsWith(State.APP_PREFIX)) {
                 String appStateKey = key.substring(State.APP_PREFIX.length());
-                if (value == State.REMOVED) {
+                if (State.isRemoved(value)) {
                   appState
                       .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
                       .remove(appStateKey);
@@ -255,7 +255,7 @@ public final class InMemorySessionService implements BaseSessionService {
                 }
               } else if (key.startsWith(State.USER_PREFIX)) {
                 String userStateKey = key.substring(State.USER_PREFIX.length());
-                if (value == State.REMOVED) {
+                if (State.isRemoved(value)) {
                   userState
                       .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
                       .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
@@ -267,8 +267,13 @@ public final class InMemorySessionService implements BaseSessionService {
                       .put(userStateKey, value);
                 }
               } else {
-                if (value == State.REMOVED) {
-                  session.state().remove(key);
+                if (State.isRemoved(value)) {
+                  Map<String, Object> s = session.state();
+                  if (s instanceof State state) {
+                    state.removeWithoutDelta(key);
+                  } else {
+                    s.remove(key);
+                  }
                 } else {
                   session.state().put(key, value);
                 }
@@ -333,12 +338,34 @@ public final class InMemorySessionService implements BaseSessionService {
     // Merge App State directly into the session's state map
     appState
         .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-        .forEach((key, value) -> sessionState.put(State.APP_PREFIX + key, value));
+        .forEach(
+            (key, value) -> {
+              if (State.isRemoved(value)) {
+                if (sessionState instanceof State state) {
+                  state.removeWithoutDelta(State.APP_PREFIX + key);
+                } else {
+                  sessionState.remove(State.APP_PREFIX + key);
+                }
+              } else {
+                sessionState.put(State.APP_PREFIX + key, value);
+              }
+            });
 
     userState
         .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
         .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
-        .forEach((key, value) -> sessionState.put(State.USER_PREFIX + key, value));
+        .forEach(
+            (key, value) -> {
+              if (State.isRemoved(value)) {
+                if (sessionState instanceof State state) {
+                  state.removeWithoutDelta(State.USER_PREFIX + key);
+                } else {
+                  sessionState.remove(State.USER_PREFIX + key);
+                }
+              } else {
+                sessionState.put(State.USER_PREFIX + key, value);
+              }
+            });
 
     return session;
   }

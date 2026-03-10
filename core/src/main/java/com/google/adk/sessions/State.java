@@ -17,6 +17,7 @@
 package com.google.adk.sessions;
 
 import com.fasterxml.jackson.annotation.JsonValue;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -32,6 +33,8 @@ public final class State implements ConcurrentMap<String, Object> {
   public static final String APP_PREFIX = "app:";
   public static final String USER_PREFIX = "user:";
   public static final String TEMP_PREFIX = "temp:";
+
+  public static final String REMOVED_SENTINEL_STRING = "__ADK_SENTINEL_REMOVED__";
 
   /** Sentinel object to mark removed entries in the delta map. */
   public static final Object REMOVED = RemovedSentinel.INSTANCE;
@@ -129,6 +132,19 @@ public final class State implements ConcurrentMap<String, Object> {
     return state.remove(key);
   }
 
+  /**
+   * Removes a key from the state map without recording the removal in the delta map. This is
+   * intended for internal use when rebuilding state from an event stream where the removal is
+   * already known and doesn't need to be represented as a new change.
+   *
+   * @param key The key to remove.
+   * @return The previous value associated with key, or null if there was no mapping for key.
+   */
+  @CanIgnoreReturnValue
+  public Object removeWithoutDelta(Object key) {
+    return state.remove(key);
+  }
+
   @Override
   public boolean remove(Object key, Object value) {
     boolean removed = state.remove(key, value);
@@ -170,6 +186,16 @@ public final class State implements ConcurrentMap<String, Object> {
     return !delta.isEmpty();
   }
 
+  /**
+   * Checks if a value represents a removed state entry, accounting for deserialization from JSON.
+   *
+   * @param value The value to check.
+   * @return True if the value indicates removal, false otherwise.
+   */
+  public static boolean isRemoved(Object value) {
+    return value == REMOVED || Objects.equals(value, REMOVED_SENTINEL_STRING);
+  }
+
   private static final class RemovedSentinel {
     public static final RemovedSentinel INSTANCE = new RemovedSentinel();
 
@@ -179,7 +205,7 @@ public final class State implements ConcurrentMap<String, Object> {
 
     @JsonValue
     public String toJson() {
-      return "__ADK_SENTINEL_REMOVED__";
+      return REMOVED_SENTINEL_STRING;
     }
   }
 }
