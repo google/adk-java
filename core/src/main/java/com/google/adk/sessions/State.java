@@ -24,7 +24,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import javax.annotation.Nullable;
 
 /** A {@link State} object that also keeps track of the changes to the state. */
 @SuppressWarnings("ShouldNotSubclass")
@@ -40,22 +39,13 @@ public final class State implements ConcurrentMap<String, Object> {
   private final ConcurrentMap<String, Object> state;
   private final ConcurrentMap<String, Object> delta;
 
-  public State(Map<String, Object> state) {
-    this(state, null);
+  public State(ConcurrentMap<String, Object> state) {
+    this(state, new ConcurrentHashMap<>());
   }
 
-  public State(Map<String, Object> state, @Nullable Map<String, Object> delta) {
-    Objects.requireNonNull(state, "state is null");
-    this.state =
-        state instanceof ConcurrentMap
-            ? (ConcurrentMap<String, Object>) state
-            : new ConcurrentHashMap<>(state);
-    this.delta =
-        delta == null
-            ? new ConcurrentHashMap<>()
-            : delta instanceof ConcurrentMap
-                ? (ConcurrentMap<String, Object>) delta
-                : new ConcurrentHashMap<>(delta);
+  public State(ConcurrentMap<String, Object> state, ConcurrentMap<String, Object> delta) {
+    this.state = Objects.requireNonNull(state);
+    this.delta = delta;
   }
 
   @Override
