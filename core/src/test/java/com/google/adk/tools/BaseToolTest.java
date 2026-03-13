@@ -2,12 +2,20 @@ package com.google.adk.tools;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonSetter;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.models.Gemini;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.sessions.InMemorySessionService;
+import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GoogleMaps;
@@ -17,6 +25,7 @@ import com.google.genai.types.ToolCodeExecution;
 import com.google.genai.types.UrlContext;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.observers.TestObserver;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.Test;
@@ -26,6 +35,20 @@ import org.junit.runners.JUnit4;
 // TODO(b/410859954): Cover more of the behavior of the default processLlmRequest
 @RunWith(JUnit4.class)
 public final class BaseToolTest {
+
+  private final BaseTool doublingBaseTool =
+      new BaseTool("doubling-test-tool", "returns doubled args") {
+        @Override
+        public Single<Map<String, Object>> runAsync(
+            Map<String, Object> args, ToolContext toolContext) {
+          String sArg = (String) args.get("s");
+          Integer iArg = (Integer) args.get("i");
+          return Single.just(
+              ImmutableMap.<String, Object>of(
+                  "s", sArg + sArg,
+                  "i", iArg + iArg));
+        }
+      };
 
   @Test
   public void processLlmRequestNoDeclarationReturnsSameRequest() {
@@ -246,5 +269,126 @@ public final class BaseToolTest {
     assertThat(updatedLlmRequest.config().get().tools()).isPresent();
     assertThat(updatedLlmRequest.config().get().tools().get())
         .containsExactly(Tool.builder().googleMaps(GoogleMaps.builder().build()).build());
+  }
+
+  @AutoValue
+  @JsonDeserialize(builder = AutoValue_BaseToolTest_TestToolArgs.Builder.class)
+  public abstract static class TestToolArgs {
+    @JsonProperty("i")
+    public abstract int getI();
+
+    @JsonProperty("s")
+    public abstract String getS();
+
+    TestToolArgs() {}
+
+    public static Builder builder() {
+      return new AutoValue_BaseToolTest_TestToolArgs.Builder();
+    }
+
+    @AutoValue.Builder
+    public abstract static class Builder {
+
+      @JsonSetter("i")
+      public abstract Builder setI(int i);
+
+      @JsonSetter("s")
+      public abstract Builder setS(String s);
+
+      public abstract TestToolArgs build();
+
+      @JsonCreator
+      public static Builder builder() {
+        return TestToolArgs.builder();
+      }
+    }
+  }
+
+  @Test
+  public void runAsync_withTypeReference_convertsArguments() throws Exception {
+    TestToolArgs.Builder builder = TestToolArgs.builder().setI(42).setS("foo");
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(
+            builder.build(), /* toolContext= */ null, new TypeReference<TestToolArgs>() {});
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = TestToolArgs.builder().setI(84).setS("foofoo").build();
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withClass_convertsArguments() throws Exception {
+    TestToolArgs.Builder builder = TestToolArgs.builder().setI(21).setS("bar");
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(builder.build(), /* toolContext= */ null, TestToolArgs.class);
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = TestToolArgs.builder().setI(42).setS("barbar").build();
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withObjectOnly_convertsArguments() throws Exception {
+    TestToolArgs.Builder builder = TestToolArgs.builder().setI(11).setS("baz");
+
+    Single<Map<String, Object>> out =
+        doublingBaseTool.runAsync(builder.build(), /* toolContext= */ null);
+    TestObserver<Map<String, Object>> testObserver = out.test();
+
+    testObserver.assertComplete();
+    ImmutableMap<String, Object> expected = ImmutableMap.of("i", 22, "s", "bazbaz");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withObjectMapperAndObjectOnly_convertsArguments() throws Exception {
+    TestToolArgs.Builder builder = TestToolArgs.builder().setI(11).setS("baz");
+    ObjectMapper objectMapper = new ObjectMapper();
+
+    Single<Map<String, Object>> out =
+        doublingBaseTool.runAsync(builder.build(), /* toolContext= */ null, objectMapper);
+    TestObserver<Map<String, Object>> testObserver = out.test();
+
+    testObserver.assertComplete();
+    ImmutableMap<String, Object> expected = ImmutableMap.of("i", 22, "s", "bazbaz");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withTypeReferenceAndObjectMapper_convertsArguments() throws Exception {
+    TestToolArgs.Builder builder = TestToolArgs.builder().setI(42).setS("foo");
+    ObjectMapper objectMapper = new ObjectMapper();
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(
+            builder.build(),
+            /* toolContext= */ null,
+            objectMapper,
+            new TypeReference<TestToolArgs>() {});
+
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = TestToolArgs.builder().setI(84).setS("foofoo").build();
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withClassAndObjectMapper_convertsArguments() throws Exception {
+    TestToolArgs.Builder builder = TestToolArgs.builder().setI(21).setS("bar");
+    ObjectMapper objectMapper = new ObjectMapper();
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(
+            builder.build(), /* toolContext= */ null, objectMapper, TestToolArgs.class);
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = TestToolArgs.builder().setI(42).setS("barbar").build();
+    testObserver.assertValue(expected);
   }
 }
