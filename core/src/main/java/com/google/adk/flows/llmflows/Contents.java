@@ -64,6 +64,11 @@ public final class Contents implements RequestProcessor {
       modelName = "";
     }
 
+    ImmutableList<Event> sessionEvents;
+    synchronized (context.session().events()) {
+      sessionEvents = ImmutableList.copyOf(context.session().events());
+    }
+
     if (llmAgent.includeContents() == LlmAgent.IncludeContents.NONE) {
       return Single.just(
           RequestProcessor.RequestProcessingResult.create(
@@ -71,7 +76,7 @@ public final class Contents implements RequestProcessor {
                   .contents(
                       getCurrentTurnContents(
                           context.branch().orElse(null),
-                          context.session().events(),
+                          sessionEvents,
                           context.agent().name(),
                           modelName))
                   .build(),
@@ -80,10 +85,7 @@ public final class Contents implements RequestProcessor {
 
     ImmutableList<Content> contents =
         getContents(
-            context.branch().orElse(null),
-            context.session().events(),
-            context.agent().name(),
-            modelName);
+            context.branch().orElse(null), sessionEvents, context.agent().name(), modelName);
 
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(
