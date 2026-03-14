@@ -312,27 +312,27 @@ public class Runner {
       throw new IllegalArgumentException("No parts in the new_message.");
     }
 
+    List<Completable> artifactSaves = new ArrayList<>();
     if (this.artifactService != null && saveInputBlobsAsArtifacts) {
       // The runner directly saves the artifacts (if applicable) in the user message and replaces
       // the artifact data with a file name placeholder.
+      List<Part> newParts = new ArrayList<>();
       for (int i = 0; i < newMessage.parts().get().size(); i++) {
         Part part = newMessage.parts().get().get(i);
-        if (part.inlineData().isEmpty()) {
+        if (part.inlineData().isEmpty() && part.fileData().isEmpty()) {
+          newParts.add(part);
           continue;
         }
         String fileName = "artifact_" + invocationContext.invocationId() + "_" + i;
-        var unused =
-            this.artifactService.saveArtifact(
-                this.appName, session.userId(), session.id(), fileName, part);
+        artifactSaves.add(
+            this.artifactService
+                .saveArtifact(this.appName, session.userId(), session.id(), fileName, part)
+                .ignoreElement());
 
-        newMessage
-            .parts()
-            .get()
-            .set(
-                i,
-                Part.fromText(
-                    "Uploaded file: " + fileName + ". It has been saved to the artifacts"));
+        newParts.add(
+            Part.fromText("Uploaded file: " + fileName + ". It has been saved to the artifacts"));
       }
+      newMessage = newMessage.toBuilder().parts(newParts).build();
     }
     // Appends only. We do not yield the event because it's not from the model.
     Event.Builder eventBuilder =
@@ -348,7 +348,12 @@ public class Runner {
           EventActions.builder().stateDelta(new ConcurrentHashMap<>(stateDelta)).build());
     }
 
-    return this.sessionService.appendEvent(session, eventBuilder.build());
+    Single<Event> appendEventSingle =
+        this.sessionService.appendEvent(session, eventBuilder.build());
+    if (artifactSaves.isEmpty()) {
+      return appendEventSingle;
+    }
+    return Completable.merge(artifactSaves).andThen(appendEventSingle);
   }
 
   /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
