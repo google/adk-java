@@ -18,7 +18,7 @@
   <parent>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-parent</artifactId>
-    <version>0.5.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <version>0.9.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   </parent>
 
   <artifactId>google-adk-dev</artifactId>
@@ -64,6 +64,11 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>com.google.truth</groupId>
       <artifactId>truth</artifactId>
       <scope>test</scope>
@@ -103,6 +108,10 @@
     <dependency>
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-sdk-trace</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-metrics</artifactId>
     </dependency>
     <dependency>
       <groupId>com.flipkart.zjsonpatch</groupId>

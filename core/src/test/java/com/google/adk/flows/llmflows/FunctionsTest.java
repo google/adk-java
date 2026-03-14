@@ -33,7 +33,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
-import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -43,12 +42,7 @@ import org.junit.runners.JUnit4;
 public final class FunctionsTest {
 
   private static final Event EVENT_WITH_NO_CONTENT =
-      Event.builder()
-          .id("event1")
-          .invocationId("invocation1")
-          .author("agent")
-          .content(Optional.empty())
-          .build();
+      Event.builder().id("event1").invocationId("invocation1").author("agent").build();
 
   private static final Event EVENT_WITH_NO_PARTS =
       Event.builder()

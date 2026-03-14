@@ -18,9 +18,7 @@ package com.google.adk.agents;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 
-import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
-import com.google.adk.events.Event;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
 import com.google.adk.plugins.Plugin;
@@ -28,12 +26,8 @@ import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
-import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
-import com.google.errorprone.annotations.InlineMe;
 import com.google.genai.types.Content;
-import com.google.genai.types.FunctionCall;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -48,21 +42,18 @@ public class InvocationContext {
   private final BaseArtifactService artifactService;
   private final BaseMemoryService memoryService;
   private final Plugin pluginManager;
-  private final Optional<LiveRequestQueue> liveRequestQueue;
+  @Nullable private final LiveRequestQueue liveRequestQueue;
   private final Map<String, ActiveStreamingTool> activeStreamingTools;
   private final String invocationId;
   private final Session session;
-  private final Optional<Content> userContent;
+  @Nullable private final Content userContent;
   private final RunConfig runConfig;
-  private final Map<String, BaseAgentState> agentStates;
-  private final Map<String, Boolean> endOfAgents;
-  private final ResumabilityConfig resumabilityConfig;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
   private final InvocationCostManager invocationCostManager;
   private final Map<String, Object> callbackContextData;
 
-  private Optional<String> branch;
+  @Nullable private String branch;
   private BaseAgent agent;
   private boolean endInvocation;
 
@@ -80,133 +71,13 @@ public class InvocationContext {
     this.userContent = builder.userContent;
     this.runConfig = builder.runConfig;
     this.endInvocation = builder.endInvocation;
-    this.agentStates = builder.agentStates;
-    this.endOfAgents = builder.endOfAgents;
-    this.resumabilityConfig = builder.resumabilityConfig;
     this.eventsCompactionConfig = builder.eventsCompactionConfig;
     this.contextCacheConfig = builder.contextCacheConfig;
     this.invocationCostManager = builder.invocationCostManager;
+    // Don't copy the callback context data.  This should be the same instance for the full
+    // invocation invocation so that Plugins can access the same data it during the invocation
+    // across all types of callbacks.
     this.callbackContextData = builder.callbackContextData;
-  }
-
-  /**
-   * @deprecated Use {@link #builder()} instead.
-   */
-  @Deprecated(forRemoval = true)
-  public InvocationContext(
-      BaseSessionService sessionService,
-      BaseArtifactService artifactService,
-      BaseMemoryService memoryService,
-      Plugin pluginManager,
-      Optional<LiveRequestQueue> liveRequestQueue,
-      Optional<String> branch,
-      String invocationId,
-      BaseAgent agent,
-      Session session,
-      Optional<Content> userContent,
-      RunConfig runConfig,
-      boolean endInvocation) {
-    this(
-        builder()
-            .sessionService(sessionService)
-            .artifactService(artifactService)
-            .memoryService(memoryService)
-            .pluginManager(pluginManager)
-            .liveRequestQueue(liveRequestQueue)
-            .branch(branch)
-            .invocationId(invocationId)
-            .agent(agent)
-            .session(session)
-            .userContent(userContent)
-            .runConfig(runConfig)
-            .endInvocation(endInvocation));
-  }
-
-  /**
-   * @deprecated Use {@link #builder()} instead.
-   */
-  @Deprecated(forRemoval = true)
-  public InvocationContext(
-      BaseSessionService sessionService,
-      BaseArtifactService artifactService,
-      BaseMemoryService memoryService,
-      Optional<LiveRequestQueue> liveRequestQueue,
-      Optional<String> branch,
-      String invocationId,
-      BaseAgent agent,
-      Session session,
-      Optional<Content> userContent,
-      RunConfig runConfig,
-      boolean endInvocation) {
-    this(
-        builder()
-            .sessionService(sessionService)
-            .artifactService(artifactService)
-            .memoryService(memoryService)
-            .liveRequestQueue(liveRequestQueue)
-            .branch(branch)
-            .invocationId(invocationId)
-            .agent(agent)
-            .session(session)
-            .userContent(userContent)
-            .runConfig(runConfig)
-            .endInvocation(endInvocation));
-  }
-
-  /**
-   * @deprecated Use {@link #builder()} instead.
-   */
-  @InlineMe(
-      replacement =
-          "InvocationContext.builder()"
-              + ".sessionService(sessionService)"
-              + ".artifactService(artifactService)"
-              + ".invocationId(invocationId)"
-              + ".agent(agent)"
-              + ".session(session)"
-              + ".userContent(Optional.ofNullable(userContent))"
-              + ".runConfig(runConfig)"
-              + ".build()",
-      imports = {"com.google.adk.agents.InvocationContext", "java.util.Optional"})
-  @Deprecated(forRemoval = true)
-  public static InvocationContext create(
-      BaseSessionService sessionService,
-      BaseArtifactService artifactService,
-      String invocationId,
-      BaseAgent agent,
-      Session session,
-      Content userContent,
-      RunConfig runConfig) {
-    return builder()
-        .sessionService(sessionService)
-        .artifactService(artifactService)
-        .invocationId(invocationId)
-        .agent(agent)
-        .session(session)
-        .userContent(Optional.ofNullable(userContent))
-        .runConfig(runConfig)
-        .build();
-  }
-
-  /**
-   * @deprecated Use {@link #builder()} instead.
-   */
-  @Deprecated(forRemoval = true)
-  public static InvocationContext create(
-      BaseSessionService sessionService,
-      BaseArtifactService artifactService,
-      BaseAgent agent,
-      Session session,
-      LiveRequestQueue liveRequestQueue,
-      RunConfig runConfig) {
-    return builder()
-        .sessionService(sessionService)
-        .artifactService(artifactService)
-        .agent(agent)
-        .session(session)
-        .liveRequestQueue(liveRequestQueue)
-        .runConfig(runConfig)
-        .build();
   }
 
   /** Returns a new {@link Builder} for creating {@link InvocationContext} instances. */
@@ -256,7 +127,7 @@ public class InvocationContext {
 
   /** Returns the queue for managing live requests, if available for this invocation. */
   public Optional<LiveRequestQueue> liveRequestQueue() {
-    return liveRequestQueue;
+    return Optional.ofNullable(liveRequestQueue);
   }
 
   /** Returns the unique ID for this invocation. */
@@ -267,12 +138,9 @@ public class InvocationContext {
   /**
    * Sets the [branch] ID for the current invocation. A branch represents a fork in the conversation
    * history.
-   *
-   * @deprecated Use {@link #toBuilder()} and {@link Builder#branch(String)} instead.
    */
-  @Deprecated(forRemoval = true)
   public void branch(@Nullable String branch) {
-    this.branch = Optional.ofNullable(branch);
+    this.branch = branch;
   }
 
   /**
@@ -280,7 +148,7 @@ public class InvocationContext {
    * the conversation history.
    */
   public Optional<String> branch() {
-    return branch;
+    return Optional.ofNullable(branch);
   }
 
   /** Returns the agent being invoked. */
@@ -305,7 +173,7 @@ public class InvocationContext {
 
   /** Returns the user content that triggered this invocation, if any. */
   public Optional<Content> userContent() {
-    return userContent;
+    return Optional.ofNullable(userContent);
   }
 
   /** Returns the configuration for the current agent run. */
@@ -319,16 +187,6 @@ public class InvocationContext {
    */
   public Map<String, Object> callbackContextData() {
     return callbackContextData;
-  }
-
-  /** Returns agent-specific state saved within this invocation. */
-  public Map<String, BaseAgentState> agentStates() {
-    return agentStates;
-  }
-
-  /** Returns map of agents that ended during this invocation. */
-  public Map<String, Boolean> endOfAgents() {
-    return endOfAgents;
   }
 
   /**
@@ -369,36 +227,6 @@ public class InvocationContext {
     this.invocationCostManager.incrementAndEnforceLlmCallsLimit(this.runConfig);
   }
 
-  /** Returns whether the current invocation is resumable. */
-  public boolean isResumable() {
-    return resumabilityConfig.isResumable();
-  }
-
-  /** Returns ResumabilityConfig for this invocation. */
-  public ResumabilityConfig resumabilityConfig() {
-    return resumabilityConfig;
-  }
-
-  /**
-   * Populates agentStates and endOfAgents maps by reading session events for this invocation id.
-   */
-  public void populateAgentStates(List<Event> events) {
-    events.stream()
-        .filter(event -> invocationId().equals(event.invocationId()))
-        .forEach(
-            event -> {
-              if (event.actions() != null) {
-                if (event.actions().agentState() != null
-                    && !event.actions().agentState().isEmpty()) {
-                  agentStates.putAll(event.actions().agentState());
-                }
-                if (event.actions().endOfAgent()) {
-                  endOfAgents.put(event.author(), true);
-                }
-              }
-            });
-  }
-
   /** Returns the events compaction configuration for the current agent run. */
   public Optional<EventsCompactionConfig> eventsCompactionConfig() {
     return Optional.ofNullable(eventsCompactionConfig);
@@ -407,23 +235,6 @@ public class InvocationContext {
   /** Returns the context cache configuration for the current agent run. */
   public Optional<ContextCacheConfig> contextCacheConfig() {
     return Optional.ofNullable(contextCacheConfig);
-  }
-
-  /** Returns whether to pause the invocation right after this [event]. */
-  public boolean shouldPauseInvocation(Event event) {
-    if (!isResumable()) {
-      return false;
-    }
-
-    var longRunningToolIds = event.longRunningToolIds().orElse(ImmutableSet.of());
-    if (longRunningToolIds.isEmpty()) {
-      return false;
-    }
-
-    return event.functionCalls().stream()
-        .map(FunctionCall::id)
-        .flatMap(Optional::stream)
-        .anyMatch(functionCallId -> longRunningToolIds.contains(functionCallId));
   }
 
   private static class InvocationCostManager {
@@ -477,12 +288,12 @@ public class InvocationContext {
       this.userContent = context.userContent;
       this.runConfig = context.runConfig;
       this.endInvocation = context.endInvocation;
-      this.agentStates = new ConcurrentHashMap<>(context.agentStates);
-      this.endOfAgents = new ConcurrentHashMap<>(context.endOfAgents);
-      this.resumabilityConfig = context.resumabilityConfig;
       this.eventsCompactionConfig = context.eventsCompactionConfig;
       this.contextCacheConfig = context.contextCacheConfig;
       this.invocationCostManager = context.invocationCostManager;
+      // Don't copy the callback context data.  This should be the same instance for the full
+      // invocation invocation so that Plugins can access the same data it during the invocation
+      // across all types of callbacks.
       this.callbackContextData = context.callbackContextData;
     }
 
@@ -490,18 +301,15 @@ public class InvocationContext {
     private BaseArtifactService artifactService;
     private BaseMemoryService memoryService;
     private Plugin pluginManager = new PluginManager();
-    private Optional<LiveRequestQueue> liveRequestQueue = Optional.empty();
+    @Nullable private LiveRequestQueue liveRequestQueue = null;
     private Map<String, ActiveStreamingTool> activeStreamingTools = new ConcurrentHashMap<>();
-    private Optional<String> branch = Optional.empty();
+    @Nullable private String branch = null;
     private String invocationId = newInvocationContextId();
     private BaseAgent agent;
     private Session session;
-    private Optional<Content> userContent = Optional.empty();
+    @Nullable private Content userContent = null;
     private RunConfig runConfig = RunConfig.builder().build();
     private boolean endInvocation = false;
-    private Map<String, BaseAgentState> agentStates = new ConcurrentHashMap<>();
-    private Map<String, Boolean> endOfAgents = new ConcurrentHashMap<>();
-    private ResumabilityConfig resumabilityConfig = new ResumabilityConfig();
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
     @Nullable private ContextCacheConfig contextCacheConfig;
     private InvocationCostManager invocationCostManager = new InvocationCostManager();
@@ -560,52 +368,22 @@ public class InvocationContext {
      *
      * @param liveRequestQueue the queue for managing live requests.
      * @return this builder instance for chaining.
-     * @deprecated Use {@link #liveRequestQueue(LiveRequestQueue)} instead.
      */
-    // TODO: b/462140921 - Builders should not accept Optional parameters.
-    @Deprecated(forRemoval = true)
     @CanIgnoreReturnValue
-    public Builder liveRequestQueue(Optional<LiveRequestQueue> liveRequestQueue) {
+    public Builder liveRequestQueue(@Nullable LiveRequestQueue liveRequestQueue) {
       this.liveRequestQueue = liveRequestQueue;
       return this;
     }
 
     /**
-     * Sets the queue for managing live requests.
-     *
-     * @param liveRequestQueue the queue for managing live requests.
-     * @return this builder instance for chaining.
-     */
-    @CanIgnoreReturnValue
-    public Builder liveRequestQueue(@Nullable LiveRequestQueue liveRequestQueue) {
-      this.liveRequestQueue = Optional.ofNullable(liveRequestQueue);
-      return this;
-    }
-
-    /**
      * Sets the branch ID for the invocation.
      *
      * @param branch the branch ID for the invocation.
      * @return this builder instance for chaining.
-     * @deprecated Use {@link #branch(String)} instead.
      */
-    // TODO: b/462140921 - Builders should not accept Optional parameters.
-    @Deprecated(forRemoval = true)
     @CanIgnoreReturnValue
-    public Builder branch(Optional<String> branch) {
+    public Builder branch(@Nullable String branch) {
       this.branch = branch;
-      return this;
-    }
-
-    /**
-     * Sets the branch ID for the invocation.
-     *
-     * @param branch the branch ID for the invocation.
-     * @return this builder instance for chaining.
-     */
-    @CanIgnoreReturnValue
-    public Builder branch(String branch) {
-      this.branch = Optional.of(branch);
       return this;
     }
 
@@ -652,20 +430,8 @@ public class InvocationContext {
      * @return this builder instance for chaining.
      */
     @CanIgnoreReturnValue
-    public Builder userContent(Optional<Content> userContent) {
+    public Builder userContent(@Nullable Content userContent) {
       this.userContent = userContent;
-      return this;
-    }
-
-    /**
-     * Sets the user content that triggered this invocation.
-     *
-     * @param userContent the user content that triggered this invocation.
-     * @return this builder instance for chaining.
-     */
-    @CanIgnoreReturnValue
-    public Builder userContent(Content userContent) {
-      this.userContent = Optional.of(userContent);
       return this;
     }
 
@@ -690,42 +456,6 @@ public class InvocationContext {
     @CanIgnoreReturnValue
     public Builder endInvocation(boolean endInvocation) {
       this.endInvocation = endInvocation;
-      return this;
-    }
-
-    /**
-     * Sets agent-specific state saved within this invocation.
-     *
-     * @param agentStates agent-specific state saved within this invocation.
-     * @return this builder instance for chaining.
-     */
-    @CanIgnoreReturnValue
-    public Builder agentStates(Map<String, BaseAgentState> agentStates) {
-      this.agentStates = agentStates;
-      return this;
-    }
-
-    /**
-     * Sets agent end-of-invocation status.
-     *
-     * @param endOfAgents agent end-of-invocation status.
-     * @return this builder instance for chaining.
-     */
-    @CanIgnoreReturnValue
-    public Builder endOfAgents(Map<String, Boolean> endOfAgents) {
-      this.endOfAgents = endOfAgents;
-      return this;
-    }
-
-    /**
-     * Sets the resumability configuration for the current agent run.
-     *
-     * @param resumabilityConfig the resumability configuration.
-     * @return this builder instance for chaining.
-     */
-    @CanIgnoreReturnValue
-    public Builder resumabilityConfig(ResumabilityConfig resumabilityConfig) {
-      this.resumabilityConfig = resumabilityConfig;
       return this;
     }
 
@@ -818,9 +548,6 @@ public class InvocationContext {
         && Objects.equals(session, that.session)
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
-        && Objects.equals(agentStates, that.agentStates)
-        && Objects.equals(endOfAgents, that.endOfAgents)
-        && Objects.equals(resumabilityConfig, that.resumabilityConfig)
         && Objects.equals(eventsCompactionConfig, that.eventsCompactionConfig)
         && Objects.equals(contextCacheConfig, that.contextCacheConfig)
         && Objects.equals(invocationCostManager, that.invocationCostManager)
@@ -843,9 +570,6 @@ public class InvocationContext {
         userContent,
         runConfig,
         endInvocation,
-        agentStates,
-        endOfAgents,
-        resumabilityConfig,
         eventsCompactionConfig,
         contextCacheConfig,
         invocationCostManager,

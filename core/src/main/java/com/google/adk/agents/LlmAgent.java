@@ -318,7 +318,7 @@ public class LlmAgent extends BaseAgent {
 
     @CanIgnoreReturnValue
     public Builder beforeModelCallback(
-        @Nullable List<BeforeModelCallbackBase> beforeModelCallbacks) {
+        @Nullable List<? extends BeforeModelCallbackBase> beforeModelCallbacks) {
       this.beforeModelCallback =
           convertCallbacks(
               beforeModelCallbacks,
@@ -355,7 +355,8 @@ public class LlmAgent extends BaseAgent {
     }
 
     @CanIgnoreReturnValue
-    public Builder afterModelCallback(@Nullable List<AfterModelCallbackBase> afterModelCallbacks) {
+    public Builder afterModelCallback(
+        @Nullable List<? extends AfterModelCallbackBase> afterModelCallbacks) {
       this.afterModelCallback =
           convertCallbacks(
               afterModelCallbacks,
@@ -392,7 +393,7 @@ public class LlmAgent extends BaseAgent {
 
     @CanIgnoreReturnValue
     public Builder onModelErrorCallback(
-        @Nullable List<OnModelErrorCallbackBase> onModelErrorCallbacks) {
+        @Nullable List<? extends OnModelErrorCallbackBase> onModelErrorCallbacks) {
       this.onModelErrorCallback =
           convertCallbacks(
               onModelErrorCallbacks,
@@ -488,7 +489,8 @@ public class LlmAgent extends BaseAgent {
     }
 
     @CanIgnoreReturnValue
-    public Builder afterToolCallback(@Nullable List<AfterToolCallbackBase> afterToolCallbacks) {
+    public Builder afterToolCallback(
+        @Nullable List<? extends AfterToolCallbackBase> afterToolCallbacks) {
       this.afterToolCallback =
           convertCallbacks(
               afterToolCallbacks,
@@ -528,7 +530,7 @@ public class LlmAgent extends BaseAgent {
 
     @CanIgnoreReturnValue
     public Builder onToolErrorCallback(
-        @Nullable List<OnToolErrorCallbackBase> onToolErrorCallbacks) {
+        @Nullable List<? extends OnToolErrorCallbackBase> onToolErrorCallbacks) {
       this.onToolErrorCallback =
           convertCallbacks(
               onToolErrorCallbacks,
@@ -758,18 +760,25 @@ public class LlmAgent extends BaseAgent {
   /**
    * Constructs the list of tools for this agent based on the {@link #tools} field.
    *
-   * <p>This method is only for use by Agent Development Kit.
+   * @return The resolved list of tools as a {@link Single} wrapped list of {@link BaseTool}.
+   */
+  public Flowable<BaseTool> canonicalTools() {
+    return canonicalTools((ReadonlyContext) null);
+  }
+
+  /**
+   * Constructs the list of tools for this agent based on the {@link #tools} field.
    *
    * @param context The context to retrieve the session state.
    * @return The resolved list of tools as a {@link Single} wrapped list of {@link BaseTool}.
    */
-  public Flowable<BaseTool> canonicalTools(Optional<ReadonlyContext> context) {
+  public Flowable<BaseTool> canonicalTools(@Nullable ReadonlyContext context) {
     List<Flowable<BaseTool>> toolFlowables = new ArrayList<>();
     for (Object toolOrToolset : toolsUnion) {
       if (toolOrToolset instanceof BaseTool baseTool) {
         toolFlowables.add(Flowable.just(baseTool));
       } else if (toolOrToolset instanceof BaseToolset baseToolset) {
-        toolFlowables.add(baseToolset.getTools(context.orElse(null)));
+        toolFlowables.add(baseToolset.getTools(context));
       } else {
         throw new IllegalArgumentException(
             "Object in tools list is not of a supported type: "
@@ -777,16 +786,6 @@ public class LlmAgent extends BaseAgent {
       }
     }
     return Flowable.concat(toolFlowables);
-  }
-
-  /** Overload of canonicalTools that defaults to an empty context. */
-  public Flowable<BaseTool> canonicalTools() {
-    return canonicalTools(Optional.empty());
-  }
-
-  /** Convenience overload of canonicalTools that accepts a non-optional ReadonlyContext. */
-  public Flowable<BaseTool> canonicalTools(ReadonlyContext context) {
-    return canonicalTools(Optional.ofNullable(context));
   }
 
   public Instruction instruction() {
@@ -965,7 +964,10 @@ public class LlmAgent extends BaseAgent {
       Model currentModel = this.model.get();
 
       if (currentModel.model().isPresent()) {
-        return currentModel;
+        String modelName = currentModel.model().get().model();
+        BaseLlm resolvedLlm = currentModel.model().get();
+
+        return Model.builder().modelName(modelName).model(resolvedLlm).build();
       }
 
       if (currentModel.modelName().isPresent()) {

@@ -33,7 +33,6 @@ import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -165,11 +164,7 @@ public final class LoopAgentTest {
     Event event2 = createEvent("event2");
     TestBaseAgent subAgent = createSubAgent("subAgent", () -> Flowable.just(event1, event2));
     LoopAgent loopAgent =
-        LoopAgent.builder()
-            .name("loopAgent")
-            .subAgents(ImmutableList.of(subAgent))
-            .maxIterations(Optional.empty())
-            .build();
+        LoopAgent.builder().name("loopAgent").subAgents(ImmutableList.of(subAgent)).build();
     InvocationContext invocationContext = createInvocationContext(loopAgent);
     Iterable<Event> result = loopAgent.runAsync(invocationContext).blockingIterable();
 

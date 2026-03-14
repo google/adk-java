@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.jspecify.annotations.Nullable;
 
 /** Utility functions for code execution. */
 public final class CodeExecutionUtils {
@@ -237,8 +238,7 @@ public final class CodeExecutionUtils {
 
     public static Builder builder() {
       return new AutoValue_CodeExecutionUtils_CodeExecutionInput.Builder()
-          .inputFiles(ImmutableList.of())
-          .executionId(Optional.empty());
+          .inputFiles(ImmutableList.of());
     }
 
     /** Builder for {@link CodeExecutionInput}. */
@@ -248,7 +248,7 @@ public final class CodeExecutionUtils {
 
       public abstract Builder inputFiles(List<File> inputFiles);
 
-      public abstract Builder executionId(Optional<String> executionId);
+      public abstract Builder executionId(@Nullable String executionId);
 
       public abstract CodeExecutionInput build();
     }

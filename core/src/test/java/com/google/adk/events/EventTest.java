@@ -45,9 +45,7 @@ public final class EventTest {
       EventActions.builder()
           .skipSummarization(true)
           .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key", "value")))
-          .artifactDelta(
-              new ConcurrentHashMap<>(
-                  ImmutableMap.of("artifact_key", Part.builder().text("artifact_value").build())))
+          .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact_key", 1)))
           .transferToAgent("agent_id")
           .escalate(true)
           .requestedAuthConfigs(
@@ -78,6 +76,7 @@ public final class EventTest {
           .avgLogprobs(0.5)
           .interrupted(true)
           .timestamp(123456789L)
+          .modelVersion("model_version")
           .build();
 
   @Test
@@ -101,6 +100,7 @@ public final class EventTest {
     assertThat(EVENT.interrupted()).hasValue(true);
     assertThat(EVENT.timestamp()).isEqualTo(123456789L);
     assertThat(EVENT.actions()).isEqualTo(EVENT_ACTIONS);
+    assertThat(EVENT.modelVersion()).hasValue("model_version");
   }
 
   @Test

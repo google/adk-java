@@ -29,13 +29,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.DoNotCall;
 import com.google.genai.types.Content;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
-import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -315,44 +312,41 @@ public abstract class BaseAgent {
   private Flowable<Event> run(
       InvocationContext parentContext,
       Function<InvocationContext, Flowable<Event>> runImplementation) {
-    Tracer tracer = Tracing.getTracer();
+    Context parentSpanContext = Context.current();
     return Flowable.defer(
         () -> {
           InvocationContext invocationContext = createInvocationContext(parentContext);
-          Span span =
-              tracer.spanBuilder("invoke_agent " + name()).setParent(Context.current()).startSpan();
-          Tracing.traceAgentInvocation(span, name(), description(), invocationContext);
-          Context spanContext = Context.current().with(span);
 
-          return Tracing.traceFlowable(
-              spanContext,
-              span,
-              () ->
-                  callCallback(
-                          beforeCallbacksToFunctions(
-                              invocationContext.pluginManager(), beforeAgentCallback),
-                          invocationContext)
-                      .flatMapPublisher(
-                          beforeEventOpt -> {
-                            if (invocationContext.endInvocation()) {
-                              return Flowable.fromOptional(beforeEventOpt);
-                            }
+          Flowable<Event> mainAndAfterEvents =
+              Flowable.defer(() -> runImplementation.apply(invocationContext))
+                  .concatWith(
+                      Flowable.defer(
+                          () ->
+                              callCallback(
+                                      afterCallbacksToFunctions(
+                                          invocationContext.pluginManager(), afterAgentCallback),
+                                      invocationContext)
+                                  .toFlowable()));
 
-                            Flowable<Event> beforeEvents = Flowable.fromOptional(beforeEventOpt);
-                            Flowable<Event> mainEvents =
-                                Flowable.defer(() -> runImplementation.apply(invocationContext));
-                            Flowable<Event> afterEvents =
-                                Flowable.defer(
-                                    () ->
-                                        callCallback(
-                                                afterCallbacksToFunctions(
-                                                    invocationContext.pluginManager(),
-                                                    afterAgentCallback),
-                                                invocationContext)
-                                            .flatMapPublisher(Flowable::fromOptional));
-
-                            return Flowable.concat(beforeEvents, mainEvents, afterEvents);
-                          }));
+          return callCallback(
+                  beforeCallbacksToFunctions(
+                      invocationContext.pluginManager(), beforeAgentCallback),
+                  invocationContext)
+              .flatMapPublisher(
+                  beforeEvent -> {
+                    if (invocationContext.endInvocation()) {
+                      return Flowable.just(beforeEvent);
+                    }
+                    return Flowable.just(beforeEvent).concatWith(mainAndAfterEvents);
+                  })
+              .switchIfEmpty(mainAndAfterEvents)
+              .compose(
+                  Tracing.<Event>trace("invoke_agent " + name())
+                      .setParent(parentSpanContext)
+                      .configure(
+                          span ->
+                              Tracing.traceAgentInvocation(
+                                  span, name(), description(), invocationContext)));
         });
   }
 
@@ -364,11 +358,8 @@ public abstract class BaseAgent {
    */
   private ImmutableList<Function<CallbackContext, Maybe<Content>>> beforeCallbacksToFunctions(
       Plugin pluginManager, List<? extends BeforeAgentCallback> callbacks) {
-    return Stream.concat(
-            Stream.of(ctx -> pluginManager.beforeAgentCallback(this, ctx)),
-            callbacks.stream()
-                .map(callback -> (Function<CallbackContext, Maybe<Content>>) callback::call))
-        .collect(toImmutableList());
+    return callbacksToFunctions(
+        ctx -> pluginManager.beforeAgentCallback(this, ctx), callbacks, c -> c::call);
   }
 
   /**
@@ -379,10 +370,15 @@ public abstract class BaseAgent {
    */
   private ImmutableList<Function<CallbackContext, Maybe<Content>>> afterCallbacksToFunctions(
       Plugin pluginManager, List<? extends AfterAgentCallback> callbacks) {
-    return Stream.concat(
-            Stream.of(ctx -> pluginManager.afterAgentCallback(this, ctx)),
-            callbacks.stream()
-                .map(callback -> (Function<CallbackContext, Maybe<Content>>) callback::call))
+    return callbacksToFunctions(
+        ctx -> pluginManager.afterAgentCallback(this, ctx), callbacks, c -> c::call);
+  }
+
+  private <T> ImmutableList<Function<CallbackContext, Maybe<Content>>> callbacksToFunctions(
+      Function<CallbackContext, Maybe<Content>> pluginCallback,
+      List<T> callbacks,
+      Function<T, Function<CallbackContext, Maybe<Content>>> mapper) {
+    return Stream.concat(Stream.of(pluginCallback), callbacks.stream().map(mapper))
         .collect(toImmutableList());
   }
 
@@ -391,13 +387,13 @@ public abstract class BaseAgent {
    *
    * @param agentCallbacks Callback functions.
    * @param invocationContext Current invocation context.
-   * @return single emitting first event, or empty if none.
+   * @return maybe emitting first event, or empty if none.
    */
-  private Single<Optional<Event>> callCallback(
+  private Maybe<Event> callCallback(
       List<Function<CallbackContext, Maybe<Content>>> agentCallbacks,
       InvocationContext invocationContext) {
     if (agentCallbacks.isEmpty()) {
-      return Single.just(Optional.empty());
+      return Maybe.empty();
     }
 
     CallbackContext callbackContext =
@@ -412,21 +408,20 @@ public abstract class BaseAgent {
                   .map(
                       content -> {
                         invocationContext.setEndInvocation(true);
-                        return Optional.of(
-                            Event.builder()
-                                .id(Event.generateEventId())
-                                .invocationId(invocationContext.invocationId())
-                                .author(name())
-                                .branch(invocationContext.branch())
-                                .actions(callbackContext.eventActions())
-                                .content(content)
-                                .build());
+                        return Event.builder()
+                            .id(Event.generateEventId())
+                            .invocationId(invocationContext.invocationId())
+                            .author(name())
+                            .branch(invocationContext.branch().orElse(null))
+                            .actions(callbackContext.eventActions())
+                            .content(content)
+                            .build();
                       })
                   .toFlowable();
             })
         .firstElement()
         .switchIfEmpty(
-            Single.defer(
+            Maybe.defer(
                 () -> {
                   if (callbackContext.state().hasDelta()) {
                     Event.Builder eventBuilder =
@@ -434,12 +429,12 @@ public abstract class BaseAgent {
                             .id(Event.generateEventId())
                             .invocationId(invocationContext.invocationId())
                             .author(name())
-                            .branch(invocationContext.branch())
+                            .branch(invocationContext.branch().orElse(null))
                             .actions(callbackContext.eventActions());
 
-                    return Single.just(Optional.of(eventBuilder.build()));
+                    return Maybe.just(eventBuilder.build());
                   } else {
-                    return Single.just(Optional.empty());
+                    return Maybe.empty();
                   }
                 }));
   }
@@ -523,8 +518,7 @@ public abstract class BaseAgent {
 
     @CanIgnoreReturnValue
     public B subAgents(BaseAgent... subAgents) {
-      this.subAgents = ImmutableList.copyOf(subAgents);
-      return self();
+      return subAgents(ImmutableList.copyOf(subAgents));
     }
 
     @CanIgnoreReturnValue

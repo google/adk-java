@@ -377,6 +377,17 @@ public final class LlmAgentTest {
   }
 
   @Test
+  public void resolveModel_withModel_usesProvidedModel() {
+    TestLlm testLlm = createTestLlm(LlmResponse.builder().build());
+    LlmAgent testAgent = createTestAgent(testLlm);
+
+    Model resolvedModel = testAgent.resolvedModel();
+
+    assertThat(resolvedModel.model()).hasValue(testLlm);
+    assertThat(resolvedModel.modelName()).hasValue(testLlm.model());
+  }
+
+  @Test
   public void canonicalCallbacks_returnsEmptyListWhenNull() {
     TestLlm testLlm = createTestLlm(LlmResponse.builder().build());
     LlmAgent agent = createTestAgent(testLlm);

@@ -29,7 +29,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
-import com.google.genai.types.Part;
 import java.io.UncheckedIOException;
 import java.time.Instant;
 import java.util.Collection;
@@ -74,7 +73,7 @@ final class SessionJsonConverter {
     event.turnComplete().ifPresent(v -> metadataJson.put("turnComplete", v));
     event.interrupted().ifPresent(v -> metadataJson.put("interrupted", v));
     event.branch().ifPresent(v -> metadataJson.put("branch", v));
-    putIfNotEmpty(metadataJson, "longRunningToolIds", event.longRunningToolIds());
+    event.longRunningToolIds().ifPresent(v -> putIfNotEmpty(metadataJson, "longRunningToolIds", v));
     event.groundingMetadata().ifPresent(v -> metadataJson.put("groundingMetadata", v));
     event.usageMetadata().ifPresent(v -> metadataJson.put("usageMetadata", v));
     Map<String, Object> eventJson = new HashMap<>();
@@ -109,7 +108,9 @@ final class SessionJsonConverter {
                 actionsJson.put("transferAgent", v);
               });
       actions.escalate().ifPresent(v -> actionsJson.put("escalate", v));
-      actionsJson.put("endOfAgent", actions.endOfAgent());
+      if (actions.endOfAgent()) {
+        actionsJson.put("endOfAgent", actions.endOfAgent());
+      }
       putIfNotEmpty(actionsJson, "requestedAuthConfigs", actions.requestedAuthConfigs());
       putIfNotEmpty(
           actionsJson, "requestedToolConfirmations", actions.requestedToolConfirmations());
@@ -207,9 +208,12 @@ final class SessionJsonConverter {
             .timestamp(convertToInstant(apiEvent.get("timestamp")).toEpochMilli())
             .errorCode(
                 Optional.ofNullable(apiEvent.get("errorCode"))
-                    .map(value -> new FinishReason((String) value)))
+                    .map(value -> new FinishReason((String) value))
+                    .orElse(null))
             .errorMessage(
-                Optional.ofNullable(apiEvent.get("errorMessage")).map(value -> (String) value))
+                Optional.ofNullable(apiEvent.get("errorMessage"))
+                    .map(value -> (String) value)
+                    .orElse(null))
             .build();
     Map<String, Object> eventMetadata = (Map<String, Object>) apiEvent.get("eventMetadata");
     if (eventMetadata != null) {
@@ -235,7 +239,7 @@ final class SessionJsonConverter {
                   Optional.ofNullable((Boolean) eventMetadata.get("turnComplete")).orElse(false))
               .interrupted(
                   Optional.ofNullable((Boolean) eventMetadata.get("interrupted")).orElse(false))
-              .branch(Optional.ofNullable((String) eventMetadata.get("branch")))
+              .branch((String) eventMetadata.get("branch"))
               .groundingMetadata(groundingMetadata)
               .usageMetadata(usageMetadata)
               .longRunningToolIds(
@@ -297,18 +301,19 @@ final class SessionJsonConverter {
    * @return A {@link ConcurrentMap} representing the artifact delta.
    */
   @SuppressWarnings("unchecked")
-  private static ConcurrentMap<String, Part> convertToArtifactDeltaMap(Object artifactDeltaObj) {
+  private static ConcurrentMap<String, Integer> convertToArtifactDeltaMap(Object artifactDeltaObj) {
     if (!(artifactDeltaObj instanceof Map)) {
       return new ConcurrentHashMap<>();
     }
-    ConcurrentMap<String, Part> artifactDeltaMap = new ConcurrentHashMap<>();
-    Map<String, Map<String, Object>> rawMap = (Map<String, Map<String, Object>>) artifactDeltaObj;
-    for (Map.Entry<String, Map<String, Object>> entry : rawMap.entrySet()) {
+    ConcurrentMap<String, Integer> artifactDeltaMap = new ConcurrentHashMap<>();
+    Map<String, Object> rawMap = (Map<String, Object>) artifactDeltaObj;
+    for (Map.Entry<String, Object> entry : rawMap.entrySet()) {
       try {
-        Part part = objectMapper.convertValue(entry.getValue(), Part.class);
-        artifactDeltaMap.put(entry.getKey(), part);
+        Integer value = objectMapper.convertValue(entry.getValue(), Integer.class);
+        artifactDeltaMap.put(entry.getKey(), value);
       } catch (IllegalArgumentException e) {
-        logger.warn("Error converting artifactDelta value to Part for key: {}", entry.getKey(), e);
+        logger.warn(
+            "Error converting artifactDelta value to Integer for key: {}", entry.getKey(), e);
       }
     }
     return artifactDeltaMap;
@@ -348,11 +353,6 @@ final class SessionJsonConverter {
     if (values != null && !values.isEmpty()) {
       map.put(key, values);
     }
-  }
-
-  private static void putIfNotEmpty(
-      Map<String, Object> map, String key, Optional<? extends Collection<?>> values) {
-    values.ifPresent(v -> putIfNotEmpty(map, key, v));
   }
 
   private static void putIfNotEmpty(

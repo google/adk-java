@@ -40,7 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Connects to the managed Vertex AI Session Service. */
 // TODO: Use the genai HttpApiClient and ApiResponse methods once they are public.
@@ -65,8 +65,8 @@ public final class VertexAiSessionService implements BaseSessionService {
   public VertexAiSessionService(
       String project,
       String location,
-      Optional<GoogleCredentials> credentials,
-      Optional<HttpOptions> httpOptions) {
+      @Nullable GoogleCredentials credentials,
+      @Nullable HttpOptions httpOptions) {
     this.client = new VertexAiClient(project, location, credentials, httpOptions);
   }
 
@@ -75,6 +75,15 @@ public final class VertexAiSessionService implements BaseSessionService {
       String appName,
       String userId,
       @Nullable ConcurrentMap<String, Object> state,
+      @Nullable String sessionId) {
+    return createSession(appName, userId, (Map<String, Object>) state, sessionId);
+  }
+
+  @Override
+  public Single<Session> createSession(
+      String appName,
+      String userId,
+      @Nullable Map<String, Object> state,
       @Nullable String sessionId) {
 
     String reasoningEngineId = parseReasoningEngineId(appName);

@@ -13,27 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package com.google.adk.a2a.common;
 
-package com.google.adk.agents;
-
-import com.google.adk.JsonBaseModel;
-
-/** Base class for all agent states. */
-public class BaseAgentState extends JsonBaseModel {
-
-  protected BaseAgentState() {}
-
-  /** Returns a new {@link Builder} for creating {@link BaseAgentState} instances. */
-  public static Builder builder() {
-    return new Builder();
+/** Exception thrown when the the genai class has an empty field. */
+public class GenAiFieldMissingException extends RuntimeException {
+  public GenAiFieldMissingException(String message) {
+    super(message);
   }
 
-  /** Builder for {@link BaseAgentState}. */
-  public static class Builder {
-    private Builder() {}
-
-    public BaseAgentState build() {
-      return new BaseAgentState();
-    }
+  public GenAiFieldMissingException(String message, Throwable cause) {
+    super(message, cause);
   }
 }

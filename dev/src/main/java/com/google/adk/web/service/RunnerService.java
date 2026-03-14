@@ -78,13 +78,14 @@ public class RunnerService {
                 "RunnerService: Creating Runner for appName: {}, using agent definition: {}",
                 appName,
                 agent.name());
-            return new Runner(
-                agent,
-                appName,
-                this.artifactService,
-                this.sessionService,
-                this.memoryService,
-                this.extraPlugins);
+            return Runner.builder()
+                .agent(agent)
+                .appName(appName)
+                .artifactService(this.artifactService)
+                .sessionService(this.sessionService)
+                .memoryService(this.memoryService)
+                .plugins(this.extraPlugins)
+                .build();
           } catch (java.util.NoSuchElementException e) {
             log.error(
                 "Agent/App named '{}' not found in registry. Available apps: {}",

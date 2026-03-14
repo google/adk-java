@@ -20,7 +20,7 @@
   <parent>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-parent</artifactId>
-    <version>0.5.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <version>0.9.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   </parent>
 
   <artifactId>google-adk</artifactId>
@@ -75,6 +75,10 @@
       <artifactId>okhttp</artifactId>
     </dependency>
     <dependency>
+      <groupId>com.squareup.okhttp3</groupId>
+      <artifactId>okhttp-jvm</artifactId>
+    </dependency>
+    <dependency>
       <groupId>com.google.auto.value</groupId>
       <artifactId>auto-value-annotations</artifactId>
       <scope>provided</scope>
@@ -87,6 +91,10 @@
     <dependency>
       <groupId>com.google.errorprone</groupId>
       <artifactId>error_prone_annotations</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-annotations</artifactId>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
@@ -200,6 +208,78 @@
     <plugins>
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <executions>
+          <execution>
+            <!-- run all tests with standard env -->
+            <id>basic</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <environmentVariables>
+                <GOOGLE_GENAI_USE_VERTEXAI>false</GOOGLE_GENAI_USE_VERTEXAI>
+              </environmentVariables>
+            </configuration>
+          </execution>
+          <execution>
+            <id>vertex-ai-rag-retrieval</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <environmentVariables>
+                <GOOGLE_GENAI_USE_VERTEXAI>true</GOOGLE_GENAI_USE_VERTEXAI>
+              </environmentVariables>
+              <!-- run a second variant of the following tests -->
+              <test>VertexAiRagRetrievalTest#processLlmRequest_gemini2Model_addVertexRagStoreToConfig, VertexAiRagRetrievalTest#processLlmRequest_otherModel_doNotAddVertexRagStoreToConfig</test>
+            </configuration>
+          </execution>
+          <execution>
+            <id>apigee-llm</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <test>ApigeeLlmTest</test>
+              <!-- this test requires the following env -->
+              <environmentVariables>
+                <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
+                <GOOGLE_GENAI_USE_VERTEXAI>false</GOOGLE_GENAI_USE_VERTEXAI>
+              </environmentVariables>
+            </configuration>
+          </execution>
+          <execution>
+            <id>apigee-llm-vertex-ai</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <test>ApigeeLlmTest#generateContent_setsVertexAiFlagCorrectly_withOrWithoutVertexAi</test>
+              <environmentVariables>
+                <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
+                <!-- runs a second variant of the test method -->
+                <GOOGLE_GENAI_USE_VERTEXAI>true</GOOGLE_GENAI_USE_VERTEXAI>
+              </environmentVariables>
+            </configuration>
+          </execution>
+          <execution>
+            <id>apigee-llm-proxy-url</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <test>ApigeeLlmTest#build_withoutProxyUrl_readsFromEnvironment</test>
+              <environmentVariables>
+                <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
+                <!-- runs a second variant of the test method -->
+                <APIGEE_PROXY_URL>proxy-url</APIGEE_PROXY_URL>
+              </environmentVariables>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

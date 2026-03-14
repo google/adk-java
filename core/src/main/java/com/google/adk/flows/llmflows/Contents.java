@@ -25,6 +25,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
@@ -41,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import javax.annotation.Nullable;
 
 /** {@link RequestProcessor} that populates content in request for LLM flows. */
 public final class Contents implements RequestProcessor {
@@ -68,7 +70,7 @@ public final class Contents implements RequestProcessor {
               request.toBuilder()
                   .contents(
                       getCurrentTurnContents(
-                          context.branch(),
+                          context.branch().orElse(null),
                           context.session().events(),
                           context.agent().name(),
                           modelName))
@@ -78,7 +80,10 @@ public final class Contents implements RequestProcessor {
 
     ImmutableList<Content> contents =
         getContents(
-            context.branch(), context.session().events(), context.agent().name(), modelName);
+            context.branch().orElse(null),
+            context.session().events(),
+            context.agent().name(),
+            modelName);
 
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(
@@ -87,7 +92,7 @@ public final class Contents implements RequestProcessor {
 
   /** Gets contents for the current turn only (no conversation history). */
   private ImmutableList<Content> getCurrentTurnContents(
-      Optional<String> currentBranch, List<Event> events, String agentName, String modelName) {
+      @Nullable String currentBranch, List<Event> events, String agentName, String modelName) {
     // Find the latest event that starts the current turn and process from there.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
@@ -99,7 +104,7 @@ public final class Contents implements RequestProcessor {
   }
 
   private ImmutableList<Content> getContents(
-      Optional<String> currentBranch, List<Event> events, String agentName, String modelName) {
+      @Nullable String currentBranch, List<Event> events, String agentName, String modelName) {
     List<Event> filteredEvents = new ArrayList<>();
     boolean hasCompactEvent = false;
 
@@ -169,7 +174,36 @@ public final class Contents implements RequestProcessor {
         || content.role().get().isEmpty()
         || content.parts().isEmpty()
         || content.parts().get().isEmpty()
-        || content.parts().get().get(0).text().map(String::isEmpty).orElse(false));
+        || content.parts().get().stream().allMatch(this::isPartInvisible));
+  }
+
+  /**
+   * Returns whether a part is invisible for LLM context.
+   *
+   * <p>A part is invisible if:
+   *
+   * <ul>
+   *   <li>It has no meaningful content (text, inline_data, file_data, function_call,
+   *       function_response, executable_code, or code_execution_result), OR
+   *   <li>It is marked as a thought AND does not contain function_call or function_response
+   * </ul>
+   *
+   * <p>Function calls and responses are never invisible, even if marked as thought, because they
+   * represent actions that need to be executed or results that need to be processed.
+   *
+   * @param part the part to check.
+   * @return {@code true} if the part is invisible, {@code false} otherwise.
+   */
+  private boolean isPartInvisible(Part part) {
+    if (part.functionCall().isPresent() || part.functionResponse().isPresent()) {
+      return false;
+    }
+    return part.thought().orElse(false)
+        || !(part.text().isPresent()
+            || part.inlineData().isPresent()
+            || part.fileData().isPresent()
+            || part.codeExecutionResult().isPresent()
+            || part.executableCode().isPresent());
   }
 
   /**
@@ -385,16 +419,12 @@ public final class Contents implements RequestProcessor {
     }
   }
 
-  private static boolean isEventBelongsToBranch(Optional<String> invocationBranchOpt, Event event) {
-    Optional<String> eventBranchOpt = event.branch();
+  private static boolean isEventBelongsToBranch(@Nullable String invocationBranch, Event event) {
+    @Nullable String eventBranch = event.branch().orElse(null);
 
-    if (invocationBranchOpt.isEmpty() || invocationBranchOpt.get().isEmpty()) {
-      return true;
-    }
-    if (eventBranchOpt.isEmpty() || eventBranchOpt.get().isEmpty()) {
-      return true;
-    }
-    return invocationBranchOpt.get().startsWith(eventBranchOpt.get());
+    return Strings.isNullOrEmpty(invocationBranch)
+        || Strings.isNullOrEmpty(eventBranch)
+        || invocationBranch.startsWith(eventBranch);
   }
 
   /**
@@ -406,6 +436,11 @@ public final class Contents implements RequestProcessor {
    * @return A new list of events with the appropriate rearrangement.
    */
   private static List<Event> rearrangeEventsForLatestFunctionResponse(List<Event> events) {
+    if (events.size() < 2) {
+      // No need to process, since there is no function_call.
+      return events;
+    }
+
     // TODO: b/412663475 - Handle parallel function calls within the same event. Currently, this
     // throws an error.
     if (events.isEmpty() || Iterables.getLast(events).functionResponses().isEmpty()) {
@@ -559,7 +594,7 @@ public final class Contents implements RequestProcessor {
 
     // Gemini 3 requires function calls to be grouped first and only then function responses:
     // FC1 FC2 FR1 FR2
-    boolean shouldBufferResponseEvents = modelName.startsWith("gemini-3-");
+    boolean shouldBufferResponseEvents = modelName.contains("gemini-3");
 
     for (int i = 0; i < events.size(); i++) {
       Event event = events.get(i);
@@ -726,9 +761,7 @@ public final class Contents implements RequestProcessor {
     }
 
     return baseEvent.toBuilder()
-        .content(
-            Optional.of(
-                Content.builder().role(baseContent.role().get()).parts(partsInMergedEvent).build()))
+        .content(Content.builder().role(baseContent.role().get()).parts(partsInMergedEvent).build())
         .build();
   }
 

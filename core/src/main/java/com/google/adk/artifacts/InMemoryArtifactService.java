@@ -28,8 +28,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.IntStream;
+import org.jspecify.annotations.Nullable;
 
 /** An in-memory implementation of the {@link BaseArtifactService}. */
 public final class InMemoryArtifactService implements BaseArtifactService {
@@ -61,7 +61,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
    */
   @Override
   public Maybe<Part> loadArtifact(
-      String appName, String userId, String sessionId, String filename, Optional<Integer> version) {
+      String appName, String userId, String sessionId, String filename, @Nullable Integer version) {
     List<Part> versions =
         getArtifactsMap(appName, userId, sessionId)
             .computeIfAbsent(filename, unused -> new ArrayList<>());
@@ -69,10 +69,9 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     if (versions.isEmpty()) {
       return Maybe.empty();
     }
-    if (version.isPresent()) {
-      int v = version.get();
-      if (v >= 0 && v < versions.size()) {
-        return Maybe.just(versions.get(v));
+    if (version != null) {
+      if (version >= 0 && version < versions.size()) {
+        return Maybe.just(versions.get(version));
       } else {
         return Maybe.empty();
       }
@@ -129,10 +128,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   public Single<Part> saveAndReloadArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact) {
     return saveArtifact(appName, userId, sessionId, filename, artifact)
-        .flatMap(
-            version ->
-                loadArtifact(appName, userId, sessionId, filename, Optional.of(version))
-                    .toSingle());
+        .flatMap(version -> loadArtifact(appName, userId, sessionId, filename, version).toSingle());
   }
 
   private Map<String, List<Part>> getArtifactsMap(String appName, String userId, String sessionId) {

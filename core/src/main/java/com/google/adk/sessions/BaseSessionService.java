@@ -23,8 +23,10 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import javax.annotation.Nullable;
 
@@ -47,12 +49,46 @@ public interface BaseSessionService {
    *     service should generate a unique ID.
    * @return The newly created {@link Session} instance.
    * @throws SessionException if creation fails.
+   * @deprecated Use {@link #createSession(String, String, Map, String)} instead.
    */
+  @Deprecated
   Single<Session> createSession(
       String appName,
       String userId,
       @Nullable ConcurrentMap<String, Object> state,
       @Nullable String sessionId);
+
+  /**
+   * Creates a new session with the specified parameters.
+   *
+   * @param appName The name of the application associated with the session.
+   * @param userId The identifier for the user associated with the session.
+   * @param state An optional map representing the initial state of the session. Can be null or
+   *     empty.
+   * @param sessionId An optional client-provided identifier for the session. If empty or null, the
+   *     service should generate a unique ID.
+   * @return The newly created {@link Session} instance.
+   * @throws SessionException if creation fails.
+   */
+  default Single<Session> createSession(
+      String appName,
+      String userId,
+      @Nullable Map<String, Object> state,
+      @Nullable String sessionId) {
+    return createSession(appName, userId, ensureConcurrentMap(state), sessionId);
+  }
+
+  /**
+   * Creates a new session with the specified parameters.
+   *
+   * @param sessionKey The session key containing appName, userId and sessionId.
+   * @param state An optional map representing the initial state of the session. Can be null or
+   *     empty.
+   */
+  default Single<Session> createSession(
+      SessionKey sessionKey, @Nullable Map<String, Object> state) {
+    return createSession(sessionKey.appName(), sessionKey.userId(), state, sessionKey.id());
+  }
 
   /**
    * Creates a new session with the specified application name and user ID, using a default state
@@ -71,6 +107,14 @@ public interface BaseSessionService {
   }
 
   /**
+   * Creates a new session with the specified application name and user ID, using a default state
+   * (null) and allowing the service to generate a unique session ID.
+   */
+  default Single<Session> createSession(SessionKey sessionKey) {
+    return createSession(sessionKey.appName(), sessionKey.userId(), null, sessionKey.id());
+  }
+
+  /**
    * Retrieves a specific session, optionally filtering the events included.
    *
    * @param appName The name of the application.
@@ -86,6 +130,12 @@ public interface BaseSessionService {
   Maybe<Session> getSession(
       String appName, String userId, String sessionId, Optional<GetSessionConfig> config);
 
+  /** Retrieves a specific session, optionally filtering the events included. */
+  default Maybe<Session> getSession(SessionKey sessionKey, @Nullable GetSessionConfig config) {
+    return getSession(
+        sessionKey.appName(), sessionKey.userId(), sessionKey.id(), Optional.ofNullable(config));
+  }
+
   /**
    * Lists sessions associated with a specific application and user.
    *
@@ -99,6 +149,11 @@ public interface BaseSessionService {
    */
   Single<ListSessionsResponse> listSessions(String appName, String userId);
 
+  /** Lists sessions associated with a specific application and user. */
+  default Single<ListSessionsResponse> listSessions(SessionKey sessionKey) {
+    return listSessions(sessionKey.appName(), sessionKey.userId());
+  }
+
   /**
    * Deletes a specific session.
    *
@@ -109,6 +164,11 @@ public interface BaseSessionService {
    * @throws SessionException for other deletion errors.
    */
   Completable deleteSession(String appName, String userId, String sessionId);
+
+  /** Deletes a specific session. */
+  default Completable deleteSession(SessionKey sessionKey) {
+    return deleteSession(sessionKey.appName(), sessionKey.userId(), sessionKey.id());
+  }
 
   /**
    * Lists the events within a specific session. Supports pagination via the response object.
@@ -122,6 +182,11 @@ public interface BaseSessionService {
    * @throws SessionException for other listing errors.
    */
   Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId);
+
+  /** Lists the events within a specific session. */
+  default Single<ListEventsResponse> listEvents(SessionKey sessionKey) {
+    return listEvents(sessionKey.appName(), sessionKey.userId(), sessionKey.id());
+  }
 
   /**
    * Closes a session. This is currently a placeholder and may involve finalizing session state or
@@ -165,21 +230,19 @@ public interface BaseSessionService {
 
     EventActions actions = event.actions();
     if (actions != null) {
-      ConcurrentMap<String, Object> stateDelta = actions.stateDelta();
-      if (stateDelta != null && !stateDelta.isEmpty()) {
-        ConcurrentMap<String, Object> sessionState = session.state();
-        if (sessionState != null) {
-          stateDelta.forEach(
-              (key, value) -> {
-                if (!key.startsWith(State.TEMP_PREFIX)) {
-                  if (value == State.REMOVED) {
-                    sessionState.remove(key);
-                  } else {
-                    sessionState.put(key, value);
-                  }
+      Map<String, Object> stateDelta = actions.stateDelta();
+      Map<String, Object> sessionState = session.state();
+      if (stateDelta != null && !stateDelta.isEmpty() && sessionState != null) {
+        stateDelta.forEach(
+            (key, value) -> {
+              if (!key.startsWith(State.TEMP_PREFIX)) {
+                if (value == State.REMOVED) {
+                  sessionState.remove(key);
+                } else {
+                  sessionState.put(key, value);
                 }
-              });
-        }
+              }
+            });
       }
     }
 
@@ -189,5 +252,22 @@ public interface BaseSessionService {
     }
 
     return Single.just(event);
+  }
+
+  /**
+   * Ensures the given {@link Map} is a {@link ConcurrentMap}. If the input is null, returns null.
+   * If the input is already a {@link ConcurrentMap}, it is cast and returned. Otherwise, a new
+   * {@link ConcurrentHashMap} is created from the input map.
+   */
+  @Nullable
+  private static ConcurrentMap<String, Object> ensureConcurrentMap(
+      @Nullable Map<String, Object> state) {
+    if (state == null) {
+      return null;
+    }
+    if (state instanceof ConcurrentMap<String, Object> concurrentMap) {
+      return concurrentMap;
+    }
+    return new ConcurrentHashMap<>(state);
   }
 }

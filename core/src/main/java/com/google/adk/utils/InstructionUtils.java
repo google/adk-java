@@ -25,7 +25,6 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -167,12 +166,7 @@ public final class InstructionUtils {
       Maybe<Part> artifactMaybe =
           context
               .artifactService()
-              .loadArtifact(
-                  session.appName(),
-                  session.userId(),
-                  session.id(),
-                  artifactName,
-                  Optional.empty());
+              .loadArtifact(session.appName(), session.userId(), session.id(), artifactName);
 
       return artifactMaybe
           .map(Part::toJson)

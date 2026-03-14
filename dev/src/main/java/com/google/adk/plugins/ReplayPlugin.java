@@ -90,7 +90,11 @@ public class ReplayPlugin extends BasePlugin {
     logger.debug("Verified and replaying LLM response for agent {}", agentName);
 
     // Return the recorded response
-    return recording.llmResponse().map(Maybe::just).orElse(Maybe.empty());
+    return recording
+        .llmResponses()
+        .filter(responses -> !responses.isEmpty())
+        .map(responses -> Maybe.just(responses.get(0)))
+        .orElse(Maybe.empty());
   }
 
   @Override

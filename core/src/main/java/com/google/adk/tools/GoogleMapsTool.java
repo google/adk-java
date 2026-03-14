@@ -79,15 +79,8 @@ public class GoogleMapsTool extends BaseTool {
     List<Tool> existingTools = configBuilder.build().tools().orElse(ImmutableList.of());
     ImmutableList.Builder<Tool> updatedToolsBuilder = ImmutableList.builder();
     updatedToolsBuilder.addAll(existingTools);
-
-    String model = llmRequestBuilder.build().model().orElse(null);
-    if (model != null && !model.startsWith("gemini-1")) {
-      updatedToolsBuilder.add(Tool.builder().googleMaps(GoogleMaps.builder().build()).build());
-      configBuilder.tools(updatedToolsBuilder.build());
-    } else {
-      return Completable.error(
-          new IllegalArgumentException("Google Maps tool is not supported for model " + model));
-    }
+    updatedToolsBuilder.add(Tool.builder().googleMaps(GoogleMaps.builder().build()).build());
+    configBuilder.tools(updatedToolsBuilder.build());
 
     llmRequestBuilder.config(configBuilder.build());
     return Completable.complete();

@@ -31,6 +31,7 @@ import com.google.adk.models.LlmResponse;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.sessions.SessionKey;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -44,12 +45,17 @@ import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.opentelemetry.sdk.trace.data.SpanData;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.After;
 import org.junit.Before;
@@ -184,6 +190,11 @@ public class ContextPropagationTest {
     }
 
     // Verify complete hierarchy
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    // The 4 spans are: "parent", "invocation", "tool_call [testTool]", and "tool_response
+    // [testTool]".
+    assertEquals("Should have 4 spans in the hierarchy", 4, spans.size());
+
     SpanData parentSpanData = findSpanByName("parent");
     String parentTraceId = parentSpanData.getSpanContext().getTraceId();
 
@@ -311,6 +322,9 @@ public class ContextPropagationTest {
       invokeAgentSpan.end();
     }
 
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertEquals("Should have 2 spans", 2, spans.size());
+
     SpanData invokeAgentSpanData = findSpanByName("invoke_agent test-agent");
     SpanData callLlmSpanData = findSpanByName("call_llm");
 
@@ -370,6 +384,95 @@ public class ContextPropagationTest {
         parentSpanData.getSpanContext().getSpanId(),
         flowableSpanData.getParentSpanContext().getSpanId());
     assertTrue(flowableSpanData.hasEnded());
+  }
+
+  @Test
+  public void testWithContextFlowable() throws InterruptedException {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.root().with(testKey, "test-value");
+
+    Flowable<Integer> flowable =
+        Flowable.just(1, 2, 3)
+            .compose(Tracing.withContext(testContext))
+            .subscribeOn(Schedulers.computation())
+            .doOnNext(
+                i -> {
+                  assertEquals("test-value", Context.current().get(testKey));
+                });
+    flowable.test().await().assertComplete();
+  }
+
+  @Test
+  public void testWithContextSingle() throws InterruptedException {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.root().with(testKey, "test-value");
+
+    Single<Integer> single =
+        Single.just(1)
+            .compose(Tracing.withContext(testContext))
+            .subscribeOn(Schedulers.computation())
+            .doOnSuccess(
+                i -> {
+                  assertEquals("test-value", Context.current().get(testKey));
+                });
+    single.test().await().assertComplete();
+  }
+
+  @Test
+  public void testWithContextMaybe() throws InterruptedException {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.root().with(testKey, "test-value");
+
+    Maybe<Integer> maybe =
+        Maybe.just(1)
+            .compose(Tracing.withContext(testContext))
+            .subscribeOn(Schedulers.computation())
+            .doOnSuccess(
+                i -> {
+                  assertEquals("test-value", Context.current().get(testKey));
+                });
+    maybe.test().await().assertComplete();
+  }
+
+  @Test
+  public void testWithContextCompletable() throws InterruptedException {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.root().with(testKey, "test-value");
+
+    Completable completable =
+        Completable.complete()
+            .compose(Tracing.withContext(testContext))
+            .subscribeOn(Schedulers.computation())
+            .doOnComplete(
+                () -> {
+                  assertEquals("test-value", Context.current().get(testKey));
+                });
+    completable.test().await().assertComplete();
+  }
+
+  @Test
+  public void testTraceTransformer() throws InterruptedException {
+    Span parentSpan = tracer.spanBuilder("parent").startSpan();
+    try (Scope s = parentSpan.makeCurrent()) {
+      Flowable<Integer> flowable =
+          Flowable.just(1, 2, 3)
+              .map(
+                  i -> {
+                    assertTrue(Span.current().getSpanContext().isValid());
+                    return i * 2;
+                  })
+              .compose(Tracing.trace("transformer"));
+      flowable.test().await().assertComplete();
+    } finally {
+      parentSpan.end();
+    }
+
+    SpanData parentSpanData = findSpanByName("parent");
+    SpanData transformerSpanData = findSpanByName("transformer");
+    assertEquals(
+        parentSpanData.getSpanContext().getSpanId(),
+        transformerSpanData.getParentSpanContext().getSpanId());
+    assertTrue(transformerSpanData.hasEnded());
   }
 
   @Test
@@ -470,7 +573,7 @@ public class ContextPropagationTest {
                       .totalTokenCount(30)
                       .build())
               .build();
-      Tracing.traceCallLlm(buildInvocationContext(), "event-1", llmRequest, llmResponse);
+      Tracing.traceCallLlm(span, buildInvocationContext(), "event-1", llmRequest, llmResponse);
     } finally {
       span.end();
     }
@@ -562,7 +665,7 @@ public class ContextPropagationTest {
       Session session =
           runner
               .sessionService()
-              .createSession("test-app", "test-user", null, "test-session")
+              .createSession(new SessionKey("test-app", "test-user", "test-session"))
               .blockingGet();
       Content newMessage = Content.fromParts(Part.fromText("hi"));
       RunConfig runConfig = RunConfig.builder().build();
@@ -590,13 +693,20 @@ public class ContextPropagationTest {
     Span parentSpan = tracer.spanBuilder("parent").startSpan();
     try (Scope s = parentSpan.makeCurrent()) {
       Session session =
-          Session.builder("test-session").userId("test-user").appName("test-app").build();
+          runner
+              .sessionService()
+              .createSession("test-app", "test-user", (Map<String, Object>) null, "test-session")
+              .blockingGet();
       Content newMessage = Content.fromParts(Part.fromText("hi"));
       RunConfig runConfig = RunConfig.builder().build();
       LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
       liveRequestQueue.content(newMessage);
       liveRequestQueue.close();
-      runner.runLive(session, liveRequestQueue, runConfig).test().await().assertComplete();
+      runner
+          .runLive(session.userId(), session.id(), liveRequestQueue, runConfig)
+          .test()
+          .await()
+          .assertComplete();
     } finally {
       parentSpan.end();
     }
