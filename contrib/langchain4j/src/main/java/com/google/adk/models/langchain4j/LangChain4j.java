@@ -524,6 +524,9 @@ public class LangChain4j extends BaseLlm {
               });
       return parts;
     } else {
+      if (aiMessage.text() == null) {
+        return List.of();
+      }
       Part part = Part.builder().text(aiMessage.text()).build();
       return List.of(part);
     }
