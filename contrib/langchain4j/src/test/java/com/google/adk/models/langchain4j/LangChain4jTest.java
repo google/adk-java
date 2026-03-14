@@ -688,4 +688,28 @@ class LangChain4jTest {
     final UserMessage userMessage = (UserMessage) capturedRequest.messages().get(0);
     assertThat(userMessage.singleText()).isEqualTo("Give me information about John Doe");
   }
+
+  @Test
+  @DisplayName("Should handle null AiMessage text without throwing NPE")
+  void testGenerateContentWithNullAiMessageText() {
+    // Given
+    final LlmRequest llmRequest =
+        LlmRequest.builder().contents(List.of(Content.fromParts(Part.fromText("Hello")))).build();
+
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    final AiMessage aiMessage = mock(AiMessage.class);
+    when(aiMessage.text()).thenReturn(null);
+    when(aiMessage.hasToolExecutionRequests()).thenReturn(false);
+    when(chatResponse.aiMessage()).thenReturn(aiMessage);
+    when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+
+    // When
+    final Flowable<LlmResponse> responseFlowable = langChain4j.generateContent(llmRequest, false);
+    final LlmResponse response = responseFlowable.blockingFirst();
+
+    // Then - no NPE thrown, and content has no text parts
+    assertThat(response).isNotNull();
+    assertThat(response.content()).isPresent();
+    assertThat(response.content().get().parts().orElse(List.of())).isEmpty();
+  }
 }
