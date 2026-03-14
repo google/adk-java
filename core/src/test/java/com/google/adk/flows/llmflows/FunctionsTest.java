@@ -26,13 +26,29 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
+import com.google.adk.telemetry.Tracing;
 import com.google.adk.testing.TestUtils;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
+import io.reactivex.rxjava3.core.Single;
+import java.util.List;
+import java.util.Map;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -40,6 +56,9 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link Functions}. */
 @RunWith(JUnit4.class)
 public final class FunctionsTest {
+
+  private InMemorySpanExporter spanExporter;
+  private Tracer tracer;
 
   private static final Event EVENT_WITH_NO_CONTENT =
       Event.builder().id("event1").invocationId("invocation1").author("agent").build();
@@ -67,6 +86,108 @@ public final class FunctionsTest {
           .author("agent")
           .content(Content.fromParts(Part.fromFunctionCall("other_function", ImmutableMap.of())))
           .build();
+
+  @Before
+  public void setUp() {
+    spanExporter = InMemorySpanExporter.create();
+    tracer =
+        SdkTracerProvider.builder()
+            .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+            .build()
+            .get("FunctionsTest");
+    Tracing.setTracerForTesting(tracer);
+    spanExporter.reset();
+  }
+
+  @Test
+  public void handleFunctionCalls_contextPropagation() {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+    InvocationContext invocationContext = createInvocationContext(createRootAgent());
+    ImmutableMap<String, Object> args = ImmutableMap.<String, Object>of("key", "value");
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id("function_call_id")
+                                .name("echo_tool")
+                                .args(args)
+                                .build())
+                        .build()))
+            .build();
+
+    BaseTool tool =
+        new BaseTool("echo_tool", "echo tool") {
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext context) {
+            assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+            return Single.just(args);
+          }
+        };
+
+    Event functionResponseEvent;
+    try (Scope scope = testContext.makeCurrent()) {
+      functionResponseEvent =
+          Functions.handleFunctionCalls(
+                  invocationContext, event, ImmutableMap.of("echo_tool", tool))
+              .doOnSuccess(
+                  e -> {
+                    assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+                  })
+              .blockingGet();
+    }
+
+    assertThat(functionResponseEvent).isNotNull();
+  }
+
+  @Test
+  public void handleFunctionCallsLive_contextPropagation() {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+    InvocationContext invocationContext = createInvocationContext(createRootAgent());
+    ImmutableMap<String, Object> args = ImmutableMap.<String, Object>of("key", "value");
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id("function_call_id")
+                                .name("echo_tool")
+                                .args(args)
+                                .build())
+                        .build()))
+            .build();
+
+    BaseTool tool =
+        new BaseTool("echo_tool", "echo tool") {
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext context) {
+            assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+            return Single.just(args);
+          }
+        };
+
+    Event functionResponseEvent;
+    try (Scope scope = testContext.makeCurrent()) {
+      functionResponseEvent =
+          Functions.handleFunctionCallsLive(
+                  invocationContext, event, ImmutableMap.of("echo_tool", tool))
+              .doOnSuccess(
+                  e -> {
+                    assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+                  })
+              .blockingGet();
+    }
+
+    assertThat(functionResponseEvent).isNotNull();
+  }
 
   @Test
   public void handleFunctionCalls_noFunctionCalls() {
@@ -388,5 +509,150 @@ public final class FunctionsTest {
             .build();
     ImmutableList<FunctionCall> result = Functions.getAskUserConfirmationFunctionCalls(event);
     assertThat(result).containsExactly(confirmationCall1, confirmationCall2);
+  }
+
+  @Test
+  public void handleFunctionCalls_singleFunctionCall_createsSpans() {
+    Span span = tracer.spanBuilder("parent").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      InvocationContext invocationContext = createInvocationContext(createRootAgent());
+      ImmutableMap<String, Object> args = ImmutableMap.<String, Object>of("key", "value");
+      Event event =
+          createEvent("event").toBuilder()
+              .content(
+                  Content.fromParts(
+                      Part.fromText("..."),
+                      Part.builder()
+                          .functionCall(
+                              FunctionCall.builder()
+                                  .id("function_call_id")
+                                  .name("echo_tool")
+                                  .args(args)
+                                  .build())
+                          .build()))
+              .build();
+      Event functionResponseEvent =
+          Functions.handleFunctionCalls(
+                  invocationContext, event, ImmutableMap.of("echo_tool", new TestUtils.EchoTool()))
+              .blockingGet();
+      assertThat(functionResponseEvent).isNotNull();
+    } finally {
+      span.end();
+    }
+
+    List<SpanData> spans = spanExporter.getFinishedSpanItems();
+    assertThat(spans.stream().map(SpanData::getName))
+        .containsExactly("tool_call [echo_tool]", "tool_response [echo_tool]", "parent");
+
+    SpanData parentSpan =
+        spans.stream().filter(s -> s.getName().equals("parent")).findFirst().get();
+    spans.stream()
+        .filter(s -> !s.getName().equals("parent"))
+        .forEach(
+            s ->
+                assertThat(s.getParentSpanContext().getSpanId()).isEqualTo(parentSpan.getSpanId()));
+  }
+
+  @Test
+  public void handleFunctionCalls_multipleFunctionCalls_parallel_createsSpans() {
+    Span span = tracer.spanBuilder("parent").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      InvocationContext invocationContext =
+          createInvocationContext(
+              createRootAgent(),
+              RunConfig.builder().setToolExecutionMode(ToolExecutionMode.PARALLEL).build());
+      ImmutableMap<String, Object> args1 = ImmutableMap.<String, Object>of("key1", "value2");
+      ImmutableMap<String, Object> args2 = ImmutableMap.<String, Object>of("key2", "value2");
+      Event event =
+          createEvent("event").toBuilder()
+              .content(
+                  Content.fromParts(
+                      Part.fromText("..."),
+                      Part.builder()
+                          .functionCall(
+                              FunctionCall.builder()
+                                  .id("function_call_id1")
+                                  .name("echo_tool")
+                                  .args(args1)
+                                  .build())
+                          .build(),
+                      Part.builder()
+                          .functionCall(
+                              FunctionCall.builder()
+                                  .id("function_call_id2")
+                                  .name("echo_tool")
+                                  .args(args2)
+                                  .build())
+                          .build()))
+              .build();
+
+      Event functionResponseEvent =
+          Functions.handleFunctionCalls(
+                  invocationContext, event, ImmutableMap.of("echo_tool", new TestUtils.EchoTool()))
+              .blockingGet();
+
+      assertThat(functionResponseEvent).isNotNull();
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = spanExporter.getFinishedSpanItems();
+    assertThat(spans.stream().map(SpanData::getName))
+        .containsExactly(
+            "tool_call [echo_tool]",
+            "tool_response [echo_tool]",
+            "tool_call [echo_tool]",
+            "tool_response [echo_tool]",
+            "tool_response",
+            "parent");
+
+    SpanData parentSpan =
+        spans.stream().filter(s -> s.getName().equals("parent")).findFirst().get();
+    spans.stream()
+        .filter(s -> !s.getName().equals("parent"))
+        .forEach(
+            s ->
+                assertThat(s.getParentSpanContext().getSpanId()).isEqualTo(parentSpan.getSpanId()));
+  }
+
+  @Test
+  public void handleFunctionCallsLive_singleFunctionCall_createsSpans() {
+    Span span = tracer.spanBuilder("parent").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      InvocationContext invocationContext = createInvocationContext(createRootAgent());
+      ImmutableMap<String, Object> args = ImmutableMap.<String, Object>of("key", "value");
+      Event event =
+          createEvent("event").toBuilder()
+              .content(
+                  Content.fromParts(
+                      Part.builder()
+                          .functionCall(
+                              FunctionCall.builder()
+                                  .id("function_call_id")
+                                  .name("echo_tool")
+                                  .args(args)
+                                  .build())
+                          .build()))
+              .build();
+
+      Event functionResponseEvent =
+          Functions.handleFunctionCallsLive(
+                  invocationContext, event, ImmutableMap.of("echo_tool", new TestUtils.EchoTool()))
+              .blockingGet();
+
+      assertThat(functionResponseEvent).isNotNull();
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = spanExporter.getFinishedSpanItems();
+    assertThat(spans.stream().map(SpanData::getName))
+        .containsExactly("tool_call [echo_tool]", "tool_response [echo_tool]", "parent");
+
+    SpanData parentSpan =
+        spans.stream().filter(s -> s.getName().equals("parent")).findFirst().get();
+    spans.stream()
+        .filter(s -> !s.getName().equals("parent"))
+        .forEach(
+            s ->
+                assertThat(s.getParentSpanContext().getSpanId()).isEqualTo(parentSpan.getSpanId()));
   }
 }

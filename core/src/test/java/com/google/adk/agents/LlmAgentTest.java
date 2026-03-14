@@ -571,6 +571,7 @@ public final class LlmAgentTest {
     assertThat(toolResponseSpans).hasSize(1);
 
     String agentSpanId = agentSpan.getSpanContext().getSpanId();
+
     llmSpans.forEach(s -> assertEquals(agentSpanId, s.getParentSpanContext().getSpanId()));
     toolCallSpans.forEach(s -> assertEquals(agentSpanId, s.getParentSpanContext().getSpanId()));
     toolResponseSpans.forEach(s -> assertEquals(agentSpanId, s.getParentSpanContext().getSpanId()));

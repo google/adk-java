@@ -57,6 +57,9 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.reactivex.rxjava3.core.Completable;
@@ -1186,6 +1189,53 @@ public final class RunnerTest {
     runner.close().blockingAwait();
 
     verify(plugin).close();
+  }
+
+  @Test
+  public void runAsync_contextPropagation() {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+
+    List<Event> events;
+    try (Scope scope = testContext.makeCurrent()) {
+      events =
+          runner
+              .runAsync("user", session.id(), createContent("test message"))
+              .doOnNext(
+                  event -> {
+                    assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+                  })
+              .toList()
+              .blockingGet();
+    }
+
+    assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void runLive_contextPropagation() throws Exception {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber;
+    try (Scope scope = testContext.makeCurrent()) {
+      testSubscriber =
+          runner
+              .runLive(session, liveRequestQueue, RunConfig.builder().build())
+              .doOnNext(
+                  event -> {
+                    assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+                  })
+              .test();
+    }
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
   }
 
   @Test
