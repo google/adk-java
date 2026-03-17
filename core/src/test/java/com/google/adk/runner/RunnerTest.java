@@ -36,6 +36,7 @@ import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
+import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmResponse;
@@ -52,6 +53,7 @@ import com.google.adk.tools.FunctionTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -65,6 +67,7 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
 import java.util.Objects;
@@ -641,6 +644,121 @@ public final class RunnerTest {
             .getSession("test", "user", session.id(), Optional.empty())
             .blockingGet();
     assertThat(finalSession.state()).containsAtLeastEntriesIn(stateDelta);
+  }
+
+  @Test
+  public void runAsync_withSaveInputBlobsAsArtifactsTrue_savesBlobsAndReplacesContent() {
+    BaseArtifactService mockArtifactService = mock(BaseArtifactService.class);
+    when(mockArtifactService.saveArtifact(any(), any(), any(), any(), any()))
+        .thenReturn(Single.just(1));
+
+    Runner runnerWithMockService =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .artifactService(mockArtifactService)
+            .build();
+    Session localSession =
+        runnerWithMockService.sessionService().createSession("test", "user").blockingGet();
+
+    Content userContent =
+        Content.builder()
+            .role("user")
+            .parts(
+                Part.fromText("text part"),
+                Part.builder()
+                    .inlineData(
+                        Blob.builder().mimeType("image/png").data(new byte[] {1, 2, 3}).build())
+                    .build())
+            .build();
+
+    var events =
+        runnerWithMockService
+            .runAsync(
+                "user",
+                localSession.id(),
+                userContent,
+                RunConfig.builder().setSaveInputBlobsAsArtifacts(true).build())
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+
+    Session finalSession =
+        runnerWithMockService
+            .sessionService()
+            .getSession("test", "user", localSession.id(), Optional.empty())
+            .blockingGet();
+
+    Event savedEvent = finalSession.events().get(0);
+    assertThat(savedEvent.author()).isEqualTo("user");
+    List<Part> parts = savedEvent.content().get().parts().get();
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).text()).hasValue("text part");
+    assertThat(parts.get(1).text().get()).startsWith("Uploaded file: artifact_");
+    assertThat(parts.get(1).inlineData()).isEmpty();
+
+    verify(mockArtifactService).saveArtifact(any(), any(), any(), any(), any());
+  }
+
+  @Test
+  public void runAsync_withSaveInputBlobsAsArtifactsFalse_doesNotModifyContent() {
+    BaseArtifactService mockArtifactService = mock(BaseArtifactService.class);
+
+    Runner runnerWithMockService =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .artifactService(mockArtifactService)
+            .build();
+    Session localSession =
+        runnerWithMockService.sessionService().createSession("test", "user").blockingGet();
+
+    Content userContent =
+        Content.builder()
+            .role("user")
+            .parts(
+                Part.fromText("text part"),
+                Part.builder()
+                    .inlineData(
+                        Blob.builder().mimeType("image/png").data(new byte[] {1, 2, 3}).build())
+                    .build())
+            .build();
+
+    var events =
+        runnerWithMockService
+            .runAsync(
+                "user",
+                localSession.id(),
+                userContent,
+                RunConfig.builder().setSaveInputBlobsAsArtifacts(false).build())
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+
+    Session finalSession =
+        runnerWithMockService
+            .sessionService()
+            .getSession("test", "user", localSession.id(), Optional.empty())
+            .blockingGet();
+
+    Event savedEvent = finalSession.events().get(0);
+    assertThat(savedEvent.author()).isEqualTo("user");
+    List<Part> parts = savedEvent.content().get().parts().get();
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).text()).hasValue("text part");
+    assertThat(parts.get(1).inlineData().get().mimeType()).hasValue("image/png");
+
+    verify(mockArtifactService, never()).saveArtifact(any(), any(), any(), any(), any());
   }
 
   @Test
