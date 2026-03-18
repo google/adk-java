@@ -287,8 +287,14 @@ public class EventActions extends JsonBaseModel {
 
     @CanIgnoreReturnValue
     @JsonProperty("stateDelta")
-    public Builder stateDelta(ConcurrentMap<String, Object> value) {
-      this.stateDelta = value;
+    public Builder stateDelta(@Nullable Map<String, Object> value) {
+      if (value == null) {
+        this.stateDelta = new ConcurrentHashMap<>();
+      } else if (value instanceof ConcurrentMap) {
+        this.stateDelta = (ConcurrentMap<String, Object>) value;
+      } else {
+        this.stateDelta = new ConcurrentHashMap<>(value);
+      }
       return this;
     }
 
