@@ -25,11 +25,9 @@ import com.google.adk.agents.Callbacks.OnModelErrorCallback;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequest;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.agents.RunConfig.StreamingMode;
 import com.google.adk.events.Event;
 import com.google.adk.flows.BaseFlow;
-import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.BaseLlmConnection;
@@ -38,7 +36,6 @@ import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.telemetry.Tracing;
-import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.FunctionResponse;
@@ -96,20 +93,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
     Context currentContext = Context.current();
     LlmAgent agent = (LlmAgent) context.agent();
 
-    RequestProcessor toolsProcessor =
-        (ctx, req) -> {
-          LlmRequest.Builder builder = req.toBuilder();
-          return agent
-              .canonicalTools(new ReadonlyContext(ctx))
-              .concatMapCompletable(
-                  tool -> tool.processLlmRequest(builder, ToolContext.builder(ctx).build()))
-              .andThen(
-                  Single.fromCallable(
-                      () -> RequestProcessingResult.create(builder.build(), ImmutableList.of())));
-        };
-
     Iterable<RequestProcessor> allProcessors =
-        Iterables.concat(requestProcessors, ImmutableList.of(toolsProcessor));
+        Iterables.concat(requestProcessors, ImmutableList.of(agent.getRequestProcessorFromTools()));
 
     return Flowable.fromIterable(allProcessors)
         .concatMap(

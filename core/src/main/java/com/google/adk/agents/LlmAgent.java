@@ -47,12 +47,16 @@ import com.google.adk.codeexecutors.BaseCodeExecutor;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.AutoFlow;
 import com.google.adk.flows.llmflows.BaseLlmFlow;
+import com.google.adk.flows.llmflows.RequestProcessor;
+import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.flows.llmflows.SingleFlow;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmRegistry;
+import com.google.adk.models.LlmRequest;
 import com.google.adk.models.Model;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
+import com.google.adk.tools.ToolContext;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -70,6 +74,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executor;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import javax.annotation.Nullable;
 import org.slf4j.Logger;
@@ -768,6 +773,45 @@ public class LlmAgent extends BaseAgent {
       }
     }
     return Flowable.concat(toolFlowables);
+  }
+
+  /**
+   * Constructs a {@link RequestProcessor} that sequentially applies the {@code processLlmRequest}
+   * methods of all tools and toolsets associated with this agent to the incoming {@link
+   * LlmRequest}.
+   *
+   * @return A {@link RequestProcessor} that applies tool-specific modifications to LLM requests.
+   */
+  public RequestProcessor getRequestProcessorFromTools() {
+    return (context, request) -> {
+      ReadonlyContext readonlyContext = new ReadonlyContext(context);
+      List<BiFunction<LlmRequest.Builder, ToolContext, Completable>> processors = new ArrayList<>();
+
+      for (Object toolOrToolset : toolsUnion()) {
+        if (toolOrToolset instanceof BaseTool baseTool) {
+          processors.add(baseTool::processLlmRequest);
+        } else if (toolOrToolset instanceof BaseToolset baseToolset) {
+          processors.add(
+              (builder, ctx) ->
+                  baseToolset
+                      .processLlmRequest(builder, ctx)
+                      .andThen(baseToolset.getTools(readonlyContext))
+                      .concatMapCompletable(b -> b.processLlmRequest(builder, ctx)));
+        } else {
+          throw new IllegalArgumentException(
+              "Object in tools list is not of a supported type: "
+                  + toolOrToolset.getClass().getName());
+        }
+      }
+
+      LlmRequest.Builder builder = request.toBuilder();
+      ToolContext toolContext = ToolContext.builder(context).build();
+      return Flowable.fromIterable(processors)
+          .concatMapCompletable(f -> f.apply(builder, toolContext))
+          .andThen(
+              Single.fromCallable(
+                  () -> RequestProcessingResult.create(builder.build(), ImmutableList.of())));
+    };
   }
 
   public Instruction instruction() {

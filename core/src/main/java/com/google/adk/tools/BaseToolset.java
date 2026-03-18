@@ -17,12 +17,23 @@
 package com.google.adk.tools;
 
 import com.google.adk.agents.ReadonlyContext;
+import com.google.adk.models.LlmRequest;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
+import java.util.Optional;
 import javax.annotation.Nullable;
 
 /** Base interface for toolsets. */
 public interface BaseToolset extends AutoCloseable {
+
+  /** Processes the outgoing {@link LlmRequest.Builder}. */
+  @CanIgnoreReturnValue
+  default Completable processLlmRequest(
+      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+    return Completable.complete();
+  }
 
   /**
    * Return all tools in the toolset based on the provided context.
