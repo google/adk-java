@@ -597,6 +597,19 @@ public final class RunnerTest {
   }
 
   @Test
+  public void toBuilder_success() {
+    Runner newRunner = runner.toBuilder().appName("new_app").build();
+
+    assertThat(newRunner.appName()).isEqualTo("new_app");
+    assertThat(newRunner.agent()).isEqualTo(runner.agent());
+    assertThat(newRunner.artifactService()).isEqualTo(runner.artifactService());
+    assertThat(newRunner.sessionService()).isEqualTo(runner.sessionService());
+    assertThat(newRunner.memoryService()).isEqualTo(runner.memoryService());
+    assertThat(newRunner.pluginManager().getPlugins())
+        .containsExactlyElementsIn(runner.pluginManager().getPlugins());
+  }
+
+  @Test
   public void runAsync_withStateDelta_mergesStateIntoSession() {
     ImmutableMap<String, Object> stateDelta = ImmutableMap.of("key1", "value1", "key2", 42);
 

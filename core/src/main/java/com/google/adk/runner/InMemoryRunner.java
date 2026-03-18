@@ -17,7 +17,9 @@
 package com.google.adk.runner;
 
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.apps.App;
 import com.google.adk.artifacts.InMemoryArtifactService;
+import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.sessions.InMemorySessionService;
@@ -38,12 +40,14 @@ public class InMemoryRunner extends Runner {
   }
 
   public InMemoryRunner(BaseAgent agent, String appName, List<? extends Plugin> plugins) {
-    super(
-        agent,
-        appName,
-        new InMemoryArtifactService(),
-        new InMemorySessionService(),
-        new InMemoryMemoryService(),
-        plugins);
+    this(App.builder().rootAgent(agent).name(appName).plugins(plugins).build());
+  }
+
+  public InMemoryRunner(App app) {
+    this(app, new InMemoryMemoryService());
+  }
+
+  public InMemoryRunner(App app, BaseMemoryService memoryService) {
+    super(app, new InMemoryArtifactService(), new InMemorySessionService(), memoryService);
   }
 }

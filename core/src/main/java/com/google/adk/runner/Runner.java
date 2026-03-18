@@ -68,43 +68,44 @@ import javax.annotation.Nullable;
 
 /** The main class for the GenAI Agents runner. */
 public class Runner {
-  private final BaseAgent agent;
-  private final String appName;
+  private final App app;
   private final BaseArtifactService artifactService;
   private final BaseSessionService sessionService;
   @Nullable private final BaseMemoryService memoryService;
   private final PluginManager pluginManager;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
-  @Nullable private final ContextCacheConfig contextCacheConfig;
 
   /** Builder for {@link Runner}. */
   public static class Builder {
-    private App app;
-    private BaseAgent agent;
-    private String appName;
+    private App.Builder appBuilder = App.builder();
     private BaseArtifactService artifactService = new InMemoryArtifactService();
     private BaseSessionService sessionService = new InMemorySessionService();
     @Nullable private BaseMemoryService memoryService = null;
-    private List<? extends Plugin> plugins = ImmutableList.of();
+
+    private Builder() {}
+
+    private Builder(Runner runner) {
+      this.appBuilder = runner.app().toBuilder();
+      this.artifactService = runner.artifactService();
+      this.sessionService = runner.sessionService();
+      this.memoryService = runner.memoryService();
+    }
 
     @CanIgnoreReturnValue
     public Builder app(App app) {
-      Preconditions.checkState(this.agent == null, "app() cannot be called when agent() is set.");
-      this.app = app;
+      this.appBuilder = app.toBuilder();
       return this;
     }
 
     @CanIgnoreReturnValue
     public Builder agent(BaseAgent agent) {
-      Preconditions.checkState(this.app == null, "agent() cannot be called when app is set.");
-      this.agent = agent;
+      this.appBuilder.rootAgent(agent);
       return this;
     }
 
     @CanIgnoreReturnValue
     public Builder appName(String appName) {
-      Preconditions.checkState(this.app == null, "appName() cannot be called when app is set.");
-      this.appName = appName;
+      this.appBuilder.name(appName);
       return this;
     }
 
@@ -128,66 +129,26 @@ public class Runner {
 
     @CanIgnoreReturnValue
     public Builder plugins(List<? extends Plugin> plugins) {
-      Preconditions.checkState(this.app == null, "plugins() cannot be called when app is set.");
-      this.plugins = plugins;
+      this.appBuilder.plugins(plugins);
       return this;
     }
 
     @CanIgnoreReturnValue
     public Builder plugins(Plugin... plugins) {
-      Preconditions.checkState(this.app == null, "plugins() cannot be called when app is set.");
-      this.plugins = ImmutableList.copyOf(plugins);
+      this.appBuilder.plugins(plugins);
       return this;
     }
 
     public Runner build() {
-      BaseAgent buildAgent;
-      String buildAppName;
-      List<? extends Plugin> buildPlugins;
-      EventsCompactionConfig buildEventsCompactionConfig;
-      ContextCacheConfig buildContextCacheConfig;
+      App app = this.appBuilder.build();
 
-      if (this.app != null) {
-        if (this.agent != null) {
-          throw new IllegalStateException("agent() cannot be called when app() is called.");
-        }
-        if (!this.plugins.isEmpty()) {
-          throw new IllegalStateException("plugins() cannot be called when app() is called.");
-        }
-        buildAgent = this.app.rootAgent();
-        buildPlugins = this.app.plugins();
-        buildAppName = this.appName == null ? this.app.name() : this.appName;
-        buildEventsCompactionConfig = this.app.eventsCompactionConfig();
-        buildContextCacheConfig = this.app.contextCacheConfig();
-      } else {
-        buildAgent = this.agent;
-        buildAppName = this.appName;
-        buildPlugins = this.plugins;
-        buildEventsCompactionConfig = null;
-        buildContextCacheConfig = null;
-      }
-
-      if (buildAgent == null) {
-        throw new IllegalStateException("Agent must be provided via app() or agent().");
-      }
-      if (buildAppName == null) {
-        throw new IllegalStateException("App name must be provided via app() or appName().");
-      }
       if (artifactService == null) {
         throw new IllegalStateException("Artifact service must be provided.");
       }
       if (sessionService == null) {
         throw new IllegalStateException("Session service must be provided.");
       }
-      return new Runner(
-          buildAgent,
-          buildAppName,
-          artifactService,
-          sessionService,
-          memoryService,
-          buildPlugins,
-          buildEventsCompactionConfig,
-          buildContextCacheConfig);
+      return new Runner(app, artifactService, sessionService, memoryService);
     }
   }
 
@@ -207,7 +168,11 @@ public class Runner {
       BaseArtifactService artifactService,
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService) {
-    this(agent, appName, artifactService, sessionService, memoryService, ImmutableList.of());
+    this(
+        App.builder().rootAgent(agent).name(appName).build(),
+        artifactService,
+        sessionService,
+        memoryService);
   }
 
   /**
@@ -223,7 +188,11 @@ public class Runner {
       BaseSessionService sessionService,
       @Nullable BaseMemoryService memoryService,
       List<? extends Plugin> plugins) {
-    this(agent, appName, artifactService, sessionService, memoryService, plugins, null, null);
+    this(
+        App.builder().rootAgent(agent).name(appName).plugins(plugins).build(),
+        artifactService,
+        sessionService,
+        memoryService);
   }
 
   /**
@@ -233,22 +202,17 @@ public class Runner {
    */
   @Deprecated
   protected Runner(
-      BaseAgent agent,
-      String appName,
+      App app,
       BaseArtifactService artifactService,
       BaseSessionService sessionService,
-      @Nullable BaseMemoryService memoryService,
-      List<? extends Plugin> plugins,
-      @Nullable EventsCompactionConfig eventsCompactionConfig,
-      @Nullable ContextCacheConfig contextCacheConfig) {
-    this.agent = agent;
-    this.appName = appName;
+      @Nullable BaseMemoryService memoryService) {
+    this.app = app;
     this.artifactService = artifactService;
     this.sessionService = sessionService;
     this.memoryService = memoryService;
-    this.pluginManager = new PluginManager(plugins);
-    this.eventsCompactionConfig = createEventsCompactionConfig(agent, eventsCompactionConfig);
-    this.contextCacheConfig = contextCacheConfig;
+    this.pluginManager = new PluginManager(app.plugins());
+    this.eventsCompactionConfig =
+        createEventsCompactionConfig(app.rootAgent(), app.eventsCompactionConfig());
   }
 
   /**
@@ -265,12 +229,16 @@ public class Runner {
     this(agent, appName, artifactService, sessionService, null);
   }
 
+  public App app() {
+    return this.app;
+  }
+
   public BaseAgent agent() {
-    return this.agent;
+    return this.app.rootAgent();
   }
 
   public String appName() {
-    return this.appName;
+    return this.app.name();
   }
 
   public BaseArtifactService artifactService() {
@@ -290,10 +258,24 @@ public class Runner {
     return this.pluginManager;
   }
 
+  @Nullable
+  public EventsCompactionConfig eventsCompactionConfig() {
+    return this.eventsCompactionConfig;
+  }
+
+  @Nullable
+  public ContextCacheConfig contextCacheConfig() {
+    return this.app.contextCacheConfig();
+  }
+
+  public Builder toBuilder() {
+    return new Builder(this);
+  }
+
   /** Closes all plugins, code executors, and releases any resources. */
   public Completable close() {
     List<Completable> completables = new ArrayList<>();
-    completables.add(agent.close());
+    completables.add(app.rootAgent().close());
     completables.add(this.pluginManager.close());
     return Completable.mergeDelayError(completables);
   }
@@ -326,7 +308,7 @@ public class Runner {
         saveArtifactsFlow =
             saveArtifactsFlow.andThen(
                 this.artifactService
-                    .saveArtifact(this.appName, session.userId(), session.id(), fileName, part)
+                    .saveArtifact(this.app.name(), session.userId(), session.id(), fileName, part)
                     .ignoreElement());
 
         newMessage
@@ -383,13 +365,13 @@ public class Runner {
     return Flowable.defer(
             () ->
                 this.sessionService
-                    .getSession(appName, userId, sessionId, Optional.empty())
+                    .getSession(this.app.name(), userId, sessionId, Optional.empty())
                     .switchIfEmpty(
                         Single.defer(
                             () -> {
                               if (runConfig.autoCreateSession()) {
                                 return this.sessionService.createSession(
-                                    appName, userId, (Map<String, Object>) null, sessionId);
+                                    this.app.name(), userId, (Map<String, Object>) null, sessionId);
                               }
                               return Single.error(
                                   new IllegalArgumentException(
@@ -475,7 +457,7 @@ public class Runner {
     Context capturedContext = Context.current();
     return Flowable.defer(
             () -> {
-              BaseAgent rootAgent = this.agent;
+              BaseAgent rootAgent = this.app.rootAgent();
               String invocationId = InvocationContext.newInvocationContextId();
 
               // Create initial context
@@ -634,7 +616,7 @@ public class Runner {
   }
 
   private InvocationContext.Builder newInvocationContextBuilder(Session session) {
-    BaseAgent rootAgent = this.agent;
+    BaseAgent rootAgent = this.app.rootAgent();
     return InvocationContext.builder()
         .sessionService(this.sessionService)
         .artifactService(this.artifactService)
@@ -643,7 +625,7 @@ public class Runner {
         .agent(rootAgent)
         .session(session)
         .eventsCompactionConfig(this.eventsCompactionConfig)
-        .contextCacheConfig(this.contextCacheConfig)
+        .contextCacheConfig(this.app.contextCacheConfig())
         .agent(this.findAgentToRun(session, rootAgent));
   }
 
@@ -663,13 +645,13 @@ public class Runner {
     return Flowable.defer(
             () ->
                 this.sessionService
-                    .getSession(appName, userId, sessionId, Optional.empty())
+                    .getSession(this.app.name(), userId, sessionId, Optional.empty())
                     .switchIfEmpty(
                         Single.defer(
                             () -> {
                               if (runConfig.autoCreateSession()) {
                                 return this.sessionService.createSession(
-                                    appName, userId, (Map<String, Object>) null, sessionId);
+                                    this.app.name(), userId, (Map<String, Object>) null, sessionId);
                               }
                               return Single.error(
                                   new IllegalArgumentException(

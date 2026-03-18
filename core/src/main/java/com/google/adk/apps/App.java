@@ -78,6 +78,10 @@ public class App {
     return contextCacheConfig;
   }
 
+  public Builder toBuilder() {
+    return new Builder(this);
+  }
+
   /** Builder for {@link App}. */
   public static class Builder {
     private String name;
@@ -85,6 +89,16 @@ public class App {
     private List<? extends Plugin> plugins = ImmutableList.of();
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
     @Nullable private ContextCacheConfig contextCacheConfig;
+
+    private Builder() {}
+
+    private Builder(App app) {
+      this.name = app.name;
+      this.rootAgent = app.rootAgent;
+      this.plugins = app.plugins;
+      this.eventsCompactionConfig = app.eventsCompactionConfig;
+      this.contextCacheConfig = app.contextCacheConfig;
+    }
 
     @CanIgnoreReturnValue
     public Builder name(String name) {
