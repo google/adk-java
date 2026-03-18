@@ -49,7 +49,7 @@
          cloud libraries. Once they update their otel dependencies we
          can consider updating ours here as well -->
     <otel.version>1.51.0</otel.version>
-    <mcp.version>0.14.0</mcp.version>
+    <mcp.version>0.17.2</mcp.version>
     <errorprone.version>2.47.0</errorprone.version>
     <google.genai.version>1.41.0</google.genai.version>
     <protobuf.version>4.33.5</protobuf.version>
@@ -73,6 +73,8 @@
     <anthropic.version>2.15.0</anthropic.version>
     <maven-plugin-tools.version>3.9.0</maven-plugin-tools.version>
     <httpclient5.version>5.6</httpclient5.version>
+    <netty.version>4.1.118.Final</netty.version>
+    <surefire.argLine>@{jacoco.agent.argLine} --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED -Dio.netty.tryReflectionSetAccessible=true</surefire.argLine>
   </properties>
 
   <dependencyManagement>
@@ -82,6 +84,13 @@
         <groupId>com.fasterxml.jackson</groupId>
         <artifactId>jackson-bom</artifactId>
         <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-bom</artifactId>
+        <version>${netty.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -338,6 +347,8 @@
             </dependency>
           </dependencies>
           <configuration>
+            <!-- The add-opens are required for classes using Netty, often brought in by gRPC or Apache Arrow. -->
+            <argLine>${surefire.argLine}</argLine>
             <reportFormat>plain</reportFormat>
             <statelessTestsetInfoReporter implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter"/>
             <includes>

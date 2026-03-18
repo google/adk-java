@@ -21,11 +21,13 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
+import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -126,6 +128,7 @@ public class PluginManager extends BasePlugin {
 
   @Override
   public Completable afterRunCallback(InvocationContext invocationContext) {
+    Context capturedContext = Context.current();
     return Flowable.fromIterable(plugins)
         .concatMapCompletable(
             plugin ->
@@ -136,11 +139,13 @@ public class PluginManager extends BasePlugin {
                             logger.error(
                                 "[{}] Error during callback 'afterRunCallback'",
                                 plugin.getName(),
-                                e)));
+                                e)))
+        .compose(Tracing.withContext(capturedContext));
   }
 
   @Override
   public Completable close() {
+    Context capturedContext = Context.current();
     return Flowable.fromIterable(plugins)
         .concatMapCompletableDelayError(
             plugin ->
@@ -149,7 +154,8 @@ public class PluginManager extends BasePlugin {
                     .doOnError(
                         e ->
                             logger.error(
-                                "[{}] Error during callback 'close'", plugin.getName(), e)));
+                                "[{}] Error during callback 'close'", plugin.getName(), e)))
+        .compose(Tracing.withContext(capturedContext));
   }
 
   @Override
@@ -227,7 +233,7 @@ public class PluginManager extends BasePlugin {
    */
   private <T> Maybe<T> runMaybeCallbacks(
       Function<Plugin, Maybe<T>> callbackExecutor, String callbackName) {
-
+    Context capturedContext = Context.current();
     return Flowable.fromIterable(this.plugins)
         .concatMapMaybe(
             plugin ->
@@ -247,6 +253,7 @@ public class PluginManager extends BasePlugin {
                                 plugin.getName(),
                                 callbackName,
                                 e)))
-        .firstElement();
+        .firstElement()
+        .compose(Tracing.withContext(capturedContext));
   }
 }

@@ -57,6 +57,9 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.reactivex.rxjava3.core.Completable;
@@ -978,6 +981,84 @@ public final class RunnerTest {
   }
 
   @Test
+  public void runAsync_createsToolSpansWithCorrectParent() {
+    LlmAgent agentWithTool =
+        createTestAgentBuilder(testLlmWithFunctionCall).tools(ImmutableList.of(echoTool)).build();
+    Runner runnerWithTool =
+        Runner.builder().app(App.builder().name("test").rootAgent(agentWithTool).build()).build();
+    Session sessionWithTool =
+        runnerWithTool.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        runnerWithTool
+            .runAsync(
+                sessionWithTool.sessionKey(),
+                createContent("from user"),
+                RunConfig.builder().build())
+            .toList()
+            .blockingGet();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    List<SpanData> llmSpans = spans.stream().filter(s -> s.getName().equals("call_llm")).toList();
+    List<SpanData> toolCallSpans =
+        spans.stream().filter(s -> s.getName().equals("tool_call [echo_tool]")).toList();
+    List<SpanData> toolResponseSpans =
+        spans.stream().filter(s -> s.getName().equals("tool_response [echo_tool]")).toList();
+
+    assertThat(llmSpans).hasSize(2);
+    assertThat(toolCallSpans).hasSize(1);
+    assertThat(toolResponseSpans).hasSize(1);
+
+    List<String> llmSpanIds = llmSpans.stream().map(s -> s.getSpanContext().getSpanId()).toList();
+    String toolCallParentId = toolCallSpans.get(0).getParentSpanContext().getSpanId();
+    String toolResponseParentId = toolResponseSpans.get(0).getParentSpanContext().getSpanId();
+
+    assertThat(toolCallParentId).isEqualTo(toolResponseParentId);
+    assertThat(llmSpanIds).contains(toolCallParentId);
+  }
+
+  @Test
+  public void runLive_createsToolSpansWithCorrectParent() throws Exception {
+    LlmAgent agentWithTool =
+        createTestAgentBuilder(testLlmWithFunctionCall).tools(ImmutableList.of(echoTool)).build();
+    Runner runnerWithTool =
+        Runner.builder().app(App.builder().name("test").rootAgent(agentWithTool).build()).build();
+    Session sessionWithTool =
+        runnerWithTool.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runnerWithTool
+            .runLive(sessionWithTool.sessionKey(), liveRequestQueue, RunConfig.builder().build())
+            .test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    List<SpanData> llmSpans = spans.stream().filter(s -> s.getName().equals("call_llm")).toList();
+    List<SpanData> toolCallSpans =
+        spans.stream().filter(s -> s.getName().equals("tool_call [echo_tool]")).toList();
+    List<SpanData> toolResponseSpans =
+        spans.stream().filter(s -> s.getName().equals("tool_response [echo_tool]")).toList();
+
+    // In runLive, there is one call_llm span for the execution
+    assertThat(llmSpans).hasSize(1);
+    assertThat(toolCallSpans).hasSize(1);
+    assertThat(toolResponseSpans).hasSize(1);
+
+    List<String> llmSpanIds = llmSpans.stream().map(s -> s.getSpanContext().getSpanId()).toList();
+    String toolCallParentId = toolCallSpans.get(0).getParentSpanContext().getSpanId();
+    String toolResponseParentId = toolResponseSpans.get(0).getParentSpanContext().getSpanId();
+
+    assertThat(toolCallParentId).isEqualTo(toolResponseParentId);
+    assertThat(llmSpanIds).contains(toolCallParentId);
+  }
+
+  @Test
   public void runAsync_withoutSessionAndAutoCreateSessionTrue_createsSession() {
     RunConfig runConfig = RunConfig.builder().setAutoCreateSession(true).build();
     String newSessionId = UUID.randomUUID().toString();
@@ -1186,6 +1267,53 @@ public final class RunnerTest {
     runner.close().blockingAwait();
 
     verify(plugin).close();
+  }
+
+  @Test
+  public void runAsync_contextPropagation() {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+
+    List<Event> events;
+    try (Scope scope = testContext.makeCurrent()) {
+      events =
+          runner
+              .runAsync("user", session.id(), createContent("test message"))
+              .doOnNext(
+                  event -> {
+                    assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+                  })
+              .toList()
+              .blockingGet();
+    }
+
+    assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void runLive_contextPropagation() throws Exception {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber;
+    try (Scope scope = testContext.makeCurrent()) {
+      testSubscriber =
+          runner
+              .runLive(session, liveRequestQueue, RunConfig.builder().build())
+              .doOnNext(
+                  event -> {
+                    assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+                  })
+              .test();
+    }
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
   }
 
   @Test

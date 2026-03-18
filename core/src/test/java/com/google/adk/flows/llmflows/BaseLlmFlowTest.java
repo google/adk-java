@@ -43,9 +43,13 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -573,6 +577,71 @@ public final class BaseLlmFlowTest {
   }
 
   @Test
+  public void run_contextPropagation() {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+
+    Content content = Content.fromParts(Part.fromText("LLM response"));
+    TestLlm testLlm = createTestLlm(createLlmResponse(content));
+
+    RequestProcessor requestProcessor =
+        (ctx, request) -> {
+          return Single.just(RequestProcessingResult.create(request, ImmutableList.of()))
+              .subscribeOn(Schedulers.computation());
+        };
+
+    ResponseProcessor responseProcessor =
+        (ctx, response) -> {
+          return Single.just(ResponseProcessingResult.create(response, ImmutableList.of()))
+              .subscribeOn(Schedulers.computation());
+        };
+
+    Callbacks.BeforeModelCallback beforeCallback =
+        (ctx, req) -> {
+          return Maybe.<LlmResponse>empty().subscribeOn(Schedulers.computation());
+        };
+
+    Callbacks.AfterModelCallback afterCallback =
+        (ctx, resp) -> {
+          return Maybe.just(resp).subscribeOn(Schedulers.computation());
+        };
+
+    Callbacks.OnModelErrorCallback onErrorCallback =
+        (ctx, req, err) -> {
+          return Maybe.just(
+                  LlmResponse.builder().content(Content.fromParts(Part.fromText("error"))).build())
+              .subscribeOn(Schedulers.computation());
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm)
+                .beforeModelCallback(beforeCallback)
+                .afterModelCallback(afterCallback)
+                .onModelErrorCallback(onErrorCallback)
+                .build());
+
+    BaseLlmFlow baseLlmFlow =
+        createBaseLlmFlow(ImmutableList.of(requestProcessor), ImmutableList.of(responseProcessor));
+
+    List<Event> events;
+    try (Scope scope = testContext.makeCurrent()) {
+      events =
+          baseLlmFlow
+              .run(invocationContext)
+              .doOnNext(
+                  event -> {
+                    assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+                  })
+              .toList()
+              .blockingGet();
+    }
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).content()).hasValue(content);
+  }
+
+  @Test
   public void postprocess_noResponseProcessors_onlyUsageMetadata_returnsEvent() {
     GenerateContentResponseUsageMetadata usageMetadata =
         createGenerateContentResponseUsageMetadata().build();
@@ -588,7 +657,12 @@ public final class BaseLlmFlowTest {
 
     List<Event> events =
         baseLlmFlow
-            .postprocess(invocationContext, baseEvent, LlmRequest.builder().build(), llmResponse)
+            .postprocess(
+                invocationContext,
+                baseEvent,
+                LlmRequest.builder().build(),
+                llmResponse,
+                Context.current())
             .toList()
             .blockingGet();
 

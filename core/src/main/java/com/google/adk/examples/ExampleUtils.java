@@ -64,6 +64,9 @@ public final class ExampleUtils {
    * @return string representation of the examples block.
    */
   private static String convertExamplesToText(List<Example> examples) {
+    if (examples.isEmpty()) {
+      return "";
+    }
     StringBuilder examplesStr = new StringBuilder();
 
     // super header

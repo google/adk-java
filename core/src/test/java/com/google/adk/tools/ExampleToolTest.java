@@ -305,4 +305,30 @@ public final class ExampleToolTest {
 
     private WrongTypeProviderHolder() {}
   }
+
+  @Test
+  public void declaration_isEmpty() {
+    ExampleTool tool = ExampleTool.builder().build();
+    assertThat(tool.declaration().isPresent()).isFalse();
+  }
+
+  @Test
+  public void processLlmRequest_doesNotAddFunctionDeclarations() {
+    ExampleTool tool = ExampleTool.builder().addExample(makeExample("qin", "qout")).build();
+    InvocationContext ctx = buildInvocationContext();
+    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
+
+    tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
+    LlmRequest updated = builder.build();
+
+    if (updated.config().isPresent()) {
+      var config = updated.config().get();
+      if (config.tools().isPresent()) {
+        var tools = config.tools().get();
+        boolean hasFunctionDeclarations =
+            tools.stream().anyMatch(t -> t.functionDeclarations().isPresent());
+        assertThat(hasFunctionDeclarations).isFalse();
+      }
+    }
+  }
 }
