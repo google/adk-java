@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import io.reactivex.rxjava3.core.Single;
+import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -246,5 +247,52 @@ public final class InMemorySessionServiceTest {
             .blockingGet();
     assertThat(retrievedSession.state()).doesNotContainKey("temp:agent1_output");
     assertThat(retrievedSession.state()).containsEntry("temp:agent2_output", "processed_data");
+  }
+
+  @Test
+  public void deleteSession_cleansUpEmptyParentMaps() throws Exception {
+    InMemorySessionService sessionService = new InMemorySessionService();
+
+    Session session = sessionService.createSession("app-name", "user-id").blockingGet();
+
+    sessionService.deleteSession(session.appName(), session.userId(), session.id()).blockingAwait();
+
+    // Use reflection to access the private 'sessions' field
+    Field field = InMemorySessionService.class.getDeclaredField("sessions");
+    field.setAccessible(true);
+    ConcurrentMap<?, ?> sessions = (ConcurrentMap<?, ?>) field.get(sessionService);
+
+    // After deleting the only session for "user-id" under "app-name",
+    // both the userId map and the appName map should have been removed
+    assertThat(sessions).isEmpty();
+  }
+
+  @Test
+  public void deleteSession_doesNotRemoveUserMapWhenOtherSessionsExist() throws Exception {
+    InMemorySessionService sessionService = new InMemorySessionService();
+
+    Session session1 = sessionService.createSession("app-name", "user-id").blockingGet();
+    Session session2 = sessionService.createSession("app-name", "user-id").blockingGet();
+
+    // Delete only one of the two sessions
+    sessionService.deleteSession(session1.appName(), session1.userId(), session1.id()).blockingAwait();
+
+    // session2 should still be retrievable
+    assertThat(
+            sessionService
+                .getSession(session2.appName(), session2.userId(), session2.id(), Optional.empty())
+                .blockingGet())
+        .isNotNull();
+
+    // The userId entry should still exist (not pruned) because session2 remains
+    Field field = InMemorySessionService.class.getDeclaredField("sessions");
+    field.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    ConcurrentMap<String, ConcurrentMap<String, ConcurrentMap<String, ?>>> sessions =
+        (ConcurrentMap<String, ConcurrentMap<String, ConcurrentMap<String, ?>>>) field.get(sessionService);
+
+    assertThat(sessions.get("app-name")).isNotNull();
+    assertThat(sessions.get("app-name").get("user-id")).isNotNull();
+    assertThat(sessions.get("app-name").get("user-id")).hasSize(1);
   }
 }
