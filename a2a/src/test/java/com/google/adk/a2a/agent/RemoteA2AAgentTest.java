@@ -114,6 +114,20 @@ public final class RemoteA2AAgentTest {
   }
 
   @Test
+  public void createAgent_streaming_false_returnsNonStreamingAgent() {
+    // With streaming false, the agent should not stream even if the AgentCard supports streaming.
+    RemoteA2AAgent agent = getAgentBuilder().streaming(false).build();
+    assertThat(agent.isStreaming()).isFalse();
+  }
+
+  @Test
+  public void createAgent_streaming_true_returnsStreamingAgent() {
+    // With streaming true, the agent should support streaming if the AgentCard supports streaming.
+    RemoteA2AAgent agent = getAgentBuilder().streaming(true).build();
+    assertThat(agent.isStreaming()).isTrue();
+  }
+
+  @Test
   public void runAsync_aggregatesPartialEvents() {
     RemoteA2AAgent agent = createAgent();
     mockStreamResponse(
@@ -763,7 +777,7 @@ public final class RemoteA2AAgentTest {
   }
 
   private RemoteA2AAgent createAgent() {
-    return getAgentBuilder().build();
+    return getAgentBuilder().streaming(true).build();
   }
 
   @SuppressWarnings("unchecked") // cast for Mockito
