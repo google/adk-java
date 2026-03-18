@@ -20,6 +20,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.adk.models.LlmRequest;
 import com.google.adk.tools.ToolContext;
+import com.google.adk.utils.ModelNameUtils;
 import com.google.cloud.aiplatform.v1.RagContexts;
 import com.google.cloud.aiplatform.v1.RagQuery;
 import com.google.cloud.aiplatform.v1.RetrieveContextsRequest;
@@ -105,10 +106,9 @@ public class VertexAiRagRetrieval extends BaseRetrievalTool {
   public Completable processLlmRequest(
       LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
     LlmRequest llmRequest = llmRequestBuilder.build();
-    // Use Gemini built-in Vertex AI RAG tool for Gemini 2 models or when using Vertex AI API Model
+    // Use Gemini built-in Vertex AI RAG tool for Gemini models when using Vertex AI API Model
     boolean useVertexAi = Boolean.parseBoolean(System.getenv("GOOGLE_GENAI_USE_VERTEXAI"));
-    if (useVertexAi
-        && (llmRequest.model().isPresent() && llmRequest.model().get().startsWith("gemini-2"))) {
+    if (useVertexAi && llmRequest.model().filter(ModelNameUtils::isGeminiModel).isPresent()) {
       GenerateContentConfig config =
           llmRequest.config().orElseGet(() -> GenerateContentConfig.builder().build());
       ImmutableList.Builder<Tool> toolsBuilder = ImmutableList.builder();

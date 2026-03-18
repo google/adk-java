@@ -22,6 +22,7 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Represents the current state of the computer environment.
@@ -31,11 +32,11 @@ import java.util.Optional;
  */
 public final class ComputerState {
   private final byte[] screenshot;
-  private final Optional<String> url;
+  private final @Nullable String url;
 
   @JsonCreator
   private ComputerState(
-      @JsonProperty("screenshot") byte[] screenshot, @JsonProperty("url") Optional<String> url) {
+      @JsonProperty("screenshot") byte[] screenshot, @JsonProperty("url") @Nullable String url) {
     this.screenshot = screenshot.clone();
     this.url = url;
   }
@@ -47,7 +48,7 @@ public final class ComputerState {
 
   @JsonProperty("url")
   public Optional<String> url() {
-    return url;
+    return Optional.ofNullable(url);
   }
 
   public static Builder builder() {
@@ -57,7 +58,7 @@ public final class ComputerState {
   /** Builder for {@link ComputerState}. */
   public static final class Builder {
     private byte[] screenshot;
-    private Optional<String> url = Optional.empty();
+    private @Nullable String url;
 
     @CanIgnoreReturnValue
     public Builder screenshot(byte[] screenshot) {
@@ -66,14 +67,8 @@ public final class ComputerState {
     }
 
     @CanIgnoreReturnValue
-    public Builder url(Optional<String> url) {
+    public Builder url(@Nullable String url) {
       this.url = url;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder url(String url) {
-      this.url = Optional.ofNullable(url);
       return this;
     }
 

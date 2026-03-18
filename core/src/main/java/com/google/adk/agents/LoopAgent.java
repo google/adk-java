@@ -21,7 +21,7 @@ import com.google.adk.events.Event;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
-import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,7 +34,7 @@ import org.slf4j.LoggerFactory;
 public class LoopAgent extends BaseAgent {
   private static final Logger logger = LoggerFactory.getLogger(LoopAgent.class);
 
-  private final Optional<Integer> maxIterations;
+  private final @Nullable Integer maxIterations;
 
   /**
    * Constructor for LoopAgent.
@@ -50,7 +50,7 @@ public class LoopAgent extends BaseAgent {
       String name,
       String description,
       List<? extends BaseAgent> subAgents,
-      Optional<Integer> maxIterations,
+      @Nullable Integer maxIterations,
       List<Callbacks.BeforeAgentCallback> beforeAgentCallback,
       List<Callbacks.AfterAgentCallback> afterAgentCallback) {
 
@@ -60,16 +60,10 @@ public class LoopAgent extends BaseAgent {
 
   /** Builder for {@link LoopAgent}. */
   public static class Builder extends BaseAgent.Builder<Builder> {
-    private Optional<Integer> maxIterations = Optional.empty();
+    private @Nullable Integer maxIterations;
 
     @CanIgnoreReturnValue
-    public Builder maxIterations(int maxIterations) {
-      this.maxIterations = Optional.of(maxIterations);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder maxIterations(Optional<Integer> maxIterations) {
+    public Builder maxIterations(@Nullable Integer maxIterations) {
       this.maxIterations = maxIterations;
       return this;
     }
@@ -124,7 +118,7 @@ public class LoopAgent extends BaseAgent {
 
     return Flowable.fromIterable(subAgents)
         .concatMap(subAgent -> subAgent.runAsync(invocationContext))
-        .repeat(maxIterations.orElse(Integer.MAX_VALUE))
+        .repeat(maxIterations != null ? maxIterations : Integer.MAX_VALUE)
         .takeUntil(LoopAgent::hasEscalateAction);
   }
 
@@ -136,5 +130,9 @@ public class LoopAgent extends BaseAgent {
 
   private static boolean hasEscalateAction(Event event) {
     return event.actions().escalate().orElse(false);
+  }
+
+  public @Nullable Integer maxIterations() {
+    return maxIterations;
   }
 }

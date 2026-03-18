@@ -30,7 +30,6 @@ import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Method;
 import java.util.Base64;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -128,10 +127,7 @@ public final class ComputerUseToolTest {
   public void testResultFormatting() throws NoSuchMethodException {
     byte[] screenshot = new byte[] {1, 2, 3};
     computerMock.nextState =
-        ComputerState.builder()
-            .screenshot(screenshot)
-            .url(Optional.of("https://example.com"))
-            .build();
+        ComputerState.builder().screenshot(screenshot).url("https://example.com").build();
 
     Method method = ComputerMock.class.getMethod("clickAt", int.class, int.class);
     ComputerUseTool tool =
@@ -226,8 +222,7 @@ public final class ComputerUseToolTest {
     public int lastY;
     public int lastDestX;
     public int lastDestY;
-    public ComputerState nextState =
-        ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build();
+    public ComputerState nextState = ComputerState.builder().screenshot(new byte[0]).build();
 
     public Single<ComputerState> clickAt(@Schema(name = "x") int x, @Schema(name = "y") int y) {
       this.lastX = x;

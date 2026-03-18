@@ -65,9 +65,7 @@ public class LoggingPluginTest {
       Event.builder()
           .id("event_id")
           .author("author")
-          .content(Optional.empty())
           .actions(EventActions.builder().build())
-          .longRunningToolIds(Optional.empty())
           .build();
   private final LlmRequest.Builder llmRequestBuilder =
       LlmRequest.builder().model("default").contents(ImmutableList.of());

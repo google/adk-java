@@ -208,7 +208,7 @@ public final class VertexAiRagRetrievalTest {
             "projects/test-project/locations/us-central1",
             ragResources,
             vectorDistanceThreshold);
-    LlmRequest.Builder llmRequestBuilder = LlmRequest.builder().model("gemini-1-pro");
+    LlmRequest.Builder llmRequestBuilder = LlmRequest.builder().model("other-model");
     ToolContext toolContext = buildToolContext();
     GenerateContentConfig initialConfig = GenerateContentConfig.builder().build();
     llmRequestBuilder.config(initialConfig);

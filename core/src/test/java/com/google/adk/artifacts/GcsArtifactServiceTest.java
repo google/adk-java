@@ -158,7 +158,7 @@ public class GcsArtifactServiceTest {
     when(mockStorage.get(blobIdV1)).thenReturn(blobV1);
 
     Optional<Part> loadedArtifact =
-        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, Optional.empty()));
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME));
 
     assertThat(loadedArtifact).isPresent();
     Optional<byte[]> actualDataOptional = loadedArtifact.get().inlineData().get().data();
@@ -177,7 +177,7 @@ public class GcsArtifactServiceTest {
     when(mockStorage.get(blobIdV0)).thenReturn(blobV0);
 
     Optional<Part> loadedArtifact =
-        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, Optional.of(0)));
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, 0));
 
     assertThat(loadedArtifact).isPresent();
     Optional<byte[]> actualDataOptional = loadedArtifact.get().inlineData().get().data();
@@ -197,8 +197,7 @@ public class GcsArtifactServiceTest {
     when(mockStorage.get(blobIdV0)).thenReturn(blobV0);
 
     Optional<Part> loadedArtifact =
-        asOptional(
-            service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, USER_FILENAME, Optional.empty()));
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, USER_FILENAME));
 
     assertThat(loadedArtifact).isPresent();
     Optional<byte[]> actualDataOptional = loadedArtifact.get().inlineData().get().data();
@@ -216,7 +215,7 @@ public class GcsArtifactServiceTest {
     when(mockStorage.get(blobIdV0)).thenReturn(null);
 
     Optional<Part> loadedArtifact =
-        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, Optional.of(0)));
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, 0));
 
     assertThat(loadedArtifact).isEmpty();
     verify(mockStorage).get(blobIdV0);
@@ -227,7 +226,7 @@ public class GcsArtifactServiceTest {
     when(mockBlobPage.iterateAll()).thenReturn(ImmutableList.of());
 
     Optional<Part> loadedArtifact =
-        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, Optional.empty()));
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME));
 
     assertThat(loadedArtifact).isEmpty();
   }
@@ -400,7 +399,7 @@ public class GcsArtifactServiceTest {
     when(mockStorage.get(blobIdV0)).thenThrow(new StorageException(500, "Induced error"));
 
     Optional<Part> loadedArtifact =
-        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, Optional.of(0)));
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, 0));
 
     assertThat(loadedArtifact).isEmpty();
   }

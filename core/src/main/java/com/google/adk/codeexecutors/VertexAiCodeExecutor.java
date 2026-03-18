@@ -36,7 +36,7 @@ import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -140,7 +140,7 @@ public final class VertexAiCodeExecutor extends BaseCodeExecutor {
         executeCodeInterpreter(
             getCodeWithImports(codeExecutionInput.code()),
             codeExecutionInput.inputFiles(),
-            codeExecutionInput.executionId());
+            codeExecutionInput.executionId().orElse(null));
 
     // Save output file as artifacts.
     List<File> savedFiles = new ArrayList<>();
@@ -173,7 +173,7 @@ public final class VertexAiCodeExecutor extends BaseCodeExecutor {
   }
 
   private Map<String, Object> executeCodeInterpreter(
-      String code, List<File> inputFiles, Optional<String> sessionId) {
+      String code, List<File> inputFiles, @Nullable String sessionId) {
     ExtensionExecutionServiceClient codeInterpreterExtension = getCodeInterpreterExtension();
     if (codeInterpreterExtension == null) {
       logger.warn("Vertex AI Code Interpreter execution is not available. Returning empty result.");
@@ -196,8 +196,9 @@ public final class VertexAiCodeExecutor extends BaseCodeExecutor {
       paramsBuilder.putFields(
           "files", Value.newBuilder().setListValue(listBuilder.build()).build());
     }
-    sessionId.ifPresent(
-        s -> paramsBuilder.putFields("session_id", Value.newBuilder().setStringValue(s).build()));
+    if (sessionId != null) {
+      paramsBuilder.putFields("session_id", Value.newBuilder().setStringValue(sessionId).build());
+    }
 
     ExecuteExtensionRequest request =
         ExecuteExtensionRequest.newBuilder()

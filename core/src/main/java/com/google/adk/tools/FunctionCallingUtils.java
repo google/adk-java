@@ -45,7 +45,7 @@ import org.slf4j.LoggerFactory;
 public final class FunctionCallingUtils {
 
   private static final Logger logger = LoggerFactory.getLogger(FunctionCallingUtils.class);
-  private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
+  private static final ObjectMapper defaultObjectMapper = JsonBaseModel.getMapper();
 
   /** Holds the state during a single schema generation process to handle caching and recursion. */
   private static class SchemaGenerationContext {
@@ -162,7 +162,20 @@ public final class FunctionCallingUtils {
    * @throws IllegalArgumentException if a type is encountered that cannot be serialized by Jackson.
    */
   public static Schema buildSchemaFromType(Type type) {
-    return buildSchemaRecursive(objectMapper.constructType(type), new SchemaGenerationContext());
+    return buildSchemaFromType(type, defaultObjectMapper);
+  }
+
+  /**
+   * Builds a Schema from a Java Type, creating a new context for the generation process.
+   *
+   * @param type The Java {@link Type} to convert into a Schema.
+   * @param objectMapper The {@link ObjectMapper} to use for introspecting types.
+   * @return The generated {@link Schema}.
+   * @throws IllegalArgumentException if a type is encountered that cannot be serialized by Jackson.
+   */
+  public static Schema buildSchemaFromType(Type type, ObjectMapper objectMapper) {
+    return buildSchemaRecursive(
+        objectMapper.constructType(type), new SchemaGenerationContext(), objectMapper);
   }
 
   /**
@@ -173,7 +186,8 @@ public final class FunctionCallingUtils {
    * @return The generated {@link Schema}.
    * @throws IllegalArgumentException if a type is encountered that cannot be serialized by Jackson.
    */
-  private static Schema buildSchemaRecursive(JavaType javaType, SchemaGenerationContext context) {
+  private static Schema buildSchemaRecursive(
+      JavaType javaType, SchemaGenerationContext context, ObjectMapper objectMapper) {
     if (context.isProcessing(javaType)) {
       logger.warn("Type {} is recursive. Omitting from schema.", javaType.toCanonical());
       return Schema.builder()
@@ -194,7 +208,9 @@ public final class FunctionCallingUtils {
       Class<?> rawClass = javaType.getRawClass();
 
       if (javaType.isCollectionLikeType() && List.class.isAssignableFrom(rawClass)) {
-        builder.type("ARRAY").items(buildSchemaRecursive(javaType.getContentType(), context));
+        builder
+            .type("ARRAY")
+            .items(buildSchemaRecursive(javaType.getContentType(), context, objectMapper));
       } else if (javaType.isMapLikeType()) {
         builder.type("OBJECT");
       } else if (String.class.equals(rawClass)) {
@@ -232,7 +248,8 @@ public final class FunctionCallingUtils {
         for (BeanPropertyDefinition property : beanDescription.findProperties()) {
           AnnotatedMember member = property.getPrimaryMember();
           if (member != null) {
-            properties.put(property.getName(), buildSchemaRecursive(member.getType(), context));
+            properties.put(
+                property.getName(), buildSchemaRecursive(member.getType(), context, objectMapper));
             if (property.isRequired()) {
               required.add(property.getName());
             }

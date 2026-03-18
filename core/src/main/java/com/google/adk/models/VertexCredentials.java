@@ -38,15 +38,10 @@ public abstract class VertexCredentials {
   /** Builder for {@link VertexCredentials}. */
   @AutoValue.Builder
   public abstract static class Builder {
-    public abstract Builder setProject(Optional<String> value);
 
     public abstract Builder setProject(@Nullable String value);
 
-    public abstract Builder setLocation(Optional<String> value);
-
     public abstract Builder setLocation(@Nullable String value);
-
-    public abstract Builder setCredentials(Optional<GoogleCredentials> value);
 
     public abstract Builder setCredentials(@Nullable GoogleCredentials value);
 

@@ -58,16 +58,16 @@ class RecordingsLoaderTest {
                     - function_declarations:
                         - name: validate_email
                           description: Validates email format
-              llm_response:
-                content:
-                  parts:
-                    - thought_signature: Cq0EAR_MhbYyfIgI1M5KlVyG9HzjQ_CvZiHb_RQ2KR0H_UkDj-LDdxdVayqSpG8F6wPq4aGB6lZlqjZIGvA5H2zX2RQ_Iu8Wb8t_wKoEpW4XcwzzU9Org_ZvTNx4TZHll5cH5ebo1LPRWfTqVn7cC1N5KwDZtS2XLwCmitucAAKGzGH4c-tM0dgj57NoMFa63iaHizzi2zupKoGPBB-ZmakNHAHRspkl85hKaq8m4fELHNNMnyi596jcGRHxTDBiqHmNG8PyRiOXRM9VOkNnPU8l2DN7b6CvaBPmH84t0MaHxFMmrMjTQaNTBw92lXT7LZfwYJrDxf1ZpVHjztpbIhfZyYyZmxhIDNcVlb5i4Xoe8Rcva51NgBJN-UAm9cXWBSvr2_EdQbWs7Tz57niquyLpD6fhnTPOWBN6PU2Nz5nMgq-SUyM7srg2Ta6OV9uwOYFAFl0klSBouZ44YTM-T-voCin7EobkTzzXcllDPJ5TPretD_mpkeATlJ3Gi3nPfFLuU2DqFb8fLZjovY5oseSkEvf6NYnGt26r290QzG0cFsZbpJdtysBL-lH-yOwKEl-26IjiWztk0wAxnIdrmILlD9hgXRuyudXI0hx4gH1KTIH7njNNyLMNevUYVGC4cGxa1IpCh4EevhfCT9PQYM-QPyRT4dRBNzoG_y_lZERctUNHAfp80ObBClHEvDjElC2H6kWlO_jBeDiyJpezO7OeYjmDipvKFk3rQgNP87A=
-                      function_call:
-                        name: validate_email
-                        args:
-                          email: test@example.com
-                  role: model
-                finish_reason: STOP
+              llm_responses:
+                - content:
+                    parts:
+                      - thought_signature: Cq0EAR_MhbYyfIgI1M5KlVyG9HzjQ_CvZiHb_RQ2KR0H_UkDj-LDdxdVayqSpG8F6wPq4aGB6lZlqjZIGvA5H2zX2RQ_Iu8Wb8t_wKoEpW4XcwzzU9Org_ZvTNx4TZHll5cH5ebo1LPRWfTqVn7cC1N5KwDZtS2XLwCmitucAAKGzGH4c-tM0dgj57NoMFa63iaHizzi2zupKoGPBB-ZmakNHAHRspkl85hKaq8m4fELHNNMnyi596jcGRHxTDBiqHmNG8PyRiOXRM9VOkNnPU8l2DN7b6CvaBPmH84t0MaHxFMmrMjTQaNTBw92lXT7LZfwYJrDxf1ZpVHjztpbIhfZyYyZmxhIDNcVlb5i4Xoe8Rcva51NgBJN-UAm9cXWBSvr2_EdQbWs7Tz57niquyLpD6fhnTPOWBN6PU2Nz5nMgq-SUyM7srg2Ta6OV9uwOYFAFl0klSBouZ44YTM-T-voCin7EobkTzzXcllDPJ5TPretD_mpkeATlJ3Gi3nPfFLuU2DqFb8fLZjovY5oseSkEvf6NYnGt26r290QzG0cFsZbpJdtysBL-lH-yOwKEl-26IjiWztk0wAxnIdrmILlD9hgXRuyudXI0hx4gH1KTIH7njNNyLMNevUYVGC4cGxa1IpCh4EevhfCT9PQYM-QPyRT4dRBNzoG_y_lZERctUNHAfp80ObBClHEvDjElC2H6kWlO_jBeDiyJpezO7OeYjmDipvKFk3rQgNP87A=
+                        function_call:
+                          name: validate_email
+                          args:
+                            email: test@example.com
+                    role: model
+                  finish_reason: STOP
           - user_message_index: 0
             agent_name: booking_assistant
             tool_recording:
@@ -108,7 +108,8 @@ class RecordingsLoaderTest {
     assertThat(systemInstructionText.get()).contains("booking assistant");
 
     // Verify URL-safe Base64 deserialization (thought_signature with '_' and '-' characters)
-    var responseContent = firstRecording.llmRecording().get().llmResponse().get().content().get();
+    var responseContent =
+        firstRecording.llmRecording().get().llmResponses().get().get(0).content().get();
     var thoughtSignature = getOnlyPart(responseContent).thoughtSignature();
     assertThat(thoughtSignature).isPresent();
     assertThat(thoughtSignature.get()).isNotEmpty();

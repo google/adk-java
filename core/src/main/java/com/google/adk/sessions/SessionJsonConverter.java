@@ -73,7 +73,7 @@ final class SessionJsonConverter {
     event.turnComplete().ifPresent(v -> metadataJson.put("turnComplete", v));
     event.interrupted().ifPresent(v -> metadataJson.put("interrupted", v));
     event.branch().ifPresent(v -> metadataJson.put("branch", v));
-    putIfNotEmpty(metadataJson, "longRunningToolIds", event.longRunningToolIds());
+    event.longRunningToolIds().ifPresent(v -> putIfNotEmpty(metadataJson, "longRunningToolIds", v));
     event.groundingMetadata().ifPresent(v -> metadataJson.put("groundingMetadata", v));
     event.usageMetadata().ifPresent(v -> metadataJson.put("usageMetadata", v));
     Map<String, Object> eventJson = new HashMap<>();
@@ -208,9 +208,12 @@ final class SessionJsonConverter {
             .timestamp(convertToInstant(apiEvent.get("timestamp")).toEpochMilli())
             .errorCode(
                 Optional.ofNullable(apiEvent.get("errorCode"))
-                    .map(value -> new FinishReason((String) value)))
+                    .map(value -> new FinishReason((String) value))
+                    .orElse(null))
             .errorMessage(
-                Optional.ofNullable(apiEvent.get("errorMessage")).map(value -> (String) value))
+                Optional.ofNullable(apiEvent.get("errorMessage"))
+                    .map(value -> (String) value)
+                    .orElse(null))
             .build();
     Map<String, Object> eventMetadata = (Map<String, Object>) apiEvent.get("eventMetadata");
     if (eventMetadata != null) {
@@ -236,7 +239,7 @@ final class SessionJsonConverter {
                   Optional.ofNullable((Boolean) eventMetadata.get("turnComplete")).orElse(false))
               .interrupted(
                   Optional.ofNullable((Boolean) eventMetadata.get("interrupted")).orElse(false))
-              .branch(Optional.ofNullable((String) eventMetadata.get("branch")))
+              .branch((String) eventMetadata.get("branch"))
               .groundingMetadata(groundingMetadata)
               .usageMetadata(usageMetadata)
               .longRunningToolIds(
@@ -350,11 +353,6 @@ final class SessionJsonConverter {
     if (values != null && !values.isEmpty()) {
       map.put(key, values);
     }
-  }
-
-  private static void putIfNotEmpty(
-      Map<String, Object> map, String key, Optional<? extends Collection<?>> values) {
-    values.ifPresent(v -> putIfNotEmpty(map, key, v));
   }
 
   private static void putIfNotEmpty(

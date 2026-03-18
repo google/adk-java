@@ -31,7 +31,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Assert;
 import org.junit.Before;
@@ -608,45 +607,6 @@ public final class InvocationContextTest {
   }
 
   @Test
-  // Testing deprecated methods.
-  public void testDeprecatedCreateMethods() {
-    InvocationContext context1 =
-        InvocationContext.builder()
-            .sessionService(mockSessionService)
-            .artifactService(mockArtifactService)
-            .invocationId(testInvocationId)
-            .agent(mockAgent)
-            .session(session)
-            .userContent(Optional.ofNullable(userContent))
-            .runConfig(runConfig)
-            .build();
-
-    assertThat(context1.sessionService()).isEqualTo(mockSessionService);
-    assertThat(context1.artifactService()).isEqualTo(mockArtifactService);
-    assertThat(context1.invocationId()).isEqualTo(testInvocationId);
-    assertThat(context1.agent()).isEqualTo(mockAgent);
-    assertThat(context1.session()).isEqualTo(session);
-    assertThat(context1.userContent()).hasValue(userContent);
-    assertThat(context1.runConfig()).isEqualTo(runConfig);
-
-    InvocationContext context2 =
-        InvocationContext.create(
-            mockSessionService,
-            mockArtifactService,
-            mockAgent,
-            session,
-            liveRequestQueue,
-            runConfig);
-
-    assertThat(context2.sessionService()).isEqualTo(mockSessionService);
-    assertThat(context2.artifactService()).isEqualTo(mockArtifactService);
-    assertThat(context2.agent()).isEqualTo(mockAgent);
-    assertThat(context2.session()).isEqualTo(session);
-    assertThat(context2.liveRequestQueue()).hasValue(liveRequestQueue);
-    assertThat(context2.runConfig()).isEqualTo(runConfig);
-  }
-
-  @Test
   public void testActiveStreamingTools() {
     InvocationContext context =
         InvocationContext.builder()
@@ -686,76 +646,14 @@ public final class InvocationContextTest {
             .artifactService(mockArtifactService)
             .agent(mockAgent)
             .session(session)
-            .liveRequestQueue(Optional.of(liveRequestQueue))
-            .branch(Optional.of("test-branch"))
-            .userContent(Optional.of(userContent))
+            .liveRequestQueue(liveRequestQueue)
+            .branch("test-branch")
+            .userContent(userContent)
             .build();
 
     assertThat(context.liveRequestQueue()).hasValue(liveRequestQueue);
     assertThat(context.branch()).hasValue("test-branch");
     assertThat(context.userContent()).hasValue(userContent);
-  }
-
-  @Test
-  // Testing deprecated methods.
-  public void testDeprecatedConstructor() {
-    InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            pluginManager,
-            Optional.of(liveRequestQueue),
-            Optional.of("test-branch"),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            true);
-
-    assertThat(context.sessionService()).isEqualTo(mockSessionService);
-    assertThat(context.artifactService()).isEqualTo(mockArtifactService);
-    assertThat(context.memoryService()).isEqualTo(mockMemoryService);
-    assertThat(context.pluginManager()).isEqualTo(pluginManager);
-    assertThat(context.liveRequestQueue()).hasValue(liveRequestQueue);
-    assertThat(context.branch()).hasValue("test-branch");
-    assertThat(context.invocationId()).isEqualTo(testInvocationId);
-    assertThat(context.agent()).isEqualTo(mockAgent);
-    assertThat(context.session()).isEqualTo(session);
-    assertThat(context.userContent()).hasValue(userContent);
-    assertThat(context.runConfig()).isEqualTo(runConfig);
-    assertThat(context.endInvocation()).isTrue();
-  }
-
-  @Test
-  // Testing deprecated methods.
-  public void testDeprecatedConstructor_11params() {
-    InvocationContext context =
-        new InvocationContext(
-            mockSessionService,
-            mockArtifactService,
-            mockMemoryService,
-            Optional.of(liveRequestQueue),
-            Optional.of("test-branch"),
-            testInvocationId,
-            mockAgent,
-            session,
-            Optional.of(userContent),
-            runConfig,
-            true);
-
-    assertThat(context.sessionService()).isEqualTo(mockSessionService);
-    assertThat(context.artifactService()).isEqualTo(mockArtifactService);
-    assertThat(context.memoryService()).isEqualTo(mockMemoryService);
-    assertThat(context.liveRequestQueue()).hasValue(liveRequestQueue);
-    assertThat(context.branch()).hasValue("test-branch");
-    assertThat(context.invocationId()).isEqualTo(testInvocationId);
-    assertThat(context.agent()).isEqualTo(mockAgent);
-    assertThat(context.session()).isEqualTo(session);
-    assertThat(context.userContent()).hasValue(userContent);
-    assertThat(context.runConfig()).isEqualTo(runConfig);
-    assertThat(context.endInvocation()).isTrue();
   }
 
   @Test

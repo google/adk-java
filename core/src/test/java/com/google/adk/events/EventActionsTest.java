@@ -26,6 +26,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -110,6 +111,16 @@ public final class EventActionsTest {
   }
 
   @Test
+  public void setArtifactDelta_copiesRegularMap() {
+    EventActions eventActions = new EventActions();
+    ImmutableMap<String, Integer> artifactDelta = ImmutableMap.of("artifact1", 1);
+
+    eventActions.setArtifactDelta(artifactDelta);
+
+    assertThat(eventActions.artifactDelta()).containsExactly("artifact1", 1);
+  }
+
+  @Test
   public void removeStateByKey_marksKeyAsRemoved() {
     EventActions eventActions = new EventActions();
     eventActions.stateDelta().put("key1", "value1");
@@ -164,5 +175,28 @@ public final class EventActionsTest {
 
     assertThrows(
         IllegalArgumentException.class, () -> eventActions1.toBuilder().merge(eventActions2));
+  }
+
+  @Test
+  public void setRequestedToolConfirmations_withConcurrentMap_usesSameInstance() {
+    ConcurrentHashMap<String, ToolConfirmation> map = new ConcurrentHashMap<>();
+    map.put("tool", TOOL_CONFIRMATION);
+
+    EventActions actions = new EventActions();
+    actions.setRequestedToolConfirmations(map);
+
+    assertThat(actions.requestedToolConfirmations()).isSameInstanceAs(map);
+  }
+
+  @Test
+  public void setRequestedToolConfirmations_withRegularMap_createsConcurrentMap() {
+    ImmutableMap<String, ToolConfirmation> map = ImmutableMap.of("tool", TOOL_CONFIRMATION);
+
+    EventActions actions = new EventActions();
+    actions.setRequestedToolConfirmations(map);
+
+    assertThat(actions.requestedToolConfirmations()).isNotSameInstanceAs(map);
+    assertThat(actions.requestedToolConfirmations()).isInstanceOf(ConcurrentMap.class);
+    assertThat(actions.requestedToolConfirmations()).containsExactly("tool", TOOL_CONFIRMATION);
   }
 }

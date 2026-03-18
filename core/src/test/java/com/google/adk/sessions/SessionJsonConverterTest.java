@@ -22,7 +22,6 @@ import java.time.Instant;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.junit.Test;
@@ -49,12 +48,12 @@ public final class SessionJsonConverterTest {
             .author("user")
             .invocationId("inv-123")
             .timestamp(Instant.parse("2023-01-01T00:00:00Z").toEpochMilli())
-            .errorCode(Optional.of(new FinishReason("OTHER")))
-            .errorMessage(Optional.of("Something was not found"))
+            .errorCode(new FinishReason("OTHER"))
+            .errorMessage("Something was not found")
             .partial(true)
             .turnComplete(true)
             .interrupted(false)
-            .branch(Optional.of("branch-1"))
+            .branch("branch-1")
             .content(Content.fromParts(Part.fromText("Hello")))
             .actions(actions)
             .build();

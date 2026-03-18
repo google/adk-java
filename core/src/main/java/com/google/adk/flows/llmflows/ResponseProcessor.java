@@ -50,11 +50,16 @@ public interface ResponseProcessor {
      */
     public abstract Optional<String> transferToAgent();
 
-    /** Creates a new {@link ResponseProcessingResult}. */
     public static ResponseProcessingResult create(
-        LlmResponse updatedResponse, Iterable<Event> events, Optional<String> transferToAgent) {
+        LlmResponse updatedResponse, Iterable<Event> events, String transferToAgent) {
       return new AutoValue_ResponseProcessor_ResponseProcessingResult(
-          updatedResponse, events, transferToAgent);
+          updatedResponse, events, Optional.of(transferToAgent));
+    }
+
+    public static ResponseProcessingResult create(
+        LlmResponse updatedResponse, Iterable<Event> events) {
+      return new AutoValue_ResponseProcessor_ResponseProcessingResult(
+          updatedResponse, events, /* transferToAgent= */ Optional.empty());
     }
   }
 

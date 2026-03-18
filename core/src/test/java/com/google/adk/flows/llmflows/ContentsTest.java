@@ -36,10 +36,15 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import java.util.ArrayList;
+import java.util.ConcurrentModificationException;
+import java.util.Iterator;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -142,7 +147,9 @@ public final class ContentsTest {
   @Test
   public void rearrangeLatest_missingFCEvent_throwsException() {
     Event frEvent = createFunctionResponseEvent("fr1", "tool1", "call1");
-    ImmutableList<Event> events = ImmutableList.of(createUserEvent("u1", "Query"), frEvent);
+    Event frEvent2 = createFunctionResponseEvent("fr2", "tool1", "call1");
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("u1", "Query"), frEvent, frEvent2);
 
     assertThrows(IllegalStateException.class, () -> runContentsProcessor(events));
   }
@@ -473,10 +480,12 @@ public final class ContentsTest {
     Event fc1 = createFunctionCallEvent("fc1", "tool1", "call1");
     Event u2 = createUserEvent("u2", "Query 2");
     Event fr1 = createFunctionResponseEvent("fr1", "tool1", "call1"); // FR for fc1
+    Event fr2 = createFunctionResponseEvent("fr2", "tool2", "call1"); // FR for fc2
 
-    ImmutableList<Event> events = ImmutableList.of(u1, fc1, u2, fr1);
+    ImmutableList<Event> events = ImmutableList.of(u1, fc1, u2, fr1, fr2);
 
-    // The current turn starts from u2. fc1 is not in the sublist [u2, fr1], so rearrangement fails.
+    // The current turn starts from u2. fc1 is not in the sublist [u2, fr1, fr2], so rearrangement
+    // fails.
     IllegalStateException e =
         assertThrows(
             IllegalStateException.class,
@@ -484,6 +493,19 @@ public final class ContentsTest {
     assertThat(e)
         .hasMessageThat()
         .contains("No function call event found for function response IDs: [call1]");
+  }
+
+  @Test
+  public void processRequest_notEnoughEvents_returnsOriginalList() {
+    Event fr1 =
+        createFunctionCallAndResponseEvent(
+            "fr1", "tool1", "call1", ImmutableMap.of("result", "ok"), "user");
+
+    ImmutableList<Event> events = ImmutableList.of(fr1);
+
+    List<Content> result =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE, "A2A-agent");
+    assertThat(result).isEmpty();
   }
 
   @Test
@@ -737,11 +759,99 @@ public final class ContentsTest {
         .containsExactly("C1", "C2", "E4", "E5");
   }
 
+  @Test
+  public void processRequest_notEmptyContent() {
+    Event e =
+        Event.builder()
+            .id("e1")
+            .author(AGENT)
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder().text("").thought(true).build(),
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder()
+                                        .name("test-tool")
+                                        .id("test-call-id")
+                                        .build())
+                                .thought(false)
+                                .build()))
+                    .build())
+            .build();
+    List<Content> contents = runContentsProcessor(ImmutableList.of(e));
+    assertThat(contents).containsExactly(e.content().get());
+  }
+
+  @Test
+  public void processRequest_concurrentReadAndWrite_noException() throws Exception {
+    LlmAgent agent =
+        LlmAgent.builder().name(AGENT).includeContents(LlmAgent.IncludeContents.DEFAULT).build();
+    List<Event> customEvents =
+        new ArrayList<Event>() {
+          private void checkLock() {
+            if (!Thread.holdsLock(this)) {
+              throw new ConcurrentModificationException("Unsynchronized iteration detected!");
+            }
+          }
+
+          @Override
+          public Iterator<Event> iterator() {
+            checkLock();
+            return super.iterator();
+          }
+
+          @Override
+          public ListIterator<Event> listIterator() {
+            checkLock();
+            return super.listIterator();
+          }
+
+          @Override
+          public ListIterator<Event> listIterator(int index) {
+            checkLock();
+            return super.listIterator(index);
+          }
+
+          @Override
+          public Stream<Event> stream() {
+            checkLock();
+            return super.stream();
+          }
+        };
+
+    Session session =
+        Session.builder("test-session")
+            .appName("test-app")
+            .userId("test-user")
+            .events(customEvents)
+            .build();
+
+    // The list must have at least one element so that operations interacting with events trigger
+    // iteration.
+    customEvents.add(createUserEvent("dummy", "dummy"));
+
+    InvocationContext context =
+        InvocationContext.builder()
+            .invocationId("test-invocation")
+            .agent(agent)
+            .session(session)
+            .sessionService(sessionService)
+            .build();
+
+    LlmRequest initialRequest = LlmRequest.builder().build();
+
+    // This single call will throw the exception if the list is accessed insecurely.
+    var unused = contentsProcessor.processRequest(context, initialRequest).blockingGet();
+  }
+
   private static Event createUserEvent(String id, String text) {
     return Event.builder()
         .id(id)
         .author(USER)
-        .content(Optional.of(Content.fromParts(Part.fromText(text))))
+        .content(Content.fromParts(Part.fromText(text)))
         .invocationId("invocationId")
         .build();
   }
@@ -751,7 +861,7 @@ public final class ContentsTest {
     return Event.builder()
         .id(id)
         .author(USER)
-        .content(Optional.of(Content.fromParts(Part.fromText(text))))
+        .content(Content.fromParts(Part.fromText(text)))
         .invocationId(invocationId)
         .timestamp(timestamp)
         .build();
@@ -883,13 +993,40 @@ public final class ContentsTest {
         .build();
   }
 
+  private static Event createFunctionCallAndResponseEvent(
+      String id, String toolName, String callId, Map<String, Object> response, String author) {
+    return Event.builder()
+        .id(id)
+        .author(author)
+        .invocationId("invocationId")
+        .content(
+            Content.fromParts(
+                Part.builder()
+                    .functionCall(FunctionCall.builder().name(toolName).id(callId).build())
+                    .build(),
+                Part.builder()
+                    .functionResponse(
+                        FunctionResponse.builder()
+                            .name(toolName)
+                            .id(callId)
+                            .response(response)
+                            .build())
+                    .build()))
+        .build();
+  }
+
   private List<Content> runContentsProcessor(List<Event> events) {
     return runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.DEFAULT);
   }
 
   private List<Content> runContentsProcessorWithIncludeContents(
       List<Event> events, LlmAgent.IncludeContents includeContents) {
-    LlmAgent agent = LlmAgent.builder().name(AGENT).includeContents(includeContents).build();
+    return runContentsProcessorWithIncludeContents(events, includeContents, AGENT);
+  }
+
+  private List<Content> runContentsProcessorWithIncludeContents(
+      List<Event> events, LlmAgent.IncludeContents includeContents, String agentName) {
+    LlmAgent agent = LlmAgent.builder().name(agentName).includeContents(includeContents).build();
     Session session =
         sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
     session.events().addAll(events);

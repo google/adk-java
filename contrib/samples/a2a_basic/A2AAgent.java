@@ -1,6 +1,6 @@
 package com.example.a2a_basic;
 
-import com.google.adk.a2a.RemoteA2AAgent;
+import com.google.adk.a2a.agent.RemoteA2AAgent;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.tools.FunctionTool;

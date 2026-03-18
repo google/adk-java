@@ -20,6 +20,8 @@ import static com.google.common.truth.Truth.assertThat;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import io.reactivex.rxjava3.core.Single;
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -84,7 +86,7 @@ public final class InMemorySessionServiceTest {
 
     Session session =
         sessionService
-            .createSession("app-name", "user-id", new ConcurrentHashMap<>(), "session-1")
+            .createSession("app-name", "user-id", new HashMap<>(), "session-1")
             .blockingGet();
 
     ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
@@ -130,9 +132,7 @@ public final class InMemorySessionServiceTest {
   public void appendEvent_updatesSessionState() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session =
-        sessionService
-            .createSession("app", "user", new ConcurrentHashMap<>(), "session1")
-            .blockingGet();
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
 
     ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
     stateDelta.put("sessionKey", "sessionValue");
@@ -167,9 +167,7 @@ public final class InMemorySessionServiceTest {
   public void appendEvent_removesState() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session =
-        sessionService
-            .createSession("app", "user", new ConcurrentHashMap<>(), "session1")
-            .blockingGet();
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
 
     ConcurrentMap<String, Object> stateDeltaAdd = new ConcurrentHashMap<>();
     stateDeltaAdd.put("sessionKey", "sessionValue");
@@ -218,12 +216,28 @@ public final class InMemorySessionServiceTest {
   }
 
   @Test
+  public void appendEvent_updatesSessionTimestampWithFractionalSeconds() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+
+    // Add an event with a timestamp that contains a fractional second
+    Event eventAdd = Event.builder().timestamp(5500).build();
+    var unused = sessionService.appendEvent(session, eventAdd).blockingGet();
+
+    // Verify the last modified timestamp contains a fractional second
+    Session retrievedSession =
+        sessionService
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(retrievedSession.lastUpdateTime()).isEqualTo(Instant.ofEpochSecond(5, 500000000L));
+  }
+
+  @Test
   public void sequentialAgents_shareTempState() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session =
-        sessionService
-            .createSession("app", "user", new ConcurrentHashMap<>(), "session1")
-            .blockingGet();
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
 
     // Agent 1 writes to temp state
     ConcurrentMap<String, Object> stateDelta1 = new ConcurrentHashMap<>();

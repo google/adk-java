@@ -38,6 +38,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import org.jspecify.annotations.Nullable;
 
 /** An artifact service implementation using Google Cloud Storage (GCS). */
 public final class GcsArtifactService implements BaseArtifactService {
@@ -126,8 +127,8 @@ public final class GcsArtifactService implements BaseArtifactService {
    */
   @Override
   public Maybe<Part> loadArtifact(
-      String appName, String userId, String sessionId, String filename, Optional<Integer> version) {
-    return version
+      String appName, String userId, String sessionId, String filename, @Nullable Integer version) {
+    return Optional.ofNullable(version)
         .map(Maybe::just)
         .orElseGet(
             () ->

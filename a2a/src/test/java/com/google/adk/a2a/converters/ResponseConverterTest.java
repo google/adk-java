@@ -1,6 +1,8 @@
 package com.google.adk.a2a.converters;
 
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.stream.Collectors.joining;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
@@ -11,11 +13,16 @@ import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
-import com.google.genai.types.Part;
+import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FinishReason;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.GroundingMetadata;
 import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskUpdateEvent;
 import io.a2a.spec.Artifact;
+import io.a2a.spec.DataPart;
 import io.a2a.spec.Message;
 import io.a2a.spec.Task;
 import io.a2a.spec.TaskArtifactUpdateEvent;
@@ -25,7 +32,6 @@ import io.a2a.spec.TaskStatusUpdateEvent;
 import io.a2a.spec.TextPart;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.Optional;
-import java.util.UUID;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -62,122 +68,8 @@ public final class ResponseConverterTest {
     return new Task.Builder().id("task-1").contextId("context-1");
   }
 
-  @Test
-  public void eventsToMessage_withNullEvents_returnsEmptyAgentMessage() {
-    Message message = ResponseConverter.eventsToMessage(null, "context-1", "task-1");
-    assertThat(message.getContextId()).isEqualTo("context-1");
-    assertThat(message.getRole()).isEqualTo(Message.Role.AGENT);
-    assertThat(message.getParts()).hasSize(1);
-    assertThat(((TextPart) message.getParts().get(0)).getText()).isEmpty();
-  }
-
-  @Test
-  public void eventsToMessage_withEmptyEvents_returnsEmptyAgentMessage() {
-    Message message = ResponseConverter.eventsToMessage(ImmutableList.of(), "context-1", "task-1");
-    assertThat(message.getContextId()).isEqualTo("context-1");
-    assertThat(message.getRole()).isEqualTo(Message.Role.AGENT);
-    assertThat(message.getParts()).hasSize(1);
-    assertThat(((TextPart) message.getParts().get(0)).getText()).isEmpty();
-  }
-
-  @Test
-  public void eventsToMessage_withSingleEvent_returnsMessage() {
-    Event event =
-        Event.builder()
-            .id(UUID.randomUUID().toString())
-            .author("user")
-            .content(
-                Content.builder()
-                    .role("user")
-                    .parts(ImmutableList.of(Part.builder().text("Hello").build()))
-                    .build())
-            .build();
-
-    Message message =
-        ResponseConverter.eventsToMessage(ImmutableList.of(event), "context-1", "task-1");
-
-    assertThat(message.getContextId()).isEqualTo("context-1");
-    assertThat(message.getRole()).isEqualTo(Message.Role.USER);
-    assertThat(message.getParts()).hasSize(1);
-    assertThat(((TextPart) message.getParts().get(0)).getText()).isEqualTo("Hello");
-  }
-
-  @Test
-  public void eventsToMessage_withMultipleEvents_returnsAggregatedMessage() {
-    Event event1 =
-        Event.builder()
-            .id(UUID.randomUUID().toString())
-            .author("agent")
-            .content(
-                Content.builder()
-                    .role("model")
-                    .parts(ImmutableList.of(Part.builder().text("Hello ").build()))
-                    .build())
-            .build();
-    Event event2 =
-        Event.builder()
-            .id(UUID.randomUUID().toString())
-            .author("agent")
-            .content(
-                Content.builder()
-                    .role("model")
-                    .parts(ImmutableList.of(Part.builder().text("World").build()))
-                    .build())
-            .build();
-
-    Message message =
-        ResponseConverter.eventsToMessage(ImmutableList.of(event1, event2), "context-1", "task-1");
-
-    assertThat(message.getMessageId()).isEqualTo("task-1");
-    assertThat(message.getContextId()).isEqualTo("context-1");
-    assertThat(message.getRole()).isEqualTo(Message.Role.AGENT);
-    assertThat(message.getParts()).hasSize(2);
-    assertThat(((TextPart) message.getParts().get(0)).getText()).isEqualTo("Hello ");
-    assertThat(((TextPart) message.getParts().get(1)).getText()).isEqualTo("World");
-  }
-
-  @Test
-  public void eventToMessage_convertsUserEvent() {
-    Event event =
-        Event.builder()
-            .id("event-1")
-            .author("user")
-            .content(
-                Content.builder()
-                    .role("user")
-                    .parts(ImmutableList.of(Part.builder().text("Test").build()))
-                    .build())
-            .build();
-
-    Message message = ResponseConverter.eventToMessage(event, "context-1");
-
-    assertThat(message.getMessageId()).isEqualTo("event-1");
-    assertThat(message.getContextId()).isEqualTo("context-1");
-    assertThat(message.getRole()).isEqualTo(Message.Role.USER);
-    assertThat(message.getParts()).hasSize(1);
-    assertThat(((TextPart) message.getParts().get(0)).getText()).isEqualTo("Test");
-  }
-
-  @Test
-  public void eventToMessage_convertsAgentEvent() {
-    Event event =
-        Event.builder()
-            .id("event-1")
-            .author("agent")
-            .content(
-                Content.builder()
-                    .role("model")
-                    .parts(ImmutableList.of(Part.builder().text("Test").build()))
-                    .build())
-            .build();
-
-    Message message = ResponseConverter.eventToMessage(event, "context-1");
-
-    assertThat(message.getMessageId()).isEqualTo("event-1");
-    assertThat(message.getContextId()).isEqualTo("context-1");
-    assertThat(message.getRole()).isEqualTo(Message.Role.AGENT);
-    assertThat(message.getParts()).hasSize(1);
-    assertThat(((TextPart) message.getParts().get(0)).getText()).isEqualTo("Test");
+  private static TaskStatusUpdateEvent.Builder testTaskStatusUpdateEvent() {
+    return new TaskStatusUpdateEvent.Builder().taskId("task-1").contextId("context-1");
   }
 
   @Test
@@ -251,6 +143,74 @@ public final class ResponseConverterTest {
   }
 
   @Test
+  public void taskToEvent_withGroundingMetadata_returnsEvent() {
+    GroundingMetadata groundingMetadata =
+        GroundingMetadata.builder().webSearchQueries("test-query").build();
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Status message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.WORKING, statusMessage, null);
+    Task task =
+        testTask()
+            .status(status)
+            .artifacts(null)
+            .metadata(
+                ImmutableMap.of(
+                    A2AMetadataKey.GROUNDING_METADATA.getType(), groundingMetadata.toJson()))
+            .build();
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+    assertThat(event).isNotNull();
+    assertThat(event.content().get().parts().get().get(0).text()).hasValue("Status message");
+    assertThat(event.groundingMetadata()).hasValue(groundingMetadata);
+  }
+
+  @Test
+  public void taskToEvent_withCustomMetadata_returnsEvent() {
+    ImmutableList<CustomMetadata> customMetadataList =
+        ImmutableList.of(
+            CustomMetadata.builder().key("test-key").stringValue("test-value").build());
+    String customMetadataJson =
+        customMetadataList.stream().map(CustomMetadata::toJson).collect(joining(",", "[", "]"));
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Status message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.WORKING, statusMessage, null);
+    Task task =
+        testTask()
+            .status(status)
+            .artifacts(null)
+            .metadata(ImmutableMap.of(A2AMetadataKey.CUSTOM_METADATA.getType(), customMetadataJson))
+            .build();
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+    assertThat(event).isNotNull();
+    assertThat(event.content().get().parts().get().get(0).text()).hasValue("Status message");
+    assertThat(event.customMetadata().get())
+        .containsExactly(
+            CustomMetadata.builder().key("a2a:task_id").stringValue("task-1").build(),
+            CustomMetadata.builder().key("a2a:context_id").stringValue("context-1").build(),
+            CustomMetadata.builder().key("test-key").stringValue("test-value").build())
+        .inOrder();
+  }
+
+  @Test
+  public void messageToEvent_withMissingTaskId_returnsEvent() {
+    Message a2aMessage =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.USER)
+            .taskId("task-1")
+            .parts(ImmutableList.of(new TextPart("test-message")))
+            .build();
+    Event event = ResponseConverter.messageToEvent(a2aMessage, invocationContext);
+    assertThat(event).isNotNull();
+    assertThat(event.customMetadata()).isEmpty();
+  }
+
+  @Test
   public void taskToEvent_withNoMessage_returnsEmptyEvent() {
     TaskStatus status = new TaskStatus(TaskState.WORKING, null, null);
     Task task = testTask().status(status).build();
@@ -258,6 +218,81 @@ public final class ResponseConverterTest {
     Event event = ResponseConverter.taskToEvent(task, invocationContext);
     assertThat(event).isNotNull();
     assertThat(event.invocationId()).isEqualTo(invocationContext.invocationId());
+  }
+
+  @Test
+  public void taskToEvent_withInputRequired_parsesLongRunningToolIds() {
+    ImmutableMap<String, Object> data =
+        ImmutableMap.of("name", "myTool", "id", "call_123", "args", ImmutableMap.of());
+    ImmutableMap<String, Object> metadata =
+        ImmutableMap.of(
+            A2AMetadataKey.TYPE.getType(),
+            "function_call",
+            A2AMetadataKey.IS_LONG_RUNNING.getType(),
+            true);
+    DataPart dataPart = new DataPart(data, metadata);
+    ImmutableMap<String, Object> statusData =
+        ImmutableMap.of("name", "messageTools", "id", "msg_123", "args", ImmutableMap.of());
+    ImmutableMap<String, Object> statusMetadata =
+        ImmutableMap.of(
+            A2AMetadataKey.TYPE.getType(),
+            "function_call",
+            A2AMetadataKey.IS_LONG_RUNNING.getType(),
+            true);
+    DataPart statusDataPart = new DataPart(statusData, statusMetadata);
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(statusDataPart))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.INPUT_REQUIRED, statusMessage, null);
+
+    Artifact artifact =
+        new Artifact.Builder().artifactId("artifact-1").parts(ImmutableList.of(dataPart)).build();
+    Task task = testTask().status(status).artifacts(ImmutableList.of(artifact)).build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+    assertThat(event).isNotNull();
+    assertThat(event.longRunningToolIds().get()).containsExactly("call_123", "msg_123");
+  }
+
+  @Test
+  public void taskToEvent_withFailedState_setsErrorCode() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Task failed")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.FAILED, statusMessage, null);
+    Task task = testTask().status(status).artifacts(ImmutableList.of()).build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+    assertThat(event).isNotNull();
+    assertThat(event.errorMessage()).hasValue("Task failed");
+  }
+
+  @Test
+  public void taskToEvent_withFinalEvent_returnsEmptyEvent() {
+    TaskStatus status = new TaskStatus(TaskState.COMPLETED);
+    Task task = testTask().status(status).artifacts(ImmutableList.of()).build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+    assertThat(event).isNotNull();
+    assertThat(event.invocationId()).isEqualTo(invocationContext.invocationId());
+    assertThat(event.turnComplete()).hasValue(true);
+    assertThat(event.content().flatMap(Content::parts).orElse(ImmutableList.of())).isEmpty();
+  }
+
+  @Test
+  public void taskToEvent_withEmptyParts_returnsEmptyEvent() {
+    TaskStatus status = new TaskStatus(TaskState.SUBMITTED);
+    Task task = testTask().status(status).artifacts(ImmutableList.of()).build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+    assertThat(event).isNotNull();
+    assertThat(event.invocationId()).isEqualTo(invocationContext.invocationId());
+    assertThat(event.content()).isPresent();
+    assertThat(event.content().get().parts().orElse(ImmutableList.of())).isEmpty();
   }
 
   @Test
@@ -308,7 +343,8 @@ public final class ResponseConverterTest {
   }
 
   @Test
-  public void clientEventToEvent_withTaskArtifactUpdateEvent_withLastChunkFalse_returnsNull() {
+  public void
+      clientEventToEvent_withTaskArtifactUpdateEvent_withLastChunkFalse_returnsHandlingPartialEvent() {
     io.a2a.spec.Part<?> a2aPart = new TextPart("Artifact content");
     Artifact artifact =
         new Artifact.Builder().artifactId("artifact-1").parts(ImmutableList.of(a2aPart)).build();
@@ -320,6 +356,168 @@ public final class ResponseConverterTest {
     TaskArtifactUpdateEvent updateEvent =
         new TaskArtifactUpdateEvent.Builder()
             .lastChunk(false)
+            .append(false)
+            .contextId("context-1")
+            .artifact(artifact)
+            .taskId("task-id-1")
+            .build();
+    TaskUpdateEvent event = new TaskUpdateEvent(task, updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.partial().orElse(false)).isTrue();
+  }
+
+  @Test
+  public void clientEventToEvent_withFinalTaskStatusUpdateEvent_withMessage_returnsEvent() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Final status message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.COMPLETED, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        testTaskStatusUpdateEvent().isFinal(true).status(status).build();
+
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.content().get().parts().get().get(0).text())
+        .hasValue("Final status message");
+    assertThat(resultEvent.content().get().parts().get().get(0).thought()).hasValue(false);
+    assertThat(resultEvent.partial().orElse(false)).isFalse();
+    assertThat(resultEvent.turnComplete()).hasValue(true);
+  }
+
+  @Test
+  public void clientEventToEvent_withFinalTaskStatusUpdateEvent_withoutMessage_returnsEvent() {
+    TaskStatus status = new TaskStatus(TaskState.COMPLETED, null, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent("task-id-1", status, "context-1", true, null);
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.turnComplete()).hasValue(true);
+  }
+
+  @Test
+  public void clientEventToEvent_withNonFinalTaskStatusUpdateEvent_withoutMessage_returnsEmpty() {
+    TaskStatus status = new TaskStatus(TaskState.WORKING, null, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent("task-id-1", status, "context-1", false, null);
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isEmpty();
+  }
+
+  @Test
+  public void clientEventToEvent_withFailedTaskStatusUpdateEvent_returnsErrorEvent() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Task failed")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.FAILED, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent("task-id-1", status, "context-1", true, null);
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.errorMessage()).hasValue("Task failed");
+    assertThat(resultEvent.turnComplete()).hasValue(true);
+  }
+
+  @Test
+  public void taskToEvent_withInvalidMetadata_throwsException() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Status message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.WORKING, statusMessage, null);
+    Task task =
+        testTask()
+            .status(status)
+            .artifacts(null)
+            .metadata(
+                ImmutableMap.of(A2AMetadataKey.GROUNDING_METADATA.getType(), "{ invalid json ]"))
+            .build();
+
+    IllegalArgumentException exception =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> ResponseConverter.taskToEvent(task, invocationContext));
+    assertThat(exception).hasMessageThat().contains("Failed to parse metadata");
+    assertThat(exception).hasMessageThat().contains("GroundingMetadata");
+  }
+
+  @Test
+  public void taskToEvent_withErrorCode_returnsEvent() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Status message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.WORKING, statusMessage, null);
+    Task task =
+        testTask()
+            .status(status)
+            .artifacts(null)
+            .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "\"STOP\""))
+            .build();
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+    assertThat(event).isNotNull();
+    assertThat(event.errorCode()).hasValue(new FinishReason(FinishReason.Known.STOP));
+  }
+
+  @Test
+  public void taskToEvent_withUsageMetadata_returnsEvent() {
+    GenerateContentResponseUsageMetadata usageMetadata =
+        GenerateContentResponseUsageMetadata.builder()
+            .promptTokenCount(10)
+            .candidatesTokenCount(20)
+            .totalTokenCount(30)
+            .build();
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Status message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.WORKING, statusMessage, null);
+    Task task =
+        testTask()
+            .status(status)
+            .artifacts(null)
+            .metadata(
+                ImmutableMap.of(A2AMetadataKey.USAGE_METADATA.getType(), usageMetadata.toJson()))
+            .build();
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+    assertThat(event).isNotNull();
+    assertThat(event.usageMetadata()).hasValue(usageMetadata);
+  }
+
+  @Test
+  public void clientEventToEvent_withTaskArtifactUpdateEventAndPartialTrue_returnsEmpty() {
+    io.a2a.spec.Part<?> a2aPart = new TextPart("Artifact content");
+    Artifact artifact =
+        new Artifact.Builder().artifactId("artifact-1").parts(ImmutableList.of(a2aPart)).build();
+    Task task =
+        testTask()
+            .status(new TaskStatus(TaskState.COMPLETED))
+            .artifacts(ImmutableList.of(artifact))
+            .build();
+    TaskArtifactUpdateEvent updateEvent =
+        new TaskArtifactUpdateEvent.Builder()
+            .lastChunk(true)
+            .metadata(ImmutableMap.of(A2AMetadataKey.PARTIAL.getType(), true))
             .contextId("context-1")
             .artifact(artifact)
             .taskId("task-id-1")

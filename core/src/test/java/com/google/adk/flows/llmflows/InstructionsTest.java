@@ -32,7 +32,6 @@ import com.google.adk.sessions.Session;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Before;
 import org.junit.Rule;
@@ -122,11 +121,7 @@ public final class InstructionsTest {
     Session session = createSession();
     Part artifactPart = Part.fromText("Artifact content");
     when(mockArtifactService.loadArtifact(
-            eq(session.appName()),
-            eq(session.userId()),
-            eq(session.id()),
-            eq("file.txt"),
-            eq(Optional.empty())))
+            eq(session.appName()), eq(session.userId()), eq(session.id()), eq("file.txt")))
         .thenReturn(Maybe.just(artifactPart));
     LlmAgent agent =
         LlmAgent.builder().name("agent").instruction("File content: {artifact.file.txt}").build();

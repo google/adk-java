@@ -59,7 +59,7 @@ public class InMemoryArtifactServiceTest {
     var unused2 =
         service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact2).blockingGet();
     Optional<Part> result =
-        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, Optional.empty()));
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME));
     assertThat(result).hasValue(artifact2);
   }
 

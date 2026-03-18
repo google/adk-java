@@ -216,9 +216,7 @@ public class McpToolset implements BaseToolset {
                               new McpTool(
                                   tool, this.mcpSession, this.mcpSessionManager, this.objectMapper))
                       .filter(
-                          tool ->
-                              isToolSelected(
-                                  tool, toolFilter, Optional.ofNullable(readonlyContext))));
+                          tool -> isToolSelected(tool, toolFilter.orElse(null), readonlyContext)));
             })
         .retryWhen(
             errorObservable ->

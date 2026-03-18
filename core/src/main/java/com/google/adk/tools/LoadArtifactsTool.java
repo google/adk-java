@@ -169,7 +169,7 @@ public final class LoadArtifactsTool extends BaseTool {
       LlmRequest.Builder llmRequestBuilder, ToolContext toolContext, String artifactName) {
 
     return toolContext
-        .loadArtifact(artifactName, Optional.empty())
+        .loadArtifact(artifactName)
         .flatMapCompletable(
             actualArtifact ->
                 Completable.fromAction(

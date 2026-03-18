@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /** Utility functions for session service. */
 public final class SessionUtils {
@@ -53,7 +54,7 @@ public final class SessionUtils {
         encodedParts.add(part);
       }
     }
-    return toContent(encodedParts, content.role());
+    return toContent(encodedParts, content.role().orElse(null));
   }
 
   /** Decodes Base64-encoded inline blobs in content. */
@@ -79,13 +80,15 @@ public final class SessionUtils {
         decodedParts.add(part);
       }
     }
-    return toContent(decodedParts, content.role());
+    return toContent(decodedParts, content.role().orElse(null));
   }
 
   /** Builds content from parts and optional role. */
-  private static Content toContent(List<Part> parts, Optional<String> role) {
+  private static Content toContent(List<Part> parts, @Nullable String role) {
     Content.Builder contentBuilder = Content.builder().parts(parts);
-    role.ifPresent(contentBuilder::role);
+    if (role != null) {
+      contentBuilder.role(role);
+    }
     return contentBuilder.build();
   }
 }

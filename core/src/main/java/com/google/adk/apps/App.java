@@ -105,6 +105,12 @@ public class App {
     }
 
     @CanIgnoreReturnValue
+    public Builder plugins(Plugin... plugins) {
+      this.plugins = ImmutableList.copyOf(plugins);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
     public Builder eventsCompactionConfig(EventsCompactionConfig eventsCompactionConfig) {
       this.eventsCompactionConfig = eventsCompactionConfig;
       return this;

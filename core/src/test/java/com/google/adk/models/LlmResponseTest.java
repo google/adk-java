@@ -28,7 +28,6 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
-import java.util.Optional;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -74,8 +73,8 @@ public final class LlmResponseTest {
             .partial(true)
             .turnComplete(false)
             .errorCode(new FinishReason("ERR_123"))
-            .errorMessage(Optional.of("An error occurred."))
-            .interrupted(Optional.of(true))
+            .errorMessage("An error occurred.")
+            .interrupted(true)
             .usageMetadata(usageMetadata)
             .build();
 
@@ -113,16 +112,7 @@ public final class LlmResponseTest {
       throws JsonProcessingException {
     Content sampleContent = createSampleFunctionCallContent("tool_abc");
     LlmResponse originalResponse =
-        LlmResponse.builder()
-            .content(sampleContent)
-            .groundingMetadata(Optional.empty())
-            .partial(Optional.empty())
-            .turnComplete(false)
-            .errorCode(Optional.empty())
-            .errorMessage(Optional.empty())
-            .interrupted(Optional.empty())
-            .usageMetadata(Optional.empty())
-            .build();
+        LlmResponse.builder().content(sampleContent).turnComplete(false).build();
 
     String json = originalResponse.toJson();
     assertThat(json).isNotNull();
