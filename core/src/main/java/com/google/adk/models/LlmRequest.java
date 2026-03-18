@@ -150,7 +150,7 @@ public abstract class LlmRequest extends JsonBaseModel {
     abstract LiveConnectConfig liveConnectConfig();
 
     @CanIgnoreReturnValue
-    abstract Builder tools(Map<String, BaseTool> tools);
+    public abstract Builder tools(Map<String, BaseTool> tools);
 
     abstract Map<String, BaseTool> tools();
 
