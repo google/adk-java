@@ -147,7 +147,12 @@ class BatchProcessor implements AutoCloseable {
           } else {
             logger.fine("Successfully wrote " + batch.size() + " rows to BigQuery.");
           }
-        } catch (AppendSerializationError ase) {
+        }
+      } catch (Exception e) {
+        if (e instanceof InterruptedException) {
+          Thread.currentThread().interrupt();
+        }
+        if (e.getCause() instanceof AppendSerializationError ase) {
           logger.log(
               Level.SEVERE, "Failed to write batch to BigQuery due to serialization error", ase);
           Map<Integer, String> rowIndexToErrorMessage = ase.getRowIndexToErrorMessage();
@@ -161,12 +166,9 @@ class BatchProcessor implements AutoCloseable {
             logger.severe(
                 "AppendSerializationError occurred, but no row-specific errors were provided.");
           }
+        } else {
+          logger.log(Level.SEVERE, "Failed to write batch to BigQuery", e);
         }
-      } catch (Exception e) {
-        if (e instanceof InterruptedException) {
-          Thread.currentThread().interrupt();
-        }
-        logger.log(Level.SEVERE, "Failed to write batch to BigQuery", e);
       } finally {
         // Clear the vectors to release the memory.
         root.clear();
@@ -185,7 +187,12 @@ class BatchProcessor implements AutoCloseable {
       return;
     }
     if (vector instanceof VarCharVector varCharVector) {
-      String strValue = (value instanceof JsonNode jsonNode) ? jsonNode.asText() : value.toString();
+      String strValue;
+      if (value instanceof JsonNode jsonNode) {
+        strValue = jsonNode.isTextual() ? jsonNode.asText() : jsonNode.toString();
+      } else {
+        strValue = value.toString();
+      }
       varCharVector.setSafe(index, strValue.getBytes(UTF_8));
     } else if (vector instanceof BigIntVector bigIntVector) {
       long longValue;

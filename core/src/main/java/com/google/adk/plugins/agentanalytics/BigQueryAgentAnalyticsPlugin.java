@@ -16,6 +16,9 @@
 
 package com.google.adk.plugins.agentanalytics;
 
+import static com.google.adk.plugins.agentanalytics.JsonFormatter.convertToJsonNode;
+import static com.google.adk.plugins.agentanalytics.JsonFormatter.smartTruncate;
+import static com.google.adk.plugins.agentanalytics.JsonFormatter.toJavaObject;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 import com.google.adk.agents.BaseAgent;
@@ -25,8 +28,17 @@ import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.BasePlugin;
+import com.google.adk.plugins.agentanalytics.JsonFormatter.ParsedContent;
+import com.google.adk.plugins.agentanalytics.JsonFormatter.TruncationResult;
+import com.google.adk.plugins.agentanalytics.TraceManager.RecordData;
+import com.google.adk.plugins.agentanalytics.TraceManager.SpanIds;
+import com.google.adk.sessions.Session;
+import com.google.adk.tools.AgentTool;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
+import com.google.adk.tools.mcp.AbstractMcpTool;
+import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.auth.oauth2.GoogleCredentials;
@@ -45,12 +57,13 @@ import com.google.cloud.bigquery.storage.v1.StreamWriter;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.SpanContext;
+import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.io.IOException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
@@ -61,7 +74,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import org.threeten.bp.Duration;
+import org.jspecify.annotations.Nullable;
 
 /**
  * BigQuery Agent Analytics Plugin for Java.
@@ -74,6 +87,14 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   private static final ImmutableList<String> DEFAULT_AUTH_SCOPES =
       ImmutableList.of("https://www.googleapis.com/auth/cloud-platform");
   private static final AtomicLong threadCounter = new AtomicLong(0);
+  private static final ImmutableMap<String, String> HITL_EVENT_TYPES =
+      ImmutableMap.of(
+          "adk_request_credential",
+          "HITL_CREDENTIAL_REQUEST",
+          "adk_request_confirmation",
+          "HITL_CONFIRMATION_REQUEST",
+          "adk_request_input",
+          "HITL_INPUT_REQUEST");
 
   private final BigQueryLoggerConfig config;
   private final BigQuery bigQuery;
@@ -81,6 +102,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   private final ScheduledExecutorService executor;
   private final Object tableEnsuredLock = new Object();
   @VisibleForTesting final BatchProcessor batchProcessor;
+  @VisibleForTesting final TraceManager traceManager;
   private volatile boolean tableEnsured = false;
 
   public BigQueryAgentAnalyticsPlugin(BigQueryLoggerConfig config) throws IOException {
@@ -96,6 +118,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
         r -> new Thread(r, "bq-analytics-plugin-" + threadCounter.getAndIncrement());
     this.executor = Executors.newScheduledThreadPool(1, threadFactory);
     this.writeClient = createWriteClient(config);
+    this.traceManager = createTraceManager();
 
     if (config.enabled()) {
       StreamWriter writer = createWriter(config);
@@ -194,9 +217,10 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     RetrySettings retrySettings =
         RetrySettings.newBuilder()
             .setMaxAttempts(retryConfig.maxRetries())
-            .setInitialRetryDelay(Duration.ofMillis(retryConfig.initialDelay().toMillis()))
+            .setInitialRetryDelay(
+                org.threeten.bp.Duration.ofMillis(retryConfig.initialDelay().toMillis()))
             .setRetryDelayMultiplier(retryConfig.multiplier())
-            .setMaxRetryDelay(Duration.ofMillis(retryConfig.maxDelay().toMillis()))
+            .setMaxRetryDelay(org.threeten.bp.Duration.ofMillis(retryConfig.maxDelay().toMillis()))
             .build();
 
     String streamName = getStreamName(config);
@@ -210,58 +234,130 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     }
   }
 
+  protected TraceManager createTraceManager() {
+    return new TraceManager();
+  }
+
   private void logEvent(
       String eventType,
       InvocationContext invocationContext,
-      Optional<CallbackContext> callbackContext,
       Object content,
-      Map<String, Object> extraAttributes) {
-    if (batchProcessor == null) {
+      Optional<EventData> eventData) {
+    logEvent(eventType, invocationContext, content, false, eventData);
+  }
+
+  private void logEvent(
+      String eventType,
+      InvocationContext invocationContext,
+      Object content,
+      boolean isContentTruncated,
+      Optional<EventData> eventData) {
+    if (!config.enabled() || batchProcessor == null) {
       return;
     }
-
+    if (!config.eventAllowlist().isEmpty() && !config.eventAllowlist().contains(eventType)) {
+      return;
+    }
+    if (config.eventDenylist().contains(eventType)) {
+      return;
+    }
+    // Ensure table exists before logging.
     ensureTableExistsOnce();
-
+    // Log common fields
     Map<String, Object> row = new HashMap<>();
     row.put("timestamp", Instant.now());
     row.put("event_type", eventType);
-    row.put(
-        "agent",
-        callbackContext.map(CallbackContext::agentName).orElse(invocationContext.agent().name()));
+    row.put("agent", invocationContext.agent().name());
     row.put("session_id", invocationContext.session().id());
     row.put("invocation_id", invocationContext.invocationId());
     row.put("user_id", invocationContext.userId());
+    // Parse and log content
+    ParsedContent parsedContent = JsonFormatter.parse(content, config.maxContentLength());
+    row.put("content_parts", parsedContent.parts());
+    row.put("content", parsedContent.content());
+    row.put("is_truncated", isContentTruncated || parsedContent.isTruncated());
 
-    if (content instanceof Content contentParts) {
-      row.put(
-          "content_parts",
-          JsonFormatter.formatContentParts(Optional.of(contentParts), config.maxContentLength()));
-      row.put(
-          "content", JsonFormatter.smartTruncate(content, config.maxContentLength()).toString());
-    } else if (content != null) {
-      row.put(
-          "content", JsonFormatter.smartTruncate(content, config.maxContentLength()).toString());
+    EventData data = eventData.orElse(EventData.builder().build());
+    row.put("status", data.status());
+    data.errorMessage().ifPresent(msg -> row.put("error_message", msg));
+
+    Map<String, Object> latencyMap = extractLatency(data);
+    if (latencyMap != null) {
+      row.put("latency_ms", convertToJsonNode(latencyMap));
     }
+    row.put("attributes", convertToJsonNode(getAttributes(data, invocationContext)));
 
-    Map<String, Object> attributes = new HashMap<>(config.customTags());
-    if (extraAttributes != null) {
-      attributes.putAll(extraAttributes);
-    }
-    row.put(
-        "attributes",
-        JsonFormatter.smartTruncate(attributes, config.maxContentLength()).toString());
-
-    addTraceDetails(row);
+    addTraceDetails(row, invocationContext, eventData);
     batchProcessor.append(row);
   }
 
-  // TODO(b/491849911): Implement own trace management functionality.
-  private void addTraceDetails(Map<String, Object> row) {
-    SpanContext spanContext = Span.current().getSpanContext();
-    if (spanContext.isValid()) {
-      row.put("trace_id", spanContext.getTraceId());
-      row.put("span_id", spanContext.getSpanId());
+  private void addTraceDetails(
+      Map<String, Object> row, InvocationContext invocationContext, Optional<EventData> eventData) {
+    String traceId =
+        eventData
+            .flatMap(EventData::traceIdOverride)
+            .orElseGet(() -> traceManager.getTraceId(invocationContext));
+    Optional<SpanIds> ambientSpanIds = traceManager.getAmbientSpanAndParent();
+    SpanIds spanIds = ambientSpanIds.orElse(traceManager.getCurrentSpanAndParent());
+
+    row.put("trace_id", traceId);
+    row.put(
+        "span_id",
+        eventData.flatMap(EventData::spanIdOverride).orElse(spanIds.spanId().orElse(null)));
+    row.put(
+        "parent_span_id",
+        eventData
+            .flatMap(EventData::parentSpanIdOverride)
+            .orElse(spanIds.parentSpanId().orElse(null)));
+  }
+
+  private @Nullable Map<String, Object> extractLatency(EventData eventData) {
+    Map<String, Object> latencyMap = new HashMap<>();
+    eventData.latency().ifPresent(v -> latencyMap.put("total_ms", v.toMillis()));
+    eventData
+        .timeToFirstToken()
+        .ifPresent(v -> latencyMap.put("time_to_first_token_ms", v.toMillis()));
+    return latencyMap.isEmpty() ? null : latencyMap;
+  }
+
+  private Map<String, Object> getAttributes(
+      EventData eventData, InvocationContext invocationContext) {
+    Map<String, Object> attributes = new HashMap<>(eventData.extraAttributes());
+
+    attributes.put("root_agent_name", traceManager.getRootAgentName());
+    eventData.model().ifPresent(m -> attributes.put("model", m));
+    eventData.modelVersion().ifPresent(mv -> attributes.put("model_version", mv));
+    eventData
+        .usageMetadata()
+        .ifPresent(
+            um -> {
+              TruncationResult result = smartTruncate(um, config.maxContentLength());
+              attributes.put("usage_metadata", toJavaObject(result.node()));
+            });
+
+    if (config.logSessionMetadata()) {
+      try {
+        Session session = invocationContext.session();
+        Map<String, Object> sessionMeta = new HashMap<>();
+        sessionMeta.put("session_id", session.id());
+        sessionMeta.put("app_name", session.appName());
+        sessionMeta.put("user_id", session.userId());
+
+        if (!session.state().isEmpty()) {
+          TruncationResult result = smartTruncate(session.state(), config.maxContentLength());
+          sessionMeta.put("state", toJavaObject(result.node()));
+        }
+        attributes.put("session_metadata", sessionMeta);
+      } catch (RuntimeException e) {
+        // Ignore session enrichment errors as in Python.
+      }
     }
+
+    if (!config.customTags().isEmpty()) {
+      attributes.put("custom_tags", config.customTags());
+    }
+
+    return attributes;
   }
 
   @Override
@@ -284,77 +380,237 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     return Completable.complete();
   }
 
+  private Optional<EventData> getCompletedEventData(InvocationContext invocationContext) {
+    String traceId = traceManager.getTraceId(invocationContext);
+    // Pop the invocation span from the trace manager.
+    Optional<RecordData> popped = traceManager.popSpan();
+    if (popped.isEmpty()) {
+      // No invocation span to pop.
+      logger.info("No invocation span to pop.");
+      return Optional.empty();
+    }
+    String parentSpanId = traceManager.getCurrentSpanId();
+
+    EventData.Builder eventDataBuilder = EventData.builder();
+    eventDataBuilder.setTraceIdOverride(traceId);
+    eventDataBuilder.setLatency(popped.get().duration());
+    // Only override span IDs when no ambient OTel span exists.
+    // Keep STARTING/COMPLETED pairs consistent.
+    if (!traceManager.hasAmbientSpan()) {
+      if (parentSpanId != null) {
+        eventDataBuilder.setParentSpanIdOverride(parentSpanId);
+      }
+      if (popped.get().spanId() != null) {
+        eventDataBuilder.setSpanIdOverride(popped.get().spanId());
+      }
+    }
+    return Optional.of(eventDataBuilder.build());
+  }
+
+  // --- Plugin callbacks ---
   @Override
   public Maybe<Content> onUserMessageCallback(
       InvocationContext invocationContext, Content userMessage) {
     return Maybe.fromAction(
-        () -> logEvent("USER_MESSAGE", invocationContext, Optional.empty(), userMessage, null));
-  }
-
-  @Override
-  public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
-    return Maybe.fromAction(
-        () -> logEvent("INVOCATION_START", invocationContext, Optional.empty(), null, null));
+        () -> {
+          traceManager.ensureInvocationSpan(invocationContext);
+          logEvent("USER_MESSAGE_RECEIVED", invocationContext, userMessage, Optional.empty());
+          if (userMessage.parts().isPresent()) {
+            for (Part part : userMessage.parts().get()) {
+              if (part.functionCall().isPresent()
+                  && HITL_EVENT_TYPES.containsKey(part.functionCall().get().name().orElse(""))) {
+                String hitlEvent = HITL_EVENT_TYPES.get(part.functionCall().get().name().get());
+                TruncationResult truncatedResult = smartTruncate(part, config.maxContentLength());
+                logEvent(
+                    hitlEvent + "_COMPLETED",
+                    invocationContext,
+                    ImmutableMap.of(
+                        "tool",
+                        part.functionCall().get().name().get(),
+                        "result",
+                        truncatedResult.node()),
+                    truncatedResult.isTruncated(),
+                    Optional.empty());
+              }
+            }
+          }
+        });
   }
 
   @Override
   public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
     return Maybe.fromAction(
         () -> {
-          Map<String, Object> attrs = new HashMap<>();
-          attrs.put("event_author", event.author());
+          EventData.Builder eventDataBuilder =
+              EventData.builder()
+                  .setExtraAttributes(
+                      ImmutableMap.<String, Object>builder()
+                          .put("state_delta", event.actions().stateDelta())
+                          .put("author", event.author())
+                          .buildOrThrow());
           logEvent(
-              "EVENT", invocationContext, Optional.empty(), event.content().orElse(null), attrs);
+              "STATE_DELTA",
+              invocationContext,
+              event.content().orElse(null),
+              Optional.of(eventDataBuilder.build()));
+
+          if (event.content().isPresent() && event.content().get().parts().isPresent()) {
+            for (Part part : event.content().get().parts().get()) {
+              if (part.functionCall().isPresent()
+                  && HITL_EVENT_TYPES.containsKey(part.functionCall().get().name().orElse(""))) {
+                String hitlEvent = HITL_EVENT_TYPES.get(part.functionCall().get().name().get());
+                TruncationResult truncatedResult =
+                    smartTruncate(part.functionCall().get().args(), config.maxContentLength());
+                logEvent(
+                    hitlEvent + "_COMPLETED",
+                    invocationContext,
+                    ImmutableMap.of(
+                        "tool",
+                        part.functionCall().get().name().get(),
+                        "args",
+                        truncatedResult.node()),
+                    truncatedResult.isTruncated(),
+                    Optional.empty());
+              }
+              if (part.functionResponse().isPresent()
+                  && HITL_EVENT_TYPES.containsKey(
+                      part.functionResponse().get().name().orElse(""))) {
+                String hitlEvent = HITL_EVENT_TYPES.get(part.functionResponse().get().name().get());
+                TruncationResult truncatedResult =
+                    smartTruncate(
+                        part.functionResponse().get().response(), config.maxContentLength());
+                logEvent(
+                    hitlEvent + "_COMPLETED",
+                    invocationContext,
+                    ImmutableMap.of(
+                        "tool",
+                        part.functionResponse().get().name().get(),
+                        "response",
+                        truncatedResult.node()),
+                    truncatedResult.isTruncated(),
+                    Optional.empty());
+              }
+            }
+          }
         });
+  }
+
+  @Override
+  public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
+    traceManager.ensureInvocationSpan(invocationContext);
+    return Maybe.fromAction(
+        () -> logEvent("INVOCATION_STARTING", invocationContext, null, Optional.empty()));
   }
 
   @Override
   public Completable afterRunCallback(InvocationContext invocationContext) {
     return Completable.fromAction(
         () -> {
-          logEvent("INVOCATION_END", invocationContext, Optional.empty(), null, null);
+          logEvent(
+              "INVOCATION_COMPLETED",
+              invocationContext,
+              null,
+              getCompletedEventData(invocationContext));
           batchProcessor.flush();
+          traceManager.clearStack();
         });
   }
 
   @Override
   public Maybe<Content> beforeAgentCallback(BaseAgent agent, CallbackContext callbackContext) {
     return Maybe.fromAction(
-        () ->
-            logEvent(
-                "AGENT_START",
-                callbackContext.invocationContext(),
-                Optional.of(callbackContext),
-                null,
-                null));
+        () -> {
+          traceManager.pushSpan("agent:" + agent.name());
+          logEvent("AGENT_STARTING", callbackContext.invocationContext(), null, Optional.empty());
+        });
   }
 
   @Override
   public Maybe<Content> afterAgentCallback(BaseAgent agent, CallbackContext callbackContext) {
     return Maybe.fromAction(
-        () ->
-            logEvent(
-                "AGENT_END",
-                callbackContext.invocationContext(),
-                Optional.of(callbackContext),
-                null,
-                null));
+        () -> {
+          logEvent(
+              "AGENT_COMPLETED",
+              callbackContext.invocationContext(),
+              null,
+              getCompletedEventData(callbackContext.invocationContext()));
+        });
   }
 
+  /**
+   * Callback before LLM call.
+   *
+   * <p>Logs the LLM request details including: 1. Prompt content 2. System instruction (if
+   * available)
+   *
+   * <p>The content is formatted as 'Prompt: {prompt} | System Prompt: {system_prompt}'.
+   */
   @Override
   public Maybe<LlmResponse> beforeModelCallback(
       CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
     return Maybe.fromAction(
         () -> {
-          Map<String, Object> attrs = new HashMap<>();
+          Map<String, Object> attributes = new HashMap<>();
+          Map<String, Object> llmConfig = new HashMap<>();
           LlmRequest req = llmRequest.build();
-          attrs.put("model", req.model().orElse("unknown"));
-          logEvent(
-              "MODEL_REQUEST",
-              callbackContext.invocationContext(),
-              Optional.of(callbackContext),
-              req,
-              attrs);
+          if (req.config().isPresent()) {
+            if (req.config().get().temperature().isPresent()) {
+              llmConfig.put("temperature", req.config().get().temperature().get());
+            }
+            if (req.config().get().topP().isPresent()) {
+              llmConfig.put("top_p", req.config().get().topP().get());
+            }
+            if (req.config().get().topK().isPresent()) {
+              llmConfig.put("top_k", req.config().get().topK().get());
+            }
+            if (req.config().get().candidateCount().isPresent()) {
+              llmConfig.put("candidate_count", req.config().get().candidateCount().get());
+            }
+            if (req.config().get().maxOutputTokens().isPresent()) {
+              llmConfig.put("max_output_tokens", req.config().get().maxOutputTokens().get());
+            }
+            if (req.config().get().stopSequences().isPresent()) {
+              llmConfig.put("stop_sequences", req.config().get().stopSequences().get());
+            }
+            if (req.config().get().presencePenalty().isPresent()) {
+              llmConfig.put("presence_penalty", req.config().get().presencePenalty().get());
+            }
+            if (req.config().get().frequencyPenalty().isPresent()) {
+              llmConfig.put("frequency_penalty", req.config().get().frequencyPenalty().get());
+            }
+            if (req.config().get().responseMimeType().isPresent()) {
+              llmConfig.put("response_mime_type", req.config().get().responseMimeType().get());
+            }
+            if (req.config().get().responseSchema().isPresent()) {
+              llmConfig.put("response_schema", req.config().get().responseSchema().get());
+            }
+            if (req.config().get().seed().isPresent()) {
+              llmConfig.put("seed", req.config().get().seed().get());
+            }
+            if (req.config().get().responseLogprobs().isPresent()) {
+              llmConfig.put("response_logprobs", req.config().get().responseLogprobs().get());
+            }
+            if (req.config().get().logprobs().isPresent()) {
+              llmConfig.put("logprobs", req.config().get().logprobs().get());
+            }
+            // Put labels in attributes instead of LLM config.
+            if (req.config().get().labels().isPresent()) {
+              attributes.put("labels", req.config().get().labels().get());
+            }
+          }
+          if (!llmConfig.isEmpty()) {
+            attributes.put("llm_config", llmConfig);
+          }
+          if (!req.tools().isEmpty()) {
+            attributes.put("tools", req.tools().keySet());
+          }
+          EventData eventData =
+              EventData.builder()
+                  .setModel(req.model().orElse(""))
+                  .setExtraAttributes(attributes)
+                  .build();
+          traceManager.pushSpan("llm_request");
+          logEvent("LLM_REQUEST", callbackContext.invocationContext(), req, Optional.of(eventData));
         });
   }
 
@@ -363,14 +619,99 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       CallbackContext callbackContext, LlmResponse llmResponse) {
     return Maybe.fromAction(
         () -> {
-          Map<String, Object> attrs = new HashMap<>();
-          llmResponse.usageMetadata().ifPresent(u -> attrs.put("usage_metadata", u));
+          // TODO(b/495809488): Add formatting of the content
+          ParsedContent parsedContent =
+              JsonFormatter.parse(llmResponse.content().orElse(null), config.maxContentLength());
+
+          Map<String, Object> usageDict = new HashMap<>();
+          llmResponse
+              .usageMetadata()
+              .ifPresent(
+                  usage -> {
+                    usage.promptTokenCount().ifPresent(c -> usageDict.put("prompt", c));
+                    usage.candidatesTokenCount().ifPresent(c -> usageDict.put("completion", c));
+                    usage.totalTokenCount().ifPresent(c -> usageDict.put("total", c));
+                  });
+
+          Map<String, Object> contentMap = new HashMap<>();
+          if (parsedContent.content() != null && !parsedContent.content().isNull()) {
+            contentMap.put("response", parsedContent.content());
+          }
+          if (!usageDict.isEmpty()) {
+            contentMap.put("usage", usageDict);
+          }
+
+          InvocationContext invocationContext = callbackContext.invocationContext();
+          String spanId = traceManager.getCurrentSpanId();
+          SpanIds spanIds = traceManager.getCurrentSpanAndParent();
+          String parentSpanId = spanIds.parentSpanId().orElse(null);
+
+          boolean isPopped = false;
+          Duration duration = Duration.ZERO;
+          Duration tfft = null;
+
+          if (llmResponse.partial().orElse(false)) {
+            // Streaming chunk - do NOT pop span yet
+            if (spanId != null) {
+              traceManager.recordFirstToken(spanId);
+              Optional<Instant> startTime = traceManager.getStartTime(spanId);
+              Optional<Instant> firstTokenTime = traceManager.getFirstTokenTime(spanId);
+              if (startTime.isPresent()) {
+                duration = Duration.between(startTime.get(), Instant.now());
+              }
+              if (startTime.isPresent() && firstTokenTime.isPresent()) {
+                tfft = Duration.between(startTime.get(), firstTokenTime.get());
+              }
+            }
+          } else {
+            // Final response - pop span
+            if (spanId != null) {
+              traceManager.recordFirstToken(spanId);
+              Optional<Instant> startTime = traceManager.getStartTime(spanId);
+              Optional<Instant> firstTokenTime = traceManager.getFirstTokenTime(spanId);
+              if (startTime.isPresent() && firstTokenTime.isPresent()) {
+                tfft = Duration.between(startTime.get(), firstTokenTime.get());
+              }
+            }
+            Optional<RecordData> popped = traceManager.popSpan();
+            if (popped.isPresent()) {
+              spanId = popped.get().spanId();
+              duration = popped.get().duration();
+              isPopped = true;
+            }
+          }
+
+          boolean hasAmbient = traceManager.hasAmbientSpan();
+          boolean useOverride = isPopped && !hasAmbient;
+
+          EventData.Builder eventDataBuilder = EventData.builder();
+          if (!duration.isZero()) {
+            eventDataBuilder.setLatency(duration);
+          }
+          if (tfft != null) {
+            eventDataBuilder.setTimeToFirstToken(tfft);
+          }
+          llmResponse.modelVersion().ifPresent(eventDataBuilder::setModelVersion);
+
+          if (!usageDict.isEmpty()) {
+            eventDataBuilder.setUsageMetadata(usageDict);
+          }
+
+          if (useOverride) {
+            if (spanId != null) {
+              eventDataBuilder.setSpanIdOverride(spanId);
+            }
+            if (parentSpanId != null) {
+              eventDataBuilder.setParentSpanIdOverride(parentSpanId);
+            }
+          }
+
           logEvent(
-              "MODEL_RESPONSE",
-              callbackContext.invocationContext(),
-              Optional.of(callbackContext),
-              llmResponse,
-              attrs);
+              "LLM_RESPONSE",
+              invocationContext,
+              contentMap.isEmpty() ? null : contentMap,
+              parsedContent.isTruncated(),
+              Optional.of(eventDataBuilder.build()));
         });
   }
 
@@ -379,14 +720,28 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       CallbackContext callbackContext, LlmRequest.Builder llmRequest, Throwable error) {
     return Maybe.fromAction(
         () -> {
-          Map<String, Object> attrs = new HashMap<>();
-          attrs.put("error_message", error.getMessage());
-          logEvent(
-              "MODEL_ERROR",
-              callbackContext.invocationContext(),
-              Optional.of(callbackContext),
-              null,
-              attrs);
+          InvocationContext invocationContext = callbackContext.invocationContext();
+          Optional<RecordData> popped = traceManager.popSpan();
+          String spanId = popped.map(RecordData::spanId).orElse(null);
+
+          SpanIds spanIds = traceManager.getCurrentSpanAndParent();
+          String parentSpanId = spanIds.spanId().orElse(null);
+
+          boolean hasAmbient = traceManager.hasAmbientSpan();
+          EventData.Builder eventDataBuilder =
+              EventData.builder()
+                  .setStatus("ERROR")
+                  .setLatency(popped.get().duration())
+                  .setErrorMessage(error.getMessage());
+          if (!hasAmbient) {
+            if (spanId != null) {
+              eventDataBuilder.setSpanIdOverride(spanId);
+            }
+            if (parentSpanId != null) {
+              eventDataBuilder.setParentSpanIdOverride(parentSpanId);
+            }
+          }
+          logEvent("LLM_ERROR", invocationContext, null, Optional.of(eventDataBuilder.build()));
         });
   }
 
@@ -395,14 +750,12 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext) {
     return Maybe.fromAction(
         () -> {
-          Map<String, Object> attrs = new HashMap<>();
-          attrs.put("tool_name", tool.name());
-          logEvent(
-              "TOOL_START",
-              toolContext.invocationContext(),
-              Optional.of(toolContext),
-              toolArgs,
-              attrs);
+          TruncationResult res = smartTruncate(toolArgs, config.maxContentLength());
+          ImmutableMap<String, Object> contentMap =
+              ImmutableMap.of(
+                  "tool_origin", getToolOrigin(tool), "tool", tool.name(), "args", res.node());
+          traceManager.pushSpan("tool");
+          logEvent("TOOL_STARTING", toolContext.invocationContext(), contentMap, Optional.empty());
         });
   }
 
@@ -414,10 +767,35 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       Map<String, Object> result) {
     return Maybe.fromAction(
         () -> {
-          Map<String, Object> attrs = new HashMap<>();
-          attrs.put("tool_name", tool.name());
+          Optional<RecordData> popped = traceManager.popSpan();
+          TruncationResult truncationResult = smartTruncate(result, config.maxContentLength());
+          ImmutableMap<String, Object> contentMap =
+              ImmutableMap.of(
+                  "tool",
+                  tool.name(),
+                  "result",
+                  truncationResult.node(),
+                  "tool_origin",
+                  getToolOrigin(tool));
+
+          SpanIds spanIds = traceManager.getCurrentSpanAndParent();
+          boolean hasAmbient = traceManager.hasAmbientSpan();
+
+          EventData.Builder eventDataBuilder = EventData.builder();
+          if (popped.isPresent()) {
+            eventDataBuilder.setLatency(popped.get().duration());
+          }
+          if (!hasAmbient) {
+            popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
+            spanIds.spanId().ifPresent(eventDataBuilder::setParentSpanIdOverride);
+          }
+
           logEvent(
-              "TOOL_END", toolContext.invocationContext(), Optional.of(toolContext), result, attrs);
+              "TOOL_COMPLETED",
+              toolContext.invocationContext(),
+              contentMap,
+              truncationResult.isTruncated(),
+              Optional.of(eventDataBuilder.build()));
         });
   }
 
@@ -426,11 +804,51 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext, Throwable error) {
     return Maybe.fromAction(
         () -> {
-          Map<String, Object> attrs = new HashMap<>();
-          attrs.put("tool_name", tool.name());
-          attrs.put("error_message", error.getMessage());
+          Optional<RecordData> popped = traceManager.popSpan();
+          TruncationResult truncationResult = smartTruncate(toolArgs, config.maxContentLength());
+          String toolOrigin = getToolOrigin(tool);
+          ImmutableMap<String, Object> contentMap =
+              ImmutableMap.of(
+                  "tool", tool.name(), "args", truncationResult.node(), "tool_origin", toolOrigin);
+
+          SpanIds spanIds = traceManager.getCurrentSpanAndParent();
+          boolean hasAmbient = traceManager.hasAmbientSpan();
+
+          EventData.Builder eventDataBuilder =
+              EventData.builder().setStatus("ERROR").setErrorMessage(error.getMessage());
+
+          if (popped.isPresent()) {
+            eventDataBuilder.setLatency(popped.get().duration());
+          }
+          if (!hasAmbient) {
+            popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
+            spanIds.spanId().ifPresent(eventDataBuilder::setParentSpanIdOverride);
+          }
+
           logEvent(
-              "TOOL_ERROR", toolContext.invocationContext(), Optional.of(toolContext), null, attrs);
+              "TOOL_ERROR",
+              toolContext.invocationContext(),
+              contentMap,
+              truncationResult.isTruncated(),
+              Optional.of(eventDataBuilder.build()));
         });
+  }
+
+  private String getToolOrigin(BaseTool tool) {
+    if (tool instanceof AbstractMcpTool) {
+      return "MCP";
+    }
+    if (tool instanceof AgentTool agentTool) {
+      return agentTool.getAgent().toolOrigin().equals(AgentOrigin.BASE_AGENT)
+          ? AgentOrigin.SUB_AGENT.toString()
+          : agentTool.getAgent().toolOrigin().toString();
+    }
+    if (tool.name().equals("transfer_to_agent")) {
+      return "TRANSFER_AGENT";
+    }
+    if (tool instanceof FunctionTool) {
+      return "LOCAL";
+    }
+    return "UNKNOWN";
   }
 }
