@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0-rc.1](https://github.com/google/adk-java/compare/v1.0.0-rc.1...v1.1.0-rc.1) (2026-03-21)
+
+
+### Features
+
+* enabling output_schema and tools to coexist ([40ca6a7](https://github.com/google/adk-java/commit/40ca6a7c5163f711e02a54163d6066f7cd86e64d))
+
+
+### Bug Fixes
+
+* handle null `AiMessage.text()` to prevent NPE and add unit test (PR [#1035](https://github.com/google/adk-java/issues/1035)) ([3e21e7a](https://github.com/google/adk-java/commit/3e21e7ac46b634341819b3543388a38caef85516))
+* Removing deprecated methods from Runner ([3633a7d](https://github.com/google/adk-java/commit/3633a7dd071265087ea2ff148d419969b0c888ef))
+* Using App conformant agent names ([f3eb936](https://github.com/google/adk-java/commit/f3eb936772740b7dc7a803a40d0d39fdbccc4af4))
+
 ## [1.0.0-rc.1](https://github.com/google/adk-java/compare/v0.9.0...v1.0.0-rc.1) (2026-03-20)
 
 
