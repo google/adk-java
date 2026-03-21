@@ -154,17 +154,11 @@ public final class InMemorySessionService implements BaseSessionService {
     if (config.numRecentEvents().isEmpty() && config.afterTimestamp().isPresent()) {
       Instant threshold = config.afterTimestamp().get();
 
-      eventsInCopy.removeIf(
-          event -> getEventTimestampEpochSeconds(event) < threshold.getEpochSecond());
+      eventsInCopy.removeIf(event -> getInstantFromEvent(event).isBefore(threshold));
     }
 
     // Merge state into the potentially filtered copy and return
     return Maybe.just(mergeWithGlobalState(appName, userId, sessionCopy));
-  }
-
-  // Helper to get event timestamp as epoch seconds
-  private long getEventTimestampEpochSeconds(Event event) {
-    return event.timestamp() / 1000L;
   }
 
   @Override
@@ -294,10 +288,7 @@ public final class InMemorySessionService implements BaseSessionService {
   /** Converts an event's timestamp to an Instant. Adapt based on actual Event structure. */
   // TODO: have Event.timestamp() return Instant directly
   private Instant getInstantFromEvent(Event event) {
-    double epochSeconds = getEventTimestampEpochSeconds(event);
-    long seconds = (long) epochSeconds;
-    long nanos = (long) ((epochSeconds % 1.0) * 1_000_000_000L);
-    return Instant.ofEpochSecond(seconds, nanos);
+    return Instant.ofEpochMilli(event.timestamp());
   }
 
   /**

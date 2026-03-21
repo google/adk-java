@@ -16,6 +16,7 @@
 
 package com.google.adk.telemetry;
 
+import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -31,11 +32,15 @@ import com.google.adk.models.LlmResponse;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
-import com.google.adk.sessions.SessionKey;
+import com.google.adk.testing.TestLlm;
+import com.google.adk.testing.TestUtils;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
+import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
@@ -54,6 +59,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -123,10 +129,7 @@ public class ContextPropagationTest {
         parentSpanData.getSpanContext().getTraceId(),
         toolCallSpanData.getSpanContext().getTraceId());
 
-    assertEquals(
-        "Tool call's parent should be the parent span",
-        parentSpanData.getSpanContext().getSpanId(),
-        toolCallSpanData.getParentSpanContext().getSpanId());
+    assertParent(parentSpanData, toolCallSpanData);
   }
 
   @Test
@@ -146,7 +149,7 @@ public class ContextPropagationTest {
 
     // Then: Should create root span (backward compatible)
     List<SpanData> spans = openTelemetryRule.getSpans();
-    assertEquals("Should have exactly 1 span", 1, spans.size());
+    assertThat(spans).hasSize(1);
 
     SpanData toolCallSpanData = spans.get(0);
     assertFalse(
@@ -193,7 +196,7 @@ public class ContextPropagationTest {
     List<SpanData> spans = openTelemetryRule.getSpans();
     // The 4 spans are: "parent", "invocation", "tool_call [testTool]", and "tool_response
     // [testTool]".
-    assertEquals("Should have 4 spans in the hierarchy", 4, spans.size());
+    assertThat(spans).hasSize(4);
 
     SpanData parentSpanData = findSpanByName("parent");
     String parentTraceId = parentSpanData.getSpanContext().getTraceId();
@@ -210,22 +213,13 @@ public class ContextPropagationTest {
     SpanData toolResponseSpanData = findSpanByName("tool_response [testTool]");
 
     // invocation should be child of parent
-    assertEquals(
-        "Invocation should be child of parent",
-        parentSpanData.getSpanContext().getSpanId(),
-        invocationSpanData.getParentSpanContext().getSpanId());
+    assertParent(parentSpanData, invocationSpanData);
 
     // tool_call should be child of invocation
-    assertEquals(
-        "Tool call should be child of invocation",
-        invocationSpanData.getSpanContext().getSpanId(),
-        toolCallSpanData.getParentSpanContext().getSpanId());
+    assertParent(invocationSpanData, toolCallSpanData);
 
     // tool_response should be child of tool_call
-    assertEquals(
-        "Tool response should be child of tool call",
-        toolCallSpanData.getSpanContext().getSpanId(),
-        toolResponseSpanData.getParentSpanContext().getSpanId());
+    assertParent(toolCallSpanData, toolResponseSpanData);
   }
 
   @Test
@@ -253,7 +247,6 @@ public class ContextPropagationTest {
     // Verify all tool calls link to same parent
     SpanData parentSpanData = findSpanByName("parent");
     String parentTraceId = parentSpanData.getSpanContext().getTraceId();
-    String parentSpanId = parentSpanData.getSpanContext().getSpanId();
 
     // All tool calls should have same trace ID and parent span ID
     List<SpanData> toolCallSpans =
@@ -261,7 +254,7 @@ public class ContextPropagationTest {
             .filter(s -> s.getName().startsWith("tool_call"))
             .toList();
 
-    assertEquals("Should have 3 tool call spans", 3, toolCallSpans.size());
+    assertThat(toolCallSpans).hasSize(3);
 
     toolCallSpans.forEach(
         span -> {
@@ -269,10 +262,7 @@ public class ContextPropagationTest {
               "Tool call should have same trace ID as parent",
               parentTraceId,
               span.getSpanContext().getTraceId());
-          assertEquals(
-              "Tool call should have parent as parent span",
-              parentSpanId,
-              span.getParentSpanContext().getSpanId());
+          assertParent(parentSpanData, span);
         });
   }
 
@@ -298,10 +288,7 @@ public class ContextPropagationTest {
     SpanData invocationSpanData = findSpanByName("invocation");
     SpanData invokeAgentSpanData = findSpanByName("invoke_agent test-agent");
 
-    assertEquals(
-        "Agent run should be child of invocation",
-        invocationSpanData.getSpanContext().getSpanId(),
-        invokeAgentSpanData.getParentSpanContext().getSpanId());
+    assertParent(invocationSpanData, invokeAgentSpanData);
   }
 
   @Test
@@ -323,15 +310,12 @@ public class ContextPropagationTest {
     }
 
     List<SpanData> spans = openTelemetryRule.getSpans();
-    assertEquals("Should have 2 spans", 2, spans.size());
+    assertThat(spans).hasSize(2);
 
     SpanData invokeAgentSpanData = findSpanByName("invoke_agent test-agent");
     SpanData callLlmSpanData = findSpanByName("call_llm");
 
-    assertEquals(
-        "Call LLM should be child of agent run",
-        invokeAgentSpanData.getSpanContext().getSpanId(),
-        callLlmSpanData.getParentSpanContext().getSpanId());
+    assertParent(invokeAgentSpanData, callLlmSpanData);
   }
 
   @Test
@@ -349,10 +333,7 @@ public class ContextPropagationTest {
     SpanData parentSpanData = findSpanByName("invocation");
     SpanData agentSpanData = findSpanByName("invoke_agent");
 
-    assertEquals(
-        "Agent span should be a child of the invocation span",
-        parentSpanData.getSpanContext().getSpanId(),
-        agentSpanData.getParentSpanContext().getSpanId());
+    assertParent(parentSpanData, agentSpanData);
   }
 
   @Test
@@ -380,9 +361,7 @@ public class ContextPropagationTest {
 
     SpanData parentSpanData = findSpanByName("parent");
     SpanData flowableSpanData = findSpanByName("flowable");
-    assertEquals(
-        parentSpanData.getSpanContext().getSpanId(),
-        flowableSpanData.getParentSpanContext().getSpanId());
+    assertParent(parentSpanData, flowableSpanData);
     assertTrue(flowableSpanData.hasEnded());
   }
 
@@ -469,9 +448,7 @@ public class ContextPropagationTest {
 
     SpanData parentSpanData = findSpanByName("parent");
     SpanData transformerSpanData = findSpanByName("transformer");
-    assertEquals(
-        parentSpanData.getSpanContext().getSpanId(),
-        transformerSpanData.getParentSpanContext().getSpanId());
+    assertParent(parentSpanData, transformerSpanData);
     assertTrue(transformerSpanData.hasEnded());
   }
 
@@ -485,7 +462,7 @@ public class ContextPropagationTest {
       span.end();
     }
     List<SpanData> spans = openTelemetryRule.getSpans();
-    assertEquals(1, spans.size());
+    assertThat(spans).hasSize(1);
     SpanData spanData = spans.get(0);
     Attributes attrs = spanData.getAttributes();
     assertEquals("invoke_agent", attrs.get(AttributeKey.stringKey("gen_ai.operation.name")));
@@ -504,7 +481,7 @@ public class ContextPropagationTest {
       span.end();
     }
     List<SpanData> spans = openTelemetryRule.getSpans();
-    assertEquals(1, spans.size());
+    assertThat(spans).hasSize(1);
     SpanData spanData = spans.get(0);
     Attributes attrs = spanData.getAttributes();
     assertEquals("execute_tool", attrs.get(AttributeKey.stringKey("gen_ai.operation.name")));
@@ -541,7 +518,7 @@ public class ContextPropagationTest {
       span.end();
     }
     List<SpanData> spans = openTelemetryRule.getSpans();
-    assertEquals(1, spans.size());
+    assertThat(spans).hasSize(1);
     SpanData spanData = spans.get(0);
     Attributes attrs = spanData.getAttributes();
     assertEquals("execute_tool", attrs.get(AttributeKey.stringKey("gen_ai.operation.name")));
@@ -578,7 +555,7 @@ public class ContextPropagationTest {
       span.end();
     }
     List<SpanData> spans = openTelemetryRule.getSpans();
-    assertEquals(1, spans.size());
+    assertThat(spans).hasSize(1);
     SpanData spanData = spans.get(0);
     Attributes attrs = spanData.getAttributes();
     assertEquals("gcp.vertex.agent", attrs.get(AttributeKey.stringKey("gen_ai.system")));
@@ -606,12 +583,12 @@ public class ContextPropagationTest {
       Tracing.traceSendData(
           buildInvocationContext(),
           "event-1",
-          ImmutableList.of(Content.builder().role("user").parts(Part.fromText("hello")).build()));
+          ImmutableList.of(Content.fromParts(Part.fromText("hello"))));
     } finally {
       span.end();
     }
     List<SpanData> spans = openTelemetryRule.getSpans();
-    assertEquals(1, spans.size());
+    assertThat(spans).hasSize(1);
     SpanData spanData = spans.get(0);
     Attributes attrs = spanData.getAttributes();
     assertEquals(
@@ -653,49 +630,35 @@ public class ContextPropagationTest {
     }
     SpanData parent = findSpanByName("parent");
     SpanData agentSpan = findSpanByName("invoke_agent test-agent");
-    assertEquals(parent.getSpanContext().getSpanId(), agentSpan.getParentSpanContext().getSpanId());
+    assertParent(parent, agentSpan);
   }
 
   @Test
   public void runnerRunAsync_propagatesContext() throws InterruptedException {
     BaseAgent agent = new TestAgent();
-    Runner runner = Runner.builder().agent(agent).appName("test-app").build();
     Span parentSpan = tracer.spanBuilder("parent").startSpan();
     try (Scope s = parentSpan.makeCurrent()) {
-      Session session =
-          runner
-              .sessionService()
-              .createSession(new SessionKey("test-app", "test-user", "test-session"))
-              .blockingGet();
-      Content newMessage = Content.fromParts(Part.fromText("hi"));
-      RunConfig runConfig = RunConfig.builder().build();
-      runner
-          .runAsync(session.userId(), session.id(), newMessage, runConfig, null)
-          .test()
-          .await()
-          .assertComplete();
+      runAgent(agent);
     } finally {
       parentSpan.end();
     }
     SpanData parent = findSpanByName("parent");
     SpanData invocation = findSpanByName("invocation");
     SpanData agentSpan = findSpanByName("invoke_agent test-agent");
-    assertEquals(
-        parent.getSpanContext().getSpanId(), invocation.getParentSpanContext().getSpanId());
-    assertEquals(
-        invocation.getSpanContext().getSpanId(), agentSpan.getParentSpanContext().getSpanId());
+    assertParent(parent, invocation);
+    assertParent(invocation, agentSpan);
   }
 
   @Test
   public void runnerRunLive_propagatesContext() throws InterruptedException {
     BaseAgent agent = new TestAgent();
-    Runner runner = Runner.builder().agent(agent).appName("test-app").build();
+    Runner runner =
+        Runner.builder().agent(agent).appName("test_app").sessionService(sessionService).build();
     Span parentSpan = tracer.spanBuilder("parent").startSpan();
     try (Scope s = parentSpan.makeCurrent()) {
       Session session =
-          runner
-              .sessionService()
-              .createSession("test-app", "test-user", (Map<String, Object>) null, "test-session")
+          sessionService
+              .createSession("test_app", "test-user", (Map<String, Object>) null, "test-session")
               .blockingGet();
       Content newMessage = Content.fromParts(Part.fromText("hi"));
       RunConfig runConfig = RunConfig.builder().build();
@@ -713,10 +676,171 @@ public class ContextPropagationTest {
     SpanData parent = findSpanByName("parent");
     SpanData invocation = findSpanByName("invocation");
     SpanData agentSpan = findSpanByName("invoke_agent test-agent");
-    assertEquals(
-        parent.getSpanContext().getSpanId(), invocation.getParentSpanContext().getSpanId());
-    assertEquals(
-        invocation.getSpanContext().getSpanId(), agentSpan.getParentSpanContext().getSpanId());
+    assertParent(parent, invocation);
+    assertParent(invocation, agentSpan);
+  }
+
+  @Test
+  public void testAgentWithToolCallTraceHierarchy() throws InterruptedException {
+    // This test verifies the trace hierarchy created when an agent calls an LLM,
+    // which then invokes a tool. The expected hierarchy is:
+    // invocation
+    // └── invoke_agent test_agent
+    //     ├── call_llm
+    //     │   ├── tool_call [search_flights]
+    //     │   └── tool_response [search_flights]
+    //     └── call_llm
+
+    SearchFlightsTool searchFlightsTool = new SearchFlightsTool();
+
+    TestLlm testLlm =
+        TestUtils.createTestLlm(
+            TestUtils.createLlmResponse(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.fromFunctionCall(
+                            searchFlightsTool.name(), ImmutableMap.of("destination", "SFO")))
+                    .build()),
+            TestUtils.createLlmResponse(Content.fromParts(Part.fromText("done"))));
+
+    LlmAgent agentWithTool =
+        LlmAgent.builder()
+            .name("test_agent")
+            .description("description")
+            .model(testLlm)
+            .tools(ImmutableList.of(searchFlightsTool))
+            .build();
+
+    runAgent(agentWithTool);
+
+    SpanData invocation = findSpanByName("invocation");
+    SpanData invokeAgent = findSpanByName("invoke_agent test_agent");
+    SpanData toolCall = findSpanByName("tool_call [search_flights]");
+    SpanData toolResponse = findSpanByName("tool_response [search_flights]");
+    List<SpanData> callLlmSpans =
+        openTelemetryRule.getSpans().stream()
+            .filter(s -> s.getName().equals("call_llm"))
+            .sorted(Comparator.comparing(SpanData::getStartEpochNanos))
+            .toList();
+    assertThat(callLlmSpans).hasSize(2);
+    SpanData callLlm1 = callLlmSpans.get(0);
+    SpanData callLlm2 = callLlmSpans.get(1);
+
+    // Assert hierarchy:
+    // invocation
+    // └── invoke_agent test_agent
+    assertParent(invocation, invokeAgent);
+    //     ├── call_llm 1
+    assertParent(invokeAgent, callLlm1);
+    //     │   ├── tool_call [search_flights]
+    assertParent(callLlm1, toolCall);
+    //     │   └── tool_response [search_flights]
+    assertParent(callLlm1, toolResponse);
+    //     └── call_llm 2
+    assertParent(invokeAgent, callLlm2);
+  }
+
+  @Test
+  public void testNestedAgentTraceHierarchy() throws InterruptedException {
+    // This test verifies the trace hierarchy created when AgentA transfers to AgentB.
+    // The expected hierarchy is:
+    // invocation
+    // └── invoke_agent AgentA
+    //     ├── call_llm
+    //     │   ├── tool_call [transfer_to_agent]
+    //     │   └── tool_response [transfer_to_agent]
+    //     └── invoke_agent AgentB
+    //         └── call_llm
+    TestLlm llm =
+        TestUtils.createTestLlm(
+            TestUtils.createLlmResponse(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.fromFunctionCall(
+                            "transfer_to_agent", ImmutableMap.of("agent_name", "AgentB")))
+                    .build()),
+            TestUtils.createLlmResponse(Content.fromParts(Part.fromText("agent b response"))));
+    LlmAgent agentB = LlmAgent.builder().name("AgentB").description("Agent B").model(llm).build();
+
+    LlmAgent agentA =
+        LlmAgent.builder()
+            .name("AgentA")
+            .description("Agent A")
+            .model(llm)
+            .subAgents(ImmutableList.of(agentB))
+            .build();
+
+    runAgent(agentA);
+
+    SpanData invocation = findSpanByName("invocation");
+    SpanData agentASpan = findSpanByName("invoke_agent AgentA");
+    SpanData toolCall = findSpanByName("tool_call [transfer_to_agent]");
+    SpanData agentBSpan = findSpanByName("invoke_agent AgentB");
+    SpanData toolResponse = findSpanByName("tool_response [transfer_to_agent]");
+
+    List<SpanData> callLlmSpans =
+        openTelemetryRule.getSpans().stream()
+            .filter(s -> s.getName().equals("call_llm"))
+            .sorted(Comparator.comparing(SpanData::getStartEpochNanos))
+            .toList();
+    assertThat(callLlmSpans).hasSize(2);
+
+    SpanData agentACallLlm1 = callLlmSpans.get(0);
+    SpanData agentBCallLlm = callLlmSpans.get(1);
+
+    assertParent(invocation, agentASpan);
+    assertParent(agentASpan, agentACallLlm1);
+    assertParent(agentACallLlm1, toolCall);
+    assertParent(agentACallLlm1, toolResponse);
+    assertParent(agentASpan, agentBSpan);
+    assertParent(agentBSpan, agentBCallLlm);
+  }
+
+  private void runAgent(BaseAgent agent) throws InterruptedException {
+    Runner runner =
+        Runner.builder().agent(agent).appName("test_app").sessionService(sessionService).build();
+    Session session =
+        sessionService.createSession("test_app", "test-user", null, "test-session").blockingGet();
+    Content newMessage = Content.fromParts(Part.fromText("hi"));
+    RunConfig runConfig = RunConfig.builder().build();
+    runner
+        .runAsync(session.sessionKey(), newMessage, runConfig, null)
+        .test()
+        .await()
+        .assertComplete();
+  }
+
+  /** Tool for testing. */
+  public static class SearchFlightsTool extends BaseTool {
+    public SearchFlightsTool() {
+      super("search_flights", "Search for flights tool");
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext context) {
+      return Single.just(ImmutableMap.of("result", args));
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(
+          FunctionDeclaration.builder()
+              .name("search_flights")
+              .description("Search for flights tool")
+              .build());
+    }
+  }
+
+  /**
+   * Asserts that the parent span is the parent of the child span.
+   *
+   * @param parent The parent span.
+   * @param child The child span.
+   */
+  private void assertParent(SpanData parent, SpanData child) {
+    assertEquals(parent.getSpanContext().getSpanId(), child.getParentSpanContext().getSpanId());
   }
 
   /**
@@ -744,7 +868,9 @@ public class ContextPropagationTest {
 
   private InvocationContext buildInvocationContext() {
     Session session =
-        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+        sessionService
+            .createSession("test_app", "test-user", (Map<String, Object>) null, "test-session")
+            .blockingGet();
     return InvocationContext.builder()
         .sessionService(sessionService)
         .session(session)

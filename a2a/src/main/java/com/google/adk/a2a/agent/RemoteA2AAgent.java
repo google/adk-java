@@ -117,7 +117,7 @@ public class RemoteA2AAgent extends BaseAgent {
     if (this.description.isEmpty() && this.agentCard.description() != null) {
       this.description = this.agentCard.description();
     }
-    this.streaming = this.agentCard.capabilities().streaming();
+    this.streaming = builder.streaming && this.agentCard.capabilities().streaming();
   }
 
   public static Builder builder() {
@@ -133,6 +133,13 @@ public class RemoteA2AAgent extends BaseAgent {
     private List<? extends BaseAgent> subAgents;
     private List<Callbacks.BeforeAgentCallback> beforeAgentCallback;
     private List<Callbacks.AfterAgentCallback> afterAgentCallback;
+    private boolean streaming;
+
+    @CanIgnoreReturnValue
+    public Builder streaming(boolean streaming) {
+      this.streaming = streaming;
+      return this;
+    }
 
     @CanIgnoreReturnValue
     public Builder name(String name) {
@@ -179,6 +186,10 @@ public class RemoteA2AAgent extends BaseAgent {
     public RemoteA2AAgent build() {
       return new RemoteA2AAgent(this);
     }
+  }
+
+  public boolean isStreaming() {
+    return streaming;
   }
 
   private Message.Builder newA2AMessage(Message.Role role, List<io.a2a.spec.Part<?>> parts) {

@@ -52,11 +52,7 @@ public final class PartConverter {
 
   private static final Logger logger = LoggerFactory.getLogger(PartConverter.class);
   private static final ObjectMapper objectMapper = new ObjectMapper();
-  // Constants for metadata types. By convention metadata keys are prefixed with "adk_" to align
-  // with the Python and Golang libraries.
-  public static final String A2A_DATA_PART_METADATA_TYPE_KEY = "adk_type";
-  public static final String A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY = "adk_is_long_running";
-  public static final String A2A_DATA_PART_METADATA_IS_PARTIAL_KEY = "adk_partial";
+  // Constants for metadata types.
   public static final String LANGUAGE_KEY = "language";
   public static final String OUTCOME_KEY = "outcome";
   public static final String CODE_KEY = "code";
@@ -135,7 +131,7 @@ public final class PartConverter {
     Map<String, Object> metadata =
         Optional.ofNullable(dataPart.getMetadata()).map(HashMap::new).orElseGet(HashMap::new);
 
-    String metadataType = metadata.getOrDefault(A2A_DATA_PART_METADATA_TYPE_KEY, "").toString();
+    String metadataType = metadata.getOrDefault(A2AMetadataKey.TYPE.getType(), "").toString();
 
     if ((data.containsKey(NAME_KEY) && data.containsKey(ARGS_KEY))
         || metadataType.equals(A2ADataPartMetadataType.FUNCTION_CALL.getType())) {
@@ -218,7 +214,7 @@ public final class PartConverter {
     addValueIfPresent(data, WILL_CONTINUE_KEY, functionCall.willContinue());
     addValueIfPresent(data, PARTIAL_ARGS_KEY, functionCall.partialArgs());
 
-    metadata.put(A2A_DATA_PART_METADATA_TYPE_KEY, A2ADataPartMetadataType.FUNCTION_CALL.getType());
+    metadata.put(A2AMetadataKey.TYPE.getType(), A2ADataPartMetadataType.FUNCTION_CALL.getType());
 
     return new DataPart(data.buildOrThrow(), metadata.buildOrThrow());
   }
@@ -245,7 +241,7 @@ public final class PartConverter {
     addValueIfPresent(data, PARTS_KEY, functionResponse.parts());
 
     metadata.put(
-        A2A_DATA_PART_METADATA_TYPE_KEY, A2ADataPartMetadataType.FUNCTION_RESPONSE.getType());
+        A2AMetadataKey.TYPE.getType(), A2ADataPartMetadataType.FUNCTION_RESPONSE.getType());
 
     return new DataPart(data.buildOrThrow(), metadata.buildOrThrow());
   }
@@ -268,7 +264,7 @@ public final class PartConverter {
     addValueIfPresent(data, OUTPUT_KEY, codeExecutionResult.output());
 
     metadata.put(
-        A2A_DATA_PART_METADATA_TYPE_KEY, A2ADataPartMetadataType.CODE_EXECUTION_RESULT.getType());
+        A2AMetadataKey.TYPE.getType(), A2ADataPartMetadataType.CODE_EXECUTION_RESULT.getType());
 
     return new DataPart(data.buildOrThrow(), metadata.buildOrThrow());
   }
@@ -290,8 +286,7 @@ public final class PartConverter {
             .orElse(Language.Known.LANGUAGE_UNSPECIFIED.toString()));
     addValueIfPresent(data, CODE_KEY, executableCode.code());
 
-    metadata.put(
-        A2A_DATA_PART_METADATA_TYPE_KEY, A2ADataPartMetadataType.EXECUTABLE_CODE.getType());
+    metadata.put(A2AMetadataKey.TYPE.getType(), A2ADataPartMetadataType.EXECUTABLE_CODE.getType());
 
     return new DataPart(data.buildOrThrow(), metadata.buildOrThrow());
   }
@@ -305,7 +300,7 @@ public final class PartConverter {
     }
     ImmutableMap.Builder<String, Object> metadata = ImmutableMap.builder();
     if (isPartial) {
-      metadata.put(A2A_DATA_PART_METADATA_IS_PARTIAL_KEY, true);
+      metadata.put(A2AMetadataKey.PARTIAL.getType(), true);
     }
 
     if (part.text().isPresent()) {

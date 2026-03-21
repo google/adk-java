@@ -90,16 +90,6 @@ public class InvocationContext {
     return new Builder(this);
   }
 
-  /**
-   * Creates a shallow copy of the given {@link InvocationContext}.
-   *
-   * @deprecated Use {@code other.toBuilder().build()} instead.
-   */
-  @Deprecated(forRemoval = true)
-  public static InvocationContext copyOf(InvocationContext other) {
-    return other.toBuilder().build();
-  }
-
   /** Returns the session service for managing session state. */
   public BaseSessionService sessionService() {
     return sessionService;
@@ -154,16 +144,6 @@ public class InvocationContext {
   /** Returns the agent being invoked. */
   public BaseAgent agent() {
     return agent;
-  }
-
-  /**
-   * Sets the [agent] being invoked. This is useful when delegating to a sub-agent.
-   *
-   * @deprecated Use {@link #toBuilder()} and {@link Builder#agent(BaseAgent)} instead.
-   */
-  @Deprecated(forRemoval = true)
-  public void agent(BaseAgent agent) {
-    this.agent = agent;
   }
 
   /** Returns the session associated with this invocation. */

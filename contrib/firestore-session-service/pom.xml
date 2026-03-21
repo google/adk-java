@@ -20,7 +20,7 @@
     <parent>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-parent</artifactId>
-        <version>0.9.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <version>1.0.1-rc.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
         <relativePath>../../pom.xml</relativePath>
     </parent>
 

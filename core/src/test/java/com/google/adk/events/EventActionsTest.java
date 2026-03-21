@@ -178,17 +178,6 @@ public final class EventActionsTest {
   }
 
   @Test
-  public void setRequestedToolConfirmations_withConcurrentMap_usesSameInstance() {
-    ConcurrentHashMap<String, ToolConfirmation> map = new ConcurrentHashMap<>();
-    map.put("tool", TOOL_CONFIRMATION);
-
-    EventActions actions = new EventActions();
-    actions.setRequestedToolConfirmations(map);
-
-    assertThat(actions.requestedToolConfirmations()).isSameInstanceAs(map);
-  }
-
-  @Test
   public void setRequestedToolConfirmations_withRegularMap_createsConcurrentMap() {
     ImmutableMap<String, ToolConfirmation> map = ImmutableMap.of("tool", TOOL_CONFIRMATION);
 

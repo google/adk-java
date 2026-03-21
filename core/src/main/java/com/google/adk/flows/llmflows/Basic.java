@@ -19,6 +19,7 @@ package com.google.adk.flows.llmflows;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.utils.ModelNameUtils;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.LiveConnectConfig;
@@ -60,7 +61,15 @@ public final class Basic implements RequestProcessor {
                     .orElseGet(() -> GenerateContentConfig.builder().build()))
             .liveConnectConfig(liveConnectConfigBuilder.build());
 
-    agent.outputSchema().ifPresent(builder::outputSchema);
+    agent
+        .outputSchema()
+        .ifPresent(
+            outputSchema -> {
+              if (agent.toolsUnion().isEmpty()
+                  || ModelNameUtils.canUseOutputSchemaWithTools(modelName)) {
+                builder.outputSchema(outputSchema);
+              }
+            });
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
   }

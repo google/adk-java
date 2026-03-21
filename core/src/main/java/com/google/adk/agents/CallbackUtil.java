@@ -42,7 +42,7 @@ public final class CallbackUtil {
    * @return normalized async callbacks, or empty list if input is null.
    */
   @CanIgnoreReturnValue
-  public static ImmutableList<BeforeAgentCallback> getBeforeAgentCallbacks(
+  public static List<BeforeAgentCallback> getBeforeAgentCallbacks(
       List<BeforeAgentCallbackBase> beforeAgentCallbacks) {
     return getCallbacks(
         beforeAgentCallbacks,
@@ -59,7 +59,7 @@ public final class CallbackUtil {
    * @return normalized async callbacks, or empty list if input is null.
    */
   @CanIgnoreReturnValue
-  public static ImmutableList<AfterAgentCallback> getAfterAgentCallbacks(
+  public static List<AfterAgentCallback> getAfterAgentCallbacks(
       List<AfterAgentCallbackBase> afterAgentCallback) {
     return getCallbacks(
         afterAgentCallback,

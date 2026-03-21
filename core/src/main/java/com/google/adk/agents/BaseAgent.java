@@ -529,7 +529,8 @@ public abstract class BaseAgent {
 
     @CanIgnoreReturnValue
     public B beforeAgentCallback(List<Callbacks.BeforeAgentCallbackBase> beforeAgentCallback) {
-      this.beforeAgentCallback = CallbackUtil.getBeforeAgentCallbacks(beforeAgentCallback);
+      this.beforeAgentCallback =
+          ImmutableList.copyOf(CallbackUtil.getBeforeAgentCallbacks(beforeAgentCallback));
       return self();
     }
 
@@ -541,7 +542,8 @@ public abstract class BaseAgent {
 
     @CanIgnoreReturnValue
     public B afterAgentCallback(List<Callbacks.AfterAgentCallbackBase> afterAgentCallback) {
-      this.afterAgentCallback = CallbackUtil.getAfterAgentCallbacks(afterAgentCallback);
+      this.afterAgentCallback =
+          ImmutableList.copyOf(CallbackUtil.getAfterAgentCallbacks(afterAgentCallback));
       return self();
     }
 

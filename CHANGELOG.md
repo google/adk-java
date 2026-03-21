@@ -1,5 +1,48 @@
 # Changelog
 
+## [1.0.0-rc.1](https://github.com/google/adk-java/compare/v0.9.0...v1.0.0-rc.1) (2026-03-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove McpToolset constructors taking Optional parameters
+* remove deprecated Example processor
+
+### Features
+
+* add handling the a2a metadata in the RemoteA2AAgent; Add the enum type for the metadata keys ([e51f911](https://github.com/google/adk-java/commit/e51f9112050955657da0dfc3aedc00f90ad739ec))
+* add type-safe runAsync methods to BaseTool ([b8cb7e2](https://github.com/google/adk-java/commit/b8cb7e2db6d5ce20f4d7a1b237bdc155563cf4bd))
+* Enhance LangChain4j to support MCP tools with parametersJsonSchema ([2c71ba1](https://github.com/google/adk-java/commit/2c71ba1332e052189115cd4644b7a473c31ed414))
+* fixing context propagation for agent transfers ([9a08076](https://github.com/google/adk-java/commit/9a080763d83c319f539d1bacac4595d13b299e7e))
+* Implement basic version of BigQuery Agent Analytics Plugin ([c8ab0f9](https://github.com/google/adk-java/commit/c8ab0f96b09a6c9636728d634c62695fcd622246))
+* init AGENTS.md file ([7ebeb07](https://github.com/google/adk-java/commit/7ebeb07bf2ee72475484d8a31ccf7b4c601dda96))
+* Propagating the otel context ([8556d4a](https://github.com/google/adk-java/commit/8556d4af16ff04c6e3b678dcfc3d4bb232abc550))
+* remove McpToolset constructors taking Optional parameters ([dbb1394](https://github.com/google/adk-java/commit/dbb139439d38157b4b9af38c52824b1e8405a495))
+* Return List instead of ImmutableList in CallbackUtil methods ([8af5e03](https://github.com/google/adk-java/commit/8af5e03811dfd548830df43103c81a592c8bf361))
+* update requestedAuthConfigs and its builder to be of general Map types ([f145c74](https://github.com/google/adk-java/commit/f145c744482b6b25f29a0b718bd452065e39d930))
+* Update return type of App.plugins() from ImmutableList to List ([8ba4bfe](https://github.com/google/adk-java/commit/8ba4bfed3fa7045f3344329de7a39acddc64ee30))
+* Update return type of toolsets() from ImmutableList to List ([cd56902](https://github.com/google/adk-java/commit/cd56902b803d4f7a1f3c718529842823d9e4370a))
+* update Session.state() and its builder to be of general Map types ([4b9b99a](https://github.com/google/adk-java/commit/4b9b99ae7149a465ba2ae9b7496e01f669786553))
+* update stateDelta builder input to Map from ConcurrentMap ([0d1e5c7](https://github.com/google/adk-java/commit/0d1e5c7b0c42cea66b178cf8fedf08a8c20f7fd0))
+
+
+### Bug Fixes
+
+* fix null handling in runAsyncImpl ([567fdf0](https://github.com/google/adk-java/commit/567fdf048fee49afc86ca5d7d35f55424a6016ba))
+* improve processRequest_concurrentReadAndWrite_noException test case ([4eb3613](https://github.com/google/adk-java/commit/4eb3613b65cb1334e9432960d0f864ef09829c23))
+* include saveArtifact invocations in event chain ([551c31f](https://github.com/google/adk-java/commit/551c31f495aafde8568461cc0aa0973d7df7e5ac))
+* prevent ConcurrentModificationException when session events are modified by another thread during iteration ([fca43fb](https://github.com/google/adk-java/commit/fca43fbb9684ec8d080e437761f6bb4e38adf255))
+* Relaxing constraints for output schema ([d7e03ee](https://github.com/google/adk-java/commit/d7e03eeb067b83abd2afa3ea9bb5fc1c16143245))
+* Removing deprecated methods in Runner ([0af82e6](https://github.com/google/adk-java/commit/0af82e61a3c0dbbd95166a10b450cb507115ab60))
+* Use ConcurrentHashMap in InvocationReplayState ([94de7f1](https://github.com/google/adk-java/commit/94de7f199f86b39bdb7cce6e9800eb05008a8953)), closes [#1009](https://github.com/google/adk-java/issues/1009)
+* workaround for the client config streaming settings are not respected ([#983](https://github.com/google/adk-java/issues/983)) ([3ba04d3](https://github.com/google/adk-java/commit/3ba04d33dc8f2ef8b151abe1be4d1c8b7afcc25a))
+
+
+### Miscellaneous Chores
+
+* remove deprecated Example processor ([28a8cd0](https://github.com/google/adk-java/commit/28a8cd04ca9348dbe51a15d2be3a2b5307394174))
+* set version to 1.0.0-rc.1 ([dc5d794](https://github.com/google/adk-java/commit/dc5d794c066571c7d87f006767bd32298e2a3ba8))
+
 ## [0.9.0](https://github.com/google/adk-java/compare/v0.8.0...v0.9.0) (2026-03-13)
 
 

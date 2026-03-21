@@ -430,7 +430,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                                   "Agent not found: " + agentToTransfer)));
                                     }
                                     return postProcessedEvents.concatWith(
-                                        Flowable.defer(() -> nextAgent.get().runAsync(context)));
+                                        Flowable.defer(
+                                            () -> {
+                                              try (Scope s = spanContext.makeCurrent()) {
+                                                return nextAgent.get().runAsync(context);
+                                              }
+                                            }));
                                   }
                                   return postProcessedEvents;
                                 });
@@ -488,6 +493,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
   public Flowable<Event> runLive(InvocationContext invocationContext) {
     AtomicReference<LlmRequest> llmRequestRef = new AtomicReference<>(LlmRequest.builder().build());
     Flowable<Event> preprocessEvents = preprocess(invocationContext, llmRequestRef);
+    // Capture agent context at assembly time to use as parent for agent transfer at subscription
+    // time. See Flowable.defer() usages below.
     Context spanContext = Context.current();
 
     return preprocessEvents.concatWith(
@@ -608,7 +615,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                     "Agent not found: " + event.actions().transferToAgent().get());
                               }
                               Flowable<Event> nextAgentEvents =
-                                  nextAgent.get().runLive(invocationContext);
+                                  Flowable.defer(
+                                      () -> {
+                                        try (Scope s = spanContext.makeCurrent()) {
+                                          return nextAgent.get().runLive(invocationContext);
+                                        }
+                                      });
                               events = Flowable.concat(events, nextAgentEvents);
                             }
                             return events;
@@ -680,9 +692,14 @@ public abstract class BaseLlmFlow implements BaseFlow {
                 Optional<Event> toolConfirmationEvent =
                     Functions.generateRequestConfirmationEvent(
                         context, modelResponseEvent, functionResponseEvent);
-                return toolConfirmationEvent.isPresent()
-                    ? Flowable.just(toolConfirmationEvent.get(), functionResponseEvent)
-                    : Flowable.just(functionResponseEvent);
+                List<Event> events = new ArrayList<>();
+                toolConfirmationEvent.ifPresent(events::add);
+                events.add(functionResponseEvent);
+                OutputSchema.getStructuredModelResponse(functionResponseEvent)
+                    .ifPresent(
+                        json ->
+                            events.add(OutputSchema.createFinalModelResponseEvent(context, json)));
+                return Flowable.fromIterable(events);
               });
     }
 

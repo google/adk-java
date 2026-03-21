@@ -27,8 +27,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 /** A {@link Session} object that encapsulates the {@link State} and {@link Event}s of a session. */
 @JsonDeserialize(builder = Session.Builder.class)
@@ -101,7 +101,7 @@ public final class Session extends JsonBaseModel {
 
     @CanIgnoreReturnValue
     @JsonProperty("state")
-    public Builder state(ConcurrentMap<String, Object> state) {
+    public Builder state(Map<String, Object> state) {
       this.state = new State(state);
       return this;
     }
@@ -162,7 +162,7 @@ public final class Session extends JsonBaseModel {
   }
 
   @JsonProperty("state")
-  public ConcurrentMap<String, Object> state() {
+  public Map<String, Object> state() {
     return state;
   }
 

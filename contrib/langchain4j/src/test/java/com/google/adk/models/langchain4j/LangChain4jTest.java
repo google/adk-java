@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.tools.FunctionTool;
@@ -26,6 +27,7 @@ import com.google.genai.types.*;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.TokenCountEstimator;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
@@ -33,6 +35,7 @@ import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.output.TokenUsage;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
 import java.util.List;
@@ -57,8 +60,26 @@ class LangChain4jTest {
     chatModel = mock(ChatModel.class);
     streamingChatModel = mock(StreamingChatModel.class);
 
-    langChain4j = new LangChain4j(chatModel, MODEL_NAME);
-    streamingLangChain4j = new LangChain4j(streamingChatModel, MODEL_NAME);
+    langChain4j = LangChain4j.builder().chatModel(chatModel).modelName(MODEL_NAME).build();
+    streamingLangChain4j =
+        LangChain4j.builder().streamingChatModel(streamingChatModel).modelName(MODEL_NAME).build();
+  }
+
+  @Test
+  void testBuilder() {
+    ObjectMapper customMapper = new ObjectMapper();
+    LangChain4j customLc4j =
+        LangChain4j.builder()
+            .chatModel(chatModel)
+            .streamingChatModel(streamingChatModel)
+            .objectMapper(customMapper)
+            .modelName("custom-model")
+            .build();
+
+    assertThat(customLc4j.chatModel()).isEqualTo(chatModel);
+    assertThat(customLc4j.streamingChatModel()).isEqualTo(streamingChatModel);
+    assertThat(customLc4j.objectMapper()).isEqualTo(customMapper);
+    assertThat(customLc4j.modelName()).isEqualTo("custom-model");
   }
 
   @Test

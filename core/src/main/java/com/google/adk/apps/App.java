@@ -64,7 +64,7 @@ public class App {
     return rootAgent;
   }
 
-  public ImmutableList<? extends Plugin> plugins() {
+  public List<? extends Plugin> plugins() {
     return plugins;
   }
 

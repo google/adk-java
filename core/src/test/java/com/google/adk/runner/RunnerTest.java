@@ -24,6 +24,9 @@ import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.truth.Truth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Arrays.stream;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.mock;
@@ -31,15 +34,18 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
+import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.BasePlugin;
+import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.sessions.SessionKey;
 import com.google.adk.summarizer.EventsCompactionConfig;
@@ -65,12 +71,14 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -78,6 +86,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 
 @RunWith(JUnit4.class)
 public final class RunnerTest {
@@ -845,8 +854,60 @@ public final class RunnerTest {
     assertThat(sessionInCallback.state()).containsEntry("number", 123);
   }
 
+  @Test
+  public void runAsync_ensureEventsAreAppendedInOrder() throws Exception {
+    Event event1 = TestUtils.createEvent("1");
+    Event event2 = TestUtils.createEvent("2");
+    BaseAgent mockAgent = TestUtils.createSubAgent("test agent", event1, event2);
+
+    BaseSessionService mockSessionService = mock(BaseSessionService.class);
+
+    when(mockSessionService.getSession(any(), any(), any(), any())).thenReturn(Maybe.just(session));
+    when(mockSessionService.appendEvent(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              Event eventArg = invocation.getArgument(1);
+              Single<Event> result = Single.just(eventArg);
+              if (eventArg.id().equals("1")) {
+                // Artificially delay the first event to ensure it is appended first.
+                return result.delay(100, MILLISECONDS);
+              }
+              return result;
+            });
+
+    Runner mockRunner =
+        Runner.builder()
+            .agent(mockAgent)
+            .appName("test")
+            .sessionService(mockSessionService)
+            .build();
+
+    List<Event> results =
+        mockRunner
+            .runAsync("user", session.id(), createContent("user message"))
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(results))
+        .containsExactly("author: content for event 1", "author: content for event 2")
+        .inOrder();
+  }
+
   private Content createContent(String text) {
     return Content.builder().parts(Part.builder().text(text).build()).build();
+  }
+
+  private static Content createInlineDataContent(byte[]... data) {
+    return Content.builder()
+        .parts(
+            stream(data)
+                .map(dataBytes -> Part.fromBytes(dataBytes, "example/octet-stream"))
+                .toArray(Part[]::new))
+        .build();
+  }
+
+  private static Content createInlineDataContent(String... data) {
+    return createInlineDataContent(stream(data).map(d -> d.getBytes(UTF_8)).toArray(byte[][]::new));
   }
 
   @Test
@@ -1330,5 +1391,41 @@ public final class RunnerTest {
     public static ImmutableMap<String, Object> echoTool(String message) {
       return ImmutableMap.of("message", message);
     }
+  }
+
+  @Test
+  public void runner_executesSaveArtifactFlow() {
+    // arrange
+    final AtomicInteger artifactsSavedCounter = new AtomicInteger();
+    BaseArtifactService mockArtifactService = Mockito.mock(BaseArtifactService.class);
+    when(mockArtifactService.saveArtifact(any(), any(), any(), any(), any()))
+        .thenReturn(
+            Single.defer(
+                () -> {
+                  // we want to assert not only that the saveArtifact method was
+                  // called, but also that the flow that it returned was run, so
+                  // we need to record the call in a counter
+                  artifactsSavedCounter.incrementAndGet();
+                  return Single.just(42);
+                }));
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .artifactService(mockArtifactService)
+            .build();
+    session = runner.sessionService().createSession("test", "user").blockingGet();
+    // each inline data will be saved using our mock artifact service
+    Content content = createInlineDataContent("test data", "test data 2");
+    RunConfig runConfig = RunConfig.builder().setSaveInputBlobsAsArtifacts(true).build();
+
+    // act
+    var events = runner.runAsync("user", session.id(), content, runConfig).test();
+
+    // assert
+    events.assertComplete();
+    // artifacts were saved
+    assertThat(artifactsSavedCounter.get()).isEqualTo(2);
+    // agent was run
+    assertThat(simplifyEvents(events.values())).containsExactly("test agent: from llm");
   }
 }

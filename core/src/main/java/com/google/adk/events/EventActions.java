@@ -41,7 +41,7 @@ public class EventActions extends JsonBaseModel {
   private Set<String> deletedArtifactIds;
   private @Nullable String transferToAgent;
   private @Nullable Boolean escalate;
-  private ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs;
+  private ConcurrentMap<String, Map<String, Object>> requestedAuthConfigs;
   private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
   private boolean endOfAgent;
   private @Nullable EventCompaction compaction;
@@ -139,13 +139,17 @@ public class EventActions extends JsonBaseModel {
   }
 
   @JsonProperty("requestedAuthConfigs")
-  public ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs() {
+  public Map<String, Map<String, Object>> requestedAuthConfigs() {
     return requestedAuthConfigs;
   }
 
   public void setRequestedAuthConfigs(
-      ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs) {
-    this.requestedAuthConfigs = requestedAuthConfigs;
+      Map<String, ? extends Map<String, Object>> requestedAuthConfigs) {
+    if (requestedAuthConfigs == null) {
+      this.requestedAuthConfigs = new ConcurrentHashMap<>();
+    } else {
+      this.requestedAuthConfigs = new ConcurrentHashMap<>(requestedAuthConfigs);
+    }
   }
 
   @JsonProperty("requestedToolConfirmations")
@@ -157,9 +161,6 @@ public class EventActions extends JsonBaseModel {
       Map<String, ToolConfirmation> requestedToolConfirmations) {
     if (requestedToolConfirmations == null) {
       this.requestedToolConfirmations = new ConcurrentHashMap<>();
-    } else if (requestedToolConfirmations instanceof ConcurrentMap) {
-      this.requestedToolConfirmations =
-          (ConcurrentMap<String, ToolConfirmation>) requestedToolConfirmations;
     } else {
       this.requestedToolConfirmations = new ConcurrentHashMap<>(requestedToolConfirmations);
     }
@@ -251,7 +252,7 @@ public class EventActions extends JsonBaseModel {
     private Set<String> deletedArtifactIds;
     private @Nullable String transferToAgent;
     private @Nullable Boolean escalate;
-    private ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs;
+    private ConcurrentMap<String, Map<String, Object>> requestedAuthConfigs;
     private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
     private boolean endOfAgent = false;
     private @Nullable EventCompaction compaction;
@@ -287,15 +288,23 @@ public class EventActions extends JsonBaseModel {
 
     @CanIgnoreReturnValue
     @JsonProperty("stateDelta")
-    public Builder stateDelta(ConcurrentMap<String, Object> value) {
-      this.stateDelta = value;
+    public Builder stateDelta(@Nullable Map<String, Object> value) {
+      if (value == null) {
+        this.stateDelta = new ConcurrentHashMap<>();
+      } else {
+        this.stateDelta = new ConcurrentHashMap<>(value);
+      }
       return this;
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("artifactDelta")
-    public Builder artifactDelta(Map<String, Integer> value) {
-      this.artifactDelta = new ConcurrentHashMap<>(value);
+    public Builder artifactDelta(@Nullable Map<String, Integer> value) {
+      if (value == null) {
+        this.artifactDelta = new ConcurrentHashMap<>();
+      } else {
+        this.artifactDelta = new ConcurrentHashMap<>(value);
+      }
       return this;
     }
 
@@ -323,8 +332,12 @@ public class EventActions extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("requestedAuthConfigs")
     public Builder requestedAuthConfigs(
-        ConcurrentMap<String, ConcurrentMap<String, Object>> value) {
-      this.requestedAuthConfigs = value;
+        @Nullable Map<String, ? extends Map<String, Object>> value) {
+      if (value == null) {
+        this.requestedAuthConfigs = new ConcurrentHashMap<>();
+      } else {
+        this.requestedAuthConfigs = new ConcurrentHashMap<>(value);
+      }
       return this;
     }
 
@@ -333,10 +346,6 @@ public class EventActions extends JsonBaseModel {
     public Builder requestedToolConfirmations(@Nullable Map<String, ToolConfirmation> value) {
       if (value == null) {
         this.requestedToolConfirmations = new ConcurrentHashMap<>();
-        return this;
-      }
-      if (value instanceof ConcurrentMap) {
-        this.requestedToolConfirmations = (ConcurrentMap<String, ToolConfirmation>) value;
       } else {
         this.requestedToolConfirmations = new ConcurrentHashMap<>(value);
       }

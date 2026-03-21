@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 Google LLC
+ * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,16 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-package com.google.adk;
+package com.google.adk.a2a.converters;
 
 /**
- * Tracks the current ADK version. Useful for tracking headers. Kept as a string literal to avoid
- * coupling with the build system.
+ * Enum for the type of ADK metadata. Adds a prefix used to differentiate A2A-related values stored
+ * in custom metadata of an ADK session event.
  */
-public final class Version {
-  // Don't touch this, release-please should keep it up to date.
-  public static final String JAVA_ADK_VERSION = "1.0.0-rc.1"; // x-release-please-released-version
+public enum AdkMetadataKey {
+  TASK_ID("task_id"),
+  CONTEXT_ID("context_id");
 
-  private Version() {}
+  private final String type;
+
+  private AdkMetadataKey(String type) {
+    this.type = "a2a:" + type;
+  }
+
+  public String getType() {
+    return type;
+  }
 }

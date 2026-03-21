@@ -594,40 +594,6 @@ public class LlmAgent extends BaseAgent {
           this.disallowTransferToParent != null && this.disallowTransferToParent;
       this.disallowTransferToPeers =
           this.disallowTransferToPeers != null && this.disallowTransferToPeers;
-
-      if (this.outputSchema != null) {
-        if (!this.disallowTransferToParent || !this.disallowTransferToPeers) {
-          logger.warn(
-              "Invalid config for agent {}: outputSchema cannot co-exist with agent transfer"
-                  + " configurations. Setting disallowTransferToParent=true and"
-                  + " disallowTransferToPeers=true.",
-              this.name);
-          this.disallowTransferToParent = true;
-          this.disallowTransferToPeers = true;
-        }
-
-        if (this.subAgents != null && !this.subAgents.isEmpty()) {
-          throw new IllegalArgumentException(
-              "Invalid config for agent "
-                  + this.name
-                  + ": if outputSchema is set, subAgents must be empty to disable agent"
-                  + " transfer.");
-        }
-        if (this.toolsUnion != null && !this.toolsUnion.isEmpty()) {
-          boolean hasOtherTools =
-              this.toolsUnion.stream()
-                  .anyMatch(
-                      tool ->
-                          !(tool instanceof BaseTool baseTool)
-                              || !baseTool.name().equals("example_tool"));
-          if (hasOtherTools) {
-            throw new IllegalArgumentException(
-                "Invalid config for agent "
-                    + this.name
-                    + ": if outputSchema is set, tools must be empty.");
-          }
-        }
-      }
     }
 
     @Override
@@ -806,7 +772,7 @@ public class LlmAgent extends BaseAgent {
     return toolsUnion;
   }
 
-  public ImmutableList<BaseToolset> toolsets() {
+  public List<BaseToolset> toolsets() {
     return toolsets;
   }
 

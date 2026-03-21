@@ -8,9 +8,13 @@ import com.google.adk.a2a.common.GenAiFieldMissingException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Blob;
+import com.google.genai.types.CodeExecutionResult;
+import com.google.genai.types.ExecutableCode;
 import com.google.genai.types.FileData;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.Language;
+import com.google.genai.types.Outcome;
 import com.google.genai.types.Part;
 import io.a2a.spec.DataPart;
 import io.a2a.spec.FilePart;
@@ -86,8 +90,7 @@ public class PartConverterTest {
         new DataPart(
             data,
             ImmutableMap.of(
-                PartConverter.A2A_DATA_PART_METADATA_TYPE_KEY,
-                A2ADataPartMetadataType.FUNCTION_CALL.getType()));
+                A2AMetadataKey.TYPE.getType(), A2ADataPartMetadataType.FUNCTION_CALL.getType()));
 
     Part result = PartConverter.toGenaiPart(dataPart);
 
@@ -121,7 +124,7 @@ public class PartConverterTest {
         new DataPart(
             data,
             ImmutableMap.of(
-                PartConverter.A2A_DATA_PART_METADATA_TYPE_KEY,
+                A2AMetadataKey.TYPE.getType(),
                 A2ADataPartMetadataType.FUNCTION_RESPONSE.getType()));
 
     Part result = PartConverter.toGenaiPart(dataPart);
@@ -188,7 +191,7 @@ public class PartConverterTest {
     assertThat(((TextPart) result).getText()).isEqualTo("text");
     assertThat(((TextPart) result).getMetadata()).containsEntry("thought", true);
     assertThat(((TextPart) result).getMetadata())
-        .containsEntry(PartConverter.A2A_DATA_PART_METADATA_IS_PARTIAL_KEY, true);
+        .containsEntry(A2AMetadataKey.PARTIAL.getType(), true);
   }
 
   @Test
@@ -227,6 +230,39 @@ public class PartConverterTest {
   }
 
   @Test
+  public void fromGenaiPart_dataPart_executableCode_returnsDataPart() {
+    ExecutableCode executableCode =
+        ExecutableCode.builder().code("print('hello')").language(new Language("python")).build();
+    Part part = Part.builder().executableCode(executableCode).build();
+    io.a2a.spec.Part<?> result = PartConverter.fromGenaiPart(part, false);
+
+    assertThat(result).isInstanceOf(DataPart.class);
+    DataPart dataPart = (DataPart) result;
+    assertThat(dataPart.getData().get("code")).isEqualTo("print('hello')");
+    assertThat(dataPart.getData().get("language")).isEqualTo("python");
+    assertThat(dataPart.getMetadata().get(A2AMetadataKey.TYPE.getType()))
+        .isEqualTo("executable_code");
+  }
+
+  @Test
+  public void fromGenaiPart_dataPart_codeExecutionResult_returnsDataPart() {
+    CodeExecutionResult codeExecutionResult =
+        CodeExecutionResult.builder()
+            .outcome(new Outcome("OUTCOME_OK"))
+            .output("print('hello')")
+            .build();
+    Part part = Part.builder().codeExecutionResult(codeExecutionResult).build();
+    io.a2a.spec.Part<?> result = PartConverter.fromGenaiPart(part, false);
+
+    assertThat(result).isInstanceOf(DataPart.class);
+    DataPart dataPart = (DataPart) result;
+    assertThat(dataPart.getData().get("outcome")).isEqualTo("OUTCOME_OK");
+    assertThat(dataPart.getData().get("output")).isEqualTo("print('hello')");
+    assertThat(dataPart.getMetadata().get(A2AMetadataKey.TYPE.getType()))
+        .isEqualTo("code_execution_result");
+  }
+
+  @Test
   public void fromGenaiPart_withFunctionCallPart_returnsDataPart() {
     Part part =
         Part.builder()
@@ -255,8 +291,7 @@ public class PartConverterTest {
             true);
     assertThat(dataPart.getMetadata())
         .containsEntry(
-            PartConverter.A2A_DATA_PART_METADATA_TYPE_KEY,
-            A2ADataPartMetadataType.FUNCTION_CALL.getType());
+            A2AMetadataKey.TYPE.getType(), A2ADataPartMetadataType.FUNCTION_CALL.getType());
   }
 
   @Test
@@ -275,8 +310,7 @@ public class PartConverterTest {
         .containsExactly("name", "func", "id", "1", "response", ImmutableMap.of());
     assertThat(dataPart.getMetadata())
         .containsEntry(
-            PartConverter.A2A_DATA_PART_METADATA_TYPE_KEY,
-            A2ADataPartMetadataType.FUNCTION_RESPONSE.getType());
+            A2AMetadataKey.TYPE.getType(), A2ADataPartMetadataType.FUNCTION_RESPONSE.getType());
   }
 
   @Test
