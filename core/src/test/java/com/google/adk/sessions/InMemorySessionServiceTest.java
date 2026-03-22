@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import io.reactivex.rxjava3.core.Single;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -212,6 +213,24 @@ public final class InMemorySessionServiceTest {
     assertThat(retrievedSessionRemove.state()).doesNotContainKey("_app_appKey");
     assertThat(retrievedSessionRemove.state()).doesNotContainKey("_user_userKey");
     assertThat(retrievedSessionRemove.state()).doesNotContainKey("temp:tempKey");
+  }
+
+  @Test
+  public void appendEvent_updatesSessionTimestampWithFractionalSeconds() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+
+    // Add an event with a timestamp that contains a fractional second
+    Event eventAdd = Event.builder().timestamp(5500).build();
+    var unused = sessionService.appendEvent(session, eventAdd).blockingGet();
+
+    // Verify the last modified timestamp contains a fractional second
+    Session retrievedSession =
+        sessionService
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(retrievedSession.lastUpdateTime()).isEqualTo(Instant.ofEpochSecond(5, 500000000L));
   }
 
   @Test

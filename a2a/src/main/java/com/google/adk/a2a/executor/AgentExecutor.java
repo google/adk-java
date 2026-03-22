@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.google.adk.a2a.executor;
 
 import static java.util.Objects.requireNonNull;
@@ -44,12 +59,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Implementation of the A2A AgentExecutor interface that uses ADK to execute agent tasks.
- *
- * <p>**EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do not
- * use in production code.
- */
+/** Implementation of the A2A AgentExecutor interface that uses ADK to execute agent tasks. */
 public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor {
   private static final Logger logger = LoggerFactory.getLogger(AgentExecutor.class);
   private static final String USER_ID_PREFIX = "A2A_USER_";
@@ -308,16 +318,8 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
                 "Agent returned an error: " + event.errorCode().get(),
                 null));
       }
-      ImmutableList<Part<?>> parts = EventConverter.contentToParts(event.content());
-      // Mark all parts as partial if the event is partial.
-      if (event.partial().orElse(false)) {
-        parts.forEach(
-            part -> {
-              Map<String, Object> metadata = part.getMetadata();
-              metadata.put("adk_partial", true);
-            });
-      }
-
+      ImmutableList<Part<?>> parts =
+          EventConverter.contentToParts(event.content(), event.partial().orElse(false));
       Map<String, Object> metadata = new HashMap<>();
       if (event.customMetadata().isPresent()) {
         for (CustomMetadata cm : event.customMetadata().get()) {

@@ -34,7 +34,6 @@ import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.List;
-import java.util.Optional;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -324,7 +323,7 @@ public class McpToolsetTest {
     when(mockMcpSyncClient.listTools()).thenReturn(mockResult);
 
     McpToolset toolset =
-        new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper(), Optional.of(toolFilter));
+        new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper(), toolFilter);
 
     List<BaseTool> tools = toolset.getTools(mockReadonlyContext).toList().blockingGet();
 
@@ -340,8 +339,7 @@ public class McpToolsetTest {
     when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
     when(mockMcpSyncClient.listTools()).thenThrow(new RuntimeException("Test Exception"));
 
-    McpToolset toolset =
-        new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper(), Optional.empty());
+    McpToolset toolset = new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper());
 
     toolset
         .getTools(mockReadonlyContext)
@@ -362,8 +360,7 @@ public class McpToolsetTest {
         .thenThrow(new RuntimeException("Attempt 2 failed"))
         .thenReturn(mockResult);
 
-    McpToolset toolset =
-        new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper(), Optional.empty());
+    McpToolset toolset = new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper());
 
     List<BaseTool> tools = toolset.getTools(mockReadonlyContext).toList().blockingGet();
 

@@ -9,8 +9,7 @@
     "vscode": {
       "extensions": [
         "extension-pack-for-java",
-        "redhat.vscode-xml",
-        "rangav.vscode-thunder-client"
+        "redhat.vscode-xml"
       ],
       "settings": {
         "java.jdt.download.server": "latest",
@@ -24,5 +23,8 @@
   },
   "remoteUser": "vscode",
   "forwardPorts": [8000, 8080, 8081, 8082],
-  "postCreateCommand": "git config --global credential.helper '!gh auth git-credential' && git config --global lfs.locksverify false"
+  "postCreateCommand": "git config --global credential.helper '!gh auth git-credential' && git config --global lfs.locksverify false",
+  "hostRequirements": {
+    "cpus": 4
+  }
 }

@@ -36,10 +36,15 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import java.util.ArrayList;
+import java.util.ConcurrentModificationException;
+import java.util.Iterator;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -780,11 +785,73 @@ public final class ContentsTest {
     assertThat(contents).containsExactly(e.content().get());
   }
 
+  @Test
+  public void processRequest_concurrentReadAndWrite_noException() throws Exception {
+    LlmAgent agent =
+        LlmAgent.builder().name(AGENT).includeContents(LlmAgent.IncludeContents.DEFAULT).build();
+    List<Event> customEvents =
+        new ArrayList<Event>() {
+          private void checkLock() {
+            if (!Thread.holdsLock(this)) {
+              throw new ConcurrentModificationException("Unsynchronized iteration detected!");
+            }
+          }
+
+          @Override
+          public Iterator<Event> iterator() {
+            checkLock();
+            return super.iterator();
+          }
+
+          @Override
+          public ListIterator<Event> listIterator() {
+            checkLock();
+            return super.listIterator();
+          }
+
+          @Override
+          public ListIterator<Event> listIterator(int index) {
+            checkLock();
+            return super.listIterator(index);
+          }
+
+          @Override
+          public Stream<Event> stream() {
+            checkLock();
+            return super.stream();
+          }
+        };
+
+    Session session =
+        Session.builder("test-session")
+            .appName("test-app")
+            .userId("test-user")
+            .events(customEvents)
+            .build();
+
+    // The list must have at least one element so that operations interacting with events trigger
+    // iteration.
+    customEvents.add(createUserEvent("dummy", "dummy"));
+
+    InvocationContext context =
+        InvocationContext.builder()
+            .invocationId("test-invocation")
+            .agent(agent)
+            .session(session)
+            .sessionService(sessionService)
+            .build();
+
+    LlmRequest initialRequest = LlmRequest.builder().build();
+
+    // This single call will throw the exception if the list is accessed insecurely.
+    var unused = contentsProcessor.processRequest(context, initialRequest).blockingGet();
+  }
+
   private static Event createUserEvent(String id, String text) {
     return Event.builder()
         .id(id)
         .author(USER)
-        .content(Optional.of(Content.fromParts(Part.fromText(text))))
+        .content(Content.fromParts(Part.fromText(text)))
         .invocationId("invocationId")
         .build();
   }
@@ -794,7 +861,7 @@ public final class ContentsTest {
     return Event.builder()
         .id(id)
         .author(USER)
-        .content(Optional.of(Content.fromParts(Part.fromText(text))))
+        .content(Content.fromParts(Part.fromText(text)))
         .invocationId(invocationId)
         .timestamp(timestamp)
         .build();

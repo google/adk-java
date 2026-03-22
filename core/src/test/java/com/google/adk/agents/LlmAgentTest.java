@@ -26,7 +26,6 @@ import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Callbacks.AfterModelCallback;
 import com.google.adk.agents.Callbacks.AfterToolCallback;
@@ -35,6 +34,7 @@ import com.google.adk.agents.Callbacks.BeforeToolCallback;
 import com.google.adk.agents.Callbacks.OnModelErrorCallback;
 import com.google.adk.agents.Callbacks.OnToolErrorCallback;
 import com.google.adk.events.Event;
+import com.google.adk.examples.Example;
 import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
@@ -46,13 +46,14 @@ import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
+import com.google.adk.tools.ExampleTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
-import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
@@ -61,7 +62,6 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.After;
@@ -209,75 +209,6 @@ public final class LlmAgentTest {
     assertEqualIgnoringFunctionIds(events.get(1).content().get(), expectedFunctionResponseContent);
     assertEqualIgnoringFunctionIds(events.get(2).content().get(), contentWithFunctionCall);
     assertEqualIgnoringFunctionIds(events.get(3).content().get(), expectedFunctionResponseContent);
-  }
-
-  @Test
-  public void build_withOutputSchemaAndTools_throwsIllegalArgumentException() {
-    BaseTool tool =
-        new BaseTool("test_tool", "test_description") {
-          @Override
-          public Optional<FunctionDeclaration> declaration() {
-            return Optional.empty();
-          }
-        };
-
-    Schema outputSchema =
-        Schema.builder()
-            .type("OBJECT")
-            .properties(ImmutableMap.of("status", Schema.builder().type("STRING").build()))
-            .required(ImmutableList.of("status"))
-            .build();
-
-    // Expecting an IllegalArgumentException when building the agent
-    IllegalArgumentException exception =
-        assertThrows(
-            IllegalArgumentException.class,
-            () ->
-                LlmAgent.builder() // Use the agent builder directly
-                    .name("agent with invalid tool config")
-                    .outputSchema(outputSchema) // Set the output schema
-                    .tools(ImmutableList.of(tool)) // Set tools (this should cause the error)
-                    .build()); // Attempt to build the agent
-
-    assertThat(exception)
-        .hasMessageThat()
-        .contains(
-            "Invalid config for agent agent with invalid tool config: if outputSchema is set, tools"
-                + " must be empty");
-  }
-
-  @Test
-  public void build_withOutputSchemaAndSubAgents_throwsIllegalArgumentException() {
-    ImmutableList<BaseAgent> subAgents =
-        ImmutableList.of(
-            createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
-                .name("test_sub_agent")
-                .description("test_sub_agent_description")
-                .build());
-
-    Schema outputSchema =
-        Schema.builder()
-            .type("OBJECT")
-            .properties(ImmutableMap.of("status", Schema.builder().type("STRING").build()))
-            .required(ImmutableList.of("status"))
-            .build();
-
-    // Expecting an IllegalArgumentException when building the agent
-    IllegalArgumentException exception =
-        assertThrows(
-            IllegalArgumentException.class,
-            () ->
-                LlmAgent.builder() // Use the agent builder directly
-                    .name("agent with invalid tool config")
-                    .outputSchema(outputSchema) // Set the output schema
-                    .subAgents(subAgents) // Set subAgents (this should cause the error)
-                    .build()); // Attempt to build the agent
-
-    assertThat(exception)
-        .hasMessageThat()
-        .contains(
-            "Invalid config for agent agent with invalid tool config: if outputSchema is set,"
-                + " subAgents must be empty to disable agent transfer.");
   }
 
   @Test
@@ -572,8 +503,13 @@ public final class LlmAgentTest {
 
     String agentSpanId = agentSpan.getSpanContext().getSpanId();
     llmSpans.forEach(s -> assertEquals(agentSpanId, s.getParentSpanContext().getSpanId()));
-    toolCallSpans.forEach(s -> assertEquals(agentSpanId, s.getParentSpanContext().getSpanId()));
-    toolResponseSpans.forEach(s -> assertEquals(agentSpanId, s.getParentSpanContext().getSpanId()));
+
+    // The tool calls and responses are children of the first LLM call that produced the function
+    // call.
+    String firstLlmSpanId = llmSpans.get(0).getSpanContext().getSpanId();
+    toolCallSpans.forEach(s -> assertEquals(firstLlmSpanId, s.getParentSpanContext().getSpanId()));
+    toolResponseSpans.forEach(
+        s -> assertEquals(firstLlmSpanId, s.getParentSpanContext().getSpanId()));
   }
 
   @Test
@@ -638,6 +574,31 @@ public final class LlmAgentTest {
     assertThat(llmSpans).hasSize(2); // One for main agent, one for sub agent
   }
 
+  @Test
+  public void run_outputSchemaWithTools_allowed() {
+    Schema personShema =
+        Schema.builder()
+            .type(Type.Known.OBJECT)
+            .properties(
+                ImmutableMap.of(
+                    "name", Schema.builder().type(Type.Known.STRING).build(),
+                    "age", Schema.builder().type(Type.Known.INTEGER).build(),
+                    "city", Schema.builder().type(Type.Known.STRING).build()))
+            .build();
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .outputSchema(personShema)
+            .tools(new EchoTool())
+            .build();
+    assertThat(agent.outputSchema()).hasValue(personShema);
+    assertThat(
+            agent
+                .canonicalTools(new ReadonlyContext(createInvocationContext(agent)))
+                .count()
+                .blockingGet())
+        .isEqualTo(1);
+  }
+
   private List<SpanData> findSpansByName(List<SpanData> spans, String name) {
     return spans.stream().filter(s -> s.getName().equals(name)).toList();
   }
@@ -648,5 +609,31 @@ public final class LlmAgentTest {
         .filter(s -> s.getName().equals(name))
         .findFirst()
         .orElseThrow(() -> new AssertionError("Span not found: " + name));
+  }
+
+  @Test
+  public void run_withExampleTool_doesNotAddFunctionDeclarations() {
+    ExampleTool tool =
+        ExampleTool.builder()
+            .addExample(
+                Example.builder()
+                    .input(Content.fromParts(Part.fromText("qin")))
+                    .output(ImmutableList.of(Content.fromParts(Part.fromText("qout"))))
+                    .build())
+            .build();
+
+    Content modelContent = Content.fromParts(Part.fromText("Real LLM response"));
+    TestLlm testLlm = createTestLlm(createLlmResponse(modelContent));
+    LlmAgent agent = createTestAgentBuilder(testLlm).tools(tool).build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    var unused = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(testLlm.getRequests()).hasSize(1);
+    LlmRequest request = testLlm.getRequests().get(0);
+
+    assertThat(request.config().isPresent()).isTrue();
+    var config = request.config().get();
+    assertThat(config.tools().isPresent()).isFalse();
   }
 }

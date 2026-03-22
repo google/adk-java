@@ -22,7 +22,7 @@ import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
-import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /** Base interface for artifact services. */
 public interface BaseArtifactService {
@@ -75,7 +75,7 @@ public interface BaseArtifactService {
   /** Loads the latest version of an artifact from the service. */
   default Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename) {
-    return loadArtifact(appName, userId, sessionId, filename, Optional.empty());
+    return loadArtifact(appName, userId, sessionId, filename, /* version= */ (Integer) null);
   }
 
   /** Loads the latest version of an artifact from the service. */
@@ -86,7 +86,7 @@ public interface BaseArtifactService {
   /** Loads a specific version of an artifact from the service. */
   default Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, int version) {
-    return loadArtifact(appName, userId, sessionId, filename, Optional.of(version));
+    return loadArtifact(appName, userId, sessionId, filename, Integer.valueOf(version));
   }
 
   default Maybe<Part> loadArtifact(SessionKey sessionKey, String filename, int version) {
@@ -94,13 +94,8 @@ public interface BaseArtifactService {
         sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, version);
   }
 
-  /**
-   * @deprecated Use {@link #loadArtifact(String, String, String, String)} or {@link
-   *     #loadArtifact(String, String, String, String, int)} instead.
-   */
-  @Deprecated
   Maybe<Part> loadArtifact(
-      String appName, String userId, String sessionId, String filename, Optional<Integer> version);
+      String appName, String userId, String sessionId, String filename, @Nullable Integer version);
 
   /**
    * Lists all the artifact filenames within a session.

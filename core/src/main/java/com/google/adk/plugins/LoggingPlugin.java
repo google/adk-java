@@ -29,7 +29,7 @@ import com.google.genai.types.Content;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.Map;
-import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -57,7 +57,7 @@ public class LoggingPlugin extends BasePlugin {
 
   @Override
   public Maybe<Content> onUserMessageCallback(
-      InvocationContext invocationContext, Content userMessage) {
+      InvocationContext invocationContext, @Nullable Content userMessage) {
     return Maybe.fromAction(
         () -> {
           log("🚀 USER MESSAGE RECEIVED");
@@ -66,7 +66,7 @@ public class LoggingPlugin extends BasePlugin {
           log("   User ID: " + invocationContext.userId());
           log("   App Name: " + invocationContext.appName());
           log("   Root Agent: " + invocationContext.agent().name());
-          log("   User Content: " + formatContent(Optional.ofNullable(userMessage)));
+          log("   User Content: " + formatContent(userMessage));
           invocationContext.branch().ifPresent(branch -> log("   Branch: " + branch));
         });
   }
@@ -88,7 +88,7 @@ public class LoggingPlugin extends BasePlugin {
           log("📢 EVENT YIELDED");
           log("   Event ID: " + event.id());
           log("   Author: " + event.author());
-          log("   Content: " + formatContent(event.content()));
+          log("   Content: " + formatContent(event.content().orElse(null)));
           log("   Final Response: " + event.finalResponse());
 
           if (!event.functionCalls().isEmpty()) {
@@ -190,7 +190,7 @@ public class LoggingPlugin extends BasePlugin {
             log("   ❌ ERROR - Code: " + llmResponse.errorCode().get());
             log("   Error Message: " + llmResponse.errorMessage().orElse("None"));
           } else {
-            log("   Content: " + formatContent(llmResponse.content()));
+            log("   Content: " + formatContent(llmResponse.content().orElse(null)));
             llmResponse.partial().ifPresent(partial -> log("   Partial: " + partial));
             llmResponse
                 .turnComplete()
@@ -265,12 +265,8 @@ public class LoggingPlugin extends BasePlugin {
         });
   }
 
-  private String formatContent(Optional<Content> contentOptional) {
-    if (contentOptional.isEmpty()) {
-      return "None";
-    }
-    Content content = contentOptional.get();
-    if (content.parts().isEmpty() || content.parts().get().isEmpty()) {
+  private String formatContent(@Nullable Content content) {
+    if (content == null || content.parts().isEmpty() || content.parts().get().isEmpty()) {
       return "None";
     }
     return content.parts().get().stream()

@@ -18,6 +18,7 @@ package com.google.adk.models.springai;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.models.springai.integrations.tools.WeatherTool;
 import com.google.adk.runner.InMemoryRunner;
@@ -73,14 +74,15 @@ class SpringAIIntegrationTest {
 
     // when
     Runner runner = new InMemoryRunner(agent);
-    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    Session session =
+        runner.sessionService().createSession(agent.name(), "test-user").blockingGet();
 
     Content userMessage =
         Content.builder().role("user").parts(List.of(Part.fromText("What is a qubit?"))).build();
 
     List<Event> events =
         runner
-            .runAsync(session, userMessage, com.google.adk.agents.RunConfig.builder().build())
+            .runAsync(session.sessionKey(), userMessage, RunConfig.builder().build())
             .toList()
             .blockingGet();
 
@@ -149,7 +151,8 @@ class SpringAIIntegrationTest {
 
     // when
     Runner runner = new InMemoryRunner(agent);
-    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    Session session =
+        runner.sessionService().createSession(agent.name(), "test-user").blockingGet();
 
     Content userMessage =
         Content.builder()
@@ -159,7 +162,7 @@ class SpringAIIntegrationTest {
 
     List<Event> events =
         runner
-            .runAsync(session, userMessage, com.google.adk.agents.RunConfig.builder().build())
+            .runAsync(session.userId(), session.id(), userMessage, RunConfig.builder().build())
             .toList()
             .blockingGet();
 
@@ -217,7 +220,8 @@ class SpringAIIntegrationTest {
 
     // when
     Runner runner = new InMemoryRunner(agent);
-    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    Session session =
+        runner.sessionService().createSession(agent.name(), "test-user").blockingGet();
 
     Content userMessage =
         Content.builder()
@@ -228,11 +232,10 @@ class SpringAIIntegrationTest {
     List<Event> events =
         runner
             .runAsync(
-                session,
+                session.userId(),
+                session.id(),
                 userMessage,
-                com.google.adk.agents.RunConfig.builder()
-                    .setStreamingMode(com.google.adk.agents.RunConfig.StreamingMode.SSE)
-                    .build())
+                RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.SSE).build())
             .toList()
             .blockingGet();
 

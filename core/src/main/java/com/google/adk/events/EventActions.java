@@ -28,36 +28,32 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Represents the actions attached to an event. */
 // TODO - b/414081262 make json wire camelCase
 @JsonDeserialize(builder = EventActions.Builder.class)
 public class EventActions extends JsonBaseModel {
 
-  private Optional<Boolean> skipSummarization;
+  private @Nullable Boolean skipSummarization;
   private ConcurrentMap<String, Object> stateDelta;
   private ConcurrentMap<String, Integer> artifactDelta;
   private Set<String> deletedArtifactIds;
-  private Optional<String> transferToAgent;
-  private Optional<Boolean> escalate;
-  private ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs;
+  private @Nullable String transferToAgent;
+  private @Nullable Boolean escalate;
+  private ConcurrentMap<String, Map<String, Object>> requestedAuthConfigs;
   private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
   private boolean endOfAgent;
-  private Optional<EventCompaction> compaction;
+  private @Nullable EventCompaction compaction;
 
   /** Default constructor for Jackson. */
   public EventActions() {
-    this.skipSummarization = Optional.empty();
     this.stateDelta = new ConcurrentHashMap<>();
     this.artifactDelta = new ConcurrentHashMap<>();
     this.deletedArtifactIds = new HashSet<>();
-    this.transferToAgent = Optional.empty();
-    this.escalate = Optional.empty();
     this.requestedAuthConfigs = new ConcurrentHashMap<>();
     this.requestedToolConfirmations = new ConcurrentHashMap<>();
     this.endOfAgent = false;
-    this.compaction = Optional.empty();
   }
 
   private EventActions(Builder builder) {
@@ -75,27 +71,23 @@ public class EventActions extends JsonBaseModel {
 
   @JsonProperty("skipSummarization")
   public Optional<Boolean> skipSummarization() {
-    return skipSummarization;
+    return Optional.ofNullable(skipSummarization);
   }
 
   public void setSkipSummarization(@Nullable Boolean skipSummarization) {
-    this.skipSummarization = Optional.ofNullable(skipSummarization);
-  }
-
-  public void setSkipSummarization(Optional<Boolean> skipSummarization) {
     this.skipSummarization = skipSummarization;
   }
 
   public void setSkipSummarization(boolean skipSummarization) {
-    this.skipSummarization = Optional.of(skipSummarization);
+    this.skipSummarization = skipSummarization;
   }
 
   @JsonProperty("stateDelta")
-  public ConcurrentMap<String, Object> stateDelta() {
+  public Map<String, Object> stateDelta() {
     return stateDelta;
   }
 
-  @Deprecated // Use stateDelta(), addState() and removeStateByKey() instead.
+  @Deprecated // Use stateDelta() and removeStateByKey() instead.
   public void setStateDelta(ConcurrentMap<String, Object> stateDelta) {
     this.stateDelta = stateDelta;
   }
@@ -110,12 +102,12 @@ public class EventActions extends JsonBaseModel {
   }
 
   @JsonProperty("artifactDelta")
-  public ConcurrentMap<String, Integer> artifactDelta() {
+  public Map<String, Integer> artifactDelta() {
     return artifactDelta;
   }
 
-  public void setArtifactDelta(ConcurrentMap<String, Integer> artifactDelta) {
-    this.artifactDelta = artifactDelta;
+  public void setArtifactDelta(Map<String, Integer> artifactDelta) {
+    this.artifactDelta = new ConcurrentHashMap<>(artifactDelta);
   }
 
   @JsonProperty("deletedArtifactIds")
@@ -130,48 +122,48 @@ public class EventActions extends JsonBaseModel {
 
   @JsonProperty("transferToAgent")
   public Optional<String> transferToAgent() {
-    return transferToAgent;
+    return Optional.ofNullable(transferToAgent);
   }
 
-  public void setTransferToAgent(Optional<String> transferToAgent) {
+  public void setTransferToAgent(@Nullable String transferToAgent) {
     this.transferToAgent = transferToAgent;
-  }
-
-  public void setTransferToAgent(String transferToAgent) {
-    this.transferToAgent = Optional.ofNullable(transferToAgent);
   }
 
   @JsonProperty("escalate")
   public Optional<Boolean> escalate() {
-    return escalate;
+    return Optional.ofNullable(escalate);
   }
 
-  public void setEscalate(Optional<Boolean> escalate) {
+  public void setEscalate(@Nullable Boolean escalate) {
     this.escalate = escalate;
   }
 
-  public void setEscalate(boolean escalate) {
-    this.escalate = Optional.of(escalate);
-  }
-
   @JsonProperty("requestedAuthConfigs")
-  public ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs() {
+  public Map<String, Map<String, Object>> requestedAuthConfigs() {
     return requestedAuthConfigs;
   }
 
   public void setRequestedAuthConfigs(
-      ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs) {
-    this.requestedAuthConfigs = requestedAuthConfigs;
+      Map<String, ? extends Map<String, Object>> requestedAuthConfigs) {
+    if (requestedAuthConfigs == null) {
+      this.requestedAuthConfigs = new ConcurrentHashMap<>();
+    } else {
+      this.requestedAuthConfigs = new ConcurrentHashMap<>(requestedAuthConfigs);
+    }
   }
 
   @JsonProperty("requestedToolConfirmations")
-  public ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations() {
+  public Map<String, ToolConfirmation> requestedToolConfirmations() {
     return requestedToolConfirmations;
   }
 
   public void setRequestedToolConfirmations(
-      ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations) {
-    this.requestedToolConfirmations = requestedToolConfirmations;
+      Map<String, ToolConfirmation> requestedToolConfirmations) {
+    if (requestedToolConfirmations == null) {
+      this.requestedToolConfirmations = new ConcurrentHashMap<>();
+    } else {
+      this.requestedToolConfirmations = new ConcurrentHashMap<>(requestedToolConfirmations);
+    }
   }
 
   @JsonProperty("endOfAgent")
@@ -196,24 +188,16 @@ public class EventActions extends JsonBaseModel {
    * @deprecated Use {@link #setEndOfAgent(boolean)} instead.
    */
   @Deprecated
-  public void setEndInvocation(Optional<Boolean> endInvocation) {
-    this.endOfAgent = endInvocation.orElse(false);
-  }
-
-  /**
-   * @deprecated Use {@link #setEndOfAgent(boolean)} instead.
-   */
-  @Deprecated
   public void setEndInvocation(boolean endInvocation) {
     this.endOfAgent = endInvocation;
   }
 
   @JsonProperty("compaction")
   public Optional<EventCompaction> compaction() {
-    return compaction;
+    return Optional.ofNullable(compaction);
   }
 
-  public void setCompaction(Optional<EventCompaction> compaction) {
+  public void setCompaction(@Nullable EventCompaction compaction) {
     this.compaction = compaction;
   }
 
@@ -262,61 +246,65 @@ public class EventActions extends JsonBaseModel {
 
   /** Builder for {@link EventActions}. */
   public static class Builder {
-    private Optional<Boolean> skipSummarization;
+    private @Nullable Boolean skipSummarization;
     private ConcurrentMap<String, Object> stateDelta;
     private ConcurrentMap<String, Integer> artifactDelta;
     private Set<String> deletedArtifactIds;
-    private Optional<String> transferToAgent;
-    private Optional<Boolean> escalate;
-    private ConcurrentMap<String, ConcurrentMap<String, Object>> requestedAuthConfigs;
+    private @Nullable String transferToAgent;
+    private @Nullable Boolean escalate;
+    private ConcurrentMap<String, Map<String, Object>> requestedAuthConfigs;
     private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
     private boolean endOfAgent = false;
-    private Optional<EventCompaction> compaction;
+    private @Nullable EventCompaction compaction;
 
     public Builder() {
-      this.skipSummarization = Optional.empty();
       this.stateDelta = new ConcurrentHashMap<>();
       this.artifactDelta = new ConcurrentHashMap<>();
       this.deletedArtifactIds = new HashSet<>();
-      this.transferToAgent = Optional.empty();
-      this.escalate = Optional.empty();
       this.requestedAuthConfigs = new ConcurrentHashMap<>();
       this.requestedToolConfirmations = new ConcurrentHashMap<>();
-      this.compaction = Optional.empty();
     }
 
     private Builder(EventActions eventActions) {
-      this.skipSummarization = eventActions.skipSummarization();
+      this.skipSummarization = eventActions.skipSummarization;
       this.stateDelta = new ConcurrentHashMap<>(eventActions.stateDelta());
       this.artifactDelta = new ConcurrentHashMap<>(eventActions.artifactDelta());
       this.deletedArtifactIds = new HashSet<>(eventActions.deletedArtifactIds());
-      this.transferToAgent = eventActions.transferToAgent();
-      this.escalate = eventActions.escalate();
+      this.transferToAgent = eventActions.transferToAgent;
+      this.escalate = eventActions.escalate;
       this.requestedAuthConfigs = new ConcurrentHashMap<>(eventActions.requestedAuthConfigs());
       this.requestedToolConfirmations =
           new ConcurrentHashMap<>(eventActions.requestedToolConfirmations());
-      this.endOfAgent = eventActions.endOfAgent();
-      this.compaction = eventActions.compaction();
+      this.endOfAgent = eventActions.endOfAgent;
+      this.compaction = eventActions.compaction;
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("skipSummarization")
     public Builder skipSummarization(boolean skipSummarization) {
-      this.skipSummarization = Optional.of(skipSummarization);
+      this.skipSummarization = skipSummarization;
       return this;
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("stateDelta")
-    public Builder stateDelta(ConcurrentMap<String, Object> value) {
-      this.stateDelta = value;
+    public Builder stateDelta(@Nullable Map<String, Object> value) {
+      if (value == null) {
+        this.stateDelta = new ConcurrentHashMap<>();
+      } else {
+        this.stateDelta = new ConcurrentHashMap<>(value);
+      }
       return this;
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("artifactDelta")
-    public Builder artifactDelta(ConcurrentMap<String, Integer> value) {
-      this.artifactDelta = value;
+    public Builder artifactDelta(@Nullable Map<String, Integer> value) {
+      if (value == null) {
+        this.artifactDelta = new ConcurrentHashMap<>();
+      } else {
+        this.artifactDelta = new ConcurrentHashMap<>(value);
+      }
       return this;
     }
 
@@ -329,30 +317,38 @@ public class EventActions extends JsonBaseModel {
 
     @CanIgnoreReturnValue
     @JsonProperty("transferToAgent")
-    public Builder transferToAgent(String agentId) {
-      this.transferToAgent = Optional.ofNullable(agentId);
+    public Builder transferToAgent(@Nullable String agentId) {
+      this.transferToAgent = agentId;
       return this;
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("escalate")
     public Builder escalate(boolean escalate) {
-      this.escalate = Optional.of(escalate);
+      this.escalate = escalate;
       return this;
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("requestedAuthConfigs")
     public Builder requestedAuthConfigs(
-        ConcurrentMap<String, ConcurrentMap<String, Object>> value) {
-      this.requestedAuthConfigs = value;
+        @Nullable Map<String, ? extends Map<String, Object>> value) {
+      if (value == null) {
+        this.requestedAuthConfigs = new ConcurrentHashMap<>();
+      } else {
+        this.requestedAuthConfigs = new ConcurrentHashMap<>(value);
+      }
       return this;
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("requestedToolConfirmations")
-    public Builder requestedToolConfirmations(ConcurrentMap<String, ToolConfirmation> value) {
-      this.requestedToolConfirmations = value;
+    public Builder requestedToolConfirmations(@Nullable Map<String, ToolConfirmation> value) {
+      if (value == null) {
+        this.requestedToolConfirmations = new ConcurrentHashMap<>();
+      } else {
+        this.requestedToolConfirmations = new ConcurrentHashMap<>(value);
+      }
       return this;
     }
 
@@ -376,8 +372,8 @@ public class EventActions extends JsonBaseModel {
 
     @CanIgnoreReturnValue
     @JsonProperty("compaction")
-    public Builder compaction(EventCompaction value) {
-      this.compaction = Optional.ofNullable(value);
+    public Builder compaction(@Nullable EventCompaction value) {
+      this.compaction = value;
       return this;
     }
 

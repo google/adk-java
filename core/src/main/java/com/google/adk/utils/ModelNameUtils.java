@@ -21,6 +21,7 @@ import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/** Utility class for model names. */
 public final class ModelNameUtils {
   private static final String GEMINI_PREFIX = "gemini-";
   private static final Pattern GEMINI_2_PATTERN = Pattern.compile("^gemini-2\\..*");
@@ -35,11 +36,15 @@ public final class ModelNameUtils {
   }
 
   public static boolean isGemini2Model(String modelString) {
+    return matchesModelPattern(modelString, GEMINI_2_PATTERN);
+  }
+
+  private static boolean matchesModelPattern(String modelString, Pattern pattern) {
     if (modelString == null) {
       return false;
     }
     String modelName = extractModelName(modelString);
-    return GEMINI_2_PATTERN.matcher(modelName).matches();
+    return pattern.matcher(modelName).matches();
   }
 
   /**
@@ -63,6 +68,17 @@ public final class ModelNameUtils {
       }
     }
     return false;
+  }
+
+  /**
+   * Returns true if the model supports using output schema together with tools.
+   *
+   * @param modelString The model name or path.
+   * @return true if output schema with tools is supported, false otherwise.
+   */
+  public static boolean canUseOutputSchemaWithTools(String modelString) {
+    // Current limitation for Vertex AI 2.x models.
+    return !isGemini2Model(modelString);
   }
 
   /**

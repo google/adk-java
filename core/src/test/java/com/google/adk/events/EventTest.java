@@ -76,6 +76,7 @@ public final class EventTest {
           .avgLogprobs(0.5)
           .interrupted(true)
           .timestamp(123456789L)
+          .modelVersion("model_version")
           .build();
 
   @Test
@@ -99,6 +100,7 @@ public final class EventTest {
     assertThat(EVENT.interrupted()).hasValue(true);
     assertThat(EVENT.timestamp()).isEqualTo(123456789L);
     assertThat(EVENT.actions()).isEqualTo(EVENT_ACTIONS);
+    assertThat(EVENT.modelVersion()).hasValue("model_version");
   }
 
   @Test

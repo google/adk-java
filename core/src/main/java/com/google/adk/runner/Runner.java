@@ -52,6 +52,7 @@ import com.google.genai.types.Modality;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -129,6 +130,13 @@ public class Runner {
     public Builder plugins(List<? extends Plugin> plugins) {
       Preconditions.checkState(this.app == null, "plugins() cannot be called when app is set.");
       this.plugins = plugins;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder plugins(Plugin... plugins) {
+      Preconditions.checkState(this.app == null, "plugins() cannot be called when app is set.");
+      this.plugins = ImmutableList.copyOf(plugins);
       return this;
     }
 
@@ -305,6 +313,7 @@ public class Runner {
       throw new IllegalArgumentException("No parts in the new_message.");
     }
 
+    Completable saveArtifactsFlow = Completable.complete();
     if (this.artifactService != null && saveInputBlobsAsArtifacts) {
       // The runner directly saves the artifacts (if applicable) in the user message and replaces
       // the artifact data with a file name placeholder.
@@ -314,9 +323,11 @@ public class Runner {
           continue;
         }
         String fileName = "artifact_" + invocationContext.invocationId() + "_" + i;
-        var unused =
-            this.artifactService.saveArtifact(
-                this.appName, session.userId(), session.id(), fileName, part);
+        saveArtifactsFlow =
+            saveArtifactsFlow.andThen(
+                this.artifactService
+                    .saveArtifact(this.appName, session.userId(), session.id(), fileName, part)
+                    .ignoreElement());
 
         newMessage
             .parts()
@@ -333,7 +344,7 @@ public class Runner {
             .id(Event.generateEventId())
             .invocationId(invocationContext.invocationId())
             .author("user")
-            .content(Optional.of(newMessage));
+            .content(newMessage);
 
     // Add state delta if provided
     if (stateDelta != null && !stateDelta.isEmpty()) {
@@ -341,7 +352,8 @@ public class Runner {
           EventActions.builder().stateDelta(new ConcurrentHashMap<>(stateDelta)).build());
     }
 
-    return this.sessionService.appendEvent(session, eventBuilder.build());
+    return saveArtifactsFlow.andThen(
+        this.sessionService.appendEvent(session, eventBuilder.build()));
   }
 
   /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
@@ -368,20 +380,25 @@ public class Runner {
       Content newMessage,
       RunConfig runConfig,
       @Nullable Map<String, Object> stateDelta) {
-    Maybe<Session> maybeSession =
-        this.sessionService.getSession(appName, userId, sessionId, Optional.empty());
-    return maybeSession
-        .switchIfEmpty(
-            Single.defer(
-                () -> {
-                  if (runConfig.autoCreateSession()) {
-                    return this.sessionService.createSession(appName, userId, null, sessionId);
-                  }
-                  return Single.error(
-                      new IllegalArgumentException(
-                          String.format("Session not found: %s for user %s", sessionId, userId)));
-                }))
-        .flatMapPublisher(session -> this.runAsyncImpl(session, newMessage, runConfig, stateDelta));
+    return Flowable.defer(
+            () ->
+                this.sessionService
+                    .getSession(appName, userId, sessionId, Optional.empty())
+                    .switchIfEmpty(
+                        Single.defer(
+                            () -> {
+                              if (runConfig.autoCreateSession()) {
+                                return this.sessionService.createSession(
+                                    appName, userId, (Map<String, Object>) null, sessionId);
+                              }
+                              return Single.error(
+                                  new IllegalArgumentException(
+                                      String.format(
+                                          "Session not found: %s for user %s", sessionId, userId)));
+                            }))
+                    .flatMapPublisher(
+                        session -> this.runAsyncImpl(session, newMessage, runConfig, stateDelta)))
+        .compose(Tracing.trace("invocation"));
   }
 
   /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
@@ -409,35 +426,6 @@ public class Runner {
   }
 
   /**
-   * See {@link #runAsync(Session, Content, RunConfig, Map)}.
-   *
-   * @deprecated Use runAsync with sessionId.
-   */
-  @Deprecated(since = "0.4.0", forRemoval = true)
-  public Flowable<Event> runAsync(Session session, Content newMessage, RunConfig runConfig) {
-    return runAsync(session, newMessage, runConfig, /* stateDelta= */ null);
-  }
-
-  /**
-   * Runs the agent asynchronously using a provided Session object.
-   *
-   * @param session The session to run the agent in.
-   * @param newMessage The new message from the user to process.
-   * @param runConfig Configuration for the agent run.
-   * @param stateDelta Optional map of state updates to merge into the session for this run.
-   * @return A Flowable stream of {@link Event} objects generated by the agent during execution.
-   * @deprecated Use runAsync with sessionId.
-   */
-  @Deprecated(since = "0.4.0", forRemoval = true)
-  public Flowable<Event> runAsync(
-      Session session,
-      Content newMessage,
-      RunConfig runConfig,
-      @Nullable Map<String, Object> stateDelta) {
-    return runAsyncImpl(session, newMessage, runConfig, stateDelta);
-  }
-
-  /**
    * Runs the agent asynchronously using a provided Session object.
    *
    * @param session The session to run the agent in.
@@ -451,6 +439,10 @@ public class Runner {
       Content newMessage,
       RunConfig runConfig,
       @Nullable Map<String, Object> stateDelta) {
+    Preconditions.checkNotNull(session, "session cannot be null");
+    Preconditions.checkNotNull(newMessage, "newMessage cannot be null");
+    Preconditions.checkNotNull(runConfig, "runConfig cannot be null");
+    Context capturedContext = Context.current();
     return Flowable.defer(
             () -> {
               BaseAgent rootAgent = this.agent;
@@ -466,22 +458,18 @@ public class Runner {
 
               return this.pluginManager
                   .onUserMessageCallback(initialContext, newMessage)
+                  .compose(Tracing.<Content>withContext(capturedContext))
                   .defaultIfEmpty(newMessage)
                   .flatMap(
                       content ->
-                          (content != null)
-                              ? appendNewMessageToSession(
-                                  session,
-                                  content,
-                                  initialContext,
-                                  runConfig.saveInputBlobsAsArtifacts(),
-                                  stateDelta)
-                              : Single.just(null))
+                          appendNewMessageToSession(
+                              session,
+                              content,
+                              initialContext,
+                              runConfig.saveInputBlobsAsArtifacts(),
+                              stateDelta))
                   .flatMapPublisher(
                       event -> {
-                        if (event == null) {
-                          return Flowable.empty();
-                        }
                         // Get the updated session after the message and state delta are
                         // applied
                         return this.sessionService
@@ -495,7 +483,8 @@ public class Runner {
                                         event,
                                         invocationId,
                                         runConfig,
-                                        rootAgent));
+                                        rootAgent))
+                            .compose(Tracing.<Event>withContext(capturedContext));
                       });
             })
         .doOnError(
@@ -503,8 +492,7 @@ public class Runner {
               Span span = Span.current();
               span.setStatus(StatusCode.ERROR, "Error in runAsync Flowable execution");
               span.recordException(throwable);
-            })
-        .compose(Tracing.trace("invocation"));
+            });
   }
 
   private Flowable<Event> runAgentWithFreshSession(
@@ -533,7 +521,7 @@ public class Runner {
                         .id(Event.generateEventId())
                         .invocationId(contextWithUpdatedSession.invocationId())
                         .author("model")
-                        .content(Optional.of(content))
+                        .content(content)
                         .build());
 
     // Agent execution
@@ -541,7 +529,7 @@ public class Runner {
         contextWithUpdatedSession
             .agent()
             .runAsync(contextWithUpdatedSession)
-            .flatMap(
+            .concatMap(
                 agentEvent ->
                     this.sessionService
                         .appendEvent(updatedSession, agentEvent)
@@ -557,12 +545,14 @@ public class Runner {
                         .toFlowable());
 
     // If beforeRunCallback returns content, emit it and skip agent
+    Context capturedContext = Context.current();
     return beforeRunEvent
         .toFlowable()
         .switchIfEmpty(agentEvents)
         .concatWith(
-            Completable.defer(() -> pluginManager.runAfterRunCallback(contextWithUpdatedSession)))
-        .concatWith(Completable.defer(() -> compactEvents(updatedSession)));
+            Completable.defer(() -> pluginManager.afterRunCallback(contextWithUpdatedSession)))
+        .concatWith(Completable.defer(() -> compactEvents(updatedSession)))
+        .compose(Tracing.withContext(capturedContext));
   }
 
   private Completable compactEvents(Session session) {
@@ -584,9 +574,9 @@ public class Runner {
    * @return invocation context configured for a live run.
    */
   private InvocationContext newInvocationContextForLive(
-      Session session, Optional<LiveRequestQueue> liveRequestQueue, RunConfig runConfig) {
+      Session session, @Nullable LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
     RunConfig.Builder runConfigBuilder = RunConfig.builder(runConfig);
-    if (liveRequestQueue.isPresent()) {
+    if (liveRequestQueue != null) {
       // Default to AUDIO modality if not specified.
       if (CollectionUtils.isNullOrEmpty(runConfig.responseModalities())) {
         runConfigBuilder.setResponseModalities(
@@ -607,8 +597,9 @@ public class Runner {
     InvocationContext.Builder builder =
         newInvocationContextBuilder(session)
             .runConfig(runConfigBuilder.build())
-            .userContent(Content.fromParts());
-    liveRequestQueue.ifPresent(builder::liveRequestQueue);
+            .userContent(Content.fromParts())
+            .liveRequestQueue(liveRequestQueue);
+
     return builder.build();
   }
 
@@ -626,46 +617,9 @@ public class Runner {
         .agent(this.findAgentToRun(session, rootAgent));
   }
 
-  /**
-   * Runs the agent in live mode, appending generated events to the session.
-   *
-   * @return stream of events from the agent.
-   */
   public Flowable<Event> runLive(
       Session session, LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
-    return Flowable.defer(
-            () -> {
-              InvocationContext invocationContext =
-                  newInvocationContextForLive(session, Optional.of(liveRequestQueue), runConfig);
-
-              Single<InvocationContext> invocationContextSingle;
-              if (invocationContext.agent() instanceof LlmAgent agent) {
-                invocationContextSingle =
-                    agent
-                        .tools()
-                        .map(
-                            tools -> {
-                              this.addActiveStreamingTools(invocationContext, tools);
-                              return invocationContext;
-                            });
-              } else {
-                invocationContextSingle = Single.just(invocationContext);
-              }
-              return invocationContextSingle
-                  .flatMapPublisher(
-                      updatedInvocationContext ->
-                          updatedInvocationContext
-                              .agent()
-                              .runLive(updatedInvocationContext)
-                              .doOnNext(event -> this.sessionService.appendEvent(session, event)))
-                  .doOnError(
-                      throwable -> {
-                        Span span = Span.current();
-                        span.setStatus(StatusCode.ERROR, "Error in runLive Flowable execution");
-                        span.recordException(throwable);
-                      });
-            })
-        .compose(Tracing.trace("invocation"));
+    return runLiveImpl(session, liveRequestQueue, runConfig).compose(Tracing.trace("invocation"));
   }
 
   /**
@@ -676,19 +630,25 @@ public class Runner {
    */
   public Flowable<Event> runLive(
       String userId, String sessionId, LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
-    return this.sessionService
-        .getSession(appName, userId, sessionId, Optional.empty())
-        .switchIfEmpty(
-            Single.defer(
-                () -> {
-                  if (runConfig.autoCreateSession()) {
-                    return this.sessionService.createSession(appName, userId, null, sessionId);
-                  }
-                  return Single.error(
-                      new IllegalArgumentException(
-                          String.format("Session not found: %s for user %s", sessionId, userId)));
-                }))
-        .flatMapPublisher(session -> this.runLive(session, liveRequestQueue, runConfig));
+    return Flowable.defer(
+            () ->
+                this.sessionService
+                    .getSession(appName, userId, sessionId, Optional.empty())
+                    .switchIfEmpty(
+                        Single.defer(
+                            () -> {
+                              if (runConfig.autoCreateSession()) {
+                                return this.sessionService.createSession(
+                                    appName, userId, (Map<String, Object>) null, sessionId);
+                              }
+                              return Single.error(
+                                  new IllegalArgumentException(
+                                      String.format(
+                                          "Session not found: %s for user %s", sessionId, userId)));
+                            }))
+                    .flatMapPublisher(
+                        session -> this.runLiveImpl(session, liveRequestQueue, runConfig)))
+        .compose(Tracing.trace("invocation"));
   }
 
   /**
@@ -703,15 +663,46 @@ public class Runner {
   }
 
   /**
-   * Runs the agent asynchronously with a default user ID.
+   * Runs the agent in live mode, appending generated events to the session.
    *
-   * @return stream of generated events.
+   * @return stream of events from the agent.
    */
-  @Deprecated(since = "0.5.0", forRemoval = true)
-  public Flowable<Event> runWithSessionId(
-      String sessionId, Content newMessage, RunConfig runConfig) {
-    // TODO(b/410859954): Add user_id to getter or method signature. Assuming "tmp-user" for now.
-    return this.runAsync("tmp-user", sessionId, newMessage, runConfig);
+  protected Flowable<Event> runLiveImpl(
+      Session session, @Nullable LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
+    return Flowable.defer(
+        () -> {
+          Context capturedContext = Context.current();
+          InvocationContext invocationContext =
+              newInvocationContextForLive(session, liveRequestQueue, runConfig);
+
+          Single<InvocationContext> invocationContextSingle;
+          if (invocationContext.agent() instanceof LlmAgent agent) {
+            invocationContextSingle =
+                agent
+                    .tools()
+                    .map(
+                        tools -> {
+                          this.addActiveStreamingTools(invocationContext, tools);
+                          return invocationContext;
+                        });
+          } else {
+            invocationContextSingle = Single.just(invocationContext);
+          }
+          return invocationContextSingle
+              .flatMapPublisher(
+                  updatedInvocationContext ->
+                      updatedInvocationContext
+                          .agent()
+                          .runLive(updatedInvocationContext)
+                          .doOnNext(event -> this.sessionService.appendEvent(session, event)))
+              .doOnError(
+                  throwable -> {
+                    Span span = Span.current();
+                    span.setStatus(StatusCode.ERROR, "Error in runLive Flowable execution");
+                    span.recordException(throwable);
+                  })
+              .compose(Tracing.<Event>withContext(capturedContext));
+        });
   }
 
   /**

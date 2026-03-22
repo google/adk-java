@@ -24,6 +24,9 @@ import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.truth.Truth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Arrays.stream;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.mock;
@@ -31,15 +34,18 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
+import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.BasePlugin;
+import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.sessions.SessionKey;
 import com.google.adk.summarizer.EventsCompactionConfig;
@@ -57,17 +63,22 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -75,6 +86,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 
 @RunWith(JUnit4.class)
 public final class RunnerTest {
@@ -842,8 +854,60 @@ public final class RunnerTest {
     assertThat(sessionInCallback.state()).containsEntry("number", 123);
   }
 
+  @Test
+  public void runAsync_ensureEventsAreAppendedInOrder() throws Exception {
+    Event event1 = TestUtils.createEvent("1");
+    Event event2 = TestUtils.createEvent("2");
+    BaseAgent mockAgent = TestUtils.createSubAgent("test agent", event1, event2);
+
+    BaseSessionService mockSessionService = mock(BaseSessionService.class);
+
+    when(mockSessionService.getSession(any(), any(), any(), any())).thenReturn(Maybe.just(session));
+    when(mockSessionService.appendEvent(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              Event eventArg = invocation.getArgument(1);
+              Single<Event> result = Single.just(eventArg);
+              if (eventArg.id().equals("1")) {
+                // Artificially delay the first event to ensure it is appended first.
+                return result.delay(100, MILLISECONDS);
+              }
+              return result;
+            });
+
+    Runner mockRunner =
+        Runner.builder()
+            .agent(mockAgent)
+            .appName("test")
+            .sessionService(mockSessionService)
+            .build();
+
+    List<Event> results =
+        mockRunner
+            .runAsync("user", session.id(), createContent("user message"))
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(results))
+        .containsExactly("author: content for event 1", "author: content for event 2")
+        .inOrder();
+  }
+
   private Content createContent(String text) {
     return Content.builder().parts(Part.builder().text(text).build()).build();
+  }
+
+  private static Content createInlineDataContent(byte[]... data) {
+    return Content.builder()
+        .parts(
+            stream(data)
+                .map(dataBytes -> Part.fromBytes(dataBytes, "example/octet-stream"))
+                .toArray(Part[]::new))
+        .build();
+  }
+
+  private static Content createInlineDataContent(String... data) {
+    return createInlineDataContent(stream(data).map(d -> d.getBytes(UTF_8)).toArray(byte[][]::new));
   }
 
   @Test
@@ -975,6 +1039,84 @@ public final class RunnerTest {
 
     assertThat(invocationSpan).isPresent();
     assertThat(invocationSpan.get().hasEnded()).isTrue();
+  }
+
+  @Test
+  public void runAsync_createsToolSpansWithCorrectParent() {
+    LlmAgent agentWithTool =
+        createTestAgentBuilder(testLlmWithFunctionCall).tools(ImmutableList.of(echoTool)).build();
+    Runner runnerWithTool =
+        Runner.builder().app(App.builder().name("test").rootAgent(agentWithTool).build()).build();
+    Session sessionWithTool =
+        runnerWithTool.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        runnerWithTool
+            .runAsync(
+                sessionWithTool.sessionKey(),
+                createContent("from user"),
+                RunConfig.builder().build())
+            .toList()
+            .blockingGet();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    List<SpanData> llmSpans = spans.stream().filter(s -> s.getName().equals("call_llm")).toList();
+    List<SpanData> toolCallSpans =
+        spans.stream().filter(s -> s.getName().equals("tool_call [echo_tool]")).toList();
+    List<SpanData> toolResponseSpans =
+        spans.stream().filter(s -> s.getName().equals("tool_response [echo_tool]")).toList();
+
+    assertThat(llmSpans).hasSize(2);
+    assertThat(toolCallSpans).hasSize(1);
+    assertThat(toolResponseSpans).hasSize(1);
+
+    List<String> llmSpanIds = llmSpans.stream().map(s -> s.getSpanContext().getSpanId()).toList();
+    String toolCallParentId = toolCallSpans.get(0).getParentSpanContext().getSpanId();
+    String toolResponseParentId = toolResponseSpans.get(0).getParentSpanContext().getSpanId();
+
+    assertThat(toolCallParentId).isEqualTo(toolResponseParentId);
+    assertThat(llmSpanIds).contains(toolCallParentId);
+  }
+
+  @Test
+  public void runLive_createsToolSpansWithCorrectParent() throws Exception {
+    LlmAgent agentWithTool =
+        createTestAgentBuilder(testLlmWithFunctionCall).tools(ImmutableList.of(echoTool)).build();
+    Runner runnerWithTool =
+        Runner.builder().app(App.builder().name("test").rootAgent(agentWithTool).build()).build();
+    Session sessionWithTool =
+        runnerWithTool.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runnerWithTool
+            .runLive(sessionWithTool.sessionKey(), liveRequestQueue, RunConfig.builder().build())
+            .test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    List<SpanData> llmSpans = spans.stream().filter(s -> s.getName().equals("call_llm")).toList();
+    List<SpanData> toolCallSpans =
+        spans.stream().filter(s -> s.getName().equals("tool_call [echo_tool]")).toList();
+    List<SpanData> toolResponseSpans =
+        spans.stream().filter(s -> s.getName().equals("tool_response [echo_tool]")).toList();
+
+    // In runLive, there is one call_llm span for the execution
+    assertThat(llmSpans).hasSize(1);
+    assertThat(toolCallSpans).hasSize(1);
+    assertThat(toolResponseSpans).hasSize(1);
+
+    List<String> llmSpanIds = llmSpans.stream().map(s -> s.getSpanContext().getSpanId()).toList();
+    String toolCallParentId = toolCallSpans.get(0).getParentSpanContext().getSpanId();
+    String toolResponseParentId = toolResponseSpans.get(0).getParentSpanContext().getSpanId();
+
+    assertThat(toolCallParentId).isEqualTo(toolResponseParentId);
+    assertThat(llmSpanIds).contains(toolCallParentId);
   }
 
   @Test
@@ -1188,11 +1330,102 @@ public final class RunnerTest {
     verify(plugin).close();
   }
 
+  @Test
+  public void runAsync_contextPropagation() {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+
+    List<Event> events;
+    try (Scope scope = testContext.makeCurrent()) {
+      events =
+          runner
+              .runAsync("user", session.id(), createContent("test message"))
+              .doOnNext(
+                  event -> {
+                    assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+                  })
+              .toList()
+              .blockingGet();
+    }
+
+    assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void runLive_contextPropagation() throws Exception {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.current().with(testKey, "test-value");
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber;
+    try (Scope scope = testContext.makeCurrent()) {
+      testSubscriber =
+          runner
+              .runLive(session, liveRequestQueue, RunConfig.builder().build())
+              .doOnNext(
+                  event -> {
+                    assertThat(Context.current().get(testKey)).isEqualTo("test-value");
+                  })
+              .test();
+    }
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void buildRunnerWithPlugins_success() {
+    BasePlugin plugin1 = mockPlugin("test1");
+    BasePlugin plugin2 = mockPlugin("test2");
+    Runner runner = Runner.builder().agent(agent).appName("test").plugins(plugin1, plugin2).build();
+    assertThat(runner.pluginManager().getPlugins()).containsExactly(plugin1, plugin2);
+  }
+
   public static class Tools {
     private Tools() {}
 
     public static ImmutableMap<String, Object> echoTool(String message) {
       return ImmutableMap.of("message", message);
     }
+  }
+
+  @Test
+  public void runner_executesSaveArtifactFlow() {
+    // arrange
+    final AtomicInteger artifactsSavedCounter = new AtomicInteger();
+    BaseArtifactService mockArtifactService = Mockito.mock(BaseArtifactService.class);
+    when(mockArtifactService.saveArtifact(any(), any(), any(), any(), any()))
+        .thenReturn(
+            Single.defer(
+                () -> {
+                  // we want to assert not only that the saveArtifact method was
+                  // called, but also that the flow that it returned was run, so
+                  // we need to record the call in a counter
+                  artifactsSavedCounter.incrementAndGet();
+                  return Single.just(42);
+                }));
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .artifactService(mockArtifactService)
+            .build();
+    session = runner.sessionService().createSession("test", "user").blockingGet();
+    // each inline data will be saved using our mock artifact service
+    Content content = createInlineDataContent("test data", "test data 2");
+    RunConfig runConfig = RunConfig.builder().setSaveInputBlobsAsArtifacts(true).build();
+
+    // act
+    var events = runner.runAsync("user", session.id(), content, runConfig).test();
+
+    // assert
+    events.assertComplete();
+    // artifacts were saved
+    assertThat(artifactsSavedCounter.get()).isEqualTo(2);
+    // agent was run
+    assertThat(simplifyEvents(events.values())).containsExactly("test agent: from llm");
   }
 }

@@ -173,87 +173,73 @@ public final class ComputerUseToolsetTest {
 
     @Override
     public Single<ComputerState> openWebBrowser() {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> clickAt(int x, int y) {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> hoverAt(int x, int y) {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> typeTextAt(
         int x, int y, String text, Boolean pressEnter, Boolean clearBeforeTyping) {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> scrollDocument(String direction) {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> scrollAt(int x, int y, String direction, int magnitude) {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> wait(Duration duration) {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> goBack() {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> goForward() {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> search() {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> navigate(String url) {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.of(url)).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).url(url).build());
     }
 
     @Override
     public Single<ComputerState> keyCombination(List<String> keys) {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> dragAndDrop(int x, int y, int destinationX, int destinationY) {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override
     public Single<ComputerState> currentState() {
-      return Single.just(
-          ComputerState.builder().screenshot(new byte[0]).url(Optional.empty()).build());
+      return Single.just(ComputerState.builder().screenshot(new byte[0]).build());
     }
 
     @Override

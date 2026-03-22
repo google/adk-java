@@ -2,12 +2,15 @@ package com.google.adk.tools;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.models.Gemini;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GoogleMaps;
@@ -17,6 +20,7 @@ import com.google.genai.types.ToolCodeExecution;
 import com.google.genai.types.UrlContext;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.observers.TestObserver;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.Test;
@@ -26,6 +30,20 @@ import org.junit.runners.JUnit4;
 // TODO(b/410859954): Cover more of the behavior of the default processLlmRequest
 @RunWith(JUnit4.class)
 public final class BaseToolTest {
+
+  private final BaseTool doublingBaseTool =
+      new BaseTool("doubling-test-tool", "returns doubled args") {
+        @Override
+        public Single<Map<String, Object>> runAsync(
+            Map<String, Object> args, ToolContext toolContext) {
+          String sArg = (String) args.get("s");
+          Integer iArg = (Integer) args.get("i");
+          return Single.just(
+              ImmutableMap.<String, Object>of(
+                  "s", sArg + sArg,
+                  "i", iArg + iArg));
+        }
+      };
 
   @Test
   public void processLlmRequestNoDeclarationReturnsSameRequest() {
@@ -247,4 +265,94 @@ public final class BaseToolTest {
     assertThat(updatedLlmRequest.config().get().tools().get())
         .containsExactly(Tool.builder().googleMaps(GoogleMaps.builder().build()).build());
   }
+
+  @Test
+  public void runAsync_withTypeReference_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(42, "foo");
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(
+            testToolArgs, /* toolContext= */ null, new TypeReference<TestToolArgs>() {});
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = new TestToolArgs(84, "foofoo");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withClass_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(21, "bar");
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(testToolArgs, /* toolContext= */ null, TestToolArgs.class);
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = new TestToolArgs(42, "barbar");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withObjectOnly_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(11, "baz");
+
+    Single<Map<String, Object>> out =
+        doublingBaseTool.runAsync(testToolArgs, /* toolContext= */ null);
+    TestObserver<Map<String, Object>> testObserver = out.test();
+
+    testObserver.assertComplete();
+    ImmutableMap<String, Object> expected = ImmutableMap.of("i", 22, "s", "bazbaz");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withObjectMapperAndObjectOnly_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(11, "baz");
+    ObjectMapper objectMapper = new ObjectMapper();
+
+    Single<Map<String, Object>> out =
+        doublingBaseTool.runAsync(testToolArgs, /* toolContext= */ null, objectMapper);
+    TestObserver<Map<String, Object>> testObserver = out.test();
+
+    testObserver.assertComplete();
+    ImmutableMap<String, Object> expected = ImmutableMap.of("i", 22, "s", "bazbaz");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withTypeReferenceAndObjectMapper_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(42, "foo");
+    ObjectMapper objectMapper = new ObjectMapper();
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(
+            testToolArgs,
+            /* toolContext= */ null,
+            objectMapper,
+            new TypeReference<TestToolArgs>() {});
+
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = new TestToolArgs(84, "foofoo");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withClassAndObjectMapper_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(21, "bar");
+    ObjectMapper objectMapper = new ObjectMapper();
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(
+            testToolArgs, /* toolContext= */ null, objectMapper, TestToolArgs.class);
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = new TestToolArgs(42, "barbar");
+    testObserver.assertValue(expected);
+  }
+
+  public record TestToolArgs(int i, String s) {}
 }

@@ -77,17 +77,11 @@ public abstract class LiveRequest extends JsonBaseModel {
     @JsonProperty("content")
     public abstract Builder content(@Nullable Content content);
 
-    public abstract Builder content(Optional<Content> content);
-
     @JsonProperty("blob")
     public abstract Builder blob(@Nullable Blob blob);
 
-    public abstract Builder blob(Optional<Blob> blob);
-
     @JsonProperty("close")
     public abstract Builder close(@Nullable Boolean close);
-
-    public abstract Builder close(Optional<Boolean> close);
 
     abstract LiveRequest autoBuild();
 

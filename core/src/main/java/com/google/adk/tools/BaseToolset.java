@@ -19,7 +19,6 @@ package com.google.adk.tools;
 import com.google.adk.agents.ReadonlyContext;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
-import java.util.Optional;
 import javax.annotation.Nullable;
 
 /** Base interface for toolsets. */
@@ -65,14 +64,5 @@ public interface BaseToolset extends AutoCloseable {
     }
 
     return false;
-  }
-
-  /**
-   * @deprecated Use {@link #isToolSelected(BaseTool, Object, ReadonlyContext)} instead.
-   */
-  @Deprecated
-  default boolean isToolSelected(
-      BaseTool tool, Optional<Object> toolFilter, Optional<ReadonlyContext> readonlyContext) {
-    return isToolSelected(tool, toolFilter.orElse(null), readonlyContext.orElse(null));
   }
 }

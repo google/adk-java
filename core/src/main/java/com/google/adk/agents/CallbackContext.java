@@ -19,12 +19,12 @@ package com.google.adk.agents;
 import com.google.adk.artifacts.ListArtifactsResponse;
 import com.google.adk.events.EventActions;
 import com.google.adk.sessions.State;
+import com.google.common.base.Preconditions;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
-import java.util.Optional;
 
 /** The context of various callbacks for an agent invocation. */
 public class CallbackContext extends ReadonlyContext {
@@ -94,22 +94,19 @@ public class CallbackContext extends ReadonlyContext {
 
   /** Loads the latest version of an artifact from the service. */
   public Maybe<Part> loadArtifact(String filename) {
-    return loadArtifact(filename, Optional.empty());
+    checkArtifactServiceInitialized();
+    return invocationContext
+        .artifactService()
+        .loadArtifact(
+            invocationContext.appName(),
+            invocationContext.userId(),
+            invocationContext.session().id(),
+            filename);
   }
 
   /** Loads a specific version of an artifact from the service. */
   public Maybe<Part> loadArtifact(String filename, int version) {
-    return loadArtifact(filename, Optional.of(version));
-  }
-
-  /**
-   * @deprecated Use {@link #loadArtifact(String)} or {@link #loadArtifact(String, int)} instead.
-   */
-  @Deprecated
-  public Maybe<Part> loadArtifact(String filename, Optional<Integer> version) {
-    if (invocationContext.artifactService() == null) {
-      throw new IllegalStateException("Artifact service is not initialized.");
-    }
+    checkArtifactServiceInitialized();
     return invocationContext
         .artifactService()
         .loadArtifact(
@@ -118,6 +115,11 @@ public class CallbackContext extends ReadonlyContext {
             invocationContext.session().id(),
             filename,
             version);
+  }
+
+  private void checkArtifactServiceInitialized() {
+    Preconditions.checkState(
+        invocationContext.artifactService() != null, "Artifact service is not initialized.");
   }
 
   /**

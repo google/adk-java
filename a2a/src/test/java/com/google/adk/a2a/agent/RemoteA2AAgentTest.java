@@ -1,4 +1,4 @@
-package com.google.adk.a2a;
+package com.google.adk.a2a.agent;
 
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -111,6 +111,20 @@ public final class RemoteA2AAgentTest {
             .runConfig(RunConfig.builder().build())
             .endInvocation(false)
             .build();
+  }
+
+  @Test
+  public void createAgent_streaming_false_returnsNonStreamingAgent() {
+    // With streaming false, the agent should not stream even if the AgentCard supports streaming.
+    RemoteA2AAgent agent = getAgentBuilder().streaming(false).build();
+    assertThat(agent.isStreaming()).isFalse();
+  }
+
+  @Test
+  public void createAgent_streaming_true_returnsStreamingAgent() {
+    // With streaming true, the agent should support streaming if the AgentCard supports streaming.
+    RemoteA2AAgent agent = getAgentBuilder().streaming(true).build();
+    assertThat(agent.isStreaming()).isTrue();
   }
 
   @Test
@@ -412,10 +426,11 @@ public final class RemoteA2AAgentTest {
         .sendMessage(messageCaptor.capture(), any(List.class), any(Consumer.class), any());
     Message message = messageCaptor.getValue();
     assertThat(message.getRole()).isEqualTo(Message.Role.USER);
-    assertThat(message.getParts()).hasSize(3);
+    assertThat(message.getParts()).hasSize(4);
     assertThat(((TextPart) message.getParts().get(0)).getText()).isEqualTo("hello");
-    assertThat(((TextPart) message.getParts().get(1)).getText()).isEqualTo("hi");
-    assertThat(((TextPart) message.getParts().get(2)).getText()).isEqualTo("how are you?");
+    assertThat(((TextPart) message.getParts().get(1)).getText()).isEqualTo("For context:");
+    assertThat(((TextPart) message.getParts().get(2)).getText()).isEqualTo("[model] said: hi");
+    assertThat(((TextPart) message.getParts().get(3)).getText()).isEqualTo("how are you?");
   }
 
   @Test
@@ -762,7 +777,7 @@ public final class RemoteA2AAgentTest {
   }
 
   private RemoteA2AAgent createAgent() {
-    return getAgentBuilder().build();
+    return getAgentBuilder().streaming(true).build();
   }
 
   @SuppressWarnings("unchecked") // cast for Mockito

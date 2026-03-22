@@ -64,7 +64,7 @@ public class App {
     return rootAgent;
   }
 
-  public ImmutableList<? extends Plugin> plugins() {
+  public List<? extends Plugin> plugins() {
     return plugins;
   }
 
@@ -101,6 +101,12 @@ public class App {
     @CanIgnoreReturnValue
     public Builder plugins(List<? extends Plugin> plugins) {
       this.plugins = plugins;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder plugins(Plugin... plugins) {
+      this.plugins = ImmutableList.copyOf(plugins);
       return this;
     }
 

@@ -46,12 +46,7 @@ import org.junit.runners.JUnit4;
 public final class FunctionsTest {
 
   private static final Event EVENT_WITH_NO_CONTENT =
-      Event.builder()
-          .id("event1")
-          .invocationId("invocation1")
-          .author("agent")
-          .content(Optional.empty())
-          .build();
+      Event.builder().id("event1").invocationId("invocation1").author("agent").build();
 
   private static final Event EVENT_WITH_NO_PARTS =
       Event.builder()

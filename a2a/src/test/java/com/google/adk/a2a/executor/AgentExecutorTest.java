@@ -361,7 +361,7 @@ public final class AgentExecutorTest {
   public void process_statefulAggregation_tracksArtifactIdAndAppendForAuthor() {
     Event partial1 =
         Event.builder()
-            .partial(Optional.of(true))
+            .partial(true)
             .author("agent_author")
             .content(
                 Content.builder()
@@ -370,7 +370,7 @@ public final class AgentExecutorTest {
             .build();
     Event partial2 =
         Event.builder()
-            .partial(Optional.of(true))
+            .partial(true)
             .author("agent_author")
             .content(
                 Content.builder()
@@ -379,7 +379,7 @@ public final class AgentExecutorTest {
             .build();
     Event finalEvent =
         Event.builder()
-            .partial(Optional.of(false))
+            .partial(false)
             .author("agent_author")
             .content(
                 Content.builder()

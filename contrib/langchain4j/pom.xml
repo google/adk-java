@@ -20,7 +20,7 @@
     <parent>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-parent</artifactId>
-        <version>0.7.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <version>1.0.1-rc.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -56,11 +56,6 @@
         <dependency>
             <groupId>com.google.adk</groupId>
             <artifactId>google-adk</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.google.adk</groupId>
-            <artifactId>google-adk-dev</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>

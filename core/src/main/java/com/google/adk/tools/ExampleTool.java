@@ -85,7 +85,9 @@ public final class ExampleTool extends BaseTool {
       return Completable.complete();
     }
 
-    llmRequestBuilder.appendInstructions(ImmutableList.of(examplesBlock));
+    if (!examplesBlock.isEmpty()) {
+      llmRequestBuilder.appendInstructions(ImmutableList.of(examplesBlock));
+    }
     // Delegate to BaseTool to keep any declaration bookkeeping (none for this tool)
     return super.processLlmRequest(llmRequestBuilder, toolContext);
   }

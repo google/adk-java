@@ -61,7 +61,7 @@ public final class TestUtils {
         .artifactService(new InMemoryArtifactService())
         .invocationId("invocationId")
         .agent(agent)
-        .session(sessionService.createSession("test-app", "test-user").blockingGet())
+        .session(sessionService.createSession("test_app", "test-user").blockingGet())
         .userContent(Content.fromParts(Part.fromText("user content")))
         .runConfig(runConfig)
         .build();

@@ -191,7 +191,7 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     return builder
         .partial(serverContent.turnComplete().map(completed -> !completed).orElse(false))
         .turnComplete(serverContent.turnComplete().orElse(false))
-        .interrupted(serverContent.interrupted())
+        .interrupted(serverContent.interrupted().orElse(null))
         .build();
   }
 

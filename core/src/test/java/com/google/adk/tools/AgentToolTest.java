@@ -143,7 +143,7 @@ public final class AgentToolTest {
     AgentTool agentTool =
         AgentTool.create(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
-                .name("agent name")
+                .name("agent_name")
                 .description("agent description")
                 .inputSchema(inputSchema)
                 .build());
@@ -153,7 +153,7 @@ public final class AgentToolTest {
     assertThat(declaration)
         .isEqualTo(
             FunctionDeclaration.builder()
-                .name("agent name")
+                .name("agent_name")
                 .description("agent description")
                 .parameters(inputSchema)
                 .build());
@@ -164,7 +164,7 @@ public final class AgentToolTest {
     AgentTool agentTool =
         AgentTool.create(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
-                .name("agent name")
+                .name("agent_name")
                 .description("agent description")
                 .build());
 
@@ -173,7 +173,7 @@ public final class AgentToolTest {
     assertThat(declaration)
         .isEqualTo(
             FunctionDeclaration.builder()
-                .name("agent name")
+                .name("agent_name")
                 .description("agent description")
                 .parameters(
                     Schema.builder()
@@ -200,7 +200,7 @@ public final class AgentToolTest {
             .build();
     LlmAgent testAgent =
         createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .inputSchema(inputSchema)
             .build();
@@ -256,7 +256,7 @@ public final class AgentToolTest {
                                     "{\"is_valid\": \"invalid type\", "
                                         + "\"message\": \"success\"}")))
                         .build()))
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .outputSchema(outputSchema)
             .build();
@@ -301,7 +301,7 @@ public final class AgentToolTest {
                                 Part.fromText(
                                     "{\"is_valid\": true, " + "\"message\": \"success\"}")))
                         .build()))
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .inputSchema(inputSchema)
             .outputSchema(outputSchema)
@@ -332,7 +332,7 @@ public final class AgentToolTest {
                                     Part.fromText("First text part. "),
                                     Part.fromText("Second text part.")))
                             .build())))
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .build();
     AgentTool agentTool = AgentTool.create(testAgent);
@@ -358,7 +358,7 @@ public final class AgentToolTest {
                         .build())
                 .build());
     LlmAgent testAgent =
-        createTestAgentBuilder(testLlm).name("agent name").description("agent description").build();
+        createTestAgentBuilder(testLlm).name("agent_name").description("agent description").build();
     AgentTool agentTool = AgentTool.create(testAgent);
     ToolContext toolContext = createToolContext(testAgent);
 
@@ -373,7 +373,7 @@ public final class AgentToolTest {
     LlmAgent testAgent =
         createTestAgentBuilder(
                 createTestLlm(LlmResponse.builder().content(Content.builder().build()).build()))
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .build();
     AgentTool agentTool = AgentTool.create(testAgent);
@@ -394,7 +394,7 @@ public final class AgentToolTest {
                 .build());
     LlmAgent testAgent =
         createTestAgentBuilder(testLlm)
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .inputSchema(
                 Schema.builder()
@@ -422,7 +422,7 @@ public final class AgentToolTest {
                 .content(Content.fromParts(Part.fromText("test response")))
                 .build());
     LlmAgent testAgent =
-        createTestAgentBuilder(testLlm).name("agent name").description("agent description").build();
+        createTestAgentBuilder(testLlm).name("agent_name").description("agent description").build();
     AgentTool agentTool = AgentTool.create(testAgent);
     ToolContext toolContext = createToolContext(testAgent);
 
@@ -447,7 +447,7 @@ public final class AgentToolTest {
                 .build());
     LlmAgent testAgent =
         createTestAgentBuilder(testLlm)
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .afterAgentCallback(afterAgentCallback)
             .build();
@@ -477,7 +477,7 @@ public final class AgentToolTest {
                 .build());
     LlmAgent testAgent =
         createTestAgentBuilder(testLlm)
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .afterAgentCallback(afterAgentCallback)
             .build();

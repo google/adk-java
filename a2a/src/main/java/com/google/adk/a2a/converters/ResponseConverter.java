@@ -1,31 +1,53 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.google.adk.a2a.converters;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.collect.Streams.zip;
 
-import com.google.adk.a2a.common.A2AClientError;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FinishReason;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.Part;
 import io.a2a.client.ClientEvent;
 import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskEvent;
 import io.a2a.client.TaskUpdateEvent;
 import io.a2a.spec.Artifact;
-import io.a2a.spec.EventKind;
-import io.a2a.spec.JSONRPCError;
+import io.a2a.spec.DataPart;
 import io.a2a.spec.Message;
-import io.a2a.spec.SendMessageResponse;
 import io.a2a.spec.Task;
 import io.a2a.spec.TaskArtifactUpdateEvent;
 import io.a2a.spec.TaskState;
 import io.a2a.spec.TaskStatusUpdateEvent;
-import io.a2a.spec.TextPart;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -33,131 +55,14 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Utility for converting ADK events to A2A spec messages (and back).
- *
- * <p>**EXPERIMENTAL:** Subject to change, rename, or removal in any future patch release. Do not
- * use in production code.
- */
+/** Utility for converting ADK events to A2A spec messages (and back). */
 public final class ResponseConverter {
+  private static final ObjectMapper objectMapper = new ObjectMapper();
   private static final Logger logger = LoggerFactory.getLogger(ResponseConverter.class);
   private static final ImmutableSet<TaskState> PENDING_STATES =
       ImmutableSet.of(TaskState.WORKING, TaskState.SUBMITTED);
 
   private ResponseConverter() {}
-
-  /**
-   * Converts a {@link SendMessageResponse} containing a {@link Message} result into ADK events.
-   *
-   * <p>Non-message results are ignored in the message-only integration and logged for awareness.
-   */
-  public static List<Event> sendMessageResponseToEvents(
-      SendMessageResponse response, String invocationId, String branch) {
-    if (response == null) {
-      logger.warn("SendMessageResponse was null; returning no events.");
-      return ImmutableList.of();
-    }
-
-    EventKind result = response.getResult();
-    if (result == null) {
-
-      JSONRPCError error = response.getError();
-      if (error != null) {
-        throw new A2AClientError(
-            String.format("SendMessageResponse error for invocation %s", invocationId), error);
-      }
-
-      throw new A2AClientError(
-          String.format("SendMessageResponse result was null for invocation %s", invocationId));
-    }
-
-    if (result instanceof Message message) {
-      return messageToEvents(message, invocationId, branch);
-    }
-
-    throw new IllegalArgumentException(
-        String.format(
-            "SendMessageResponse result was neither a Message nor an error for invocation %s",
-            invocationId));
-  }
-
-  /** Converts an A2A message back to ADK events. */
-  public static List<Event> messageToEvents(Message message, String invocationId, String branch) {
-    List<Event> events = new ArrayList<>();
-
-    for (io.a2a.spec.Part<?> part : message.getParts()) {
-      PartConverter.toGenaiPart(part)
-          .ifPresent(
-              genaiPart ->
-                  events.add(
-                      Event.builder()
-                          .id(UUID.randomUUID().toString())
-                          .invocationId(invocationId)
-                          .author(message.getRole() == Message.Role.AGENT ? "agent" : "user")
-                          .branch(branch)
-                          .content(
-                              Content.builder()
-                                  .role(message.getRole() == Message.Role.AGENT ? "model" : "user")
-                                  .parts(ImmutableList.of(genaiPart))
-                                  .build())
-                          .timestamp(Instant.now().toEpochMilli())
-                          .build()));
-    }
-    return events;
-  }
-
-  private static Message emptyAgentMessage(String contextId) {
-    Message.Builder builder =
-        new Message.Builder()
-            .messageId(UUID.randomUUID().toString())
-            .role(Message.Role.AGENT)
-            .parts(ImmutableList.of(new TextPart("")));
-    if (contextId != null) {
-      builder.contextId(contextId);
-    }
-    return builder.build();
-  }
-
-  /** Converts a list of ADK events into a single aggregated A2A message. */
-  public static Message eventsToMessage(List<Event> events, String contextId, String taskId) {
-    if (events == null || events.isEmpty()) {
-      return emptyAgentMessage(contextId);
-    }
-
-    if (events.size() == 1) {
-      return eventToMessage(events.get(0), contextId);
-    }
-
-    List<io.a2a.spec.Part<?>> parts = new ArrayList<>();
-    for (Event event : events) {
-      parts.addAll(eventParts(event));
-    }
-
-    Message.Builder builder =
-        new Message.Builder()
-            .messageId(taskId != null ? taskId : UUID.randomUUID().toString())
-            .role(Message.Role.AGENT)
-            .parts(parts);
-    if (contextId != null) {
-      builder.contextId(contextId);
-    }
-    return builder.build();
-  }
-
-  /** Converts a single ADK event into an A2A message. */
-  public static Message eventToMessage(Event event, String contextId) {
-    List<io.a2a.spec.Part<?>> parts = eventParts(event);
-
-    Message.Builder builder =
-        new Message.Builder()
-            .messageId(event.id() != null ? event.id() : UUID.randomUUID().toString())
-            .role(event.author().equalsIgnoreCase("user") ? Message.Role.USER : Message.Role.AGENT)
-            .parts(parts);
-    if (contextId != null) {
-      builder.contextId(contextId);
-    }
-    return builder.build();
-  }
 
   /**
    * Converts a A2A {@link ClientEvent} to an ADK {@link Event}, based on the event type. Returns an
@@ -175,7 +80,15 @@ public final class ResponseConverter {
     } else if (event instanceof TaskUpdateEvent updateEvent) {
       return handleTaskUpdate(updateEvent, invocationContext);
     }
+    logger.warn("Unsupported ClientEvent type: {}", event.getClass());
     throw new IllegalArgumentException("Unsupported ClientEvent type: " + event.getClass());
+  }
+
+  private static boolean isPartial(@Nullable Map<String, Object> metadata) {
+    if (metadata == null) {
+      return false;
+    }
+    return Objects.equals(metadata.getOrDefault(A2AMetadataKey.PARTIAL.getType(), false), true);
   }
 
   /**
@@ -193,13 +106,25 @@ public final class ResponseConverter {
       boolean isAppend = Objects.equals(artifactEvent.isAppend(), true);
       boolean isLastChunk = Objects.equals(artifactEvent.isLastChunk(), true);
 
+      if (isLastChunk && isPartial(artifactEvent.getMetadata())) {
+        return Optional.empty();
+      }
+
       Event eventPart = artifactToEvent(artifactEvent.getArtifact(), context);
-      eventPart.setPartial(Optional.of(isAppend || !isLastChunk));
+      if (eventPart.content().flatMap(Content::parts).orElse(ImmutableList.of()).isEmpty()) {
+        return Optional.empty();
+      }
+      eventPart.setPartial(isAppend || !isLastChunk);
       // append=true, lastChunk=false: emit as partial, update aggregation
       // append=false, lastChunk=false: emit as partial, reset aggregation
       // append=true, lastChunk=true: emit as partial, update aggregation and emit as non-partial
       // append=false, lastChunk=true: emit as non-partial, drop aggregation
-      return Optional.of(eventPart);
+      return Optional.of(
+          updateEventMetadata(
+              eventPart,
+              artifactEvent.getMetadata(),
+              artifactEvent.getTaskId(),
+              artifactEvent.getContextId()));
     }
 
     if (updateEvent instanceof TaskStatusUpdateEvent statusEvent) {
@@ -217,15 +142,21 @@ public final class ResponseConverter {
                   });
 
       if (statusEvent.isFinal()) {
-        return messageEvent
-            .map(Event::toBuilder)
-            .or(() -> Optional.of(remoteAgentEventBuilder(context)))
-            .map(builder -> builder.turnComplete(true))
-            .map(builder -> builder.partial(false))
-            .map(Event.Builder::build);
-      } else {
-        return messageEvent;
+        messageEvent =
+            messageEvent
+                .map(Event::toBuilder)
+                .or(() -> Optional.of(remoteAgentEventBuilder(context)))
+                .map(builder -> builder.turnComplete(true))
+                .map(builder -> builder.partial(false))
+                .map(Event.Builder::build);
       }
+      return messageEvent.map(
+          finalMessageEvent ->
+              updateEventMetadata(
+                  finalMessageEvent,
+                  statusEvent.getMetadata(),
+                  statusEvent.getTaskId(),
+                  statusEvent.getContextId()));
     }
     throw new IllegalArgumentException(
         "Unsupported TaskUpdateEvent type: " + updateEvent.getClass());
@@ -233,16 +164,12 @@ public final class ResponseConverter {
 
   /** Converts an artifact to an ADK event. */
   public static Event artifactToEvent(Artifact artifact, InvocationContext invocationContext) {
-    Message message =
-        new Message.Builder().role(Message.Role.AGENT).parts(artifact.parts()).build();
-    return messageToEvent(message, invocationContext);
-  }
-
-  /** Converts an A2A message back to ADK events. */
-  public static Event messageToEvent(Message message, InvocationContext invocationContext) {
-    return remoteAgentEventBuilder(invocationContext)
-        .content(fromModelParts(PartConverter.toGenaiParts(message.getParts())))
-        .build();
+    Event.Builder eventBuilder = remoteAgentEventBuilder(invocationContext);
+    ImmutableList<Part> genaiParts = PartConverter.toGenaiParts(artifact.parts());
+    eventBuilder
+        .content(fromModelParts(genaiParts))
+        .longRunningToolIds(getLongRunningToolIds(artifact.parts(), genaiParts));
+    return eventBuilder.build();
   }
 
   /** Converts an A2A message for a failed task to ADK event filling in the error message. */
@@ -255,6 +182,17 @@ public final class ResponseConverter {
     return builder.build();
   }
 
+  /** Converts an A2A message back to ADK events. */
+  public static Event messageToEvent(Message message, InvocationContext invocationContext) {
+    return updateEventMetadata(
+        remoteAgentEventBuilder(invocationContext)
+            .content(fromModelParts(PartConverter.toGenaiParts(message.getParts())))
+            .build(),
+        message.getMetadata(),
+        message.getTaskId(),
+        message.getContextId());
+  }
+
   /**
    * Converts an A2A message back to ADK events. For streaming task in pending state it sets the
    * thought field to true, to mark them as thought updates.
@@ -262,7 +200,7 @@ public final class ResponseConverter {
   public static Event messageToEvent(
       Message message, InvocationContext invocationContext, boolean isPending) {
 
-    ImmutableList<com.google.genai.types.Part> genaiParts =
+    ImmutableList<Part> genaiParts =
         PartConverter.toGenaiParts(message.getParts()).stream()
             .map(part -> part.toBuilder().thought(isPending).build())
             .collect(toImmutableList());
@@ -276,38 +214,141 @@ public final class ResponseConverter {
    * If none of these are present, an empty event is returned.
    */
   public static Event taskToEvent(Task task, InvocationContext invocationContext) {
-    Message taskMessage = null;
+    ImmutableList.Builder<Part> genaiParts = ImmutableList.builder();
+    ImmutableSet.Builder<String> longRunningToolIds = ImmutableSet.builder();
 
-    if (!task.getArtifacts().isEmpty()) {
-      taskMessage =
-          new Message.Builder()
-              .messageId("")
-              .role(Message.Role.AGENT)
-              .parts(Iterables.getLast(task.getArtifacts()).parts())
-              .build();
-    } else if (task.getStatus().message() != null) {
-      taskMessage = task.getStatus().message();
-    } else if (!task.getHistory().isEmpty()) {
-      taskMessage = Iterables.getLast(task.getHistory());
+    for (Artifact artifact : task.getArtifacts()) {
+      ImmutableList<Part> converted = PartConverter.toGenaiParts(artifact.parts());
+      longRunningToolIds.addAll(getLongRunningToolIds(artifact.parts(), converted));
+      genaiParts.addAll(converted);
     }
 
-    if (taskMessage != null) {
-      return messageToEvent(taskMessage, invocationContext);
+    Event.Builder eventBuilder = remoteAgentEventBuilder(invocationContext);
+
+    if (task.getStatus().message() != null) {
+      ImmutableList<Part> msgParts =
+          PartConverter.toGenaiParts(task.getStatus().message().getParts());
+      longRunningToolIds.addAll(
+          getLongRunningToolIds(task.getStatus().message().getParts(), msgParts));
+      if (task.getStatus().state() == TaskState.FAILED
+          && msgParts.size() == 1
+          && msgParts.get(0).text().isPresent()) {
+        eventBuilder.errorMessage(msgParts.get(0).text().get());
+      } else {
+        genaiParts.addAll(msgParts);
+      }
     }
-    return emptyEvent(invocationContext);
+
+    ImmutableList<Part> finalParts = genaiParts.build();
+    boolean isFinal =
+        task.getStatus().state().isFinal() || task.getStatus().state() == TaskState.INPUT_REQUIRED;
+
+    if (finalParts.isEmpty() && !isFinal) {
+      return emptyEvent(invocationContext);
+    }
+    if (!finalParts.isEmpty()) {
+      eventBuilder.content(fromModelParts(finalParts));
+    }
+    if (task.getStatus().state() == TaskState.INPUT_REQUIRED) {
+      eventBuilder.longRunningToolIds(longRunningToolIds.build());
+    }
+    eventBuilder.turnComplete(isFinal);
+    return updateEventMetadata(
+        eventBuilder.build(), task.getMetadata(), task.getId(), task.getContextId());
   }
 
-  private static List<io.a2a.spec.Part<?>> eventParts(Event event) {
-    List<io.a2a.spec.Part<?>> parts = new ArrayList<>();
-    Optional<Content> content = event.content();
-    if (content.isEmpty() || content.get().parts().isEmpty()) {
-      return parts;
+  private static ImmutableSet<String> getLongRunningToolIds(
+      List<io.a2a.spec.Part<?>> parts, List<Part> convertedParts) {
+    return zip(
+            parts.stream(),
+            convertedParts.stream(),
+            (part, convertedPart) -> {
+              if (!(part instanceof DataPart dataPart)) {
+                return Optional.<String>empty();
+              }
+              Object isLongRunning =
+                  dataPart.getMetadata().get(A2AMetadataKey.IS_LONG_RUNNING.getType());
+              if (!Objects.equals(isLongRunning, true)) {
+                return Optional.<String>empty();
+              }
+              if (convertedPart.functionCall().isEmpty()) {
+                return Optional.<String>empty();
+              }
+              return convertedPart.functionCall().get().id();
+            })
+        .flatMap(Optional::stream)
+        .collect(toImmutableSet());
+  }
+
+  private static Event updateEventMetadata(
+      Event event,
+      @Nullable Map<String, Object> clientMetadata,
+      @Nullable String taskId,
+      @Nullable String contextId) {
+    if (taskId == null || contextId == null) {
+      logger.warn("Task ID or context ID is null, skipping metadata update.");
+      return event;
     }
 
-    for (com.google.genai.types.Part genaiPart : content.get().parts().get()) {
-      PartConverter.fromGenaiPart(genaiPart).ifPresent(parts::add);
+    if (clientMetadata == null) {
+      clientMetadata = ImmutableMap.of();
     }
-    return parts;
+    Event.Builder eventBuilder = event.toBuilder();
+    Object groundingMetadata = clientMetadata.get(A2AMetadataKey.GROUNDING_METADATA.getType());
+    // if groundingMetadata is null, parseMetadata will return null as well.
+    eventBuilder.groundingMetadata(parseMetadata(groundingMetadata, GroundingMetadata.class));
+    Object usageMetadata = clientMetadata.get(A2AMetadataKey.USAGE_METADATA.getType());
+    // if usageMetadata is null, parseMetadata will return null as well.
+    eventBuilder.usageMetadata(
+        parseMetadata(usageMetadata, GenerateContentResponseUsageMetadata.class));
+
+    ImmutableList.Builder<CustomMetadata> customMetadataList = ImmutableList.builder();
+    customMetadataList
+        .add(
+            CustomMetadata.builder()
+                .key(AdkMetadataKey.TASK_ID.getType())
+                .stringValue(taskId)
+                .build())
+        .add(
+            CustomMetadata.builder()
+                .key(AdkMetadataKey.CONTEXT_ID.getType())
+                .stringValue(contextId)
+                .build());
+    Object customMetadata = clientMetadata.get(A2AMetadataKey.CUSTOM_METADATA.getType());
+    if (customMetadata != null) {
+      customMetadataList.addAll(
+          parseMetadata(customMetadata, new TypeReference<List<CustomMetadata>>() {}));
+    }
+    eventBuilder.customMetadata(customMetadataList.build());
+
+    Object errorCode = clientMetadata.get(A2AMetadataKey.ERROR_CODE.getType());
+    eventBuilder.errorCode(parseMetadata(errorCode, FinishReason.class));
+
+    return eventBuilder.build();
+  }
+
+  private static <T> @Nullable T parseMetadata(@Nullable Object metadata, Class<T> type) {
+    try {
+      if (metadata instanceof String jsonString) {
+        return objectMapper.readValue(jsonString, type);
+      } else {
+        return objectMapper.convertValue(metadata, type);
+      }
+    } catch (IllegalArgumentException | JsonProcessingException e) {
+      throw new IllegalArgumentException("Failed to parse metadata of type " + type, e);
+    }
+  }
+
+  private static <T> @Nullable T parseMetadata(@Nullable Object metadata, TypeReference<T> type) {
+    try {
+      if (metadata instanceof String jsonString) {
+        return objectMapper.readValue(jsonString, type);
+      } else {
+        return objectMapper.convertValue(metadata, type);
+      }
+    } catch (IllegalArgumentException | JsonProcessingException e) {
+      throw new IllegalArgumentException("Failed to parse metadata of type " + type.getType(), e);
+    }
   }
 
   private static Event emptyEvent(InvocationContext invocationContext) {
@@ -322,7 +363,7 @@ public final class ResponseConverter {
     return builder.build();
   }
 
-  private static Content fromModelParts(List<com.google.genai.types.Part> parts) {
+  private static Content fromModelParts(List<Part> parts) {
     return Content.builder().role("model").parts(parts).build();
   }
 
@@ -333,16 +374,5 @@ public final class ResponseConverter {
         .author(invocationContext.agent().name())
         .branch(invocationContext.branch().orElse(null))
         .timestamp(Instant.now().toEpochMilli());
-  }
-
-  /** Simple REST-friendly wrapper to carry either a message result or a task result. */
-  public record MessageSendResult(@Nullable Message message, @Nullable Task task) {
-    public static MessageSendResult fromMessage(Message message) {
-      return new MessageSendResult(message, null);
-    }
-
-    public static MessageSendResult fromTask(Task task) {
-      return new MessageSendResult(null, task);
-    }
   }
 }
