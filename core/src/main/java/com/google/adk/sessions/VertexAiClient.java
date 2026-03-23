@@ -112,8 +112,10 @@ final class VertexAiClient {
   Maybe<JsonNode> listSessions(String reasoningEngineId, String userId) {
     return performApiRequest(
             "GET",
-            "reasoningEngines/" + reasoningEngineId
-                + "/sessions?filter=user_id=" + encodeParam(userId),
+            "reasoningEngines/"
+                + reasoningEngineId
+                + "/sessions?filter=user_id="
+                + encodeParam(userId),
             "")
         .flatMapMaybe(VertexAiClient::getJsonResponse);
   }
@@ -121,8 +123,11 @@ final class VertexAiClient {
   Maybe<JsonNode> listEvents(String reasoningEngineId, String sessionId) {
     return performApiRequest(
             "GET",
-            "reasoningEngines/" + reasoningEngineId
-                + "/sessions/" + encodeParam(sessionId) + "/events",
+            "reasoningEngines/"
+                + reasoningEngineId
+                + "/sessions/"
+                + encodeParam(sessionId)
+                + "/events",
             "")
         .doOnSuccess(apiResponse -> logger.debug("List events response {}", apiResponse))
         .flatMapMaybe(VertexAiClient::getJsonResponse);
@@ -131,8 +136,7 @@ final class VertexAiClient {
   Maybe<JsonNode> getSession(String reasoningEngineId, String sessionId) {
     return performApiRequest(
             "GET",
-            "reasoningEngines/" + reasoningEngineId
-                + "/sessions/" + encodeParam(sessionId),
+            "reasoningEngines/" + reasoningEngineId + "/sessions/" + encodeParam(sessionId),
             "")
         .flatMapMaybe(apiResponse -> getJsonResponse(apiResponse));
   }
@@ -140,8 +144,7 @@ final class VertexAiClient {
   Completable deleteSession(String reasoningEngineId, String sessionId) {
     return performApiRequest(
             "DELETE",
-            "reasoningEngines/" + reasoningEngineId
-                + "/sessions/" + encodeParam(sessionId),
+            "reasoningEngines/" + reasoningEngineId + "/sessions/" + encodeParam(sessionId),
             "")
         .doOnSuccess(ApiResponse::close)
         .ignoreElement();
@@ -150,8 +153,11 @@ final class VertexAiClient {
   Completable appendEvent(String reasoningEngineId, String sessionId, String eventJson) {
     return performApiRequest(
             "POST",
-            "reasoningEngines/" + reasoningEngineId
-                + "/sessions/" + encodeParam(sessionId) + ":appendEvent",
+            "reasoningEngines/"
+                + reasoningEngineId
+                + "/sessions/"
+                + encodeParam(sessionId)
+                + ":appendEvent",
             eventJson)
         .flatMapCompletable(
             response -> {
