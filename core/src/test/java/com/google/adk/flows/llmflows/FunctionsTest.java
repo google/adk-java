@@ -27,12 +27,16 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
 import com.google.adk.testing.TestUtils;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Maybe;
+import java.util.Map;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -144,6 +148,39 @@ public final class FunctionsTest {
                                     .build()))
                         .build())
                 .build());
+  }
+
+  @Test
+  public void handleFunctionCalls_longRunningToolWithEmptyResponse() {
+    InvocationContext invocationContext = createInvocationContext(createRootAgent());
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromText("..."),
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id("function_call_id")
+                                .name("empty_tool")
+                                .args(ImmutableMap.of())
+                                .build())
+                        .build()))
+            .build();
+    BaseTool tool =
+        new BaseTool("empty_tool", "Long-running tool without an immediate response", true) {
+          @Override
+          public Maybe<Map<String, Object>> runMaybeAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            return Maybe.empty();
+          }
+        };
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(invocationContext, event, ImmutableMap.of("empty_tool", tool))
+            .blockingGet();
+
+    assertThat(functionResponseEvent).isNull();
   }
 
   @Test

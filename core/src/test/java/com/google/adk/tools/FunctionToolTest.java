@@ -552,6 +552,14 @@ public final class FunctionToolTest {
   }
 
   @Test
+  public void runMaybeAsync_longRunningWithEmptyMaybeReturnType_returnsEmpty() throws Exception {
+    Method method = Functions.class.getMethod("returnsEmptyMaybeMap");
+    FunctionTool tool = new FunctionTool(null, method, /* isLongRunning= */ true);
+
+    assertThat(tool.runMaybeAsync(new HashMap<>(), null).blockingGet()).isNull();
+  }
+
+  @Test
   public void create_withSingleMapReturnType() {
     FunctionTool tool = FunctionTool.create(Functions.class, "returnsSingleMap");
 
@@ -802,6 +810,10 @@ public final class FunctionToolTest {
 
     public static Maybe<Map<String, Object>> returnsMaybeMap() {
       return Maybe.just(ImmutableMap.of("key", "value"));
+    }
+
+    public static Maybe<Map<String, Object>> returnsEmptyMaybeMap() {
+      return Maybe.empty();
     }
 
     public static Maybe<String> returnsMaybeString() {

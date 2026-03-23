@@ -1,6 +1,7 @@
 package com.google.adk.tools;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,6 +20,7 @@ import com.google.genai.types.Tool;
 import com.google.genai.types.ToolCodeExecution;
 import com.google.genai.types.UrlContext;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.observers.TestObserver;
 import java.util.Map;
@@ -133,6 +135,42 @@ public final class BaseToolTest {
             Tool.builder()
                 .functionDeclarations(ImmutableList.of(functionDeclaration1, functionDeclaration2))
                 .build());
+  }
+
+  @Test
+  public void runAsync_withOnlyRunMaybeAsyncOverride_returnsEmptyMap() {
+    BaseTool tool =
+        new BaseTool("test_tool", "test_description", /* isLongRunning= */ true) {
+          @Override
+          public Maybe<Map<String, Object>> runMaybeAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            return Maybe.empty();
+          }
+        };
+
+    assertThat(tool.runAsync(Map.of(), /* toolContext= */ null).blockingGet()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_withRunAsyncAndRunMaybeAsyncOverridesCallingSuper_throwsException() {
+    BaseTool tool =
+        new BaseTool("test_tool", "test_description", /* isLongRunning= */ true) {
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            return super.runAsync(args, toolContext);
+          }
+
+          @Override
+          public Maybe<Map<String, Object>> runMaybeAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            return super.runMaybeAsync(args, toolContext);
+          }
+        };
+
+    assertThrows(
+        UnsupportedOperationException.class,
+        () -> tool.runAsync(Map.of(), /* toolContext= */ null));
   }
 
   @Test
