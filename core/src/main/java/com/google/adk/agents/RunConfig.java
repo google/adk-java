@@ -76,25 +76,25 @@ public abstract class RunConfig {
 
   public static Builder builder() {
     return new AutoValue_RunConfig.Builder()
-        .setSaveInputBlobsAsArtifacts(false)
-        .setResponseModalities(ImmutableList.of())
-        .setStreamingMode(StreamingMode.NONE)
-        .setToolExecutionMode(ToolExecutionMode.NONE)
-        .setMaxLlmCalls(500)
-        .setAutoCreateSession(false);
+        .saveInputBlobsAsArtifacts(false)
+        .responseModalities(ImmutableList.of())
+        .streamingMode(StreamingMode.NONE)
+        .toolExecutionMode(ToolExecutionMode.NONE)
+        .maxLlmCalls(500)
+        .autoCreateSession(false);
   }
 
   public static Builder builder(RunConfig runConfig) {
     return new AutoValue_RunConfig.Builder()
-        .setSaveInputBlobsAsArtifacts(runConfig.saveInputBlobsAsArtifacts())
-        .setStreamingMode(runConfig.streamingMode())
-        .setToolExecutionMode(runConfig.toolExecutionMode())
-        .setMaxLlmCalls(runConfig.maxLlmCalls())
-        .setResponseModalities(runConfig.responseModalities())
-        .setSpeechConfig(runConfig.speechConfig())
-        .setOutputAudioTranscription(runConfig.outputAudioTranscription())
-        .setInputAudioTranscription(runConfig.inputAudioTranscription())
-        .setAutoCreateSession(runConfig.autoCreateSession());
+        .saveInputBlobsAsArtifacts(runConfig.saveInputBlobsAsArtifacts())
+        .streamingMode(runConfig.streamingMode())
+        .toolExecutionMode(runConfig.toolExecutionMode())
+        .maxLlmCalls(runConfig.maxLlmCalls())
+        .responseModalities(runConfig.responseModalities())
+        .speechConfig(runConfig.speechConfig())
+        .outputAudioTranscription(runConfig.outputAudioTranscription())
+        .inputAudioTranscription(runConfig.inputAudioTranscription())
+        .autoCreateSession(runConfig.autoCreateSession());
   }
 
   /** Builder for {@link RunConfig}. */
@@ -102,33 +102,33 @@ public abstract class RunConfig {
   public abstract static class Builder {
 
     @CanIgnoreReturnValue
-    public abstract Builder setSpeechConfig(@Nullable SpeechConfig speechConfig);
+    public abstract Builder speechConfig(@Nullable SpeechConfig speechConfig);
 
     @CanIgnoreReturnValue
-    public abstract Builder setResponseModalities(Iterable<Modality> responseModalities);
+    public abstract Builder responseModalities(Iterable<Modality> responseModalities);
 
     @CanIgnoreReturnValue
-    public abstract Builder setSaveInputBlobsAsArtifacts(boolean saveInputBlobsAsArtifacts);
+    public abstract Builder saveInputBlobsAsArtifacts(boolean saveInputBlobsAsArtifacts);
 
     @CanIgnoreReturnValue
-    public abstract Builder setStreamingMode(StreamingMode streamingMode);
+    public abstract Builder streamingMode(StreamingMode streamingMode);
 
     @CanIgnoreReturnValue
-    public abstract Builder setToolExecutionMode(ToolExecutionMode toolExecutionMode);
+    public abstract Builder toolExecutionMode(ToolExecutionMode toolExecutionMode);
 
     @CanIgnoreReturnValue
-    public abstract Builder setOutputAudioTranscription(
+    public abstract Builder outputAudioTranscription(
         @Nullable AudioTranscriptionConfig outputAudioTranscription);
 
     @CanIgnoreReturnValue
-    public abstract Builder setInputAudioTranscription(
+    public abstract Builder inputAudioTranscription(
         @Nullable AudioTranscriptionConfig inputAudioTranscription);
 
     @CanIgnoreReturnValue
-    public abstract Builder setMaxLlmCalls(int maxLlmCalls);
+    public abstract Builder maxLlmCalls(int maxLlmCalls);
 
     @CanIgnoreReturnValue
-    public abstract Builder setAutoCreateSession(boolean autoCreateSession);
+    public abstract Builder autoCreateSession(boolean autoCreateSession);
 
     abstract RunConfig autoBuild();
 

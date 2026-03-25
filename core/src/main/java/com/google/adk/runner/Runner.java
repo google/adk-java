@@ -579,19 +579,18 @@ public class Runner {
     if (liveRequestQueue != null) {
       // Default to AUDIO modality if not specified.
       if (CollectionUtils.isNullOrEmpty(runConfig.responseModalities())) {
-        runConfigBuilder.setResponseModalities(
-            ImmutableList.of(new Modality(Modality.Known.AUDIO)));
+        runConfigBuilder.responseModalities(ImmutableList.of(new Modality(Modality.Known.AUDIO)));
         if (runConfig.outputAudioTranscription() == null) {
-          runConfigBuilder.setOutputAudioTranscription(AudioTranscriptionConfig.builder().build());
+          runConfigBuilder.outputAudioTranscription(AudioTranscriptionConfig.builder().build());
         }
       } else if (!runConfig.responseModalities().contains(new Modality(Modality.Known.TEXT))) {
         if (runConfig.outputAudioTranscription() == null) {
-          runConfigBuilder.setOutputAudioTranscription(AudioTranscriptionConfig.builder().build());
+          runConfigBuilder.outputAudioTranscription(AudioTranscriptionConfig.builder().build());
         }
       }
       // Need input transcription for agent transferring in live mode.
       if (runConfig.inputAudioTranscription() == null) {
-        runConfigBuilder.setInputAudioTranscription(AudioTranscriptionConfig.builder().build());
+        runConfigBuilder.inputAudioTranscription(AudioTranscriptionConfig.builder().build());
       }
     }
     InvocationContext.Builder builder =

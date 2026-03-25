@@ -102,7 +102,7 @@ public final class ExampleTool extends BaseTool {
     var maybeExamplesProvider = args.getOrEmpty("examples", new TypeReference<String>() {});
     if (maybeExamplesProvider.isPresent()) {
       BaseExampleProvider provider = resolveExampleProvider(maybeExamplesProvider.get());
-      return ExampleTool.builder().setExampleProvider(provider).build();
+      return ExampleTool.builder().exampleProvider(provider).build();
     }
     var maybeListOfExamples = args.getOrEmpty("examples", new TypeReference<List<Example>>() {});
     if (maybeListOfExamples.isPresent()) {
@@ -167,13 +167,13 @@ public final class ExampleTool extends BaseTool {
     private Optional<BaseExampleProvider> provider = Optional.empty();
 
     @CanIgnoreReturnValue
-    public Builder setName(String name) {
+    public Builder name(String name) {
       this.name = name;
       return this;
     }
 
     @CanIgnoreReturnValue
-    public Builder setDescription(String description) {
+    public Builder description(String description) {
       this.description = description;
       return this;
     }
@@ -185,7 +185,7 @@ public final class ExampleTool extends BaseTool {
     }
 
     @CanIgnoreReturnValue
-    public Builder setExampleProvider(BaseExampleProvider provider) {
+    public Builder exampleProvider(BaseExampleProvider provider) {
       this.provider = Optional.ofNullable(provider);
       return this;
     }
