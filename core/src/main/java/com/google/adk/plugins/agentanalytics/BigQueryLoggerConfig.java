@@ -33,13 +33,11 @@ public abstract class BigQueryLoggerConfig {
   // Whether the plugin is enabled.
   public abstract boolean enabled();
 
-  // List of event types to log. If None, all are allowed
-  // TODO(b/491852782): Implement allowlist/denylist for event types.
+  // List of event types to log. If None, all are allowed.
   @Nullable
   public abstract ImmutableList<String> eventAllowlist();
 
   // List of event types to ignore.
-  // TODO(b/491852782): Implement allowlist/denylist for event types.
   @Nullable
   public abstract ImmutableList<String> eventDenylist();
 
@@ -102,6 +100,8 @@ public abstract class BigQueryLoggerConfig {
   @Nullable
   public abstract Credentials credentials();
 
+  public abstract Builder toBuilder();
+
   public static Builder builder() {
     return new AutoValue_BigQueryLoggerConfig.Builder()
         .setEnabled(true)
@@ -117,6 +117,8 @@ public abstract class BigQueryLoggerConfig {
         .setQueueMaxSize(10000)
         .setLogSessionMetadata(true)
         .setCustomTags(ImmutableMap.of())
+        .setEventAllowlist(ImmutableList.of())
+        .setEventDenylist(ImmutableList.of())
         // TODO(b/491851868): Enable auto-schema upgrade once implemented.
         .setAutoSchemaUpgrade(false);
   }

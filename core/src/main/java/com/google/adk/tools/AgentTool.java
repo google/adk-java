@@ -80,7 +80,7 @@ public class AgentTool extends BaseTool {
   }
 
   @VisibleForTesting
-  BaseAgent getAgent() {
+  public BaseAgent getAgent() {
     return agent;
   }
 
