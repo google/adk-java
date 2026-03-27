@@ -20,6 +20,7 @@ import com.google.auth.Credentials;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -104,66 +105,87 @@ public abstract class BigQueryLoggerConfig {
 
   public static Builder builder() {
     return new AutoValue_BigQueryLoggerConfig.Builder()
-        .setEnabled(true)
-        .setMaxContentLength(500 * 1024)
-        .setDatasetId("agent_analytics")
-        .setTableName("events")
-        .setClusteringFields(ImmutableList.of("event_type", "agent", "user_id"))
-        .setLogMultiModalContent(true)
-        .setRetryConfig(RetryConfig.builder().build())
-        .setBatchSize(1)
-        .setBatchFlushInterval(Duration.ofSeconds(1))
-        .setShutdownTimeout(Duration.ofSeconds(10))
-        .setQueueMaxSize(10000)
-        .setLogSessionMetadata(true)
-        .setCustomTags(ImmutableMap.of())
+        .enabled(true)
+        .maxContentLength(500 * 1024)
+        .datasetId("agent_analytics")
+        .tableName("events")
+        .clusteringFields(ImmutableList.of("event_type", "agent", "user_id"))
+        .logMultiModalContent(true)
+        .retryConfig(RetryConfig.builder().build())
+        .batchSize(1)
+        .batchFlushInterval(Duration.ofSeconds(1))
+        .shutdownTimeout(Duration.ofSeconds(10))
+        .queueMaxSize(10000)
+        .logSessionMetadata(true)
+        .customTags(ImmutableMap.of())
         // TODO(b/491851868): Enable auto-schema upgrade once implemented.
-        .setAutoSchemaUpgrade(false);
+        .autoSchemaUpgrade(false);
   }
 
   /** Builder for {@link BigQueryLoggerConfig}. */
   @AutoValue.Builder
   public abstract static class Builder {
-    public abstract Builder setEnabled(boolean enabled);
 
-    public abstract Builder setEventAllowlist(@Nullable List<String> eventAllowlist);
+    @CanIgnoreReturnValue
+    public abstract Builder enabled(boolean enabled);
 
-    public abstract Builder setEventDenylist(@Nullable List<String> eventDenylist);
+    @CanIgnoreReturnValue
+    public abstract Builder eventAllowlist(@Nullable List<String> eventAllowlist);
 
-    public abstract Builder setMaxContentLength(int maxContentLength);
+    @CanIgnoreReturnValue
+    public abstract Builder eventDenylist(@Nullable List<String> eventDenylist);
 
-    public abstract Builder setProjectId(String projectId);
+    @CanIgnoreReturnValue
+    public abstract Builder maxContentLength(int maxContentLength);
 
-    public abstract Builder setDatasetId(String datasetId);
+    @CanIgnoreReturnValue
+    public abstract Builder projectId(String projectId);
 
-    public abstract Builder setTableName(String tableName);
+    @CanIgnoreReturnValue
+    public abstract Builder datasetId(String datasetId);
 
-    public abstract Builder setClusteringFields(List<String> clusteringFields);
+    @CanIgnoreReturnValue
+    public abstract Builder tableName(String tableName);
 
-    public abstract Builder setLogMultiModalContent(boolean logMultiModalContent);
+    @CanIgnoreReturnValue
+    public abstract Builder clusteringFields(List<String> clusteringFields);
 
-    public abstract Builder setRetryConfig(RetryConfig retryConfig);
+    @CanIgnoreReturnValue
+    public abstract Builder logMultiModalContent(boolean logMultiModalContent);
 
-    public abstract Builder setBatchSize(int batchSize);
+    @CanIgnoreReturnValue
+    public abstract Builder retryConfig(RetryConfig retryConfig);
 
-    public abstract Builder setBatchFlushInterval(Duration batchFlushInterval);
+    @CanIgnoreReturnValue
+    public abstract Builder batchSize(int batchSize);
 
-    public abstract Builder setShutdownTimeout(Duration shutdownTimeout);
+    @CanIgnoreReturnValue
+    public abstract Builder batchFlushInterval(Duration batchFlushInterval);
 
-    public abstract Builder setQueueMaxSize(int queueMaxSize);
+    @CanIgnoreReturnValue
+    public abstract Builder shutdownTimeout(Duration shutdownTimeout);
 
-    public abstract Builder setContentFormatter(
+    @CanIgnoreReturnValue
+    public abstract Builder queueMaxSize(int queueMaxSize);
+
+    @CanIgnoreReturnValue
+    public abstract Builder contentFormatter(
         @Nullable BiFunction<Object, String, Object> contentFormatter);
 
-    public abstract Builder setConnectionId(String connectionId);
+    @CanIgnoreReturnValue
+    public abstract Builder connectionId(String connectionId);
 
-    public abstract Builder setLogSessionMetadata(boolean logSessionMetadata);
+    @CanIgnoreReturnValue
+    public abstract Builder logSessionMetadata(boolean logSessionMetadata);
 
-    public abstract Builder setCustomTags(Map<String, Object> customTags);
+    @CanIgnoreReturnValue
+    public abstract Builder customTags(Map<String, Object> customTags);
 
-    public abstract Builder setAutoSchemaUpgrade(boolean autoSchemaUpgrade);
+    @CanIgnoreReturnValue
+    public abstract Builder autoSchemaUpgrade(boolean autoSchemaUpgrade);
 
-    public abstract Builder setCredentials(Credentials credentials);
+    @CanIgnoreReturnValue
+    public abstract Builder credentials(Credentials credentials);
 
     public abstract BigQueryLoggerConfig build();
   }
@@ -181,22 +203,27 @@ public abstract class BigQueryLoggerConfig {
 
     public static Builder builder() {
       return new AutoValue_BigQueryLoggerConfig_RetryConfig.Builder()
-          .setMaxRetries(3)
-          .setInitialDelay(Duration.ofSeconds(1))
-          .setMultiplier(2.0)
-          .setMaxDelay(Duration.ofSeconds(10));
+          .maxRetries(3)
+          .initialDelay(Duration.ofSeconds(1))
+          .multiplier(2.0)
+          .maxDelay(Duration.ofSeconds(10));
     }
 
     /** Builder for {@link RetryConfig}. */
     @AutoValue.Builder
     public abstract static class Builder {
-      public abstract Builder setMaxRetries(int maxRetries);
 
-      public abstract Builder setInitialDelay(Duration initialDelay);
+      @CanIgnoreReturnValue
+      public abstract Builder maxRetries(int maxRetries);
 
-      public abstract Builder setMultiplier(double multiplier);
+      @CanIgnoreReturnValue
+      public abstract Builder initialDelay(Duration initialDelay);
 
-      public abstract Builder setMaxDelay(Duration maxDelay);
+      @CanIgnoreReturnValue
+      public abstract Builder multiplier(double multiplier);
+
+      @CanIgnoreReturnValue
+      public abstract Builder maxDelay(Duration maxDelay);
 
       public abstract RetryConfig build();
     }

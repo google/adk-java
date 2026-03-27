@@ -96,15 +96,15 @@ public class BigQueryAgentAnalyticsPluginTest {
     fakeAgent = new FakeAgent("agent_name");
     config =
         BigQueryLoggerConfig.builder()
-            .setEnabled(true)
-            .setProjectId("project")
-            .setDatasetId("dataset")
-            .setTableName("table")
-            .setBatchSize(10)
-            .setBatchFlushInterval(Duration.ofSeconds(10))
-            .setAutoSchemaUpgrade(false)
-            .setCredentials(mock(Credentials.class))
-            .setCustomTags(ImmutableMap.of("global_tag", "global_value"))
+            .enabled(true)
+            .projectId("project")
+            .datasetId("dataset")
+            .tableName("table")
+            .batchSize(10)
+            .batchFlushInterval(Duration.ofSeconds(10))
+            .autoSchemaUpgrade(false)
+            .credentials(mock(Credentials.class))
+            .customTags(ImmutableMap.of("global_tag", "global_value"))
             .build();
 
     when(mockBigQuery.getOptions())
@@ -167,9 +167,9 @@ public class BigQueryAgentAnalyticsPluginTest {
   public void getStreamName_returnsCorrectFormat() {
     BigQueryLoggerConfig config =
         BigQueryLoggerConfig.builder()
-            .setProjectId("test-project")
-            .setDatasetId("test-dataset")
-            .setTableName("test-table")
+            .projectId("test-project")
+            .datasetId("test-dataset")
+            .tableName("test-table")
             .build();
 
     String streamName = plugin.getStreamName(config);

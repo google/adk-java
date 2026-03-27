@@ -18,6 +18,7 @@ package com.google.adk.memory;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.List;
 
 /** Represents the response from a memory search. */
@@ -29,19 +30,21 @@ public abstract class SearchMemoryResponse {
 
   /** Creates a new builder for {@link SearchMemoryResponse}. */
   public static Builder builder() {
-    return new AutoValue_SearchMemoryResponse.Builder().setMemories(ImmutableList.of());
+    return new AutoValue_SearchMemoryResponse.Builder().memories(ImmutableList.of());
   }
 
   /** Builder for {@link SearchMemoryResponse}. */
   @AutoValue.Builder
   public abstract static class Builder {
 
-    abstract Builder setMemories(ImmutableList<MemoryEntry> memories);
-
     /** Sets the list of memory entries using a list. */
-    public Builder setMemories(List<MemoryEntry> memories) {
-      return setMemories(ImmutableList.copyOf(memories));
+    @CanIgnoreReturnValue
+    public Builder memories(List<MemoryEntry> memories) {
+      return memories(ImmutableList.copyOf(memories));
     }
+
+    @CanIgnoreReturnValue
+    public abstract Builder memories(ImmutableList<MemoryEntry> memories);
 
     /** Builds the immutable {@link SearchMemoryResponse} object. */
     public abstract SearchMemoryResponse build();
