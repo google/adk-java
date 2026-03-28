@@ -14,13 +14,13 @@ To integrate this Firestore session service into your ADK project, add the follo
     <dependency>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk</artifactId>
-        <version>0.4.0-SNAPSHOT</version>
+        <version>1.0.1-rc.1-SNAPSHOT</version>
     </dependency>
     <!-- Firestore Session Service -->
     <dependency>
-        <groupId>com.google.adk.contrib</groupId>
-        <artifactId>firestore-session-service</artifactId>
-        <version>0.4.0-SNAPSHOT</version>
+        <groupId>com.google.adk</groupId>
+        <artifactId>google-adk-firestore-session-service</artifactId>
+        <version>1.0.1-rc.1-SNAPSHOT</version>
     </dependency>
 </dependencies>
 ```
@@ -28,9 +28,9 @@ To integrate this Firestore session service into your ADK project, add the follo
 ```gradle
 dependencies {
     // ADK Core
-    implementation 'com.google.adk:google-adk:0.4.0-SNAPSHOT'
+    implementation 'com.google.adk:google-adk:1.0.1-rc.1-SNAPSHOT'
     // Firestore Session Service
-    implementation 'com.google.adk.contrib:firestore-session-service:0.4.0-SNAPSHOT'
+    implementation 'com.google.adk:google-adk-firestore-session-service:1.0.1-rc.1-SNAPSHOT'
 }
 ```
 
@@ -52,39 +52,100 @@ adk.stop.words=a,about,above,after,again,against,all,am,an,and,any,are,aren't,as
 Then, you can use the `FirestoreDatabaseRunner` to start your ADK application with Firestore session management:
 
 ```java
-import com.google.adk.agents.YourAgent; // Replace with your actual agent class
-import com.google.adk.plugins.BasePlugin;
+import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.runner.FirestoreDatabaseRunner;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.FirestoreOptions;
-import java.util.ArrayList;
-import java.util.List;
-import com.google.adk.sessions.GetSessionConfig;
-import java.util.Optional;
+import io.reactivex.rxjava3.core.Flowable;
+import java.util.Map;
+import com.google.adk.sessions.FirestoreSessionService;
+import com.google.adk.sessions.Session;
+import com.google.adk.tools.Annotations.Schema;
+import com.google.adk.tools.FunctionTool;
+import com.google.genai.types.Content;
+import com.google.genai.types.Part;
+import com.google.adk.events.Event;
+import java.util.Scanner;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
+/***
+ *
+ */
+public class YourAgentApplication {
 
-
-
-public class YourApp {
     public static void main(String[] args) {
-        Firestore firestore = FirestoreOptions.getDefaultInstance().getService();
-        List<BasePlugin> plugins = new ArrayList<>();
-        // Add any plugins you want to use
+        System.out.println("Starting YourAgentApplication...");
 
 
-        FirestoreDatabaseRunner firestoreRunner = new FirestoreDatabaseRunner(
-            new YourAgent(), // Replace with your actual agent instance
-            "YourAppName",
-            plugins,
-            firestore
+        RunConfig runConfig = RunConfig.builder().build();
+        String appName = "hello-time-agent";
+
+          BaseAgent timeAgent = initAgent();
+        // Initialize Firestore
+        FirestoreOptions firestoreOptions = FirestoreOptions.getDefaultInstance();
+        Firestore firestore = firestoreOptions.getService();
+
+
+        // Use FirestoreDatabaseRunner to persist session state
+        FirestoreDatabaseRunner runner = new FirestoreDatabaseRunner(
+                timeAgent,
+                appName,
+                firestore
         );
 
-        GetSessionConfig config = GetSessionConfig.builder().build();
-        // Example usage of session service
-        firestoreRunner.sessionService().getSession("APP_NAME","USER_ID","SESSION_ID", Optional.of(config));
+
+
+        Session session = new FirestoreSessionService(firestore)
+                .createSession(appName,"user1234",null,"12345")
+                .blockingGet();
+
+
+                try (Scanner scanner = new Scanner(System.in, UTF_8)) {
+            while (true) {
+                System.out.print("\nYou > ");
+                String userInput = scanner.nextLine();
+                if ("quit".equalsIgnoreCase(userInput)) {
+                    break;
+                }
+
+                Content userMsg = Content.fromParts(Part.fromText(userInput));
+                Flowable<Event> events = runner.runAsync(session.userId(), session.id(), userMsg, runConfig);
+
+                System.out.print("\nAgent > ");
+                events.blockingForEach(event -> {
+                    if (event.finalResponse()) {
+                        System.out.println(event.stringifyContent());
+                    }
+                });
+            }
+        }
+
 
     }
+
+    /** Mock tool implementation */
+    @Schema(description = "Get the current time for a given city")
+    public static Map<String, String> getCurrentTime(
+        @Schema(name = "city", description = "Name of the city to get the time for") String city) {
+        return Map.of(
+            "city", city,
+            "forecast", "The time is 10:30am."
+        );
+    }
+    private static BaseAgent initAgent() {
+        return LlmAgent.builder()
+            .name("hello-time-agent")
+            .description("Tells the current time in a specified city")
+            .instruction("""
+                You are a helpful assistant that tells the current time in a city.
+                Use the 'getCurrentTime' tool for this purpose.
+                """)
+            .model("gemini-3.1-pro-preview")
+            .tools(FunctionTool.create(YourAgentApplication.class, "getCurrentTime"))
+            .build();
+    }
+
 }
 ```
-
-Make sure to replace `YourAgent` and `"YourAppName"` with your actual agent class and application name.
