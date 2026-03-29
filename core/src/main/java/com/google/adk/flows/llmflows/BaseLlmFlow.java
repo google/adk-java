@@ -415,6 +415,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                 })
                             .concatMap(
                                 event -> {
+                                  String oldId = event.id();
+                                  String newId = Event.generateEventId();
+                                  logger.debug("Resetting event ID from {} to {}", oldId, newId);
+                                  event = event.toBuilder().id(newId).build();
                                   Flowable<Event> postProcessedEvents = Flowable.just(event);
                                   if (event.actions().transferToAgent().isPresent()) {
                                     String agentToTransfer =
