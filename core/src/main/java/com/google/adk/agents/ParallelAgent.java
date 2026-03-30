@@ -148,7 +148,8 @@ public class ParallelAgent extends BaseAgent {
     for (BaseAgent subAgent : currentSubAgents) {
       agentFlowables.add(subAgent.runAsync(updatedInvocationContext).subscribeOn(scheduler));
     }
-    return Flowable.merge(agentFlowables);
+    return Flowable.merge(agentFlowables)
+        .takeUntil((Event event) -> event.actions().escalate().orElse(false));
   }
 
   /**
