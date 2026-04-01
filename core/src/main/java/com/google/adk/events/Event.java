@@ -26,6 +26,7 @@ import com.google.adk.JsonBaseModel;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.genai.types.CitationMetadata;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.FinishReason;
@@ -61,6 +62,7 @@ public class Event extends JsonBaseModel {
   private @Nullable Double avgLogprobs;
   private @Nullable Boolean interrupted;
   private @Nullable String branch;
+  private @Nullable CitationMetadata citationMetadata;
   private @Nullable GroundingMetadata groundingMetadata;
   private @Nullable List<CustomMetadata> customMetadata;
   private @Nullable String modelVersion;
@@ -236,6 +238,16 @@ public class Event extends JsonBaseModel {
     this.branch = branch;
   }
 
+  /** The citation metadata of the event. */
+  @JsonProperty("citationMetadata")
+  public Optional<CitationMetadata> citationMetadata() {
+    return Optional.ofNullable(citationMetadata);
+  }
+
+  public void setCitationMetadata(@Nullable CitationMetadata citationMetadata) {
+    this.citationMetadata = citationMetadata;
+  }
+
   /** The grounding metadata of the event. */
   @JsonProperty("groundingMetadata")
   public Optional<GroundingMetadata> groundingMetadata() {
@@ -359,6 +371,7 @@ public class Event extends JsonBaseModel {
     private @Nullable Double avgLogprobs;
     private @Nullable Boolean interrupted;
     private @Nullable String branch;
+    private @Nullable CitationMetadata citationMetadata;
     private @Nullable GroundingMetadata groundingMetadata;
     private @Nullable List<CustomMetadata> customMetadata;
     private @Nullable String modelVersion;
@@ -496,6 +509,13 @@ public class Event extends JsonBaseModel {
     }
 
     @CanIgnoreReturnValue
+    @JsonProperty("citationMetadata")
+    public Builder citationMetadata(@Nullable CitationMetadata value) {
+      this.citationMetadata = value;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
     @JsonProperty("groundingMetadata")
     public Builder groundingMetadata(@Nullable GroundingMetadata value) {
       this.groundingMetadata = value;
@@ -536,6 +556,7 @@ public class Event extends JsonBaseModel {
       event.setAvgLogprobs(avgLogprobs);
       event.setInterrupted(interrupted);
       event.branch(branch);
+      event.setCitationMetadata(citationMetadata);
       event.setGroundingMetadata(groundingMetadata);
       event.setCustomMetadata(customMetadata);
       event.setModelVersion(modelVersion);
@@ -573,6 +594,7 @@ public class Event extends JsonBaseModel {
             .avgLogprobs(this.avgLogprobs)
             .interrupted(this.interrupted)
             .branch(this.branch)
+            .citationMetadata(this.citationMetadata)
             .groundingMetadata(this.groundingMetadata)
             .customMetadata(this.customMetadata)
             .modelVersion(this.modelVersion);
@@ -606,6 +628,7 @@ public class Event extends JsonBaseModel {
         && Objects.equals(avgLogprobs, other.avgLogprobs)
         && Objects.equals(interrupted, other.interrupted)
         && Objects.equals(branch, other.branch)
+        && Objects.equals(citationMetadata, other.citationMetadata)
         && Objects.equals(groundingMetadata, other.groundingMetadata)
         && Objects.equals(customMetadata, other.customMetadata)
         && Objects.equals(modelVersion, other.modelVersion);
@@ -634,6 +657,7 @@ public class Event extends JsonBaseModel {
         avgLogprobs,
         interrupted,
         branch,
+        citationMetadata,
         groundingMetadata,
         customMetadata,
         modelVersion,
