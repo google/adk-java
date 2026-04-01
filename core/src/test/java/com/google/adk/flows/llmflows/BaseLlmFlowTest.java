@@ -43,6 +43,7 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import com.google.genai.types.Transcription;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
@@ -639,6 +640,94 @@ public final class BaseLlmFlowTest {
 
     assertThat(events).hasSize(1);
     assertThat(events.get(0).content()).hasValue(content);
+  }
+
+  @Test
+  public void postprocess_onlyInputTranscription_returnsEvent() {
+    Transcription inputTranscription =
+        Transcription.builder().text("user said hello").finished(true).build();
+    LlmResponse llmResponse = LlmResponse.builder().inputTranscription(inputTranscription).build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(createTestLlm(llmResponse)));
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    Event baseEvent =
+        Event.builder()
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .build();
+
+    List<Event> events =
+        baseLlmFlow
+            .postprocess(
+                invocationContext,
+                baseEvent,
+                LlmRequest.builder().build(),
+                llmResponse,
+                Context.current())
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(1);
+    Event event = getOnlyElement(events);
+    assertThat(event.inputTranscription()).hasValue(inputTranscription);
+    assertThat(event.outputTranscription()).isEmpty();
+  }
+
+  @Test
+  public void postprocess_onlyOutputTranscription_returnsEvent() {
+    Transcription outputTranscription =
+        Transcription.builder().text("model replied hi").finished(false).build();
+    LlmResponse llmResponse =
+        LlmResponse.builder().outputTranscription(outputTranscription).build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(createTestLlm(llmResponse)));
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    Event baseEvent =
+        Event.builder()
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .build();
+
+    List<Event> events =
+        baseLlmFlow
+            .postprocess(
+                invocationContext,
+                baseEvent,
+                LlmRequest.builder().build(),
+                llmResponse,
+                Context.current())
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(1);
+    Event event = getOnlyElement(events);
+    assertThat(event.outputTranscription()).hasValue(outputTranscription);
+    assertThat(event.inputTranscription()).isEmpty();
+  }
+
+  @Test
+  public void run_responseWithTranscriptions_propagatesTranscriptionsToEvent() {
+    Transcription inputTranscription =
+        Transcription.builder().text("user said hello").finished(true).build();
+    Transcription outputTranscription =
+        Transcription.builder().text("model replied hi").finished(true).build();
+    Content content = Content.fromParts(Part.fromText("model replied hi"));
+    LlmResponse llmResponse =
+        LlmResponse.builder()
+            .content(content)
+            .inputTranscription(inputTranscription)
+            .outputTranscription(outputTranscription)
+            .build();
+    TestLlm testLlm = createTestLlm(llmResponse);
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> events = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    Event event = getOnlyElement(events);
+    assertThat(event.inputTranscription()).hasValue(inputTranscription);
+    assertThat(event.outputTranscription()).hasValue(outputTranscription);
   }
 
   @Test
