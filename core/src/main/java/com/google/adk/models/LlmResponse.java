@@ -24,6 +24,7 @@ import com.google.adk.JsonBaseModel;
 import com.google.auto.value.AutoValue;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Candidate;
+import com.google.genai.types.CitationMetadata;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.FinishReason;
@@ -51,6 +52,14 @@ public abstract class LlmResponse extends JsonBaseModel {
    */
   @JsonProperty("content")
   public abstract Optional<Content> content();
+
+  /**
+   * Returns the citation metadata of the first candidate in the response, if available.
+   *
+   * @return An {@link Optional} containing {@link CitationMetadata} or empty.
+   */
+  @JsonProperty("citationMetadata")
+  public abstract Optional<CitationMetadata> citationMetadata();
 
   /**
    * Returns the grounding metadata of the first candidate in the response, if available.
@@ -133,6 +142,9 @@ public abstract class LlmResponse extends JsonBaseModel {
     @JsonProperty("interrupted")
     public abstract Builder interrupted(@Nullable Boolean interrupted);
 
+    @JsonProperty("citationMetadata")
+    public abstract Builder citationMetadata(@Nullable CitationMetadata citationMetadata);
+
     @JsonProperty("groundingMetadata")
     public abstract Builder groundingMetadata(@Nullable GroundingMetadata groundingMetadata);
 
@@ -172,6 +184,7 @@ public abstract class LlmResponse extends JsonBaseModel {
         this.finishReason(candidate.finishReason().orElse(null));
         if (candidate.content().isPresent()) {
           this.content(candidate.content().get());
+          this.citationMetadata(candidate.citationMetadata().orElse(null));
           this.groundingMetadata(candidate.groundingMetadata().orElse(null));
         } else {
           candidate.finishReason().ifPresent(this::errorCode);
