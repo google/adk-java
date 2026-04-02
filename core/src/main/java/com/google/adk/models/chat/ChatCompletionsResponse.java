@@ -50,7 +50,7 @@ public final class ChatCompletionsResponse {
 
   private ChatCompletionsResponse() {}
 
-  static @Nullable FinishReason mapFinishReason(String reason) {
+  static @Nullable FinishReason mapFinishReason(@Nullable String reason) {
     if (reason == null) {
       return null;
     }
@@ -62,7 +62,7 @@ public final class ChatCompletionsResponse {
     };
   }
 
-  static @Nullable GenerateContentResponseUsageMetadata mapUsage(Usage usage) {
+  static @Nullable GenerateContentResponseUsageMetadata mapUsage(@Nullable Usage usage) {
     if (usage == null) {
       return null;
     }
@@ -188,8 +188,15 @@ public final class ChatCompletionsResponse {
       return parts.build();
     }
 
+    /**
+     * Maps a list of tool calls to a list of {@link Part} objects.
+     *
+     * @param toolCalls the list of tool calls to map (non-null).
+     * @return a list of parts containing converted tool calls.
+     */
     private ImmutableList<Part> mapToolCallsToParts(
         List<ChatCompletionsCommon.ToolCall> toolCalls) {
+
       ImmutableList.Builder<Part> parts = ImmutableList.builder();
       for (ChatCompletionsCommon.ToolCall toolCall : toolCalls) {
         Part part = toolCall.toPart();
