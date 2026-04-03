@@ -77,13 +77,13 @@ public final class BigQueryAgentAnalyticsPluginE2ETest {
 
     config =
         BigQueryLoggerConfig.builder()
-            .setEnabled(true)
-            .setProjectId("project")
-            .setDatasetId("dataset")
-            .setTableName("table")
-            .setBatchSize(10)
-            .setBatchFlushInterval(Duration.ofSeconds(10))
-            .setCredentials(mock(Credentials.class))
+            .enabled(true)
+            .projectId("project")
+            .datasetId("dataset")
+            .tableName("table")
+            .batchSize(10)
+            .batchFlushInterval(Duration.ofSeconds(10))
+            .credentials(mock(Credentials.class))
             .build();
 
     when(mockBigQuery.getOptions())
