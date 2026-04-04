@@ -28,6 +28,7 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
+import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
@@ -35,7 +36,6 @@ import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.Part;
 import io.a2a.client.Client;
 import io.a2a.client.ClientEvent;
-import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskEvent;
 import io.a2a.client.TaskUpdateEvent;
 import io.a2a.spec.A2AClientException;
@@ -539,6 +539,11 @@ public class RemoteA2AAgent extends BaseAgent {
   protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
     throw new UnsupportedOperationException(
         "runLiveImpl for " + getClass() + " via A2A is not implemented.");
+  }
+
+  @Override
+  public AgentOrigin toolOrigin() {
+    return AgentOrigin.A2A;
   }
 
   /** Exception thrown when the agent card cannot be resolved. */

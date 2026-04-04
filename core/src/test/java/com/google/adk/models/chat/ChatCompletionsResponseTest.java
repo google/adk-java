@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-package com.google.adk.models;
+package com.google.adk.models.chat;
 
 import static com.google.common.truth.Truth.assertThat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.adk.models.ChatCompletionsResponse.ChatCompletion;
-import com.google.adk.models.ChatCompletionsResponse.ChatCompletionChunk;
+import com.google.adk.models.chat.ChatCompletionsResponse.ChatCompletion;
+import com.google.adk.models.chat.ChatCompletionsResponse.ChatCompletionChunk;
 import java.util.Map;
 import org.junit.Before;
 import org.junit.Test;
@@ -245,7 +245,7 @@ public final class ChatCompletionsResponseTest {
         objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletion.class);
 
     assertThat(completion.choices.get(0).message.toolCalls).hasSize(1);
-    ChatCompletionsResponse.ToolCall toolCall = completion.choices.get(0).message.toolCalls.get(0);
+    ChatCompletionsCommon.ToolCall toolCall = completion.choices.get(0).message.toolCalls.get(0);
     assertThat(toolCall.type).isEqualTo("custom");
     assertThat(toolCall.custom.name).isEqualTo("custom_tool");
     assertThat(toolCall.custom.input).isEqualTo("{\"arg\":\"val\"}");
@@ -310,7 +310,7 @@ public final class ChatCompletionsResponseTest {
     ChatCompletionChunk chunk = objectMapper.readValue(json, ChatCompletionChunk.class);
 
     assertThat(chunk.choices.get(0).delta.toolCalls).hasSize(1);
-    ChatCompletionsResponse.ToolCall toolCall = chunk.choices.get(0).delta.toolCalls.get(0);
+    ChatCompletionsCommon.ToolCall toolCall = chunk.choices.get(0).delta.toolCalls.get(0);
     assertThat(toolCall.index).isEqualTo(1);
     assertThat(toolCall.id).isEqualTo("call_abc");
     assertThat(toolCall.type).isEqualTo("function");

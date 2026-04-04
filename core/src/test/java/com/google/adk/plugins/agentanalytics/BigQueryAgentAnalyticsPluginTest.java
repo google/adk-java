@@ -33,7 +33,12 @@ import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.models.LlmResponse;
 import com.google.adk.sessions.Session;
+import com.google.adk.tools.AgentTool;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
+import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.api.core.ApiFutures;
 import com.google.auth.Credentials;
 import com.google.cloud.bigquery.BigQuery;
@@ -43,18 +48,27 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
+import com.google.genai.types.GenerateContentResponse;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
+import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.reactivex.rxjava3.core.Flowable;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -67,6 +81,7 @@ import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -80,6 +95,7 @@ import org.mockito.junit.MockitoRule;
 @RunWith(JUnit4.class)
 public class BigQueryAgentAnalyticsPluginTest {
   @Rule public MockitoRule mockitoRule = MockitoJUnit.rule();
+  @Rule public final OpenTelemetryRule openTelemetryRule = OpenTelemetryRule.create();
 
   @Mock private BigQuery mockBigQuery;
   @Mock private StreamWriter mockWriter;
@@ -90,9 +106,11 @@ public class BigQueryAgentAnalyticsPluginTest {
   private BigQueryLoggerConfig config;
   private BigQueryAgentAnalyticsPlugin plugin;
   private Handler mockHandler;
+  private Tracer tracer;
 
   @Before
   public void setUp() throws Exception {
+    tracer = openTelemetryRule.getOpenTelemetry().getTracer("test-plugin");
     fakeAgent = new FakeAgent("agent_name");
     config =
         BigQueryLoggerConfig.builder()
@@ -124,17 +142,31 @@ public class BigQueryAgentAnalyticsPluginTest {
           protected StreamWriter createWriter(BigQueryLoggerConfig config) {
             return mockWriter;
           }
+
+          @Override
+          protected TraceManager createTraceManager() {
+            return new TraceManager(tracer);
+          }
         };
 
-    Session session = Session.builder("session_id").build();
+    Session session = Session.builder("session_id").appName("test_app").userId("test_user").build();
     when(mockInvocationContext.session()).thenReturn(session);
     when(mockInvocationContext.invocationId()).thenReturn("invocation_id");
     when(mockInvocationContext.agent()).thenReturn(fakeAgent);
+    when(mockInvocationContext.callbackContextData()).thenReturn(new ConcurrentHashMap<>());
     when(mockInvocationContext.userId()).thenReturn("user_id");
 
     Logger logger = Logger.getLogger(BatchProcessor.class.getName());
     mockHandler = mock(Handler.class);
     logger.addHandler(mockHandler);
+  }
+
+  @After
+  public void tearDown() {
+    Logger logger = Logger.getLogger(BatchProcessor.class.getName());
+    if (mockHandler != null) {
+      logger.removeHandler(mockHandler);
+    }
   }
 
   @Test
@@ -216,12 +248,15 @@ public class BigQueryAgentAnalyticsPluginTest {
 
       ArgumentCaptor<LogRecord> captor = ArgumentCaptor.forClass(LogRecord.class);
       verify(mockHandler, atLeastOnce()).publish(captor.capture());
-      assertTrue(
-          captor
-              .getValue()
-              .getMessage()
-              .contains("Failed to check or create/upgrade BigQuery table"));
-      assertEquals(Level.WARNING, captor.getValue().getLevel());
+      boolean found =
+          captor.getAllValues().stream()
+              .anyMatch(
+                  record ->
+                      record
+                              .getMessage()
+                              .contains("Failed to check or create/upgrade BigQuery table")
+                          && Objects.equals(record.getLevel(), Level.WARNING));
+      assertTrue("Should have logged table creation failure warning", found);
     } finally {
       logger.removeHandler(mockHandler);
     }
@@ -313,7 +348,8 @@ public class BigQueryAgentAnalyticsPluginTest {
                 if (root.getRowCount() != 1) {
                   failureMessage[0] = "Expected 1 row, got " + root.getRowCount();
                 } else if (!Objects.equals(
-                    root.getVector("event_type").getObject(0).toString(), "USER_MESSAGE")) {
+                    root.getVector("event_type").getObject(0).toString(),
+                    "USER_MESSAGE_RECEIVED")) {
                   failureMessage[0] =
                       "Wrong event_type: " + root.getVector("event_type").getObject(0);
                 } else if (!root.getVector("agent").getObject(0).toString().equals("agent_name")) {
@@ -334,6 +370,9 @@ public class BigQueryAgentAnalyticsPluginTest {
                   failureMessage[0] = "Wrong user_id: " + root.getVector("user_id").getObject(0);
                 } else if (((TimeStampMicroTZVector) root.getVector("timestamp")).get(0) <= 0) {
                   failureMessage[0] = "Timestamp not populated";
+                } else if (!Objects.equals(root.getVector("is_truncated").getObject(0), false)) {
+                  failureMessage[0] =
+                      "Wrong is_truncated: " + root.getVector("is_truncated").getObject(0);
                 } else {
                   // Check content and content_parts
                   String contentJson = root.getVector("content").getObject(0).toString();
@@ -381,6 +420,8 @@ public class BigQueryAgentAnalyticsPluginTest {
     Span mockSpan = Span.wrap(mockSpanContext);
 
     try (Scope scope = mockSpan.makeCurrent()) {
+      plugin.traceManager.attachCurrentSpan();
+
       Content content = Content.builder().build();
       plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
 
@@ -414,29 +455,190 @@ public class BigQueryAgentAnalyticsPluginTest {
 
     Map<String, Object> row = plugin.batchProcessor.queue.poll();
     assertNotNull("Row not found in queue", row);
-    assertEquals("EVENT", row.get("event_type"));
+    assertEquals("STATE_DELTA", row.get("event_type"));
     assertEquals("agent_name", row.get("agent"));
-    assertTrue(row.get("attributes").toString().contains("agent_author"));
+    ObjectNode attributes = (ObjectNode) row.get("attributes");
+    assertEquals("agent_author", attributes.get("author").asText());
     assertTrue(row.get("content").toString().contains("event content"));
+    assertEquals(false, row.get("is_truncated"));
   }
 
   @Test
   public void onModelErrorCallback_populatesCorrectFields() throws Exception {
     CallbackContext mockCallbackContext = mock(CallbackContext.class);
     when(mockCallbackContext.invocationContext()).thenReturn(mockInvocationContext);
-    when(mockCallbackContext.agentName()).thenReturn("agent_in_context");
     LlmRequest.Builder mockLlmRequestBuilder = mock(LlmRequest.Builder.class);
     Throwable error = new RuntimeException("model error message");
 
+    plugin.traceManager.pushSpan("llm_request");
     plugin
         .onModelErrorCallback(mockCallbackContext, mockLlmRequestBuilder, error)
         .blockingSubscribe();
 
     Map<String, Object> row = plugin.batchProcessor.queue.poll();
     assertNotNull("Row not found in queue", row);
-    assertEquals("MODEL_ERROR", row.get("event_type"));
-    assertEquals("agent_in_context", row.get("agent"));
-    assertTrue(row.get("attributes").toString().contains("model error message"));
+    assertEquals("LLM_ERROR", row.get("event_type"));
+    assertEquals("agent_name", row.get("agent"));
+    assertEquals("ERROR", row.get("status"));
+    assertEquals("model error message", row.get("error_message"));
+    assertNotNull(row.get("latency_ms"));
+    assertEquals(false, row.get("is_truncated"));
+  }
+
+  @Test
+  public void afterModelCallback_populatesCorrectFields() throws Exception {
+    CallbackContext mockCallbackContext = mock(CallbackContext.class);
+    when(mockCallbackContext.invocationContext()).thenReturn(mockInvocationContext);
+
+    GenerateContentResponseUsageMetadata usage =
+        GenerateContentResponseUsageMetadata.builder()
+            .promptTokenCount(10)
+            .candidatesTokenCount(20)
+            .totalTokenCount(30)
+            .build();
+
+    GenerateContentResponse response =
+        GenerateContentResponse.builder()
+            .modelVersion("v1")
+            .usageMetadata(usage)
+            .candidates(
+                ImmutableList.of(
+                    Candidate.builder()
+                        .content(Content.fromParts(Part.fromText("llm response")))
+                        .build()))
+            .build();
+
+    LlmResponse adkResponse = LlmResponse.create(response);
+
+    Span parentSpan = tracer.spanBuilder("parent_request").startSpan();
+    Span ambientSpan =
+        tracer.spanBuilder("ambient").setParent(Context.current().with(parentSpan)).startSpan();
+    // Set valid ambient span context
+    try (Scope scope = ambientSpan.makeCurrent()) {
+      plugin.traceManager.pushSpan("parent_request");
+      plugin.traceManager.pushSpan("llm_request");
+      plugin.afterModelCallback(mockCallbackContext, adkResponse).blockingSubscribe();
+    } finally {
+      ambientSpan.end();
+    }
+    Map<String, Object> row = plugin.batchProcessor.queue.poll();
+    assertNotNull("Row not found in queue", row);
+    assertEquals("LLM_RESPONSE", row.get("event_type"));
+    ObjectNode contentMap = (ObjectNode) row.get("content");
+    assertNotNull(contentMap.get("response"));
+    ObjectNode usageMap = (ObjectNode) contentMap.get("usage");
+    assertEquals(10, usageMap.get("prompt").asInt());
+
+    ObjectNode attributes = (ObjectNode) row.get("attributes");
+    assertEquals("v1", attributes.get("model_version").asText());
+    ObjectNode usageAttr = (ObjectNode) attributes.get("usage_metadata");
+    assertEquals(10, usageAttr.get("prompt").asInt());
+    assertEquals(false, row.get("is_truncated"));
+    assertNotNull(row.get("parent_span_id"));
+    ObjectNode latencyMs = (ObjectNode) row.get("latency_ms");
+    assertNotNull("latency_ms should not be null", latencyMs);
+    assertTrue(
+        "latency_ms should contain time_to_first_token_ms",
+        latencyMs.has("time_to_first_token_ms"));
+  }
+
+  @Test
+  public void afterToolCallback_populatesCorrectFields() throws Exception {
+    ToolContext mockToolContext = mock(ToolContext.class);
+    when(mockToolContext.invocationContext()).thenReturn(mockInvocationContext);
+
+    BaseTool mockTool = mock(BaseTool.class);
+    when(mockTool.name()).thenReturn("test_tool");
+
+    ImmutableMap<String, Object> toolArgs = ImmutableMap.of("arg1", "value1");
+    ImmutableMap<String, Object> result = ImmutableMap.of("res1", "value2");
+
+    plugin.traceManager.pushSpan("tool_request");
+    plugin.afterToolCallback(mockTool, toolArgs, mockToolContext, result).blockingSubscribe();
+
+    Map<String, Object> row = plugin.batchProcessor.queue.poll();
+    assertNotNull("Row not found in queue", row);
+    assertEquals("TOOL_COMPLETED", row.get("event_type"));
+    assertEquals("agent_name", row.get("agent"));
+    ObjectNode contentMap = (ObjectNode) row.get("content");
+    assertEquals("test_tool", contentMap.get("tool").asText());
+    assertNotNull(contentMap.get("result"));
+    assertEquals("UNKNOWN", contentMap.get("tool_origin").asText());
+    assertEquals(false, row.get("is_truncated"));
+    assertNotNull(row.get("latency_ms"));
+  }
+
+  @Test
+  public void afterToolCallback_identifiesA2AOrigin() throws Exception {
+    ToolContext mockToolContext = mock(ToolContext.class);
+    when(mockToolContext.invocationContext()).thenReturn(mockInvocationContext);
+
+    BaseAgent a2aAgent =
+        new FakeAgent("a2a_agent") {
+          @Override
+          public AgentOrigin toolOrigin() {
+            return AgentOrigin.A2A;
+          }
+        };
+
+    AgentTool a2aTool = AgentTool.create(a2aAgent);
+
+    plugin.traceManager.pushSpan("tool_request");
+    plugin
+        .afterToolCallback(a2aTool, ImmutableMap.of(), mockToolContext, ImmutableMap.of())
+        .blockingSubscribe();
+
+    Map<String, Object> row = plugin.batchProcessor.queue.poll();
+    assertNotNull(row);
+    ObjectNode contentMap = (ObjectNode) row.get("content");
+    assertEquals("A2A", contentMap.get("tool_origin").asText());
+  }
+
+  @Test
+  public void logEvent_includesSessionMetadata_whenEnabled() throws Exception {
+    // Config default has logSessionMetadata(true)
+    Content content = Content.fromParts(Part.fromText("test message"));
+    plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    Map<String, Object> row = plugin.batchProcessor.queue.poll();
+    assertNotNull(row);
+    ObjectNode attributes = (ObjectNode) row.get("attributes");
+    assertTrue("attributes should contain session_metadata", attributes.has("session_metadata"));
+    ObjectNode sessionMeta = (ObjectNode) attributes.get("session_metadata");
+    assertEquals("session_id", sessionMeta.get("session_id").asText());
+    assertEquals("test_user", sessionMeta.get("user_id").asText());
+    assertEquals("test_app", sessionMeta.get("app_name").asText());
+  }
+
+  @Test
+  public void logEvent_excludesSessionMetadata_whenDisabled() throws Exception {
+    BigQueryLoggerConfig disabledConfig = config.toBuilder().setLogSessionMetadata(false).build();
+    BigQueryAgentAnalyticsPlugin disabledPlugin =
+        new BigQueryAgentAnalyticsPlugin(disabledConfig, mockBigQuery) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter(BigQueryLoggerConfig config) {
+            return mockWriter;
+          }
+
+          @Override
+          protected TraceManager createTraceManager() {
+            return new TraceManager(GlobalOpenTelemetry.getTracer("test-plugin-disabled"));
+          }
+        };
+
+    Content content = Content.fromParts(Part.fromText("test message"));
+    disabledPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    Map<String, Object> row = disabledPlugin.batchProcessor.queue.poll();
+    assertNotNull(row);
+    ObjectNode attributes = (ObjectNode) row.get("attributes");
+    assertFalse(
+        "attributes should not contain session_metadata", attributes.has("session_metadata"));
   }
 
   private static class FakeAgent extends BaseAgent {

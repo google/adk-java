@@ -25,6 +25,7 @@ import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.events.Event;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.telemetry.Tracing;
+import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.DoNotCall;
@@ -254,6 +255,15 @@ public abstract class BaseAgent {
 
   public ImmutableList<? extends AfterAgentCallback> afterAgentCallback() {
     return afterAgentCallback;
+  }
+
+  /**
+   * Returns the origin of the tool when this agent is used as a tool.
+   *
+   * @return the tool origin, defaults to "BASE_AGENT".
+   */
+  public AgentOrigin toolOrigin() {
+    return AgentOrigin.BASE_AGENT;
   }
 
   /**
