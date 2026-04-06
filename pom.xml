@@ -30,6 +30,7 @@
     <module>maven_plugin</module>
     <module>contrib/langchain4j</module>
     <module>contrib/spring-ai</module>
+    <module>contrib/planners</module>
     <module>contrib/samples</module>
     <module>contrib/firestore-session-service</module>
     <module>tutorials/city-time-weather</module>
