@@ -60,6 +60,7 @@ import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -532,12 +533,34 @@ public class Runner {
         contextWithUpdatedSession
             .agent()
             .runAsync(contextWithUpdatedSession)
+            .map(
+                agentEvent -> {
+                  // We create a temporary shallow copy of the session to pass to the persistence
+                  // service.
+                  // This copy is created BEFORE we add the agentEvent to the in-memory session.
+                  Session sessionForService =
+                      Session.builder(updatedSession.id())
+                          .appName(updatedSession.appName())
+                          .userId(updatedSession.userId())
+                          .state(new HashMap<>(updatedSession.state()))
+                          .events(new ArrayList<>(updatedSession.events()))
+                          .build();
+
+                  // Unblock the in-memory session synchronously as soon as the event is emitted!
+                  // This allows the agent's internal loop (llmFlow) to see the event immediately
+                  // for its next turn without waiting for previous DB writes to complete.
+                  updatedSession.events().add(agentEvent);
+
+                  return new EventWithSession(sessionForService, agentEvent);
+                })
             .concatMap(
-                agentEvent ->
+                wrapper ->
                     this.sessionService
-                        .appendEvent(updatedSession, agentEvent)
+                        .appendEvent(wrapper.sessionForService(), wrapper.event())
                         .flatMap(
                             registeredEvent -> {
+                              // Sync state changes back from isolated copy to our primary session
+                              copySessionStates(wrapper.sessionForService(), updatedSession);
                               // TODO: remove this hack after deprecating runAsync with Session.
                               copySessionStates(updatedSession, initialContext.session());
                               return contextWithUpdatedSession
@@ -803,6 +826,9 @@ public class Runner {
         config.tokenThreshold(),
         config.eventRetentionSize());
   }
+
+  /** A record to wrap the isolated session and the event for sequential persistence. */
+  private static record EventWithSession(Session sessionForService, Event event) {}
 
   // TODO: run statelessly
 }

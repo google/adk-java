@@ -35,6 +35,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
@@ -612,6 +613,77 @@ public final class RunnerTest {
         runner.runAsync("user", session.id(), createContent("test")).toList().blockingGet();
 
     assertThat(contextCaptor.getValue().callbackContextData()).containsEntry(testKey, testValue);
+  }
+
+  @Test
+  public void runAsync_duringMultiTurnExecution_emittedEventsAreVisibleInSubsequentTurn() {
+    // Setup LLM to return a function call, and then a final response
+    TestLlm testLlmForRace =
+        createTestLlm(
+            createLlmResponse(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.builder()
+                            .functionCall(
+                                FunctionCall.builder()
+                                    .name(echoTool.name())
+                                    .args(ImmutableMap.of("args_name", "args_value"))
+                                    .build())
+                            .build())
+                    .build()),
+            createLlmResponse(createContent("done")));
+
+    LlmAgent agentForRace =
+        createTestAgentBuilder(testLlmForRace).tools(ImmutableList.of(echoTool)).build();
+
+    Runner runnerForRace =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agentForRace)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .build();
+
+    Session sessionForRace =
+        runnerForRace.sessionService().createSession("test", "user").blockingGet();
+
+    // Use a mock plugin to check session events in beforeModelCallback
+    // It should be called for the second turn (after the function call)
+    AtomicInteger callCount = new AtomicInteger(0);
+    when(plugin.beforeModelCallback(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              CallbackContext context = invocation.getArgument(0);
+              int count = callCount.incrementAndGet();
+              if (count == 2) {
+                // This is the second turn, after the function call
+                // Check if the session contains the function call event
+                List<Event> events = context.events();
+                boolean hasFunctionCall =
+                    events.stream()
+                        .flatMap(
+                            e ->
+                                e
+                                    .content()
+                                    .flatMap(Content::parts)
+                                    .orElse(ImmutableList.of())
+                                    .stream())
+                        .anyMatch(p -> p.functionCall().isPresent());
+                assertThat(hasFunctionCall).isTrue();
+              }
+              return Maybe.empty();
+            });
+
+    var unused =
+        runnerForRace
+            .runAsync("user", sessionForRace.id(), createContent("start"))
+            .toList()
+            .blockingGet();
+
+    assertThat(callCount.get()).isEqualTo(2);
   }
 
   @Test
