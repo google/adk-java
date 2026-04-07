@@ -448,6 +448,12 @@ public class Runner {
               BaseAgent rootAgent = this.agent;
               String invocationId = InvocationContext.newInvocationContextId();
 
+              // Pre-merge stateDelta so onUserMessageCallback can access it.
+              // Safe: session is a copy; persistence still happens via appendNewMessageToSession.
+              if (stateDelta != null && !stateDelta.isEmpty()) {
+                stateDelta.forEach((key, value) -> session.state().put(key, value));
+              }
+
               // Create initial context
               InvocationContext initialContext =
                   newInvocationContextBuilder(session)
