@@ -19,7 +19,16 @@ package com.google.adk.models.chat;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.adk.models.LlmResponse;
+import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FinishReason;
+import com.google.genai.types.FinishReason.Known;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.Part;
+import java.util.ArrayList;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Data Transfer Objects for Chat Completion and Chat Completion Chunk API responses.
@@ -62,6 +71,162 @@ final class ChatCompletionsResponse {
 
     /** See class definition for more details. */
     public Usage usage;
+
+    /**
+     * Converts this chat completion to a {@link LlmResponse}.
+     *
+     * @return the {@link LlmResponse} object.
+     */
+    public LlmResponse toLlmResponse() {
+      Choice choice = (choices != null && !choices.isEmpty()) ? choices.get(0) : null;
+      Content content = mapChoiceToContent(choice);
+
+      LlmResponse.Builder builder = LlmResponse.builder().content(content);
+
+      if (choice != null) {
+        builder.finishReason(mapFinishReason(choice.finishReason));
+      }
+
+      if (model != null) {
+        builder.modelVersion(model);
+      }
+
+      if (usage != null) {
+        builder.usageMetadata(mapUsage(usage));
+      }
+
+      List<CustomMetadata> customMetadataList = buildCustomMetadata();
+      return builder.customMetadata(customMetadataList).build();
+    }
+
+    /**
+     * Maps the finish reason string to a {@link FinishReason}.
+     *
+     * @param reason the finish reason string.
+     * @return the {@link FinishReason}, or {@code null} if the input reason is null.
+     */
+    private @Nullable FinishReason mapFinishReason(String reason) {
+      if (reason == null) {
+        return null;
+      }
+      return switch (reason) {
+        case "stop", "tool_calls" -> new FinishReason(Known.STOP.toString());
+        case "length" -> new FinishReason(Known.MAX_TOKENS.toString());
+        case "content_filter" -> new FinishReason(Known.SAFETY.toString());
+        default -> new FinishReason(Known.OTHER.toString());
+      };
+    }
+
+    private GenerateContentResponseUsageMetadata mapUsage(Usage usage) {
+      GenerateContentResponseUsageMetadata.Builder builder =
+          GenerateContentResponseUsageMetadata.builder();
+      if (usage.promptTokens != null) {
+        builder.promptTokenCount(usage.promptTokens);
+      }
+      if (usage.completionTokens != null) {
+        builder.candidatesTokenCount(usage.completionTokens);
+      }
+      if (usage.totalTokens != null) {
+        builder.totalTokenCount(usage.totalTokens);
+      }
+      if (usage.thoughtsTokenCount != null) {
+        builder.thoughtsTokenCount(usage.thoughtsTokenCount);
+      } else if (usage.completionTokensDetails != null
+          && usage.completionTokensDetails.reasoningTokens != null) {
+        builder.thoughtsTokenCount(usage.completionTokensDetails.reasoningTokens);
+      }
+      return builder.build();
+    }
+
+    /**
+     * Maps the chosen completion to a {@link Content} object.
+     *
+     * @param choice the completion choice to map, or {@code null}.
+     * @return the {@link Content} object, which will be empty if the choice or its message is null.
+     */
+    private Content mapChoiceToContent(@Nullable Choice choice) {
+      Content.Builder contentBuilder = Content.builder();
+      if (choice != null && choice.message != null) {
+        contentBuilder.role(mapRole(choice.message.role)).parts(mapMessageToParts(choice.message));
+      }
+      return contentBuilder.build();
+    }
+
+    private String mapRole(@Nullable String role) {
+      return (role != null && role.equals(ChatCompletionsCommon.ROLE_ASSISTANT))
+          ? ChatCompletionsCommon.ROLE_MODEL
+          : role;
+    }
+
+    private List<Part> mapMessageToParts(Message message) {
+      List<Part> parts = new ArrayList<>();
+      if (message.content != null) {
+        parts.add(Part.fromText(message.content));
+      }
+      if (message.refusal != null) {
+        parts.add(Part.fromText(message.refusal));
+      }
+      if (message.toolCalls != null) {
+        parts.addAll(mapToolCallsToParts(message.toolCalls));
+      }
+      return parts;
+    }
+
+    private List<Part> mapToolCallsToParts(List<ChatCompletionsCommon.ToolCall> toolCalls) {
+      List<Part> parts = new ArrayList<>();
+      for (ChatCompletionsCommon.ToolCall toolCall : toolCalls) {
+        Part part = toolCall.toPart();
+        if (part != null) {
+          parts.add(part);
+        }
+      }
+      return parts;
+    }
+
+    /**
+     * Builds the list of custom metadata from the chat completion fields.
+     *
+     * @return a list of {@link CustomMetadata}, which will be empty if no relevant fields are set.
+     */
+    private List<CustomMetadata> buildCustomMetadata() {
+      List<CustomMetadata> customMetadataList = new ArrayList<>();
+      if (id != null) {
+        customMetadataList.add(
+            CustomMetadata.builder()
+                .key(ChatCompletionsCommon.METADATA_KEY_ID)
+                .stringValue(id)
+                .build());
+      }
+      if (created != null) {
+        customMetadataList.add(
+            CustomMetadata.builder()
+                .key(ChatCompletionsCommon.METADATA_KEY_CREATED)
+                .stringValue(created.toString())
+                .build());
+      }
+      if (object != null) {
+        customMetadataList.add(
+            CustomMetadata.builder()
+                .key(ChatCompletionsCommon.METADATA_KEY_OBJECT)
+                .stringValue(object)
+                .build());
+      }
+      if (systemFingerprint != null) {
+        customMetadataList.add(
+            CustomMetadata.builder()
+                .key(ChatCompletionsCommon.METADATA_KEY_SYSTEM_FINGERPRINT)
+                .stringValue(systemFingerprint)
+                .build());
+      }
+      if (serviceTier != null) {
+        customMetadataList.add(
+            CustomMetadata.builder()
+                .key(ChatCompletionsCommon.METADATA_KEY_SERVICE_TIER)
+                .stringValue(serviceTier)
+                .build());
+      }
+      return customMetadataList;
+    }
   }
 
   /**

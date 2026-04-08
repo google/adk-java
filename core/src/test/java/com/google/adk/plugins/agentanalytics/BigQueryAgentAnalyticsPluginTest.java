@@ -612,7 +612,7 @@ public class BigQueryAgentAnalyticsPluginTest {
 
   @Test
   public void logEvent_excludesSessionMetadata_whenDisabled() throws Exception {
-    BigQueryLoggerConfig disabledConfig = config.toBuilder().setLogSessionMetadata(false).build();
+    BigQueryLoggerConfig disabledConfig = config.toBuilder().logSessionMetadata(false).build();
     BigQueryAgentAnalyticsPlugin disabledPlugin =
         new BigQueryAgentAnalyticsPlugin(disabledConfig, mockBigQuery) {
           @Override

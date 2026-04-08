@@ -34,6 +34,7 @@ import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
@@ -72,8 +73,29 @@ public final class ToolRequestConfirmationActionTest {
     }
   }
 
+  private static class NormalTool extends BaseTool {
+    NormalTool() {
+      super("normal_tool", "Normal tool.");
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(
+          FunctionDeclaration.builder()
+              .name(name())
+              .description(description())
+              .parameters(Schema.builder().type("OBJECT").build())
+              .build());
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+      return Single.just(ImmutableMap.of("result", "success"));
+    }
+  }
+
   @Test
-  public void toolRequestConfirmation_eventHasNonNullId() {
+  public void toolRequestConfirmation_generatesConfirmationEvent() {
     Content requestConfirmationCallContent =
         Content.fromParts(Part.fromFunctionCall("request_confirmation_tool", ImmutableMap.of()));
     Content response1 = Content.fromParts(Part.fromText("response1"));
@@ -107,7 +129,51 @@ public final class ToolRequestConfirmationActionTest {
             .collect(toImmutableList());
 
     assertThat(confirmationEvents).isNotEmpty();
-    assertThat(confirmationEvents.get(0).id()).isNotNull();
+
+    Event confirmationEvent = confirmationEvents.get(0);
+    assertThat(confirmationEvent.id()).isNotNull();
+
+    FunctionCall functionCall = confirmationEvent.functionCalls().get(0);
+    assertThat(functionCall.args()).isPresent();
+
+    Map<String, Object> args = functionCall.args().get();
+    assertThat(args).containsKey("toolConfirmation");
+    assertThat(args).containsKey("originalFunctionCall");
+  }
+
+  @Test
+  public void normalTool_doesNotGenerateConfirmationEvent() {
+    Content normalCallContent =
+        Content.fromParts(Part.fromFunctionCall("normal_tool", ImmutableMap.of()));
+    Content response1 = Content.fromParts(Part.fromText("response1"));
+
+    var testLlm =
+        createTestLlm(
+            Flowable.just(createLlmResponse(normalCallContent)),
+            Flowable.just(createLlmResponse(response1)));
+
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .tools(ImmutableList.of(new NormalTool()))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(rootAgent);
+
+    Runner runner = getRunnerAndCreateSession(rootAgent, invocationContext.session());
+
+    ImmutableList<Event> confirmationEvents =
+        runRunner(runner, invocationContext).stream()
+            .filter(
+                e ->
+                    e.functionCalls().stream()
+                        .anyMatch(
+                            f ->
+                                Objects.equals(
+                                    f.name().orElse(""),
+                                    Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)))
+            .collect(toImmutableList());
+
+    assertThat(confirmationEvents).isEmpty();
   }
 
   private Runner getRunnerAndCreateSession(LlmAgent agent, Session session) {
