@@ -48,6 +48,7 @@ import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Function;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -591,8 +592,9 @@ public final class Functions {
 
   private static Maybe<Map<String, Object>> callTool(
       BaseTool tool, Map<String, Object> args, ToolContext toolContext) {
-    return tool.runAsync(args, toolContext)
+    return Single.defer(() -> tool.runAsync(args, toolContext))
         .toMaybe()
+        .subscribeOn(Schedulers.io())
         .doOnError(t -> Span.current().recordException(t))
         .onErrorResumeNext(
             e ->
