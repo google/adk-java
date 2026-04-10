@@ -20,7 +20,6 @@ import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createRootAgent;
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.RunConfig;
@@ -90,11 +89,11 @@ public final class FunctionsTest {
                     Part.fromText("..."), Part.fromFunctionCall("missing_tool", ImmutableMap.of())))
             .build();
 
-    assertThrows(
-        RuntimeException.class,
-        () ->
-            Functions.handleFunctionCalls(
-                invocationContext, event, /* tools= */ ImmutableMap.of()));
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(invocationContext, event, /* tools= */ ImmutableMap.of())
+            .blockingGet();
+
+    assertThat(functionResponseEvent).isNull();
   }
 
   @Test

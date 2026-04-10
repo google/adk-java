@@ -33,7 +33,6 @@ import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
-import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -141,9 +140,12 @@ public final class Functions {
       Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
 
+    List<FunctionCall> validFunctionCalls = new ArrayList<>();
     for (FunctionCall functionCall : functionCalls) {
       if (!tools.containsKey(functionCall.name().get())) {
-        throw new VerifyException("Tool not found: " + functionCall.name().get());
+        logger.warn("Tool not found: {}", functionCall.name().get());
+      } else {
+        validFunctionCalls.add(functionCall);
       }
     }
 
@@ -154,10 +156,10 @@ public final class Functions {
     Observable<Event> functionResponseEventsObservable;
     if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
       functionResponseEventsObservable =
-          Observable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
+          Observable.fromIterable(validFunctionCalls).concatMapMaybe(functionCallMapper);
     } else {
       functionResponseEventsObservable =
-          Observable.fromIterable(functionCalls)
+          Observable.fromIterable(validFunctionCalls)
               .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
     }
     return functionResponseEventsObservable
@@ -209,9 +211,12 @@ public final class Functions {
       Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
 
+    List<FunctionCall> validFunctionCalls = new ArrayList<>();
     for (FunctionCall functionCall : functionCalls) {
       if (!tools.containsKey(functionCall.name().get())) {
-        throw new VerifyException("Tool not found: " + functionCall.name().get());
+        logger.warn("Tool not found: {}", functionCall.name().get());
+      } else {
+        validFunctionCalls.add(functionCall);
       }
     }
 
@@ -222,10 +227,10 @@ public final class Functions {
     Observable<Event> responseEventsObservable;
     if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
       responseEventsObservable =
-          Observable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
+          Observable.fromIterable(validFunctionCalls).concatMapMaybe(functionCallMapper);
     } else {
       responseEventsObservable =
-          Observable.fromIterable(functionCalls)
+          Observable.fromIterable(validFunctionCalls)
               .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
     }
 
@@ -238,7 +243,7 @@ public final class Functions {
               if (events.isEmpty()) {
                 return Maybe.empty();
               }
-              return Maybe.just(Functions.mergeParallelFunctionResponseEvents(events).orElse(null));
+              return Maybe.fromOptional(Functions.mergeParallelFunctionResponseEvents(events));
             });
   }
 
