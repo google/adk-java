@@ -27,6 +27,7 @@ import com.google.adk.a2a.converters.ResponseConverter;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.Resumable;
 import com.google.adk.events.Event;
 import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.common.collect.ImmutableList;
@@ -75,7 +76,7 @@ import org.slf4j.LoggerFactory;
  *   <li>Converting A2A client responses back into ADK format
  * </ul>
  */
-public class RemoteA2AAgent extends BaseAgent {
+public class RemoteA2AAgent extends BaseAgent implements Resumable {
 
   private static final Logger logger = LoggerFactory.getLogger(RemoteA2AAgent.class);
   private static final ObjectMapper objectMapper =
@@ -85,6 +86,7 @@ public class RemoteA2AAgent extends BaseAgent {
   private final Client a2aClient;
   private String description;
   private final boolean streaming;
+  private final boolean resumable;
 
   // Internal constructor used by builder
   private RemoteA2AAgent(Builder builder) {
@@ -118,6 +120,7 @@ public class RemoteA2AAgent extends BaseAgent {
       this.description = this.agentCard.description();
     }
     this.streaming = builder.streaming && this.agentCard.capabilities().streaming();
+    this.resumable = builder.resumable;
   }
 
   public static Builder builder() {
@@ -134,10 +137,17 @@ public class RemoteA2AAgent extends BaseAgent {
     private List<Callbacks.BeforeAgentCallback> beforeAgentCallback;
     private List<Callbacks.AfterAgentCallback> afterAgentCallback;
     private boolean streaming;
+    private boolean resumable = true;
 
     @CanIgnoreReturnValue
     public Builder streaming(boolean streaming) {
       this.streaming = streaming;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder resumable(boolean resumable) {
+      this.resumable = resumable;
       return this;
     }
 
@@ -192,6 +202,11 @@ public class RemoteA2AAgent extends BaseAgent {
     return streaming;
   }
 
+  @Override
+  public boolean isResumable() {
+    return resumable;
+  }
+
   private Message.Builder newA2AMessage(Message.Role role, List<io.a2a.spec.Part<?>> parts) {
     return new Message.Builder().messageId(UUID.randomUUID().toString()).role(role).parts(parts);
   }
@@ -227,8 +242,7 @@ public class RemoteA2AAgent extends BaseAgent {
     return Flowable.create(
         emitter -> {
           StreamHandler handler =
-              new StreamHandler(
-                  emitter.serialize(), invocationContext, requestJson, streaming, name());
+              new StreamHandler(emitter.serialize(), invocationContext, requestJson, name());
           ImmutableList<BiConsumer<ClientEvent, AgentCard>> consumers =
               ImmutableList.of(handler::handleEvent);
           a2aClient.sendMessage(originalMessage, consumers, handler::handleError, null);
@@ -249,7 +263,6 @@ public class RemoteA2AAgent extends BaseAgent {
     private final FlowableEmitter<Event> emitter;
     private final InvocationContext invocationContext;
     private final String requestJson;
-    private final boolean streaming;
     private final String agentName;
     private boolean done = false;
     private final StringBuilder textBuffer = new StringBuilder();
@@ -259,12 +272,10 @@ public class RemoteA2AAgent extends BaseAgent {
         FlowableEmitter<Event> emitter,
         InvocationContext invocationContext,
         String requestJson,
-        boolean streaming,
         String agentName) {
       this.emitter = emitter;
       this.invocationContext = invocationContext;
       this.requestJson = requestJson;
-      this.streaming = streaming;
       this.agentName = agentName;
     }
 
