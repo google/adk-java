@@ -299,6 +299,7 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     private final String runArtifactId;
     private final AgentExecutorConfig.OutputMode outputMode;
     private final Map<String, String> lastAgentPartialArtifact = new ConcurrentHashMap<>();
+    private boolean isFirstEventForRun = true;
 
     // All artifacts related to the invocation should have the same artifact id.
     private EventProcessor(AgentExecutorConfig.OutputMode outputMode) {
@@ -329,8 +330,9 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
         }
       }
 
-      Boolean append = true;
-      Boolean lastChunk = false;
+      boolean append = !isFirstEventForRun;
+      isFirstEventForRun = false;
+      boolean lastChunk = !event.partial().orElse(false);
       String artifactId = runArtifactId;
 
       if (outputMode == AgentExecutorConfig.OutputMode.ARTIFACT_PER_EVENT) {

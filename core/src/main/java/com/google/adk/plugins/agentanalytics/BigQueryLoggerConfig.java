@@ -43,6 +43,9 @@ public abstract class BigQueryLoggerConfig {
   // Max length for text content before truncation.
   public abstract int maxContentLength();
 
+  // BigQuery location.
+  public abstract String location();
+
   // Project ID for the BigQuery table.
   public abstract String projectId();
 
@@ -93,8 +96,15 @@ public abstract class BigQueryLoggerConfig {
   // Automatically add new columns to existing tables when the plugin
   // schema evolves.  Only additive changes are made (columns are never
   // dropped or altered).
-  // TODO(b/491852782): Implement auto-schema upgrade.
   public abstract boolean autoSchemaUpgrade();
+
+  // Automatically create per-event-type BigQuery views that unnest
+  // JSON columns into typed, queryable columns.
+  public abstract boolean createViews();
+
+  // Prefix for auto-created per-event-type view names.
+  // Default "v" produces views like ``v_llm_request``.
+  public abstract String viewPrefix();
 
   @Nullable
   public abstract Credentials credentials();
@@ -105,6 +115,7 @@ public abstract class BigQueryLoggerConfig {
     return new AutoValue_BigQueryLoggerConfig.Builder()
         .enabled(true)
         .maxContentLength(500 * 1024)
+        .location("us") // Default location.
         .datasetId("agent_analytics")
         .tableName("events")
         .clusteringFields(ImmutableList.of("event_type", "agent", "user_id"))
@@ -118,192 +129,81 @@ public abstract class BigQueryLoggerConfig {
         .customTags(ImmutableMap.of())
         .eventAllowlist(ImmutableList.of())
         .eventDenylist(ImmutableList.of())
-        // TODO(b/491851868): Enable auto-schema upgrade once implemented.
-        .autoSchemaUpgrade(false);
+        .autoSchemaUpgrade(true)
+        .createViews(false)
+        .viewPrefix("v");
   }
 
   /** Builder for {@link BigQueryLoggerConfig}. */
   @AutoValue.Builder
   public abstract static class Builder {
 
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setEnabled(boolean enabled) {
-      return enabled(enabled);
-    }
-
     @CanIgnoreReturnValue
     public abstract Builder enabled(boolean enabled);
-
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setEventAllowlist(@Nullable List<String> eventAllowlist) {
-      return eventAllowlist(eventAllowlist);
-    }
 
     @CanIgnoreReturnValue
     public abstract Builder eventAllowlist(@Nullable List<String> eventAllowlist);
 
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setEventDenylist(@Nullable List<String> eventDenylist) {
-      return eventDenylist(eventDenylist);
-    }
-
     @CanIgnoreReturnValue
     public abstract Builder eventDenylist(@Nullable List<String> eventDenylist);
-
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setMaxContentLength(int maxContentLength) {
-      return maxContentLength(maxContentLength);
-    }
 
     @CanIgnoreReturnValue
     public abstract Builder maxContentLength(int maxContentLength);
 
-    @Deprecated
     @CanIgnoreReturnValue
-    public final Builder setProjectId(String projectId) {
-      return projectId(projectId);
-    }
+    public abstract Builder location(String location);
 
     @CanIgnoreReturnValue
     public abstract Builder projectId(String projectId);
 
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setDatasetId(String datasetId) {
-      return datasetId(datasetId);
-    }
-
     @CanIgnoreReturnValue
     public abstract Builder datasetId(String datasetId);
-
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setTableName(String tableName) {
-      return tableName(tableName);
-    }
 
     @CanIgnoreReturnValue
     public abstract Builder tableName(String tableName);
 
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setClusteringFields(List<String> clusteringFields) {
-      return clusteringFields(clusteringFields);
-    }
-
     @CanIgnoreReturnValue
     public abstract Builder clusteringFields(List<String> clusteringFields);
-
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setLogMultiModalContent(boolean logMultiModalContent) {
-      return logMultiModalContent(logMultiModalContent);
-    }
 
     @CanIgnoreReturnValue
     public abstract Builder logMultiModalContent(boolean logMultiModalContent);
 
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setRetryConfig(RetryConfig retryConfig) {
-      return retryConfig(retryConfig);
-    }
-
     @CanIgnoreReturnValue
     public abstract Builder retryConfig(RetryConfig retryConfig);
-
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setBatchSize(int batchSize) {
-      return batchSize(batchSize);
-    }
 
     @CanIgnoreReturnValue
     public abstract Builder batchSize(int batchSize);
 
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setBatchFlushInterval(Duration batchFlushInterval) {
-      return batchFlushInterval(batchFlushInterval);
-    }
-
     @CanIgnoreReturnValue
     public abstract Builder batchFlushInterval(Duration batchFlushInterval);
-
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setShutdownTimeout(Duration shutdownTimeout) {
-      return shutdownTimeout(shutdownTimeout);
-    }
 
     @CanIgnoreReturnValue
     public abstract Builder shutdownTimeout(Duration shutdownTimeout);
 
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setQueueMaxSize(int queueMaxSize) {
-      return queueMaxSize(queueMaxSize);
-    }
-
     @CanIgnoreReturnValue
     public abstract Builder queueMaxSize(int queueMaxSize);
-
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setContentFormatter(
-        @Nullable BiFunction<Object, String, Object> contentFormatter) {
-      return contentFormatter(contentFormatter);
-    }
 
     @CanIgnoreReturnValue
     public abstract Builder contentFormatter(
         @Nullable BiFunction<Object, String, Object> contentFormatter);
 
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setConnectionId(String connectionId) {
-      return connectionId(connectionId);
-    }
-
     @CanIgnoreReturnValue
     public abstract Builder connectionId(String connectionId);
-
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setLogSessionMetadata(boolean logSessionMetadata) {
-      return logSessionMetadata(logSessionMetadata);
-    }
 
     @CanIgnoreReturnValue
     public abstract Builder logSessionMetadata(boolean logSessionMetadata);
 
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setCustomTags(Map<String, Object> customTags) {
-      return customTags(customTags);
-    }
-
     @CanIgnoreReturnValue
     public abstract Builder customTags(Map<String, Object> customTags);
-
-    @Deprecated
-    @CanIgnoreReturnValue
-    public final Builder setAutoSchemaUpgrade(boolean autoSchemaUpgrade) {
-      return autoSchemaUpgrade(autoSchemaUpgrade);
-    }
 
     @CanIgnoreReturnValue
     public abstract Builder autoSchemaUpgrade(boolean autoSchemaUpgrade);
 
-    @Deprecated
     @CanIgnoreReturnValue
-    public final Builder setCredentials(Credentials credentials) {
-      return credentials(credentials);
-    }
+    public abstract Builder createViews(boolean createViews);
+
+    @CanIgnoreReturnValue
+    public abstract Builder viewPrefix(String viewPrefix);
 
     @CanIgnoreReturnValue
     public abstract Builder credentials(Credentials credentials);
@@ -333,39 +233,14 @@ public abstract class BigQueryLoggerConfig {
     /** Builder for {@link RetryConfig}. */
     @AutoValue.Builder
     public abstract static class Builder {
-
-      @Deprecated
-      @CanIgnoreReturnValue
-      public final Builder setMaxRetries(int maxRetries) {
-        return maxRetries(maxRetries);
-      }
-
       @CanIgnoreReturnValue
       public abstract Builder maxRetries(int maxRetries);
-
-      @Deprecated
-      @CanIgnoreReturnValue
-      public final Builder setInitialDelay(Duration initialDelay) {
-        return initialDelay(initialDelay);
-      }
 
       @CanIgnoreReturnValue
       public abstract Builder initialDelay(Duration initialDelay);
 
-      @Deprecated
-      @CanIgnoreReturnValue
-      public final Builder setMultiplier(double multiplier) {
-        return multiplier(multiplier);
-      }
-
       @CanIgnoreReturnValue
       public abstract Builder multiplier(double multiplier);
-
-      @Deprecated
-      @CanIgnoreReturnValue
-      public final Builder setMaxDelay(Duration maxDelay) {
-        return maxDelay(maxDelay);
-      }
 
       @CanIgnoreReturnValue
       public abstract Builder maxDelay(Duration maxDelay);

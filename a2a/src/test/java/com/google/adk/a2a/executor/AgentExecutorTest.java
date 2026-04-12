@@ -439,6 +439,72 @@ public final class AgentExecutorTest {
     assertThat(ev3.getArtifact().artifactId()).isEqualTo(firstArtifactId);
   }
 
+  @Test
+  public void execute_withDefaultArtifactPerRun_emitsMessageAndLastChunk() {
+    Event partialEvent =
+        Event.builder()
+            .partial(true)
+            .author("agent")
+            .content(
+                Content.builder()
+                    .parts(ImmutableList.of(Part.builder().text("chunk1").build()))
+                    .build())
+            .build();
+    Event finalEvent =
+        Event.builder()
+            .partial(false)
+            .author("agent")
+            .content(
+                Content.builder()
+                    .parts(ImmutableList.of(Part.builder().text("chunk1chunk2").build()))
+                    .build())
+            .build();
+
+    testAgent.setEventsToEmit(Flowable.just(partialEvent, finalEvent));
+    AgentExecutor executor =
+        new AgentExecutor.Builder()
+            .app(App.builder().name("test_app").rootAgent(testAgent).build())
+            .sessionService(new InMemorySessionService())
+            .artifactService(new InMemoryArtifactService())
+            .agentExecutorConfig(
+                AgentExecutorConfig.builder()
+                    .outputMode(AgentExecutorConfig.OutputMode.ARTIFACT_PER_RUN)
+                    .build())
+            .build();
+
+    RequestContext requestContext = createRequestContext();
+    executor.execute(requestContext, eventQueue);
+
+    // Verify events were correctly formed.
+    ImmutableList<TaskArtifactUpdateEvent> artifactEvents =
+        enqueuedEvents.stream()
+            .filter(e -> e instanceof TaskArtifactUpdateEvent)
+            .map(e -> (TaskArtifactUpdateEvent) e)
+            .collect(toImmutableList());
+
+    assertThat(artifactEvents).hasSize(2);
+    // Partial event has lastChunk = false
+    assertThat(artifactEvents.get(0).isLastChunk()).isFalse();
+    // Final event has lastChunk = true
+    assertThat(artifactEvents.get(1).isLastChunk()).isTrue();
+
+    // First chunk appends=false, subsequent chunks append=true
+    assertThat(artifactEvents.get(0).isAppend()).isFalse();
+    assertThat(artifactEvents.get(1).isAppend()).isTrue();
+
+    // Now verify the final TaskStatusUpdateEvent has a null message as expected
+    Optional<TaskStatusUpdateEvent> statusEvent =
+        enqueuedEvents.stream()
+            .filter(e -> e instanceof TaskStatusUpdateEvent)
+            .map(e -> (TaskStatusUpdateEvent) e)
+            .filter(TaskStatusUpdateEvent::isFinal)
+            .findFirst();
+
+    assertThat(statusEvent).isPresent();
+    Message finalMessage = statusEvent.get().getStatus().message();
+    assertThat(finalMessage).isNull();
+  }
+
   private static final class TestAgent extends BaseAgent {
     private Flowable<Event> eventsToEmit;
 

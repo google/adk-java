@@ -45,6 +45,14 @@ public final class BigQuerySchema {
 
   private BigQuerySchema() {}
 
+  /**
+   * The version of the BigQuery schema. Each time the schema is changed(new fields are added), this
+   * should be incremented.
+   */
+  static final String SCHEMA_VERSION = "1";
+
+  static final String SCHEMA_VERSION_LABEL_KEY = "adk_schema_version";
+
   private static final ImmutableMap<StandardSQLTypeName, ImmutableMap<String, String>>
       FIELD_TYPE_TO_ARROW_FIELD_METADATA =
           ImmutableMap.of(

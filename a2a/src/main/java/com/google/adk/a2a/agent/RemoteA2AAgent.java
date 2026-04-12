@@ -328,9 +328,9 @@ public class RemoteA2AAgent extends BaseAgent {
             emitter.onNext(event);
           });
 
-      // For non-streaming communication, complete the flow; for streaming, wait until the client
-      // marks the completion.
-      if (isCompleted(clientEvent) || !streaming) {
+      // Wait until the client receives a status payload marking the completion of the task
+      // regardless of the underlying streaming or non-streaming protocol configuration.
+      if (isCompleted(clientEvent)) {
         // Only complete the flow once.
         if (!done) {
           emitAggregatedEventAndClearBuffer(clientEvent);

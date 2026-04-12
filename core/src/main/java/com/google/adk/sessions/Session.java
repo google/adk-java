@@ -123,7 +123,7 @@ public final class Session extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("events")
     public Builder events(List<Event> events) {
-      this.events = Collections.synchronizedList(events);
+      this.events = Collections.synchronizedList(new ArrayList<>(events));
       return this;
     }
 

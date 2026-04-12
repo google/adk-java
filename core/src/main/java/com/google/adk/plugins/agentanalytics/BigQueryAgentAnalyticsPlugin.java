@@ -16,6 +16,8 @@
 
 package com.google.adk.plugins.agentanalytics;
 
+import static com.google.adk.plugins.agentanalytics.BigQueryUtils.createAnalyticsViews;
+import static com.google.adk.plugins.agentanalytics.BigQueryUtils.maybeUpgradeSchema;
 import static com.google.adk.plugins.agentanalytics.JsonFormatter.convertToJsonNode;
 import static com.google.adk.plugins.agentanalytics.JsonFormatter.smartTruncate;
 import static com.google.adk.plugins.agentanalytics.JsonFormatter.toJavaObject;
@@ -143,6 +145,8 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       builder.setCredentials(
           GoogleCredentials.getApplicationDefault().createScoped(DEFAULT_AUTH_SCOPES));
     }
+    builder = builder.setLocation(config.location());
+    builder.setProjectId(config.projectId());
     return builder.build().getService();
   }
 
@@ -172,27 +176,36 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
           tableDefinitionBuilder.setClustering(
               Clustering.newBuilder().setFields(config.clusteringFields()).build());
         }
-        TableInfo tableInfo = TableInfo.newBuilder(tableId, tableDefinitionBuilder.build()).build();
+        TableInfo tableInfo =
+            TableInfo.newBuilder(tableId, tableDefinitionBuilder.build())
+                .setLabels(
+                    ImmutableMap.of(
+                        BigQuerySchema.SCHEMA_VERSION_LABEL_KEY, BigQuerySchema.SCHEMA_VERSION))
+                .build();
         bigQuery.create(tableInfo);
       } else if (config.autoSchemaUpgrade()) {
-        // TODO(b/491851868): Implement auto-schema upgrade.
-        logger.info("BigQuery table already exists and auto-schema upgrade is enabled: " + tableId);
-        logger.info("Auto-schema upgrade is not implemented yet.");
+        maybeUpgradeSchema(bigQuery, table);
       }
     } catch (BigQueryException e) {
-      if (e.getMessage().contains("invalid_grant")) {
-        logger.log(
-            Level.SEVERE,
-            "Failed to authenticate with BigQuery. Please run 'gcloud auth application-default"
-                + " login' to refresh your credentials or provide valid credentials in"
-                + " BigQueryLoggerConfig.",
-            e);
-      } else {
-        logger.log(
-            Level.WARNING, "Failed to check or create/upgrade BigQuery table: " + tableId, e);
-      }
+      processBigQueryException(e, "Failed to check or create/upgrade BigQuery table: " + tableId);
     } catch (RuntimeException e) {
       logger.log(Level.WARNING, "Failed to check or create/upgrade BigQuery table: " + tableId, e);
+    }
+
+    try {
+      if (config.createViews()) {
+        var unused = executor.submit(() -> createAnalyticsViews(bigQuery, config));
+      }
+    } catch (RuntimeException e) {
+      logger.log(Level.WARNING, "Failed to create/update BigQuery views for table: " + tableId, e);
+    }
+  }
+
+  private void processBigQueryException(BigQueryException e, String logMessage) {
+    if (e.getMessage().contains("invalid_grant")) {
+      logger.log(Level.SEVERE, "Failed to authenticate with BigQuery.", e);
+    } else {
+      logger.log(Level.WARNING, logMessage, e);
     }
   }
 

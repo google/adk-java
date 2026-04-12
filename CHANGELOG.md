@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.1.0](https://github.com/google/adk-java/compare/v1.0.0...v1.1.0) (2026-04-10)
+
+
+### Features
+
+* Add ChatCompletionsRequest object ([88eb0f5](https://github.com/google/adk-java/commit/88eb0f523c14266840ffc4b3d9ed827c9cdb1510))
+* Add ChatCompletionsResponse object ([55becb8](https://github.com/google/adk-java/commit/55becb81b6dcc15a9a82ec842a0096132813ae64))
+* Add ChatCompletionsResponse to LlmResponse conversion ([ec88c64](https://github.com/google/adk-java/commit/ec88c64d311946c1d427c4374be75d6163160478))
+* add README for ADK LangChain4j integration library ([f861ef9](https://github.com/google/adk-java/commit/f861ef9c0d5c6a5ef27e7be1d8ac27a399ba6fad))
+* add support for Gemma models in LlmRegistry ([9d6cc80](https://github.com/google/adk-java/commit/9d6cc80660d81fc217d058b7c8edb1ff906e2c30))
+* add transcription in event ([cb9d2e3](https://github.com/google/adk-java/commit/cb9d2e3e9225c550fd1f1a1445cebe569d30a20a))
+* Implement Trace management, add HITL support ([7407e37](https://github.com/google/adk-java/commit/7407e37a043f7b25a66663eb04a6bafbef620583))
+* Support Sub-agent Escalation event in Parallel Agent (Issue [#561](https://github.com/google/adk-java/issues/561)) ([88c8b0e](https://github.com/google/adk-java/commit/88c8b0e5a4863fa623fa17ff616d13570b60c4d0))
+* Update event IDs in BaseLlmFlow's post processing section ([d0e1085](https://github.com/google/adk-java/commit/d0e108510487d97d186052caa164649e1c90f176))
+
+
+### Bug Fixes
+
+* Fix A2A protocol chunk streaming and task completion states ([c95f669](https://github.com/google/adk-java/commit/c95f669bb6fbadbf07d62a8ff8a3e533e17032f4))
+* Fix critical race condition in ADK Runner ([51f4d1f](https://github.com/google/adk-java/commit/51f4d1f9a4d4d67a92f4a97989e5bd1ab24910e1))
+* Fix critical race condition in ADK Runner ([3091156](https://github.com/google/adk-java/commit/30911560ff2f928e40f6de9426c7c8295b16bacb))
+* Fix race condition and stale session in ADK Runner ([7964e93](https://github.com/google/adk-java/commit/7964e93dc12c3d24079facfd5d64ed913ec082aa))
+
 ## [1.0.0](https://github.com/google/adk-java/compare/v1.0.0-rc.1...v1.0.0) (2026-03-30)
 
 

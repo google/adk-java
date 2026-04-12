@@ -677,7 +677,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
         && updatedResponse.errorCode().isEmpty()
         && !updatedResponse.interrupted().orElse(false)
         && !updatedResponse.turnComplete().orElse(false)
-        && updatedResponse.usageMetadata().isEmpty()) {
+        && updatedResponse.usageMetadata().isEmpty()
+        && updatedResponse.inputTranscription().isEmpty()
+        && updatedResponse.outputTranscription().isEmpty()) {
       return processorEvents;
     }
 
@@ -740,7 +742,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
             .avgLogprobs(llmResponse.avgLogprobs().orElse(null))
             .finishReason(llmResponse.finishReason().orElse(null))
             .usageMetadata(llmResponse.usageMetadata().orElse(null))
-            .modelVersion(llmResponse.modelVersion().orElse(null));
+            .modelVersion(llmResponse.modelVersion().orElse(null))
+            .inputTranscription(llmResponse.inputTranscription().orElse(null))
+            .outputTranscription(llmResponse.outputTranscription().orElse(null));
 
     Event event = eventBuilder.build();
 

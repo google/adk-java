@@ -16,11 +16,13 @@
 
 package com.google.adk.plugins.agentanalytics;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -43,7 +45,12 @@ import com.google.api.core.ApiFutures;
 import com.google.auth.Credentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.FieldList;
+import com.google.cloud.bigquery.QueryJobConfiguration;
+import com.google.cloud.bigquery.StandardSQLTypeName;
+import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.Table;
+import com.google.cloud.bigquery.TableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
@@ -88,6 +95,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -101,6 +109,7 @@ public class BigQueryAgentAnalyticsPluginTest {
   @Mock private StreamWriter mockWriter;
   @Mock private BigQueryWriteClient mockWriteClient;
   @Mock private InvocationContext mockInvocationContext;
+  @Captor private ArgumentCaptor<Map<String, String>> labelsCaptor;
   private BaseAgent fakeAgent;
 
   private BigQueryLoggerConfig config;
@@ -612,7 +621,7 @@ public class BigQueryAgentAnalyticsPluginTest {
 
   @Test
   public void logEvent_excludesSessionMetadata_whenDisabled() throws Exception {
-    BigQueryLoggerConfig disabledConfig = config.toBuilder().setLogSessionMetadata(false).build();
+    BigQueryLoggerConfig disabledConfig = config.toBuilder().logSessionMetadata(false).build();
     BigQueryAgentAnalyticsPlugin disabledPlugin =
         new BigQueryAgentAnalyticsPlugin(disabledConfig, mockBigQuery) {
           @Override
@@ -639,6 +648,123 @@ public class BigQueryAgentAnalyticsPluginTest {
     ObjectNode attributes = (ObjectNode) row.get("attributes");
     assertFalse(
         "attributes should not contain session_metadata", attributes.has("session_metadata"));
+  }
+
+  @Test
+  public void maybeUpgradeSchema_addsNewTopLevelField() throws Exception {
+    Table mockTable = mock(Table.class);
+    when(mockTable.getTableId()).thenReturn(TableId.of("project", "dataset", "table"));
+    when(mockTable.getLabels()).thenReturn(ImmutableMap.of());
+
+    // Initial schema missing one field, e.g., 'is_truncated'
+    ImmutableList<com.google.cloud.bigquery.Field> initialFields =
+        BigQuerySchema.getEventsSchema().getFields().stream()
+            .filter(f -> !f.getName().equals("is_truncated"))
+            .collect(toImmutableList());
+    StandardTableDefinition tableDefinition =
+        StandardTableDefinition.newBuilder()
+            .setSchema(com.google.cloud.bigquery.Schema.of(initialFields))
+            .build();
+    when(mockTable.getDefinition()).thenReturn(tableDefinition);
+
+    Table.Builder mockTableBuilder = mock(Table.Builder.class);
+    when(mockTable.toBuilder()).thenReturn(mockTableBuilder);
+    when(mockTableBuilder.setDefinition(any(TableDefinition.class))).thenReturn(mockTableBuilder);
+    when(mockTableBuilder.setLabels(anyMap())).thenReturn(mockTableBuilder);
+    when(mockTableBuilder.build()).thenReturn(mockTable);
+
+    BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
+
+    ArgumentCaptor<StandardTableDefinition> definitionCaptor =
+        ArgumentCaptor.forClass(StandardTableDefinition.class);
+    verify(mockTableBuilder).setDefinition(definitionCaptor.capture());
+    com.google.cloud.bigquery.Schema updatedSchema = definitionCaptor.getValue().getSchema();
+    assertNotNull(updatedSchema.getFields().get("is_truncated"));
+
+    verify(mockTableBuilder).setLabels(labelsCaptor.capture());
+    assertEquals(
+        BigQuerySchema.SCHEMA_VERSION,
+        labelsCaptor.getValue().get(BigQuerySchema.SCHEMA_VERSION_LABEL_KEY));
+
+    verify(mockBigQuery).update(any(Table.class));
+  }
+
+  @Test
+  public void maybeUpgradeSchema_addsNewNestedField() throws Exception {
+    Table mockTable = mock(Table.class);
+    when(mockTable.getTableId()).thenReturn(TableId.of("project", "dataset", "table"));
+    when(mockTable.getLabels()).thenReturn(ImmutableMap.of());
+
+    // Initial schema missing 'storage_mode' in 'content_parts'
+    ImmutableList<com.google.cloud.bigquery.Field> initialFields =
+        BigQuerySchema.getEventsSchema().getFields().stream()
+            .map(
+                f -> {
+                  if (f.getName().equals("content_parts")) {
+                    ImmutableList<com.google.cloud.bigquery.Field> subFields =
+                        f.getSubFields().stream()
+                            .filter(sf -> !sf.getName().equals("storage_mode"))
+                            .collect(toImmutableList());
+                    return f.toBuilder()
+                        .setType(StandardSQLTypeName.STRUCT, FieldList.of(subFields))
+                        .build();
+                  }
+                  return f;
+                })
+            .collect(toImmutableList());
+
+    StandardTableDefinition tableDefinition =
+        StandardTableDefinition.newBuilder()
+            .setSchema(com.google.cloud.bigquery.Schema.of(initialFields))
+            .build();
+    when(mockTable.getDefinition()).thenReturn(tableDefinition);
+
+    Table.Builder mockTableBuilder = mock(Table.Builder.class);
+    when(mockTable.toBuilder()).thenReturn(mockTableBuilder);
+    when(mockTableBuilder.setDefinition(any(TableDefinition.class))).thenReturn(mockTableBuilder);
+    when(mockTableBuilder.setLabels(anyMap())).thenReturn(mockTableBuilder);
+    when(mockTableBuilder.build()).thenReturn(mockTable);
+
+    BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
+
+    ArgumentCaptor<StandardTableDefinition> definitionCaptor =
+        ArgumentCaptor.forClass(StandardTableDefinition.class);
+    verify(mockTableBuilder).setDefinition(definitionCaptor.capture());
+    com.google.cloud.bigquery.Field contentParts =
+        definitionCaptor.getValue().getSchema().getFields().get("content_parts");
+    assertNotNull(contentParts.getSubFields().get("storage_mode"));
+
+    verify(mockBigQuery).update(any(Table.class));
+  }
+
+  @Test
+  public void createAnalyticsViews_executesQueries() throws Exception {
+    BigQueryUtils.createAnalyticsViews(mockBigQuery, config);
+
+    // Verify a few specific views are created
+    verify(mockBigQuery, atLeastOnce()).query(any(QueryJobConfiguration.class));
+
+    ArgumentCaptor<QueryJobConfiguration> captor =
+        ArgumentCaptor.forClass(QueryJobConfiguration.class);
+    verify(mockBigQuery, atLeastOnce()).query(captor.capture());
+
+    ImmutableList<String> queries =
+        captor.getAllValues().stream()
+            .map(QueryJobConfiguration::getQuery)
+            .collect(toImmutableList());
+
+    assertTrue(
+        queries.stream()
+            .anyMatch(
+                q ->
+                    q.contains(
+                        "CREATE OR REPLACE VIEW `project.dataset.v_user_message_received`")));
+    assertTrue(
+        queries.stream()
+            .anyMatch(q -> q.contains("CREATE OR REPLACE VIEW `project.dataset.v_llm_request`")));
+    assertTrue(
+        queries.stream()
+            .anyMatch(q -> q.contains("CREATE OR REPLACE VIEW `project.dataset.v_llm_response`")));
   }
 
   private static class FakeAgent extends BaseAgent {

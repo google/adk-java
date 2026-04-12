@@ -19,8 +19,15 @@ package com.google.adk.models.chat;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.models.LlmResponse;
 import com.google.adk.models.chat.ChatCompletionsResponse.ChatCompletion;
 import com.google.adk.models.chat.ChatCompletionsResponse.ChatCompletionChunk;
+import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FinishReason.Known;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.Part;
+import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import org.junit.Before;
 import org.junit.Test;
@@ -135,7 +142,7 @@ public final class ChatCompletionsResponseTest {
     assertThat(completion.choices.get(0).message.toolCalls).hasSize(1);
     assertThat(completion.choices.get(0).message.toolCalls.get(0).extraContent).isNotNull();
     Map<String, Object> extraContentMap =
-        (Map<String, Object>) completion.choices.get(0).message.toolCalls.get(0).extraContent;
+        completion.choices.get(0).message.toolCalls.get(0).extraContent;
     @SuppressWarnings("unchecked") // This code won't run in production and it's is a JSON object.
     Map<String, Object> googleMap = (Map<String, Object>) extraContentMap.get("google");
     assertThat(googleMap.get("thought_signature")).isEqualTo("c2lnbmF0dXJl");
@@ -168,8 +175,7 @@ public final class ChatCompletionsResponseTest {
     ChatCompletion got = objectMapper.readValue(json, ChatCompletion.class);
 
     assertThat(got.choices.get(0).message.toolCalls).hasSize(1);
-    Map<String, Object> extraContent =
-        (Map<String, Object>) got.choices.get(0).message.toolCalls.get(0).extraContent;
+    Map<String, Object> extraContent = got.choices.get(0).message.toolCalls.get(0).extraContent;
     assertThat(extraContent.get("custom_key")).isEqualTo("custom_value");
     @SuppressWarnings("unchecked") // This code won't run in production and it's is a JSON object.
     Map<String, Object> nested = (Map<String, Object>) extraContent.get("nested");
@@ -324,5 +330,361 @@ public final class ChatCompletionsResponseTest {
     assertThat(chunk.usage.completionTokens).isEqualTo(10);
     assertThat(chunk.usage.promptTokens).isEqualTo(5);
     assertThat(chunk.usage.totalTokens).isEqualTo(15);
+  }
+
+  @Test
+  public void testToLlmResponse_simpleText() throws Exception {
+    String json =
+        """
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion",
+          "created": 1694268190,
+          "model": "gpt-4",
+          "system_fingerprint": "fp_123",
+          "service_tier": "scale",
+          "choices": [{
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "Hello world"
+            },
+            "finish_reason": "stop"
+          }],
+          "usage": {
+            "completion_tokens": 10,
+            "prompt_tokens": 5,
+            "total_tokens": 15,
+            "thoughts_token_count": 42
+          }
+        }
+        """;
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletion.class);
+
+    LlmResponse response = completion.toLlmResponse();
+
+    assertThat(response.modelVersion()).hasValue("gpt-4");
+    assertThat(response.finishReason().get().knownEnum()).isEqualTo(Known.STOP);
+
+    // Usage Metadata
+    assertThat(response.usageMetadata().get().promptTokenCount()).hasValue(5);
+    assertThat(response.usageMetadata().get().candidatesTokenCount()).hasValue(10);
+    assertThat(response.usageMetadata().get().totalTokenCount()).hasValue(15);
+    assertThat(response.usageMetadata().get().thoughtsTokenCount()).hasValue(42);
+
+    // Content
+    assertThat(response.content().get().role()).hasValue("model");
+    assertThat(response.content().get().parts().get().get(0).text()).hasValue("Hello world");
+
+    // Custom Metadata
+    List<CustomMetadata> metadata = response.customMetadata().get();
+    assertThat(metadata).hasSize(5);
+    assertThat(metadata.get(0).key()).hasValue("id");
+    assertThat(metadata.get(0).stringValue()).hasValue("chatcmpl-123");
+    assertThat(metadata.get(1).key()).hasValue("created");
+    assertThat(metadata.get(1).stringValue()).hasValue("1694268190");
+    assertThat(metadata.get(2).key()).hasValue("object");
+    assertThat(metadata.get(2).stringValue()).hasValue("chat.completion");
+    assertThat(metadata.get(3).key()).hasValue("system_fingerprint");
+    assertThat(metadata.get(3).stringValue()).hasValue("fp_123");
+    assertThat(metadata.get(4).key()).hasValue("service_tier");
+    assertThat(metadata.get(4).stringValue()).hasValue("scale");
+  }
+
+  @Test
+  public void testToLlmResponse_userRole() throws Exception {
+    String json =
+        """
+        {
+          "choices": [{
+            "index": 0,
+            "message": {
+              "role": "user",
+              "content": "Hello world"
+            },
+            "finish_reason": "stop"
+          }]
+        }
+        """;
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletion.class);
+
+    LlmResponse response = completion.toLlmResponse();
+
+    assertThat(response.content().get().role()).hasValue("user");
+  }
+
+  @Test
+  public void testToLlmResponse_withToolCall_simple() throws Exception {
+    String json =
+        """
+        {
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                  "name": "get_weather",
+                  "arguments": "{\\\"location\\\":\\\"Seattle\\\"}"
+                }
+              }]
+            }
+          }]
+         }
+        """;
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletion.class);
+
+    LlmResponse response = completion.toLlmResponse();
+
+    Part part = response.content().get().parts().get().get(0);
+    FunctionCall fc = part.functionCall().get();
+    assertThat(fc.id()).hasValue("call_123");
+    assertThat(fc.name()).hasValue("get_weather");
+    assertThat(fc.args().get().get("location")).isEqualTo("Seattle");
+
+    assertThat(response.customMetadata().get()).isEmpty();
+  }
+
+  @Test
+  public void testToLlmResponse_thoughtSignature() throws Exception {
+    String json =
+        """
+        {
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                  "name": "get_weather",
+                  "arguments": "{\\\"location\\\":\\\"Seattle\\\"}"
+                },
+                "extra_content": {
+                  "google": {
+                    "thought_signature": "c2ln"
+                  }
+                }
+              }]
+            }
+          }]
+         }
+        """;
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletion.class);
+
+    LlmResponse response = completion.toLlmResponse();
+
+    assertThat(response.content().get().parts().get().get(0).thoughtSignature().get())
+        .isEqualTo(Base64.getDecoder().decode("c2ln"));
+  }
+
+  @Test
+  public void testToLlmResponse_withRefusal() throws Exception {
+    String json =
+        """
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion",
+          "created": 1677652288,
+          "model": "gpt-3.5-turbo-0125",
+          "choices": [{
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "refusal": "System error or refusal"
+            },
+            "finish_reason": "stop"
+          }]
+        }
+        """;
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletion.class);
+
+    LlmResponse response = completion.toLlmResponse();
+
+    assertThat(response.modelVersion()).hasValue("gpt-3.5-turbo-0125");
+    assertThat(response.finishReason().get().knownEnum()).isEqualTo(Known.STOP);
+
+    // Content
+    assertThat(response.content().get().role()).hasValue("model");
+    assertThat(response.content().get().parts().get().get(0).text())
+        .hasValue("System error or refusal");
+
+    // Custom Metadata
+    List<CustomMetadata> metadata = response.customMetadata().get();
+    assertThat(metadata).hasSize(3);
+    assertThat(metadata.get(0).key()).hasValue("id");
+    assertThat(metadata.get(0).stringValue()).hasValue("chatcmpl-123");
+    assertThat(metadata.get(1).key()).hasValue("created");
+    assertThat(metadata.get(1).stringValue()).hasValue("1677652288");
+    assertThat(metadata.get(2).key()).hasValue("object");
+    assertThat(metadata.get(2).stringValue()).hasValue("chat.completion");
+  }
+
+  @Test
+  public void testToLlmResponse_reasoningTokens() throws Exception {
+    String json =
+        """
+        {
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "content": "hello"
+            },
+            "finish_reason": "stop"
+          }],
+          "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "completion_tokens_details": {
+              "reasoning_tokens": 4
+            }
+          }
+        }
+        """;
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletion.class);
+
+    LlmResponse response = completion.toLlmResponse();
+
+    assertThat(response.finishReason().get().knownEnum()).isEqualTo(Known.STOP);
+
+    // Content
+    assertThat(response.content().get().role()).hasValue("model");
+    assertThat(response.content().get().parts().get().get(0).text()).hasValue("hello");
+
+    // Usage Metadata
+    assertThat(response.usageMetadata().get().promptTokenCount()).hasValue(10);
+    assertThat(response.usageMetadata().get().candidatesTokenCount()).hasValue(5);
+    assertThat(response.usageMetadata().get().totalTokenCount()).hasValue(15);
+    assertThat(response.usageMetadata().get().thoughtsTokenCount()).hasValue(4);
+
+    assertThat(response.customMetadata().get()).isEmpty();
+  }
+
+  @Test
+  public void testToolCallToPart_withFunction() throws Exception {
+    String json =
+        """
+        {
+          "id": "call_123",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\\\"location\\\":\\\"Seattle\\\"}"
+          }
+        }
+        """;
+    ChatCompletionsCommon.ToolCall toolCall =
+        objectMapper.readValue(json, ChatCompletionsCommon.ToolCall.class);
+
+    Part part = toolCall.toPart();
+
+    assertThat(part).isNotNull();
+    assertThat(part.functionCall()).isPresent();
+    FunctionCall fc = part.functionCall().get();
+    assertThat(fc.id()).hasValue("call_123");
+    assertThat(fc.name()).hasValue("get_weather");
+  }
+
+  @Test
+  public void testToolCallToPart_withFunction_nullId() throws Exception {
+    String json =
+        """
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\\\"location\\\":\\\"Seattle\\\"}"
+          }
+        }
+        """;
+    ChatCompletionsCommon.ToolCall toolCall =
+        objectMapper.readValue(json, ChatCompletionsCommon.ToolCall.class);
+
+    Part part = toolCall.toPart();
+
+    assertThat(part).isNotNull();
+    assertThat(part.functionCall()).isPresent();
+    FunctionCall fc = part.functionCall().get();
+    assertThat(fc.id()).isEmpty();
+  }
+
+  @Test
+  public void testToolCallToPart_withThoughtSignature() throws Exception {
+    String json =
+        """
+        {
+          "id": "call_123",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\\\"location\\\":\\\"Seattle\\\"}"
+          },
+          "extra_content": {
+            "google": {
+              "thought_signature": "c2ln"
+            }
+          }
+        }
+        """;
+    ChatCompletionsCommon.ToolCall toolCall =
+        objectMapper.readValue(json, ChatCompletionsCommon.ToolCall.class);
+
+    Part part = toolCall.toPart();
+
+    assertThat(part).isNotNull();
+    assertThat(part.thoughtSignature().get()).isEqualTo(Base64.getDecoder().decode("c2ln"));
+  }
+
+  @Test
+  public void testToolCallToPart_nullFunction() throws Exception {
+    String json =
+        """
+        {
+          "id": "call_123",
+          "type": "function"
+        }
+        """;
+    ChatCompletionsCommon.ToolCall toolCall =
+        objectMapper.readValue(json, ChatCompletionsCommon.ToolCall.class);
+
+    Part part = toolCall.toPart();
+
+    assertThat(part).isNull();
+  }
+
+  @Test
+  public void testToLlmResponse_noChoices() throws Exception {
+    String json =
+        """
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion",
+          "created": 1677652288,
+          "model": "gpt-4"
+        }
+        """;
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletion.class);
+
+    LlmResponse response = completion.toLlmResponse();
+
+    assertThat(response.modelVersion()).hasValue("gpt-4");
+    assertThat(response.content()).isPresent();
+    assertThat(response.content().get().parts()).isEmpty();
   }
 }

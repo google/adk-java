@@ -45,6 +45,7 @@ import com.google.adk.tools.FunctionTool;
 import com.google.adk.utils.CollectionUtils;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.MapMaker;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
 import com.google.genai.types.Content;
@@ -57,6 +58,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -64,6 +66,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
 
 /** The main class for the GenAI Agents runner. */
@@ -76,6 +79,8 @@ public class Runner {
   private final PluginManager pluginManager;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
+  private final ConcurrentMap<String, Completable> activeSessionCompletables =
+      new MapMaker().weakValues().makeMap();
 
   /** Builder for {@link Runner}. */
   public static class Builder {
@@ -380,25 +385,57 @@ public class Runner {
       Content newMessage,
       RunConfig runConfig,
       @Nullable Map<String, Object> stateDelta) {
+    Flowable<Event> result =
+        Flowable.defer(
+                () ->
+                    this.sessionService
+                        .getSession(appName, userId, sessionId, Optional.empty())
+                        .switchIfEmpty(
+                            Single.defer(
+                                () -> {
+                                  if (runConfig.autoCreateSession()) {
+                                    return this.sessionService.createSession(
+                                        appName, userId, (Map<String, Object>) null, sessionId);
+                                  }
+                                  return Single.error(
+                                      new IllegalArgumentException(
+                                          String.format(
+                                              "Session not found: %s for user %s",
+                                              sessionId, userId)));
+                                }))
+                        .flatMapPublisher(
+                            session ->
+                                this.runAsyncImpl(session, newMessage, runConfig, stateDelta)))
+            .compose(Tracing.trace("invocation"));
+
     return Flowable.defer(
-            () ->
-                this.sessionService
-                    .getSession(appName, userId, sessionId, Optional.empty())
-                    .switchIfEmpty(
-                        Single.defer(
-                            () -> {
-                              if (runConfig.autoCreateSession()) {
-                                return this.sessionService.createSession(
-                                    appName, userId, (Map<String, Object>) null, sessionId);
-                              }
-                              return Single.error(
-                                  new IllegalArgumentException(
-                                      String.format(
-                                          "Session not found: %s for user %s", sessionId, userId)));
-                            }))
-                    .flatMapPublisher(
-                        session -> this.runAsyncImpl(session, newMessage, runConfig, stateDelta)))
-        .compose(Tracing.trace("invocation"));
+        () -> {
+          if (sessionId == null) {
+            return result;
+          }
+
+          CompletableSubject requestCompletion = CompletableSubject.create();
+
+          Completable[] previousHolder = new Completable[1];
+
+          activeSessionCompletables.compute(
+              sessionId,
+              (key, current) -> {
+                previousHolder[0] = current;
+                return requestCompletion;
+              });
+
+          Completable previous = previousHolder[0];
+
+          Flowable<Event> sequenced =
+              (previous == null) ? result : previous.onErrorComplete().andThen(result);
+
+          return sequenced.doFinally(
+              () -> {
+                requestCompletion.onComplete();
+                activeSessionCompletables.remove(sessionId, requestCompletion);
+              });
+        });
   }
 
   /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
@@ -740,6 +777,9 @@ public class Runner {
 
     for (Event event : events) {
       String author = event.author();
+      if (author == null) {
+        continue;
+      }
       if (author.equals("user")) {
         continue;
       }
