@@ -18,6 +18,7 @@ package com.google.adk.models;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.google.adk.utils.ModelNameUtils;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.AsyncSession;
 import com.google.genai.Client;
@@ -257,6 +258,13 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
 
     List<FunctionResponse> functionResponses = extractFunctionResponses(content);
     if (functionResponses.isEmpty()) {
+      Optional<LiveSendRealtimeInputParameters> realtimeInputParameters =
+          createRealtimeInputForContent(content, modelName, apiClient.vertexAI());
+      if (realtimeInputParameters.isPresent()) {
+        return Completable.fromFuture(
+            sessionFuture.thenCompose(
+                session -> session.sendRealtimeInput(realtimeInputParameters.get())));
+      }
       return sendClientContentInternal(
           LiveSendClientContentParameters.builder()
               .turns(ImmutableList.of(content))
@@ -289,7 +297,7 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
         sessionFuture.thenCompose(
             session ->
                 session.sendRealtimeInput(
-                    LiveSendRealtimeInputParameters.builder().media(blob).build())));
+                    createRealtimeInputForBlob(blob, modelName, apiClient.vertexAI()))));
   }
 
   /** Helper to send client content parameters. */
@@ -302,6 +310,40 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
   private Completable sendToolResponseInternal(LiveSendToolResponseParameters parameters) {
     return Completable.fromFuture(
         sessionFuture.thenCompose(session -> session.sendToolResponse(parameters)));
+  }
+
+  static boolean usesGemini31FlashLiveRealtimeInput(String modelName, boolean vertexAI) {
+    return !vertexAI && ModelNameUtils.isGemini31FlashLiveModel(modelName);
+  }
+
+  static Optional<LiveSendRealtimeInputParameters> createRealtimeInputForContent(
+      Content content, String modelName, boolean vertexAI) {
+    if (!usesGemini31FlashLiveRealtimeInput(modelName, vertexAI)
+        || content.parts().isEmpty()
+        || content.parts().get().size() != 1) {
+      return Optional.empty();
+    }
+    Part part = content.parts().get().get(0);
+    if (part.text().isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(LiveSendRealtimeInputParameters.builder().text(part.text().get()).build());
+  }
+
+  static LiveSendRealtimeInputParameters createRealtimeInputForBlob(
+      Blob blob, String modelName, boolean vertexAI) {
+    if (!usesGemini31FlashLiveRealtimeInput(modelName, vertexAI)) {
+      return LiveSendRealtimeInputParameters.builder().media(blob).build();
+    }
+
+    String mimeType = blob.mimeType().orElse("");
+    if (mimeType.startsWith("audio/")) {
+      return LiveSendRealtimeInputParameters.builder().audio(blob).build();
+    }
+    if (mimeType.startsWith("image/")) {
+      return LiveSendRealtimeInputParameters.builder().video(blob).build();
+    }
+    return LiveSendRealtimeInputParameters.builder().media(blob).build();
   }
 
   @Override

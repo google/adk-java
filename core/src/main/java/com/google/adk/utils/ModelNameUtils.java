@@ -24,6 +24,7 @@ import java.util.regex.Pattern;
 /** Utility class for model names. */
 public final class ModelNameUtils {
   private static final String GEMINI_PREFIX = "gemini-";
+  private static final String GEMINI_3_1_FLASH_LIVE_PREFIX = "gemini-3.1-flash-live";
   private static final Pattern GEMINI_2_PATTERN = Pattern.compile("^gemini-2\\..*");
   private static final String GEMINI_CLASS = "com.google.adk.models.Gemini";
   private static final Pattern PATH_PATTERN =
@@ -37,6 +38,13 @@ public final class ModelNameUtils {
 
   public static boolean isGemini2Model(String modelString) {
     return matchesModelPattern(modelString, GEMINI_2_PATTERN);
+  }
+
+  public static boolean isGemini31FlashLiveModel(String modelString) {
+    if (modelString == null) {
+      return false;
+    }
+    return extractModelName(modelString).startsWith(GEMINI_3_1_FLASH_LIVE_PREFIX);
   }
 
   private static boolean matchesModelPattern(String modelString, Pattern pattern) {

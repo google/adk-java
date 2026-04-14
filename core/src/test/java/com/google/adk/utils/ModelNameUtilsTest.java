@@ -138,6 +138,21 @@ public class ModelNameUtilsTest {
   }
 
   @Test
+  public void isGemini31FlashLiveModel_withPrefixOnly_returnsTrue() {
+    assertThat(ModelNameUtils.isGemini31FlashLiveModel("gemini-3.1-flash-live")).isTrue();
+  }
+
+  @Test
+  public void isGemini31FlashLiveModel_withPrefixedVariant_returnsTrue() {
+    assertThat(ModelNameUtils.isGemini31FlashLiveModel("gemini-3.1-flash-live-preview")).isTrue();
+  }
+
+  @Test
+  public void isGemini31FlashLiveModel_withOtherModel_returnsFalse() {
+    assertThat(ModelNameUtils.isGemini31FlashLiveModel("gemini-2.0-flash-live-001")).isFalse();
+  }
+
+  @Test
   public void isInstanceOfGemini_withGeminiInstance_returnsTrue() {
     assertThat(ModelNameUtils.isInstanceOfGemini(new Gemini("", ""))).isTrue();
   }
