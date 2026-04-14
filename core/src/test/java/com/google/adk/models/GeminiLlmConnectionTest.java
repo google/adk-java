@@ -19,9 +19,11 @@ package com.google.adk.models;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.ImmutableList;
+import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.LiveSendRealtimeInputParameters;
 import com.google.genai.types.LiveServerContent;
 import com.google.genai.types.LiveServerMessage;
 import com.google.genai.types.LiveServerSetupComplete;
@@ -31,12 +33,99 @@ import com.google.genai.types.Part;
 import com.google.genai.types.UsageMetadata;
 import io.reactivex.rxjava3.observers.TestObserver;
 import java.util.List;
+import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public final class GeminiLlmConnectionTest {
+
+  @Test
+  public void usesGemini31FlashLiveRealtimeInput_withGeminiApiPreviewModel_returnsTrue() {
+    assertThat(
+            GeminiLlmConnection.usesGemini31FlashLiveRealtimeInput(
+                "gemini-3.1-flash-live-preview", false))
+        .isTrue();
+  }
+
+  @Test
+  public void usesGemini31FlashLiveRealtimeInput_withVertexAi_returnsFalse() {
+    assertThat(
+            GeminiLlmConnection.usesGemini31FlashLiveRealtimeInput(
+                "gemini-3.1-flash-live-preview", true))
+        .isFalse();
+  }
+
+  @Test
+  public void createRealtimeInputForContent_withSingleTextOnGemini31_returnsTextInput() {
+    Content content = Content.fromParts(Part.fromText("hello"));
+
+    Optional<LiveSendRealtimeInputParameters> parameters =
+        GeminiLlmConnection.createRealtimeInputForContent(
+            content, "gemini-3.1-flash-live-preview", false);
+
+    assertThat(parameters).isPresent();
+    assertThat(parameters.get().text()).hasValue("hello");
+    assertThat(parameters.get().media()).isEmpty();
+  }
+
+  @Test
+  public void createRealtimeInputForContent_withNonTextContent_returnsEmpty() {
+    Content content =
+        Content.builder()
+            .parts(
+                ImmutableList.of(
+                    Part.builder()
+                        .inlineData(
+                            Blob.builder().mimeType("image/png").data(new byte[] {1}).build())
+                        .build()))
+            .build();
+
+    Optional<LiveSendRealtimeInputParameters> parameters =
+        GeminiLlmConnection.createRealtimeInputForContent(
+            content, "gemini-3.1-flash-live-preview", false);
+
+    assertThat(parameters).isEmpty();
+  }
+
+  @Test
+  public void createRealtimeInputForBlob_withGemini31Audio_setsAudio() {
+    Blob blob = Blob.builder().mimeType("audio/pcm").data(new byte[] {1}).build();
+
+    LiveSendRealtimeInputParameters parameters =
+        GeminiLlmConnection.createRealtimeInputForBlob(
+            blob, "gemini-3.1-flash-live-preview", false);
+
+    assertThat(parameters.audio()).hasValue(blob);
+    assertThat(parameters.media()).isEmpty();
+    assertThat(parameters.video()).isEmpty();
+  }
+
+  @Test
+  public void createRealtimeInputForBlob_withGemini31Image_setsVideo() {
+    Blob blob = Blob.builder().mimeType("image/jpeg").data(new byte[] {1}).build();
+
+    LiveSendRealtimeInputParameters parameters =
+        GeminiLlmConnection.createRealtimeInputForBlob(
+            blob, "gemini-3.1-flash-live-preview", false);
+
+    assertThat(parameters.video()).hasValue(blob);
+    assertThat(parameters.media()).isEmpty();
+    assertThat(parameters.audio()).isEmpty();
+  }
+
+  @Test
+  public void createRealtimeInputForBlob_withOtherModel_keepsMedia() {
+    Blob blob = Blob.builder().mimeType("audio/pcm").data(new byte[] {1}).build();
+
+    LiveSendRealtimeInputParameters parameters =
+        GeminiLlmConnection.createRealtimeInputForBlob(blob, "gemini-2.0-flash-live-001", false);
+
+    assertThat(parameters.media()).hasValue(blob);
+    assertThat(parameters.audio()).isEmpty();
+    assertThat(parameters.video()).isEmpty();
+  }
 
   @Test
   public void convertToServerResponse_withInterruptedTrue_mapsInterruptedField() {
