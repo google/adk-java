@@ -257,9 +257,7 @@ public class ContextPropagationTest {
     assertEquals("tool-name", attrs.get(AttributeKey.stringKey("gen_ai.tool.name")));
     assertEquals("tool-description", attrs.get(AttributeKey.stringKey("gen_ai.tool.description")));
     assertEquals("tool-type", attrs.get(AttributeKey.stringKey("gen_ai.tool.type")));
-    assertEquals(
-        "{\"arg1\":\"value1\"}",
-        attrs.get(AttributeKey.stringKey("gcp.vertex.agent.tool_call_args")));
+    assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.tool_call_args")));
     assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.llm_request")));
     assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.llm_response")));
   }
@@ -304,9 +302,7 @@ public class ContextPropagationTest {
     assertEquals("tool-description", attrs.get(AttributeKey.stringKey("gen_ai.tool.description")));
     assertEquals("tool-type", attrs.get(AttributeKey.stringKey("gen_ai.tool.type")));
     assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.tool_call_args")));
-    assertEquals(
-        "{\"result\":\"tool-result\"}",
-        attrs.get(AttributeKey.stringKey("gcp.vertex.agent.tool_response")));
+    assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.tool_response")));
   }
 
   @Test
@@ -353,9 +349,8 @@ public class ContextPropagationTest {
     assertEquals(
         ImmutableList.of("stop"),
         attrs.get(AttributeKey.stringArrayKey("gen_ai.response.finish_reasons")));
-    assertTrue(
-        attrs.get(AttributeKey.stringKey("gcp.vertex.agent.llm_request")).contains("gemini-pro"));
-    assertTrue(attrs.get(AttributeKey.stringKey("gcp.vertex.agent.llm_response")).contains("STOP"));
+    assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.llm_request")));
+    assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.llm_response")));
   }
 
   @Test
@@ -379,7 +374,7 @@ public class ContextPropagationTest {
         "test-invocation-id", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.invocation_id")));
     assertEquals("event-1", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.event_id")));
     assertEquals("test-session", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.session_id")));
-    assertTrue(attrs.get(AttributeKey.stringKey("gcp.vertex.agent.data")).contains("hello"));
+    assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.data")));
   }
 
   // Agent that emits one event on a computation thread.

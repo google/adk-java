@@ -137,7 +137,7 @@ public class Tracing {
 
   private static final boolean CAPTURE_MESSAGE_CONTENT_IN_SPANS =
       Boolean.parseBoolean(
-          System.getenv().getOrDefault("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "true"));
+          System.getenv().getOrDefault("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false"));
 
   private Tracing() {}
 
