@@ -16,6 +16,15 @@
 
 package com.google.adk.flows.llmflows;
 
+import com.google.adk.agents.Callbacks;
+import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.ReadonlyContext;
+import com.google.adk.events.Event;
+import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
+import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
+import com.google.adk.models.LlmRequest;
+import com.google.adk.models.LlmResponse;
+import com.google.adk.testing.TestLlm;
 import static com.google.adk.testing.TestUtils.assertEqualIgnoringFunctionIds;
 import static com.google.adk.testing.TestUtils.createGenerateContentResponseUsageMetadata;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
@@ -23,21 +32,13 @@ import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
-import static com.google.common.collect.Iterables.getOnlyElement;
-import static com.google.common.truth.Truth.assertThat;
-
-import com.google.adk.agents.Callbacks;
-import com.google.adk.agents.InvocationContext;
-import com.google.adk.events.Event;
-import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
-import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
-import com.google.adk.models.LlmRequest;
-import com.google.adk.models.LlmResponse;
-import com.google.adk.testing.TestLlm;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import static com.google.common.collect.Iterables.getOnlyElement;
+import static com.google.common.truth.Truth.assertThat;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionDeclaration;
@@ -47,18 +48,22 @@ import com.google.genai.types.Transcription;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
+
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
 
 /** Unit tests for {@link BaseLlmFlow}. */
 @RunWith(JUnit4.class)
@@ -575,6 +580,350 @@ public final class BaseLlmFlowTest {
     public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
       return Single.just(response);
     }
+  }
+
+  @Test
+  public void run_withToolset_processLlmRequestIsCalled() {
+    Content content = Content.fromParts(Part.fromText("LLM response"));
+    TestLlm testLlm = createTestLlm(createLlmResponse(content));
+
+    AtomicInteger processLlmRequestCallCount = new AtomicInteger();
+
+    BaseToolset toolset =
+        new BaseToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.empty();
+          }
+
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+            return Completable.fromAction(
+                () -> {
+                  processLlmRequestCallCount.incrementAndGet();
+                  llmRequestBuilder.appendInstructions(List.of("instruction from toolset"));
+                });
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm).tools(ImmutableList.of(toolset)).build());
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> unused = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(processLlmRequestCallCount.get()).isEqualTo(1);
+    assertThat(testLlm.getLastRequest().config().orElseThrow().systemInstruction().orElseThrow())
+        .isEqualTo(Content.fromParts(Part.fromText("instruction from toolset")));
+  }
+
+  @Test
+  public void run_withToolsetAndTools_processLlmRequestIsCalledBeforeTools() {
+    Content content = Content.fromParts(Part.fromText("LLM response"));
+    TestLlm testLlm = createTestLlm(createLlmResponse(content));
+
+    BaseToolset toolset =
+        new BaseToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.just(new TestTool("my_function", ImmutableMap.of()));
+          }
+
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+            return Completable.fromAction(
+                () -> llmRequestBuilder.appendInstructions(List.of("toolset instruction")));
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm).tools(ImmutableList.of(toolset)).build());
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> unused = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    // Both the tool and the toolset instruction should be present
+    assertThat(testLlm.getLastRequest().tools()).containsKey("my_function");
+    assertThat(testLlm.getLastRequest().config().orElseThrow().systemInstruction().orElseThrow())
+        .isEqualTo(Content.fromParts(Part.fromText("toolset instruction")));
+  }
+
+  @Test
+  public void run_withToolset_toolsetProcessedBeforeItsTools() {
+    Content content = Content.fromParts(Part.fromText("LLM response"));
+    TestLlm testLlm = createTestLlm(createLlmResponse(content));
+    List<String> callOrder = new ArrayList<>();
+
+    BaseToolset toolset =
+        new BaseToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.just(
+                new BaseTool("ordering_tool", "test tool") {
+                  @Override
+                  public Optional<FunctionDeclaration> declaration() {
+                    return Optional.of(FunctionDeclaration.builder().name("ordering_tool").build());
+                  }
+
+                  @Override
+                  public Completable processLlmRequest(
+                      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+                    return Completable.fromAction(() -> callOrder.add("tool"));
+                  }
+
+                  @Override
+                  public Single<Map<String, Object>> runAsync(
+                      Map<String, Object> args, ToolContext toolContext) {
+                    return Single.just(ImmutableMap.of());
+                  }
+                });
+          }
+
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+            return Completable.fromAction(() -> callOrder.add("toolset"));
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm).tools(ImmutableList.of(toolset)).build());
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> unused = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(callOrder).containsExactly("toolset", "tool").inOrder();
+  }
+
+  @Test
+  public void run_withToolset_toolsetAndToolsShareSameToolContext() {
+    Content content = Content.fromParts(Part.fromText("LLM response"));
+    TestLlm testLlm = createTestLlm(createLlmResponse(content));
+
+    AtomicReference<ToolContext> toolsetContext = new AtomicReference<>();
+    AtomicReference<ToolContext> toolToolContext = new AtomicReference<>();
+
+    BaseToolset toolset =
+        new BaseToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.just(
+                new BaseTool("ctx_tool", "test tool") {
+                  @Override
+                  public Optional<FunctionDeclaration> declaration() {
+                    return Optional.of(FunctionDeclaration.builder().name("ctx_tool").build());
+                  }
+
+                  @Override
+                  public Completable processLlmRequest(
+                      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+                    return Completable.fromAction(() -> toolToolContext.set(toolContext));
+                  }
+
+                  @Override
+                  public Single<Map<String, Object>> runAsync(
+                      Map<String, Object> args, ToolContext toolContext) {
+                    return Single.just(ImmutableMap.of());
+                  }
+                });
+          }
+
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+            return Completable.fromAction(() -> toolsetContext.set(toolContext));
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm).tools(ImmutableList.of(toolset)).build());
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> unused = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(toolsetContext.get()).isNotNull();
+    assertThat(toolToolContext.get()).isNotNull();
+    assertThat(toolsetContext.get()).isSameInstanceAs(toolToolContext.get());
+  }
+
+  @Test
+  public void run_multipleToolsets_processedInDeclarationOrder() {
+    Content content = Content.fromParts(Part.fromText("LLM response"));
+    TestLlm testLlm = createTestLlm(createLlmResponse(content));
+    List<String> callOrder = new ArrayList<>();
+
+    BaseToolset toolsetA =
+        new BaseToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.just(
+                new BaseTool("tool_a", "tool a") {
+                  @Override
+                  public Optional<FunctionDeclaration> declaration() {
+                    return Optional.of(FunctionDeclaration.builder().name("tool_a").build());
+                  }
+
+                  @Override
+                  public Completable processLlmRequest(
+                      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+                    return Completable.fromAction(() -> callOrder.add("tool_a"));
+                  }
+
+                  @Override
+                  public Single<Map<String, Object>> runAsync(
+                      Map<String, Object> args, ToolContext toolContext) {
+                    return Single.just(ImmutableMap.of());
+                  }
+                });
+          }
+
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+            return Completable.fromAction(() -> callOrder.add("toolset_a"));
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    BaseToolset toolsetB =
+        new BaseToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.just(
+                new BaseTool("tool_b", "tool b") {
+                  @Override
+                  public Optional<FunctionDeclaration> declaration() {
+                    return Optional.of(FunctionDeclaration.builder().name("tool_b").build());
+                  }
+
+                  @Override
+                  public Completable processLlmRequest(
+                      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+                    return Completable.fromAction(() -> callOrder.add("tool_b"));
+                  }
+
+                  @Override
+                  public Single<Map<String, Object>> runAsync(
+                      Map<String, Object> args, ToolContext toolContext) {
+                    return Single.just(ImmutableMap.of());
+                  }
+                });
+          }
+
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+            return Completable.fromAction(() -> callOrder.add("toolset_b"));
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm).tools(ImmutableList.of(toolsetA, toolsetB)).build());
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> unused = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    // Toolset A and its tools should be processed before toolset B and its tools
+    assertThat(callOrder).containsExactly("toolset_a", "tool_a", "toolset_b", "tool_b").inOrder();
+  }
+
+  @Test
+  public void run_mixedToolsAndToolsets_processedInDeclarationOrder() {
+    Content content = Content.fromParts(Part.fromText("LLM response"));
+    TestLlm testLlm = createTestLlm(createLlmResponse(content));
+    List<String> callOrder = new ArrayList<>();
+
+    BaseTool standaloneTool =
+        new BaseTool("standalone", "standalone tool") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(FunctionDeclaration.builder().name("standalone").build());
+          }
+
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+            return Completable.fromAction(() -> callOrder.add("standalone_tool"));
+          }
+
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            return Single.just(ImmutableMap.of());
+          }
+        };
+
+    BaseToolset toolset =
+        new BaseToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.just(
+                new BaseTool("toolset_tool", "from toolset") {
+                  @Override
+                  public Optional<FunctionDeclaration> declaration() {
+                    return Optional.of(FunctionDeclaration.builder().name("toolset_tool").build());
+                  }
+
+                  @Override
+                  public Completable processLlmRequest(
+                      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+                    return Completable.fromAction(() -> callOrder.add("toolset_tool"));
+                  }
+
+                  @Override
+                  public Single<Map<String, Object>> runAsync(
+                      Map<String, Object> args, ToolContext toolContext) {
+                    return Single.just(ImmutableMap.of());
+                  }
+                });
+          }
+
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+            return Completable.fromAction(() -> callOrder.add("toolset"));
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    // Standalone tool declared BEFORE toolset
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm)
+                .tools(ImmutableList.of(standaloneTool, toolset))
+                .build());
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> unused = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    // Standalone tool processes first, then toolset + its tool
+    assertThat(callOrder).containsExactly("standalone_tool", "toolset", "toolset_tool").inOrder();
   }
 
   @Test
