@@ -47,6 +47,7 @@ import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Function;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -70,8 +71,17 @@ public final class Functions {
   private static final Logger logger = LoggerFactory.getLogger(Functions.class);
 
   /** Generates a unique ID for a function call. */
-  public static String generateClientFunctionCallId() {
-    return AF_FUNCTION_CALL_ID_PREFIX + UUID.randomUUID();
+  public static String generateClientFunctionCallId(
+      String salt, FunctionCall functionCall, int sequenceNumber) {
+    String source =
+        salt
+            + "-"
+            + functionCall.name().orElse("")
+            + functionCall.args().orElse(ImmutableMap.of()).toString()
+            + "-"
+            + sequenceNumber;
+    return AF_FUNCTION_CALL_ID_PREFIX
+        + UUID.nameUUIDFromBytes(source.getBytes(StandardCharsets.UTF_8)).toString();
   }
 
   /**
@@ -95,12 +105,17 @@ public final class Functions {
 
     List<Part> newParts = new ArrayList<>();
     boolean modified = false;
+    int counter = 0;
     for (Part part : originalParts) {
       if (part.functionCall().isPresent()) {
         FunctionCall functionCall = part.functionCall().get();
         if (functionCall.id().isEmpty() || functionCall.id().get().isEmpty()) {
           FunctionCall updatedFunctionCall =
-              functionCall.toBuilder().id(generateClientFunctionCallId()).build();
+              functionCall.toBuilder()
+                  .id(
+                      generateClientFunctionCallId(
+                          modelResponseEvent.id(), functionCall, counter++))
+                  .build();
           newParts.add(part.toBuilder().functionCall(updatedFunctionCall).build());
           modified = true;
         } else {
@@ -626,7 +641,7 @@ public final class Functions {
             .build();
 
     return Event.builder()
-        .id(Event.generateEventId())
+        .id(toolContext.functionCallId().orElseGet(Event::generateEventId))
         .invocationId(invocationContext.invocationId())
         .author(invocationContext.agent().name())
         .branch(invocationContext.branch().orElse(null))
@@ -662,7 +677,7 @@ public final class Functions {
             .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue))
             .entrySet()) {
 
-      FunctionCall requestConfirmationFunctionCall =
+      FunctionCall.Builder builder =
           FunctionCall.builder()
               .name(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
               .args(
@@ -670,8 +685,10 @@ public final class Functions {
                       "originalFunctionCall",
                       functionCallsById.get(entry.getKey()),
                       "toolConfirmation",
-                      entry.getValue()))
-              .id(generateClientFunctionCallId())
+                      entry.getValue()));
+      FunctionCall requestConfirmationFunctionCall =
+          builder
+              .id(generateClientFunctionCallId(functionResponseEvent.id(), builder.build(), 0))
               .build();
 
       longRunningToolIds.add(requestConfirmationFunctionCall.id().get());
@@ -687,6 +704,7 @@ public final class Functions {
 
     return Optional.of(
         Event.builder()
+            .id(Event.generateEventId())
             .invocationId(invocationContext.invocationId())
             .author(invocationContext.agent().name())
             .branch(invocationContext.branch().orElse(null))

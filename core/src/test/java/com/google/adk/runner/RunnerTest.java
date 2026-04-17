@@ -46,9 +46,12 @@ import com.google.adk.apps.App;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
+import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.sessions.BaseSessionService;
+import com.google.adk.sessions.GetSessionConfig;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.sessions.SessionKey;
 import com.google.adk.summarizer.EventsCompactionConfig;
@@ -80,6 +83,7 @@ import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -588,12 +592,22 @@ public final class RunnerTest {
   @Test
   public void onEventCallback_success() {
     when(plugin.onEventCallback(any(), any()))
-        .thenReturn(Maybe.just(TestUtils.createEvent("form plugin")));
+        .thenAnswer(
+            invocation -> {
+              Event event = invocation.getArgument(1);
+              return Maybe.just(
+                  Event.builder()
+                      .id(event.id())
+                      .invocationId(event.invocationId())
+                      .author("model")
+                      .content(createContent("from plugin"))
+                      .build());
+            });
 
     List<Event> events =
         runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
 
-    assertThat(simplifyEvents(events)).containsExactly("author: content for event form plugin");
+    assertThat(simplifyEvents(events)).containsExactly("model: from plugin");
 
     verify(plugin).onEventCallback(any(), any());
   }
@@ -1685,5 +1699,169 @@ public final class RunnerTest {
     assertThat(artifactsSavedCounter.get()).isEqualTo(2);
     // agent was run
     assertThat(simplifyEvents(events.values())).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void runAsync_ensuresSequentialConsistencyForTools() {
+    // Arrange
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse("call_1", "tool1", ImmutableMap.of("arg", "value1")),
+            createTextLlmResponse("Final response"));
+
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .tools(
+                ImmutableList.of(
+                    FunctionTool.create(RaceConditionTools.class, "tool1"),
+                    FunctionTool.create(RaceConditionTools.class, "tool2")))
+            .build();
+
+    BaseSessionService delegate = new InMemorySessionService();
+    BaseSessionService delayedSessionService = createDelayedSessionService(delegate, 0);
+
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .sessionService(delayedSessionService)
+            .build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    // Act
+    var unused =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("start")))
+            .toList()
+            .blockingGet();
+
+    // Assert
+    ImmutableList<LlmRequest> requests = ImmutableList.copyOf(testLlm.getRequests());
+    assertThat(requests).hasSize(2);
+
+    // Second request should contain the result of tool1
+    LlmRequest secondRequest = requests.get(1);
+    List<Content> history = secondRequest.contents();
+
+    boolean foundToolResponse =
+        history.stream()
+            .flatMap(content -> content.parts().stream().flatMap(List::stream))
+            .filter(part -> part.functionResponse().isPresent())
+            .map(part -> part.functionResponse().get())
+            .anyMatch(
+                response ->
+                    response.name().orElse("").equals("tool1")
+                        && response
+                            .response()
+                            .map(r -> Objects.equals(r, ImmutableMap.of("result", "result_value1")))
+                            .orElse(false));
+
+    assertThat(foundToolResponse).isTrue();
+  }
+
+  @SuppressWarnings("unchecked") // Suppressed because of raw types in mockito matchers.
+  private static BaseSessionService createDelayedSessionService(
+      BaseSessionService delegate, long delayMs) {
+    BaseSessionService delayedSessionService = mock(BaseSessionService.class);
+    when(delayedSessionService.createSession(anyString(), anyString(), any(Map.class), anyString()))
+        .thenAnswer(
+            inv ->
+                delegate.createSession(
+                    (String) inv.getArgument(0),
+                    (String) inv.getArgument(1),
+                    (Map<String, Object>) inv.getArgument(2),
+                    (String) inv.getArgument(3)));
+    when(delayedSessionService.createSession(anyString(), anyString()))
+        .thenAnswer(
+            inv ->
+                delegate.createSession((String) inv.getArgument(0), (String) inv.getArgument(1)));
+    when(delayedSessionService.getSession(anyString(), anyString(), anyString(), any()))
+        .thenAnswer(
+            inv ->
+                delegate.getSession(
+                    (String) inv.getArgument(0),
+                    (String) inv.getArgument(1),
+                    (String) inv.getArgument(2),
+                    (Optional<GetSessionConfig>) inv.getArgument(3)));
+    when(delayedSessionService.appendEvent(any(), any()))
+        .thenAnswer(
+            inv ->
+                delegate
+                    .appendEvent(inv.getArgument(0), inv.getArgument(1))
+                    .delay(delayMs, MILLISECONDS));
+    return delayedSessionService;
+  }
+
+  public static class RaceConditionTools {
+    private RaceConditionTools() {}
+
+    public static ImmutableMap<String, Object> tool1(String arg) {
+      return ImmutableMap.of("result", "result_" + arg);
+    }
+
+    public static ImmutableMap<String, Object> tool2(String input) {
+      return ImmutableMap.of("status", "received_" + input);
+    }
+  }
+
+  @Test
+  public void runAsync_withExistingEvents_appendsAgentResponse() {
+    // Create a session with an existing event
+    Event existingEvent =
+        Event.builder()
+            .id("existing_event_id")
+            .invocationId("inv1")
+            .author("user")
+            .content(Content.fromParts(Part.fromText("existing content")))
+            .build();
+    session = runner.sessionService().createSession("test", "user").blockingGet();
+    var unused = runner.sessionService().appendEvent(session, existingEvent).blockingGet();
+
+    // Run the agent
+    var unusedFix =
+        runner.runAsync("user", session.id(), createContent("new message")).toList().blockingGet();
+
+    // Verify the agent response was appended
+    Session updatedSession =
+        runner
+            .sessionService()
+            .getSession("test", "user", session.id(), Optional.empty())
+            .blockingGet();
+    // Expected events: existingEvent, user message event, agent response event.
+    assertThat(updatedSession.events()).hasSize(3);
+  }
+
+  @Test
+  public void runAsync_skipsDuplicateEvents() throws Exception {
+    Event existingEvent =
+        Event.builder()
+            .id("duplicate_event_id")
+            .invocationId("inv1")
+            .author("user")
+            .content(Content.fromParts(Part.fromText("existing content")))
+            .build();
+    session = runner.sessionService().createSession("test", "user").blockingGet();
+    var unused = runner.sessionService().appendEvent(session, existingEvent).blockingGet();
+
+    BaseAgent mockAgent = TestUtils.createSubAgent("test agent", existingEvent);
+    Runner mockRunner =
+        Runner.builder()
+            .agent(mockAgent)
+            .appName("test")
+            .sessionService(runner.sessionService())
+            .build();
+
+    var unused2 =
+        mockRunner
+            .runAsync("user", session.id(), createContent("new message"))
+            .toList()
+            .blockingGet();
+
+    Session updatedSession =
+        runner
+            .sessionService()
+            .getSession("test", "user", session.id(), Optional.empty())
+            .blockingGet();
+    // Expected events: existingEvent, user message event. Duplicate agent response is skipped.
+    assertThat(updatedSession.events()).hasSize(2);
   }
 }

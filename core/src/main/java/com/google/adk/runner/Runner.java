@@ -68,9 +68,12 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** The main class for the GenAI Agents runner. */
 public class Runner {
+  private static final Logger logger = LoggerFactory.getLogger(Runner.class);
   private final BaseAgent agent;
   private final String appName;
   private final BaseArtifactService artifactService;
@@ -570,19 +573,28 @@ public class Runner {
             .agent()
             .runAsync(contextWithUpdatedSession)
             .concatMap(
-                agentEvent ->
-                    this.sessionService
-                        .appendEvent(updatedSession, agentEvent)
-                        .flatMap(
-                            registeredEvent -> {
-                              // TODO: remove this hack after deprecating runAsync with Session.
-                              copySessionStates(updatedSession, initialContext.session());
-                              return contextWithUpdatedSession
-                                  .pluginManager()
-                                  .onEventCallback(contextWithUpdatedSession, registeredEvent)
-                                  .defaultIfEmpty(registeredEvent);
-                            })
-                        .toFlowable());
+                agentEvent -> {
+                  // TODO: remove this hack after deprecating runAsync with Session.
+                  copySessionStates(updatedSession, initialContext.session());
+
+                  // TODO: b/502182243 - Investigate if appendEvent should be made idempotent in
+                  // SessionService to avoid this check.
+                  if (updatedSession.events().stream()
+                      .anyMatch(e -> e.id() != null && e.id().equals(agentEvent.id()))) {
+                    logger.debug("Event {} already in session, skipping append", agentEvent.id());
+                    return Flowable.just(agentEvent);
+                  }
+                  return this.sessionService
+                      .appendEvent(updatedSession, agentEvent)
+                      .flatMap(
+                          registeredEvent -> {
+                            return contextWithUpdatedSession
+                                .pluginManager()
+                                .onEventCallback(contextWithUpdatedSession, registeredEvent)
+                                .defaultIfEmpty(registeredEvent);
+                          })
+                      .toFlowable();
+                });
 
     // If beforeRunCallback returns content, emit it and skip agent
     Context capturedContext = Context.current();
