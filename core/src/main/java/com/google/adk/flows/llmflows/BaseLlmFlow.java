@@ -38,6 +38,8 @@ import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.telemetry.Tracing;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
@@ -99,10 +101,24 @@ public abstract class BaseLlmFlow implements BaseFlow {
     RequestProcessor toolsProcessor =
         (ctx, req) -> {
           LlmRequest.Builder builder = req.toBuilder();
-          return agent
-              .canonicalTools(new ReadonlyContext(ctx))
+          ReadonlyContext readonlyContext = new ReadonlyContext(ctx);
+          return Flowable.fromIterable(agent.toolsUnion())
               .concatMapCompletable(
-                  tool -> tool.processLlmRequest(builder, ToolContext.builder(ctx).build()))
+                  toolOrToolset -> {
+                    ToolContext toolContext = ToolContext.builder(ctx).build();
+                    if (toolOrToolset instanceof BaseToolset toolset) {
+                      return toolset
+                          .processLlmRequest(builder, toolContext)
+                          .andThen(
+                              toolset
+                                  .getTools(readonlyContext)
+                                  .concatMapCompletable(
+                                      tool -> tool.processLlmRequest(builder, toolContext)));
+                    } else if (toolOrToolset instanceof BaseTool tool) {
+                      return tool.processLlmRequest(builder, toolContext);
+                    }
+                    return Completable.complete();
+                  })
               .andThen(
                   Single.fromCallable(
                       () -> RequestProcessingResult.create(builder.build(), ImmutableList.of())));
