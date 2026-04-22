@@ -24,15 +24,17 @@ import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Method;
 
 /**
- * A tool that loads reasoning strategies for the current task.
+ * A tool that loads relevant reasoning memory items for the current task.
  *
- * <p>This tool allows agents to retrieve relevant reasoning strategies from the ReasoningBank based
- * on a query describing the current task. The retrieved strategies provide structured
- * problem-solving approaches that can guide the agent's reasoning.
+ * <p>This implements the "retrieve" step of the ReasoningBank loop: given a description of the
+ * current task, the tool queries the {@link BaseReasoningBankService} for memory items (titles,
+ * descriptions, and distilled reasoning content) that can steer the agent — including preventative
+ * lessons extracted from past failures.
  *
- * <p>Based on the ReasoningBank paper (arXiv:2509.25140).
+ * <p>Based on Ouyang et al. "ReasoningBank: Scaling Agent Self-Evolving with Reasoning Memory"
+ * (ICLR 2026, <a href="https://arxiv.org/abs/2509.25140">arXiv:2509.25140</a>).
  */
-public class LoadReasoningStrategyTool extends FunctionTool {
+public class LoadReasoningMemoryTool extends FunctionTool {
 
   /** Handler that holds the service reference and implements the tool method. */
   public static class ReasoningBankHandler {
@@ -45,41 +47,40 @@ public class LoadReasoningStrategyTool extends FunctionTool {
     }
 
     /**
-     * Loads reasoning strategies that match the given query.
+     * Loads memory items that match the given query.
      *
-     * @param query A description of the task or problem to find strategies for.
-     * @param toolContext The tool context (required by FunctionTool contract).
-     * @return A response containing matching reasoning strategies.
+     * @param query a description of the task or problem being solved.
+     * @param toolContext the tool context (required by FunctionTool contract).
      */
-    public Single<LoadReasoningStrategyResponse> loadReasoningStrategy(
+    public Single<LoadReasoningMemoryResponse> loadReasoningMemory(
         @Annotations.Schema(name = "query", description = "A description of the task or problem")
             String query,
         ToolContext toolContext) {
       return reasoningBankService
-          .searchStrategies(appName, query)
-          .map(response -> new LoadReasoningStrategyResponse(response.strategies()));
+          .searchMemoryItems(appName, query)
+          .map(response -> new LoadReasoningMemoryResponse(response.memoryItems()));
     }
   }
 
-  private static Method getLoadReasoningStrategyMethod() {
+  private static Method getLoadReasoningMemoryMethod() {
     try {
       return ReasoningBankHandler.class.getMethod(
-          "loadReasoningStrategy", String.class, ToolContext.class);
+          "loadReasoningMemory", String.class, ToolContext.class);
     } catch (NoSuchMethodException e) {
-      throw new IllegalStateException("Failed to find loadReasoningStrategy method.", e);
+      throw new IllegalStateException("Failed to find loadReasoningMemory method.", e);
     }
   }
 
   /**
-   * Creates a new LoadReasoningStrategyTool.
+   * Creates a new {@code LoadReasoningMemoryTool}.
    *
-   * @param reasoningBankService The reasoning bank service to search for strategies.
-   * @param appName The application name used to scope strategy storage and retrieval.
+   * @param reasoningBankService the reasoning bank service to search.
+   * @param appName the application name used to scope storage and retrieval.
    */
-  public LoadReasoningStrategyTool(BaseReasoningBankService reasoningBankService, String appName) {
+  public LoadReasoningMemoryTool(BaseReasoningBankService reasoningBankService, String appName) {
     super(
         new ReasoningBankHandler(reasoningBankService, appName),
-        getLoadReasoningStrategyMethod(),
+        getLoadReasoningMemoryMethod(),
         /* isLongRunning= */ false,
         /* requireConfirmation= */ false);
   }
@@ -93,10 +94,11 @@ public class LoadReasoningStrategyTool extends FunctionTool {
                 llmRequestBuilder.appendInstructions(
                     ImmutableList.of(
 """
-You have access to a reasoning bank containing proven problem-solving strategies.
-When facing a complex task, you can call loadReasoningStrategy with a description
-of your task to retrieve relevant reasoning approaches. Each strategy includes
-problem patterns it addresses and ordered reasoning steps to follow.
+You have access to a ReasoningBank containing distilled memory items learned from past
+task executions (both successful and failed). When facing a complex task, call
+loadReasoningMemory with a description of the task to retrieve relevant items. Each
+item has a title, a one-sentence description, and reasoning content — some items
+encode preventative lessons from past failures, so treat them as guardrails.
 """)));
   }
 }

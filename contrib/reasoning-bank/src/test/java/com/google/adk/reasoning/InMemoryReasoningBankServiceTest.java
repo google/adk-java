@@ -36,216 +36,197 @@ public final class InMemoryReasoningBankServiceTest {
     service = new InMemoryReasoningBankService();
   }
 
-  @Test
-  public void searchStrategies_emptyBank_returnsEmpty() {
-    SearchReasoningResponse response =
-        service.searchStrategies(APP_NAME, "math problem").blockingGet();
-
-    assertThat(response.strategies()).isEmpty();
+  private static ReasoningMemoryItem.Builder item(String id) {
+    return ReasoningMemoryItem.builder().id(id).title("t").description("d").content("c");
   }
 
   @Test
-  public void storeAndSearch_findsMatchingStrategy() {
-    ReasoningStrategy strategy =
-        ReasoningStrategy.builder()
-            .id("strategy-1")
-            .name("Math Problem Solving")
-            .problemPattern("Mathematical calculations involving algebra")
-            .steps(ImmutableList.of("Identify unknowns", "Set up equations", "Solve"))
+  public void search_emptyBank_returnsEmpty() {
+    SearchReasoningResponse response =
+        service.searchMemoryItems(APP_NAME, "math problem").blockingGet();
+
+    assertThat(response.memoryItems()).isEmpty();
+  }
+
+  @Test
+  public void storeAndSearch_findsMatchingItem() {
+    ReasoningMemoryItem mem =
+        item("mem-1")
+            .title("Algebra problem solving")
+            .description("Strategy for algebraic word problems")
+            .content("Identify unknowns, set up equations, then solve.")
             .tags(ImmutableList.of("math", "algebra"))
             .build();
 
-    service.storeStrategy(APP_NAME, strategy).blockingAwait();
+    service.storeMemoryItem(APP_NAME, mem).blockingAwait();
 
     SearchReasoningResponse response =
-        service.searchStrategies(APP_NAME, "algebra problem").blockingGet();
+        service.searchMemoryItems(APP_NAME, "algebra problem").blockingGet();
 
-    assertThat(response.strategies()).hasSize(1);
-    assertThat(response.strategies().get(0).id()).isEqualTo("strategy-1");
+    assertThat(response.memoryItems()).hasSize(1);
+    assertThat(response.memoryItems().get(0).id()).isEqualTo("mem-1");
   }
 
   @Test
-  public void searchStrategies_noMatch_returnsEmpty() {
-    ReasoningStrategy strategy =
-        ReasoningStrategy.builder()
-            .id("strategy-1")
-            .name("Math Problem Solving")
-            .problemPattern("Mathematical calculations")
-            .steps(ImmutableList.of("Step 1"))
-            .build();
-
-    service.storeStrategy(APP_NAME, strategy).blockingAwait();
+  public void search_noMatch_returnsEmpty() {
+    service
+        .storeMemoryItem(
+            APP_NAME, item("mem-1").title("Math").description("x").content("y").build())
+        .blockingAwait();
 
     SearchReasoningResponse response =
-        service.searchStrategies(APP_NAME, "biology chemistry").blockingGet();
+        service.searchMemoryItems(APP_NAME, "biology chemistry").blockingGet();
 
-    assertThat(response.strategies()).isEmpty();
+    assertThat(response.memoryItems()).isEmpty();
   }
 
   @Test
-  public void searchStrategies_matchesByName() {
-    ReasoningStrategy strategy =
-        ReasoningStrategy.builder()
-            .id("strategy-1")
-            .name("Debugging Code")
-            .problemPattern("Test pattern")
-            .steps(ImmutableList.of("Step 1"))
-            .build();
-
-    service.storeStrategy(APP_NAME, strategy).blockingAwait();
+  public void search_matchesByDescription() {
+    service
+        .storeMemoryItem(
+            APP_NAME,
+            item("mem-1")
+                .title("Unrelated")
+                .description("Handles debugging of compiled code")
+                .content("...")
+                .build())
+        .blockingAwait();
 
     SearchReasoningResponse response =
-        service.searchStrategies(APP_NAME, "code debugging").blockingGet();
+        service.searchMemoryItems(APP_NAME, "debugging").blockingGet();
 
-    assertThat(response.strategies()).hasSize(1);
+    assertThat(response.memoryItems()).hasSize(1);
   }
 
   @Test
-  public void searchStrategies_matchesByTags() {
-    ReasoningStrategy strategy =
-        ReasoningStrategy.builder()
-            .id("strategy-1")
-            .name("Test Strategy")
-            .problemPattern("Test pattern")
-            .steps(ImmutableList.of("Step 1"))
-            .tags(ImmutableList.of("python", "programming"))
-            .build();
+  public void search_matchesByTags() {
+    service
+        .storeMemoryItem(
+            APP_NAME,
+            item("mem-1")
+                .title("Unrelated")
+                .description("x")
+                .content("y")
+                .tags(ImmutableList.of("python", "programming"))
+                .build())
+        .blockingAwait();
 
-    service.storeStrategy(APP_NAME, strategy).blockingAwait();
+    SearchReasoningResponse response = service.searchMemoryItems(APP_NAME, "python").blockingGet();
 
-    SearchReasoningResponse response = service.searchStrategies(APP_NAME, "python").blockingGet();
-
-    assertThat(response.strategies()).hasSize(1);
+    assertThat(response.memoryItems()).hasSize(1);
   }
 
   @Test
-  public void searchStrategies_rankedByRelevance() {
-    // Strategy with pattern match (highest weight)
-    ReasoningStrategy patternMatch =
-        ReasoningStrategy.builder()
-            .id("pattern-match")
-            .name("Other Name")
-            .problemPattern("algorithm optimization problems")
-            .steps(ImmutableList.of("Step 1"))
+  public void search_rankedByRelevance_titleOutranksDescription() {
+    ReasoningMemoryItem titleMatch =
+        item("title")
+            .title("Algorithm optimization")
+            .description("Other pattern")
+            .content("...")
+            .build();
+    ReasoningMemoryItem descMatch =
+        item("desc")
+            .title("Other")
+            .description("Handles algorithm questions")
+            .content("...")
             .build();
 
-    // Strategy with name match (medium weight)
-    ReasoningStrategy nameMatch =
-        ReasoningStrategy.builder()
-            .id("name-match")
-            .name("Algorithm Design")
-            .problemPattern("Other pattern")
-            .steps(ImmutableList.of("Step 1"))
-            .build();
-
-    service.storeStrategy(APP_NAME, nameMatch).blockingAwait();
-    service.storeStrategy(APP_NAME, patternMatch).blockingAwait();
+    service.storeMemoryItem(APP_NAME, descMatch).blockingAwait();
+    service.storeMemoryItem(APP_NAME, titleMatch).blockingAwait();
 
     SearchReasoningResponse response =
-        service.searchStrategies(APP_NAME, "algorithm").blockingGet();
+        service.searchMemoryItems(APP_NAME, "algorithm").blockingGet();
 
-    assertThat(response.strategies()).hasSize(2);
-    // Pattern match should rank higher than name match
-    assertThat(response.strategies().get(0).id()).isEqualTo("pattern-match");
+    assertThat(response.memoryItems()).hasSize(2);
+    assertThat(response.memoryItems().get(0).id()).isEqualTo("title");
   }
 
   @Test
-  public void searchStrategies_respectsMaxResults() {
+  public void search_respectsMaxResults() {
     for (int i = 0; i < 10; i++) {
-      ReasoningStrategy strategy =
-          ReasoningStrategy.builder()
-              .id("strategy-" + i)
-              .name("Test Strategy " + i)
-              .problemPattern("Common problem pattern")
-              .steps(ImmutableList.of("Step 1"))
-              .build();
-      service.storeStrategy(APP_NAME, strategy).blockingAwait();
+      service
+          .storeMemoryItem(
+              APP_NAME,
+              item("mem-" + i)
+                  .title("Shared keyword title " + i)
+                  .description("desc")
+                  .content("c")
+                  .build())
+          .blockingAwait();
     }
 
     SearchReasoningResponse response =
-        service.searchStrategies(APP_NAME, "problem pattern", 3).blockingGet();
+        service.searchMemoryItems(APP_NAME, "keyword", 3).blockingGet();
 
-    assertThat(response.strategies()).hasSize(3);
+    assertThat(response.memoryItems()).hasSize(3);
   }
 
   @Test
-  public void searchStrategies_differentApps_isolated() {
-    ReasoningStrategy strategy1 =
-        ReasoningStrategy.builder()
-            .id("app1-strategy")
-            .name("Test Strategy")
-            .problemPattern("Test pattern")
-            .steps(ImmutableList.of("Step 1"))
-            .build();
+  public void search_differentApps_isolated() {
+    service.storeMemoryItem("app1", item("a1").title("shared").build()).blockingAwait();
+    service.storeMemoryItem("app2", item("a2").title("shared").build()).blockingAwait();
 
-    ReasoningStrategy strategy2 =
-        ReasoningStrategy.builder()
-            .id("app2-strategy")
-            .name("Test Strategy")
-            .problemPattern("Test pattern")
-            .steps(ImmutableList.of("Step 1"))
-            .build();
-
-    service.storeStrategy("app1", strategy1).blockingAwait();
-    service.storeStrategy("app2", strategy2).blockingAwait();
-
-    SearchReasoningResponse response1 = service.searchStrategies("app1", "test").blockingGet();
-    SearchReasoningResponse response2 = service.searchStrategies("app2", "test").blockingGet();
-
-    assertThat(response1.strategies()).hasSize(1);
-    assertThat(response1.strategies().get(0).id()).isEqualTo("app1-strategy");
-
-    assertThat(response2.strategies()).hasSize(1);
-    assertThat(response2.strategies().get(0).id()).isEqualTo("app2-strategy");
+    assertThat(service.searchMemoryItems("app1", "shared").blockingGet().memoryItems()).hasSize(1);
+    assertThat(service.searchMemoryItems("app1", "shared").blockingGet().memoryItems().get(0).id())
+        .isEqualTo("a1");
+    assertThat(service.searchMemoryItems("app2", "shared").blockingGet().memoryItems().get(0).id())
+        .isEqualTo("a2");
   }
 
   @Test
-  public void storeTrace_tracesAreStored() {
+  public void storeTrace_storesWithoutError() {
     ReasoningTrace trace =
         ReasoningTrace.builder()
             .id("trace-1")
             .task("Test task")
             .output("Test output")
             .reasoningSteps(ImmutableList.of("Step 1"))
-            .successful(true)
+            .successful(false)
             .build();
 
-    // Should complete without error
     service.storeTrace(APP_NAME, trace).blockingAwait();
   }
 
   @Test
-  public void searchStrategies_emptyQuery_returnsEmpty() {
-    ReasoningStrategy strategy =
-        ReasoningStrategy.builder()
-            .id("strategy-1")
-            .name("Test Strategy")
-            .problemPattern("Test pattern")
-            .steps(ImmutableList.of("Step 1"))
-            .build();
+  public void search_emptyQuery_returnsEmpty() {
+    service.storeMemoryItem(APP_NAME, item("mem-1").title("anything").build()).blockingAwait();
 
-    service.storeStrategy(APP_NAME, strategy).blockingAwait();
-
-    SearchReasoningResponse response = service.searchStrategies(APP_NAME, "").blockingGet();
-
-    assertThat(response.strategies()).isEmpty();
+    assertThat(service.searchMemoryItems(APP_NAME, "").blockingGet().memoryItems()).isEmpty();
   }
 
   @Test
-  public void searchStrategies_caseInsensitive() {
-    ReasoningStrategy strategy =
-        ReasoningStrategy.builder()
-            .id("strategy-1")
-            .name("Test Strategy")
-            .problemPattern("UPPERCASE pattern")
-            .steps(ImmutableList.of("Step 1"))
-            .build();
+  public void search_caseInsensitive() {
+    service
+        .storeMemoryItem(
+            APP_NAME,
+            item("mem-1")
+                .title("Unrelated")
+                .description("UPPERCASE content in description")
+                .content("...")
+                .build())
+        .blockingAwait();
 
-    service.storeStrategy(APP_NAME, strategy).blockingAwait();
+    assertThat(service.searchMemoryItems(APP_NAME, "uppercase").blockingGet().memoryItems())
+        .hasSize(1);
+  }
+
+  @Test
+  public void search_failureDerivedItems_areReturned() {
+    // Items distilled from failed trajectories must still be retrievable — they are the
+    // preventative lessons the paper emphasises.
+    ReasoningMemoryItem failureLesson =
+        item("pitfall")
+            .title("Avoid infinite scroll trap")
+            .description("Verify page identifier before loading more results")
+            .content("...")
+            .sourceTraceSuccessful(false)
+            .build();
+    service.storeMemoryItem(APP_NAME, failureLesson).blockingAwait();
 
     SearchReasoningResponse response =
-        service.searchStrategies(APP_NAME, "uppercase").blockingGet();
+        service.searchMemoryItems(APP_NAME, "scroll trap").blockingGet();
 
-    assertThat(response.strategies()).hasSize(1);
+    assertThat(response.memoryItems()).hasSize(1);
+    assertThat(response.memoryItems().get(0).sourceTraceSuccessful()).isFalse();
   }
 }

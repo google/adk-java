@@ -34,123 +34,106 @@ import java.util.stream.Collectors;
 /**
  * An in-memory reasoning bank service for prototyping purposes only.
  *
- * <p>Uses keyword matching instead of semantic search. For production use, consider implementing a
- * service backed by vector embeddings for semantic similarity matching.
+ * <p>Uses bag-of-words keyword matching instead of semantic search. The reference ReasoningBank
+ * implementation uses embedding-based retrieval (e.g. {@code gemini-embedding-001} with cosine
+ * similarity). For production use, implement {@link BaseReasoningBankService} against a vector
+ * store.
  */
 public final class InMemoryReasoningBankService implements BaseReasoningBankService {
 
   private static final int DEFAULT_MAX_RESULTS = 5;
 
-  // Pattern to extract words for keyword matching.
   private static final Pattern WORD_PATTERN = Pattern.compile("[A-Za-z]+");
 
-  /** Keys are app names, values are lists of strategies. */
-  private final Map<String, List<ReasoningStrategy>> strategies;
+  /** appName → memory items. */
+  private final Map<String, List<ReasoningMemoryItem>> memoryItems = new ConcurrentHashMap<>();
 
-  /** Keys are app names, values are lists of traces. */
-  private final Map<String, List<ReasoningTrace>> traces;
-
-  public InMemoryReasoningBankService() {
-    this.strategies = new ConcurrentHashMap<>();
-    this.traces = new ConcurrentHashMap<>();
-  }
+  /** appName → traces. */
+  private final Map<String, List<ReasoningTrace>> traces = new ConcurrentHashMap<>();
 
   @Override
-  public Completable storeStrategy(String appName, ReasoningStrategy strategy) {
+  public Completable storeMemoryItem(String appName, ReasoningMemoryItem memoryItem) {
     return Completable.fromAction(
-        () -> {
-          List<ReasoningStrategy> appStrategies =
-              strategies.computeIfAbsent(
-                  appName, k -> Collections.synchronizedList(new ArrayList<>()));
-          appStrategies.add(strategy);
-        });
+        () ->
+            memoryItems
+                .computeIfAbsent(appName, k -> Collections.synchronizedList(new ArrayList<>()))
+                .add(memoryItem));
   }
 
   @Override
   public Completable storeTrace(String appName, ReasoningTrace trace) {
     return Completable.fromAction(
-        () -> {
-          List<ReasoningTrace> appTraces =
-              traces.computeIfAbsent(appName, k -> Collections.synchronizedList(new ArrayList<>()));
-          appTraces.add(trace);
-        });
+        () ->
+            traces
+                .computeIfAbsent(appName, k -> Collections.synchronizedList(new ArrayList<>()))
+                .add(trace));
   }
 
   @Override
-  public Single<SearchReasoningResponse> searchStrategies(String appName, String query) {
-    return searchStrategies(appName, query, DEFAULT_MAX_RESULTS);
+  public Single<SearchReasoningResponse> searchMemoryItems(String appName, String query) {
+    return searchMemoryItems(appName, query, DEFAULT_MAX_RESULTS);
   }
 
   @Override
-  public Single<SearchReasoningResponse> searchStrategies(
+  public Single<SearchReasoningResponse> searchMemoryItems(
       String appName, String query, int maxResults) {
     return Single.fromCallable(
         () -> {
-          if (!strategies.containsKey(appName)) {
+          List<ReasoningMemoryItem> items = memoryItems.get(appName);
+          if (items == null || items.isEmpty()) {
             return SearchReasoningResponse.builder().build();
           }
 
-          List<ReasoningStrategy> appStrategies = strategies.get(appName);
           ImmutableSet<String> queryWords = extractWords(query);
-
           if (queryWords.isEmpty()) {
             return SearchReasoningResponse.builder().build();
           }
 
-          List<ScoredStrategy> scoredStrategies = new ArrayList<>();
-
-          for (ReasoningStrategy strategy : appStrategies) {
-            int score = calculateMatchScore(strategy, queryWords);
+          List<Scored> scored = new ArrayList<>();
+          // Snapshot to avoid iterating over the synchronized list without locking.
+          List<ReasoningMemoryItem> snapshot;
+          synchronized (items) {
+            snapshot = new ArrayList<>(items);
+          }
+          for (ReasoningMemoryItem item : snapshot) {
+            int score = matchScore(item, queryWords);
             if (score > 0) {
-              scoredStrategies.add(new ScoredStrategy(strategy, score));
+              scored.add(new Scored(item, score));
             }
           }
 
-          // Sort by score descending
-          scoredStrategies.sort((a, b) -> Integer.compare(b.score, a.score));
+          scored.sort((a, b) -> Integer.compare(b.score, a.score));
 
-          // Take top results
-          List<ReasoningStrategy> matchingStrategies =
-              scoredStrategies.stream()
-                  .map(scoredStrategy -> scoredStrategy.strategy)
-                  .limit(maxResults)
-                  .collect(Collectors.toList());
-
-          return SearchReasoningResponse.builder().setStrategies(matchingStrategies).build();
+          List<ReasoningMemoryItem> top =
+              scored.stream().map(s -> s.item).limit(maxResults).collect(Collectors.toList());
+          return SearchReasoningResponse.builder().setMemoryItems(top).build();
         });
   }
 
-  private int calculateMatchScore(ReasoningStrategy strategy, Set<String> queryWords) {
+  /**
+   * Scores a memory item against the query bag-of-words.
+   *
+   * <p>Weighting mirrors the paper's emphasis on identity fields: title > description > tags >
+   * content. Content matches get a flat bonus rather than per-word to avoid long items dominating
+   * retrieval.
+   */
+  private int matchScore(ReasoningMemoryItem item, Set<String> queryWords) {
     int score = 0;
-
-    // Check problem pattern
-    Set<String> patternWords = extractWords(strategy.problemPattern());
-    score += countOverlap(queryWords, patternWords) * 3; // Weight pattern matches higher
-
-    // Check name
-    Set<String> nameWords = extractWords(strategy.name());
-    score += countOverlap(queryWords, nameWords) * 2;
-
-    // Check tags
-    for (String tag : strategy.tags()) {
-      Set<String> tagWords = extractWords(tag);
-      score += countOverlap(queryWords, tagWords);
+    score += countOverlap(queryWords, extractWords(item.title())) * 3;
+    score += countOverlap(queryWords, extractWords(item.description())) * 2;
+    for (String tag : item.tags()) {
+      score += countOverlap(queryWords, extractWords(tag));
     }
-
-    // Check steps (lower weight)
-    for (String step : strategy.steps()) {
-      Set<String> stepWords = extractWords(step);
-      if (!Collections.disjoint(queryWords, stepWords)) {
-        score += 1;
-      }
+    Set<String> contentWords = extractWords(item.content());
+    if (!Collections.disjoint(queryWords, contentWords)) {
+      score += 1;
     }
-
     return score;
   }
 
-  private int countOverlap(Set<String> set1, Set<String> set2) {
-    Set<String> intersection = new HashSet<>(set1);
-    intersection.retainAll(set2);
+  private int countOverlap(Set<String> a, Set<String> b) {
+    Set<String> intersection = new HashSet<>(a);
+    intersection.retainAll(b);
     return intersection.size();
   }
 
@@ -158,7 +141,6 @@ public final class InMemoryReasoningBankService implements BaseReasoningBankServ
     if (text == null || text.isEmpty()) {
       return ImmutableSet.of();
     }
-
     Set<String> words = new HashSet<>();
     Matcher matcher = WORD_PATTERN.matcher(text);
     while (matcher.find()) {
@@ -167,13 +149,12 @@ public final class InMemoryReasoningBankService implements BaseReasoningBankServ
     return ImmutableSet.copyOf(words);
   }
 
-  /** Helper class for scoring strategies during search. */
-  private static class ScoredStrategy {
-    final ReasoningStrategy strategy;
+  private static final class Scored {
+    final ReasoningMemoryItem item;
     final int score;
 
-    ScoredStrategy(ReasoningStrategy strategy, int score) {
-      this.strategy = strategy;
+    Scored(ReasoningMemoryItem item, int score) {
+      this.item = item;
       this.score = score;
     }
   }

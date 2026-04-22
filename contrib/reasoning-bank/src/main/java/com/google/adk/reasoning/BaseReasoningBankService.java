@@ -20,49 +20,60 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 
 /**
- * Base contract for reasoning bank services.
+ * Service contract for a ReasoningBank.
  *
- * <p>The service provides functionalities to store and retrieve reasoning strategies that can be
- * used to augment LLM prompts with relevant problem-solving approaches.
+ * <p>A ReasoningBank implements the closed loop described in the paper:
  *
- * <p>Based on the ReasoningBank paper (arXiv:2509.25140).
+ * <ol>
+ *   <li><strong>Retrieve</strong> — {@link #searchMemoryItems} pulls relevant memory items into the
+ *       agent's context before it acts.
+ *   <li><strong>Act</strong> — the agent interacts with the environment (external to this service).
+ *   <li><strong>Judge &amp; extract</strong> — an LLM-as-a-judge self-assesses the trajectory, and
+ *       a {@link MemoryExtractor} distills success insights or failure reflections into memory
+ *       items.
+ *   <li><strong>Consolidate</strong> — {@link #storeMemoryItem} appends the distilled items back
+ *       into the bank.
+ * </ol>
+ *
+ * <p>Raw trajectories can optionally be persisted via {@link #storeTrace} for offline or batch
+ * distillation (e.g. memory-aware test-time scaling with multiple trajectories).
+ *
+ * <p>Reference: Ouyang et al. "ReasoningBank: Scaling Agent Self-Evolving with Reasoning Memory"
+ * (ICLR 2026, <a href="https://arxiv.org/abs/2509.25140">arXiv:2509.25140</a>).
  */
 public interface BaseReasoningBankService {
 
   /**
-   * Stores a reasoning strategy in the bank.
+   * Stores a distilled memory item.
    *
-   * @param appName The name of the application.
-   * @param strategy The strategy to store.
-   * @return A Completable that completes when the strategy is stored.
+   * @param appName application scope for storage and retrieval.
+   * @param memoryItem the memory item to store.
    */
-  Completable storeStrategy(String appName, ReasoningStrategy strategy);
+  Completable storeMemoryItem(String appName, ReasoningMemoryItem memoryItem);
 
   /**
-   * Stores a reasoning trace for later distillation into strategies.
+   * Stores a raw reasoning trace for later distillation.
    *
-   * @param appName The name of the application.
-   * @param trace The trace to store.
-   * @return A Completable that completes when the trace is stored.
+   * <p>Traces are not searchable on their own; they exist so that a {@link MemoryExtractor} can
+   * turn them into {@link ReasoningMemoryItem}s (online per-trajectory, or offline in batches for
+   * parallel/sequential memory-aware test-time scaling).
    */
   Completable storeTrace(String appName, ReasoningTrace trace);
 
   /**
-   * Searches for reasoning strategies that match the given query.
+   * Searches for memory items relevant to the given query.
    *
-   * @param appName The name of the application.
-   * @param query The query to search for (typically a task description).
-   * @return A {@link SearchReasoningResponse} containing matching strategies.
+   * @param appName application scope.
+   * @param query task description used for retrieval.
    */
-  Single<SearchReasoningResponse> searchStrategies(String appName, String query);
+  Single<SearchReasoningResponse> searchMemoryItems(String appName, String query);
 
   /**
-   * Searches for reasoning strategies that match the given query with a limit.
+   * Searches for memory items with an explicit result cap.
    *
-   * @param appName The name of the application.
-   * @param query The query to search for.
-   * @param maxResults Maximum number of strategies to return.
-   * @return A {@link SearchReasoningResponse} containing matching strategies.
+   * @param appName application scope.
+   * @param query task description used for retrieval.
+   * @param maxResults maximum number of items to return.
    */
-  Single<SearchReasoningResponse> searchStrategies(String appName, String query, int maxResults);
+  Single<SearchReasoningResponse> searchMemoryItems(String appName, String query, int maxResults);
 }

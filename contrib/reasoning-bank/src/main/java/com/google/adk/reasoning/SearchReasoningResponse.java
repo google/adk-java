@@ -20,30 +20,30 @@ import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import java.util.List;
 
-/** Represents the response from a reasoning strategy search. */
+/** Response from a reasoning memory search. */
 @AutoValue
 public abstract class SearchReasoningResponse {
 
-  /** Returns a list of reasoning strategies that match the search query. */
-  public abstract ImmutableList<ReasoningStrategy> strategies();
+  /** Returns the memory items that match the search query, ordered by relevance (best first). */
+  public abstract ImmutableList<ReasoningMemoryItem> memoryItems();
 
   /** Creates a new builder for {@link SearchReasoningResponse}. */
   public static Builder builder() {
-    return new AutoValue_SearchReasoningResponse.Builder().setStrategies(ImmutableList.of());
+    return new AutoValue_SearchReasoningResponse.Builder().setMemoryItems(ImmutableList.of());
   }
 
   /** Builder for {@link SearchReasoningResponse}. */
   @AutoValue.Builder
   public abstract static class Builder {
 
-    abstract Builder setStrategies(ImmutableList<ReasoningStrategy> strategies);
+    abstract Builder setMemoryItems(ImmutableList<ReasoningMemoryItem> memoryItems);
 
-    /** Sets the list of reasoning strategies using a list. */
-    public Builder setStrategies(List<ReasoningStrategy> strategies) {
-      return setStrategies(ImmutableList.copyOf(strategies));
+    /** Sets the memory items from a list. */
+    public Builder setMemoryItems(List<ReasoningMemoryItem> memoryItems) {
+      return setMemoryItems(ImmutableList.copyOf(memoryItems));
     }
 
-    /** Builds the immutable {@link SearchReasoningResponse} object. */
+    /** Builds the response. */
     public abstract SearchReasoningResponse build();
   }
 }

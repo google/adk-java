@@ -14,12 +14,22 @@
  * limitations under the License.
  */
 
-package com.google.adk.tools;
+package com.google.adk.reasoning;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.adk.reasoning.ReasoningStrategy;
+import com.google.common.collect.ImmutableList;
+import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 
-/** The response from a load reasoning strategy tool invocation. */
-public record LoadReasoningStrategyResponse(
-    @JsonProperty("strategies") List<ReasoningStrategy> strategies) {}
+/**
+ * A {@link MemoryExtractor} that always returns an empty list.
+ *
+ * <p>Useful as a default when an LLM-backed extractor is not yet configured, and as a test double.
+ */
+public final class NoOpMemoryExtractor implements MemoryExtractor {
+
+  @Override
+  public Single<ImmutableList<ReasoningMemoryItem>> extract(
+      String query, List<ReasoningTrace> trajectories) {
+    return Single.just(ImmutableList.of());
+  }
+}
