@@ -26,6 +26,7 @@ import com.google.adk.agents.ConfigAgentUtils;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.plugins.Plugin;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.State;
@@ -46,6 +47,7 @@ public class AgentTool extends BaseTool {
 
   private final BaseAgent agent;
   private final boolean skipSummarization;
+  private final List<Plugin> plugins;
 
   public static BaseTool fromConfig(ToolArgsConfig args, String configAbsPath)
       throws ConfigurationException {
@@ -62,21 +64,32 @@ public class AgentTool extends BaseTool {
     }
 
     BaseAgent agent = resolvedAgents.get(0);
-    return AgentTool.create(agent, args.getOrDefault("skipSummarization", false).booleanValue());
+    return AgentTool.create(
+        agent, args.getOrDefault("skipSummarization", false).booleanValue(), ImmutableList.of());
+  }
+
+  public static AgentTool create(
+      BaseAgent agent, boolean skipSummarization, List<? extends Plugin> plugins) {
+    return new AgentTool(agent, skipSummarization, plugins);
   }
 
   public static AgentTool create(BaseAgent agent, boolean skipSummarization) {
-    return new AgentTool(agent, skipSummarization);
+    return new AgentTool(agent, skipSummarization, ImmutableList.of());
   }
 
   public static AgentTool create(BaseAgent agent) {
-    return new AgentTool(agent, false);
+    return new AgentTool(agent, false, ImmutableList.of());
   }
 
   protected AgentTool(BaseAgent agent, boolean skipSummarization) {
+    this(agent, skipSummarization, ImmutableList.of());
+  }
+
+  protected AgentTool(BaseAgent agent, boolean skipSummarization, List<? extends Plugin> plugins) {
     super(agent.name(), agent.description());
     this.agent = agent;
     this.skipSummarization = skipSummarization;
+    this.plugins = ImmutableList.copyOf(plugins != null ? plugins : ImmutableList.of());
   }
 
   @VisibleForTesting
@@ -159,7 +172,7 @@ public class AgentTool extends BaseTool {
       content = Content.fromParts(Part.fromText(input.toString()));
     }
 
-    Runner runner = new InMemoryRunner(this.agent, toolContext.agentName());
+    Runner runner = new InMemoryRunner(this.agent, toolContext.agentName(), this.plugins);
     // Session state is final, can't update to toolContext state
     // session.toBuilder().setState(toolContext.getState());
     return runner
@@ -220,3 +233,4 @@ public class AgentTool extends BaseTool {
         });
   }
 }
+

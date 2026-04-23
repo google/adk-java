@@ -704,6 +704,62 @@ public final class AgentToolTest {
                 .build());
   }
 
+  @Test
+  public void create_withPlugins_initializesCorrectly() {
+    LlmAgent testAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("agent name")
+            .description("agent description")
+            .build();
+
+    AgentTool agentTool = AgentTool.create(testAgent, false, ImmutableList.of());
+
+    assertThat(agentTool).isNotNull();
+    assertThat(agentTool.declaration()).isPresent();
+  }
+
+  @Test
+  public void runAsync_withPlugins_usesThem() {
+    LlmAgent testAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    LlmResponse.builder()
+                        .content(Content.fromParts(Part.fromText("Sub-agent executed")))
+                        .build()))
+            .name("sub-agent")
+            .description("sub-agent description")
+            .build();
+
+    TestPlugin testPlugin = new TestPlugin();
+
+    AgentTool agentTool = AgentTool.create(testAgent, false, ImmutableList.of(testPlugin));
+
+    ToolContext toolContext = createToolContext(testAgent);
+
+    Map<String, Object> result =
+        agentTool.runAsync(ImmutableMap.of("request", "start"), toolContext).blockingGet();
+
+    assertThat(result).containsEntry("result", "Sub-agent executed");
+
+    assertThat(testPlugin.wasCalled.get()).isTrue();
+  }
+
+  private static class TestPlugin extends com.google.adk.plugins.BasePlugin {
+    final java.util.concurrent.atomic.AtomicBoolean wasCalled =
+        new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    TestPlugin() {
+      super("test-plugin");
+    }
+
+    @Override
+    public Maybe<Content> onUserMessageCallback(
+        InvocationContext invocationContext, Content userMessage) {
+      wasCalled.set(true);
+      return Maybe.empty();
+    }
+  }
+
   private ToolContext createToolContext(BaseAgent agent) {
     Session session =
         sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
