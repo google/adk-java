@@ -16,6 +16,8 @@
 
 package com.google.adk.plugins.agentanalytics;
 
+import static java.util.Collections.newSetFromMap;
+
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -30,14 +32,17 @@ import com.google.genai.types.FileData;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Part;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.logging.Logger;
 import org.jspecify.annotations.Nullable;
 
 /** Utility for parsing, formatting and truncating content for BigQuery logging. */
 final class JsonFormatter {
+  private static final Logger logger = Logger.getLogger(JsonFormatter.class.getName());
   private static final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
 
   @AutoValue
@@ -304,11 +309,15 @@ final class JsonFormatter {
     if (obj == null) {
       return TruncationResult.create(mapper.nullNode(), false);
     }
+    if (obj instanceof JsonNode jsonNode) {
+      return recursiveSmartTruncate(jsonNode, maxLength, newSetFromMap(new IdentityHashMap<>()));
+    }
     try {
-      return recursiveSmartTruncate(mapper.valueToTree(obj), maxLength);
-    } catch (IllegalArgumentException e) {
+      return recursiveSmartTruncate(
+          mapper.valueToTree(obj), maxLength, newSetFromMap(new IdentityHashMap<>()));
+    } catch (IllegalArgumentException | StackOverflowError e) {
       // Fallback for types that mapper can't handle directly as a tree
-      return truncateWithStatus(String.valueOf(obj), maxLength);
+      return truncateWithStatus(safeToString(obj), maxLength);
     }
   }
 
@@ -318,39 +327,65 @@ final class JsonFormatter {
     }
     try {
       return mapper.valueToTree(obj);
-    } catch (IllegalArgumentException e) {
+    } catch (IllegalArgumentException | StackOverflowError e) {
       // Fallback for types that mapper can't handle directly as a tree
-      return mapper.valueToTree(String.valueOf(obj));
+      return mapper.valueToTree(safeToString(obj));
     }
   }
 
-  private static TruncationResult recursiveSmartTruncate(JsonNode node, int maxLength) {
-    boolean isTruncated = false;
-    if (node.isTextual()) {
-      String text = node.asText();
-      if (text.length() > maxLength) {
-        return TruncationResult.create(mapper.valueToTree(truncate(text, maxLength)), true);
+  static String safeToString(Object obj) {
+    try {
+      return String.valueOf(obj);
+    } catch (StackOverflowError e) {
+      logger.warning("StackOverflowError when converting object to string");
+      return "[STACK OVERFLOW ERROR CONVERTING TO STRING]";
+    } catch (RuntimeException e) {
+      logger.warning("RuntimeException when converting object to string");
+      return "[ERROR CONVERTING TO STRING]";
+    }
+  }
+
+  private static TruncationResult recursiveSmartTruncate(
+      JsonNode node, int maxLength, Set<JsonNode> visited) {
+    if (node.isContainerNode()) {
+      if (visited.contains(node)) {
+        return TruncationResult.create(mapper.valueToTree("[CYCLE DETECTED]"), true);
+      }
+      visited.add(node);
+    }
+
+    try {
+      boolean isTruncated = false;
+      if (node.isTextual()) {
+        String text = node.asText();
+        if (text.length() > maxLength) {
+          return TruncationResult.create(mapper.valueToTree(truncate(text, maxLength)), true);
+        }
+        return TruncationResult.create(node, false);
+      } else if (node.isObject()) {
+        ObjectNode newNode = mapper.createObjectNode();
+        Set<Map.Entry<String, JsonNode>> properties = node.properties();
+        for (Map.Entry<String, JsonNode> entry : properties) {
+          TruncationResult res = recursiveSmartTruncate(entry.getValue(), maxLength, visited);
+          newNode.set(entry.getKey(), res.node());
+          isTruncated = isTruncated || res.isTruncated();
+        }
+        return TruncationResult.create(newNode, isTruncated);
+      } else if (node.isArray()) {
+        ArrayNode newNode = mapper.createArrayNode();
+        for (JsonNode element : node) {
+          TruncationResult res = recursiveSmartTruncate(element, maxLength, visited);
+          newNode.add(res.node());
+          isTruncated = isTruncated || res.isTruncated();
+        }
+        return TruncationResult.create(newNode, isTruncated);
       }
       return TruncationResult.create(node, false);
-    } else if (node.isObject()) {
-      ObjectNode newNode = mapper.createObjectNode();
-      Set<Map.Entry<String, JsonNode>> properties = node.properties();
-      for (Map.Entry<String, JsonNode> entry : properties) {
-        TruncationResult res = recursiveSmartTruncate(entry.getValue(), maxLength);
-        newNode.set(entry.getKey(), res.node());
-        isTruncated = isTruncated || res.isTruncated();
+    } finally {
+      if (node.isContainerNode()) {
+        visited.remove(node);
       }
-      return TruncationResult.create(newNode, isTruncated);
-    } else if (node.isArray()) {
-      ArrayNode newNode = mapper.createArrayNode();
-      for (JsonNode element : node) {
-        TruncationResult res = recursiveSmartTruncate(element, maxLength);
-        newNode.add(res.node());
-        isTruncated = isTruncated || res.isTruncated();
-      }
-      return TruncationResult.create(newNode, isTruncated);
     }
-    return TruncationResult.create(node, false);
   }
 
   private static TruncationResult truncateWithStatus(String s, int maxLength) {
