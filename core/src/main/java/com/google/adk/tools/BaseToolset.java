@@ -17,6 +17,8 @@
 package com.google.adk.tools;
 
 import com.google.adk.agents.ReadonlyContext;
+import com.google.adk.models.LlmRequest;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import org.jspecify.annotations.Nullable;
@@ -31,6 +33,21 @@ public interface BaseToolset extends AutoCloseable {
    * @return A Single emitting a list of tools available under the specified context.
    */
   Flowable<BaseTool> getTools(ReadonlyContext readonlyContext);
+
+  /**
+   * Called during LLM request preprocessing, before the toolset's individual tools are processed.
+   * Allows the toolset to modify the LLM request, e.g. to append system instructions.
+   *
+   * <p>The default implementation is a no-op.
+   *
+   * @param llmRequestBuilder The builder for the LLM request to be modified.
+   * @param toolContext The tool context providing access to session state and agent information.
+   * @return A {@link Completable} that completes when processing is done.
+   */
+  default Completable processLlmRequest(
+      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+    return Completable.complete();
+  }
 
   /**
    * Performs cleanup and releases resources held by the toolset.
