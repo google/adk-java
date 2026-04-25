@@ -327,6 +327,74 @@ public final class FunctionsTest {
   }
 
   @Test
+  public void generateClientFunctionCallId_returnsConsistentId() {
+    FunctionCall functionCall =
+        FunctionCall.builder().name("echo_tool").args(ImmutableMap.of("key", "value")).build();
+
+    String id1 = Functions.generateClientFunctionCallId("test-event-id", functionCall, 0);
+    String id2 = Functions.generateClientFunctionCallId("test-event-id", functionCall, 0);
+
+    assertThat(id1).isEqualTo(id2);
+    assertThat(id1).startsWith("adk-");
+  }
+
+  @Test
+  public void generateClientFunctionCallId_returnsDifferentIdForDifferentArgs() {
+    FunctionCall functionCall1 =
+        FunctionCall.builder().name("echo_tool").args(ImmutableMap.of("key", "value1")).build();
+    FunctionCall functionCall2 =
+        FunctionCall.builder().name("echo_tool").args(ImmutableMap.of("key", "value2")).build();
+
+    String id1 = Functions.generateClientFunctionCallId("test-event-id", functionCall1, 0);
+    String id2 = Functions.generateClientFunctionCallId("test-event-id", functionCall2, 0);
+
+    assertThat(id1).isNotEqualTo(id2);
+  }
+
+  @Test
+  public void generateClientFunctionCallId_returnsDifferentIdForDifferentSequenceNumbers() {
+    FunctionCall functionCall =
+        FunctionCall.builder().name("echo_tool").args(ImmutableMap.of("key", "value")).build();
+
+    String id1 = Functions.generateClientFunctionCallId("test-event-id", functionCall, 0);
+    String id2 = Functions.generateClientFunctionCallId("test-event-id", functionCall, 1);
+
+    assertThat(id1).isNotEqualTo(id2);
+  }
+
+  @Test
+  public void generateClientFunctionCallId_returnsDifferentIdForDifferentNames() {
+    FunctionCall functionCall1 =
+        FunctionCall.builder().name("echo_tool1").args(ImmutableMap.of("key", "value")).build();
+    FunctionCall functionCall2 =
+        FunctionCall.builder().name("echo_tool2").args(ImmutableMap.of("key", "value")).build();
+
+    String id1 = Functions.generateClientFunctionCallId("test-event-id", functionCall1, 0);
+    String id2 = Functions.generateClientFunctionCallId("test-event-id", functionCall2, 0);
+
+    assertThat(id1).isNotEqualTo(id2);
+  }
+
+  @Test
+  public void populateClientFunctionCallId_withMultipleCalls_populatesDifferentIds() {
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromFunctionCall("echo_tool", ImmutableMap.of("key", "value1")),
+                    Part.fromFunctionCall("echo_tool", ImmutableMap.of("key", "value1"))))
+            .build();
+
+    Functions.populateClientFunctionCallId(event);
+
+    var parts = event.content().get().parts().get();
+    String id1 = parts.get(0).functionCall().get().id().get();
+    String id2 = parts.get(1).functionCall().get().id().get();
+
+    assertThat(id1).isNotEqualTo(id2);
+  }
+
+  @Test
   public void getAskUserConfirmationFunctionCalls_eventWithNoContent_returnsEmptyList() {
     assertThat(Functions.getAskUserConfirmationFunctionCalls(EVENT_WITH_NO_CONTENT)).isEmpty();
   }

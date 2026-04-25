@@ -21,6 +21,7 @@ import static java.util.Objects.requireNonNullElse;
 import static java.util.stream.Collectors.joining;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Callbacks.AfterAgentCallbackSync;
 import com.google.adk.agents.Callbacks.AfterModelCallback;
@@ -50,12 +51,15 @@ import com.google.adk.flows.llmflows.BaseLlmFlow;
 import com.google.adk.flows.llmflows.SingleFlow;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmRegistry;
+import com.google.adk.models.LlmResponse;
 import com.google.adk.models.Model;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
@@ -64,6 +68,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -134,7 +139,13 @@ public class LlmAgent extends BaseAgent {
     this.disallowTransferToParent = requireNonNullElse(builder.disallowTransferToParent, false);
     this.disallowTransferToPeers = requireNonNullElse(builder.disallowTransferToPeers, false);
     this.beforeModelCallback = requireNonNullElse(builder.beforeModelCallback, ImmutableList.of());
-    this.afterModelCallback = requireNonNullElse(builder.afterModelCallback, ImmutableList.of());
+    List<AfterModelCallback> afterCallbacks = new ArrayList<>();
+    if (builder.outputKey != null) {
+      afterCallbacks.add(
+          new OutputKeySaverCallback(builder.outputKey, Optional.ofNullable(builder.outputSchema)));
+    }
+    afterCallbacks.addAll(requireNonNullElse(builder.afterModelCallback, ImmutableList.of()));
+    this.afterModelCallback = ImmutableList.copyOf(afterCallbacks);
     this.onModelErrorCallback =
         requireNonNullElse(builder.onModelErrorCallback, ImmutableList.of());
     this.beforeToolCallback = requireNonNullElse(builder.beforeToolCallback, ImmutableList.of());
@@ -610,41 +621,69 @@ public class LlmAgent extends BaseAgent {
     }
   }
 
-  private void maybeSaveOutputToState(Event event) {
-    if (outputKey().isPresent() && event.finalResponse() && event.content().isPresent()) {
-      // Concatenate text from all parts, excluding thoughts.
-      Object output;
+  private static class OutputKeySaverCallback implements AfterModelCallback {
+    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private final String outputKey;
+    private final Optional<Schema> outputSchema;
+
+    private OutputKeySaverCallback(String outputKey, Optional<Schema> outputSchema) {
+      this.outputKey = outputKey;
+      this.outputSchema = outputSchema;
+    }
+
+    @Override
+    public Maybe<LlmResponse> call(CallbackContext context, LlmResponse response) {
+      if (response.content().isEmpty()) {
+        return Maybe.empty();
+      }
+
+      Content originalContent = response.content().get();
       String rawResult =
-          event.content().flatMap(Content::parts).orElseGet(ImmutableList::of).stream()
+          originalContent.parts().orElse(ImmutableList.of()).stream()
               .filter(part -> !isThought(part))
               .map(part -> part.text().orElse(""))
               .collect(joining());
 
-      Optional<Schema> outputSchema = outputSchema();
+      Object output;
       if (outputSchema.isPresent()) {
         try {
           Map<String, Object> validatedMap =
               SchemaUtils.validateOutputSchema(rawResult, outputSchema.get());
           output = validatedMap;
-        } catch (JsonProcessingException e) {
-          logger.error(
-              "LlmAgent output for outputKey '{}' was not valid JSON, despite an outputSchema being"
-                  + " present. Saving raw output to state.",
-              outputKey().get(),
-              e);
-          output = rawResult;
-        } catch (IllegalArgumentException e) {
+        } catch (JsonProcessingException | IllegalArgumentException e) {
           logger.error(
               "LlmAgent output for outputKey '{}' did not match the outputSchema. Saving raw output"
                   + " to state.",
-              outputKey().get(),
+              outputKey,
               e);
           output = rawResult;
         }
       } else {
         output = rawResult;
       }
-      event.actions().stateDelta().put(outputKey().get(), output);
+
+      String jsonMetadata;
+      try {
+        jsonMetadata = objectMapper.writeValueAsString(ImmutableMap.of(outputKey, output));
+      } catch (JsonProcessingException e) {
+        return Maybe.error(e);
+      }
+
+      Part stateDeltaPart =
+          Part.builder()
+              .inlineData(
+                  Blob.builder()
+                      .data(jsonMetadata.getBytes(StandardCharsets.UTF_8))
+                      .mimeType("application/json+metadata")
+                      .build())
+              .build();
+
+      List<Part> newParts = new ArrayList<>(originalContent.parts().orElse(ImmutableList.of()));
+      newParts.add(stateDeltaPart);
+
+      Content newContent = originalContent.toBuilder().parts(newParts).build();
+
+      return Maybe.just(response.toBuilder().content(newContent).build());
     }
   }
 
@@ -654,12 +693,12 @@ public class LlmAgent extends BaseAgent {
 
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    return llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    return llmFlow.run(invocationContext);
   }
 
   @Override
   protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
-    return llmFlow.runLive(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    return llmFlow.runLive(invocationContext);
   }
 
   /**

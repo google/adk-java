@@ -185,6 +185,17 @@ public final class LlmAgentTest {
   }
 
   @Test
+  public void runAsync_withOutputKeyAndEmptyResponse_doesNotSaveState() {
+    TestLlm testLlm = createTestLlm(LlmResponse.builder().build());
+    LlmAgent agent = createTestAgentBuilder(testLlm).outputKey("myOutput").build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).isEmpty();
+  }
+
+  @Test
   public void run_withToolsAndMaxSteps_stopsAfterMaxSteps() {
     ImmutableMap<String, Object> echoArgs = ImmutableMap.of("arg", "value");
     Content contentWithFunctionCall =

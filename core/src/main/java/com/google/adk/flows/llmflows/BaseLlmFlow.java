@@ -16,6 +16,11 @@
 
 package com.google.adk.flows.llmflows;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.CallbackContext;
@@ -28,6 +33,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.agents.RunConfig.StreamingMode;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
 import com.google.adk.flows.BaseFlow;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
@@ -41,7 +47,9 @@ import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.genai.types.Content;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.context.Context;
@@ -54,7 +62,9 @@ import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.observers.DisposableCompletableObserver;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -64,6 +74,7 @@ import org.slf4j.LoggerFactory;
 /** A basic flow that calls the LLM in a loop until a final response is generated. */
 public abstract class BaseLlmFlow implements BaseFlow {
   private static final Logger logger = LoggerFactory.getLogger(BaseLlmFlow.class);
+  private static final ObjectMapper objectMapper = new ObjectMapper();
 
   protected final List<RequestProcessor> requestProcessors;
   protected final List<ResponseProcessor> responseProcessors;
@@ -349,14 +360,19 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
     Maybe<LlmResponse> callbackResult =
         Maybe.defer(
-            () ->
-                Flowable.fromIterable(callbacks)
-                    .concatMapMaybe(
-                        callback ->
+            () -> {
+              Single<LlmResponse> currentResponse = Single.just(llmResponse);
+              for (AfterModelCallback callback : callbacks) {
+                currentResponse =
+                    currentResponse.flatMap(
+                        resp ->
                             callback
-                                .call(callbackContext, llmResponse)
-                                .compose(Tracing.withContext(currentContext)))
-                    .firstElement());
+                                .call(callbackContext, resp)
+                                .compose(Tracing.withContext(currentContext))
+                                .defaultIfEmpty(resp));
+              }
+              return currentResponse.toMaybe();
+            });
 
     return pluginResult.switchIfEmpty(callbackResult).defaultIfEmpty(llmResponse);
   }
@@ -461,14 +477,37 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
   private Flowable<Event> run(
       Context spanContext, InvocationContext invocationContext, int stepsCompleted) {
-    Flowable<Event> currentStepEvents = runOneStep(spanContext, invocationContext).cache();
+    Flowable<Event> currentStepEvents = runOneStep(spanContext, invocationContext);
+
+    Flowable<Event> processedEvents =
+        currentStepEvents
+            .concatMap(
+                event -> {
+                  if (invocationContext.session().events().stream()
+                      .anyMatch(e -> e.id() != null && e.id().equals(event.id()))) {
+                    logger.debug("Event {} already in session, skipping append", event.id());
+                    return Flowable.just(event);
+                  }
+                  return invocationContext
+                      .sessionService()
+                      .appendEvent(invocationContext.session(), event)
+                      .flatMap(
+                          registeredEvent ->
+                              invocationContext
+                                  .pluginManager()
+                                  .onEventCallback(invocationContext, registeredEvent)
+                                  .defaultIfEmpty(registeredEvent))
+                      .toFlowable();
+                })
+            .cache();
+
     if (stepsCompleted + 1 >= maxSteps) {
       logger.debug("Ending flow execution because max steps reached.");
-      return currentStepEvents;
+      return processedEvents;
     }
 
-    return currentStepEvents.concatWith(
-        currentStepEvents
+    return processedEvents.concatWith(
+        processedEvents
             .toList()
             .flatMapPublisher(
                 eventList -> {
@@ -685,22 +724,75 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
     Event modelResponseEvent =
         buildModelResponseEvent(baseEventForLlmResponse, llmRequest, updatedResponse);
-    if (modelResponseEvent.functionCalls().isEmpty()) {
-      return processorEvents.concatWith(Flowable.just(modelResponseEvent));
+
+    if (context.agent() instanceof LlmAgent agent) {
+      Optional<String> outputKeyOpt = agent.outputKey();
+      if (outputKeyOpt.isPresent() && modelResponseEvent.content().isPresent()) {
+        Content content = modelResponseEvent.content().get();
+        Map<String, Object> extractedDelta = new HashMap<>();
+        List<Part> cleanParts = new ArrayList<>();
+        boolean metadataFound = false;
+        for (Part part : content.parts().orElse(ImmutableList.of())) {
+          if (part.inlineData().isPresent()
+              && part.inlineData()
+                  .get()
+                  .mimeType()
+                  .orElse("")
+                  .equals("application/json+metadata")) {
+            metadataFound = true;
+            byte[] data = part.inlineData().get().data().orElse(null);
+            if (data != null) {
+              String json = new String(data, UTF_8);
+              try {
+                Map<String, Object> metadata =
+                    objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+                extractedDelta.putAll(metadata);
+              } catch (JsonProcessingException e) {
+                logger.error("Failed to parse metadata from inlineData", e);
+              }
+            }
+          } else {
+            cleanParts.add(part);
+          }
+        }
+
+        if (metadataFound) {
+          Event.Builder updatedEventBuilder = modelResponseEvent.toBuilder();
+          Content newContent =
+              Content.builder().role(content.role().orElse("model")).parts(cleanParts).build();
+          updatedEventBuilder.content(newContent);
+
+          if (!extractedDelta.isEmpty() && modelResponseEvent.finalResponse()) {
+            Map<String, Object> newStateDelta =
+                new HashMap<>(modelResponseEvent.actions().stateDelta());
+            newStateDelta.putAll(extractedDelta);
+            EventActions updatedActions =
+                modelResponseEvent.actions().toBuilder().stateDelta(newStateDelta).build();
+            updatedEventBuilder.actions(updatedActions);
+          }
+          modelResponseEvent = updatedEventBuilder.build();
+        }
+      }
+    }
+    final Event finalModelResponseEvent = modelResponseEvent;
+
+    if (finalModelResponseEvent.functionCalls().isEmpty()) {
+      return processorEvents.concatWith(Flowable.just(finalModelResponseEvent));
     }
 
     Flowable<Event> functionEvents;
     try (Scope scope = parentContext.makeCurrent()) {
       Maybe<Event> maybeFunctionResponseEvent =
           context.runConfig().streamingMode() == StreamingMode.BIDI
-              ? Functions.handleFunctionCallsLive(context, modelResponseEvent, llmRequest.tools())
-              : Functions.handleFunctionCalls(context, modelResponseEvent, llmRequest.tools());
+              ? Functions.handleFunctionCallsLive(
+                  context, finalModelResponseEvent, llmRequest.tools())
+              : Functions.handleFunctionCalls(context, finalModelResponseEvent, llmRequest.tools());
       functionEvents =
           maybeFunctionResponseEvent.flatMapPublisher(
               functionResponseEvent -> {
                 Optional<Event> toolConfirmationEvent =
                     Functions.generateRequestConfirmationEvent(
-                        context, modelResponseEvent, functionResponseEvent);
+                        context, finalModelResponseEvent, functionResponseEvent);
                 List<Event> events = new ArrayList<>();
                 toolConfirmationEvent.ifPresent(events::add);
                 events.add(functionResponseEvent);
