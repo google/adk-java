@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <parent>
+        <groupId>com.google.adk</groupId>
+        <artifactId>google-adk-parent</artifactId>
+        <version>1.1.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>multi-agent-patterns</artifactId>
+    <name>Agent Development Kit - Multi-Agent Patterns</name>
+    <description>Multi-Agent Patterns Examples</description>
+    <properties>
+        <jackson.version>2.17.0</jackson.version>
+		<jakarta.inject.version>2.0.1</jakarta.inject.version>
+        <apache.commons.lang3.version>3.20.0</apache.commons.lang3.version>
+    </properties>
+    <dependencies>
+        <!-- The ADK core dependency -->
+        <dependency>
+            <groupId>com.google.adk</groupId>
+            <artifactId>google-adk</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- The ADK dev web UI to debug your agent -->
+        <dependency>
+            <groupId>com.google.adk</groupId>
+            <artifactId>google-adk-dev</artifactId>
+            <version>${project.version}</version>
+            <scope>compile</scope>
+        </dependency>
+<!-- Source: https://mvnrepository.com/artifact/jakarta.inject/jakarta.inject-api -->
+		<dependency>
+            <groupId>jakarta.inject</groupId>
+            <artifactId>jakarta.inject-api</artifactId>
+        <!--<version>${jakarta.inject.version}</version> -->
+            <scope>compile</scope>
+        </dependency>      
+<!-- Source: https://mvnrepository.com/artifact/org.apache.commons/commons-lang3 -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+         <!--<version>${apache.commons.lang3.version}</version>-->
+            <scope>compile</scope>
+        </dependency>          
+		<dependency>
+    		<groupId>com.fasterxml.jackson.core</groupId>
+    		<artifactId>jackson-databind</artifactId>
+    		<!--<version>${jackson.version}</version> -->
+		</dependency>
+		<dependency>
+    		<groupId>com.fasterxml.jackson.dataformat</groupId>
+    		<artifactId>jackson-dataformat-yaml</artifactId>
+    		<!--<version>${jackson.version}</version> -->
+		</dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-guava</artifactId>
+            <!--<version>${jackson.version}</version>-->
+        </dependency>	
+    </dependencies>
+</project>

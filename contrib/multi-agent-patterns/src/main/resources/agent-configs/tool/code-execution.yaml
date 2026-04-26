@@ -1,0 +1,6 @@
+name: CodeExecutor
+model: gemini-2.5-flash
+description: An agent that generates code
+instruction: |
+ Produce correct, maintainable code
+ that satisfies the problem statement.
