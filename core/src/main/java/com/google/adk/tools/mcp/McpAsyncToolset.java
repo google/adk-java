@@ -121,13 +121,13 @@ public class McpAsyncToolset implements BaseToolset {
   }
 
   /**
-   * Initializes the McpAsyncToolset with SSE server parameters.
+   * Initializes the McpAsyncToolset with a provided McpSessionManager.
    *
-   * @param connectionParams The SSE connection parameters to the MCP server.
+   * @param mcpSessionManager The session manager for MCP connections.
    * @param objectMapper An ObjectMapper instance for parsing schemas.
    * @param toolFilter Either a ToolPredicate or a List of tool names.
    */
-  McpAsyncToolset(
+  protected McpAsyncToolset(
       McpSessionManager mcpSessionManager, ObjectMapper objectMapper, @Nullable Object toolFilter) {
     Objects.requireNonNull(mcpSessionManager);
     Objects.requireNonNull(objectMapper);
