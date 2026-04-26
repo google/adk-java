@@ -127,7 +127,7 @@ public class McpAsyncToolset implements BaseToolset {
    * @param objectMapper An ObjectMapper instance for parsing schemas.
    * @param toolFilter Either a ToolPredicate or a List of tool names.
    */
-  McpAsyncToolset(
+  protected McpAsyncToolset(
       McpSessionManager mcpSessionManager, ObjectMapper objectMapper, @Nullable Object toolFilter) {
     Objects.requireNonNull(mcpSessionManager);
     Objects.requireNonNull(objectMapper);
