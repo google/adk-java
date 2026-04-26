@@ -128,6 +128,18 @@ public final class RemoteA2AAgentTest {
   }
 
   @Test
+  public void createAgent_resumable_default_true() {
+    RemoteA2AAgent agent = getAgentBuilder().build();
+    assertThat(agent.isResumable()).isTrue();
+  }
+
+  @Test
+  public void createAgent_resumable_false() {
+    RemoteA2AAgent agent = getAgentBuilder().resumable(false).build();
+    assertThat(agent.isResumable()).isFalse();
+  }
+
+  @Test
   public void runAsync_aggregatesPartialEvents() {
     RemoteA2AAgent agent = createAgent();
     mockStreamResponse(
