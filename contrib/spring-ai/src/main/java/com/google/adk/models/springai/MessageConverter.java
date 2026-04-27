@@ -22,6 +22,7 @@ import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import java.net.URI;
 import java.util.ArrayList;
@@ -32,6 +33,8 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.EmptyUsage;
+import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.ChatOptions;
@@ -318,11 +321,27 @@ public class MessageConverter {
     boolean isPartial = isStreaming && isPartialResponse(assistantMessage);
     boolean isTurnComplete = !isStreaming || isTurnCompleteResponse(chatResponse);
 
-    return LlmResponse.builder()
-        .content(content)
-        .partial(isPartial)
-        .turnComplete(isTurnComplete)
-        .build();
+    LlmResponse.Builder responseBuilder =
+        LlmResponse.builder().content(content).partial(isPartial).turnComplete(isTurnComplete);
+
+    if (chatResponse.getMetadata() != null
+        && chatResponse.getMetadata().getUsage() != null
+        && !(chatResponse.getMetadata().getUsage() instanceof EmptyUsage)) {
+      Usage springUsage = chatResponse.getMetadata().getUsage();
+
+      GenerateContentResponseUsageMetadata adkUsage =
+          GenerateContentResponseUsageMetadata.builder()
+              .promptTokenCount(nullSafeInt(springUsage.getPromptTokens()))
+              .candidatesTokenCount(nullSafeInt(springUsage.getCompletionTokens()))
+              .totalTokenCount(nullSafeInt(springUsage.getTotalTokens()))
+              .build();
+      responseBuilder.usageMetadata(adkUsage);
+    }
+    return responseBuilder.build();
+  }
+
+  private int nullSafeInt(Integer value) {
+    return value != null ? value.intValue() : 0;
   }
 
   /** Determines if an assistant message represents a partial response in streaming. */
