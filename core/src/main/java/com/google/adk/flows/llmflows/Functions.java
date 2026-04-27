@@ -47,6 +47,7 @@ import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Function;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -154,13 +155,16 @@ public final class Functions {
         getFunctionCallMapper(invocationContext, tools, toolConfirmations, false, parentContext);
 
     Observable<Event> functionResponseEventsObservable;
-    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
+    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL
+        || validFunctionCalls.size() <= 1) {
       functionResponseEventsObservable =
           Observable.fromIterable(validFunctionCalls).concatMapMaybe(functionCallMapper);
     } else {
       functionResponseEventsObservable =
           Observable.fromIterable(validFunctionCalls)
-              .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
+              .concatMapEager(
+                  call ->
+                      functionCallMapper.apply(call).toObservable().subscribeOn(Schedulers.io()));
     }
     return functionResponseEventsObservable
         .toList()
@@ -225,13 +229,16 @@ public final class Functions {
         getFunctionCallMapper(invocationContext, tools, toolConfirmations, true, parentContext);
 
     Observable<Event> responseEventsObservable;
-    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
+    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL
+        || validFunctionCalls.size() <= 1) {
       responseEventsObservable =
           Observable.fromIterable(validFunctionCalls).concatMapMaybe(functionCallMapper);
     } else {
       responseEventsObservable =
           Observable.fromIterable(validFunctionCalls)
-              .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
+              .concatMapEager(
+                  call ->
+                      functionCallMapper.apply(call).toObservable().subscribeOn(Schedulers.io()));
     }
 
     return responseEventsObservable
