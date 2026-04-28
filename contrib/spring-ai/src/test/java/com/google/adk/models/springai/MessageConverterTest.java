@@ -16,7 +16,8 @@
 package com.google.adk.models.springai;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmRequest;
@@ -33,6 +34,8 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -235,6 +238,70 @@ class MessageConverterTest {
     assertThat(functionCallPart.functionCall().get().name()).contains("get_weather");
     // Verify ID is preserved
     assertThat(functionCallPart.functionCall().get().id()).contains("call_123");
+  }
+
+  @Test
+  void testUsageMetadataShouldBeEmptyWhenSpringAiMetadataIsNull() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("intermediate chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), null);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, true);
+
+    assertTrue(
+        llmResponse.usageMetadata().isEmpty(),
+        "Expected usageMetadata to be empty for intermediate stream chunks lacking metadata");
+  }
+
+  @Test
+  void testUsageMetadataShouldBeEmptyWhenSpringAiUsageIsNull() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("intermediate chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    ChatResponseMetadata metadata = ChatResponseMetadata.builder().id("resp-no-usage").build();
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), metadata);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, true);
+
+    assertTrue(
+        llmResponse.usageMetadata().isEmpty(),
+        "Expected usageMetadata to be empty when metadata exists but usage is null");
+  }
+
+  @Test
+  void testUsageMetadataShouldDefaultToZeroWhenSpringAiTokensAreNull() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("final chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    // Anonymous implementation to simulate incomplete provider data where some token counts are
+    // null
+    DefaultUsage incompleteUsage = new DefaultUsage(null, null, 42);
+    ChatResponseMetadata metadata =
+        ChatResponseMetadata.builder().id("resp-partial-tokens").usage(incompleteUsage).build();
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), metadata);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, false);
+
+    assertTrue(llmResponse.usageMetadata().isPresent(), "Expected usageMetadata to be present");
+
+    assertEquals(
+        0,
+        llmResponse.usageMetadata().get().promptTokenCount().orElse(-1),
+        "Null prompt tokens should default to 0");
+    assertEquals(
+        0,
+        llmResponse.usageMetadata().get().candidatesTokenCount().orElse(-1),
+        "Null completion tokens should default to 0");
+    assertEquals(
+        42,
+        llmResponse.usageMetadata().get().totalTokenCount().orElse(-1),
+        "Total tokens should be mapped correctly");
   }
 
   @Test
