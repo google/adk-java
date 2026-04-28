@@ -31,6 +31,7 @@ import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.State;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -131,8 +132,14 @@ public class AgentTool extends BaseTool {
 
   @Override
   public Optional<FunctionDeclaration> declaration() {
+
+    // The genai FunctionDeclaration builder uses Optional.of() internally, which NPEs on a null
+    // description. Coerce null to an empty string. This matches the Python, Go, and Kotlin ports,
+    // which send an empty description when the agent has none.
+    String desc = Strings.nullToEmpty(this.description());
+
     FunctionDeclaration.Builder builder =
-        FunctionDeclaration.builder().description(this.description()).name(this.name());
+        FunctionDeclaration.builder().description(desc).name(this.name());
 
     Optional<Schema> agentInputSchema = getInputSchema(agent);
 
