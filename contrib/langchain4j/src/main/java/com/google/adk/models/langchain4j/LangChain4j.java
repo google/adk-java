@@ -75,6 +75,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
@@ -96,6 +97,7 @@ public abstract class LangChain4j extends BaseLlm {
 
   public abstract ObjectMapper objectMapper();
 
+  @Nullable
   public abstract String modelName();
 
   @Nullable
@@ -122,7 +124,32 @@ public abstract class LangChain4j extends BaseLlm {
 
     public abstract Builder modelName(String modelName);
 
-    public abstract LangChain4j build();
+    abstract @Nullable ChatModel chatModel();
+
+    abstract @Nullable StreamingChatModel streamingChatModel();
+
+    abstract @Nullable String modelName();
+
+    abstract LangChain4j autoBuild();
+
+    public LangChain4j build() {
+      if (Objects.isNull(modelName())) {
+        // Try to extract modelName from chatModel or streamingChatModel
+        if (!Objects.isNull(chatModel())
+            && !Objects.isNull(chatModel().defaultRequestParameters())) {
+          modelName(chatModel().defaultRequestParameters().modelName());
+        } else if (!Objects.isNull(streamingChatModel())
+            && !Objects.isNull(streamingChatModel().defaultRequestParameters())) {
+          modelName(streamingChatModel().defaultRequestParameters().modelName());
+        }
+      }
+      // Up to this step, if modelName still null - Fail fast
+      if (modelName() == null) {
+        throw new IllegalStateException(
+            "modelName is required. Either set it explicitly via modelName() or provide a ChatModel/StreamingChatModel");
+      }
+      return autoBuild();
+    }
   }
 
   public LangChain4j(ChatModel chatModel) {
