@@ -43,6 +43,7 @@ import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.Before;
 import org.junit.Test;
@@ -881,5 +882,21 @@ public final class AgentToolTest {
                 .sessionService(sessionService)
                 .build())
         .build();
+  }
+
+  @Test
+  public void declaration_withNullDescription_fallsBackToName() {
+    // Create an agent with a name but NO description
+    LlmAgent testAgent =
+        LlmAgent.builder()
+            .name("TestAgent")
+            // .description() is intentionally left out
+            .build();
+
+    AgentTool tool = AgentTool.create(testAgent);
+    Optional<FunctionDeclaration> declaration = tool.declaration();
+    assertThat(declaration.isPresent());
+    assertThat(declaration.get().name().get()).isEqualTo("TestAgent");
+    assertThat(declaration.get().description().get()).isEqualTo("TestAgent");
   }
 }
