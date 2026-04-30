@@ -225,7 +225,7 @@ public final class VertexAiSessionService implements BaseSessionService {
                         if (events.isEmpty()) {
                           return sessionBuilder.build();
                         }
-                        events = filterEvents(events, updateTimestamp, config);
+                        events = filterEvents(events, config);
                         return sessionBuilder.events(events).build();
                       })
                   .toMaybe();
@@ -233,15 +233,11 @@ public final class VertexAiSessionService implements BaseSessionService {
   }
 
   private static List<Event> filterEvents(
-      List<Event> originalEvents,
-      @Nullable Instant updateTimestamp,
-      Optional<GetSessionConfig> config) {
+      List<Event> originalEvents, Optional<GetSessionConfig> config) {
+    // Do not pre-filter by session updateTime: updateTime comes from Vertex backend clock,
+    // while Event.timestamp is client-side. Comparing them can drop valid latest events.
     List<Event> events =
         originalEvents.stream()
-            .filter(
-                event ->
-                    updateTimestamp == null
-                        || Instant.ofEpochMilli(event.timestamp()).isBefore(updateTimestamp))
             .sorted(Comparator.comparing(Event::timestamp))
             .collect(toCollection(ArrayList::new));
 
@@ -253,16 +249,10 @@ public final class VertexAiSessionService implements BaseSessionService {
         }
       } else if (config.get().afterTimestamp().isPresent()) {
         Instant afterTimestamp = config.get().afterTimestamp().get();
-        int i = events.size() - 1;
-        while (i >= 0) {
-          if (Instant.ofEpochMilli(events.get(i).timestamp()).isBefore(afterTimestamp)) {
-            break;
-          }
-          i -= 1;
-        }
-        if (i >= 0) {
-          events = events.subList(i, events.size());
-        }
+        events =
+            events.stream()
+                .filter(event -> !Instant.ofEpochMilli(event.timestamp()).isBefore(afterTimestamp))
+                .collect(toCollection(ArrayList::new));
       }
     }
     return events;

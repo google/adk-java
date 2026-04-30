@@ -70,6 +70,17 @@ public class VertexAiSessionServiceTest {
       }\
       """;
 
+  private static final String MOCK_SESSION_STRING_5 =
+      """
+      {
+        "name" : "projects/test-project/locations/test-location/reasoningEngines/123/sessions/5",
+        "createTime" : "2026-04-29T11:00:05.000000Z",
+        "userId" : "skew_user",
+        "updateTime" : "2026-04-29T11:00:05.940523Z",
+        "sessionState" : {}
+      }\
+      """;
+
   private static final String MOCK_EVENT_STRING =
       """
       [
@@ -98,6 +109,36 @@ public class VertexAiSessionServiceTest {
             "interrupted" : false,
             "branch" : "",
             "longRunningToolIds" : [ "tool1" ]
+          }
+        }
+      ]
+      """;
+
+  private static final String MOCK_EVENT_STRING_5 =
+      """
+      [
+        {
+          "name" : "projects/test-project/locations/test-location/reasoningEngines/123/sessions/5/events/500",
+          "invocationId" : "500",
+          "author" : "skew_user",
+          "timestamp" : "2026-04-29T11:00:05.900000Z",
+          "content" : {
+            "role" : "user",
+            "parts" : [
+              { "text" : "before-update-time" }
+            ]
+          }
+        },
+        {
+          "name" : "projects/test-project/locations/test-location/reasoningEngines/123/sessions/5/events/501",
+          "invocationId" : "501",
+          "author" : "model",
+          "timestamp" : "2026-04-29T11:00:06.103000Z",
+          "content" : {
+            "role" : "model",
+            "parts" : [
+              { "text" : "after-update-time" }
+            ]
           }
         }
       ]
@@ -154,8 +195,9 @@ public class VertexAiSessionServiceTest {
             ImmutableMap.of(
                 "1", MOCK_SESSION_STRING_1,
                 "2", MOCK_SESSION_STRING_2,
-                "3", MOCK_SESSION_STRING_3));
-    eventMap = new HashMap<>(ImmutableMap.of("1", MOCK_EVENT_STRING));
+                "3", MOCK_SESSION_STRING_3,
+                "5", MOCK_SESSION_STRING_5));
+    eventMap = new HashMap<>(ImmutableMap.of("1", MOCK_EVENT_STRING, "5", MOCK_EVENT_STRING_5));
 
     MockitoAnnotations.openMocks(this);
     vertexAiSessionService =
@@ -350,6 +392,44 @@ public class VertexAiSessionServiceTest {
                 .blockingGet()
                 .events())
         .isEmpty();
+  }
+
+  @Test
+  public void getSession_clockSkewWithUpdateTime_doesNotDropRecentEvents() {
+    Session session =
+        vertexAiSessionService.getSession("123", "skew_user", "5", Optional.empty()).blockingGet();
+
+    assertThat(session.events()).hasSize(2);
+    ImmutableList<String> eventIds =
+        session.events().stream().map(Event::id).collect(toImmutableList());
+    assertThat(eventIds).containsExactly("500", "501").inOrder();
+  }
+
+  @Test
+  public void getSession_afterTimestamp_filtersAtOrAfterThreshold() {
+    Instant threshold = Instant.parse("2026-04-29T11:00:06.103000Z");
+    GetSessionConfig config = GetSessionConfig.builder().afterTimestamp(threshold).build();
+
+    Session session =
+        vertexAiSessionService
+            .getSession("123", "skew_user", "5", Optional.of(config))
+            .blockingGet();
+
+    assertThat(session.events()).hasSize(1);
+    assertThat(session.events().get(0).id()).isEqualTo("501");
+  }
+
+  @Test
+  public void getSession_numRecentEvents_returnsLatestEvents() {
+    GetSessionConfig config = GetSessionConfig.builder().numRecentEvents(1).build();
+
+    Session session =
+        vertexAiSessionService
+            .getSession("123", "skew_user", "5", Optional.of(config))
+            .blockingGet();
+
+    assertThat(session.events()).hasSize(1);
+    assertThat(session.events().get(0).id()).isEqualTo("501");
   }
 
   @Test
