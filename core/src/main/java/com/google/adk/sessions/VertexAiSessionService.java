@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -148,7 +149,7 @@ public final class VertexAiSessionService implements BaseSessionService {
       Session session =
           Session.builder(sessionId)
               .appName(appName)
-              .userId(userId)
+              .userId((String) apiSession.get("userId"))
               .state(
                   apiSession.get("sessionState") == null
                       ? new ConcurrentHashMap<>()
@@ -195,6 +196,16 @@ public final class VertexAiSessionService implements BaseSessionService {
         .getSession(reasoningEngineId, sessionId)
         .flatMap(
             getSessionResponseMap -> {
+              String responseUserId =
+                  Optional.ofNullable(getSessionResponseMap.get("userId"))
+                      .map(JsonNode::asText)
+                      .orElse(null);
+              if (!Objects.equals(responseUserId, userId)) {
+                return Maybe.error(
+                    new IllegalArgumentException(
+                        "Session " + sessionId + " does not belong to user " + userId + "."));
+              }
+
               String sessId =
                   Optional.ofNullable(getSessionResponseMap.get("name"))
                       .map(name -> Iterables.getLast(Splitter.on('/').splitToList(name.asText())))
