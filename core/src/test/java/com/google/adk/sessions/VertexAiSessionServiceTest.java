@@ -278,6 +278,33 @@ public class VertexAiSessionServiceTest {
     assertThat(sessionsList).hasSize(2);
     ImmutableList<String> ids = sessionsList.stream().map(Session::id).collect(toImmutableList());
     assertThat(ids).containsExactly("1", "2");
+    ImmutableList<String> userIds =
+        sessionsList.stream().map(Session::userId).collect(toImmutableList());
+    assertThat(userIds).containsExactly("user", "user");
+  }
+
+  @Test
+  public void listSessions_usesResponseUserId() throws Exception {
+    when(mockApiClient.request("GET", "reasoningEngines/123/sessions?filter=user_id=user1", ""))
+        .thenAnswer(
+            new MockApiAnswer(
+                """
+                {
+                  "sessions": [
+                    {
+                      "name": "projects/test-project/locations/test-location/reasoningEngines/123/sessions/3",
+                      "userId": "user2",
+                      "updateTime": "2024-12-14T12:12:12.123456Z"
+                    }
+                  ]
+                }\
+                """));
+
+    ListSessionsResponse sessions =
+        vertexAiSessionService.listSessions("123", "user1").blockingGet();
+
+    assertThat(sessions.sessions()).hasSize(1);
+    assertThat(sessions.sessions().get(0).userId()).isEqualTo("user2");
   }
 
   @Test
@@ -350,10 +377,23 @@ public class VertexAiSessionServiceTest {
   public void listEmptySession_success() {
     assertThat(
             vertexAiSessionService
-                .getSession("789", "user1", "3", Optional.empty())
+                .getSession("789", "user2", "3", Optional.empty())
                 .blockingGet()
                 .events())
         .isEmpty();
+  }
+
+  @Test
+  public void getSession_whenResponseUserIdDiffers_throws() {
+    IllegalArgumentException exception =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                vertexAiSessionService
+                    .getSession("789", "user1", "3", Optional.empty())
+                    .blockingGet());
+
+    assertThat(exception).hasMessageThat().contains("Session 3 does not belong to user user1.");
   }
 
   @Test
