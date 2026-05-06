@@ -46,16 +46,22 @@ public final class State implements ConcurrentMap<String, Object> {
 
   public State(Map<String, Object> state, @Nullable Map<String, Object> delta) {
     Objects.requireNonNull(state, "state is null");
-    this.state =
-        state instanceof ConcurrentMap
-            ? (ConcurrentMap<String, Object>) state
-            : new ConcurrentHashMap<>(state);
-    this.delta =
-        delta == null
-            ? new ConcurrentHashMap<>()
-            : delta instanceof ConcurrentMap
-                ? (ConcurrentMap<String, Object>) delta
-                : new ConcurrentHashMap<>(delta);
+    this.state = toConcurrentMap(state);
+    this.delta = toConcurrentMap(delta);
+  }
+
+  private static ConcurrentMap<String, Object> toConcurrentMap(Map<String, Object> map) {
+    if (map == null) {
+      return new ConcurrentHashMap<>();
+    }
+    if (map instanceof ConcurrentMap) {
+      return (ConcurrentMap<String, Object>) map;
+    }
+    ConcurrentMap<String, Object> concurrentMap = new ConcurrentHashMap<>();
+    for (Map.Entry<String, Object> entry : map.entrySet()) {
+      concurrentMap.put(entry.getKey(), entry.getValue() == null ? REMOVED : entry.getValue());
+    }
+    return concurrentMap;
   }
 
   @Override
