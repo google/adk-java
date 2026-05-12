@@ -18,6 +18,7 @@ package com.google.adk.sessions;
 
 import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 
+import com.google.adk.config.AdkConfiguration;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Ascii;
 import com.google.common.base.Strings;
@@ -46,7 +47,7 @@ abstract class ApiClient {
   /** Constructs an ApiClient for Google AI APIs. */
   ApiClient(@Nullable String apiKey, @Nullable HttpOptions customHttpOptions) {
 
-    this.apiKey = apiKey != null ? apiKey : System.getenv("GOOGLE_API_KEY");
+    this.apiKey = apiKey != null ? apiKey : AdkConfiguration.get("GOOGLE_API_KEY").orElse(null);
 
     if (Strings.isNullOrEmpty(this.apiKey)) {
       throw new IllegalArgumentException(
@@ -74,7 +75,8 @@ abstract class ApiClient {
       @Nullable GoogleCredentials credentials,
       @Nullable HttpOptions customHttpOptions) {
 
-    this.project = project != null ? project : System.getenv("GOOGLE_CLOUD_PROJECT");
+    this.project =
+        project != null ? project : AdkConfiguration.get("GOOGLE_CLOUD_PROJECT").orElse(null);
 
     if (Strings.isNullOrEmpty(this.project)) {
       throw new IllegalArgumentException(
@@ -82,7 +84,8 @@ abstract class ApiClient {
               + " GOOGLE_CLOUD_PROJECT.");
     }
 
-    this.location = location != null ? location : System.getenv("GOOGLE_CLOUD_LOCATION");
+    this.location =
+        location != null ? location : AdkConfiguration.get("GOOGLE_CLOUD_LOCATION").orElse(null);
 
     if (Strings.isNullOrEmpty(this.location)) {
       throw new IllegalArgumentException(
