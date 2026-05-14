@@ -7,7 +7,6 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: write
 
 jobs:
   welcome:
@@ -19,3 +18,4 @@ jobs:
           script: |
             const script = require('./.github/scripts/csat.js')
             script({github, context})
+            
