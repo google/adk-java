@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <parent>
+        <groupId>com.google.adk</groupId>
+        <artifactId>google-adk-parent</artifactId>
+        <version>1.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>adk-model-prism</artifactId>
+    <name>Agent Development Kit - Model Prism</name>
+<!--	<version>0.1.0-SNAPSHOT</version>-->
+	<packaging>pom</packaging>
+    <description>
+		Proposal: Model Prism for Google ADK Java.
+		Demonstrates how pluggable model providers could work 
+		via Java ServiceLoader, making it trivial to swap LLM 
+		backends without modifying ADK core.
+		Each provider ships as its own JAR - drop one on the 
+		classpath and it auto-registers. No code changes required.
+	</description>
+	<modules>
+		<module>model-prism-core</module>
+		<module>model-prism-groq</module>
+		<module>model-prism-ollama</module>
+		<module>model-prism-openrouter</module>
+		<module>model-prism-demo</module>
+	</modules>
+
+    <dependencies>
+        <!-- The ADK core dependency -->
+        <dependency>
+            <groupId>com.google.adk</groupId>
+            <artifactId>google-adk</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.adk</groupId>
+            <artifactId>google-adk-dev</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+<!-- Source: https://mvnrepository.com/artifact/jakarta.inject/jakarta.inject-api -->
+		<dependency>
+            <groupId>jakarta.inject</groupId>
+            <artifactId>jakarta.inject-api</artifactId>
+        <!--<version>${jakarta.inject.version}</version> -->
+            <scope>compile</scope>
+        </dependency>      
+<!-- Source: https://mvnrepository.com/artifact/org.apache.commons/commons-lang3 -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+         <!--<version>${apache.commons.lang3.version}</version>-->
+            <scope>compile</scope>
+        </dependency>          
+		<dependency>
+    		<groupId>com.fasterxml.jackson.core</groupId>
+    		<artifactId>jackson-databind</artifactId>
+		</dependency>
+    </dependencies>
+	<build>
+		<pluginManagement>
+			<plugins>
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-compiler-plugin</artifactId>
+				</plugin>
+			</plugins>
+		</pluginManagement>
+	</build>
+</project>
