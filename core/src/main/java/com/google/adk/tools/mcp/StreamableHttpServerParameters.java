@@ -26,6 +26,7 @@ import org.jspecify.annotations.Nullable;
 /** Server parameters for Streamable HTTP client transport. */
 public class StreamableHttpServerParameters {
   private final String url;
+  private final String endpoint;
   private final Map<String, String> headers;
   private final Duration timeout;
   private final Duration readTimeout;
@@ -35,6 +36,8 @@ public class StreamableHttpServerParameters {
    * Server parameters for Streamable HTTP client transport.
    *
    * @param url The base URL for the MCP Streamable HTTP server.
+   * @param endpoint The endpoint path on the server (e.g. {@code /mcp/stream}). When {@code null},
+   *     the MCP library default ({@code /mcp}) is used.
    * @param headers Optional headers to include in requests.
    * @param timeout Timeout for HTTP operations (default: 30 seconds).
    * @param readTimeout Timeout for reading data from the streamed http events(default: 5 minutes).
@@ -42,12 +45,14 @@ public class StreamableHttpServerParameters {
    */
   public StreamableHttpServerParameters(
       String url,
+      @Nullable String endpoint,
       Map<String, String> headers,
       @Nullable Duration timeout,
       @Nullable Duration readTimeout,
       @Nullable Boolean terminateOnClose) {
     Assert.hasText(url, "url must not be empty");
     this.url = url;
+    this.endpoint = endpoint;
     this.headers = headers == null ? Collections.emptyMap() : headers;
     this.timeout = timeout == null ? Duration.ofSeconds(30) : timeout;
     this.readTimeout = readTimeout == null ? Duration.ofMinutes(5) : readTimeout;
@@ -56,6 +61,11 @@ public class StreamableHttpServerParameters {
 
   public String url() {
     return url;
+  }
+
+  @Nullable
+  public String endpoint() {
+    return endpoint;
   }
 
   public Map<String, String> headers() {
@@ -81,6 +91,7 @@ public class StreamableHttpServerParameters {
   /** Builder for {@link StreamableHttpServerParameters}. */
   public static class Builder {
     private String url;
+    private String endpoint;
     private Map<String, String> headers = Collections.emptyMap();
     private Duration timeout = Duration.ofSeconds(30);
     private Duration readTimeout = Duration.ofMinutes(5);
@@ -92,6 +103,12 @@ public class StreamableHttpServerParameters {
     public Builder url(String url) {
       Assert.hasText(url, "url must not be empty");
       this.url = url;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder endpoint(String endpoint) {
+      this.endpoint = endpoint;
       return this;
     }
 
@@ -121,7 +138,7 @@ public class StreamableHttpServerParameters {
 
     public StreamableHttpServerParameters build() {
       return new StreamableHttpServerParameters(
-          url, headers, timeout, readTimeout, terminateOnClose);
+          url, endpoint, headers, timeout, readTimeout, terminateOnClose);
     }
   }
 }

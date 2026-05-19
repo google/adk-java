@@ -44,15 +44,19 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
                                       .orElse(""))))
           .build();
     } else if (connectionParams instanceof StreamableHttpServerParameters streamableParams) {
-      return HttpClientStreamableHttpTransport.builder(streamableParams.url())
-          .connectTimeout(streamableParams.timeout())
-          .jsonMapper(jsonMapper)
-          .asyncHttpRequestCustomizer(
-              (builder, method, uri, body, context) -> {
-                streamableParams.headers().forEach((key, value) -> builder.header(key, value));
-                return Mono.just(builder);
-              })
-          .build();
+      HttpClientStreamableHttpTransport.Builder transportBuilder =
+          HttpClientStreamableHttpTransport.builder(streamableParams.url())
+              .connectTimeout(streamableParams.timeout())
+              .jsonMapper(jsonMapper)
+              .asyncHttpRequestCustomizer(
+                  (builder, method, uri, body, context) -> {
+                    streamableParams.headers().forEach((key, value) -> builder.header(key, value));
+                    return Mono.just(builder);
+                  });
+      if (streamableParams.endpoint() != null) {
+        transportBuilder.endpoint(streamableParams.endpoint());
+      }
+      return transportBuilder.build();
     } else {
       throw new IllegalArgumentException(
           "DefaultMcpTransportBuilder supports only ServerParameters, SseServerParameters, or"
