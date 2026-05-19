@@ -685,7 +685,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
     Event modelResponseEvent =
         buildModelResponseEvent(baseEventForLlmResponse, llmRequest, updatedResponse);
-    if (modelResponseEvent.functionCalls().isEmpty()) {
+    if (modelResponseEvent.functionCalls().isEmpty()
+        || modelResponseEvent.partial().orElse(false)) {
       return processorEvents.concatWith(Flowable.just(modelResponseEvent));
     }
 

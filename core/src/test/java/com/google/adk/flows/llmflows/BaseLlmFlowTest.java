@@ -217,6 +217,33 @@ public final class BaseLlmFlowTest {
   }
 
   @Test
+  public void run_withPartialFunctionCall_doesNotExecuteTool() {
+    Content partialContent =
+        Content.fromParts(Part.fromFunctionCall("my_function", ImmutableMap.of("arg1", "value1")));
+    LlmResponse partialResponse =
+        LlmResponse.builder().content(partialContent).partial(true).build();
+    TestLlm testLlm = createTestLlm(partialResponse);
+    ImmutableMap<String, Object> testResponse =
+        ImmutableMap.<String, Object>of("response", "response for my_function");
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm)
+                .tools(ImmutableList.of(new TestTool("my_function", testResponse)))
+                .build());
+    BaseLlmFlow baseLlmFlow =
+        createBaseLlmFlow(
+            /* requestProcessors= */ ImmutableList.of(),
+            /* responseProcessors= */ ImmutableList.of(),
+            /* maxSteps= */ Optional.of(1));
+
+    List<Event> events = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).partial()).hasValue(true);
+    assertThat(events.get(0).functionCalls()).hasSize(1);
+  }
+
+  @Test
   public void run_withRequestProcessor_doesNotModifyRequest() {
     Content content = Content.fromParts(Part.fromText("LLM response"));
     TestLlm testLlm = createTestLlm(createLlmResponse(content));
