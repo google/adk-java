@@ -86,10 +86,10 @@ public final class DefaultMcpTransportBuilderTest {
     // When the user sets .endpoint("/mcp/stream"), the transport's endpoint field must reflect it.
     // This is the core of the bug fix: the library's Utils.resolveUri(baseUri, endpoint) will now
     // compute URI.create("http://localhost:8080").resolve("/mcp/stream")
-    //   = "http://localhost:8080/mcp/stream"  ✅
+    //   = "http://localhost:8080/mcp/stream"  
     // instead of the broken pre-fix behaviour:
     //   URI.create("http://localhost:8080/mcp/stream").resolve("/mcp")
-    //   = "http://localhost:8080/mcp"          ❌
+    //   = "http://localhost:8080/mcp"          
     StreamableHttpServerParameters params =
         StreamableHttpServerParameters.builder()
             .url("http://localhost:8080")
