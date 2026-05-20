@@ -165,6 +165,33 @@ public final class BaseToolTest {
   }
 
   @Test
+  public void processLlmRequestWithLatestAliasAddsToolToConfig() {
+    final GoogleSearchTool googleSearchTool = new GoogleSearchTool();
+    LlmRequest.Builder builder =
+        LlmRequest.builder().model("gemini-flash-latest").build().toBuilder();
+    Completable result = googleSearchTool.processLlmRequest(builder, null);
+    result.test().assertComplete();
+    assertThat(builder.build().config().get().tools().get())
+        .contains(Tool.builder().googleSearch(GoogleSearch.builder().build()).build());
+  }
+
+  @Test
+  public void processLlmRequestWithUnsupportedModelReturnsError() {
+    final GoogleSearchTool googleSearchTool = new GoogleSearchTool();
+    LlmRequest.Builder builder = LlmRequest.builder().model("text-bison-001").build().toBuilder();
+    Completable result = googleSearchTool.processLlmRequest(builder, null);
+    result.test().assertError(IllegalArgumentException.class);
+  }
+
+  @Test
+  public void processLlmRequest_WithNullModel_ReturnsError() {
+    final GoogleSearchTool googleSearchTool = new GoogleSearchTool();
+    LlmRequest.Builder builder = LlmRequest.builder().build().toBuilder();
+    Completable result = googleSearchTool.processLlmRequest(builder, null);
+    result.test().assertError(IllegalArgumentException.class);
+  }
+
+  @Test
   public void processLlmRequestWithUrlContextToolAddsToolToConfig() {
     FunctionDeclaration functionDeclaration =
         FunctionDeclaration.builder().name("test_function").build();
