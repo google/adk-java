@@ -4,6 +4,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -24,6 +25,7 @@ import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -217,5 +219,79 @@ public final class LoadArtifactsToolTest {
     verify(mockArtifactService, never())
         .loadArtifact(anyString(), anyString(), anyString(), anyString(), anyInt());
     assertThat(finalRequest.contents()).containsExactly(functionCallContent);
+  }
+
+  @Test
+  public void processLlmRequest_unsupportedTextLikeMime_convertsToText() {
+    String artifactName = "data.csv";
+    String csvContent = "col1,col2\n1,2\n";
+    LlmRequest finalRequest =
+        processLoadArtifactRequest(
+            artifactName,
+            Part.fromBytes(csvContent.getBytes(StandardCharsets.UTF_8), "application/csv"));
+
+    Part artifactPart = finalRequest.contents().get(1).parts().get().get(1);
+    assertThat(artifactPart.inlineData()).isEmpty();
+    assertThat(artifactPart.text()).hasValue(csvContent);
+  }
+
+  @Test
+  public void processLlmRequest_supportedMime_keepsInlineData() {
+    String artifactName = "file.pdf";
+    byte[] pdfBytes = "%PDF-1.4".getBytes(StandardCharsets.UTF_8);
+    LlmRequest finalRequest =
+        processLoadArtifactRequest(artifactName, Part.fromBytes(pdfBytes, "application/pdf"));
+
+    Part artifactPart = finalRequest.contents().get(1).parts().get().get(1);
+    assertThat(artifactPart.inlineData()).isPresent();
+    assertThat(artifactPart.inlineData().get().mimeType()).hasValue("application/pdf");
+    assertThat(artifactPart.inlineData().get().data().get()).isEqualTo(pdfBytes);
+  }
+
+  @Test
+  public void processLlmRequest_unsupportedBinaryMime_convertsToPlaceholder() {
+    String artifactName = "slides.pptx";
+    LlmRequest finalRequest =
+        processLoadArtifactRequest(
+            artifactName,
+            Part.fromBytes(
+                new byte[] {1, 2, 3},
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"));
+
+    Part artifactPart = finalRequest.contents().get(1).parts().get().get(1);
+    assertThat(artifactPart.inlineData()).isEmpty();
+    assertThat(artifactPart.text())
+        .hasValue(
+            "[Binary artifact: slides.pptx, type:"
+                + " application/vnd.openxmlformats-officedocument.presentationml.presentation,"
+                + " size: 0.0 KB. Content cannot be displayed inline.]");
+  }
+
+  private LlmRequest processLoadArtifactRequest(String artifactName, Part loadedArtifactPart) {
+    ImmutableList<String> availableArtifacts = ImmutableList.of(artifactName);
+    ImmutableList<String> artifactsToLoad = ImmutableList.of(artifactName);
+
+    FunctionResponse functionResponse =
+        FunctionResponse.builder()
+            .name("load_artifacts")
+            .response(ImmutableMap.of("artifact_names", artifactsToLoad))
+            .build();
+    Content functionCallContent =
+        Content.builder()
+            .role("model")
+            .parts(
+                ImmutableList.of(
+                    Part.fromFunctionResponse(
+                        functionResponse.name().get(), functionResponse.response().get())))
+            .build();
+    llmRequestBuilder.contents(ImmutableList.of(functionCallContent));
+
+    ToolContext spiedToolContext = spy(ToolContext.builder(mockInvocationContext).build());
+    doReturn(Single.just(availableArtifacts)).when(spiedToolContext).listArtifacts();
+    doReturn(Maybe.just(loadedArtifactPart)).when(spiedToolContext).loadArtifact(artifactName);
+
+    loadArtifactsTool.processLlmRequest(llmRequestBuilder, spiedToolContext).blockingAwait();
+    verify(spiedToolContext).loadArtifact(artifactName);
+    return llmRequestBuilder.build();
   }
 }
