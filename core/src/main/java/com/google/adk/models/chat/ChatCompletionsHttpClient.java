@@ -190,14 +190,21 @@ public final class ChatCompletionsHttpClient {
   public Flowable<LlmResponse> complete(LlmRequest llmRequest, boolean stream) {
     return Flowable.defer(
         () -> {
+          String effectiveModelName = llmRequest.model().orElse("?");
+          logger.trace("Chat Completion Request Contents: {}", llmRequest.contents());
+          llmRequest.config().ifPresent(c -> logger.trace("Chat Completion Request Config: {}", c));
+
           ChatCompletionsRequest dtoRequest =
               ChatCompletionsRequest.fromLlmRequest(llmRequest, stream);
           String jsonPayload = objectMapper.writeValueAsString(dtoRequest);
-          logger.trace(
-              "Chat Completion Request: model={}, stream={}, messagesCount={}",
-              dtoRequest.model,
-              dtoRequest.stream,
-              dtoRequest.messages != null ? dtoRequest.messages.size() : 0);
+          logger.trace("Chat Completion Request JSON: {}", jsonPayload);
+
+          if (stream) {
+            logger.debug(
+                "Sending streaming chat-completion request to model {}", effectiveModelName);
+          } else {
+            logger.debug("Sending chat-completion request to model {}", effectiveModelName);
+          }
 
           Request.Builder requestBuilder =
               new Request.Builder().url(completionsUrl).post(RequestBody.create(jsonPayload, JSON));
@@ -209,11 +216,7 @@ public final class ChatCompletionsHttpClient {
           requestBuilder.header("Content-Type", JSON.toString());
 
           Request request = requestBuilder.build();
-          if (stream) {
-            return createStreamingFlowable(request);
-          } else {
-            return createNonStreamingFlowable(request);
-          }
+          return stream ? createStreamingFlowable(request) : createNonStreamingFlowable(request);
         });
   }
 
@@ -274,10 +277,14 @@ public final class ChatCompletionsHttpClient {
                       // A single malformed chunk must not abort the entire stream. Log a
                       // warning and continue.
                       try {
+                        logger.trace("Raw streaming chat-completion chunk: {}", data);
                         ChatCompletionsResponse.ChatCompletionChunk chunk =
                             objectMapper.readValue(
                                 data, ChatCompletionsResponse.ChatCompletionChunk.class);
                         ImmutableList<LlmResponse> responses = collection.processChunk(chunk);
+                        if (!responses.isEmpty()) {
+                          logger.trace("Responses to emit: {}", responses);
+                        }
                         for (LlmResponse resp : responses) {
                           emitter.onNext(resp);
                         }
@@ -341,9 +348,12 @@ public final class ChatCompletionsHttpClient {
         }
 
         String jsonResponse = body.string();
+        logger.trace("Raw non-streaming chat-completion response: {}", jsonResponse);
         ChatCompletionsResponse.ChatCompletion completion =
             objectMapper.readValue(jsonResponse, ChatCompletionsResponse.ChatCompletion.class);
-        emitter.onNext(completion.toLlmResponse());
+        LlmResponse llmResponse = completion.toLlmResponse();
+        logger.trace("Response to emit: {}", llmResponse);
+        emitter.onNext(llmResponse);
         emitter.onComplete();
       } catch (Exception e) {
         emitter.tryOnError(e);
