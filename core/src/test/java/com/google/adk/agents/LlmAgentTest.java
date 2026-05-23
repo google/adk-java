@@ -440,7 +440,7 @@ public final class LlmAgentTest {
   }
 
   @Test
-  public void close_closesToolsetsOnException() throws Exception {
+  public void close_closesToolsetsOnException() {
     ClosableToolset toolset1 =
         new ClosableToolset() {
           @Override

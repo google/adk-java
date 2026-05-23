@@ -25,9 +25,12 @@ import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
@@ -35,6 +38,8 @@ import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
+import com.google.adk.tools.LlmRequestProcessor;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -47,6 +52,7 @@ import com.google.genai.types.Transcription;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
@@ -761,5 +767,98 @@ public final class BaseLlmFlowTest {
     assertThat(event.usageMetadata()).hasValue(usageMetadata);
     assertThat(event.author()).isEqualTo(invocationContext.agent().name());
     assertThat(event.invocationId()).isEqualTo(invocationContext.invocationId());
+  }
+
+  @Test
+  public void run_withTools_sequentiallyAppliesToolProcessors() {
+    BaseTool tool1 =
+        new BaseTool("tool1", "test tool 1") {
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder builder, ToolContext toolContext) {
+            return Completable.fromAction(
+                () -> builder.appendInstructions(ImmutableList.of("instruction1")));
+          }
+        };
+    BaseTool tool2 =
+        new BaseTool("tool2", "test tool 2") {
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder builder, ToolContext toolContext) {
+            return Completable.fromAction(
+                () -> builder.appendInstructions(ImmutableList.of("instruction2")));
+          }
+        };
+
+    TestLlm testLlm = createTestLlm(LlmResponse.builder().build());
+    LlmAgent agent = createTestAgentBuilder(testLlm).tools(tool1, tool2).build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> unused = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(testLlm.getLastRequest().getSystemInstructions())
+        .containsExactly("instruction1\n\ninstruction2");
+  }
+
+  @Test
+  public void run_withToolset_appliesToolsetAndItsToolsProcessors() {
+    TestToolset toolset = new TestToolset();
+    TestLlm testLlm = createTestLlm(LlmResponse.builder().build());
+    LlmAgent agent = createTestAgentBuilder(testLlm).tools(toolset).build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> unused = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(testLlm.getLastRequest().getSystemInstructions())
+        .containsExactly("toolset-instruction\n\ntool-instruction");
+  }
+
+  private static final class TestToolset implements BaseToolset, LlmRequestProcessor {
+    private final BaseTool tool1 =
+        new BaseTool("tool1", "test tool 1") {
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder builder, ToolContext toolContext) {
+            return Completable.fromAction(
+                () -> builder.appendInstructions(ImmutableList.of("tool-instruction")));
+          }
+        };
+
+    @Override
+    public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+      return Flowable.just(tool1);
+    }
+
+    @Override
+    public Completable processLlmRequest(LlmRequest.Builder builder, ToolContext toolContext) {
+      return Completable.fromAction(
+          () -> builder.appendInstructions(ImmutableList.of("toolset-instruction")));
+    }
+
+    @Override
+    public void close() {}
+  }
+
+  @Test
+  public void run_withUnsupportedToolType_throwsIllegalArgumentException() {
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .tools("unsupported-tool-type-string")
+            .build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    Flowable<Event> flow = baseLlmFlow.run(invocationContext);
+    Single<List<Event>> single = flow.toList();
+    IllegalArgumentException thrown =
+        assertThrows(IllegalArgumentException.class, single::blockingGet);
+    assertThat(thrown)
+        .hasMessageThat()
+        .contains("Object in tools list is not of a supported type: java.lang.String");
   }
 }

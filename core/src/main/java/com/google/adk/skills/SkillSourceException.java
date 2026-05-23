@@ -22,11 +22,43 @@ package com.google.adk.skills;
  */
 public final class SkillSourceException extends Exception {
 
-  public SkillSourceException(String message) {
+  public static final String SKILL_LOAD_ERROR = "SKILL_LOAD_ERROR";
+  public static final String SKILL_NOT_FOUND = "SKILL_NOT_FOUND";
+  public static final String SKILL_FORMAT_ERROR = "SKILL_FORMAT_ERROR";
+  public static final String RESOURCE_LOAD_ERROR = "RESOURCE_LOAD_ERROR";
+  public static final String RESOURCE_NOT_FOUND = "RESOURCE_NOT_FOUND";
+
+  private final String errorCode;
+
+  /**
+   * Constructs a new exception with the specified detail message and error code.
+   *
+   * @param message The detail message.
+   * @param errorCode The specific error code categorizing the failure.
+   */
+  public SkillSourceException(String message, String errorCode) {
     super(message);
+    this.errorCode = errorCode;
   }
 
-  public SkillSourceException(String message, Throwable cause) {
+  /**
+   * Constructs a new exception with the specified detail message, error code, and cause.
+   *
+   * @param message The detail message.
+   * @param errorCode The specific error code categorizing the failure.
+   * @param cause The cause.
+   */
+  public SkillSourceException(String message, String errorCode, Throwable cause) {
     super(message, cause);
+    this.errorCode = errorCode;
+  }
+
+  /**
+   * Returns the error code categorizing the failure.
+   *
+   * @return The error code string.
+   */
+  public String getErrorCode() {
+    return errorCode;
   }
 }

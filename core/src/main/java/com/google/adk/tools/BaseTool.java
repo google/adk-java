@@ -45,7 +45,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** The base class for all ADK tools. */
-public abstract class BaseTool {
+public abstract class BaseTool implements LlmRequestProcessor {
   private final String name;
   private final String description;
   private final boolean isLongRunning;
@@ -183,6 +183,7 @@ public abstract class BaseTool {
    * internal list of tools. Override this method for processing the outgoing request.
    */
   @CanIgnoreReturnValue
+  @Override
   public Completable processLlmRequest(
       LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
     if (declaration().isEmpty()) {

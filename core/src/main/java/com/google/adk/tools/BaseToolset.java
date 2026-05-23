@@ -28,7 +28,7 @@ public interface BaseToolset extends AutoCloseable {
    * Return all tools in the toolset based on the provided context.
    *
    * @param readonlyContext Context used to filter tools available to the agent.
-   * @return A Single emitting a list of tools available under the specified context.
+   * @return A Flowable emitting tools available under the specified context.
    */
   Flowable<BaseTool> getTools(ReadonlyContext readonlyContext);
 

@@ -38,6 +38,9 @@ import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.telemetry.Tracing;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
+import com.google.adk.tools.LlmRequestProcessor;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
@@ -58,6 +61,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -96,20 +100,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
     Context currentContext = Context.current();
     LlmAgent agent = (LlmAgent) context.agent();
 
-    RequestProcessor toolsProcessor =
-        (ctx, req) -> {
-          LlmRequest.Builder builder = req.toBuilder();
-          return agent
-              .canonicalTools(new ReadonlyContext(ctx))
-              .concatMapCompletable(
-                  tool -> tool.processLlmRequest(builder, ToolContext.builder(ctx).build()))
-              .andThen(
-                  Single.fromCallable(
-                      () -> RequestProcessingResult.create(builder.build(), ImmutableList.of())));
-        };
-
     Iterable<RequestProcessor> allProcessors =
-        Iterables.concat(requestProcessors, ImmutableList.of(toolsProcessor));
+        Iterables.concat(requestProcessors, ImmutableList.of(getRequestProcessorFromTools(agent)));
 
     return Flowable.fromIterable(allProcessors)
         .concatMap(
@@ -119,6 +111,49 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     .doOnSuccess(result -> llmRequestRef.set(result.updatedRequest()))
                     .flattenAsFlowable(
                         result -> result.events() != null ? result.events() : ImmutableList.of()));
+  }
+
+  /**
+   * Constructs a {@link RequestProcessor} that sequentially applies the {@code processLlmRequest}
+   * methods of all tools and toolsets associated with this agent to the incoming {@link
+   * LlmRequest}.
+   *
+   * @return A {@link RequestProcessor} that applies tool-specific modifications to LLM requests.
+   */
+  private RequestProcessor getRequestProcessorFromTools(LlmAgent agent) {
+    return (context, request) -> {
+      ReadonlyContext readonlyContext = new ReadonlyContext(context);
+      List<BiFunction<LlmRequest.Builder, ToolContext, Completable>> processors = new ArrayList<>();
+
+      for (Object toolOrToolset : agent.toolsUnion()) {
+        if (toolOrToolset instanceof BaseTool baseTool) {
+          processors.add(baseTool::processLlmRequest);
+        } else if (toolOrToolset instanceof BaseToolset baseToolset) {
+          // First apply the toolset's own request processor if it implements the
+          // LlmRequestProcessor interface, then unwrap all tools from the toolset
+          // and apply each individual tool's request processor sequentially.
+          processors.add(
+              (builder, ctx) ->
+                  (baseToolset instanceof LlmRequestProcessor processor
+                          ? processor.processLlmRequest(builder, ctx)
+                          : Completable.complete())
+                      .andThen(baseToolset.getTools(readonlyContext))
+                      .concatMapCompletable(b -> b.processLlmRequest(builder, ctx)));
+        } else {
+          throw new IllegalArgumentException(
+              "Object in tools list is not of a supported type: "
+                  + toolOrToolset.getClass().getName());
+        }
+      }
+
+      LlmRequest.Builder builder = request.toBuilder();
+      ToolContext toolContext = ToolContext.builder(context).build();
+      return Flowable.fromIterable(processors)
+          .concatMapCompletable(f -> f.apply(builder, toolContext))
+          .andThen(
+              Single.fromCallable(
+                  () -> RequestProcessingResult.create(builder.build(), ImmutableList.of())));
+    };
   }
 
   /**
