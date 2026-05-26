@@ -293,5 +293,40 @@ public final class TestUtils {
     }
   }
 
+  /**
+   * A tool that simulates blocking I/O by sleeping on the subscribing thread. Records the name of
+   * the thread on which {@link #runAsync} executes, allowing tests to assert that parallel tool
+   * calls are dispatched to distinct threads.
+   */
+  public static class BlockingTool extends BaseTool {
+    private final long sleepMillis;
+    private volatile String executionThreadName;
+
+    public BlockingTool(String name, long sleepMillis) {
+      super(name, "A blocking tool for testing parallel execution");
+      this.sleepMillis = sleepMillis;
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(FunctionDeclaration.builder().name(name()).build());
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+      return Single.fromCallable(
+          () -> {
+            executionThreadName = Thread.currentThread().getName();
+            Thread.sleep(sleepMillis);
+            return ImmutableMap.<String, Object>of("tool", name(), "status", "done");
+          });
+    }
+
+    /** Returns the name of the thread that executed {@link #runAsync}, or null if not yet run. */
+    public String getExecutionThreadName() {
+      return executionThreadName;
+    }
+  }
+
   private TestUtils() {}
 }
