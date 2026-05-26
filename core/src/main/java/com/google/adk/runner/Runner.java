@@ -61,7 +61,6 @@ import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -772,10 +771,9 @@ public class Runner {
    * @return agent to run.
    */
   private BaseAgent findAgentToRun(Session session, BaseAgent rootAgent) {
-    List<Event> events = new ArrayList<>(session.events());
-    Collections.reverse(events);
-
-    for (Event event : events) {
+    List<Event> events = session.events();
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event event = events.get(i);
       String author = event.author();
       if (author == null) {
         continue;
