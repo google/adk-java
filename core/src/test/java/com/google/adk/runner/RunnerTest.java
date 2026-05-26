@@ -1123,6 +1123,38 @@ public final class RunnerTest {
   }
 
   @Test
+  public void onUserMessageCallback_withStateDelta_seesMergedState() {
+    ArgumentCaptor<InvocationContext> contextCaptor =
+        ArgumentCaptor.forClass(InvocationContext.class);
+    when(plugin.onUserMessageCallback(contextCaptor.capture(), any())).thenReturn(Maybe.empty());
+
+    ImmutableMap<String, Object> stateDelta =
+        ImmutableMap.of("callback_key", "callback_value", "number", 123);
+
+    var unused =
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                createContent("test with state"),
+                RunConfig.builder().build(),
+                stateDelta)
+            .toList()
+            .blockingGet();
+
+    // Verify onUserMessageCallback was called
+    verify(plugin).onUserMessageCallback(any(), any());
+
+    // Verify the context passed to onUserMessageCallback has the merged state
+    InvocationContext capturedContext = contextCaptor.getValue();
+    Session sessionInCallback = capturedContext.session();
+
+    // Verify state delta was merged before onUserMessageCallback was invoked
+    assertThat(sessionInCallback.state()).containsEntry("callback_key", "callback_value");
+    assertThat(sessionInCallback.state()).containsEntry("number", 123);
+  }
+
+  @Test
   public void runAsync_ensureEventsAreAppendedInOrder() throws Exception {
     Event event1 = TestUtils.createEvent("1");
     Event event2 = TestUtils.createEvent("2");
