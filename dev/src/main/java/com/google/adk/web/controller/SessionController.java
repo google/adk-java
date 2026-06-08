@@ -22,6 +22,7 @@ import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.ListSessionsResponse;
 import com.google.adk.sessions.Session;
 import com.google.adk.web.dto.SessionRequest;
+import com.google.adk.web.security.CallerStateGuard;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Collections;
@@ -176,6 +177,7 @@ public class SessionController {
         body);
 
     Map<String, Object> initialState = (body != null) ? body.getState() : Collections.emptyMap();
+    CallerStateGuard.validateCallerState(initialState);
 
     try {
       findSessionOrThrow(appName, userId, sessionId);
@@ -237,8 +239,9 @@ public class SessionController {
         userId,
         body);
 
+    Map<String, Object> initialState = (body != null) ? body.getState() : Collections.emptyMap();
+    CallerStateGuard.validateCallerState(initialState);
     try {
-      Map<String, Object> initialState = (body != null) ? body.getState() : Collections.emptyMap();
       Session createdSession =
           sessionService
               .createSession(appName, userId, new ConcurrentHashMap<>(initialState), null)

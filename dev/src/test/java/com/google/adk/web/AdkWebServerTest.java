@@ -139,4 +139,63 @@ public class AdkWebServerTest {
     mockMvc.perform(delete("/apps/test-app/users/test-user/sessions/test-session-1"));
     mockMvc.perform(delete("/apps/test-app/users/test-user/sessions/test-session-2"));
   }
+
+  @Test
+  public void createSession_withPlainSessionScopedState_returnsOk() throws Exception {
+    var result =
+        mockMvc
+            .perform(
+                post("/apps/test-app/users/test-user/sessions")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"state\":{\"topic\":\"weather\"}}"))
+            .andExpect(status().isOk())
+            .andReturn();
+
+    var sessionId =
+        com.jayway.jsonpath.JsonPath.read(result.getResponse().getContentAsString(), "$.id");
+    mockMvc.perform(delete("/apps/test-app/users/test-user/sessions/" + sessionId));
+  }
+
+  @Test
+  public void createSession_withAppScopedState_returnsBadRequest() throws Exception {
+    mockMvc
+        .perform(
+            post("/apps/test-app/users/test-user/sessions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"state\":{\"app:operationalScope\":\"everything\"}}"))
+        .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  public void createSession_withUserScopedState_returnsBadRequest() throws Exception {
+    mockMvc
+        .perform(
+            post("/apps/test-app/users/test-user/sessions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"state\":{\"user:role\":\"admin\"}}"))
+        .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  public void createSessionWithId_withAppScopedState_returnsBadRequest() throws Exception {
+    mockMvc
+        .perform(
+            post("/apps/test-app/users/test-user/sessions/test-session-scoped")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"state\":{\"app:operationalScope\":\"everything\"}}"))
+        .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  public void run_withAppScopedStateDelta_returnsBadRequest() throws Exception {
+    mockMvc
+        .perform(
+            post("/run")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    "{\"appName\":\"test-app\",\"userId\":\"test-user\","
+                        + "\"sessionId\":\"test-session\","
+                        + "\"stateDelta\":{\"app:operationalScope\":\"everything\"}}"))
+        .andExpect(status().isBadRequest());
+  }
 }

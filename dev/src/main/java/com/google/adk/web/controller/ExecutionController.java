@@ -21,6 +21,7 @@ import com.google.adk.agents.RunConfig.StreamingMode;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
 import com.google.adk.web.dto.AgentRunRequest;
+import com.google.adk.web.security.CallerStateGuard;
 import com.google.adk.web.service.RunnerService;
 import com.google.common.collect.Lists;
 import io.reactivex.rxjava3.core.Flowable;
@@ -73,6 +74,7 @@ public class ExecutionController {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "sessionId cannot be null or empty");
     }
+    CallerStateGuard.validateCallerState(request.stateDelta);
     log.info("Request received for POST /run for session: {}", request.sessionId);
 
     Runner runner = this.runnerService.getRunner(request.appName);
@@ -122,6 +124,12 @@ public class ExecutionController {
           request.sessionId);
       emitter.completeWithError(
           new ResponseStatusException(HttpStatus.BAD_REQUEST, "sessionId cannot be null or empty"));
+      return emitter;
+    }
+    try {
+      CallerStateGuard.validateCallerState(request.stateDelta);
+    } catch (ResponseStatusException e) {
+      emitter.completeWithError(e);
       return emitter;
     }
 
