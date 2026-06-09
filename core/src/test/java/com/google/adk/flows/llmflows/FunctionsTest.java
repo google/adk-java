@@ -25,6 +25,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
@@ -75,6 +76,31 @@ public final class FunctionsTest {
           .author("agent")
           .content(Content.fromParts(Part.fromFunctionCall("other_function", ImmutableMap.of())))
           .build();
+
+  @Test
+  public void generateClientFunctionCallId_withProvider_derivesFromProvider() {
+    UuidProvider provider = () -> "deterministic-uuid";
+
+    String id = Functions.generateClientFunctionCallId(provider);
+
+    assertThat(id).isEqualTo("adk-deterministic-uuid");
+  }
+
+  @Test
+  public void populateClientFunctionCallId_withProvider_usesProvider() {
+    Event event =
+        Event.builder()
+            .id("event1")
+            .invocationId("invocation1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromFunctionCall("some_function", ImmutableMap.of())))
+            .build();
+
+    Functions.populateClientFunctionCallId(event, () -> "deterministic-uuid");
+
+    Part populatedPart = event.content().get().parts().get().get(0);
+    assertThat(populatedPart.functionCall().get().id()).hasValue("adk-deterministic-uuid");
+  }
 
   @Test
   public void handleFunctionCalls_noFunctionCalls() {

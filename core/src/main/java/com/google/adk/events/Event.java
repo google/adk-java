@@ -23,6 +23,8 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -34,12 +36,10 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
 import com.google.genai.types.Transcription;
-import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
 // TODO - b/413761119 update Agent.java when resolved.
@@ -74,7 +74,7 @@ public class Event extends JsonBaseModel {
   private Event() {}
 
   public static String generateEventId() {
-    return UUID.randomUUID().toString();
+    return UuidProvider.SYSTEM.newUuid();
   }
 
   /** The event id. */
@@ -587,7 +587,7 @@ public class Event extends JsonBaseModel {
       event.setCustomMetadata(customMetadata);
       event.setModelVersion(modelVersion);
       event.setActions(actions().orElseGet(() -> EventActions.builder().build()));
-      event.setTimestamp(timestamp().orElseGet(() -> Instant.now().toEpochMilli()));
+      event.setTimestamp(timestamp().orElseGet(() -> TimeProvider.SYSTEM.now().toEpochMilli()));
       event.setInputTranscription(inputTranscription);
       event.setOutputTranscription(outputTranscription);
       return event;

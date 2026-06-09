@@ -418,7 +418,8 @@ public abstract class BaseAgent {
                       content -> {
                         invocationContext.setEndInvocation(true);
                         return Event.builder()
-                            .id(Event.generateEventId())
+                            .id(invocationContext.newUuid())
+                            .timestamp(invocationContext.now().toEpochMilli())
                             .invocationId(invocationContext.invocationId())
                             .author(name())
                             .branch(invocationContext.branch().orElse(null))
@@ -435,7 +436,8 @@ public abstract class BaseAgent {
                   if (callbackContext.state().hasDelta()) {
                     Event.Builder eventBuilder =
                         Event.builder()
-                            .id(Event.generateEventId())
+                            .id(invocationContext.newUuid())
+                            .timestamp(invocationContext.now().toEpochMilli())
                             .invocationId(invocationContext.invocationId())
                             .author(name())
                             .branch(invocationContext.branch().orElse(null))

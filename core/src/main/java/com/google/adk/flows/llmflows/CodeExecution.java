@@ -226,6 +226,8 @@ public final class CodeExecution {
               llmRequest.contents().add(codeContent);
               Event codeEvent =
                   Event.builder()
+                      .id(invocationContext.newUuid())
+                      .timestamp(invocationContext.now().toEpochMilli())
                       .invocationId(invocationContext.invocationId())
                       .author(llmAgent.name())
                       .content(codeContent)
@@ -307,6 +309,8 @@ public final class CodeExecution {
 
     Event codeEvent =
         Event.builder()
+            .id(invocationContext.newUuid())
+            .timestamp(invocationContext.now().toEpochMilli())
             .invocationId(invocationContext.invocationId())
             .author(llmAgent.name())
             .content(responseContent)
@@ -456,6 +460,8 @@ public final class CodeExecution {
               }
               eventActionsBuilder.artifactDelta(artifactDelta);
               return Event.builder()
+                  .id(invocationContext.newUuid())
+                  .timestamp(invocationContext.now().toEpochMilli())
                   .invocationId(invocationContext.invocationId())
                   .author(invocationContext.agent().name())
                   .content(resultContent)

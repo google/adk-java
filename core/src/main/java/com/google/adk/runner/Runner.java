@@ -33,6 +33,8 @@ import com.google.adk.events.EventActions;
 import com.google.adk.flows.llmflows.PersistBarrier;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.Model;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
@@ -85,6 +87,8 @@ public class Runner {
   private final PluginManager pluginManager;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
+  private final TimeProvider timeProvider;
+  private final UuidProvider uuidProvider;
   private final ConcurrentMap<String, Completable> activeSessionCompletables =
       new MapMaker().weakValues().makeMap();
 
@@ -94,9 +98,11 @@ public class Runner {
     private BaseAgent agent;
     private String appName;
     private BaseArtifactService artifactService = new InMemoryArtifactService();
-    private BaseSessionService sessionService = new InMemorySessionService();
+    @Nullable private BaseSessionService sessionService = null;
     @Nullable private BaseMemoryService memoryService = null;
     private List<? extends Plugin> plugins = ImmutableList.of();
+    private TimeProvider timeProvider = TimeProvider.SYSTEM;
+    private UuidProvider uuidProvider = UuidProvider.SYSTEM;
 
     @CanIgnoreReturnValue
     public Builder app(App app) {
@@ -151,6 +157,18 @@ public class Runner {
       return this;
     }
 
+    @CanIgnoreReturnValue
+    public Builder timeProvider(TimeProvider timeProvider) {
+      this.timeProvider = timeProvider;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder uuidProvider(UuidProvider uuidProvider) {
+      this.uuidProvider = uuidProvider;
+      return this;
+    }
+
     public Runner build() {
       BaseAgent buildAgent;
       String buildAppName;
@@ -187,18 +205,21 @@ public class Runner {
       if (artifactService == null) {
         throw new IllegalStateException("Artifact service must be provided.");
       }
-      if (sessionService == null) {
-        throw new IllegalStateException("Session service must be provided.");
-      }
+      BaseSessionService buildSessionService =
+          sessionService != null
+              ? sessionService
+              : new InMemorySessionService(timeProvider, uuidProvider);
       return new Runner(
           buildAgent,
           buildAppName,
           artifactService,
-          sessionService,
+          buildSessionService,
           memoryService,
           buildPlugins,
           buildEventsCompactionConfig,
-          buildContextCacheConfig);
+          buildContextCacheConfig,
+          timeProvider,
+          uuidProvider);
     }
   }
 
@@ -252,14 +273,41 @@ public class Runner {
       List<? extends Plugin> plugins,
       @Nullable EventsCompactionConfig eventsCompactionConfig,
       @Nullable ContextCacheConfig contextCacheConfig) {
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        plugins,
+        eventsCompactionConfig,
+        contextCacheConfig,
+        TimeProvider.SYSTEM,
+        UuidProvider.SYSTEM);
+  }
+
+  private Runner(
+      BaseAgent agent,
+      String appName,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService,
+      @Nullable BaseMemoryService memoryService,
+      List<? extends Plugin> plugins,
+      @Nullable EventsCompactionConfig eventsCompactionConfig,
+      @Nullable ContextCacheConfig contextCacheConfig,
+      TimeProvider timeProvider,
+      UuidProvider uuidProvider) {
     this.agent = agent;
     this.appName = appName;
     this.artifactService = artifactService;
     this.sessionService = sessionService;
     this.memoryService = memoryService;
     this.pluginManager = new PluginManager(plugins);
-    this.eventsCompactionConfig = createEventsCompactionConfig(agent, eventsCompactionConfig);
+    this.eventsCompactionConfig =
+        createEventsCompactionConfig(agent, eventsCompactionConfig, timeProvider, uuidProvider);
     this.contextCacheConfig = contextCacheConfig;
+    this.timeProvider = timeProvider;
+    this.uuidProvider = uuidProvider;
   }
 
   /**
@@ -352,7 +400,8 @@ public class Runner {
     // Appends only. We do not yield the event because it's not from the model.
     Event.Builder eventBuilder =
         Event.builder()
-            .id(Event.generateEventId())
+            .id(invocationContext.newUuid())
+            .timestamp(invocationContext.now().toEpochMilli())
             .invocationId(invocationContext.invocationId())
             .author("user")
             .content(newMessage);
@@ -489,7 +538,7 @@ public class Runner {
     return Flowable.defer(
             () -> {
               BaseAgent rootAgent = this.agent;
-              String invocationId = InvocationContext.newInvocationContextId();
+              String invocationId = InvocationContext.newInvocationContextId(this.uuidProvider);
 
               // Pre-merge stateDelta so onUserMessageCallback can access it.
               // Safe: session is a copy; persistence still happens via appendNewMessageToSession.
@@ -561,7 +610,8 @@ public class Runner {
             .map(
                 content ->
                     Event.builder()
-                        .id(Event.generateEventId())
+                        .id(contextWithUpdatedSession.newUuid())
+                        .timestamp(contextWithUpdatedSession.now().toEpochMilli())
                         .invocationId(contextWithUpdatedSession.invocationId())
                         .author("model")
                         .content(content)
@@ -669,6 +719,8 @@ public class Runner {
         .session(session)
         .eventsCompactionConfig(this.eventsCompactionConfig)
         .contextCacheConfig(this.contextCacheConfig)
+        .timeProvider(this.timeProvider)
+        .uuidProvider(this.uuidProvider)
         .agent(this.findAgentToRun(session, rootAgent));
   }
 
@@ -873,7 +925,10 @@ public class Runner {
 
   @Nullable
   private static EventsCompactionConfig createEventsCompactionConfig(
-      BaseAgent agent, @Nullable EventsCompactionConfig config) {
+      BaseAgent agent,
+      @Nullable EventsCompactionConfig config,
+      TimeProvider timeProvider,
+      UuidProvider uuidProvider) {
     if (config == null || config.summarizer() != null) {
       return config;
     }
@@ -883,7 +938,7 @@ public class Runner {
             .map(LlmAgent.class::cast)
             .flatMap(LlmAgent::model)
             .flatMap(Model::model)
-            .map(LlmEventSummarizer::new)
+            .map(baseLlm -> new LlmEventSummarizer(baseLlm, timeProvider, uuidProvider))
             .orElseThrow(
                 () ->
                     new IllegalArgumentException(
