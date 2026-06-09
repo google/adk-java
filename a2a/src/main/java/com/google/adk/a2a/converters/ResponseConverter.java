@@ -45,12 +45,10 @@ import io.a2a.spec.Task;
 import io.a2a.spec.TaskArtifactUpdateEvent;
 import io.a2a.spec.TaskState;
 import io.a2a.spec.TaskStatusUpdateEvent;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -393,12 +391,12 @@ public final class ResponseConverter {
   private static Event emptyEvent(InvocationContext invocationContext) {
     Event.Builder builder =
         Event.builder()
-            .id(UUID.randomUUID().toString())
+            .id(invocationContext.newUuid())
             .invocationId(invocationContext.invocationId())
             .author(invocationContext.agent().name())
             .branch(invocationContext.branch().orElse(null))
             .content(Content.builder().role("user").parts(ImmutableList.of()).build())
-            .timestamp(Instant.now().toEpochMilli());
+            .timestamp(invocationContext.now().toEpochMilli());
     return builder.build();
   }
 
@@ -408,10 +406,10 @@ public final class ResponseConverter {
 
   private static Event.Builder remoteAgentEventBuilder(InvocationContext invocationContext) {
     return Event.builder()
-        .id(UUID.randomUUID().toString())
+        .id(invocationContext.newUuid())
         .invocationId(invocationContext.invocationId())
         .author(invocationContext.agent().name())
         .branch(invocationContext.branch().orElse(null))
-        .timestamp(Instant.now().toEpochMilli());
+        .timestamp(invocationContext.now().toEpochMilli());
   }
 }

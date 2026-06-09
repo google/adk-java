@@ -48,12 +48,10 @@ import io.a2a.spec.TaskStatusUpdateEvent;
 import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.FlowableEmitter;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.function.BiConsumer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -193,8 +191,9 @@ public class RemoteA2AAgent extends BaseAgent {
     return streaming;
   }
 
-  private Message.Builder newA2AMessage(Message.Role role, List<io.a2a.spec.Part<?>> parts) {
-    return new Message.Builder().messageId(UUID.randomUUID().toString()).role(role).parts(parts);
+  private Message.Builder newA2AMessage(
+      InvocationContext invocationContext, Message.Role role, List<io.a2a.spec.Part<?>> parts) {
+    return new Message.Builder().messageId(invocationContext.newUuid()).role(role).parts(parts);
   }
 
   private Message prepareMessage(InvocationContext invocationContext) {
@@ -202,13 +201,15 @@ public class RemoteA2AAgent extends BaseAgent {
     if (userCall != null) {
       ImmutableList<io.a2a.spec.Part<?>> parts =
           EventConverter.contentToParts(userCall.content(), userCall.partial().orElse(false));
-      return newA2AMessage(Message.Role.USER, parts)
+      return newA2AMessage(invocationContext, Message.Role.USER, parts)
           .taskId(EventConverter.taskId(userCall))
           .contextId(EventConverter.contextId(userCall))
           .build();
     }
     return newA2AMessage(
-            Message.Role.USER, EventConverter.messagePartsFromContext(invocationContext))
+            invocationContext,
+            Message.Role.USER,
+            EventConverter.messagePartsFromContext(invocationContext))
         .build();
   }
 
@@ -568,11 +569,11 @@ public class RemoteA2AAgent extends BaseAgent {
       }
 
       return Event.builder()
-          .id(UUID.randomUUID().toString())
+          .id(invocationContext.newUuid())
           .invocationId(invocationContext.invocationId())
           .author(agentName)
           .content(content)
-          .timestamp(Instant.now().toEpochMilli())
+          .timestamp(invocationContext.now().toEpochMilli())
           .customMetadata(aggMetadataBuilder.build())
           .build();
     }

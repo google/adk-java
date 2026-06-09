@@ -20,6 +20,8 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.sessions.InMemorySessionService.DuplicateSessionIdBehavior;
 import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Field;
@@ -67,6 +69,35 @@ public final class InMemorySessionServiceTest {
     assertThat(session.appName()).isEqualTo("app-name");
     assertThat(session.userId()).isEqualTo("user-id");
     assertThat(session.state()).isEmpty();
+  }
+
+  @Test
+  public void createSession_withDeterministicProviders_usesProvidersForIdAndTime() {
+    TimeProvider fixedClock = () -> Instant.ofEpochMilli(1234L);
+    UuidProvider fixedUuids = () -> "fixed-session-id";
+    InMemorySessionService sessionService = new InMemorySessionService(fixedClock, fixedUuids);
+
+    Session session = sessionService.createSession("app-name", "user-id").blockingGet();
+
+    assertThat(session.id()).isEqualTo("fixed-session-id");
+    assertThat(session.lastUpdateTime()).isEqualTo(Instant.ofEpochMilli(1234L));
+  }
+
+  @Test
+  public void createSession_withDuplicateBehaviorAndProviders_usesBoth() {
+    InMemorySessionService sessionService =
+        new InMemorySessionService(
+            DuplicateSessionIdBehavior.REJECT,
+            () -> Instant.ofEpochMilli(1234L),
+            () -> "fixed-session-id");
+
+    Session session = sessionService.createSession("app-name", "user-id").blockingGet();
+    Single<Session> duplicate = sessionService.createSession("app-name", "user-id");
+
+    assertThat(session.id()).isEqualTo("fixed-session-id");
+    assertThat(session.lastUpdateTime()).isEqualTo(Instant.ofEpochMilli(1234L));
+    SessionException exception = assertThrows(SessionException.class, duplicate::blockingGet);
+    assertThat(exception).hasMessageThat().isEqualTo(SessionException.SESSION_ALREADY_EXISTS);
   }
 
   @Test

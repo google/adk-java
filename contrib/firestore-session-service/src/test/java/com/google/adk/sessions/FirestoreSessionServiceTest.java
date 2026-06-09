@@ -318,6 +318,33 @@ public class FirestoreSessionServiceTest {
     verify(mockSessionDocRef).create(anyMap());
   }
 
+  /** Tests that createSession draws the generated session ID and update time from the providers. */
+  @Test
+  void createSession_withInjectedProviders_usesProvidersForIdAndUpdateTime() {
+    // Arrange
+    FirestoreSessionService providerService =
+        new FirestoreSessionService(
+            mockDb, () -> Instant.ofEpochMilli(1234L), () -> "fixed-session-id");
+    when(mockSessionsCollection.document("fixed-session-id")).thenReturn(mockSessionDocRef);
+
+    // Act
+    TestObserver<Session> testObserver =
+        providerService.createSession(APP_NAME, USER_ID, new ConcurrentHashMap<>(), null).test();
+
+    // Assert
+    testObserver.awaitCount(1);
+    testObserver.assertComplete();
+    testObserver.assertValue(
+        session -> {
+          assertThat(session.id()).isEqualTo("fixed-session-id");
+          assertThat(session.lastUpdateTime()).isEqualTo(Instant.ofEpochMilli(1234L));
+          return true;
+        });
+    verify(mockSessionDocRef).create(sessionDataCaptor.capture());
+    assertThat(sessionDataCaptor.getValue())
+        .containsEntry(Constants.KEY_UPDATE_TIME, Instant.ofEpochMilli(1234L).toString());
+  }
+
   /** Tests that createSession creates a new session with a generated session ID. */
   @Test
   void createSession_withNullSessionId_generatesNewId() {

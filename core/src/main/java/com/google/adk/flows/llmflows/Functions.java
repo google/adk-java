@@ -31,6 +31,7 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.models.FunctionCallIds;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.telemetry.Instrumentation;
 import com.google.adk.telemetry.Instrumentation.ToolExecution;
 import com.google.adk.telemetry.Tracing;
@@ -89,6 +90,18 @@ public final class Functions {
    * @param modelResponseEvent The event potentially containing function calls.
    */
   public static void populateClientFunctionCallId(Event modelResponseEvent) {
+    populateClientFunctionCallId(modelResponseEvent, UuidProvider.SYSTEM);
+  }
+
+  /**
+   * Populates missing function call IDs in the provided event's content using the given {@link
+   * UuidProvider}.
+   *
+   * @param modelResponseEvent The event potentially containing function calls.
+   * @param uuidProvider The provider used to mint new function call IDs.
+   */
+  public static void populateClientFunctionCallId(
+      Event modelResponseEvent, UuidProvider uuidProvider) {
     Optional<Content> originalContentOptional = modelResponseEvent.content();
     if (originalContentOptional.isEmpty()) {
       return;
@@ -106,7 +119,9 @@ public final class Functions {
         FunctionCall functionCall = part.functionCall().get();
         if (functionCall.id().isEmpty() || functionCall.id().get().isEmpty()) {
           FunctionCall updatedFunctionCall =
-              functionCall.toBuilder().id(generateClientFunctionCallId()).build();
+              functionCall.toBuilder()
+                  .id(FunctionCallIds.generateClientFunctionCallId(uuidProvider))
+                  .build();
           newParts.add(part.toBuilder().functionCall(updatedFunctionCall).build());
           modified = true;
         } else {
@@ -169,7 +184,7 @@ public final class Functions {
                 return Maybe.empty();
               }
               Optional<Event> maybeMergedEvent =
-                  Functions.mergeParallelFunctionResponseEvents(events);
+                  Functions.mergeParallelFunctionResponseEvents(invocationContext, events);
               if (maybeMergedEvent.isEmpty()) {
                 return Maybe.empty();
               }
@@ -233,7 +248,8 @@ public final class Functions {
               if (events.isEmpty()) {
                 return Maybe.empty();
               }
-              return Maybe.fromOptional(Functions.mergeParallelFunctionResponseEvents(events));
+              return Maybe.fromOptional(
+                  Functions.mergeParallelFunctionResponseEvents(invocationContext, events));
             });
   }
 
@@ -585,7 +601,7 @@ public final class Functions {
   }
 
   private static Optional<Event> mergeParallelFunctionResponseEvents(
-      List<Event> functionResponseEvents) {
+      InvocationContext invocationContext, List<Event> functionResponseEvents) {
     if (functionResponseEvents.isEmpty()) {
       return Optional.empty();
     }
@@ -609,7 +625,7 @@ public final class Functions {
 
     return Optional.of(
         Event.builder()
-            .id(Event.generateEventId())
+            .id(invocationContext.newUuid())
             .invocationId(baseEvent.invocationId())
             .author(baseEvent.author())
             .branch(baseEvent.branch().orElse(null))
@@ -760,7 +776,8 @@ public final class Functions {
             .build();
 
     return Event.builder()
-        .id(Event.generateEventId())
+        .id(invocationContext.newUuid())
+        .timestamp(invocationContext.now().toEpochMilli())
         .invocationId(invocationContext.invocationId())
         .author(invocationContext.agent().name())
         .branch(invocationContext.branch().orElse(null))
@@ -805,7 +822,7 @@ public final class Functions {
                       functionCallsById.get(entry.getKey()),
                       "toolConfirmation",
                       entry.getValue()))
-              .id(generateClientFunctionCallId())
+              .id(FunctionCallIds.generateClientFunctionCallId(invocationContext.uuidProvider()))
               .build();
 
       longRunningToolIds.add(requestConfirmationFunctionCall.id().get());
@@ -821,6 +838,8 @@ public final class Functions {
 
     return Optional.of(
         Event.builder()
+            .id(invocationContext.newUuid())
+            .timestamp(invocationContext.now().toEpochMilli())
             .invocationId(invocationContext.invocationId())
             .author(invocationContext.agent().name())
             .branch(invocationContext.branch().orElse(null))

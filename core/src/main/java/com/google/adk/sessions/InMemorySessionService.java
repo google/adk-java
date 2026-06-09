@@ -20,6 +20,8 @@ import static java.util.stream.Collectors.toCollection;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Completable;
@@ -32,7 +34,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
@@ -79,6 +80,8 @@ public final class InMemorySessionService implements BaseSessionService {
   private final ConcurrentMap<String, ConcurrentMap<String, Object>> appState;
 
   private final DuplicateSessionIdBehavior duplicateSessionIdBehavior;
+  private final TimeProvider timeProvider;
+  private final UuidProvider uuidProvider;
 
   /**
    * Creates a new instance of the in-memory session service with empty storage. A duplicate session
@@ -95,12 +98,41 @@ public final class InMemorySessionService implements BaseSessionService {
    *     already in use.
    */
   public InMemorySessionService(DuplicateSessionIdBehavior duplicateSessionIdBehavior) {
+    this(duplicateSessionIdBehavior, TimeProvider.SYSTEM, UuidProvider.SYSTEM);
+  }
+
+  /**
+   * Creates a new instance of the in-memory session service with empty storage whose generated
+   * session IDs and {@code lastUpdateTime} values come from the given providers. A duplicate
+   * session ID overwrites the stored session, as with {@link #InMemorySessionService()}.
+   *
+   * @param timeProvider Supplies the {@code lastUpdateTime} of a newly created session.
+   * @param uuidProvider Supplies the session ID when {@code createSession} is not given one.
+   */
+  public InMemorySessionService(TimeProvider timeProvider, UuidProvider uuidProvider) {
+    this(DuplicateSessionIdBehavior.OVERWRITE, timeProvider, uuidProvider);
+  }
+
+  /**
+   * Creates a new instance of the in-memory session service with empty storage.
+   *
+   * @param duplicateSessionIdBehavior What {@code createSession} does when the session ID is
+   *     already in use.
+   * @param timeProvider Supplies the {@code lastUpdateTime} of a newly created session.
+   * @param uuidProvider Supplies the session ID when {@code createSession} is not given one.
+   */
+  public InMemorySessionService(
+      DuplicateSessionIdBehavior duplicateSessionIdBehavior,
+      TimeProvider timeProvider,
+      UuidProvider uuidProvider) {
     this.duplicateSessionIdBehavior =
         Objects.requireNonNull(
             duplicateSessionIdBehavior, "duplicateSessionIdBehavior cannot be null");
     this.sessions = new ConcurrentHashMap<>();
     this.userState = new ConcurrentHashMap<>();
     this.appState = new ConcurrentHashMap<>();
+    this.timeProvider = Objects.requireNonNull(timeProvider, "timeProvider cannot be null");
+    this.uuidProvider = Objects.requireNonNull(uuidProvider, "uuidProvider cannot be null");
   }
 
   @Override
@@ -125,7 +157,7 @@ public final class InMemorySessionService implements BaseSessionService {
         Optional.ofNullable(sessionId)
             .map(String::trim)
             .filter(s -> !s.isEmpty())
-            .orElseGet(() -> UUID.randomUUID().toString());
+            .orElseGet(uuidProvider::newUuid);
 
     // Ensure state map and events list are mutable for the new session
     ConcurrentMap<String, Object> initialState =
@@ -137,7 +169,7 @@ public final class InMemorySessionService implements BaseSessionService {
             .appName(appName)
             .userId(userId)
             .state(initialState)
-            .lastUpdateTime(Instant.now())
+            .lastUpdateTime(timeProvider.now())
             .build();
 
     ConcurrentMap<String, Session> userSessions =

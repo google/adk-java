@@ -78,6 +78,22 @@ public final class FunctionsTest {
           .build();
 
   @Test
+  public void populateClientFunctionCallId_withProvider_usesProvider() {
+    Event event =
+        Event.builder()
+            .id("event1")
+            .invocationId("invocation1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromFunctionCall("some_function", ImmutableMap.of())))
+            .build();
+
+    Functions.populateClientFunctionCallId(event, () -> "deterministic-uuid");
+
+    Part populatedPart = event.content().get().parts().get().get(0);
+    assertThat(populatedPart.functionCall().get().id()).hasValue("adk-deterministic-uuid");
+  }
+
+  @Test
   public void handleFunctionCalls_noFunctionCalls() {
     InvocationContext invocationContext = createInvocationContext(createRootAgent());
     Event event = createEvent("event");

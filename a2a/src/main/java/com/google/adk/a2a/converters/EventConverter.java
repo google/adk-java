@@ -27,7 +27,6 @@ import io.a2a.spec.Part;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
 /** Converter for ADK Events to A2A Messages. */
@@ -157,16 +156,17 @@ public final class EventConverter {
     for (int i = lastResponseIndex + 1; i < events.size(); i++) {
       Event event = events.get(i);
       if (!event.author().equals("user") && !event.author().equals(context.agent().name())) {
-        event = presentAsUserMessage(event, contextId);
+        event = presentAsUserMessage(context, event, contextId);
       }
       contentToParts(event.content(), event.partial().orElse(false)).forEach(partsBuilder::add);
     }
     return partsBuilder.build();
   }
 
-  private static Event presentAsUserMessage(Event event, String contextId) {
+  private static Event presentAsUserMessage(
+      InvocationContext context, Event event, String contextId) {
     Event.Builder userEvent =
-        new Event.Builder().id(UUID.randomUUID().toString()).invocationId(contextId).author("user");
+        new Event.Builder().id(context.newUuid()).invocationId(contextId).author("user");
     ImmutableList<com.google.genai.types.Part> parts =
         event.content().flatMap(Content::parts).stream()
             .flatMap(Collection::stream)
