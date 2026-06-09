@@ -45,6 +45,12 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
 
   @Override
   public Single<ImmutableList<String>> listResources(String skillName, String resourceDirectory) {
+    try {
+      validatePathWithinBase(skillsBasePath, skillName);
+      validatePathWithinBase(skillsBasePath.resolve(skillName), resourceDirectory);
+    } catch (SkillSourceException e) {
+      return Single.error(e);
+    }
     Path skillDir = skillsBasePath.resolve(skillName);
     if (!isDirectory(skillDir)) {
       return Single.error(
@@ -96,6 +102,12 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
 
   @Override
   protected Single<Path> findResourcePath(String skillName, String resourcePath) {
+    try {
+      validatePathWithinBase(skillsBasePath, skillName);
+      validatePathWithinBase(skillsBasePath.resolve(skillName), resourcePath);
+    } catch (SkillSourceException e) {
+      return Single.error(e);
+    }
     Path file = skillsBasePath.resolve(skillName).resolve(resourcePath);
     if (!Files.exists(file)) {
       return Single.error(
@@ -106,6 +118,11 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
 
   @Override
   protected Single<Path> findSkillMdPath(String skillName) {
+    try {
+      validatePathWithinBase(skillsBasePath, skillName);
+    } catch (SkillSourceException e) {
+      return Single.error(e);
+    }
     Path skillDir = skillsBasePath.resolve(skillName);
     if (!isDirectory(skillDir)) {
       return Single.error(
@@ -120,6 +137,22 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
   @Override
   protected ReadableByteChannel openChannel(Path path) throws IOException {
     return Files.newByteChannel(path);
+  }
+
+  private static void validatePathWithinBase(Path base, String component)
+      throws SkillSourceException {
+    if (Path.of(component).isAbsolute()) {
+      throw new SkillSourceException(
+          "Absolute paths are not allowed: " + component, SKILL_NOT_FOUND);
+    }
+    Path normalizedBase = base.normalize().toAbsolutePath();
+    Path resolved = base.resolve(component).normalize().toAbsolutePath();
+    if (!resolved.startsWith(normalizedBase)) {
+      throw new SkillSourceException(
+          "Path traversal detected; component must remain within its parent directory: "
+              + component,
+          SKILL_NOT_FOUND);
+    }
   }
 
   private Optional<Path> findSkillMd(Path dir) {
