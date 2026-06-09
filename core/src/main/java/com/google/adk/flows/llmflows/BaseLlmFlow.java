@@ -451,7 +451,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
                         final Event mutableEventTemplate =
                             Event.builder()
-                                .id(Event.generateEventId())
+                                .id(context.newUuid())
                                 .invocationId(context.invocationId())
                                 .author(context.agent().name())
                                 .branch(context.branch().orElse(null))
@@ -466,7 +466,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                             .doFinally(
                                 () -> {
                                   String oldId = mutableEventTemplate.id();
-                                  String newId = Event.generateEventId();
+                                  String newId = context.newUuid();
                                   logger.debug("Resetting event ID from {} to {}", oldId, newId);
                                   mutableEventTemplate.setId(newId);
                                 })
@@ -474,7 +474,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                 event -> {
                                   // Update event ID for the new resulting events
                                   String oldId = event.id();
-                                  String newId = Event.generateEventId();
+                                  String newId = context.newUuid();
                                   logger.debug("Resetting event ID from {} to {}", oldId, newId);
                                   event = event.toBuilder().id(newId).build();
                                   Flowable<Event> postProcessedEvents = Flowable.just(event);
@@ -575,7 +575,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                 return Flowable.empty();
               }
 
-              String eventIdForSendData = Event.generateEventId();
+              String eventIdForSendData = invocationContext.newUuid();
               LlmAgent agent = (LlmAgent) invocationContext.agent();
               BaseLlm llm =
                   agent.resolvedModel().model().isPresent()
@@ -667,7 +667,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                       .flatMap(
                           llmResponse -> {
                             Event baseEventForThisLlmResponse =
-                                liveEventBuilderTemplate.id(Event.generateEventId()).build();
+                                liveEventBuilderTemplate.id(invocationContext.newUuid()).build();
                             return postprocess(
                                 invocationContext,
                                 baseEventForThisLlmResponse,
@@ -750,7 +750,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
     }
 
     Event modelResponseEvent =
-        buildModelResponseEvent(baseEventForLlmResponse, llmRequest, updatedResponse);
+        buildModelResponseEvent(context, baseEventForLlmResponse, llmRequest, updatedResponse);
     if (modelResponseEvent.functionCalls().isEmpty()
         || modelResponseEvent.partial().orElse(false)) {
       return processorEvents.concatWith(Flowable.just(modelResponseEvent));
@@ -796,9 +796,13 @@ public abstract class BaseLlmFlow implements BaseFlow {
   }
 
   private Event buildModelResponseEvent(
-      Event baseEventForLlmResponse, LlmRequest llmRequest, LlmResponse llmResponse) {
+      InvocationContext context,
+      Event baseEventForLlmResponse,
+      LlmRequest llmRequest,
+      LlmResponse llmResponse) {
     Event.Builder eventBuilder =
         baseEventForLlmResponse.toBuilder()
+            .timestamp(context.now().toEpochMilli())
             .content(llmResponse.content().orElse(null))
             .partial(llmResponse.partial().orElse(null))
             .errorCode(llmResponse.errorCode().orElse(null))
@@ -818,7 +822,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
     logger.debug("event: {} functionCalls: {}", event, event.functionCalls());
 
     if (!event.functionCalls().isEmpty()) {
-      Functions.populateClientFunctionCallId(event);
+      Functions.populateClientFunctionCallId(event, context.uuidProvider());
       Set<String> longRunningToolIds =
           Functions.getLongRunningFunctionCalls(event.functionCalls(), llmRequest.tools());
       logger.debug("longRunningToolIds: {}", longRunningToolIds);

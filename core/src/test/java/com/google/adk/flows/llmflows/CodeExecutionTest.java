@@ -45,6 +45,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.observers.TestObserver;
+import java.time.Instant;
 import java.util.ArrayList;
 import org.junit.Before;
 import org.junit.Rule;
@@ -79,6 +80,8 @@ public class CodeExecutionTest {
     when(invocationContext.appName()).thenReturn("app");
     when(invocationContext.userId()).thenReturn("user");
     when(invocationContext.artifactService()).thenReturn(mockArtifactService);
+    when(invocationContext.now()).thenReturn(Instant.ofEpochMilli(1234L));
+    when(invocationContext.newUuid()).thenReturn("test-event-id");
     when(mockArtifactService.saveArtifact(
             anyString(), anyString(), anyString(), anyString(), any(Part.class)))
         .thenReturn(Single.just(1));

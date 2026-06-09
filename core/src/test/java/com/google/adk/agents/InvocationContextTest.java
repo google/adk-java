@@ -23,12 +23,15 @@ import static org.mockito.Mockito.mock;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -256,6 +259,77 @@ public final class InvocationContextTest {
     // Basic check for UUID format after "e-"
     assertThat(id.substring(2))
         .matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+  }
+
+  @Test
+  public void testNewInvocationContextId_withCustomProvider() {
+    UuidProvider provider = () -> "deterministic-uuid";
+
+    String id = InvocationContext.newInvocationContextId(provider);
+
+    assertThat(id).isEqualTo("e-deterministic-uuid");
+  }
+
+  @Test
+  public void providers_defaultToSystem() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .build();
+
+    assertThat(context.timeProvider()).isEqualTo(TimeProvider.SYSTEM);
+    assertThat(context.uuidProvider()).isEqualTo(UuidProvider.SYSTEM);
+    assertThat(context.newUuid())
+        .matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+    Instant before = Instant.now();
+    Instant now = context.now();
+    assertThat(now).isAtLeast(before);
+  }
+
+  @Test
+  public void providers_customAreCarriedAndUsedByAccessors() {
+    Instant fixed = Instant.ofEpochMilli(1234L);
+    TimeProvider fixedClock = () -> fixed;
+    UuidProvider fixedUuids = () -> "fixed-uuid";
+
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .timeProvider(fixedClock)
+            .uuidProvider(fixedUuids)
+            .build();
+
+    assertThat(context.timeProvider()).isEqualTo(fixedClock);
+    assertThat(context.uuidProvider()).isEqualTo(fixedUuids);
+    assertThat(context.now()).isEqualTo(fixed);
+    assertThat(context.newUuid()).isEqualTo("fixed-uuid");
+  }
+
+  @Test
+  public void toBuilder_carriesProviders() {
+    TimeProvider fixedClock = () -> Instant.ofEpochMilli(1234L);
+    UuidProvider fixedUuids = () -> "fixed-uuid";
+
+    InvocationContext originalContext =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .timeProvider(fixedClock)
+            .uuidProvider(fixedUuids)
+            .build();
+
+    InvocationContext copiedContext = originalContext.toBuilder().build();
+
+    assertThat(copiedContext.timeProvider()).isEqualTo(fixedClock);
+    assertThat(copiedContext.uuidProvider()).isEqualTo(fixedUuids);
   }
 
   @Test
