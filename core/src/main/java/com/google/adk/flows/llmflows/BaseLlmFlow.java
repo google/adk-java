@@ -218,74 +218,87 @@ public abstract class BaseLlmFlow implements BaseFlow {
       Event eventForCallbackUsage) {
     LlmRequest.Builder llmRequestBuilder = llmRequest.toBuilder();
 
-    return handleBeforeModelCallback(context, llmRequestBuilder, eventForCallbackUsage)
-        .toFlowable()
-        .concatMap(
-            llmResp ->
-                postprocess(
-                    context,
-                    eventForCallbackUsage,
-                    llmRequestBuilder.build(),
-                    llmResp,
-                    spanContext))
-        .switchIfEmpty(
-            Flowable.defer(
-                () -> {
-                  LlmAgent agent = (LlmAgent) context.agent();
-                  BaseLlm llm =
-                      agent.resolvedModel().model().isPresent()
-                          ? agent.resolvedModel().model().get()
-                          : LlmRegistry.getLlm(agent.resolvedModel().modelName().get());
-                  LlmRequest finalLlmRequest = llmRequestBuilder.build();
+    return Flowable.defer(
+        () -> {
+          Span span =
+              Tracing.getTracer().spanBuilder("call_llm").setParent(spanContext).startSpan();
+          Context callLlmContext = spanContext.with(span);
 
-                  Span span =
-                      Tracing.getTracer()
-                          .spanBuilder("call_llm")
-                          .setParent(spanContext)
-                          .startSpan();
-                  Context callLlmContext = spanContext.with(span);
-
-                  Flowable<Event> flowable =
-                      llm.generateContent(
-                              finalLlmRequest,
-                              context.runConfig().streamingMode() == StreamingMode.SSE)
-                          .onErrorResumeNext(
-                              exception ->
-                                  handleOnModelErrorCallback(
-                                          context,
-                                          llmRequestBuilder,
-                                          eventForCallbackUsage,
-                                          exception)
-                                      .switchIfEmpty(Single.error(exception))
-                                      .toFlowable())
-                          .doOnError(
-                              error -> {
-                                span.setStatus(StatusCode.ERROR, error.getMessage());
-                                span.recordException(error);
-                              })
+          return Tracing.traceFlowable(
+                  callLlmContext,
+                  span,
+                  () ->
+                      handleBeforeModelCallback(context, llmRequestBuilder, eventForCallbackUsage)
+                          .toFlowable()
                           .concatMap(
-                              llmResp ->
-                                  handleAfterModelCallback(context, llmResp, eventForCallbackUsage)
-                                      .toFlowable())
-                          .flatMap(
                               llmResp ->
                                   postprocess(
                                           context,
                                           eventForCallbackUsage,
-                                          finalLlmRequest,
+                                          llmRequestBuilder.build(),
                                           llmResp,
                                           callLlmContext)
                                       .doOnSubscribe(
-                                          s ->
+                                          subscription ->
                                               traceCallLlm(
                                                   span,
                                                   context,
                                                   eventForCallbackUsage.id(),
-                                                  finalLlmRequest,
-                                                  llmResp)));
+                                                  llmRequestBuilder.build(),
+                                                  llmResp)))
+                          .switchIfEmpty(
+                              Flowable.defer(
+                                  () -> {
+                                    LlmAgent agent = (LlmAgent) context.agent();
+                                    BaseLlm llm =
+                                        agent.resolvedModel().model().isPresent()
+                                            ? agent.resolvedModel().model().get()
+                                            : LlmRegistry.getLlm(
+                                                agent.resolvedModel().modelName().get());
+                                    LlmRequest finalLlmRequest = llmRequestBuilder.build();
 
-                  return Tracing.traceFlowable(callLlmContext, span, () -> flowable);
-                }));
+                                    return llm.generateContent(
+                                            finalLlmRequest,
+                                            context.runConfig().streamingMode()
+                                                == StreamingMode.SSE)
+                                        .onErrorResumeNext(
+                                            exception ->
+                                                handleOnModelErrorCallback(
+                                                        context,
+                                                        llmRequestBuilder,
+                                                        eventForCallbackUsage,
+                                                        exception)
+                                                    .switchIfEmpty(Single.error(exception))
+                                                    .toFlowable())
+                                        .doOnError(
+                                            error -> {
+                                              span.setStatus(StatusCode.ERROR, error.getMessage());
+                                              span.recordException(error);
+                                            })
+                                        .concatMap(
+                                            llmResp ->
+                                                handleAfterModelCallback(
+                                                        context, llmResp, eventForCallbackUsage)
+                                                    .toFlowable())
+                                        .flatMap(
+                                            llmResp ->
+                                                postprocess(
+                                                        context,
+                                                        eventForCallbackUsage,
+                                                        finalLlmRequest,
+                                                        llmResp,
+                                                        callLlmContext)
+                                                    .doOnSubscribe(
+                                                        subscription ->
+                                                            traceCallLlm(
+                                                                span,
+                                                                context,
+                                                                eventForCallbackUsage.id(),
+                                                                finalLlmRequest,
+                                                                llmResp)));
+                                  })))
+              .compose(Tracing.withContext(spanContext));
+        });
   }
 
   /**
@@ -667,10 +680,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                     "Agent not found: " + event.actions().transferToAgent().get());
                               }
                               Flowable<Event> nextAgentEvents =
-                                  nextAgent
-                                      .get()
-                                      .runLive(invocationContext)
-                                      .compose(Tracing.withContext(spanContext));
+                                  Flowable.defer(
+                                      () -> {
+                                        try (Scope scope = spanContext.makeCurrent()) {
+                                          return nextAgent.get().runLive(invocationContext);
+                                        }
+                                      });
                               events = Flowable.concat(events, nextAgentEvents);
                             }
                             return events;
@@ -693,11 +708,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
                           });
 
               return Tracing.traceFlowable(
-                  callLlmContext,
-                  span,
-                  () ->
-                      receiveFlow.takeWhile(
-                          event -> !event.actions().endInvocation().orElse(false)));
+                      callLlmContext,
+                      span,
+                      () ->
+                          receiveFlow.takeWhile(
+                              event -> !event.actions().endInvocation().orElse(false)))
+                  .compose(Tracing.withContext(spanContext));
             }));
   }
 
