@@ -31,6 +31,7 @@ import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.ReadonlyContext;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
@@ -834,7 +835,7 @@ public final class BaseLlmFlowTest {
   }
 
   @Test
-  public void postprocess_noResponseProcessors_onlyUsageMetadata_returnsEvent() {
+  public void postprocess_noResponseProcessors_onlyUsageMetadata_returnsNoEvent() {
     GenerateContentResponseUsageMetadata usageMetadata =
         createGenerateContentResponseUsageMetadata().build();
     LlmResponse llmResponse = LlmResponse.builder().usageMetadata(usageMetadata).build();
@@ -858,12 +859,40 @@ public final class BaseLlmFlowTest {
             .toList()
             .blockingGet();
 
+    assertThat(events).isEmpty();
+  }
+
+  @Test
+  public void postprocess_bidiUsageMetadataOnlyResponse_returnsEvent() {
+    GenerateContentResponseUsageMetadata usageMetadata =
+        createGenerateContentResponseUsageMetadata().build();
+    LlmResponse llmResponse = LlmResponse.builder().usageMetadata(usageMetadata).build();
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgent(createTestLlm(llmResponse)),
+            RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.BIDI).build());
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    Event baseEvent =
+        Event.builder()
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .build();
+
+    List<Event> events =
+        baseLlmFlow
+            .postprocess(
+                invocationContext,
+                baseEvent,
+                LlmRequest.builder().build(),
+                llmResponse,
+                Context.current())
+            .toList()
+            .blockingGet();
+
     assertThat(events).hasSize(1);
     Event event = getOnlyElement(events);
     assertThat(event.content()).isEmpty();
     assertThat(event.usageMetadata()).hasValue(usageMetadata);
-    assertThat(event.author()).isEqualTo(invocationContext.agent().name());
-    assertThat(event.invocationId()).isEqualTo(invocationContext.invocationId());
   }
 
   @Test

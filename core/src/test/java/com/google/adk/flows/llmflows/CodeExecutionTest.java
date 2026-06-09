@@ -16,6 +16,8 @@
 
 package com.google.adk.flows.llmflows;
 
+import static com.google.adk.testing.TestUtils.createGenerateContentResponseUsageMetadata;
+import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
@@ -120,6 +122,37 @@ public class CodeExecutionTest {
     Part executionResultPart = events.get(1).content().get().parts().get().get(0);
     assertThat(executionResultPart.codeExecutionResult().get().output())
         .hasValue("Code execution result:\nhello\n\n");
+  }
+
+  @Test
+  public void run_withCodeExecutionResponseAndUsageMetadata_continuesToFinalAnswer() {
+    String code = "print('hello')";
+    Content codeResponseContent =
+        Content.builder()
+            .role("model")
+            .parts(Part.fromText("```tool_code\n" + code + "\n```"))
+            .build();
+    var usageMetadata = createGenerateContentResponseUsageMetadata().build();
+    LlmResponse codeResponse =
+        createLlmResponse(codeResponseContent).toBuilder().usageMetadata(usageMetadata).build();
+    Content finalResponseContent = Content.fromParts(Part.fromText("Done."));
+    testLlm = createTestLlm(codeResponse, createLlmResponse(finalResponseContent));
+    agent = createTestAgentBuilder(testLlm).codeExecutor(mockCodeExecutor).build();
+    InvocationContext realInvocationContext = createInvocationContext(agent);
+    CodeExecutionResult executionResult = CodeExecutionResult.builder().stdout("hello\n").build();
+    when(mockCodeExecutor.errorRetryAttempts()).thenReturn(2);
+    when(mockCodeExecutor.executeCode(any(), any())).thenReturn(executionResult);
+    when(mockCodeExecutor.codeBlockDelimiters())
+        .thenReturn(ImmutableList.of(ImmutableList.of("```tool_code\n", "\n```")));
+
+    ImmutableList<Event> events =
+        ImmutableList.copyOf(new SingleFlow().run(realInvocationContext).toList().blockingGet());
+
+    assertThat(testLlm.getRequests()).hasSize(2);
+    assertThat(events).hasSize(3);
+    assertThat(events.get(0).usageMetadata()).isEmpty();
+    assertThat(events.get(1).hasTrailingCodeExecutionResult()).isTrue();
+    assertThat(events.get(2).content()).hasValue(finalResponseContent);
   }
 
   @Test
