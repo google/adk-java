@@ -234,6 +234,10 @@ public final class TestUtils {
     return new TestLlm(responsesSupplier);
   }
 
+  public static Content createContent(String text) {
+    return Content.builder().parts(Part.builder().text(text).build()).build();
+  }
+
   public static LlmResponse createLlmResponse(Content content) {
     return LlmResponse.builder().content(content).build();
   }

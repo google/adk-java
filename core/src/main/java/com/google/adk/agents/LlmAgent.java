@@ -76,7 +76,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** The LLM-based agent. */
-public class LlmAgent extends BaseAgent {
+public class LlmAgent extends BaseAgent implements Resumable {
 
   private static final Logger logger = LoggerFactory.getLogger(LlmAgent.class);
 
@@ -777,6 +777,11 @@ public class LlmAgent extends BaseAgent {
 
   public boolean disallowTransferToParent() {
     return disallowTransferToParent;
+  }
+
+  @Override
+  public boolean isResumable() {
+    return !disallowTransferToParent();
   }
 
   public boolean disallowTransferToPeers() {
