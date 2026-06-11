@@ -763,8 +763,11 @@ public final class RunnerTest {
                   .firstOrError()
                   .doOnSuccess(
                       event -> {
+                        s.events().add(e);
+                        if (e.actions() != null && e.actions().stateDelta() != null) {
+                          s.state().putAll(e.actions().stateDelta());
+                        }
                         List<Event> newEvents = new ArrayList<>(s.events());
-                        newEvents.add(e);
                         Session updated =
                             Session.builder(s.id())
                                 .appName(s.appName())
@@ -1191,6 +1194,41 @@ public final class RunnerTest {
     // 1 (user msg) + N (agent events); a second writer would make it 1 + 2N.
     int expectedAppendCount = 1 + emittedEvents.size();
     verify(pureMockSessionService, times(expectedAppendCount)).appendEvent(any(), any());
+  }
+
+  @Test
+  public void runAsync_bypassesRedundantGetSession() {
+    BaseSessionService mockSessionService = mock(BaseSessionService.class);
+    Session backingSession = Session.builder("session-id").appName("test").userId("user").build();
+
+    when(mockSessionService.getSession(anyString(), anyString(), anyString(), any()))
+        .thenReturn(Maybe.just(backingSession));
+    when(mockSessionService.appendEvent(any(), any()))
+        .thenReturn(Single.just(Event.builder().id("sentinel").author("user").build()));
+
+    BaseAgent mockAgent = mock(BaseAgent.class);
+    when(mockAgent.runAsync(any()))
+        .thenReturn(Flowable.just(Event.builder().id("agent-event").author("agent").build()));
+
+    Runner spyRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(mockAgent)
+                    .plugins(ImmutableList.of(plugin))
+                    .build())
+            .sessionService(mockSessionService)
+            .build();
+
+    List<Event> unused =
+        spyRunner
+            .runAsync("user", backingSession.id(), createContent("from user"))
+            .toList()
+            .blockingGet();
+
+    // Verify getSession was only called once (at the start of runAsync)
+    verify(mockSessionService, times(1)).getSession(anyString(), anyString(), anyString(), any());
   }
 
   @Test

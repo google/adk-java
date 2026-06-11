@@ -43,6 +43,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,7 +81,13 @@ public final class PartConverter {
     }
 
     if (a2aPart instanceof TextPart textPart) {
-      return com.google.genai.types.Part.builder().text(textPart.getText()).build();
+      com.google.genai.types.Part.Builder partBuilder =
+          com.google.genai.types.Part.builder().text(textPart.getText());
+      if (textPart.getMetadata() != null
+          && Objects.equals(textPart.getMetadata().get("thought"), Boolean.TRUE)) {
+        partBuilder.thought(true);
+      }
+      return partBuilder.build();
     }
 
     if (a2aPart instanceof FilePart filePart) {

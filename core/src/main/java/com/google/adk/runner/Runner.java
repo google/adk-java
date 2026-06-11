@@ -518,18 +518,9 @@ public class Runner {
                               runConfig.saveInputBlobsAsArtifacts(),
                               stateDelta))
                   .flatMapPublisher(
-                      event -> {
-                        // Get the updated session after the message and state delta are
-                        // applied
-                        return this.sessionService
-                            .getSession(
-                                session.appName(), session.userId(), session.id(), Optional.empty())
-                            .flatMapPublisher(
-                                updatedSession ->
-                                    runAgentWithUpdatedSession(
-                                        initialContext, updatedSession, event, rootAgent))
-                            .compose(Tracing.<Event>withContext(capturedContext));
-                      });
+                      event ->
+                          runAgentWithUpdatedSession(initialContext, session, event, rootAgent)
+                              .compose(Tracing.<Event>withContext(capturedContext)));
             })
         .doOnError(
             throwable -> {

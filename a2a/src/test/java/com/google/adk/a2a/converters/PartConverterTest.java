@@ -44,6 +44,46 @@ public class PartConverterTest {
   }
 
   @Test
+  public void toGenaiPart_withTextPartThought_returnsGenaiTextPartWithThought() {
+    TextPart textPart = new TextPart("Thinking process", ImmutableMap.of("thought", true));
+
+    Part result = PartConverter.toGenaiPart(textPart);
+
+    assertThat(result.text()).hasValue("Thinking process");
+    assertThat(result.thought()).hasValue(true);
+  }
+
+  @Test
+  public void toGenaiPart_withTextPartMetadataWithoutThought_returnsGenaiTextPartWithoutThought() {
+    TextPart textPart = new TextPart("Thinking process", ImmutableMap.of("otherKey", "value"));
+
+    Part result = PartConverter.toGenaiPart(textPart);
+
+    assertThat(result.text()).hasValue("Thinking process");
+    assertThat(result.thought()).isEmpty();
+  }
+
+  @Test
+  public void toGenaiPart_withTextPartThoughtFalse_returnsGenaiTextPartWithoutThought() {
+    TextPart textPart = new TextPart("Thinking process", ImmutableMap.of("thought", false));
+
+    Part result = PartConverter.toGenaiPart(textPart);
+
+    assertThat(result.text()).hasValue("Thinking process");
+    assertThat(result.thought()).isEmpty();
+  }
+
+  @Test
+  public void toGenaiPart_withTextPartNonBooleanThought_returnsGenaiTextPartWithoutThought() {
+    TextPart textPart = new TextPart("Thinking process", ImmutableMap.of("thought", "true"));
+
+    Part result = PartConverter.toGenaiPart(textPart);
+
+    assertThat(result.text()).hasValue("Thinking process");
+    assertThat(result.thought()).isEmpty();
+  }
+
+  @Test
   public void toGenaiPart_withFilePartUri_returnsGenaiFilePart() {
     FilePart filePart = new FilePart(new FileWithUri("text/plain", "file.txt", "http://file.txt"));
 
