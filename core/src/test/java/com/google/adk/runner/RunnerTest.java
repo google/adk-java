@@ -51,6 +51,8 @@ import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.GetSessionConfig;
@@ -1567,6 +1569,85 @@ public final class RunnerTest {
     assertThat(simplifyEvents(results))
         .containsExactly("author: content for event 1", "author: content for event 2")
         .inOrder();
+  }
+
+  /**
+   * Verification of custom time/UUID provider behavior: running identical input twice with the same
+   * deterministic clock and UUID provider yields byte-identical event ids, timestamps, and
+   * invocation ids.
+   */
+  @Test
+  public void runAsync_withDeterministicProviders_producesIdenticalEvents() {
+    List<Event> firstRun = runWithDeterministicProviders();
+    List<Event> secondRun = runWithDeterministicProviders();
+
+    assertThat(firstRun).isNotEmpty();
+
+    List<String> firstIds = firstRun.stream().map(Event::id).toList();
+    List<String> secondIds = secondRun.stream().map(Event::id).toList();
+    assertThat(firstIds).isEqualTo(secondIds);
+
+    List<Long> firstTimestamps = firstRun.stream().map(Event::timestamp).toList();
+    List<Long> secondTimestamps = secondRun.stream().map(Event::timestamp).toList();
+    assertThat(firstTimestamps).isEqualTo(secondTimestamps);
+
+    List<String> firstInvocationIds = firstRun.stream().map(Event::invocationId).toList();
+    List<String> secondInvocationIds = secondRun.stream().map(Event::invocationId).toList();
+    assertThat(firstInvocationIds).isEqualTo(secondInvocationIds);
+
+    // The injected clock seam is actually used: every event carries the fixed timestamp.
+    assertThat(firstTimestamps).doesNotContain(null);
+    assertThat(firstTimestamps.stream().distinct().toList()).containsExactly(1234L);
+    // The invocation id is minted from the injected UUID provider.
+    assertThat(firstInvocationIds.stream().distinct().toList()).containsExactly("e-uuid-0000");
+  }
+
+  @Test
+  public void build_defaultSessionService_usesRunnerProviders() {
+    TimeProvider fixedClock = () -> Instant.ofEpochMilli(1234L);
+    UuidProvider fixedUuids = () -> "session-uuid";
+    Runner deterministicRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .timeProvider(fixedClock)
+            .uuidProvider(fixedUuids)
+            .build();
+
+    Session createdSession =
+        deterministicRunner.sessionService().createSession("test", "user").blockingGet();
+
+    assertThat(createdSession.id()).isEqualTo("session-uuid");
+    assertThat(createdSession.lastUpdateTime()).isEqualTo(Instant.ofEpochMilli(1234L));
+  }
+
+  private List<Event> runWithDeterministicProviders() {
+    TimeProvider fixedClock = () -> Instant.ofEpochMilli(1234L);
+    UuidProvider sequentialUuids =
+        new UuidProvider() {
+          private final AtomicInteger counter = new AtomicInteger();
+
+          @Override
+          public String newUuid() {
+            return String.format("uuid-%04d", counter.getAndIncrement());
+          }
+        };
+    LlmAgent deterministicAgent =
+        createTestAgentBuilder(createTestLlm(createLlmResponse(createContent("from llm")))).build();
+    Runner deterministicRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(deterministicAgent).build())
+            .timeProvider(fixedClock)
+            .uuidProvider(sequentialUuids)
+            .build();
+    Session deterministicSession =
+        deterministicRunner
+            .sessionService()
+            .createSession("test", "user", new ConcurrentHashMap<String, Object>(), "fixed-session")
+            .blockingGet();
+    return deterministicRunner
+        .runAsync("user", deterministicSession.id(), createContent("hi"))
+        .toList()
+        .blockingGet();
   }
 
   private Content createContent(String text) {

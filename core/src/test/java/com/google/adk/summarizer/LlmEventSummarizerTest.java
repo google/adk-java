@@ -34,6 +34,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
+import java.time.Instant;
 import java.util.Map;
 import org.junit.Before;
 import org.junit.Rule;
@@ -112,6 +113,26 @@ public class LlmEventSummarizerTest {
     assertThat(llmRequest.model()).hasValue("test-model");
     assertThat(llmRequest.contents().get(0).role()).hasValue("user");
     assertThat(llmRequest.contents().get(0).parts().get().get(0).text()).hasValue(expectedPrompt);
+  }
+
+  @Test
+  public void summarizeEvents_usesInjectedProviders() {
+    LlmEventSummarizer providerSummarizer =
+        new LlmEventSummarizer(mockLlm, () -> Instant.ofEpochMilli(1234L), () -> "summary-uuid");
+    ImmutableList<Event> events =
+        ImmutableList.of(createEvent(1L, "Hello", "user"), createEvent(2L, "Hi there!", "model"));
+    LlmResponse mockLlmResponse =
+        LlmResponse.builder()
+            .content(Content.builder().parts(ImmutableList.of(Part.fromText("Summary"))).build())
+            .build();
+    when(mockLlm.generateContent(any(LlmRequest.class), eq(false)))
+        .thenReturn(Flowable.just(mockLlmResponse));
+
+    Event compactedEvent = providerSummarizer.summarizeEvents(events).blockingGet();
+
+    assertThat(compactedEvent.id()).isEqualTo("summary-uuid");
+    assertThat(compactedEvent.invocationId()).isEqualTo("summary-uuid");
+    assertThat(compactedEvent.timestamp()).isEqualTo(1234L);
   }
 
   @Test
