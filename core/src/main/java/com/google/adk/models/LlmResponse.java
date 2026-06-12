@@ -41,7 +41,8 @@ import org.jspecify.annotations.Nullable;
 @JsonDeserialize(builder = LlmResponse.Builder.class)
 public abstract class LlmResponse extends JsonBaseModel {
 
-  LlmResponse() {}
+  /** Protected to allow custom LLM integrations to subclass this type outside the package. */
+  protected LlmResponse() {}
 
   /**
    * Returns the content of the first candidate in the response, if available.
