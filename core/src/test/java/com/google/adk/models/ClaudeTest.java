@@ -17,10 +17,15 @@
 package com.google.adk.models;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.models.messages.ContentBlockParam;
+import com.anthropic.models.messages.Message;
 import com.anthropic.models.messages.ToolResultBlockParam;
+import com.anthropic.models.messages.Usage;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
@@ -77,5 +82,22 @@ public final class ClaudeTest {
 
     ToolResultBlockParam toolResult = result.asToolResult();
     assertThat(toolResult.content().get().asString()).contains("\"custom_key\":\"custom_value\"");
+  }
+
+  @Test
+  public void testClaudeUsageMapping_ShouldFailWhenMappingIsMissing() throws Exception {
+    Usage mockUsage = mock(Usage.class);
+    when(mockUsage.inputTokens()).thenReturn(10L);
+    when(mockUsage.outputTokens()).thenReturn(20L);
+
+    Message mockMessage = mock(Message.class);
+    when(mockMessage.usage()).thenReturn(mockUsage);
+    when(mockMessage.content()).thenReturn(java.util.Collections.emptyList());
+
+    Method convertMethod =
+        Claude.class.getDeclaredMethod("convertAnthropicResponseToLlmResponse", Message.class);
+    convertMethod.setAccessible(true);
+    LlmResponse result = (LlmResponse) convertMethod.invoke(claude, mockMessage);
+    assertTrue(result.usageMetadata().isPresent());
   }
 }
