@@ -14,6 +14,8 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -103,10 +105,17 @@ final class VertexAiClient {
             });
   }
 
+  private static String encodeParam(String value) {
+    return URLEncoder.encode(value, StandardCharsets.UTF_8);
+  }
+
   Maybe<JsonNode> listSessions(String reasoningEngineId, String userId) {
     return performApiRequest(
             "GET",
-            "reasoningEngines/" + reasoningEngineId + "/sessions?filter=user_id=" + userId,
+            "reasoningEngines/"
+                + reasoningEngineId
+                + "/sessions?filter=user_id="
+                + encodeParam(userId),
             "")
         .flatMapMaybe(VertexAiClient::getJsonResponse);
   }
@@ -114,7 +123,11 @@ final class VertexAiClient {
   Maybe<JsonNode> listEvents(String reasoningEngineId, String sessionId) {
     return performApiRequest(
             "GET",
-            "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId + "/events",
+            "reasoningEngines/"
+                + reasoningEngineId
+                + "/sessions/"
+                + encodeParam(sessionId)
+                + "/events",
             "")
         .doOnSuccess(apiResponse -> logger.debug("List events response {}", apiResponse))
         .flatMapMaybe(VertexAiClient::getJsonResponse);
@@ -122,13 +135,17 @@ final class VertexAiClient {
 
   Maybe<JsonNode> getSession(String reasoningEngineId, String sessionId) {
     return performApiRequest(
-            "GET", "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId, "")
+            "GET",
+            "reasoningEngines/" + reasoningEngineId + "/sessions/" + encodeParam(sessionId),
+            "")
         .flatMapMaybe(apiResponse -> getJsonResponse(apiResponse));
   }
 
   Completable deleteSession(String reasoningEngineId, String sessionId) {
     return performApiRequest(
-            "DELETE", "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId, "")
+            "DELETE",
+            "reasoningEngines/" + reasoningEngineId + "/sessions/" + encodeParam(sessionId),
+            "")
         .doOnSuccess(ApiResponse::close)
         .ignoreElement();
   }
@@ -136,7 +153,11 @@ final class VertexAiClient {
   Completable appendEvent(String reasoningEngineId, String sessionId, String eventJson) {
     return performApiRequest(
             "POST",
-            "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId + ":appendEvent",
+            "reasoningEngines/"
+                + reasoningEngineId
+                + "/sessions/"
+                + encodeParam(sessionId)
+                + ":appendEvent",
             eventJson)
         .flatMapCompletable(
             response -> {
