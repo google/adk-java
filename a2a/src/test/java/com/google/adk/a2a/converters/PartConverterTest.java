@@ -193,13 +193,17 @@ public class PartConverterTest {
   }
 
   @Test
-  public void toGenaiPart_withOtherDataPart_returnsGenaiTextPartWithJson() {
+  public void toGenaiPart_withOtherDataPart_returnsGenaiInlineDataPartWithWrappedJson() {
     ImmutableMap<String, Object> data = ImmutableMap.of("key", "value");
     DataPart dataPart = new DataPart(data, null);
 
     Part result = PartConverter.toGenaiPart(dataPart);
 
-    assertThat(result.text()).hasValue("{\"key\":\"value\"}");
+    assertThat(result.inlineData()).isPresent();
+    Blob blob = result.inlineData().get();
+    assertThat(blob.mimeType()).hasValue("text/plain");
+    String expectedContent = "<a2a_datapart_json>{\"key\":\"value\"}</a2a_datapart_json>";
+    assertThat(new String(blob.data().get(), UTF_8)).isEqualTo(expectedContent);
   }
 
   @Test
@@ -373,5 +377,21 @@ public class PartConverterTest {
 
     assertThat(result.functionCall()).isPresent();
     assertThat(result.functionCall().get().args()).hasValue(ImmutableMap.of("value", 123));
+  }
+
+  @Test
+  public void fromGenaiPart_withDataPartInlineData_returnsDataPart() {
+    String wrappedJson = "<a2a_datapart_json>{\"key\":\"value\"}</a2a_datapart_json>";
+    Part part =
+        Part.builder()
+            .inlineData(
+                Blob.builder().mimeType("text/plain").data(wrappedJson.getBytes(UTF_8)).build())
+            .build();
+
+    io.a2a.spec.Part<?> result = PartConverter.fromGenaiPart(part, false);
+
+    assertThat(result).isInstanceOf(DataPart.class);
+    DataPart dataPart = (DataPart) result;
+    assertThat(dataPart.getData()).containsExactly("key", "value");
   }
 }
