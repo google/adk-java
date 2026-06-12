@@ -19,6 +19,7 @@ package com.google.adk.models.chat;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.models.chat.ChatCompletionsResponse.ChatCompletion;
 import com.google.adk.models.chat.ChatCompletionsResponse.ChatCompletionChunk;
@@ -767,7 +768,11 @@ public final class ChatCompletionsResponseTest {
             .modelVersion("")
             .build();
 
-    LlmResponse finalResponse = responses.get(1);
+    // Tool call deltas are accumulated across chunks 1-4 without emitting partial responses.
+    // Chunk 5 (finish_reason=tool_calls) emits a single metadata-final response carrying the fully
+    // accumulated tool calls and the FinishReason. Size 1.
+    assertThat(responses).hasSize(1);
+    LlmResponse finalResponse = responses.get(0);
 
     assertThat(finalResponse).isEqualTo(expectedFinalResponse);
   }
@@ -800,21 +805,31 @@ public final class ChatCompletionsResponseTest {
         collection.processChunk(
             objectMapper.readValue(chunk3Json, ChatCompletionsResponse.ChatCompletionChunk.class));
 
-    LlmResponse expectedFinalResponse =
+    // For a text-only turn, the finish_reason chunk emits TWO non-partial responses:
+    // (A) an aggregated-text response with the full text but NO finishReason.
+    // (B) a metadata-final response with FinishReason=STOP and no text parts.
+    // See ChatCompletionsResponse.processChunk for rationale. Size 2.
+    LlmResponse expectedAggregatedTextResponse =
         LlmResponse.builder()
             .content(
                 Content.builder()
                     .role("")
                     .parts(ImmutableList.of(Part.fromText("Hello World!")))
                     .build())
+            .customMetadata(ImmutableList.of())
+            .modelVersion("")
+            .build();
+    LlmResponse expectedFinalResponse =
+        LlmResponse.builder()
+            .content(Content.builder().role("").parts(ImmutableList.of()).build())
             .finishReason(new FinishReason(Known.STOP.toString()))
             .customMetadata(ImmutableList.of())
             .modelVersion("")
             .build();
 
-    LlmResponse finalResponse = responses.get(1);
-
-    assertThat(finalResponse).isEqualTo(expectedFinalResponse);
+    assertThat(responses)
+        .containsExactly(expectedAggregatedTextResponse, expectedFinalResponse)
+        .inOrder();
   }
 
   @Test
@@ -838,21 +853,30 @@ public final class ChatCompletionsResponseTest {
         collection.processChunk(
             objectMapper.readValue(chunk2Json, ChatCompletionsResponse.ChatCompletionChunk.class));
 
-    LlmResponse expectedFinalResponse =
+    // Similar to testChunkCollection_simpleText: chunk 1 streams the refusal, then chunk 2
+    // (finish_reason) emits an aggregated-text response with the full refusal text, followed
+    // by a metadata-final response with FinishReason and no text parts. Size 2.
+    LlmResponse expectedAggregatedTextResponse =
         LlmResponse.builder()
             .content(
                 Content.builder()
                     .role("")
                     .parts(ImmutableList.of(Part.fromText("I cannot do that.")))
                     .build())
+            .customMetadata(ImmutableList.of())
+            .modelVersion("")
+            .build();
+    LlmResponse expectedFinalResponse =
+        LlmResponse.builder()
+            .content(Content.builder().role("").parts(ImmutableList.of()).build())
             .finishReason(new FinishReason(Known.STOP.toString()))
             .customMetadata(ImmutableList.of())
             .modelVersion("")
             .build();
 
-    LlmResponse finalResponse = responses.get(1);
-
-    assertThat(finalResponse).isEqualTo(expectedFinalResponse);
+    assertThat(responses)
+        .containsExactly(expectedAggregatedTextResponse, expectedFinalResponse)
+        .inOrder();
   }
 
   @Test
@@ -875,5 +899,371 @@ public final class ChatCompletionsResponseTest {
     assertThat(response.modelVersion()).hasValue("gpt-4");
     assertThat(response.content()).isPresent();
     assertThat(response.content().get().parts()).isEmpty();
+  }
+
+  // ----- thought_signature decoding on the response side -----------------------------------
+  //
+  // The response code maps wire-level extra_content.google.thought_signature (base64) onto
+  // Part.thoughtSignature() bytes across four conceptual paths. The tests below cover one
+  // canonical positive per path plus a single malformed-input tolerance check and one
+  // request-response byte-equality round-trip:
+  //   1. Non-streaming text:   Message.extra_content is PARSED onto the DTO but is NOT
+  //                            attached to the output text Part. Characterized below as
+  //                            current behavior (likely a bug; see the test's TODO).
+  //   2. Non-streaming tool:   ToolCall.extra_content --> tool-call Part.thoughtSignature
+  //                            (already covered by testToLlmResponse_thoughtSignature).
+  //   3. Streaming text:       Per-chunk delta.extra_content captured into
+  //                            ChatCompletionChunkCollection.accumulatedTextThoughtSignature,
+  //                            attached to the aggregated text Part on the finish chunk.
+  //   4. Streaming tool:       Per-chunk delta.tool_calls[i].extra_content applied to the
+  //                            accumulated tool-call Part; message-level signature backfills
+  //                            tool-call Parts that lack their own.
+
+  private static final byte[] streamingTextSignature = {0x0a, 0x0b, 0x0c};
+  private static final byte[] streamingToolSignature = {0x11, 0x12, 0x13, 0x14};
+  private static final String STREAMING_TEXT_SIGNATURE_B64 =
+      Base64.getEncoder().encodeToString(streamingTextSignature);
+  private static final String STREAMING_TOOL_SIGNATURE_B64 =
+      Base64.getEncoder().encodeToString(streamingToolSignature);
+
+  @Test
+  public void testToLlmResponse_nonStreamingText_messageLevelSignatureStaysOnDtoButNotOnOutputPart()
+      throws Exception {
+    // Characterizes a known asymmetry between the streaming and non-streaming paths:
+    //   - Streaming:     ChatCompletionChunkCollection.captureMessageThoughtSignature decodes
+    //                    extra_content.google.thought_signature from any delta and attaches
+    //                    it to the aggregated text Part (see buildAggregatedTextResponse).
+    //   - Non-streaming: mapMessageToParts does NOT decode Message.extraContent at all; the
+    //                    signature parses onto the Message DTO but never lands on any Part.
+    //
+    // Gemini's OpenAI-compatible endpoint emits a message-level thought_signature on
+    // assistant text responses; if not round-tripped on the next turn, Gemini may retry or
+    // loop. Today the non-streaming branch silently drops the signature, which is likely a
+    // bug. This test pins the CURRENT behavior so it is visible to future readers and so any
+    // future fix (propagating the signature to the text Part, mirroring streaming) flips
+    // this test from passing to failing -- forcing an intentional, documented update.
+    //
+    // TODO(b/...): consider attaching message.extraContent.google.thought_signature to the
+    // output text Part to match the streaming-path contract. If/when that fix lands, this
+    // test should be updated to assert that textPart.thoughtSignature() has the decoded
+    // bytes (compare with
+    // testChunkCollection_streamingText_messageLevelSignatureAttachesToAggregatedTextPart).
+    String json =
+        String.format(
+            """
+            {
+              "choices": [{
+                "message": {
+                  "role": "assistant",
+                  "content": "Hello world",
+                  "extra_content": {
+                    "google": {
+                      "thought_signature": "%s"
+                    }
+                  }
+                },
+                "finish_reason": "stop"
+              }]
+            }
+            """,
+            STREAMING_TEXT_SIGNATURE_B64);
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletion.class);
+
+    // The DTO field IS populated (Jackson parses the JSON) ...
+    @SuppressWarnings("unchecked")
+    Map<String, Object> google =
+        (Map<String, Object>) completion.choices.get(0).message.extraContent.get("google");
+    assertThat(google).containsEntry("thought_signature", STREAMING_TEXT_SIGNATURE_B64);
+
+    // ... but mapMessageToParts does NOT propagate it to the output text Part.
+    LlmResponse response = completion.toLlmResponse();
+    Part textPart = response.content().get().parts().get().get(0);
+    assertThat(textPart.text()).hasValue("Hello world");
+    assertThat(textPart.thoughtSignature()).isEmpty();
+  }
+
+  @Test
+  public void testToLlmResponse_nonStreamingText_malformedExtraContent_doesNotCrash()
+      throws Exception {
+    // Defensive: a non-string thought_signature (e.g. the number 42) on a non-streaming
+    // text Message must not throw during toLlmResponse(). The Message DTO parses the field
+    // as Map<String, Object>, so a numeric value lands as Integer/Long and any future
+    // decoder needs to tolerate it. Today's code does nothing with it; this test guards
+    // both today's no-op behavior and any future decode site from a NullPointer/ClassCast.
+    String json =
+        """
+        {
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "content": "hi",
+              "extra_content": {
+                "google": {
+                  "thought_signature": 42
+                }
+              }
+            },
+            "finish_reason": "stop"
+          }]
+        }
+        """;
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletion.class);
+
+    LlmResponse response = completion.toLlmResponse();
+
+    Part textPart = response.content().get().parts().get().get(0);
+    assertThat(textPart.text()).hasValue("hi");
+    assertThat(textPart.thoughtSignature()).isEmpty();
+  }
+
+  @Test
+  public void testToLlmResponse_nonStreamingText_googleNotAMap_doesNotCrash() throws Exception {
+    String json =
+        """
+        {
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "content": "hi",
+              "extra_content": {
+                "google": "not_a_map"
+              }
+            },
+            "finish_reason": "stop"
+          }]
+        }
+        """;
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletion.class);
+
+    LlmResponse response = completion.toLlmResponse();
+
+    Part textPart = response.content().get().parts().get().get(0);
+    assertThat(textPart.text()).hasValue("hi");
+    assertThat(textPart.thoughtSignature()).isEmpty();
+  }
+
+  // ----- streaming thought_signature paths -------------------------------------------------
+
+  /**
+   * Pushes the given JSON chunks (one per varargs entry) through a fresh {@link
+   * ChatCompletionsResponse.ChatCompletionChunkCollection} and returns the concatenated list of all
+   * {@link LlmResponse} values emitted. Centralizes the four-line decode-and-process boiler so
+   * streaming tests stay focused on assertions.
+   */
+  private ImmutableList<LlmResponse> runStream(String... chunkJson) throws Exception {
+    ChatCompletionsResponse.ChatCompletionChunkCollection collection =
+        new ChatCompletionsResponse.ChatCompletionChunkCollection();
+    ImmutableList.Builder<LlmResponse> all = ImmutableList.builder();
+    for (String json : chunkJson) {
+      all.addAll(
+          collection.processChunk(
+              objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletionChunk.class)));
+    }
+    return all.build();
+  }
+
+  @Test
+  public void testChunkCollection_streamingText_messageLevelSignatureAttachesToAggregatedTextPart()
+      throws Exception {
+    // The canonical Gemini streaming-text pattern: text chunks first, then a finish chunk that
+    // carries the message-level thought_signature in delta.extra_content. The aggregated-text
+    // response emitted on the finish chunk MUST carry the signature on its single Part.
+    String chunk1 = "{\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}";
+    String chunk2 = "{\"choices\":[{\"delta\":{\"content\":\"world!\"}}]}";
+    String chunk3 =
+        String.format(
+            "{\"choices\":[{\"delta\":{\"extra_content\":{\"google\":{\"thought_signature\":\"%s\"}}},\"finish_reason\":\"stop\"}]}",
+            STREAMING_TEXT_SIGNATURE_B64);
+
+    ImmutableList<LlmResponse> all = runStream(chunk1, chunk2, chunk3);
+
+    // chunk1 and chunk2 each emit a partial text response (no signature); chunk3 emits
+    // (A) aggregated-text with signature, then (B) the metadata-final response.
+    assertThat(all).hasSize(4);
+    LlmResponse aggregated = all.get(2);
+    Part aggregatedTextPart = aggregated.content().get().parts().get().get(0);
+    assertThat(aggregatedTextPart.text()).hasValue("Hello world!");
+    assertThat(aggregatedTextPart.thoughtSignature()).hasValue(streamingTextSignature);
+  }
+
+  @Test
+  public void testChunkCollection_streamingText_malformedExtraContent_doesNotCrash()
+      throws Exception {
+    String chunk1 = "{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}";
+    String chunk2 =
+        "{\"choices\":[{\"delta\":{\"extra_content\":{\"google\":42}},\"finish_reason\":\"stop\"}]}";
+
+    ImmutableList<LlmResponse> all = runStream(chunk1, chunk2);
+
+    assertThat(all).hasSize(3);
+    LlmResponse aggregated = all.get(1);
+    Part aggregatedTextPart = aggregated.content().get().parts().get().get(0);
+    assertThat(aggregatedTextPart.text()).hasValue("hi");
+    assertThat(aggregatedTextPart.thoughtSignature()).isEmpty();
+  }
+
+  @Test
+  public void testChunkCollection_streamingText_googleNotAMap_doesNotCrash() throws Exception {
+    String chunk1 = "{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}";
+    String chunk2 =
+        "{\"choices\":[{\"delta\":{\"extra_content\":{\"google\":\"not_a_map\"}},\"finish_reason\":\"stop\"}]}";
+
+    ImmutableList<LlmResponse> all = runStream(chunk1, chunk2);
+
+    assertThat(all).hasSize(3);
+    LlmResponse aggregated = all.get(1);
+    Part aggregatedTextPart = aggregated.content().get().parts().get().get(0);
+    assertThat(aggregatedTextPart.text()).hasValue("hi");
+    assertThat(aggregatedTextPart.thoughtSignature()).isEmpty();
+  }
+
+  @Test
+  public void testChunkCollection_streamingToolCall_perToolCallSignatureAttachesToFinalPart()
+      throws Exception {
+    // Per-tool-call streaming: a tool_call delta with extra_content.google.thought_signature
+    // must land on the accumulated tool-call Part by the time finish_reason=tool_calls fires.
+    String chunk1 =
+        String.format(
+            "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"do_thing\",\"arguments\":\"{}\"},\"extra_content\":{\"google\":{\"thought_signature\":\"%s\"}}}]}}]}",
+            STREAMING_TOOL_SIGNATURE_B64);
+    String chunk2 = "{\"choices\":[{\"finish_reason\":\"tool_calls\"}]}";
+
+    ImmutableList<LlmResponse> all = runStream(chunk1, chunk2);
+
+    // Tool-call chunks are accumulated silently: per the doc-comment on accumulateToolCalls
+    // ("To prevent downstream flows from dispatching the same tool multiple times, partial
+    // tool calls are NOT emitted."), chunk1 emits zero events. chunk2's finish chunk emits
+    // a single metadata-final response carrying the fully-accumulated tool-call Part with the
+    // per-tool-call signature applied by updateAccumulatedToolCall.
+    assertThat(all).hasSize(1);
+
+    LlmResponse finalResponse = all.get(0);
+    assertThat(finalResponse.finishReason().get().knownEnum()).isEqualTo(Known.STOP);
+    Part finalToolPart = finalResponse.content().get().parts().get().get(0);
+    assertThat(finalToolPart.functionCall().get().name()).hasValue("do_thing");
+    assertThat(finalToolPart.thoughtSignature()).hasValue(streamingToolSignature);
+  }
+
+  @Test
+  public void testChunkCollection_streamingToolCall_backfillsMessageLevelSignatureWhenAbsent()
+      throws Exception {
+    // When a tool-call Part lacks its own per-call signature but the stream carries a
+    // message-level signature (typical Gemini pattern: message-level signature on the final
+    // chunk), getFinalToolCallParts backfills it onto the tool-call Part so the assistant
+    // turn round-trips with a signature.
+    String chunk1 =
+        "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"do_thing\",\"arguments\":\"{}\"}}]}}]}";
+    String chunk2 =
+        String.format(
+            "{\"choices\":[{\"delta\":{\"extra_content\":{\"google\":{\"thought_signature\":\"%s\"}}},\"finish_reason\":\"tool_calls\"}]}",
+            STREAMING_TEXT_SIGNATURE_B64);
+
+    ImmutableList<LlmResponse> all = runStream(chunk1, chunk2);
+
+    // chunk1: silently accumulated (no partial emitted for tool calls). chunk2: single
+    // metadata-final response (no aggregated-text event because contentParts is empty).
+    assertThat(all).hasSize(1);
+
+    LlmResponse finalResponse = all.get(0);
+    Part finalToolPart = finalResponse.content().get().parts().get().get(0);
+    // Backfilled signature.
+    assertThat(finalToolPart.thoughtSignature()).hasValue(streamingTextSignature);
+  }
+
+  @Test
+  public void
+      testChunkCollection_streamingToolCall_messageLevelSignatureDoesNotOverwriteExistingToolCallSignature()
+          throws Exception {
+    // If a tool-call already has its own per-tool-call signature, a message-level signature
+    // does not overwrite it during getFinalToolCallParts.
+    String chunk1 =
+        String.format(
+            "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"do_thing\",\"arguments\":\"{}\"},\"extra_content\":{\"google\":{\"thought_signature\":\"%s\"}}}]}}]}",
+            STREAMING_TOOL_SIGNATURE_B64);
+    String chunk2 =
+        String.format(
+            "{\"choices\":[{\"delta\":{\"extra_content\":{\"google\":{\"thought_signature\":\"%s\"}}},\"finish_reason\":\"tool_calls\"}]}",
+            STREAMING_TEXT_SIGNATURE_B64);
+
+    ImmutableList<LlmResponse> all = runStream(chunk1, chunk2);
+
+    assertThat(all).hasSize(1);
+    LlmResponse finalResponse = all.get(0);
+    Part finalToolPart = finalResponse.content().get().parts().get().get(0);
+    // Preserved tool-level signature, not the message-level one.
+    assertThat(finalToolPart.thoughtSignature()).hasValue(streamingToolSignature);
+  }
+
+  // ----- Round-trip: Part(sig) --> request --> response --> Part(sig) bytewise equal -------
+
+  @Test
+  public void testRoundTrip_functionCallSignature_bytesPreservedThroughRequestAndResponse()
+      throws Exception {
+    // Bytewise round-trip from a Part with a signature through the request encoder, then
+    // back through the response decoder. Guards against any encoding-decoding asymmetry
+    // (e.g. URL-safe vs standard base64) that DTO-only tests cannot catch.
+    byte[] originalSig = {0x00, 0x7f, (byte) 0x80, (byte) 0xff};
+
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.builder()
+                                    .functionCall(
+                                        FunctionCall.builder().id("call_rt").name("ping").build())
+                                    .thoughtSignature(originalSig)
+                                    .build()))
+                        .build()))
+            .build();
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    // Sanity-check the outbound DTO carries the same encoded signature value...
+    @SuppressWarnings("unchecked")
+    Map<String, Object> outboundGoogle =
+        (Map<String, Object>) request.messages.get(0).toolCalls.get(0).extraContent.get("google");
+    String encodedSig = (String) outboundGoogle.get("thought_signature");
+
+    // ...then synthesize a wire-shaped response carrying the same encoded sig and decode it
+    // back through toLlmResponse.
+    String responseJson =
+        String.format(
+            """
+            {
+              "choices": [{
+                "message": {
+                  "role": "assistant",
+                  "tool_calls": [{
+                    "id": "call_rt",
+                    "type": "function",
+                    "function": { "name": "ping", "arguments": "{}" },
+                    "extra_content": {
+                      "google": {
+                        "thought_signature": "%s"
+                      }
+                    }
+                  }]
+                }
+              }]
+            }
+            """,
+            encodedSig);
+
+    ChatCompletion roundTrippedCompletion =
+        objectMapper.readValue(responseJson, ChatCompletion.class);
+    LlmResponse roundTripped = roundTrippedCompletion.toLlmResponse();
+
+    Part decodedPart = roundTripped.content().get().parts().get().get(0);
+    assertThat(decodedPart.thoughtSignature()).hasValue(originalSig);
   }
 }

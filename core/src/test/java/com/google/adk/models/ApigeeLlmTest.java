@@ -18,6 +18,7 @@ package com.google.adk.models;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assume.assumeNotNull;
+import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
@@ -25,6 +26,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.google.adk.models.ApigeeLlm.ApiType;
+import com.google.adk.models.chat.ChatCompletionsHttpClient;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -47,6 +50,7 @@ public class ApigeeLlmTest {
 
   @Rule public final MockitoRule mocks = MockitoJUnit.rule();
   @Mock private Gemini mockGeminiDelegate;
+  @Mock private ChatCompletionsHttpClient mockCcClient;
 
   private static final String PROXY_URL = "https://test.apigee.net";
 
@@ -62,7 +66,8 @@ public class ApigeeLlmTest {
       "apigee/v1/whatever-model",
       "apigee/vertex_ai/whatever-model",
       "apigee/gemini/v1/whatever-model",
-      "apigee/vertex_ai/v1beta/whatever-model"
+      "apigee/vertex_ai/v1beta/whatever-model",
+      "apigee/openai/gpt-4"
     };
 
     for (String modelName : validModelStrings) {
@@ -84,9 +89,11 @@ public class ApigeeLlmTest {
     };
 
     for (String modelName : invalidModelStrings) {
-      assertThrows(
-          IllegalArgumentException.class,
-          () -> ApigeeLlm.builder().modelName(modelName).proxyUrl(PROXY_URL).build());
+      IllegalArgumentException e =
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> ApigeeLlm.builder().modelName(modelName).proxyUrl(PROXY_URL).build());
+      assertThat(e).hasMessageThat().contains("Invalid model string: " + modelName);
     }
   }
 
@@ -106,6 +113,47 @@ public class ApigeeLlmTest {
     ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
     verify(mockGeminiDelegate).generateContent(requestCaptor.capture(), eq(true));
     assertThat(requestCaptor.getValue().model()).hasValue("whatever-model");
+  }
+
+  @Test
+  public void generateContent_withChatCompletionsApiType_sendsToCcClient() {
+    when(mockCcClient.complete(any(), anyBoolean())).thenReturn(Flowable.empty());
+
+    ApigeeLlm llm = new ApigeeLlm("apigee/openai/gpt-4", mockGeminiDelegate, mockCcClient);
+
+    LlmRequest request =
+        LlmRequest.builder()
+            .model("apigee/openai/gpt-4")
+            .contents(ImmutableList.of(Content.builder().parts(Part.fromText("hello")).build()))
+            .build();
+    llm.generateContent(request, false).test().assertNoErrors();
+
+    ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+    verify(mockCcClient).complete(requestCaptor.capture(), eq(false));
+    verify(mockGeminiDelegate, never()).generateContent(any(), anyBoolean());
+    assertThat(requestCaptor.getValue().model()).hasValue("gpt-4");
+  }
+
+  @Test
+  public void connect_withChatCompletionsApiType_throwsUnsupportedOperationException() {
+    ApigeeLlm llm = new ApigeeLlm("apigee/openai/gpt-4", mockGeminiDelegate, mockCcClient);
+    LlmRequest request = LlmRequest.builder().model("apigee/openai/gpt-4").build();
+    UnsupportedOperationException e =
+        assertThrows(UnsupportedOperationException.class, () -> llm.connect(request));
+    assertThat(e)
+        .hasMessageThat()
+        .contains("Streaming connections are not supported for chat completions.");
+  }
+
+  @Test
+  public void build_withExplicitChatCompletionsApiType_success() {
+    ApigeeLlm llm =
+        ApigeeLlm.builder()
+            .modelName("apigee/whatever-model")
+            .proxyUrl(PROXY_URL)
+            .apiType(ApiType.CHAT_COMPLETIONS)
+            .build();
+    assertThat(llm).isNotNull();
   }
 
   // Add a test to verify the vertexAI flag is set correctly.
@@ -187,23 +235,168 @@ public class ApigeeLlmTest {
         LlmRequest.builder()
             .contents(ImmutableList.of(Content.builder().parts(Part.fromText("hi")).build()))
             .build();
-    assertThrows(IllegalArgumentException.class, () -> llm.generateContent(request, false));
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> llm.generateContent(request, false));
+    assertThat(e)
+        .hasMessageThat()
+        .contains(
+            "Invalid model string, expected apigee/[<provider>/][<version>/]<model_id>: "
+                + "apigee/gemini/v1/");
     verify(mockGeminiDelegate, never()).generateContent(any(), anyBoolean());
   }
 
   @Test
-  public void build_withoutProxyUrl_readsFromEnvironment() {
+  public void build_withoutProxyUrlAndEnvVarSet_readsFromEnvironment() {
+    assumeNotNull(System.getenv("APIGEE_PROXY_URL"));
     String envProxyUrl = System.getenv("APIGEE_PROXY_URL");
-    if (envProxyUrl != null) {
-      ApigeeLlm llm = ApigeeLlm.builder().modelName("apigee/whatever-model").build();
-      assertThat(llm.getHttpOptions().baseUrl()).hasValue(envProxyUrl);
-    } else {
-      assertThrows(
-          IllegalArgumentException.class,
-          () -> ApigeeLlm.builder().modelName("apigee/whatever-model").build());
-      ApigeeLlm llm =
-          ApigeeLlm.builder().proxyUrl(PROXY_URL).modelName("apigee/whatever-model").build();
-      assertThat(llm.getHttpOptions().baseUrl()).hasValue(PROXY_URL);
+    ApigeeLlm llm = ApigeeLlm.builder().modelName("apigee/whatever-model").build();
+    assertThat(llm.getHttpOptions().baseUrl()).hasValue(envProxyUrl);
+  }
+
+  @Test
+  public void build_withoutProxyUrlAndEnvVarNotSet_throwsException() {
+    assumeTrue(System.getenv("APIGEE_PROXY_URL") == null);
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> ApigeeLlm.builder().modelName("apigee/whatever-model").build());
+    assertThat(e)
+        .hasMessageThat()
+        .contains(
+            "Apigee proxy URL is not set and not found in the environment variable"
+                + " APIGEE_PROXY_URL.");
+  }
+
+  @Test
+  public void build_withProxyUrl_usesProvidedUrl() {
+    ApigeeLlm llm =
+        ApigeeLlm.builder().proxyUrl(PROXY_URL).modelName("apigee/whatever-model").build();
+    assertThat(llm.getHttpOptions().baseUrl()).hasValue(PROXY_URL);
+  }
+
+  @Test
+  public void generateContent_withChatCompletionsApiType_sendsToCcClient_streaming() {
+    when(mockCcClient.complete(any(), anyBoolean())).thenReturn(Flowable.empty());
+
+    ApigeeLlm llm = new ApigeeLlm("apigee/openai/gpt-4o", mockGeminiDelegate, mockCcClient);
+    LlmRequest request =
+        LlmRequest.builder()
+            .model("apigee/openai/gpt-4o")
+            .contents(ImmutableList.of(Content.builder().parts(Part.fromText("hello")).build()))
+            .build();
+    llm.generateContent(request, true).test().assertNoErrors();
+
+    ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+    verify(mockCcClient).complete(requestCaptor.capture(), eq(true));
+    verify(mockGeminiDelegate, never()).generateContent(any(), anyBoolean());
+    assertThat(requestCaptor.getValue().model()).hasValue("gpt-4o");
+  }
+
+  @Test
+  public void generateContent_requestLevelModelOverride_extractedCorrectly() {
+    when(mockCcClient.complete(any(), anyBoolean())).thenReturn(Flowable.empty());
+
+    ApigeeLlm llm = new ApigeeLlm("apigee/openai/gpt-4o", mockGeminiDelegate, mockCcClient);
+    LlmRequest request =
+        LlmRequest.builder()
+            .model("apigee/openai/gpt-3.5-turbo")
+            .contents(ImmutableList.of(Content.builder().parts(Part.fromText("hello")).build()))
+            .build();
+
+    llm.generateContent(request, false).test().assertNoErrors();
+
+    ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+    verify(mockCcClient).complete(requestCaptor.capture(), eq(false));
+    assertThat(requestCaptor.getValue().model()).hasValue("gpt-3.5-turbo");
+  }
+
+  @Test
+  public void validateModelString_rejectsOpenAiWithVersion() {
+    // 3-component model string (e.g. apigee/openai/v1/gpt-4o) fails because "openai" != "vertex_ai"
+    // and != "gemini"
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                ApigeeLlm.builder()
+                    .modelName("apigee/openai/v1/gpt-4o")
+                    .proxyUrl(PROXY_URL)
+                    .build());
+    assertThat(e).hasMessageThat().contains("Invalid model string: apigee/openai/v1/gpt-4o");
+  }
+
+  @Test
+  public void build_withCustomHeadersOverlappingTrackingHeaders_throwsException() {
+    Map<String, String> overlappingHeaders = ImmutableMap.of("user-agent", "custom-agent");
+    IllegalArgumentException e =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                ApigeeLlm.builder()
+                    .modelName("apigee/openai/gpt-4o")
+                    .proxyUrl(PROXY_URL)
+                    .customHeaders(overlappingHeaders)
+                    .build());
+    assertThat(e).hasMessageThat().contains("Multiple entries with same key: user-agent=");
+  }
+
+  @Test
+  public void generateContent_crossApiTypeRequestOverride_routesBasedOnOriginalApiType() {
+    when(mockGeminiDelegate.generateContent(any(), anyBoolean())).thenReturn(Flowable.empty());
+
+    // Original ApiType is GENAI implicitly
+    ApigeeLlm llm = new ApigeeLlm("apigee/gemini/gemini-pro", mockGeminiDelegate);
+
+    // Override specifies openai models
+    LlmRequest request =
+        LlmRequest.builder()
+            .model("apigee/openai/gpt-4o")
+            .contents(ImmutableList.of(Content.builder().parts(Part.fromText("hello")).build()))
+            .build();
+
+    llm.generateContent(request, false).test().assertNoErrors();
+
+    ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+    verify(mockGeminiDelegate).generateContent(requestCaptor.capture(), eq(false));
+    // It still goes to gemini delegate, but model is stripped
+    assertThat(requestCaptor.getValue().model()).hasValue("gpt-4o");
+  }
+
+  @Test
+  public void generateContent_invalidRequestLevelOverride_throwsException() {
+    ApigeeLlm llm = new ApigeeLlm("apigee/openai/gpt-4o", mockGeminiDelegate, mockCcClient);
+
+    LlmRequest request =
+        LlmRequest.builder()
+            .model("invalid-no-apigee-prefix")
+            .contents(ImmutableList.of(Content.builder().parts(Part.fromText("hello")).build()))
+            .build();
+
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> llm.generateContent(request, false));
+    assertThat(e)
+        .hasMessageThat()
+        .contains(
+            "Invalid model string, expected apigee/[<provider>/][<version>/]<model_id>: "
+                + "invalid-no-apigee-prefix");
+  }
+
+  @Test
+  public void build_nullModelName_throwsNullPointerException() {
+    assertThrows(
+        NullPointerException.class,
+        () -> ApigeeLlm.builder().modelName(null).proxyUrl(PROXY_URL).build());
+  }
+
+  @Test
+  public void build_malformedModelsWithTrailingSlashes_throwsException() {
+    String[] malformedModels = {"apigee/openai/", "apigee/openai/gpt-4o/"};
+    for (String modelName : malformedModels) {
+      IllegalArgumentException e =
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> ApigeeLlm.builder().modelName(modelName).proxyUrl(PROXY_URL).build());
+      assertThat(e).hasMessageThat().contains("Invalid model string: " + modelName);
     }
   }
 }

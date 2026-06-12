@@ -26,6 +26,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
@@ -351,41 +352,43 @@ public final class ChatCompletionsRequest {
     List<ChatCompletionsCommon.ToolCall> toolCalls = new ArrayList<>();
     List<Message> toolResponses = new ArrayList<>();
     List<String> refusals = new ArrayList<>();
+    // Capture a message-level thought_signature from the first text Part that carries one.
+    // This signature must be echoed back on subsequent turns to ensure proper round-tripping.
+    byte[] textThoughtSignature = null;
 
-    content
-        .parts()
-        .ifPresent(
-            parts -> {
-              for (Part part : parts) {
-                if (part.text().isPresent()) {
-                  // Text Parts may carry refusal content prefixed with REFUSAL_PREFIX.
-                  ChatCompletionsCommon.RefusalSplit split =
-                      ChatCompletionsCommon.parseRefusalPrefix(part.text().get());
-                  if (split.content() != null) {
-                    ContentPart textPart = new ContentPart();
-                    textPart.type = "text";
-                    textPart.text = split.content();
-                    contentParts.add(textPart);
-                  }
-                  if (split.refusal() != null) {
-                    refusals.add(split.refusal());
-                  }
-                } else if (part.inlineData().isPresent()) {
-                  contentParts.add(processInlineDataPart(part));
-                } else if (part.fileData().isPresent()) {
-                  contentParts.add(processFileDataPart(part));
-                } else if (part.functionCall().isPresent()) {
-                  toolCalls.add(processFunctionCallPart(part));
-                } else if (part.functionResponse().isPresent()) {
-                  toolResponses.add(processFunctionResponsePart(part));
-                } else if (part.executableCode().isPresent()) {
-                  logger.warn("Executable code is not supported in Chat Completion conversion");
-                } else if (part.codeExecutionResult().isPresent()) {
-                  logger.warn(
-                      "Code execution result is not supported in Chat Completion conversion");
-                }
-              }
-            });
+    if (content.parts().isPresent()) {
+      for (Part part : content.parts().get()) {
+        if (part.text().isPresent()) {
+          // Text Parts may carry refusal content prefixed with REFUSAL_PREFIX.
+          ChatCompletionsCommon.RefusalSplit split =
+              ChatCompletionsCommon.parseRefusalPrefix(part.text().get());
+          if (split.content() != null) {
+            ContentPart textPart = new ContentPart();
+            textPart.type = "text";
+            textPart.text = split.content();
+            contentParts.add(textPart);
+          }
+          if (split.refusal() != null) {
+            refusals.add(split.refusal());
+          }
+          if (textThoughtSignature == null && part.thoughtSignature().isPresent()) {
+            textThoughtSignature = part.thoughtSignature().get();
+          }
+        } else if (part.inlineData().isPresent()) {
+          contentParts.add(processInlineDataPart(part));
+        } else if (part.fileData().isPresent()) {
+          contentParts.add(processFileDataPart(part));
+        } else if (part.functionCall().isPresent()) {
+          toolCalls.add(processFunctionCallPart(part));
+        } else if (part.functionResponse().isPresent()) {
+          toolResponses.add(processFunctionResponsePart(part));
+        } else if (part.executableCode().isPresent()) {
+          logger.warn("Executable code is not supported in Chat Completion conversion");
+        } else if (part.codeExecutionResult().isPresent()) {
+          logger.warn("Code execution result is not supported in Chat Completion conversion");
+        }
+      }
+    }
 
     if (!toolResponses.isEmpty()) {
       return toolResponses;
@@ -402,6 +405,14 @@ public final class ChatCompletionsRequest {
         } else {
           msg.content = new MessageContent(ImmutableList.copyOf(contentParts));
         }
+      }
+      // Round-trip the message-level thought_signature for assistant text responses.
+      if (textThoughtSignature != null) {
+        msg.extraContent =
+            ImmutableMap.of(
+                "google",
+                ImmutableMap.of(
+                    "thought_signature", Base64.getEncoder().encodeToString(textThoughtSignature)));
       }
       List<Message> messages = new ArrayList<>();
       messages.add(msg);
@@ -446,6 +457,10 @@ public final class ChatCompletionsRequest {
   /**
    * Processes a function call part and returns a mapped ToolCall.
    *
+   * <p>If the source {@link Part} carries a {@code thoughtSignature}, it is round-tripped back out
+   * as a base64-encoded string in {@code extra_content.google.thought_signature} to satisfy
+   * endpoint requirements.
+   *
    * @param part The input part containing a requested function call or invocation.
    * @return The mapped function call tool call.
    */
@@ -464,6 +479,13 @@ public final class ChatCompletionsRequest {
       }
     }
     toolCall.function = function;
+    part.thoughtSignature()
+        .ifPresent(
+            sigBytes -> {
+              String sig = Base64.getEncoder().encodeToString(sigBytes);
+              toolCall.extraContent =
+                  ImmutableMap.of("google", ImmutableMap.of("thought_signature", sig));
+            });
     return toolCall;
   }
 
@@ -616,6 +638,13 @@ public final class ChatCompletionsRequest {
 
     /** See class definition for more details. */
     public String refusal;
+
+    /**
+     * Message-level additional parameters used by some providers. Used for round-tripping data like
+     * {@code extra_content.google.thought_signature}.
+     */
+    @JsonProperty("extra_content")
+    public Map<String, Object> extraContent;
   }
 
   /**

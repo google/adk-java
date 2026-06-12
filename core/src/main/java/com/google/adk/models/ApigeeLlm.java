@@ -19,6 +19,7 @@ import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.google.adk.Version;
+import com.google.adk.models.chat.ChatCompletionsHttpClient;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -28,6 +29,8 @@ import io.reactivex.rxjava3.core.Flowable;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A {@link BaseLlm} implementation for calling an Apigee proxy.
@@ -36,6 +39,7 @@ import java.util.Objects;
  * allows for specifying the provider (Gemini or Vertex AI), API version, and model ID.
  */
 public class ApigeeLlm extends BaseLlm {
+  private static final Logger logger = LoggerFactory.getLogger(ApigeeLlm.class);
   private static final String GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME =
       "GOOGLE_GENAI_USE_VERTEXAI";
   private static final String APIGEE_PROXY_URL_ENV_VARIABLE_NAME = "APIGEE_PROXY_URL";
@@ -51,9 +55,18 @@ public class ApigeeLlm extends BaseLlm {
             "user-agent", versionHeaderValue);
   }
 
+  /** Defines the type of API to be used by the Apigee proxy. */
+  public enum ApiType {
+    UNKNOWN,
+    CHAT_COMPLETIONS,
+    GENAI
+  }
+
   private final Gemini geminiDelegate;
+  private final ChatCompletionsHttpClient chatCompletionsHttpClient;
   private final Client apiClient;
   private final HttpOptions httpOptions;
+  private final ApiType apiType;
 
   /**
    * Constructs a new ApigeeLlm instance.
@@ -62,13 +75,24 @@ public class ApigeeLlm extends BaseLlm {
    * @param proxyUrl The URL of the Apigee proxy.
    * @param customHeaders A map of custom headers to be sent with the request.
    */
-  private ApigeeLlm(String modelName, String proxyUrl, Map<String, String> customHeaders) {
+  private ApigeeLlm(
+      String modelName, String proxyUrl, Map<String, String> customHeaders, ApiType apiType) {
     super(modelName);
 
     if (!validateModelString(modelName)) {
       throw new IllegalArgumentException(
           "Invalid model string, expected apigee/[<provider>/][<version>/]<model_id>: "
               + modelName);
+    }
+
+    if (apiType == null || apiType == ApiType.UNKNOWN) {
+      if (modelName.startsWith("apigee/openai/")) {
+        this.apiType = ApiType.CHAT_COMPLETIONS;
+      } else {
+        this.apiType = ApiType.GENAI;
+      }
+    } else {
+      this.apiType = apiType;
     }
 
     String effectiveProxyUrl = proxyUrl;
@@ -96,13 +120,26 @@ public class ApigeeLlm extends BaseLlm {
               .buildOrThrow());
     }
     this.httpOptions = httpOptionsBuilder.build();
-    Client.Builder apiClientBuilder = Client.builder().httpOptions(this.httpOptions);
-    if (isVertexAiModel(modelName)) {
-      apiClientBuilder.vertexAI(true);
+
+    if (this.apiType == ApiType.CHAT_COMPLETIONS) {
+      this.apiClient = null;
+      this.geminiDelegate = null;
+      this.chatCompletionsHttpClient = new ChatCompletionsHttpClient(this.httpOptions);
+    } else {
+      Client.Builder apiClientBuilder = Client.builder().httpOptions(this.httpOptions);
+      if (isVertexAiModel(modelName)) {
+        apiClientBuilder.vertexAI(true);
+      }
+      this.apiClient = apiClientBuilder.build();
+      this.geminiDelegate = new Gemini(modelName, apiClient);
+      this.chatCompletionsHttpClient = null;
     }
 
-    this.apiClient = apiClientBuilder.build();
-    this.geminiDelegate = new Gemini(modelName, apiClient);
+    logger.trace(
+        "ApigeeLlm constructed: modelName={} apiType={} effectiveProxyUrl={}",
+        modelName,
+        this.apiType,
+        effectiveProxyUrl);
   }
 
   /**
@@ -113,10 +150,31 @@ public class ApigeeLlm extends BaseLlm {
    */
   @VisibleForTesting
   ApigeeLlm(String modelName, Gemini geminiDelegate) {
+    this(modelName, geminiDelegate, null);
+  }
+
+  /**
+   * Constructs a new ApigeeLlm instance for testing purposes.
+   *
+   * @param modelName The name of the Apigee model to use.
+   * @param geminiDelegate The Gemini delegate to use for making API calls.
+   * @param chatCompletionsHttpClient The ChatCompletionsHttpClient to use for making API calls.
+   */
+  @VisibleForTesting
+  ApigeeLlm(
+      String modelName,
+      Gemini geminiDelegate,
+      ChatCompletionsHttpClient chatCompletionsHttpClient) {
     super(modelName);
     this.apiClient = null;
     this.httpOptions = null;
     this.geminiDelegate = geminiDelegate;
+    this.chatCompletionsHttpClient = chatCompletionsHttpClient;
+    if (chatCompletionsHttpClient != null) {
+      this.apiType = ApiType.CHAT_COMPLETIONS;
+    } else {
+      this.apiType = ApiType.GENAI;
+    }
   }
 
   /**
@@ -178,6 +236,7 @@ public class ApigeeLlm extends BaseLlm {
     private String modelName;
     private String proxyUrl;
     private Map<String, String> customHeaders = new HashMap<>();
+    private ApiType apiType = ApiType.UNKNOWN;
 
     protected Builder() {}
 
@@ -244,6 +303,18 @@ public class ApigeeLlm extends BaseLlm {
     }
 
     /**
+     * Sets the explicit {@link ApiType} to use (e.g., CHAT_COMPLETIONS or GENAI).
+     *
+     * @param apiType the type of API.
+     * @return this builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder apiType(ApiType apiType) {
+      this.apiType = apiType;
+      return this;
+    }
+
+    /**
      * Builds the {@link ApigeeLlm} instance.
      *
      * @return a new {@link ApigeeLlm} instance.
@@ -255,7 +326,7 @@ public class ApigeeLlm extends BaseLlm {
         throw new IllegalArgumentException("Invalid model string: " + modelName);
       }
 
-      return new ApigeeLlm(modelName, proxyUrl, customHeaders);
+      return new ApigeeLlm(modelName, proxyUrl, customHeaders, apiType);
     }
   }
 
@@ -264,11 +335,23 @@ public class ApigeeLlm extends BaseLlm {
     String modelToUse = llmRequest.model().orElse(model());
     String modelId = getModelId(modelToUse);
     LlmRequest newLlmRequest = llmRequest.toBuilder().model(modelId).build();
+
+    logger.debug("ApigeeLlm.generateContent routing through {} for model {}", apiType, modelId);
+
+    if (apiType == ApiType.CHAT_COMPLETIONS) {
+      return chatCompletionsHttpClient.complete(newLlmRequest, stream);
+    }
+
     return geminiDelegate.generateContent(newLlmRequest, stream);
   }
 
   @Override
   public BaseLlmConnection connect(LlmRequest llmRequest) {
+    if (apiType == ApiType.CHAT_COMPLETIONS) {
+      throw new UnsupportedOperationException(
+          "Streaming connections are not supported for chat completions.");
+    }
+
     String modelToUse = llmRequest.model().orElse(model());
     String modelId = getModelId(modelToUse);
     LlmRequest newLlmRequest = llmRequest.toBuilder().model(modelId).build();
@@ -297,7 +380,9 @@ public class ApigeeLlm extends BaseLlm {
       return components[1].startsWith("v");
     }
     if (components.length == 2) {
-      if (components[0].equals("vertex_ai") || components[0].equals("gemini")) {
+      if (components[0].equals("vertex_ai")
+          || components[0].equals("gemini")
+          || components[0].equals("openai")) {
         return true;
       }
       return components[0].startsWith("v");
