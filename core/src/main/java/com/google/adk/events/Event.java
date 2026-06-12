@@ -375,9 +375,12 @@ public class Event extends JsonBaseModel {
   /** Builder for {@link Event}. */
   public static class Builder {
 
-    private String id;
-    private String invocationId;
-    private String author;
+    private static final String MISSING_INVOCATION_ID = "__adk__invocation__id__missing";
+    private static final String MISSING_AUTHOR = "__adk__author__unknown";
+
+    private @Nullable String id;
+    private @Nullable String invocationId;
+    private @Nullable String author;
     private @Nullable Content content;
     private @Nullable EventActions actions;
     private @Nullable Set<String> longRunningToolIds;
@@ -569,9 +572,9 @@ public class Event extends JsonBaseModel {
 
     public Event build() {
       Event event = new Event();
-      event.setId(id);
-      event.setInvocationId(invocationId);
-      event.setAuthor(author);
+      event.setId(Optional.ofNullable(id).orElse(UUID.randomUUID().toString()));
+      event.setInvocationId(Optional.ofNullable(invocationId).orElse(MISSING_INVOCATION_ID));
+      event.setAuthor(Optional.ofNullable(author).orElse(MISSING_AUTHOR));
       event.setContent(content);
       event.setLongRunningToolIds(longRunningToolIds);
       event.setPartial(partial);
