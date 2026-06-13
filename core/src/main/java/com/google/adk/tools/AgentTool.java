@@ -16,6 +16,8 @@
 
 package com.google.adk.tools;
 
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
@@ -131,8 +133,11 @@ public class AgentTool extends BaseTool {
 
   @Override
   public Optional<FunctionDeclaration> declaration() {
+
+    String desc = isNotBlank(this.description()) ? this.description() : this.name();
+
     FunctionDeclaration.Builder builder =
-        FunctionDeclaration.builder().description(this.description()).name(this.name());
+        FunctionDeclaration.builder().description(desc).name(this.name());
 
     Optional<Schema> agentInputSchema = getInputSchema(agent);
 
