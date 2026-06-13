@@ -19,6 +19,7 @@ package com.google.adk.models.chat;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.internal.http.HttpClientFactory;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.common.annotations.VisibleForTesting;
@@ -72,7 +73,8 @@ public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
    * {@link ChatCompletionsHttpClient} instances. Each instance forks this client via {@link
    * OkHttpClient#newBuilder()} to apply per-instance timeouts without leaking pools.
    */
-  private static final OkHttpClient SHARED_POOL_CLIENT = new OkHttpClient();
+  private static final OkHttpClient SHARED_POOL_CLIENT =
+      HttpClientFactory.createSharedHttpClient("ChatCompletionsHttpClient");
 
   private final OkHttpClient client;
   private final HttpUrl completionsUrl;
