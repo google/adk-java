@@ -374,4 +374,31 @@ public final class LocalSkillSourceTest {
         .hasMessageThat()
         .contains("Skill file must start with ---");
   }
+
+  @Test
+  public void testLoadResource_pathTraversalRejected() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+    // A secret file outside the skills base directory.
+    Files.writeString(tempFolder.getRoot().toPath().resolve("secret.txt"), "top-secret");
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+
+    // A skill name that escapes the skills base via "..".
+    var single = source.loadResource("..", "secret.txt");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+  }
+
+  @Test
+  public void testListResources_pathTraversalRejected() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+
+    var single = source.listResources("../../etc", "");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+  }
 }
