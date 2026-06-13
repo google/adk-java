@@ -317,4 +317,55 @@ public final class InMemorySessionServiceTest {
     assertThat(sessions.get("app-name").get("user-id")).isNotNull();
     assertThat(sessions.get("app-name").get("user-id")).hasSize(1);
   }
+
+  @Test
+  public void createSession_stripsReservedStateKeys() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+
+    HashMap<String, Object> state = new HashMap<>();
+    state.put("user_key", "user_value");
+    state.put("_code_execution_context", "should_be_stripped");
+    state.put("_code_executor_input_files", "should_be_stripped");
+    state.put("_code_executor_error_counts", "should_be_stripped");
+    state.put("_code_execution_results", "should_be_stripped");
+
+    Session session =
+        sessionService.createSession("app", "user", state, "session-id").blockingGet();
+
+    // Only the non-reserved key should survive.
+    assertThat(session.state()).containsExactly("user_key", "user_value");
+    assertThat(session.state()).doesNotContainKey("_code_execution_context");
+    assertThat(session.state()).doesNotContainKey("_code_executor_input_files");
+    assertThat(session.state()).doesNotContainKey("_code_executor_error_counts");
+    assertThat(session.state()).doesNotContainKey("_code_execution_results");
+  }
+
+  @Test
+  public void appendEvent_stateDelta_stripsReservedStateKeys() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+
+    Session session = sessionService.createSession("app", "user").blockingGet();
+
+    // Attempt to inject a reserved key via stateDelta.
+    ConcurrentMap<String, Object> stateDelta = new ConcurrentHashMap<>();
+    stateDelta.put("safe_key", "safe_value");
+    stateDelta.put("_code_execution_context", "attacker_controlled");
+
+    Event event =
+        Event.builder().actions(EventActions.builder().stateDelta(stateDelta).build()).build();
+    sessionService.appendEvent(session, event).blockingGet();
+
+    assertThat(session.state()).containsEntry("safe_key", "safe_value");
+    assertThat(session.state()).doesNotContainKey("_code_execution_context");
+  }
+
+  @Test
+  public void createSession_nullState_producesEmptyState() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+
+    Session session = sessionService.createSession("app", "user", null, "s1").blockingGet();
+
+    assertThat(session.state()).isEmpty();
+  }
+
 }
