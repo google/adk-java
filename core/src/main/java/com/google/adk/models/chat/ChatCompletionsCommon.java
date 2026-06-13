@@ -37,6 +37,10 @@ final class ChatCompletionsCommon {
 
   private static final ObjectMapper objectMapper = new ObjectMapper();
 
+  static final String EMPTY_JSON_OBJECT = "{}";
+  static final Map<String, Object> EMPTY_PARAMETERS_SCHEMA =
+      Map.of("type", "object", "properties", Map.of());
+
   public static final String ROLE_ASSISTANT = "assistant";
   public static final String ROLE_MODEL = "model";
 
@@ -158,6 +162,18 @@ final class ChatCompletionsCommon {
   }
 
   /**
+   * Robust defense: Function arguments and responses MUST be JSON objects. If the LLM hallucinates
+   * "null", "NULL", "none", or conversational text, we fallback to an empty JSON object "{}". This
+   * prevents OpenAI-compatible proxies (like Groq) from throwing 400 Bad Request errors.
+   */
+  static String enforceJsonObject(String json) {
+    if (json == null || !json.trim().startsWith("{")) {
+      return EMPTY_JSON_OBJECT;
+    }
+    return json.trim();
+  }
+
+  /**
    * See
    * https://developers.openai.com/api/reference/resources/chat#(resource)%20chat.completions%20%3E%20(model)%20chat_completion_message_function_tool_call%20%3E%20(schema)
    */
@@ -181,20 +197,26 @@ final class ChatCompletionsCommon {
       if (name != null) {
         fcBuilder.name(name);
       }
-      if (arguments != null && !arguments.isEmpty()) {
-        try {
-          Map<String, Object> args =
-              objectMapper.readValue(arguments, new TypeReference<Map<String, Object>>() {});
-          fcBuilder.args(args);
-        } catch (Exception e) {
-          throw new IllegalArgumentException(
-              "Failed to parse function arguments JSON: " + arguments, e);
-        }
-      }
+      fcBuilder.args(parseArguments(arguments));
       if (toolCallId != null) {
         fcBuilder.id(toolCallId);
       }
       return fcBuilder.build();
+    }
+
+    private Map<String, Object> parseArguments(String arguments) {
+      if (arguments == null || arguments.trim().isEmpty()) {
+        return Map.of();
+      }
+      try {
+        String json = enforceJsonObject(arguments);
+        Map<String, Object> result =
+            objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+        return result != null ? result : Map.of();
+      } catch (Exception e) {
+        throw new IllegalArgumentException(
+            "Failed to parse function arguments JSON: " + arguments, e);
+      }
     }
   }
 

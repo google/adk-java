@@ -566,6 +566,38 @@ public final class ChatCompletionsRequestTest {
   }
 
   @Test
+  public void testFromLlmRequest_withEmptyFunctionArguments() throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.builder()
+                                    .functionCall(
+                                        FunctionCall.builder()
+                                            .id("call_123")
+                                            .name("get_time")
+                                            .args(ImmutableMap.of())
+                                            .build())
+                                    .build()))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message msg = request.messages.get(0);
+    assertThat(msg.role).isEqualTo("assistant");
+    assertThat(msg.toolCalls).hasSize(1);
+    assertThat(msg.toolCalls.get(0).function.name).isEqualTo("get_time");
+    assertThat(msg.toolCalls.get(0).function.arguments).isEqualTo("{}");
+  }
+
+  @Test
   public void testFromLlmRequest_withStreamOptions() throws Exception {
     LlmRequest llmRequest =
         LlmRequest.builder().model("gemini-1.5-pro").contents(ImmutableList.of()).build();
@@ -626,11 +658,11 @@ public final class ChatCompletionsRequestTest {
 
     assertThat(request.messages.get(1).role).isEqualTo("tool");
     assertThat(request.messages.get(1).toolCallId).isEmpty();
-    assertThat(request.messages.get(1).content).isNull();
+    assertThat(request.messages.get(1).content.getValue()).isEqualTo("{}");
 
     assertThat(request.messages.get(2).role).isEqualTo("tool");
     assertThat(request.messages.get(2).toolCallId).isEqualTo("call_faulty");
-    assertThat(request.messages.get(2).content).isNull();
+    assertThat(request.messages.get(2).content.getValue()).isEqualTo("{}");
   }
 
   @Test
