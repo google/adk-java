@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.utils.HttpUtils;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -74,7 +75,8 @@ public final class ChatCompletionsHttpClient {
    * {@link ChatCompletionsHttpClient} instances. Each instance forks this client via {@link
    * OkHttpClient#newBuilder()} to apply per-instance timeouts without leaking pools.
    */
-  private static final OkHttpClient SHARED_POOL_CLIENT = new OkHttpClient();
+  private static final OkHttpClient SHARED_POOL_CLIENT =
+      HttpUtils.createSharedHttpClient("ChatCompletionsHttpClient");
 
   private final OkHttpClient client;
   private final HttpUrl completionsUrl;
