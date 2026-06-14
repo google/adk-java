@@ -1,4 +1,4 @@
-package com.example.SpringBootAdkTemplate;
+package com.example.springbootadktemplate;
 
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.runner.Runner;

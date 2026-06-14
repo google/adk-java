@@ -1,3 +1,24 @@
 spring:
   application:
-    name: SpringBootAdkTemplate
+    name: spring_boot_adk_template      # must be a valid identifier (App#validateAppName regex)
+
+# Defaults — services are in-memory unless these are uncommented.
+# adk:
+#   artifacts:
+#     gcs-enabled: false
+#     # bucket-name: my-bucket
+#   session:
+#     type: IN_MEMORY                   # IN_MEMORY | VERTEX_AI | FIRESTORE
+#     # project-id: my-project
+#     # location: us-central1
+#   memory:
+#     type: IN_MEMORY                   # IN_MEMORY | FIRESTORE
+#   run-config:
+#     streaming-mode: NONE              # NONE | SSE | BIDI
+#     max-llm-calls: 500
+#     tool-execution-mode: NONE         # NONE | SEQUENTIAL | PARALLEL | PARALLEL_SUBSCRIBE
+#     save-input-blobs-as-artifacts: false
+#     auto-create-session: true
+#   firestore:
+#     # project-id: my-gcp-project
+#     # database-id: "(default)"
