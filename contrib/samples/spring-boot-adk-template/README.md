@@ -1,76 +1,55 @@
 # Spring Boot ADK Template
 
-This project is a Spring Boot application that serves as a template and verification app for the **Google ADK Spring Boot Starter**.
+Sample Spring Boot application demonstrating the **`google-adk-spring-boot-starter`** in its simplest form. The user code consists of:
 
-It demonstrates how to integrate the Google Agent Development Kit (ADK) into a Spring Boot application using the custom starter.
+- One `@Bean LlmAgent rootAgent()` — the agent topology
+- One `@Bean App` — wraps the root agent under an app name
+- One `@Service AgentService` — illustrates injection of the starter-provided `Runner`
 
-## Features
-
-*   **ADK Integration**: Uses `adk-spring-boot-starter` for auto-configuration.
-*   **Agent Configuration**: Defines a sample `LlmAgent` bean.
-*   **Bean Verification**: Verifies the injection of core ADK components (`Runner`, `RunConfig`, `ArtifactService`, etc.) on startup.
-*   **Reactive Web**: Built on Spring WebFlux (though the current test scenario is console-based).
+Everything else (`Runner`, `BaseSessionService`, `BaseArtifactService`, `RunConfig`) is wired by the starter.
 
 ## Prerequisites
 
-*   Java 21
-*   Maven
-*   **adk-spring-boot-starter**: This project depends on the local `adk-spring-boot-starter` artifact. You must build and install the starter first.
+- Java 17
+- Maven
+- This module is built as part of the ADK aggregator; no separate install of the starter is required.
 
-## Getting Started
+## Build and run
 
-### 1. Build the ADK Starter
-
-Before running this application, ensure the starter is installed in your local Maven repository:
+From the repository root:
 
 ```bash
-cd ../adk-spring-boot-starter
-./mvnw clean install -DskipTests
+mvn -pl contrib/samples/spring-boot-adk-template -am verify
 ```
 
-### 2. Build and Run the Template
+To run interactively:
 
 ```bash
-cd ../SpringBootAdkTemplate
-./mvnw spring-boot:run
-```
-
-### 3. Verify Output
-
-On successful startup, you should see logs indicating the ADK components have been initialized:
-
-```text
-=== ADK Starter Verification ===
-Service Info: Agent created: LlmAgent, Runner: ...
-Run Config streaming mode: NONE
-RunConfig: com.google.adk.agents.RunConfig
-Runner: com.google.adk.runner.Runner
-BaseArtifactService: com.google.adk.artifacts.BaseArtifactService
-...
-================================
+mvn -pl contrib/samples/spring-boot-adk-template -am spring-boot:run
 ```
 
 ## Configuration
 
-The application is configured via `src/main/resources/application.yaml`.
+`src/main/resources/application.yaml` shows the full property surface as comments. The defaults give an all-in-memory configuration with no GCP credentials required — switch backends by uncommenting the relevant blocks (`adk.session.type=VERTEX_AI`, `adk.session.type=FIRESTORE`, `adk.artifacts.gcs-enabled=true`, etc.).
 
-Key ADK properties (managed by the starter):
+See the [starter README](../../adk-spring-boot-starter/README.md) for the full property reference.
 
-```yaml
-adk:
-  run-config:
-    streaming-mode: NONE # Options: NONE, SSE, BIDI
-  artifacts:
-    gcs-enabled: false # Set to true to use Google Cloud Storage
-    # bucket-name: my-bucket
-  session:
-    type: IN_MEMORY # Options: IN_MEMORY, VERTEX_AI
-  memory:
-    type: IN_MEMORY
+## Use Spring AI as the LLM substrate (optional)
+
+This sample uses a string model name (`"gemini-2.5-flash"`). To swap to Spring AI's `ChatModel` ecosystem (OpenAI, Anthropic, Gemini, Ollama, Vertex AI, Azure OpenAI, Bedrock):
+
+1. Add `com.google.adk:google-adk-spring-ai` and your preferred Spring AI provider artifact to `pom.xml`.
+2. Configure the provider via `spring.ai.*` properties (e.g. `spring.ai.openai.api-key`).
+3. Inject the auto-configured `SpringAI` bean into `AgentConfig.rootAgent()` and pass it to `.model(...)`.
+
+## Project structure
+
 ```
-
-## Project Structure
-
-*   `src/main/java/com/example/SpringBootAdkTemplate/config/AgentConfig.java`: Defines the `LlmAgent` and `Runner` beans.
-*   `src/main/java/com/example/SpringBootAdkTemplate/AgentService.java`: Service that uses the `Runner`.
-*   `src/main/java/com/example/SpringBootAdkTemplate/SpringBootAdkTemplateApplication.java`: Main entry point with verification logic.
+src/main/java/com/example/springbootadktemplate/
+├── SpringBootAdkTemplateApplication.java   — @SpringBootApplication entry point
+├── AgentService.java                        — sample @Service injecting Runner + LlmAgent
+└── config/AgentConfig.java                  — @Bean LlmAgent + @Bean App
+src/main/resources/application.yaml          — spring.application.name + (commented) adk.* properties
+src/test/java/com/example/springbootadktemplate/
+└── SpringBootAdkTemplateApplicationTest.java — context-load test asserting every starter bean is reachable
+```

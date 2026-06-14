@@ -1,102 +1,174 @@
 # ADK Spring Boot Starter
 
-This starter integrates the Google Agent Development Kit (ADK) into Spring Boot applications. 
-It provides auto-configuration for core services like Artifacts, Session, and Memory management.
+Spring Boot auto-configuration for the [Agent Development Kit (ADK)](https://github.com/google/adk-java) runtime.
+
+After adding this starter, declare a single `@Bean App` (your agent topology) and the starter wires the rest: `Runner`, `BaseSessionService`, `BaseArtifactService`, optionally `BaseMemoryService`, and `RunConfig`. The starter is **LLM-agnostic** — pair it with `google-adk-spring-ai` for Spring AI LLMs, or declare your own `@Bean BaseLlm`.
 
 ## Installation
-
-Add the following dependency to your `pom.xml`:
 
 ```xml
 <dependency>
     <groupId>com.google.adk</groupId>
-    <artifactId>adk-spring-boot-starter</artifactId>
-    <version>${adk-starter.version}</version>
+    <artifactId>google-adk-spring-boot-starter</artifactId>
+    <version>${adk.version}</version>
+</dependency>
+
+<!-- Recommended companion for Spring AI users (OpenAI / Anthropic / Gemini / Ollama / Azure OpenAI / Bedrock): -->
+<dependency>
+    <groupId>com.google.adk</groupId>
+    <artifactId>google-adk-spring-ai</artifactId>
+    <version>${adk.version}</version>
 </dependency>
 ```
 
-## Configuration
+The starter declares `google-adk-firestore-session-service` as an `<optional>true</optional>` dependency. It is on your runtime classpath by default — explicitly exclude it if you do not want Firestore-related auto-configurations to activate.
 
-By default, the starter configures all services to use **In-Memory** implementations. This is great for local development and testing.
+## Quick Start
 
-You can configure the behavior using `application.yaml`:
+```java
+@SpringBootApplication
+class MyApp {
+  public static void main(String[] args) { SpringApplication.run(MyApp.class, args); }
+}
 
-### 1. Artifacts Service
+@Configuration
+class MyAgents {
+  @Bean public LlmAgent rootAgent(SpringAI llm) {       // SpringAI bean comes from google-adk-spring-ai
+    return LlmAgent.builder()
+        .name("root_agent")
+        .model(llm)
+        .instruction("Answer concisely.")
+        .build();
+  }
+  @Bean public App app(LlmAgent rootAgent,
+                       @Value("${spring.application.name}") String appName) {
+    return App.builder().name(appName).rootAgent(rootAgent).build();
+  }
+}
 
-*   **Default**: `InMemoryArtifactService`
-*   **Production**: `GcsArtifactService` (Google Cloud Storage)
+@RestController
+class ChatController {
+  private final Runner runner;                          // provided by starter
+  private final RunConfig runConfig;                    // provided by starter
+  private final BaseSessionService sessionService;      // provided by starter
+  ChatController(Runner r, RunConfig c, BaseSessionService s) {
+    this.runner = r; this.runConfig = c; this.sessionService = s;
+  }
+  @PostMapping("/chat") String chat(@RequestBody String prompt) {
+    String userId = "alice";
+    String sessionId = UUID.randomUUID().toString();
+    sessionService.createSession(runner.appName(), userId, null, sessionId).blockingGet();
+    Content msg = Content.builder().role("user").parts(List.of(Part.builder().text(prompt).build())).build();
+    return runner.runAsync(userId, sessionId, msg, runConfig)
+        .toList().blockingGet()
+        .stream().map(Event::stringifyContent).collect(joining());
+  }
+}
+```
 
-To enable GCS:
+## Property Reference
 
 ```yaml
+spring:
+  application:
+    name: my_app                       # used as the App's appName (must match validateAppName regex)
+
 adk:
   artifacts:
-    gcs-enabled: true
-    bucket-name: "my-agent-artifacts-bucket"
-```
+    gcs-enabled: false                 # default; switch to true to use Google Cloud Storage
+    # bucket-name: my-artifacts-bucket # required when gcs-enabled=true (fail-fast otherwise)
 
-### 2. Session Service
-
-*   **Default**: `InMemorySessionService`
-*   **Production**: `VertexAiSessionService`
-
-To enable Vertex AI Sessions:
-
-```yaml
-adk:
   session:
-    type: VERTEX_AI
-    project-id: "my-gcp-project"
-    location: "us-central1"
-```
+    type: IN_MEMORY                    # IN_MEMORY | VERTEX_AI | FIRESTORE
+    # project-id: my-gcp-project       # required for VERTEX_AI
+    # location: us-central1            # required for VERTEX_AI
 
-### 3. Memory Service
+  memory:
+    type: IN_MEMORY                    # IN_MEMORY | FIRESTORE
+                                       # VERTEX_AI is reserved — fails fast (no impl exists in ADK)
 
-*   **Default**: `InMemoryMemoryService`
-
-Currently, only In-Memory memory service is supported by default.
-
-
-### 4. Run Configuration
-
-*   **Default Streaming Mode**: `NONE`
-
-To enable streaming (e.g., SSE or BIDI):
-
-```yaml
-adk:
   run-config:
-    streaming-mode: SSE # Options: NONE, SSE, BIDI
+    streaming-mode: NONE               # NONE | SSE | BIDI
+    max-llm-calls: 500
+    tool-execution-mode: NONE          # NONE | SEQUENTIAL | PARALLEL | PARALLEL_SUBSCRIBE
+    save-input-blobs-as-artifacts: false
+    auto-create-session: false
+
+  firestore:                           # only consulted when session/memory type=FIRESTORE
+    # project-id: my-gcp-project       # optional — falls back to ADC project
+    # database-id: "(default)"         # optional — falls back to "(default)"
 ```
 
-*Note: Other `RunConfig` options (like modalities, audio config) will be added in future versions.*
+## Persistence Backends
+
+| Concern    | `IN_MEMORY` | `VERTEX_AI`                        | `FIRESTORE`                                | GCS (artifacts only) |
+|------------|-------------|------------------------------------|--------------------------------------------|----------------------|
+| Sessions   | default     | `VertexAiSessionService` (managed) | `FirestoreSessionService` (contrib module) | —                    |
+| Memory     | default     | n/a — fails fast                   | `FirestoreMemoryService` (contrib module)  | —                    |
+| Artifacts  | default     | n/a                                | n/a                                        | `GcsArtifactService` |
+
+The Firestore branches activate only when the `google-adk-firestore-session-service` module is on the classpath (gated by `@ConditionalOnClass`). The starter declares it as an optional dependency — exclude it from your application pom if you want to keep Firestore wiring off the classpath entirely.
+
+## Multiple business-unit agents in one Spring Boot app
+
+ADK's `appName` is the partition key for sessions, memory, and artifacts. A single Spring Boot app can host multiple independent agentic applications (one per business unit) by declaring multiple `@Bean App`. The starter's `@Bean Runner` auto-config uses `@ConditionalOnSingleCandidate(App.class)`, so it steps aside cleanly when multiple Apps exist — wire one `Runner` per `App` explicitly:
+
+```java
+@Configuration
+class BusinessUnits {
+
+  @Bean App salesApp(SpringAI llm) {
+    return App.builder().name("sales").rootAgent(salesRootAgent(llm)).build();
+  }
+  @Bean App supportApp(SpringAI llm) {
+    return App.builder().name("support").rootAgent(supportRootAgent(llm)).build();
+  }
+  // ... per-BU rootAgent bean factories ...
+
+  @Bean Runner salesRunner(
+      @Qualifier("salesApp") App app,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService) {
+    return Runner.builder().app(app).artifactService(artifactService).sessionService(sessionService).build();
+  }
+  @Bean Runner supportRunner(
+      @Qualifier("supportApp") App app,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService) {
+    return Runner.builder().app(app).artifactService(artifactService).sessionService(sessionService).build();
+  }
+}
+```
+
+The shared `BaseSessionService`, `BaseArtifactService`, `BaseMemoryService`, and `RunConfig` beans are singletons partitioned internally by `appName`. No duplication — and no per-BU service wiring boilerplate.
 
 ## Architecture
 
-The starter follows the Single Responsibility Principle by splitting configuration into:
-*   `AdkArtifactsAutoConfiguration`
-*   `AdkSessionAutoConfiguration`
-*   `AdkMemoryAutoConfiguration`
-*   `AdkRunConfigAutoConfiguration`
+Eight auto-configuration classes, each owning one concern:
 
-Each has its own properties class (e.g., `AdkArtifactProperties`).
+| Auto-config                                    | Produces                              | Activation                                                                    |
+|------------------------------------------------|---------------------------------------|-------------------------------------------------------------------------------|
+| `AdkArtifactsAutoConfiguration`                | `BaseArtifactService`, conditional `Storage` | always; `Storage` only when `adk.artifacts.gcs-enabled=true`                 |
+| `AdkSessionAutoConfiguration`                  | `BaseSessionService` (IN_MEMORY, VERTEX_AI) | always; FIRESTORE falls through to the Firestore variant when on classpath  |
+| `AdkFirestoreSessionAutoConfiguration`         | `BaseSessionService` (FIRESTORE)      | `@ConditionalOnClass(FirestoreSessionService.class)`; `@AutoConfigureBefore`  |
+| `AdkMemoryAutoConfiguration`                   | `BaseMemoryService` (IN_MEMORY)       | always; FIRESTORE falls through; VERTEX_AI fails fast                         |
+| `AdkFirestoreMemoryAutoConfiguration`          | `BaseMemoryService` (FIRESTORE)       | `@ConditionalOnClass(FirestoreMemoryService.class)`; `@AutoConfigureBefore`   |
+| `AdkRunConfigAutoConfiguration`                | `RunConfig`                           | always                                                                        |
+| `AdkFirestoreAutoConfiguration`                | `Firestore` client                    | `@ConditionalOnClass(Firestore.class)`                                       |
+| `AdkRunnerAutoConfiguration`                   | `Runner`                              | `@ConditionalOnBean(App.class)` + `@ConditionalOnSingleCandidate(App.class)` |
 
-## Usage
+Every `@Bean` factory uses `@ConditionalOnMissingBean` so any user-declared override (`Storage`, `Firestore`, `BaseSessionService`, `Runner`, etc.) always wins.
 
-Simply inject the beans into your application:
+## Failure Modes
 
-```java
-@Service
-public class MyAgentService {
+The starter fails fast at startup (throwing `BeanCreationException` with a clear remediation message) when:
 
-    private final Runner runner;
-    // Agent bean is no longer auto-configured by default.
-    // You must define your own Agent bean or use the Runner directly.
+- `adk.artifacts.gcs-enabled=true` but `adk.artifacts.bucket-name` is blank.
+- `adk.session.type=VERTEX_AI` but `project-id` or `location` is blank.
+- `adk.session.type=FIRESTORE` but `google-adk-firestore-session-service` is not on the classpath.
+- `adk.memory.type=VERTEX_AI` (no Vertex AI memory service exists in ADK today).
+- `adk.memory.type=FIRESTORE` but the contrib jar is missing.
 
-    public MyAgentService(Runner runner) {
-        this.runner = runner;
-    }
+## Roadmap — not in this module
 
-    // ... use runner
-}
-```
+Bridges from Spring AI primitives into ADK service interfaces (`ChatMemory` → sessions, `VectorStore` → memory, `ToolCallback` → tools incl. MCP) are planned for `contrib/spring-ai` as a follow-up PR. Once they land, this starter will gain `SPRING_AI_CHAT_MEMORY` / `SPRING_AI_VECTOR_STORE` enum values that activate the bridges when the contrib classes are on the classpath. New artifact backends (S3, Azure Blob, filesystem) require new `BaseArtifactService` impls upstream in ADK first.
