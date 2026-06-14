@@ -19,8 +19,8 @@ import org.springframework.context.annotation.Configuration;
  * Sample agent topology — defines a root LlmAgent and packages it into an App.
  *
  * <p>The starter provides {@code Runner}, {@code BaseSessionService}, {@code BaseArtifactService},
- * and {@code RunConfig} automatically — this configuration only declares the user-specific
- * agent topology.
+ * and {@code RunConfig} automatically — this configuration only declares the user-specific agent
+ * topology.
  */
 @Configuration
 public class AgentConfig {

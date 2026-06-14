@@ -7,16 +7,18 @@ import org.springframework.stereotype.Service;
 @Service
 public class AgentService {
 
-    private final Runner runner;
-    private final LlmAgent agent;
+  private final Runner runner;
+  private final LlmAgent agent;
 
-    public AgentService(Runner runner, LlmAgent agent) {
-        this.runner = runner;
-        this.agent = agent;
-    }
+  public AgentService(Runner runner, LlmAgent agent) {
+    this.runner = runner;
+    this.agent = agent;
+  }
 
-    public String getAgentInfo() {
-        return "Agent created: " + agent.getClass().getSimpleName() +
-                ", Runner: " + runner.getClass().getSimpleName();
-    }
+  public String getAgentInfo() {
+    return "Agent created: "
+        + agent.getClass().getSimpleName()
+        + ", Runner: "
+        + runner.getClass().getSimpleName();
+  }
 }
