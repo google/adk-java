@@ -720,7 +720,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
         && updatedResponse.errorCode().isEmpty()
         && !updatedResponse.interrupted().orElse(false)
         && !updatedResponse.turnComplete().orElse(false)
-        && updatedResponse.usageMetadata().isEmpty()
+        && (context.runConfig().streamingMode() != StreamingMode.BIDI
+            || updatedResponse.usageMetadata().isEmpty())
         && updatedResponse.inputTranscription().isEmpty()
         && updatedResponse.outputTranscription().isEmpty()) {
       return processorEvents;
