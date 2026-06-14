@@ -15,6 +15,7 @@ import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.autoconfigure.properties.AdkArtifactProperties;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageOptions;
+import java.util.Optional;
 import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -26,10 +27,9 @@ import org.springframework.context.annotation.Bean;
 /**
  * Auto-configures the {@link BaseArtifactService} bean.
  *
- * <p>Default behaviour: produces an {@link InMemoryArtifactService}. When {@code
- * adk.artifacts.gcs-enabled=true}, produces a {@link GcsArtifactService} backed by a {@link
- * Storage} bean — either user-supplied or auto-created via
- * {@link StorageOptions#getDefaultInstance()}.
+ * <p>Default: {@link InMemoryArtifactService}. With {@code adk.artifacts.gcs-enabled=true}: {@link
+ * GcsArtifactService} backed by a {@link Storage} bean (user-supplied or auto-created via {@link
+ * StorageOptions#getDefaultInstance()}).
  */
 @AutoConfiguration
 @EnableConfigurationProperties(AdkArtifactProperties.class)
@@ -46,14 +46,16 @@ public class AdkArtifactsAutoConfiguration {
   @ConditionalOnMissingBean
   public BaseArtifactService artifactService(
       AdkArtifactProperties properties, ObjectProvider<Storage> storageProvider) {
-    if (properties.isGcsEnabled()) {
-      if (properties.getBucketName() == null || properties.getBucketName().isBlank()) {
-        throw new BeanCreationException(
-            "adk.artifacts.bucket-name must be set when adk.artifacts.gcs-enabled=true");
-      }
-      Storage storage = storageProvider.getObject();
-      return new GcsArtifactService(properties.getBucketName(), storage);
+    if (!properties.isGcsEnabled()) {
+      return new InMemoryArtifactService();
     }
-    return new InMemoryArtifactService();
+    String bucketName =
+        Optional.ofNullable(properties.getBucketName())
+            .filter(s -> !s.isBlank())
+            .orElseThrow(
+                () ->
+                    new BeanCreationException(
+                        "adk.artifacts.bucket-name must be set when adk.artifacts.gcs-enabled=true"));
+    return new GcsArtifactService(bucketName, storageProvider.getObject());
   }
 }
