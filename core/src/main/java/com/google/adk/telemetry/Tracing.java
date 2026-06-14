@@ -543,7 +543,8 @@ public class Tracing {
       return Flowable.defer(
           () -> {
             TracingLifecycle lifecycle = new TracingLifecycle();
-            Flowable<T> pipeline = upstream.doOnSubscribe(s -> lifecycle.start());
+            lifecycle.start();
+            Flowable<T> pipeline = upstream;
             if (onSuccessConsumer != null) {
               pipeline = pipeline.doOnNext(t -> onSuccessConsumer.accept(lifecycle.span, t));
             }
@@ -556,7 +557,8 @@ public class Tracing {
       return Single.defer(
           () -> {
             TracingLifecycle lifecycle = new TracingLifecycle();
-            Single<T> pipeline = upstream.doOnSubscribe(s -> lifecycle.start());
+            lifecycle.start();
+            Single<T> pipeline = upstream;
             if (onSuccessConsumer != null) {
               pipeline = pipeline.doOnSuccess(t -> onSuccessConsumer.accept(lifecycle.span, t));
             }
@@ -569,7 +571,8 @@ public class Tracing {
       return Maybe.defer(
           () -> {
             TracingLifecycle lifecycle = new TracingLifecycle();
-            Maybe<T> pipeline = upstream.doOnSubscribe(s -> lifecycle.start());
+            lifecycle.start();
+            Maybe<T> pipeline = upstream;
             if (onSuccessConsumer != null) {
               pipeline = pipeline.doOnSuccess(t -> onSuccessConsumer.accept(lifecycle.span, t));
             }
@@ -582,7 +585,8 @@ public class Tracing {
       return Completable.defer(
           () -> {
             TracingLifecycle lifecycle = new TracingLifecycle();
-            return upstream.doOnSubscribe(s -> lifecycle.start()).doFinally(lifecycle::end);
+            lifecycle.start();
+            return upstream.doFinally(lifecycle::end);
           });
     }
   }
