@@ -32,7 +32,7 @@ mvn -pl contrib/samples/spring-boot-adk-template -am spring-boot:run
 
 `src/main/resources/application.yaml` shows the full property surface as comments. The defaults give an all-in-memory configuration with no GCP credentials required — switch backends by uncommenting the relevant blocks (`adk.session.type=VERTEX_AI`, `adk.session.type=FIRESTORE`, `adk.artifacts.gcs-enabled=true`, etc.).
 
-See the [starter README](../../adk-spring-boot-starter/README.md) for the full property reference.
+See the [starter README](../../spring-boot-starter/README.md) for the full property reference.
 
 ## Use Spring AI as the LLM substrate (optional)
 

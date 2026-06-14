@@ -36,7 +36,7 @@
     <module>tutorials/city-time-weather</module>
     <module>tutorials/live-audio-single-agent</module>
     <module>a2a</module>
-    <module>contrib/adk-spring-boot-starter</module>
+    <module>contrib/spring-boot-starter</module>
   </modules>
 
   <properties>
