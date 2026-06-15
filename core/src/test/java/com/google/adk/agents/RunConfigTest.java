@@ -17,9 +17,12 @@
 package com.google.adk.agents;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.AudioTranscriptionConfig;
+import com.google.genai.types.AvatarConfig;
+import com.google.genai.types.CustomizedAvatar;
 import com.google.genai.types.Modality;
 import com.google.genai.types.SpeechConfig;
 import org.junit.Test;
@@ -60,6 +63,7 @@ public final class RunConfigTest {
 
     assertThat(runConfig.speechConfig()).isNull();
     assertThat(runConfig.responseModalities()).isEmpty();
+    assertThat(runConfig.avatarConfig()).isNull();
     assertThat(runConfig.saveInputBlobsAsArtifacts()).isFalse();
     assertThat(runConfig.streamingMode()).isEqualTo(RunConfig.StreamingMode.NONE);
     assertThat(runConfig.outputAudioTranscription()).isNull();
@@ -113,5 +117,40 @@ public final class RunConfigTest {
     assertThat(runConfig.outputAudioTranscription()).isNull();
     assertThat(runConfig.streamingMode()).isEqualTo(RunConfig.StreamingMode.BIDI);
     assertThat(runConfig.responseModalities()).containsExactly(new Modality(Modality.Known.AUDIO));
+  }
+
+  @Test
+  public void testMaxLlmCalls_integerMaxValue_throwsIllegalArgumentException() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> RunConfig.builder().setMaxLlmCalls(Integer.MAX_VALUE).build());
+  }
+
+  @Test
+  public void testAvatarConfig_withName() {
+    AvatarConfig avatarConfig = AvatarConfig.builder().avatarName("test_avatar").build();
+
+    RunConfig runConfig = RunConfig.builder().avatarConfig(avatarConfig).build();
+
+    assertThat(runConfig.avatarConfig()).isEqualTo(avatarConfig);
+    assertThat(runConfig.avatarConfig().avatarName()).hasValue("test_avatar");
+    assertThat(runConfig.avatarConfig().customizedAvatar()).isEmpty();
+  }
+
+  @Test
+  public void testAvatarConfig_withCustomizedAvatar() {
+    CustomizedAvatar customizedAvatar =
+        CustomizedAvatar.builder()
+            .imageMimeType("image/jpeg")
+            .imageData(new byte[] {1, 2, 3})
+            .build();
+    AvatarConfig avatarConfig = AvatarConfig.builder().customizedAvatar(customizedAvatar).build();
+
+    RunConfig runConfig = RunConfig.builder().avatarConfig(avatarConfig).build();
+
+    assertThat(runConfig.avatarConfig()).isEqualTo(avatarConfig);
+    assertThat(runConfig.avatarConfig().customizedAvatar()).hasValue(customizedAvatar);
+    assertThat(runConfig.avatarConfig().customizedAvatar().get().imageMimeType())
+        .hasValue("image/jpeg");
   }
 }

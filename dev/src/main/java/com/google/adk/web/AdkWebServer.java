@@ -35,6 +35,8 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.context.ApplicationContextInitializer;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
@@ -87,8 +89,23 @@ public class AdkWebServer implements WebMvcConfigurer {
    * @return Configured ObjectMapper instance
    */
   @Bean
+  @Primary
   public ObjectMapper objectMapper() {
     return JsonBaseModel.getMapper();
+  }
+
+  /**
+   * Configures the message converter to use the custom ADK ObjectMapper. This ensures that Spring
+   * Web uses the correct JSON serialization settings (like omitting absent optional fields) and
+   * prevents double-serialization issues, particularly for Server-Sent Events (SSE).
+   *
+   * @param objectMapper The primary ObjectMapper configured for the ADK.
+   * @return A configured MappingJackson2HttpMessageConverter.
+   */
+  @Bean
+  public MappingJackson2HttpMessageConverter mappingJackson2HttpMessageConverter(
+      ObjectMapper objectMapper) {
+    return new MappingJackson2HttpMessageConverter(objectMapper);
   }
 
   /**

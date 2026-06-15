@@ -46,7 +46,7 @@ public class TestUtils {
       allEvents.addAll(
           runner
               .runAsync(
-                  session,
+                  session.sessionKey(),
                   messageContent,
                   RunConfig.builder()
                       .setStreamingMode(
@@ -67,13 +67,17 @@ public class TestUtils {
     }
 
     Runner runner = new InMemoryRunner(agent);
-    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    Session session =
+        runner.sessionService().createSession(agent.name(), "test-user").blockingGet();
 
     List<Event> events = new ArrayList<>();
 
     for (Content content : contents) {
       List<Event> batchEvents =
-          runner.runAsync(session, content, RunConfig.builder().build()).toList().blockingGet();
+          runner
+              .runAsync(session.userId(), session.id(), content, RunConfig.builder().build())
+              .toList()
+              .blockingGet();
       events.addAll(batchEvents);
     }
 
@@ -88,7 +92,8 @@ public class TestUtils {
     }
 
     Runner runner = new InMemoryRunner(agent);
-    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+    Session session =
+        runner.sessionService().createSession(agent.name(), "test-user").blockingGet();
 
     List<Event> events = new ArrayList<>();
 
@@ -96,7 +101,8 @@ public class TestUtils {
       List<Event> batchEvents =
           runner
               .runAsync(
-                  session,
+                  session.userId(),
+                  session.id(),
                   content,
                   RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.SSE).build())
               .toList()

@@ -22,7 +22,32 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** An agent that runs its sub-agents sequentially. */
+/**
+ * An agent that runs its sub-agents sequentially.
+ *
+ * <p><b>Composition with {@link LlmAgent}s:</b> a {@code SequentialAgent} does not transfer control
+ * back to a parent {@link LlmAgent}. Use it as the root or transferred-to agent and place any
+ * follow-up {@link LlmAgent} as the next sibling. Upstream publishes via {@code outputKey} and
+ * downstream reads via {@code {key}} placeholders in its instruction:
+ *
+ * <pre>{@code
+ * var draft =
+ *     LlmAgent.builder()
+ *         .name("draft")
+ *         .model("gemini-flash-latest")
+ *         .instruction("Draft a summary.")
+ *         .outputKey("draft")
+ *         .build();
+ * var reviewer =
+ *     LlmAgent.builder()
+ *         .name("reviewer")
+ *         .model("gemini-flash-latest")
+ *         .instruction("Polish the draft: {draft}")
+ *         .build();
+ * var pipeline =
+ *     SequentialAgent.builder().name("pipeline").subAgents(draft, reviewer).build();
+ * }</pre>
+ */
 public class SequentialAgent extends BaseAgent {
 
   private static final Logger logger = LoggerFactory.getLogger(SequentialAgent.class);

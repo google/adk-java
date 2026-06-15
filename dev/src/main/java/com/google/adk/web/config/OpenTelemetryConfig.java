@@ -17,6 +17,7 @@
 package com.google.adk.web.config;
 
 import com.google.adk.web.service.ApiServerSpanExporter;
+import com.google.adk.web.service.ApiServerSpanExporterConfig;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
@@ -24,8 +25,10 @@ import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -35,8 +38,14 @@ public class OpenTelemetryConfig {
   private static final Logger otelLog = LoggerFactory.getLogger(OpenTelemetryConfig.class);
 
   @Bean
-  public ApiServerSpanExporter apiServerSpanExporter() {
-    return new ApiServerSpanExporter();
+  public ApiServerSpanExporterConfig apiServerSpanExporterConfig(
+      @Value("${adk.debug.trace.max-spans:#{null}}") Optional<Integer> maxSpansToKeep) {
+    return ApiServerSpanExporterConfig.builder().maxSpansToKeep(maxSpansToKeep).build();
+  }
+
+  @Bean
+  public ApiServerSpanExporter apiServerSpanExporter(ApiServerSpanExporterConfig config) {
+    return new ApiServerSpanExporter(config);
   }
 
   @Bean(destroyMethod = "shutdown")
@@ -60,18 +69,14 @@ public class OpenTelemetryConfig {
 
     // Check if OpenTelemetry has already been set globally (common in tests)
     try {
-      io.opentelemetry.api.GlobalOpenTelemetry.get();
-      // If we get here, it's already set, so just return a new instance without global
-      // registration
-      otelLog.debug("OpenTelemetry already registered globally, creating non-global instance.");
-      return OpenTelemetrySdk.builder().setTracerProvider(sdkTracerProvider).build();
-    } catch (IllegalStateException e) {
-      // GlobalOpenTelemetry hasn't been set yet, safe to register globally
       otelLog.debug("Registering OpenTelemetry globally.");
-      OpenTelemetrySdk otelSdk =
+      OpenTelemetrySdk sdk =
           OpenTelemetrySdk.builder().setTracerProvider(sdkTracerProvider).buildAndRegisterGlobal();
-      Runtime.getRuntime().addShutdownHook(new Thread(otelSdk::close));
-      return otelSdk;
+      Runtime.getRuntime().addShutdownHook(new Thread(sdk::close));
+      return sdk;
+    } catch (IllegalStateException e) {
+      otelLog.debug("OpenTelemetry already registered globally, returning non-global instance.");
+      return OpenTelemetrySdk.builder().setTracerProvider(sdkTracerProvider).build();
     }
   }
 }

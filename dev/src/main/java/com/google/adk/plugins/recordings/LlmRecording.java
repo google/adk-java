@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.auto.value.AutoValue;
+import java.util.List;
 import java.util.Optional;
 import javax.annotation.Nullable;
 
@@ -31,8 +32,8 @@ public abstract class LlmRecording {
   /** The LLM request. */
   public abstract Optional<LlmRequest> llmRequest();
 
-  /** The LLM response. */
-  public abstract Optional<LlmResponse> llmResponse();
+  /** The LLM responses. */
+  public abstract Optional<List<LlmResponse>> llmResponses();
 
   public static Builder builder() {
     return new AutoValue_LlmRecording.Builder();
@@ -44,7 +45,7 @@ public abstract class LlmRecording {
   public abstract static class Builder {
     public abstract Builder llmRequest(@Nullable LlmRequest llmRequest);
 
-    public abstract Builder llmResponse(@Nullable LlmResponse llmResponse);
+    public abstract Builder llmResponses(@Nullable List<LlmResponse> llmResponses);
 
     public abstract LlmRecording build();
   }

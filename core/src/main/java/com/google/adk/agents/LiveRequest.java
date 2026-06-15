@@ -26,7 +26,7 @@ import com.google.common.base.Preconditions;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Represents a request to be sent to a live connection to the LLM model. */
 @AutoValue
@@ -77,17 +77,11 @@ public abstract class LiveRequest extends JsonBaseModel {
     @JsonProperty("content")
     public abstract Builder content(@Nullable Content content);
 
-    public abstract Builder content(Optional<Content> content);
-
     @JsonProperty("blob")
     public abstract Builder blob(@Nullable Blob blob);
 
-    public abstract Builder blob(Optional<Blob> blob);
-
     @JsonProperty("close")
     public abstract Builder close(@Nullable Boolean close);
-
-    public abstract Builder close(Optional<Boolean> close);
 
     abstract LiveRequest autoBuild();
 

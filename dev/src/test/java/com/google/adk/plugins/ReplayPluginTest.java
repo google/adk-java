@@ -83,11 +83,11 @@ class ReplayPluginTest {
                   - role: "user"
                     parts:
                       - text: "Hello"
-              llm_response:
-                content:
-                  role: "model"
-                  parts:
-                    - text: "Recorded response"
+              llm_responses:
+                - content:
+                    role: "model"
+                    parts:
+                      - text: "Recorded response"
         """);
 
     // Step 1: Setup replay config

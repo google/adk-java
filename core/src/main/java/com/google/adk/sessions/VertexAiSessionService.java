@@ -40,7 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Connects to the managed Vertex AI Session Service. */
 // TODO: Use the genai HttpApiClient and ApiResponse methods once they are public.
@@ -65,8 +65,8 @@ public final class VertexAiSessionService implements BaseSessionService {
   public VertexAiSessionService(
       String project,
       String location,
-      Optional<GoogleCredentials> credentials,
-      Optional<HttpOptions> httpOptions) {
+      @Nullable GoogleCredentials credentials,
+      @Nullable HttpOptions httpOptions) {
     this.client = new VertexAiClient(project, location, credentials, httpOptions);
   }
 
@@ -75,6 +75,15 @@ public final class VertexAiSessionService implements BaseSessionService {
       String appName,
       String userId,
       @Nullable ConcurrentMap<String, Object> state,
+      @Nullable String sessionId) {
+    return createSession(appName, userId, (Map<String, Object>) state, sessionId);
+  }
+
+  @Override
+  public Single<Session> createSession(
+      String appName,
+      String userId,
+      @Nullable Map<String, Object> state,
       @Nullable String sessionId) {
 
     String reasoningEngineId = parseReasoningEngineId(appName);
@@ -119,15 +128,17 @@ public final class VertexAiSessionService implements BaseSessionService {
         .map(
             listSessionsResponseMap ->
                 parseListSessionsResponse(listSessionsResponseMap, appName, userId))
-        .defaultIfEmpty(ListSessionsResponse.builder().build());
+        .defaultIfEmpty(ListSessionsResponse.builder().sessions(new ArrayList<>()).build());
   }
 
   private ListSessionsResponse parseListSessionsResponse(
       JsonNode listSessionsResponseMap, String appName, String userId) {
+    JsonNode sessionsNode = listSessionsResponseMap.get("sessions");
+    if (sessionsNode == null || sessionsNode.isNull() || sessionsNode.isEmpty()) {
+      return ListSessionsResponse.builder().build();
+    }
     List<Map<String, Object>> apiSessions =
-        objectMapper.convertValue(
-            listSessionsResponseMap.get("sessions"),
-            new TypeReference<List<Map<String, Object>>>() {});
+        objectMapper.convertValue(sessionsNode, new TypeReference<List<Map<String, Object>>>() {});
 
     List<Session> sessions = new ArrayList<>();
     for (Map<String, Object> apiSession : apiSessions) {
@@ -163,7 +174,7 @@ public final class VertexAiSessionService implements BaseSessionService {
   private ListEventsResponse parseListEventsResponse(JsonNode listEventsResponse) {
     JsonNode sessionEventsNode = listEventsResponse.get("sessionEvents");
     if (sessionEventsNode == null || sessionEventsNode.isEmpty()) {
-      return ListEventsResponse.builder().events(new ArrayList<>()).build();
+      return ListEventsResponse.builder().build();
     }
     return ListEventsResponse.builder()
         .events(
@@ -214,7 +225,7 @@ public final class VertexAiSessionService implements BaseSessionService {
                         if (events.isEmpty()) {
                           return sessionBuilder.build();
                         }
-                        events = filterEvents(events, updateTimestamp, config);
+                        events = filterEvents(events, config);
                         return sessionBuilder.events(events).build();
                       })
                   .toMaybe();
@@ -222,16 +233,13 @@ public final class VertexAiSessionService implements BaseSessionService {
   }
 
   private static List<Event> filterEvents(
-      List<Event> originalEvents,
-      @Nullable Instant updateTimestamp,
-      Optional<GetSessionConfig> config) {
+      List<Event> originalEvents, Optional<GetSessionConfig> config) {
+    // Preserve the full event stream that Vertex AI returns. Event timestamps are
+    // assigned client-side while updateTime is assigned server-side, so filtering
+    // on updateTime could silently drop the most recently appended event(s).
     List<Event> events =
         originalEvents.stream()
-            .filter(
-                event ->
-                    updateTimestamp == null
-                        || Instant.ofEpochMilli(event.timestamp()).isBefore(updateTimestamp))
-            .sorted(Comparator.comparing(Event::timestamp))
+            .sorted(Comparator.comparingLong(Event::timestamp))
             .collect(toCollection(ArrayList::new));
 
     if (config.isPresent()) {
@@ -241,20 +249,29 @@ public final class VertexAiSessionService implements BaseSessionService {
           events = events.subList(events.size() - numRecentEvents, events.size());
         }
       } else if (config.get().afterTimestamp().isPresent()) {
-        Instant afterTimestamp = config.get().afterTimestamp().get();
-        int i = events.size() - 1;
-        while (i >= 0) {
-          if (Instant.ofEpochMilli(events.get(i).timestamp()).isBefore(afterTimestamp)) {
-            break;
-          }
-          i -= 1;
-        }
-        if (i >= 0) {
-          events = events.subList(i, events.size());
-        }
+        long afterTimestampMillis = config.get().afterTimestamp().get().toEpochMilli();
+        events = events.subList(firstIndexAtOrAfter(events, afterTimestampMillis), events.size());
       }
     }
     return events;
+  }
+
+  /**
+   * Returns the index of the first event whose timestamp is at or after {@code timestampMillis}, or
+   * the list size if there is none. {@code sortedEvents} must be sorted ascending by timestamp.
+   */
+  private static int firstIndexAtOrAfter(List<Event> sortedEvents, long timestampMillis) {
+    int low = 0;
+    int high = sortedEvents.size();
+    while (low < high) {
+      int mid = (low + high) >>> 1;
+      if (sortedEvents.get(mid).timestamp() < timestampMillis) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    return low;
   }
 
   @Override

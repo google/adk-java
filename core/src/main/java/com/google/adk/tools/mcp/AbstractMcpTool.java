@@ -115,7 +115,6 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
     if (callResult == null) {
       return ImmutableMap.of("error", "MCP framework error: CallToolResult was null");
     }
-
     List<Content> contents = callResult.content();
     Boolean isToolError = callResult.isError();
 

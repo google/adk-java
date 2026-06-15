@@ -17,6 +17,7 @@
 package com.google.adk.web.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.adk.JsonBaseModel;
 import com.google.genai.types.Content;
 import java.util.Map;
 import javax.annotation.Nullable;
@@ -36,7 +37,7 @@ public class AgentRunRequest {
   public String sessionId;
 
   @JsonProperty("newMessage")
-  public Content newMessage;
+  public Object newMessage;
 
   @JsonProperty("streaming")
   public boolean streaming = false;
@@ -65,7 +66,17 @@ public class AgentRunRequest {
   }
 
   public Content getNewMessage() {
-    return newMessage;
+    if (newMessage instanceof Content) {
+      return (Content) newMessage;
+    }
+    if (newMessage != null) {
+      try {
+        return JsonBaseModel.getMapper().convertValue(newMessage, Content.class);
+      } catch (IllegalArgumentException e) {
+        throw new IllegalStateException("Failed to parse newMessage into Content", e);
+      }
+    }
+    return null;
   }
 
   public boolean getStreaming() {

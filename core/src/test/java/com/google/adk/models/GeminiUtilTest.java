@@ -24,6 +24,8 @@ import com.google.common.collect.Iterables;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FileData;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
 import java.util.Arrays;
@@ -449,6 +451,43 @@ public final class GeminiUtilTest {
     assertThat(result.contents())
         .containsExactly(expectedContent1, content2, CONTINUE_CONTENT)
         .inOrder();
+  }
+
+  @Test
+  public void removeClientFunctionCallId_stripsIds() {
+    Part partWithFunctionCall =
+        Part.builder()
+            .functionCall(
+                FunctionCall.builder()
+                    .name("foo")
+                    .id("id1")
+                    .args(ImmutableMap.of("key", "value"))
+                    .build())
+            .build();
+    Part partWithFunctionResponse =
+        Part.builder()
+            .functionResponse(
+                FunctionResponse.builder()
+                    .name("bar")
+                    .id("id2")
+                    .response(ImmutableMap.of("key", "value"))
+                    .build())
+            .build();
+    LlmRequest request = toRequest(partWithFunctionCall, partWithFunctionResponse);
+
+    LlmRequest result = GeminiUtil.removeClientFunctionCallId(request);
+
+    assertThat(result.contents()).hasSize(1);
+    assertThat(result.contents().get(0).parts()).isPresent();
+    assertThat(result.contents().get(0).parts().get()).hasSize(2);
+    Part resultPart1 = result.contents().get(0).parts().get().get(0);
+    assertThat(resultPart1.functionCall()).isPresent();
+    assertThat(resultPart1.functionCall().get().id()).isEmpty();
+    assertThat(resultPart1.functionCall().get().name()).hasValue("foo");
+    Part resultPart2 = result.contents().get(0).parts().get().get(1);
+    assertThat(resultPart2.functionResponse()).isPresent();
+    assertThat(resultPart2.functionResponse().get().id()).isEmpty();
+    assertThat(resultPart2.functionResponse().get().name()).hasValue("bar");
   }
 
   private static Content toContent(Part... parts) {

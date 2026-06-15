@@ -27,11 +27,12 @@ public class SingleFlow extends BaseLlmFlow {
   protected static final ImmutableList<RequestProcessor> REQUEST_PROCESSORS =
       ImmutableList.of(
           new Basic(),
+          new OutputSchema(),
+          new RequestConfirmationLlmRequestProcessor(),
           new Instructions(),
           new Identity(),
+          new Compaction(),
           new Contents(),
-          new Examples(),
-          new RequestConfirmationLlmRequestProcessor(),
           CodeExecution.requestProcessor);
 
   protected static final ImmutableList<ResponseProcessor> RESPONSE_PROCESSORS =

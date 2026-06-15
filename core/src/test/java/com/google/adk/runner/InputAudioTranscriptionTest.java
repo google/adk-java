@@ -33,7 +33,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Modality;
 import com.google.genai.types.Part;
 import java.lang.reflect.Method;
-import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -50,10 +49,9 @@ public final class InputAudioTranscriptionTest {
       throws Exception {
     Method method =
         Runner.class.getDeclaredMethod(
-            "newInvocationContextForLive", Session.class, Optional.class, RunConfig.class);
+            "newInvocationContextForLive", Session.class, LiveRequestQueue.class, RunConfig.class);
     method.setAccessible(true);
-    return (InvocationContext)
-        method.invoke(runner, session, Optional.of(liveRequestQueue), runConfig);
+    return (InvocationContext) method.invoke(runner, session, liveRequestQueue, runConfig);
   }
 
   @Test

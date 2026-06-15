@@ -27,20 +27,23 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.Transcription;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 // TODO - b/413761119 update Agent.java when resolved.
+
 /** Represents an event in a session. */
 @JsonDeserialize(builder = Event.Builder.class)
 public class Event extends JsonBaseModel {
@@ -48,20 +51,24 @@ public class Event extends JsonBaseModel {
   private String id;
   private String invocationId;
   private String author;
-  private Optional<Content> content = Optional.empty();
+  private @Nullable Content content;
   private EventActions actions;
-  private Optional<Set<String>> longRunningToolIds = Optional.empty();
-  private Optional<Boolean> partial = Optional.empty();
-  private Optional<Boolean> turnComplete = Optional.empty();
-  private Optional<FinishReason> errorCode = Optional.empty();
-  private Optional<String> errorMessage = Optional.empty();
-  private Optional<FinishReason> finishReason = Optional.empty();
-  private Optional<GenerateContentResponseUsageMetadata> usageMetadata = Optional.empty();
-  private Optional<Double> avgLogprobs = Optional.empty();
-  private Optional<Boolean> interrupted = Optional.empty();
-  private Optional<String> branch = Optional.empty();
-  private Optional<GroundingMetadata> groundingMetadata = Optional.empty();
-  private Optional<String> modelVersion = Optional.empty();
+  private @Nullable Set<String> longRunningToolIds;
+  private @Nullable Boolean partial;
+  private @Nullable Boolean turnComplete;
+  private @Nullable FinishReason errorCode;
+  private @Nullable String errorMessage;
+  private @Nullable FinishReason finishReason;
+  private @Nullable GenerateContentResponseUsageMetadata usageMetadata;
+  private @Nullable Double avgLogprobs;
+  private @Nullable Boolean interrupted;
+  private @Nullable String branch;
+  private @Nullable GroundingMetadata groundingMetadata;
+  private @Nullable List<CustomMetadata> customMetadata;
+  private @Nullable String modelVersion;
+  private @Nullable Transcription inputTranscription;
+  private @Nullable Transcription outputTranscription;
+
   private long timestamp;
 
   private Event() {}
@@ -102,10 +109,10 @@ public class Event extends JsonBaseModel {
 
   @JsonProperty("content")
   public Optional<Content> content() {
-    return content;
+    return Optional.ofNullable(content);
   }
 
-  public void setContent(Optional<Content> content) {
+  public void setContent(@Nullable Content content) {
     this.content = content;
   }
 
@@ -124,10 +131,10 @@ public class Event extends JsonBaseModel {
    */
   @JsonProperty("longRunningToolIds")
   public Optional<Set<String>> longRunningToolIds() {
-    return longRunningToolIds;
+    return Optional.ofNullable(longRunningToolIds);
   }
 
-  public void setLongRunningToolIds(Optional<Set<String>> longRunningToolIds) {
+  public void setLongRunningToolIds(@Nullable Set<String> longRunningToolIds) {
     this.longRunningToolIds = longRunningToolIds;
   }
 
@@ -137,73 +144,79 @@ public class Event extends JsonBaseModel {
    */
   @JsonProperty("partial")
   public Optional<Boolean> partial() {
-    return partial;
+    return Optional.ofNullable(partial);
   }
 
-  public void setPartial(Optional<Boolean> partial) {
+  public void setPartial(@Nullable Boolean partial) {
     this.partial = partial;
   }
 
   @JsonProperty("turnComplete")
   public Optional<Boolean> turnComplete() {
-    return turnComplete;
+    return Optional.ofNullable(turnComplete);
   }
 
-  public void setTurnComplete(Optional<Boolean> turnComplete) {
+  public void setTurnComplete(@Nullable Boolean turnComplete) {
     this.turnComplete = turnComplete;
   }
 
   @JsonProperty("errorCode")
   public Optional<FinishReason> errorCode() {
-    return errorCode;
+    return Optional.ofNullable(errorCode);
   }
 
   @JsonProperty("finishReason")
   public Optional<FinishReason> finishReason() {
-    return finishReason;
+    return Optional.ofNullable(finishReason);
   }
 
-  public void setErrorCode(Optional<FinishReason> errorCode) {
+  public void setErrorCode(@Nullable FinishReason errorCode) {
     this.errorCode = errorCode;
   }
 
+  @Deprecated
+  @SuppressWarnings("checkstyle:IllegalType")
   public void setFinishReason(Optional<FinishReason> finishReason) {
+    this.finishReason = finishReason.orElse(null);
+  }
+
+  public void setFinishReason(@Nullable FinishReason finishReason) {
     this.finishReason = finishReason;
   }
 
   @JsonProperty("errorMessage")
   public Optional<String> errorMessage() {
-    return errorMessage;
+    return Optional.ofNullable(errorMessage);
   }
 
-  public void setErrorMessage(Optional<String> errorMessage) {
+  public void setErrorMessage(@Nullable String errorMessage) {
     this.errorMessage = errorMessage;
   }
 
   @JsonProperty("usageMetadata")
   public Optional<GenerateContentResponseUsageMetadata> usageMetadata() {
-    return usageMetadata;
+    return Optional.ofNullable(usageMetadata);
   }
 
-  public void setUsageMetadata(Optional<GenerateContentResponseUsageMetadata> usageMetadata) {
+  public void setUsageMetadata(@Nullable GenerateContentResponseUsageMetadata usageMetadata) {
     this.usageMetadata = usageMetadata;
   }
 
   @JsonProperty("avgLogprobs")
   public Optional<Double> avgLogprobs() {
-    return avgLogprobs;
+    return Optional.ofNullable(avgLogprobs);
   }
 
-  public void setAvgLogprobs(Optional<Double> avgLogprobs) {
+  public void setAvgLogprobs(@Nullable Double avgLogprobs) {
     this.avgLogprobs = avgLogprobs;
   }
 
   @JsonProperty("interrupted")
   public Optional<Boolean> interrupted() {
-    return interrupted;
+    return Optional.ofNullable(interrupted);
   }
 
-  public void setInterrupted(Optional<Boolean> interrupted) {
+  public void setInterrupted(@Nullable Boolean interrupted) {
     this.interrupted = interrupted;
   }
 
@@ -214,7 +227,7 @@ public class Event extends JsonBaseModel {
    */
   @JsonProperty("branch")
   public Optional<String> branch() {
-    return branch;
+    return Optional.ofNullable(branch);
   }
 
   /**
@@ -225,31 +238,63 @@ public class Event extends JsonBaseModel {
    * @param branch Branch identifier.
    */
   public void branch(@Nullable String branch) {
-    this.branch = Optional.ofNullable(branch);
-  }
-
-  public void branch(Optional<String> branch) {
     this.branch = branch;
   }
 
   /** The grounding metadata of the event. */
   @JsonProperty("groundingMetadata")
   public Optional<GroundingMetadata> groundingMetadata() {
-    return groundingMetadata;
+    return Optional.ofNullable(groundingMetadata);
   }
 
-  public void setGroundingMetadata(Optional<GroundingMetadata> groundingMetadata) {
+  public void setGroundingMetadata(@Nullable GroundingMetadata groundingMetadata) {
     this.groundingMetadata = groundingMetadata;
+  }
+
+  /** The custom metadata of the event. */
+  @JsonProperty("customMetadata")
+  public Optional<List<CustomMetadata>> customMetadata() {
+    return Optional.ofNullable(customMetadata);
+  }
+
+  public void setCustomMetadata(@Nullable List<CustomMetadata> customMetadata) {
+    this.customMetadata = customMetadata;
   }
 
   /** The model version used to generate the response. */
   @JsonProperty("modelVersion")
   public Optional<String> modelVersion() {
-    return modelVersion;
+    return Optional.ofNullable(modelVersion);
   }
 
-  public void setModelVersion(Optional<String> modelVersion) {
+  public void setModelVersion(@Nullable String modelVersion) {
     this.modelVersion = modelVersion;
+  }
+
+  /**
+   * Input transcription. The transcription is independent to the model turn which means it doesn't
+   * imply any ordering between transcription and model turn.
+   */
+  @JsonProperty("inputTranscription")
+  public Optional<Transcription> inputTranscription() {
+    return Optional.ofNullable(inputTranscription);
+  }
+
+  public void setInputTranscription(@Nullable Transcription inputTranscription) {
+    this.inputTranscription = inputTranscription;
+  }
+
+  /**
+   * Output transcription. The transcription is independent to the model turn which means it doesn't
+   * imply any ordering between transcription and model turn.
+   */
+  @JsonProperty("outputTranscription")
+  public Optional<Transcription> outputTranscription() {
+    return Optional.ofNullable(outputTranscription);
+  }
+
+  public void setOutputTranscription(@Nullable Transcription outputTranscription) {
+    this.outputTranscription = outputTranscription;
   }
 
   /** The timestamp of the event. */
@@ -294,8 +339,7 @@ public class Event extends JsonBaseModel {
   /** Returns true if this is a final response. */
   @JsonIgnore
   public final boolean finalResponse() {
-    if (actions().skipSummarization().orElse(false)
-        || (longRunningToolIds().isPresent() && !longRunningToolIds().get().isEmpty())) {
+    if (actions().skipSummarization().orElse(false)) {
       return true;
     }
     return functionCalls().isEmpty()
@@ -334,21 +378,24 @@ public class Event extends JsonBaseModel {
     private String id;
     private String invocationId;
     private String author;
-    private Optional<Content> content = Optional.empty();
-    private EventActions actions;
-    private Optional<Set<String>> longRunningToolIds = Optional.empty();
-    private Optional<Boolean> partial = Optional.empty();
-    private Optional<Boolean> turnComplete = Optional.empty();
-    private Optional<FinishReason> errorCode = Optional.empty();
-    private Optional<String> errorMessage = Optional.empty();
-    private Optional<FinishReason> finishReason = Optional.empty();
-    private Optional<GenerateContentResponseUsageMetadata> usageMetadata = Optional.empty();
-    private Optional<Double> avgLogprobs = Optional.empty();
-    private Optional<Boolean> interrupted = Optional.empty();
-    private Optional<String> branch = Optional.empty();
-    private Optional<GroundingMetadata> groundingMetadata = Optional.empty();
-    private Optional<String> modelVersion = Optional.empty();
-    private Optional<Long> timestamp = Optional.empty();
+    private @Nullable Content content;
+    private @Nullable EventActions actions;
+    private @Nullable Set<String> longRunningToolIds;
+    private @Nullable Boolean partial;
+    private @Nullable Boolean turnComplete;
+    private @Nullable FinishReason errorCode;
+    private @Nullable String errorMessage;
+    private @Nullable FinishReason finishReason;
+    private @Nullable GenerateContentResponseUsageMetadata usageMetadata;
+    private @Nullable Double avgLogprobs;
+    private @Nullable Boolean interrupted;
+    private @Nullable String branch;
+    private @Nullable GroundingMetadata groundingMetadata;
+    private @Nullable List<CustomMetadata> customMetadata;
+    private @Nullable String modelVersion;
+    private @Nullable Transcription inputTranscription;
+    private @Nullable Transcription outputTranscription;
+    private @Nullable Long timestamp;
 
     @JsonCreator
     private static Builder create() {
@@ -379,19 +426,13 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("content")
     public Builder content(@Nullable Content value) {
-      this.content = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder content(Optional<Content> value) {
       this.content = value;
       return this;
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("actions")
-    public Builder actions(EventActions value) {
+    public Builder actions(@Nullable EventActions value) {
       this.actions = value;
       return this;
     }
@@ -403,12 +444,6 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("longRunningToolIds")
     public Builder longRunningToolIds(@Nullable Set<String> value) {
-      this.longRunningToolIds = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder longRunningToolIds(Optional<Set<String>> value) {
       this.longRunningToolIds = value;
       return this;
     }
@@ -416,12 +451,6 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("partial")
     public Builder partial(@Nullable Boolean value) {
-      this.partial = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder partial(Optional<Boolean> value) {
       this.partial = value;
       return this;
     }
@@ -429,12 +458,6 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("turnComplete")
     public Builder turnComplete(@Nullable Boolean value) {
-      this.turnComplete = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder turnComplete(Optional<Boolean> value) {
       this.turnComplete = value;
       return this;
     }
@@ -442,12 +465,6 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("errorCode")
     public Builder errorCode(@Nullable FinishReason value) {
-      this.errorCode = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder errorCode(Optional<FinishReason> value) {
       this.errorCode = value;
       return this;
     }
@@ -455,12 +472,6 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("errorMessage")
     public Builder errorMessage(@Nullable String value) {
-      this.errorMessage = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder errorMessage(Optional<String> value) {
       this.errorMessage = value;
       return this;
     }
@@ -468,12 +479,6 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("finishReason")
     public Builder finishReason(@Nullable FinishReason value) {
-      this.finishReason = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder finishReason(Optional<FinishReason> value) {
       this.finishReason = value;
       return this;
     }
@@ -481,12 +486,6 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("usageMetadata")
     public Builder usageMetadata(@Nullable GenerateContentResponseUsageMetadata value) {
-      this.usageMetadata = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder usageMetadata(Optional<GenerateContentResponseUsageMetadata> value) {
       this.usageMetadata = value;
       return this;
     }
@@ -494,12 +493,6 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("avgLogprobs")
     public Builder avgLogprobs(@Nullable Double value) {
-      this.avgLogprobs = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder avgLogprobs(Optional<Double> value) {
       this.avgLogprobs = value;
       return this;
     }
@@ -507,12 +500,6 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("interrupted")
     public Builder interrupted(@Nullable Boolean value) {
-      this.interrupted = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder interrupted(Optional<Boolean> value) {
       this.interrupted = value;
       return this;
     }
@@ -520,71 +507,64 @@ public class Event extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("timestamp")
     public Builder timestamp(long value) {
-      this.timestamp = Optional.of(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder timestamp(Optional<Long> value) {
       this.timestamp = value;
       return this;
     }
 
     // Getter for builder's timestamp, used in build()
     Optional<Long> timestamp() {
-      return timestamp;
+      return Optional.ofNullable(timestamp);
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("branch")
     public Builder branch(@Nullable String value) {
-      this.branch = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder branch(Optional<String> value) {
       this.branch = value;
       return this;
     }
 
     // Getter for builder's branch, used in build()
     Optional<String> branch() {
-      return branch;
+      return Optional.ofNullable(branch);
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("groundingMetadata")
     public Builder groundingMetadata(@Nullable GroundingMetadata value) {
-      this.groundingMetadata = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder groundingMetadata(Optional<GroundingMetadata> value) {
       this.groundingMetadata = value;
       return this;
     }
 
     Optional<GroundingMetadata> groundingMetadata() {
-      return groundingMetadata;
+      return Optional.ofNullable(groundingMetadata);
+    }
+
+    @CanIgnoreReturnValue
+    @JsonProperty("customMetadata")
+    public Builder customMetadata(@Nullable List<CustomMetadata> value) {
+      this.customMetadata = value;
+      return this;
     }
 
     @CanIgnoreReturnValue
     @JsonProperty("modelVersion")
     public Builder modelVersion(@Nullable String value) {
-      this.modelVersion = Optional.ofNullable(value);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder modelVersion(Optional<String> value) {
       this.modelVersion = value;
       return this;
     }
 
-    Optional<String> modelVersion() {
-      return modelVersion;
+    @CanIgnoreReturnValue
+    @JsonProperty("inputTranscription")
+    public Builder inputTranscription(@Nullable Transcription value) {
+      this.inputTranscription = value;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    @JsonProperty("outputTranscription")
+    public Builder outputTranscription(@Nullable Transcription value) {
+      this.outputTranscription = value;
+      return this;
     }
 
     public Event build() {
@@ -604,9 +584,12 @@ public class Event extends JsonBaseModel {
       event.setInterrupted(interrupted);
       event.branch(branch);
       event.setGroundingMetadata(groundingMetadata);
+      event.setCustomMetadata(customMetadata);
       event.setModelVersion(modelVersion);
-      event.setActions(actions().orElse(EventActions.builder().build()));
-      event.setTimestamp(timestamp().orElse(Instant.now().toEpochMilli()));
+      event.setActions(actions().orElseGet(() -> EventActions.builder().build()));
+      event.setTimestamp(timestamp().orElseGet(() -> Instant.now().toEpochMilli()));
+      event.setInputTranscription(inputTranscription);
+      event.setOutputTranscription(outputTranscription);
       return event;
     }
   }
@@ -640,7 +623,10 @@ public class Event extends JsonBaseModel {
             .interrupted(this.interrupted)
             .branch(this.branch)
             .groundingMetadata(this.groundingMetadata)
-            .modelVersion(this.modelVersion);
+            .customMetadata(this.customMetadata)
+            .modelVersion(this.modelVersion)
+            .inputTranscription(this.inputTranscription)
+            .outputTranscription(this.outputTranscription);
     if (this.timestamp != 0) {
       builder.timestamp(this.timestamp);
     }
@@ -672,7 +658,10 @@ public class Event extends JsonBaseModel {
         && Objects.equals(interrupted, other.interrupted)
         && Objects.equals(branch, other.branch)
         && Objects.equals(groundingMetadata, other.groundingMetadata)
-        && Objects.equals(modelVersion, other.modelVersion);
+        && Objects.equals(customMetadata, other.customMetadata)
+        && Objects.equals(modelVersion, other.modelVersion)
+        && Objects.equals(inputTranscription, other.inputTranscription)
+        && Objects.equals(outputTranscription, other.outputTranscription);
   }
 
   @Override
@@ -699,7 +688,10 @@ public class Event extends JsonBaseModel {
         interrupted,
         branch,
         groundingMetadata,
+        customMetadata,
         modelVersion,
+        inputTranscription,
+        outputTranscription,
         timestamp);
   }
 }

@@ -20,13 +20,13 @@ import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,74 +41,131 @@ import org.slf4j.LoggerFactory;
 public class ApiServerSpanExporter implements SpanExporter {
   private static final Logger exporterLog = LoggerFactory.getLogger(ApiServerSpanExporter.class);
 
-  private final Map<String, Map<String, Object>> eventIdTraceStorage = new ConcurrentHashMap<>();
+  private final ApiServerSpanExporterConfig config;
+
+  private final Map<String, Integer> eventIdRefCount = new HashMap<>();
+  private final Map<String, Map<String, Object>> eventIdTraceStorage = new HashMap<>();
 
   // Session ID -> Trace IDs -> Trace Object
-  private final Map<String, List<String>> sessionToTraceIdsMap = new ConcurrentHashMap<>();
+  private final Map<String, List<String>> sessionToTraceIdsMap = new HashMap<>();
 
-  private final List<SpanData> allExportedSpans = Collections.synchronizedList(new ArrayList<>());
+  private final Deque<SpanData> allExportedSpans = new ArrayDeque<>();
 
-  public ApiServerSpanExporter() {}
+  public ApiServerSpanExporter() {
+    this(ApiServerSpanExporterConfig.builder().build());
+  }
+
+  public ApiServerSpanExporter(ApiServerSpanExporterConfig config) {
+    this.config = config;
+  }
 
   public Map<String, Object> getEventTraceAttributes(String eventId) {
-    return this.eventIdTraceStorage.get(eventId);
+    synchronized (allExportedSpans) {
+      return this.eventIdTraceStorage.get(eventId);
+    }
   }
 
   public Map<String, List<String>> getSessionToTraceIdsMap() {
-    return this.sessionToTraceIdsMap;
+    synchronized (allExportedSpans) {
+      return new HashMap<>(this.sessionToTraceIdsMap);
+    }
   }
 
   public List<SpanData> getAllExportedSpans() {
-    return this.allExportedSpans;
+    synchronized (allExportedSpans) {
+      return new ArrayList<>(this.allExportedSpans);
+    }
   }
 
   @Override
   public CompletableResultCode export(Collection<SpanData> spans) {
     exporterLog.debug("ApiServerSpanExporter received {} spans to export.", spans.size());
-    List<SpanData> currentBatch = new ArrayList<>(spans);
-    allExportedSpans.addAll(currentBatch);
 
-    for (SpanData span : currentBatch) {
-      String spanName = span.getName();
-      if ("call_llm".equals(spanName)
-          || "send_data".equals(spanName)
-          || (spanName != null && spanName.startsWith("tool_response"))) {
-        String eventId =
-            span.getAttributes().get(AttributeKey.stringKey("gcp.vertex.agent.event_id"));
-        if (eventId != null && !eventId.isEmpty()) {
-          Map<String, Object> attributesMap = new HashMap<>();
-          span.getAttributes().forEach((key, value) -> attributesMap.put(key.getKey(), value));
-          attributesMap.put("trace_id", span.getSpanContext().getTraceId());
-          attributesMap.put("span_id", span.getSpanContext().getSpanId());
-          attributesMap.putIfAbsent("gcp.vertex.agent.event_id", eventId);
-          exporterLog.debug("Storing event-based trace attributes for event_id: {}", eventId);
-          this.eventIdTraceStorage.put(eventId, attributesMap); // Use internal storage
-        } else {
-          exporterLog.trace(
-              "Span {} for event-based trace did not have 'gcp.vertex.agent.event_id'"
-                  + " attribute or it was empty.",
-              spanName);
+    synchronized (allExportedSpans) {
+      for (SpanData span : spans) {
+        if (config.maxSpansToKeep().isPresent()
+            && allExportedSpans.size() >= config.maxSpansToKeep().get()) {
+          SpanData evicted = allExportedSpans.pollFirst();
+          if (evicted != null) {
+            handleEviction(evicted);
+          }
         }
-      }
-
-      if ("call_llm".equals(spanName)) {
-        String sessionId =
-            span.getAttributes().get(AttributeKey.stringKey("gcp.vertex.agent.session_id"));
-        if (sessionId != null && !sessionId.isEmpty()) {
-          String traceId = span.getSpanContext().getTraceId();
-          sessionToTraceIdsMap
-              .computeIfAbsent(sessionId, k -> Collections.synchronizedList(new ArrayList<>()))
-              .add(traceId);
-          exporterLog.trace(
-              "Associated trace_id {} with session_id {} for session tracing", traceId, sessionId);
-        } else {
-          exporterLog.trace(
-              "Span {} for session trace did not have 'gcp.vertex.agent.session_id' attribute.",
-              spanName);
-        }
+        allExportedSpans.addLast(span);
+        handleAddition(span);
       }
     }
     return CompletableResultCode.ofSuccess();
+  }
+
+  private void handleAddition(SpanData span) {
+    String spanName = span.getName();
+    String eventId = span.getAttributes().get(AttributeKey.stringKey("gcp.vertex.agent.event_id"));
+    boolean isEventTraceSpan =
+        "call_llm".equals(spanName)
+            || "send_data".equals(spanName)
+            || (spanName != null && spanName.startsWith("tool_response"));
+    if (eventId != null && !eventId.isEmpty()) {
+      eventIdRefCount.merge(eventId, 1, Integer::sum);
+      if (isEventTraceSpan) {
+        Map<String, Object> attributesMap = new HashMap<>();
+        span.getAttributes().forEach((key, value) -> attributesMap.put(key.getKey(), value));
+        attributesMap.put("trace_id", span.getSpanContext().getTraceId());
+        attributesMap.put("span_id", span.getSpanContext().getSpanId());
+        attributesMap.putIfAbsent("gcp.vertex.agent.event_id", eventId);
+        exporterLog.debug("Storing event-based trace attributes for event_id: {}", eventId);
+        eventIdTraceStorage.put(eventId, attributesMap);
+      }
+    } else if (isEventTraceSpan) {
+      exporterLog.trace(
+          "Span {} for event-based trace did not have 'gcp.vertex.agent.event_id'"
+              + " attribute or it was empty.",
+          spanName);
+    }
+
+    if ("call_llm".equals(spanName)) {
+      String sessionId =
+          span.getAttributes().get(AttributeKey.stringKey("gcp.vertex.agent.session_id"));
+      if (sessionId != null && !sessionId.isEmpty()) {
+        String traceId = span.getSpanContext().getTraceId();
+        sessionToTraceIdsMap.computeIfAbsent(sessionId, k -> new ArrayList<>()).add(traceId);
+        exporterLog.trace(
+            "Associated trace_id {} with session_id {} for session tracing", traceId, sessionId);
+      } else {
+        exporterLog.trace(
+            "Span {} for session trace did not have 'gcp.vertex.agent.session_id' attribute.",
+            spanName);
+      }
+    }
+  }
+
+  private void handleEviction(SpanData span) {
+    String spanName = span.getName();
+    String eventId = span.getAttributes().get(AttributeKey.stringKey("gcp.vertex.agent.event_id"));
+    if (eventId != null && !eventId.isEmpty()) {
+      Integer count = eventIdRefCount.get(eventId);
+      if (count != null) {
+        if (count <= 1) {
+          eventIdRefCount.remove(eventId);
+          eventIdTraceStorage.remove(eventId);
+        } else {
+          eventIdRefCount.put(eventId, count - 1);
+        }
+      }
+    }
+
+    if ("call_llm".equals(spanName)) {
+      String sessionId =
+          span.getAttributes().get(AttributeKey.stringKey("gcp.vertex.agent.session_id"));
+      if (sessionId != null && !sessionId.isEmpty()) {
+        List<String> traceIds = sessionToTraceIdsMap.get(sessionId);
+        if (traceIds != null) {
+          traceIds.remove(span.getSpanContext().getTraceId());
+          if (traceIds.isEmpty()) {
+            sessionToTraceIdsMap.remove(sessionId);
+          }
+        }
+      }
+    }
   }
 
   @Override
@@ -119,7 +176,12 @@ public class ApiServerSpanExporter implements SpanExporter {
   @Override
   public CompletableResultCode shutdown() {
     exporterLog.debug("Shutting down ApiServerSpanExporter.");
-    // no need to clear storage on shutdown, as everything is currently stored in memory.
+    synchronized (allExportedSpans) {
+      allExportedSpans.clear();
+      eventIdRefCount.clear();
+      eventIdTraceStorage.clear();
+      sessionToTraceIdsMap.clear();
+    }
     return CompletableResultCode.ofSuccess();
   }
 }

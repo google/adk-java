@@ -16,6 +16,7 @@
 
 package com.google.adk.agents;
 
+import com.google.common.collect.ImmutableList;
 import java.util.List;
 
 /**
@@ -27,11 +28,11 @@ public class BaseAgentConfig {
   private String name;
   private String description = "";
   private String agentClass;
-  private List<AgentRefConfig> subAgents;
+  private ImmutableList<AgentRefConfig> subAgents = ImmutableList.of();
 
   // Callback configuration (names resolved via ComponentRegistry)
-  private List<CallbackRef> beforeAgentCallbacks;
-  private List<CallbackRef> afterAgentCallbacks;
+  private ImmutableList<CallbackRef> beforeAgentCallbacks = ImmutableList.of();
+  private ImmutableList<CallbackRef> afterAgentCallbacks = ImmutableList.of();
 
   /** Reference to a callback stored in the ComponentRegistry. */
   public static class CallbackRef {
@@ -131,27 +132,33 @@ public class BaseAgentConfig {
     return agentClass;
   }
 
-  public List<AgentRefConfig> subAgents() {
+  public ImmutableList<AgentRefConfig> subAgents() {
     return subAgents;
   }
 
   public void setSubAgents(List<AgentRefConfig> subAgents) {
-    this.subAgents = subAgents;
+    this.subAgents = subAgents == null ? ImmutableList.of() : ImmutableList.copyOf(subAgents);
   }
 
-  public List<CallbackRef> beforeAgentCallbacks() {
+  public ImmutableList<CallbackRef> beforeAgentCallbacks() {
     return beforeAgentCallbacks;
   }
 
   public void setBeforeAgentCallbacks(List<CallbackRef> beforeAgentCallbacks) {
-    this.beforeAgentCallbacks = beforeAgentCallbacks;
+    this.beforeAgentCallbacks =
+        beforeAgentCallbacks == null
+            ? ImmutableList.of()
+            : ImmutableList.copyOf(beforeAgentCallbacks);
   }
 
-  public List<CallbackRef> afterAgentCallbacks() {
+  public ImmutableList<CallbackRef> afterAgentCallbacks() {
     return afterAgentCallbacks;
   }
 
   public void setAfterAgentCallbacks(List<CallbackRef> afterAgentCallbacks) {
-    this.afterAgentCallbacks = afterAgentCallbacks;
+    this.afterAgentCallbacks =
+        afterAgentCallbacks == null
+            ? ImmutableList.of()
+            : ImmutableList.copyOf(afterAgentCallbacks);
   }
 }

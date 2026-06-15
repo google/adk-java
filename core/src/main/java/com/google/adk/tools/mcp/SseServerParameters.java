@@ -23,7 +23,7 @@ import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableMap;
 import java.time.Duration;
 import java.util.Map;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Parameters for establishing a MCP Server-Sent Events (SSE) connection. */
 @AutoValue

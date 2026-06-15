@@ -23,9 +23,12 @@ import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -39,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import org.jspecify.annotations.Nullable;
 
 /** {@link RequestProcessor} that populates content in request for LLM flows. */
 public final class Contents implements RequestProcessor {
@@ -60,14 +64,19 @@ public final class Contents implements RequestProcessor {
       modelName = "";
     }
 
+    ImmutableList<Event> sessionEvents;
+    synchronized (context.session().events()) {
+      sessionEvents = ImmutableList.copyOf(context.session().events());
+    }
+
     if (llmAgent.includeContents() == LlmAgent.IncludeContents.NONE) {
       return Single.just(
           RequestProcessor.RequestProcessingResult.create(
               request.toBuilder()
                   .contents(
                       getCurrentTurnContents(
-                          context.branch(),
-                          context.session().events(),
+                          context.branch().orElse(null),
+                          sessionEvents,
                           context.agent().name(),
                           modelName))
                   .build(),
@@ -76,7 +85,7 @@ public final class Contents implements RequestProcessor {
 
     ImmutableList<Content> contents =
         getContents(
-            context.branch(), context.session().events(), context.agent().name(), modelName);
+            context.branch().orElse(null), sessionEvents, context.agent().name(), modelName);
 
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(
@@ -85,7 +94,7 @@ public final class Contents implements RequestProcessor {
 
   /** Gets contents for the current turn only (no conversation history). */
   private ImmutableList<Content> getCurrentTurnContents(
-      Optional<String> currentBranch, List<Event> events, String agentName, String modelName) {
+      @Nullable String currentBranch, List<Event> events, String agentName, String modelName) {
     // Find the latest event that starts the current turn and process from there.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
@@ -97,26 +106,27 @@ public final class Contents implements RequestProcessor {
   }
 
   private ImmutableList<Content> getContents(
-      Optional<String> currentBranch, List<Event> events, String agentName, String modelName) {
+      @Nullable String currentBranch, List<Event> events, String agentName, String modelName) {
     List<Event> filteredEvents = new ArrayList<>();
+    boolean hasCompactEvent = false;
 
     // Filter the events, leaving the contents and the function calls and responses from the current
     // agent.
     for (Event event : events) {
-      // Skip events without content, or generated neither by user nor by model or has empty text.
-      // E.g. events purely for mutating session states.
-      if (event.content().isEmpty()) {
-        continue;
-      }
-      var content = event.content().get();
-      if (content.role().isEmpty()
-          || content.role().get().isEmpty()
-          || content.parts().isEmpty()
-          || content.parts().get().isEmpty()
-          || content.parts().get().get(0).text().map(String::isEmpty).orElse(false)) {
+      if (event.actions().compaction().isPresent()) {
+        // Always include the compaction event for the later processCompactionEvent call.
+        // The compaction event is used to filter out normal events that are covered by the
+        // compaction event.
+        hasCompactEvent = true;
+        filteredEvents.add(event);
         continue;
       }
 
+      // Skip events without content, or generated neither by user nor by model or has empty text.
+      // E.g. events purely for mutating session states.
+      if (isEmptyContent(event)) {
+        continue;
+      }
       if (!isEventBelongsToBranch(currentBranch, event)) {
         continue;
       }
@@ -133,6 +143,10 @@ public final class Contents implements RequestProcessor {
       }
     }
 
+    if (hasCompactEvent) {
+      filteredEvents = processCompactionEvent(filteredEvents);
+    }
+
     List<Event> resultEvents = rearrangeEventsForLatestFunctionResponse(filteredEvents);
     resultEvents = rearrangeEventsForAsyncFunctionResponsesInHistory(resultEvents, modelName);
 
@@ -140,6 +154,211 @@ public final class Contents implements RequestProcessor {
         .map(Event::content)
         .flatMap(Optional::stream)
         .collect(toImmutableList());
+  }
+
+  /**
+   * Check if an event has missing or empty content.
+   *
+   * <p>This can happen to the events that only changed session state. When both content and
+   * transcriptions are empty, the event will be considered as empty. The content is considered
+   * empty if none of its parts contain text, inline data, file data, function call, or function
+   * response. Parts with only thoughts are also considered empty.
+   *
+   * @param event the event to check.
+   * @return {@code true} if the event is considered to have empty content, {@code false} otherwise.
+   */
+  private boolean isEmptyContent(Event event) {
+    if (event.content().isEmpty()) {
+      return true;
+    }
+    var content = event.content().get();
+    return (content.role().isEmpty()
+        || content.role().get().isEmpty()
+        || content.parts().isEmpty()
+        || content.parts().get().isEmpty()
+        || content.parts().get().stream().allMatch(this::isPartInvisible));
+  }
+
+  /**
+   * Returns whether a part is invisible for LLM context.
+   *
+   * <p>A part is invisible if:
+   *
+   * <ul>
+   *   <li>It has no meaningful content (text, inline_data, file_data, function_call,
+   *       function_response, executable_code, or code_execution_result), OR
+   *   <li>It is marked as a thought AND does not contain function_call or function_response
+   * </ul>
+   *
+   * <p>Function calls and responses are never invisible, even if marked as thought, because they
+   * represent actions that need to be executed or results that need to be processed.
+   *
+   * @param part the part to check.
+   * @return {@code true} if the part is invisible, {@code false} otherwise.
+   */
+  private boolean isPartInvisible(Part part) {
+    if (part.functionCall().isPresent() || part.functionResponse().isPresent()) {
+      return false;
+    }
+    return part.thought().orElse(false)
+        || !(part.text().isPresent()
+            || part.inlineData().isPresent()
+            || part.fileData().isPresent()
+            || part.codeExecutionResult().isPresent()
+            || part.executableCode().isPresent());
+  }
+
+  /**
+   * Filters events that are covered by compaction events by identifying compacted ranges and
+   * filters out events that are covered by compaction summaries. Also filters out redundant
+   * compaction events (i.e., those fully covered by a later compaction event).
+   *
+   * <p>Compaction events are inserted into the stream relative to the events they cover.
+   * Specifically, a compaction event is placed immediately before the first retained event that
+   * follows the compaction range (or at the end of the covered range if no events are retained).
+   * This ensures a logical flow of "Summary of History" -> "Recent/Retained Events".
+   *
+   * <p><b>Case 1: Sliding Window + Retention</b>
+   *
+   * <p>Compaction events have some overlap but do not fully cover each other. Therefore, all
+   * compaction events are preserved, as well as the final retained events.
+   *
+   * <pre>
+   * [
+   *   event_1(timestamp=1),
+   *   event_2(timestamp=2),
+   *   compaction_1(event_1, event_2, timestamp=3, content=summary_1_2, startTime=1, endTime=2),
+   *   event_3(timestamp=4),
+   *   compaction_2(event_2, event_3, timestamp=5, content=summary_2_3, startTime=2, endTime=4),
+   *   event_4(timestamp=6)
+   * ]
+   * </pre>
+   *
+   * Will result in the following events output
+   *
+   * <pre>
+   * [
+   *   compaction_1,
+   *   compaction_2
+   *   event_4
+   * ]
+   * </pre>
+   *
+   * <p><b>Case 2: Rolling Summary + Retention</b>
+   *
+   * <p>The newer compaction event fully covers the older one. Therefore, the older compaction event
+   * is removed, leaving only the latest summary and the final retained events.
+   *
+   * <pre>
+   * [
+   *   event_1(timestamp=1),
+   *   event_2(timestamp=2),
+   *   event_3(timestamp=3),
+   *   event_4(timestamp=4),
+   *   compaction_1(event_1, timestamp=5, content=summary_1, startTime=1, endTime=1),
+   *   event_6(timestamp=6),
+   *   event_7(timestamp=7),
+   *   compaction_2(compaction_1, event_2, event_3, timestamp=8, content=summary_1_3, startTime=1, endTime=3),
+   *   event_9(timestamp=9)
+   * ]
+   * </pre>
+   *
+   * Will result in the following events output
+   *
+   * <pre>
+   * [
+   *   compaction_2,
+   *   event_4,
+   *   event_6,
+   *   event_7,
+   *   event_9
+   * ]
+   * </pre>
+   *
+   * @param events the list of event to filter.
+   * @return a new list with compaction applied.
+   */
+  private List<Event> processCompactionEvent(List<Event> events) {
+    // Step 1: Split events into compaction events and regular events.
+    List<Event> compactionEvents = new ArrayList<>();
+    List<Event> regularEvents = new ArrayList<>();
+    for (Event event : events) {
+      if (event.actions().compaction().isPresent()) {
+        compactionEvents.add(event);
+      } else {
+        regularEvents.add(event);
+      }
+    }
+
+    // Step 2: Remove redundant compaction events (overlapping ones).
+    compactionEvents = removeOverlappingCompactions(compactionEvents);
+
+    // Step 3: Merge regular events and compaction events based on timestamps.
+    // We iterate backwards from the latest to the earliest event.
+    List<Event> result = new ArrayList<>();
+    int c = compactionEvents.size() - 1;
+    int e = regularEvents.size() - 1;
+    while (e >= 0 && c >= 0) {
+      Event event = regularEvents.get(e);
+      EventCompaction compaction = compactionEvents.get(c).actions().compaction().get();
+
+      if (event.timestamp() >= compaction.startTimestamp()
+          && event.timestamp() <= compaction.endTimestamp()) {
+        // If the event is covered by compaction, skip it.
+        e--;
+      } else if (event.timestamp() > compaction.endTimestamp()) {
+        // If the event is after compaction, keep it.
+        result.add(event);
+        e--;
+      } else {
+        // Otherwise the event is before the compaction, let's move to the next compaction event;
+        result.add(createCompactionEvent(compactionEvents.get(c)));
+        c--;
+      }
+    }
+    // Flush any remaining compactions.
+    while (c >= 0) {
+      result.add(createCompactionEvent(compactionEvents.get(c)));
+      c--;
+    }
+    // Flush any remaining regular events.
+    while (e >= 0) {
+      result.add(regularEvents.get(e));
+      e--;
+    }
+    return Lists.reverse(result);
+  }
+
+  private static List<Event> removeOverlappingCompactions(List<Event> events) {
+    List<Event> result = new ArrayList<>();
+    // Iterate backwards to prioritize later compactions
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event current = events.get(i);
+      EventCompaction c = current.actions().compaction().get();
+
+      // Check if this compaction is covered by the last compaction we've already kept.
+      boolean covered = false;
+      if (!result.isEmpty()) {
+        EventCompaction lastKept = Iterables.getLast(result).actions().compaction().get();
+        covered =
+            c.startTimestamp() >= lastKept.startTimestamp()
+                && c.endTimestamp() <= lastKept.endTimestamp();
+      }
+
+      if (!covered) {
+        result.add(current);
+      }
+    }
+    return Lists.reverse(result);
+  }
+
+  private static Event createCompactionEvent(Event event) {
+    EventCompaction compaction = event.actions().compaction().get();
+    return event.toBuilder()
+        .timestamp(compaction.endTimestamp())
+        .author("model")
+        .content(compaction.compactedContent())
+        .build();
   }
 
   /** Whether the event is a reply from another agent. */
@@ -202,16 +421,12 @@ public final class Contents implements RequestProcessor {
     }
   }
 
-  private static boolean isEventBelongsToBranch(Optional<String> invocationBranchOpt, Event event) {
-    Optional<String> eventBranchOpt = event.branch();
+  private static boolean isEventBelongsToBranch(@Nullable String invocationBranch, Event event) {
+    @Nullable String eventBranch = event.branch().orElse(null);
 
-    if (invocationBranchOpt.isEmpty() || invocationBranchOpt.get().isEmpty()) {
-      return true;
-    }
-    if (eventBranchOpt.isEmpty() || eventBranchOpt.get().isEmpty()) {
-      return true;
-    }
-    return invocationBranchOpt.get().startsWith(eventBranchOpt.get());
+    return Strings.isNullOrEmpty(invocationBranch)
+        || Strings.isNullOrEmpty(eventBranch)
+        || invocationBranch.startsWith(eventBranch);
   }
 
   /**
@@ -223,6 +438,11 @@ public final class Contents implements RequestProcessor {
    * @return A new list of events with the appropriate rearrangement.
    */
   private static List<Event> rearrangeEventsForLatestFunctionResponse(List<Event> events) {
+    if (events.size() < 2) {
+      // No need to process, since there is no function_call.
+      return events;
+    }
+
     // TODO: b/412663475 - Handle parallel function calls within the same event. Currently, this
     // throws an error.
     if (events.isEmpty() || Iterables.getLast(events).functionResponses().isEmpty()) {
@@ -376,13 +596,12 @@ public final class Contents implements RequestProcessor {
 
     // Gemini 3 requires function calls to be grouped first and only then function responses:
     // FC1 FC2 FR1 FR2
-    boolean shouldBufferResponseEvents = modelName.startsWith("gemini-3-");
+    boolean shouldBufferResponseEvents = modelName.contains("gemini-3");
 
     for (int i = 0; i < events.size(); i++) {
       Event event = events.get(i);
 
-      // Skip response events that will be processed via responseEventsBuffer
-      if (processedResponseIndices.contains(i)) {
+      if (!event.functionResponses().isEmpty()) {
         continue;
       }
 
@@ -544,9 +763,7 @@ public final class Contents implements RequestProcessor {
     }
 
     return baseEvent.toBuilder()
-        .content(
-            Optional.of(
-                Content.builder().role(baseContent.role().get()).parts(partsInMergedEvent).build()))
+        .content(Content.builder().role(baseContent.role().get()).parts(partsInMergedEvent).build())
         .build();
   }
 

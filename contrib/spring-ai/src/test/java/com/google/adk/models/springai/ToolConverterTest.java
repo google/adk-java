@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.tool.ToolCallback;
 
 class ToolConverterTest {
 
@@ -177,5 +178,38 @@ class ToolConverterTest {
     assertThat(metadata.getName()).isEqualTo("test_function");
     assertThat(metadata.getDescription()).isEqualTo("Test description");
     assertThat(metadata.getDeclaration()).isEqualTo(function);
+  }
+
+  @Test
+  void testConvertToSpringAiToolsWithParametersJsonSchema() {
+    Map<String, Object> jsonSchema =
+        Map.of(
+            "type",
+            "object",
+            "properties",
+            Map.of("location", Map.of("type", "string", "description", "City name")),
+            "required",
+            List.of("location"));
+
+    FunctionDeclaration function =
+        FunctionDeclaration.builder()
+            .name("get_weather")
+            .description("Get weather for a location")
+            .parametersJsonSchema(jsonSchema)
+            .build();
+
+    BaseTool testTool =
+        new BaseTool("get_weather", "Get weather for a location") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(function);
+          }
+        };
+
+    Map<String, BaseTool> tools = Map.of("get_weather", testTool);
+    List<ToolCallback> toolCallbacks = toolConverter.convertToSpringAiTools(tools);
+
+    assertThat(toolCallbacks).hasSize(1);
+    assertThat(toolCallbacks.get(0).getToolDefinition().name()).isEqualTo("get_weather");
   }
 }

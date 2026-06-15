@@ -28,8 +28,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.IntStream;
+import org.jspecify.annotations.Nullable;
 
 /** An in-memory implementation of the {@link BaseArtifactService}. */
 public final class InMemoryArtifactService implements BaseArtifactService {
@@ -48,11 +48,8 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   public Single<Integer> saveArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact) {
     List<Part> versions =
-        artifacts
-            .computeIfAbsent(appName, k -> new HashMap<>())
-            .computeIfAbsent(userId, k -> new HashMap<>())
-            .computeIfAbsent(sessionId, k -> new HashMap<>())
-            .computeIfAbsent(filename, k -> new ArrayList<>());
+        getArtifactsMap(appName, userId, sessionId)
+            .computeIfAbsent(filename, unused -> new ArrayList<>());
     versions.add(artifact);
     return Single.just(versions.size() - 1);
   }
@@ -64,21 +61,17 @@ public final class InMemoryArtifactService implements BaseArtifactService {
    */
   @Override
   public Maybe<Part> loadArtifact(
-      String appName, String userId, String sessionId, String filename, Optional<Integer> version) {
+      String appName, String userId, String sessionId, String filename, @Nullable Integer version) {
     List<Part> versions =
-        artifacts
-            .getOrDefault(appName, new HashMap<>())
-            .getOrDefault(userId, new HashMap<>())
-            .getOrDefault(sessionId, new HashMap<>())
-            .getOrDefault(filename, new ArrayList<>());
+        getArtifactsMap(appName, userId, sessionId)
+            .computeIfAbsent(filename, unused -> new ArrayList<>());
 
     if (versions.isEmpty()) {
       return Maybe.empty();
     }
-    if (version.isPresent()) {
-      int v = version.get();
-      if (v >= 0 && v < versions.size()) {
-        return Maybe.just(versions.get(v));
+    if (version != null) {
+      if (version >= 0 && version < versions.size()) {
+        return Maybe.just(versions.get(version));
       } else {
         return Maybe.empty();
       }
@@ -97,13 +90,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
       String appName, String userId, String sessionId) {
     return Single.just(
         ListArtifactsResponse.builder()
-            .filenames(
-                ImmutableList.copyOf(
-                    artifacts
-                        .getOrDefault(appName, new HashMap<>())
-                        .getOrDefault(userId, new HashMap<>())
-                        .getOrDefault(sessionId, new HashMap<>())
-                        .keySet()))
+            .filenames(ImmutableList.copyOf(getArtifactsMap(appName, userId, sessionId).keySet()))
             .build());
   }
 
@@ -115,11 +102,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   @Override
   public Completable deleteArtifact(
       String appName, String userId, String sessionId, String filename) {
-    artifacts
-        .getOrDefault(appName, new HashMap<>())
-        .getOrDefault(userId, new HashMap<>())
-        .getOrDefault(sessionId, new HashMap<>())
-        .remove(filename);
+    getArtifactsMap(appName, userId, sessionId).remove(filename);
     return Completable.complete();
   }
 
@@ -132,15 +115,26 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   public Single<ImmutableList<Integer>> listVersions(
       String appName, String userId, String sessionId, String filename) {
     int size =
-        artifacts
-            .getOrDefault(appName, new HashMap<>())
-            .getOrDefault(userId, new HashMap<>())
-            .getOrDefault(sessionId, new HashMap<>())
-            .getOrDefault(filename, new ArrayList<>())
+        getArtifactsMap(appName, userId, sessionId)
+            .computeIfAbsent(filename, unused -> new ArrayList<>())
             .size();
     if (size == 0) {
       return Single.just(ImmutableList.of());
     }
     return Single.just(IntStream.range(0, size).boxed().collect(toImmutableList()));
+  }
+
+  @Override
+  public Single<Part> saveAndReloadArtifact(
+      String appName, String userId, String sessionId, String filename, Part artifact) {
+    return saveArtifact(appName, userId, sessionId, filename, artifact)
+        .flatMap(version -> loadArtifact(appName, userId, sessionId, filename, version).toSingle());
+  }
+
+  private Map<String, List<Part>> getArtifactsMap(String appName, String userId, String sessionId) {
+    return artifacts
+        .computeIfAbsent(appName, unused -> new HashMap<>())
+        .computeIfAbsent(userId, unused -> new HashMap<>())
+        .computeIfAbsent(sessionId, unused -> new HashMap<>());
   }
 }

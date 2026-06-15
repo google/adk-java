@@ -65,9 +65,7 @@ public class LoggingPluginTest {
       Event.builder()
           .id("event_id")
           .author("author")
-          .content(Optional.empty())
           .actions(EventActions.builder().build())
-          .longRunningToolIds(Optional.empty())
           .build();
   private final LlmRequest.Builder llmRequestBuilder =
       LlmRequest.builder().model("default").contents(ImmutableList.of());
@@ -87,7 +85,7 @@ public class LoggingPluginTest {
 
     when(mockCallbackContext.invocationId()).thenReturn("invocation_id");
     when(mockCallbackContext.agentName()).thenReturn("agent_name");
-    when(mockCallbackContext.branch()).thenReturn(Optional.empty());
+    when(mockCallbackContext.invocationContext()).thenReturn(mockInvocationContext);
 
     when(mockTool.name()).thenReturn("tool_name");
     when(mockToolContext.agentName()).thenReturn("agent_name");

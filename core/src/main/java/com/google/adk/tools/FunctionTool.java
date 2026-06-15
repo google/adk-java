@@ -36,7 +36,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,18 +44,23 @@ import org.slf4j.LoggerFactory;
 public class FunctionTool extends BaseTool {
 
   private static final Logger logger = LoggerFactory.getLogger(FunctionTool.class);
-  private static final ObjectMapper OBJECT_MAPPER = JsonBaseModel.getMapper();
 
   private final @Nullable Object instance;
   private final Method func;
   private final FunctionDeclaration funcDeclaration;
   private final boolean requireConfirmation;
+  private final ObjectMapper objectMapper;
 
   public static FunctionTool create(Object instance, Method func) {
     return create(instance, func, /* requireConfirmation= */ false);
   }
 
   public static FunctionTool create(Object instance, Method func, boolean requireConfirmation) {
+    return create(instance, func, requireConfirmation, false);
+  }
+
+  public static FunctionTool create(
+      Object instance, Method func, boolean requireConfirmation, boolean isLongRunning) {
     if (!areParametersAnnotatedWithSchema(func) && wasCompiledWithDefaultParameterNames(func)) {
       logger.error(
           """
@@ -72,7 +77,7 @@ public class FunctionTool extends BaseTool {
               func.getDeclaringClass().getName(), instance.getClass().getName()));
     }
     return new FunctionTool(
-        instance, func, /* isLongRunning= */ false, /* requireConfirmation= */ requireConfirmation);
+        instance, func, isLongRunning, /* requireConfirmation= */ requireConfirmation);
   }
 
   public static FunctionTool create(Method func) {
@@ -80,6 +85,11 @@ public class FunctionTool extends BaseTool {
   }
 
   public static FunctionTool create(Method func, boolean requireConfirmation) {
+    return create(func, requireConfirmation, false);
+  }
+
+  public static FunctionTool create(
+      Method func, boolean requireConfirmation, boolean isLongRunning) {
     if (!areParametersAnnotatedWithSchema(func) && wasCompiledWithDefaultParameterNames(func)) {
       logger.error(
           """
@@ -91,7 +101,7 @@ public class FunctionTool extends BaseTool {
     if (!Modifier.isStatic(func.getModifiers())) {
       throw new IllegalArgumentException("The method provided must be static.");
     }
-    return new FunctionTool(null, func, /* isLongRunning= */ false, requireConfirmation);
+    return new FunctionTool(null, func, isLongRunning, requireConfirmation);
   }
 
   public static FunctionTool create(Class<?> cls, String methodName) {
@@ -99,9 +109,14 @@ public class FunctionTool extends BaseTool {
   }
 
   public static FunctionTool create(Class<?> cls, String methodName, boolean requireConfirmation) {
+    return create(cls, methodName, requireConfirmation, false);
+  }
+
+  public static FunctionTool create(
+      Class<?> cls, String methodName, boolean requireConfirmation, boolean isLongRunning) {
     for (Method method : cls.getMethods()) {
       if (method.getName().equals(methodName) && Modifier.isStatic(method.getModifiers())) {
-        return create(null, method, requireConfirmation);
+        return create(null, method, requireConfirmation, isLongRunning);
       }
     }
     throw new IllegalArgumentException(
@@ -114,10 +129,15 @@ public class FunctionTool extends BaseTool {
 
   public static FunctionTool create(
       Object instance, String methodName, boolean requireConfirmation) {
+    return create(instance, methodName, requireConfirmation, false);
+  }
+
+  public static FunctionTool create(
+      Object instance, String methodName, boolean requireConfirmation, boolean isLongRunning) {
     Class<?> cls = instance.getClass();
     for (Method method : cls.getMethods()) {
       if (method.getName().equals(methodName) && !Modifier.isStatic(method.getModifiers())) {
-        return create(instance, method, requireConfirmation);
+        return create(instance, method, requireConfirmation, isLongRunning);
       }
     }
     throw new IllegalArgumentException(
@@ -146,11 +166,26 @@ public class FunctionTool extends BaseTool {
   }
 
   protected FunctionTool(@Nullable Object instance, Method func, boolean isLongRunning) {
-    this(instance, func, isLongRunning, /* requireConfirmation= */ false);
+    this(
+        instance, func, isLongRunning, /* requireConfirmation= */ false, JsonBaseModel.getMapper());
   }
 
   protected FunctionTool(
       @Nullable Object instance, Method func, boolean isLongRunning, boolean requireConfirmation) {
+    this(instance, func, isLongRunning, requireConfirmation, JsonBaseModel.getMapper());
+  }
+
+  protected FunctionTool(
+      @Nullable Object instance, Method func, boolean isLongRunning, ObjectMapper objectMapper) {
+    this(instance, func, isLongRunning, /* requireConfirmation= */ false, objectMapper);
+  }
+
+  protected FunctionTool(
+      @Nullable Object instance,
+      Method func,
+      boolean isLongRunning,
+      boolean requireConfirmation,
+      ObjectMapper objectMapper) {
     super(
         func.isAnnotationPresent(Annotations.Schema.class)
                 && !func.getAnnotation(Annotations.Schema.class).name().isEmpty()
@@ -173,6 +208,7 @@ public class FunctionTool extends BaseTool {
         FunctionCallingUtils.buildFunctionDeclaration(
             this.func, ImmutableList.of("toolContext", "inputStream"));
     this.requireConfirmation = requireConfirmation;
+    this.objectMapper = objectMapper;
   }
 
   @Override
@@ -186,8 +222,7 @@ public class FunctionTool extends BaseTool {
   }
 
   /** Returns the underlying function's {@link Object} instance if present. */
-  @Nullable
-  Object instance() {
+  @Nullable Object instance() {
     return instance;
   }
 
@@ -236,29 +271,43 @@ public class FunctionTool extends BaseTool {
       throws IllegalAccessException, InvocationTargetException {
     Object[] arguments = buildArguments(args, toolContext, null);
     Object result = func.invoke(instance, arguments);
-    if (result == null) {
+    if (result == null || isEmptyOptional(result)) {
       return Maybe.empty();
     } else if (result instanceof Maybe) {
       return ((Maybe<?>) result)
-          .map(
-              data ->
-                  OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}));
+          .filter(data -> !isEmptyOptional(data))
+          .map(this::convertToMapOrResult);
     } else if (result instanceof Single) {
       return ((Single<?>) result)
-          .map(
-              data -> OBJECT_MAPPER.convertValue(data, new TypeReference<Map<String, Object>>() {}))
-          .toMaybe();
+          .toMaybe()
+          .filter(data -> !isEmptyOptional(data))
+          .map(this::convertToMapOrResult);
     } else {
-      try {
-        return Maybe.just(
-            OBJECT_MAPPER.convertValue(result, new TypeReference<Map<String, Object>>() {}));
-      } catch (IllegalArgumentException e) {
-        // Conversion to map failed, in this case we follow
-        // https://google.github.io/adk-docs/tools-custom/function-tools/#return-type and return
-        // the { "result": $result }
-        return Maybe.just(ImmutableMap.of("result", result));
-      }
+      return Maybe.just(convertToMapOrResult(result));
     }
+  }
+
+  private Map<String, Object> convertToMapOrResult(Object value) {
+    if (value instanceof Optional) {
+      value = ((Optional<?>) value).get();
+    }
+    try {
+      Map<String, Object> map =
+          objectMapper.convertValue(value, new TypeReference<Map<String, Object>>() {});
+      if (map == null) {
+        return ImmutableMap.of();
+      }
+      return map;
+    } catch (IllegalArgumentException e) {
+      // Conversion to map failed, in this case we follow
+      // https://google.github.io/adk-docs/tools-custom/function-tools/#return-type and return
+      // the { "result": $result }
+      return ImmutableMap.of("result", value);
+    }
+  }
+
+  private static boolean isEmptyOptional(Object value) {
+    return value instanceof Optional && ((Optional<?>) value).isEmpty();
   }
 
   @SuppressWarnings("unchecked")
@@ -273,6 +322,21 @@ public class FunctionTool extends BaseTool {
       throw new IllegalArgumentException(
           "callLive was called but the underlying function does not return a Flowable.");
     }
+  }
+
+  @SuppressWarnings("unchecked") // For tool parameter type casting.
+  private @Nullable Object resolveArgumentValue(
+      @Nullable Object argValue, Class<?> paramType, Type parameterizedType, String paramName) {
+    if (paramType.equals(List.class)) {
+      if (argValue instanceof List) {
+        Type type = ((ParameterizedType) parameterizedType).getActualTypeArguments()[0];
+        Class<?> typeArgClass = getTypeClass(type, paramName);
+        return createList((List<Object>) argValue, typeArgClass);
+      }
+    } else if (argValue instanceof Map) {
+      return objectMapper.convertValue(argValue, paramType);
+    }
+    return castValue(argValue, paramType);
   }
 
   @SuppressWarnings("unchecked") // For tool parameter type casting.
@@ -303,9 +367,14 @@ public class FunctionTool extends BaseTool {
         continue;
       }
       Annotations.Schema schema = parameters[i].getAnnotation(Annotations.Schema.class);
+      Class<?> paramType = parameters[i].getType();
       if (!args.containsKey(paramName)) {
         if (schema != null && schema.optional()) {
-          arguments[i] = null;
+          if (paramType.equals(Optional.class)) {
+            arguments[i] = Optional.empty();
+          } else {
+            arguments[i] = null;
+          }
           continue;
         } else {
           throw new IllegalArgumentException(
@@ -314,22 +383,27 @@ public class FunctionTool extends BaseTool {
                   paramName));
         }
       }
-      Class<?> paramType = parameters[i].getType();
       Object argValue = args.get(paramName);
-      if (paramType.equals(List.class)) {
-        if (argValue instanceof List) {
-          Type type =
-              ((ParameterizedType) parameters[i].getParameterizedType())
-                  .getActualTypeArguments()[0];
-          Class<?> typeArgClass = getTypeClass(type, paramName);
-          arguments[i] = createList((List<Object>) argValue, typeArgClass);
-          continue;
+      if (paramType.equals(Optional.class)) {
+        if (argValue == null) {
+          arguments[i] = Optional.empty();
+        } else {
+          Type innerType;
+          Type paramParameterizedType = parameters[i].getParameterizedType();
+          if (paramParameterizedType instanceof ParameterizedType pType) {
+            innerType = pType.getActualTypeArguments()[0];
+          } else {
+            innerType = Object.class;
+          }
+          Class<?> innerClass = getTypeClass(innerType, paramName);
+          Object resolvedValue = resolveArgumentValue(argValue, innerClass, innerType, paramName);
+          arguments[i] = Optional.ofNullable(resolvedValue);
         }
-      } else if (argValue instanceof Map) {
-        arguments[i] = OBJECT_MAPPER.convertValue(argValue, paramType);
-        continue;
+      } else {
+        arguments[i] =
+            resolveArgumentValue(
+                argValue, paramType, parameters[i].getParameterizedType(), paramName);
       }
-      arguments[i] = castValue(argValue, paramType);
     }
     return arguments;
   }
@@ -347,7 +421,7 @@ public class FunctionTool extends BaseTool {
     }
   }
 
-  private static List<Object> createList(List<Object> values, Class<?> type) {
+  private List<Object> createList(List<Object> values, Class<?> type) {
     List<Object> list = new ArrayList<>();
     // List of parameterized type is not supported.
     if (type == null) {
@@ -363,13 +437,13 @@ public class FunctionTool extends BaseTool {
           || cls == String.class) {
         list.add(castValue(value, cls));
       } else {
-        list.add(OBJECT_MAPPER.convertValue(value, type));
+        list.add(objectMapper.convertValue(value, type));
       }
     }
     return list;
   }
 
-  private static Object castValue(Object value, Class<?> type) {
+  private Object castValue(Object value, Class<?> type) {
     if (type.equals(Integer.class) || type.equals(int.class)) {
       if (value instanceof Integer) {
         return value;
@@ -414,6 +488,6 @@ public class FunctionTool extends BaseTool {
         return value;
       }
     }
-    return OBJECT_MAPPER.convertValue(value, type);
+    return objectMapper.convertValue(value, type);
   }
 }

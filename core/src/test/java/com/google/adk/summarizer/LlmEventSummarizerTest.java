@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.adk.summarizer;
 
 import static com.google.common.truth.Truth.assertThat;
@@ -12,12 +28,13 @@ import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
-import java.util.HashMap;
+import java.util.Map;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -58,7 +75,7 @@ public class LlmEventSummarizerTest {
   public void summarizeEvents_success() {
     ImmutableList<Event> events =
         ImmutableList.of(createEvent(1L, "Hello", "user"), createEvent(2L, "Hi there!", "model"));
-    String expectedConversationHistory = "user: Hello\\nmodel: Hi there!";
+    String expectedConversationHistory = "user: Hello\nmodel: Hi there!";
     String expectedPrompt =
         DEFAULT_PROMPT_TEMPLATE.replace("{conversation_history}", expectedConversationHistory);
     LlmResponse mockLlmResponse =
@@ -132,47 +149,25 @@ public class LlmEventSummarizerTest {
                 .invocationId("id2")
                 .build(),
             // Event with function call
-            Event.builder()
-                .timestamp(7L)
-                .author("model")
-                .content(
-                    Content.builder()
-                        .parts(
-                            ImmutableList.of(
-                                Part.builder()
-                                    .functionCall(
-                                        FunctionCall.builder()
-                                            .name("tool")
-                                            .args(new HashMap<>())
-                                            .build())
-                                    .build()))
-                        .build())
-                .invocationId("id3")
-                .build(),
+            createFunctionCallEvent(7L, "id3", "tool", ImmutableMap.of("key", "value")),
             // Event with function response
-            Event.builder()
-                .timestamp(8L)
-                .author("model")
-                .content(
-                    Content.builder()
-                        .parts(
-                            ImmutableList.of(
-                                Part.builder()
-                                    .functionResponse(
-                                        FunctionResponse.builder()
-                                            .name("tool")
-                                            .response(new HashMap<>())
-                                            .build())
-                                    .build()))
-                        .build())
-                .invocationId("id4")
-                .build());
+            createFunctionResponseEvent(8L, "id4", "tool", ImmutableMap.of("status", "ok")),
+            // Event with function call (add)
+            createFunctionCallEvent(9L, "id5", "add", ImmutableMap.of("a", 20, "b", 22)),
+            // Event with primitive function response
+            createFunctionResponseEvent(10L, "id6", "add", ImmutableMap.of("result", 42)));
 
     String expectedFormattedHistory =
-        "user: User says...\\n"
-            + "model: Model replies...\\n"
-            + "user: Another user input\\n"
-            + "model: More model text";
+        """
+        user: User says...
+        model: Model replies...
+        user: Another user input
+        model: More model text
+        model: [FUNCTION_CALL: tool({"key":"value"})]
+        model: [FUNCTION_RESPONSE: tool -> {"status":"ok"}]
+        model: [FUNCTION_CALL: add({"a":20,"b":22})]
+        model: [FUNCTION_RESPONSE: add -> {"result":42}]\
+        """;
     String expectedPrompt =
         DEFAULT_PROMPT_TEMPLATE.replace("{conversation_history}", expectedFormattedHistory);
 
@@ -197,6 +192,41 @@ public class LlmEventSummarizerTest {
         .author(author)
         .content(Content.builder().parts(ImmutableList.of(Part.fromText(text))).build())
         .invocationId(Event.generateEventId())
+        .build();
+  }
+
+  private Event createFunctionCallEvent(
+      long timestamp, String invocationId, String name, Map<String, Object> args) {
+    return Event.builder()
+        .timestamp(timestamp)
+        .author("model")
+        .content(
+            Content.builder()
+                .parts(
+                    ImmutableList.of(
+                        Part.builder()
+                            .functionCall(FunctionCall.builder().name(name).args(args).build())
+                            .build()))
+                .build())
+        .invocationId(invocationId)
+        .build();
+  }
+
+  private Event createFunctionResponseEvent(
+      long timestamp, String invocationId, String name, Map<String, Object> response) {
+    return Event.builder()
+        .timestamp(timestamp)
+        .author("model")
+        .content(
+            Content.builder()
+                .parts(
+                    ImmutableList.of(
+                        Part.builder()
+                            .functionResponse(
+                                FunctionResponse.builder().name(name).response(response).build())
+                            .build()))
+                .build())
+        .invocationId(invocationId)
         .build();
   }
 }

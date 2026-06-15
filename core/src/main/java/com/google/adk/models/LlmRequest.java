@@ -17,7 +17,6 @@
 package com.google.adk.models;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 
@@ -109,7 +108,7 @@ public abstract class LlmRequest extends JsonBaseModel {
                     .map(Part::text)
                     .flatMap(Optional::stream)
                     .collect(toImmutableList()))
-        .orElse(ImmutableList.of());
+        .orElseGet(ImmutableList::of);
   }
 
   public static Builder builder() {
@@ -151,7 +150,7 @@ public abstract class LlmRequest extends JsonBaseModel {
     abstract LiveConnectConfig liveConnectConfig();
 
     @CanIgnoreReturnValue
-    abstract Builder tools(Map<String, BaseTool> tools);
+    public abstract Builder tools(Map<String, BaseTool> tools);
 
     abstract Map<String, BaseTool> tools();
 
@@ -172,29 +171,33 @@ public abstract class LlmRequest extends JsonBaseModel {
       return liveConnectConfig(liveCfg.toBuilder().systemInstruction(newLiveSi).build());
     }
 
+    // In this particular case we can keep the Optional as a type of a
+    // parameter, since the function is private and used in only one place while
+    // the Optional type plays nicely with flatMaps in the code (if we had a
+    // nullable here, we'd wrap it in the Optional anyway)
     private Content addInstructions(
-        Optional<Content> currentSystemInstruction, List<String> additionalInstructions) {
+        @SuppressWarnings("checkstyle:IllegalType") Optional<Content> currentSystemInstruction,
+        List<String> additionalInstructions) {
       checkArgument(
-          currentSystemInstruction.isEmpty()
-              || currentSystemInstruction.get().parts().map(parts -> parts.size()).orElse(0) <= 1,
+          currentSystemInstruction.flatMap(Content::parts).map(parts -> parts.size()).orElse(0)
+              <= 1,
           "At most one instruction is supported.");
 
       // Either append to the existing instruction, or create a new one.
       String instructions = String.join("\n\n", additionalInstructions);
 
-      Optional<Part> part =
-          currentSystemInstruction
-              .flatMap(Content::parts)
-              .flatMap(parts -> parts.stream().findFirst());
-      if (part.isEmpty() || part.get().text().isEmpty()) {
-        part = Optional.of(Part.fromText(instructions));
-      } else {
-        part = Optional.of(Part.fromText(part.get().text().get() + "\n\n" + instructions));
-      }
-      checkState(part.isPresent(), "Failed to create instruction.");
+      Part part =
+          Part.fromText(
+              currentSystemInstruction
+                  .flatMap(Content::parts)
+                  .flatMap(parts -> parts.stream().findFirst())
+                  .flatMap(Part::text)
+                  .map(text -> text + "\n\n" + instructions)
+                  .orElse(instructions));
 
       String role = currentSystemInstruction.flatMap(Content::role).orElse("user");
-      return Content.builder().parts(part.get()).role(role).build();
+
+      return Content.builder().parts(part).role(role).build();
     }
 
     @CanIgnoreReturnValue
@@ -223,7 +226,8 @@ public abstract class LlmRequest extends JsonBaseModel {
      */
     @CanIgnoreReturnValue
     public final Builder outputSchema(Schema schema) {
-      GenerateContentConfig config = config().orElse(GenerateContentConfig.builder().build());
+      GenerateContentConfig config =
+          config().orElseGet(() -> GenerateContentConfig.builder().build());
       return config(
           config.toBuilder().responseSchema(schema).responseMimeType("application/json").build());
     }

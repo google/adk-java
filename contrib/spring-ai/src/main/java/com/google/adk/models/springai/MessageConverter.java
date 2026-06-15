@@ -221,8 +221,7 @@ public class MessageConverter {
           } catch (Exception e) {
             // Log warning but continue processing other parts
             // In production, consider proper logging framework
-            System.err.println(
-                "Warning: Failed to parse media mime type: " + blob.mimeType().get());
+            System.err.println("Warning: Failed to process media part: " + e.getMessage());
           }
         }
       } else if (part.fileData().isPresent()) {
@@ -235,19 +234,14 @@ public class MessageConverter {
             URI uri = URI.create(fileData.fileUri().get());
             mediaList.add(new Media(mimeType, uri));
           } catch (Exception e) {
-            System.err.println(
-                "Warning: Failed to parse media mime type: " + fileData.mimeType().get());
+            System.err.println("Warning: Failed to process media part: " + e.getMessage());
           }
         }
       }
     }
 
     List<Message> messages = new ArrayList<>();
-    // Create UserMessage with text
-    // TODO: Media attachments support - UserMessage constructors with media are private in Spring
-    // AI 1.1.0
-    // For now, only text content is supported
-    messages.add(new UserMessage(textBuilder.toString()));
+    messages.add(UserMessage.builder().text(textBuilder.toString()).media(mediaList).build());
     messages.addAll(toolResponseMessages);
 
     return messages;

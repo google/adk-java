@@ -75,8 +75,36 @@ public final class Callbacks {
     Optional<LlmResponse> call(CallbackContext callbackContext, LlmResponse llmResponse);
   }
 
+  interface OnModelErrorCallbackBase {}
+
+  /** Async callback interface for handling errors that occur during an LLM model call. */
+  @FunctionalInterface
+  public interface OnModelErrorCallback extends OnModelErrorCallbackBase {
+    /**
+     * Async callback when model call fails.
+     *
+     * @param callbackContext Callback context.
+     * @param llmRequest LLM request.
+     * @param error The exception that occurred.
+     * @return response override, or empty to continue with error.
+     */
+    Maybe<LlmResponse> call(
+        CallbackContext callbackContext, LlmRequest llmRequest, Exception error);
+  }
+
+  /**
+   * Helper interface to allow for sync onModelErrorCallback. The function is wrapped into an async
+   * one before being processed further.
+   */
+  @FunctionalInterface
+  public interface OnModelErrorCallbackSync extends OnModelErrorCallbackBase {
+    Optional<LlmResponse> call(
+        CallbackContext callbackContext, LlmRequest llmRequest, Exception error);
+  }
+
   interface BeforeAgentCallbackBase {}
 
+  /** Async callback interface for actions to be performed before an agent starts running. */
   @FunctionalInterface
   public interface BeforeAgentCallback extends BeforeAgentCallbackBase {
     /**
@@ -99,6 +127,7 @@ public final class Callbacks {
 
   interface AfterAgentCallbackBase {}
 
+  /** Async callback interface for actions to be performed after an agent has finished running. */
   @FunctionalInterface
   public interface AfterAgentCallback extends AfterAgentCallbackBase {
     /**
@@ -121,6 +150,7 @@ public final class Callbacks {
 
   interface BeforeToolCallbackBase {}
 
+  /** Async callback interface for actions to be performed before a tool is invoked. */
   @FunctionalInterface
   public interface BeforeToolCallback extends BeforeToolCallbackBase {
     /**
@@ -154,6 +184,7 @@ public final class Callbacks {
 
   interface AfterToolCallbackBase {}
 
+  /** Async callback interface for actions to be performed after a tool has been invoked. */
   @FunctionalInterface
   public interface AfterToolCallback extends AfterToolCallbackBase {
     /**
@@ -186,6 +217,43 @@ public final class Callbacks {
         Map<String, Object> input,
         ToolContext toolContext,
         Object response);
+  }
+
+  interface OnToolErrorCallbackBase {}
+
+  /** Async callback interface for handling errors that occur during a tool invocation. */
+  @FunctionalInterface
+  public interface OnToolErrorCallback extends OnToolErrorCallbackBase {
+    /**
+     * Async callback when tool call fails.
+     *
+     * @param invocationContext Invocation context.
+     * @param baseTool Tool instance.
+     * @param input Tool input arguments.
+     * @param toolContext Tool context.
+     * @param error The exception that occurred.
+     * @return override result, or empty to continue with error.
+     */
+    Maybe<Map<String, Object>> call(
+        InvocationContext invocationContext,
+        BaseTool baseTool,
+        Map<String, Object> input,
+        ToolContext toolContext,
+        Exception error);
+  }
+
+  /**
+   * Helper interface to allow for sync onToolErrorCallback. The function is wrapped into an async
+   * one before being processed further.
+   */
+  @FunctionalInterface
+  public interface OnToolErrorCallbackSync extends OnToolErrorCallbackBase {
+    Optional<Map<String, Object>> call(
+        InvocationContext invocationContext,
+        BaseTool baseTool,
+        Map<String, Object> input,
+        ToolContext toolContext,
+        Exception error);
   }
 
   private Callbacks() {}

@@ -24,7 +24,6 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -78,8 +77,7 @@ public class ArtifactController {
         versionStr);
 
     Maybe<Part> artifactMaybe =
-        artifactService.loadArtifact(
-            appName, userId, sessionId, artifactName, Optional.ofNullable(version));
+        artifactService.loadArtifact(appName, userId, sessionId, artifactName, version);
 
     Part artifact = artifactMaybe.blockingGet();
 
@@ -126,8 +124,7 @@ public class ArtifactController {
         versionId);
 
     Maybe<Part> artifactMaybe =
-        artifactService.loadArtifact(
-            appName, userId, sessionId, artifactName, Optional.of(versionId));
+        artifactService.loadArtifact(appName, userId, sessionId, artifactName, versionId);
 
     Part artifact = artifactMaybe.blockingGet();
 

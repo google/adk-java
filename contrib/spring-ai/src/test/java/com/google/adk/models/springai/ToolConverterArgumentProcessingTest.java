@@ -115,6 +115,90 @@ class ToolConverterArgumentProcessingTest {
     return (Map<String, Object>) method.invoke(converter, args, declaration);
   }
 
+  @Test
+  void testArgumentProcessingWithParametersJsonSchema_correctFormat() throws Exception {
+    ToolConverter converter = new ToolConverter();
+    Method processArguments = getProcessArgumentsMethod(converter);
+
+    com.google.genai.types.FunctionDeclaration declaration =
+        com.google.genai.types.FunctionDeclaration.builder()
+            .name("getWeatherInfo")
+            .description("Get weather information")
+            .parametersJsonSchema(
+                Map.of(
+                    "type", "object", "properties", Map.of("location", Map.of("type", "string"))))
+            .build();
+
+    Map<String, Object> correctArgs = Map.of("location", "San Francisco");
+    Map<String, Object> processedArgs =
+        invokeProcessArguments(processArguments, converter, correctArgs, declaration);
+
+    assertThat(processedArgs).isEqualTo(correctArgs);
+  }
+
+  @Test
+  void testArgumentProcessingWithParametersJsonSchema_nestedFormat() throws Exception {
+    ToolConverter converter = new ToolConverter();
+    Method processArguments = getProcessArgumentsMethod(converter);
+
+    com.google.genai.types.FunctionDeclaration declaration =
+        com.google.genai.types.FunctionDeclaration.builder()
+            .name("getWeatherInfo")
+            .description("Get weather information")
+            .parametersJsonSchema(
+                Map.of(
+                    "type", "object", "properties", Map.of("location", Map.of("type", "string"))))
+            .build();
+
+    Map<String, Object> nestedArgs = Map.of("args", Map.of("location", "San Francisco"));
+    Map<String, Object> processedArgs =
+        invokeProcessArguments(processArguments, converter, nestedArgs, declaration);
+
+    assertThat(processedArgs).containsEntry("location", "San Francisco");
+  }
+
+  @Test
+  void testArgumentProcessingWithParametersJsonSchema_directValue() throws Exception {
+    ToolConverter converter = new ToolConverter();
+    Method processArguments = getProcessArgumentsMethod(converter);
+
+    com.google.genai.types.FunctionDeclaration declaration =
+        com.google.genai.types.FunctionDeclaration.builder()
+            .name("getWeatherInfo")
+            .description("Get weather information")
+            .parametersJsonSchema(
+                Map.of(
+                    "type", "object", "properties", Map.of("location", Map.of("type", "string"))))
+            .build();
+
+    Map<String, Object> directValueArgs = Map.of("value", "San Francisco");
+    Map<String, Object> processedArgs =
+        invokeProcessArguments(processArguments, converter, directValueArgs, declaration);
+
+    assertThat(processedArgs).containsEntry("location", "San Francisco");
+  }
+
+  @Test
+  void testArgumentProcessingWithParametersJsonSchema_noMatch() throws Exception {
+    ToolConverter converter = new ToolConverter();
+    Method processArguments = getProcessArgumentsMethod(converter);
+
+    com.google.genai.types.FunctionDeclaration declaration =
+        com.google.genai.types.FunctionDeclaration.builder()
+            .name("getWeatherInfo")
+            .description("Get weather information")
+            .parametersJsonSchema(
+                Map.of(
+                    "type", "object", "properties", Map.of("location", Map.of("type", "string"))))
+            .build();
+
+    Map<String, Object> wrongArgs = Map.of("city", "San Francisco", "country", "USA");
+    Map<String, Object> processedArgs =
+        invokeProcessArguments(processArguments, converter, wrongArgs, declaration);
+
+    assertThat(processedArgs).isEqualTo(wrongArgs);
+  }
+
   public static class WeatherTools {
     public static Map<String, Object> getWeatherInfo(String location) {
       return Map.of(

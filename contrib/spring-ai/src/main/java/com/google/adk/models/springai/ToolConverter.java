@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
@@ -172,6 +173,17 @@ public class ToolConverter {
           } catch (Exception e) {
             logger.error("Error serializing schema to JSON: {}", e.getMessage(), e);
           }
+        } else if (declaration.parametersJsonSchema().isPresent()) {
+          callbackBuilder.inputType(Map.class);
+          try {
+            String schemaJson =
+                new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(declaration.parametersJsonSchema().get());
+            callbackBuilder.inputSchema(schemaJson);
+            logger.debug("Set input schema JSON from parametersJsonSchema: {}", schemaJson);
+          } catch (Exception e) {
+            logger.error("Error serializing parametersJsonSchema to JSON: {}", e.getMessage(), e);
+          }
         }
 
         toolCallbacks.add(callbackBuilder.build());
@@ -187,45 +199,63 @@ public class ToolConverter {
    */
   private Map<String, Object> processArguments(
       Map<String, Object> args, FunctionDeclaration declaration) {
-    // If the arguments already match the expected format, return as-is
     if (declaration.parameters().isPresent()) {
       var schema = declaration.parameters().get();
       if (schema.properties().isPresent()) {
-        var expectedParams = schema.properties().get().keySet();
-
-        // Check if all expected parameters are present at the top level
-        boolean allParamsPresent = expectedParams.stream().allMatch(args::containsKey);
-        if (allParamsPresent) {
-          return args;
+        return normalizeArguments(args, schema.properties().get().keySet());
+      }
+    } else if (declaration.parametersJsonSchema().isPresent()) {
+      try {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> schemaMap =
+            new com.fasterxml.jackson.databind.ObjectMapper()
+                .convertValue(declaration.parametersJsonSchema().get(), Map.class);
+        Object propertiesObj = schemaMap.get("properties");
+        if (propertiesObj instanceof Map) {
+          @SuppressWarnings("unchecked")
+          Set<String> expectedParams = ((Map<String, Object>) propertiesObj).keySet();
+          return normalizeArguments(args, expectedParams);
         }
-
-        // Check if arguments are nested under a single key (common pattern)
-        if (args.size() == 1) {
-          var singleValue = args.values().iterator().next();
-          if (singleValue instanceof Map) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> nestedArgs = (Map<String, Object>) singleValue;
-            boolean allNestedParamsPresent =
-                expectedParams.stream().allMatch(nestedArgs::containsKey);
-            if (allNestedParamsPresent) {
-              return nestedArgs;
-            }
-          }
-        }
-
-        // Check if we have a single parameter function and got a direct value
-        if (expectedParams.size() == 1) {
-          String expectedParam = expectedParams.iterator().next();
-          if (args.size() == 1 && !args.containsKey(expectedParam)) {
-            // Try to map the single value to the expected parameter name
-            Object singleValue = args.values().iterator().next();
-            return Map.of(expectedParam, singleValue);
-          }
-        }
+      } catch (Exception e) {
+        logger.warn(
+            "Error processing parametersJsonSchema for argument mapping: {}", e.getMessage());
       }
     }
 
     // If no processing worked, return original args and let ADK handle the error
+    return args;
+  }
+
+  private Map<String, Object> normalizeArguments(
+      Map<String, Object> args, Set<String> expectedParams) {
+    // Check if all expected parameters are present at the top level
+    boolean allParamsPresent = expectedParams.stream().allMatch(args::containsKey);
+    if (allParamsPresent) {
+      return args;
+    }
+
+    // Check if arguments are nested under a single key (common pattern)
+    if (args.size() == 1) {
+      var singleValue = args.values().iterator().next();
+      if (singleValue instanceof Map) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> nestedArgs = (Map<String, Object>) singleValue;
+        boolean allNestedParamsPresent = expectedParams.stream().allMatch(nestedArgs::containsKey);
+        if (allNestedParamsPresent) {
+          return nestedArgs;
+        }
+      }
+    }
+
+    // Check if we have a single parameter function and got a direct value
+    if (expectedParams.size() == 1) {
+      String expectedParam = expectedParams.iterator().next();
+      if (args.size() == 1 && !args.containsKey(expectedParam)) {
+        Object singleValue = args.values().iterator().next();
+        return Map.of(expectedParam, singleValue);
+      }
+    }
+
     return args;
   }
 

@@ -81,7 +81,11 @@ public class ExecutionController {
       RunConfig runConfig = RunConfig.builder().setStreamingMode(StreamingMode.NONE).build();
       Flowable<Event> eventStream =
           runner.runAsync(
-              request.userId, request.sessionId, request.newMessage, runConfig, request.stateDelta);
+              request.userId,
+              request.sessionId,
+              request.getNewMessage(),
+              runConfig,
+              request.stateDelta);
 
       List<Event> events = Lists.newArrayList(eventStream.blockingIterable());
       log.info("Agent run for session {} generated {} events.", request.sessionId, events.size());
@@ -155,7 +159,7 @@ public class ExecutionController {
               runner.runAsync(
                   request.userId,
                   request.sessionId,
-                  request.newMessage,
+                  request.getNewMessage(),
                   runConfig,
                   request.stateDelta);
 
@@ -167,7 +171,7 @@ public class ExecutionController {
                         try {
                           log.debug(
                               "SseEmitter: Sending event {} for session {}", event.id(), sessionId);
-                          emitter.send(SseEmitter.event().data(event.toJson()));
+                          emitter.send(SseEmitter.event().data(event));
                         } catch (IOException e) {
                           log.error(
                               "SseEmitter: IOException sending event for session {}: {}",

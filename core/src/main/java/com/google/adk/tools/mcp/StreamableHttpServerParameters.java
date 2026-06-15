@@ -21,7 +21,7 @@ import io.modelcontextprotocol.util.Assert;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Server parameters for Streamable HTTP client transport. */
 public class StreamableHttpServerParameters {

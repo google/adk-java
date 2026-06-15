@@ -5,7 +5,7 @@ import java.io.IOException;
 import java.net.http.HttpRequest;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * This interface provides a method to convert a service account JSON string to a Google Credentials

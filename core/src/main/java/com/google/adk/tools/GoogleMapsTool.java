@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.adk.tools;
 
 import com.google.adk.models.LlmRequest;
@@ -58,20 +74,13 @@ public class GoogleMapsTool extends BaseTool {
             .build()
             .config()
             .map(GenerateContentConfig::toBuilder)
-            .orElse(GenerateContentConfig.builder());
+            .orElseGet(GenerateContentConfig::builder);
 
     List<Tool> existingTools = configBuilder.build().tools().orElse(ImmutableList.of());
     ImmutableList.Builder<Tool> updatedToolsBuilder = ImmutableList.builder();
     updatedToolsBuilder.addAll(existingTools);
-
-    String model = llmRequestBuilder.build().model().orElse(null);
-    if (model != null && !model.startsWith("gemini-1")) {
-      updatedToolsBuilder.add(Tool.builder().googleMaps(GoogleMaps.builder().build()).build());
-      configBuilder.tools(updatedToolsBuilder.build());
-    } else {
-      return Completable.error(
-          new IllegalArgumentException("Google Maps tool is not supported for model " + model));
-    }
+    updatedToolsBuilder.add(Tool.builder().googleMaps(GoogleMaps.builder().build()).build());
+    configBuilder.tools(updatedToolsBuilder.build());
 
     llmRequestBuilder.config(configBuilder.build());
     return Completable.complete();

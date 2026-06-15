@@ -29,7 +29,7 @@ import com.google.genai.types.Content;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.Map;
-import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -57,7 +57,7 @@ public class LoggingPlugin extends BasePlugin {
 
   @Override
   public Maybe<Content> onUserMessageCallback(
-      InvocationContext invocationContext, Content userMessage) {
+      InvocationContext invocationContext, @Nullable Content userMessage) {
     return Maybe.fromAction(
         () -> {
           log("🚀 USER MESSAGE RECEIVED");
@@ -66,7 +66,7 @@ public class LoggingPlugin extends BasePlugin {
           log("   User ID: " + invocationContext.userId());
           log("   App Name: " + invocationContext.appName());
           log("   Root Agent: " + invocationContext.agent().name());
-          log("   User Content: " + formatContent(Optional.ofNullable(userMessage)));
+          log("   User Content: " + formatContent(userMessage));
           invocationContext.branch().ifPresent(branch -> log("   Branch: " + branch));
         });
   }
@@ -88,7 +88,7 @@ public class LoggingPlugin extends BasePlugin {
           log("📢 EVENT YIELDED");
           log("   Event ID: " + event.id());
           log("   Author: " + event.author());
-          log("   Content: " + formatContent(event.content()));
+          log("   Content: " + formatContent(event.content().orElse(null)));
           log("   Final Response: " + event.finalResponse());
 
           if (!event.functionCalls().isEmpty()) {
@@ -133,7 +133,7 @@ public class LoggingPlugin extends BasePlugin {
     return Maybe.fromAction(
         () -> {
           log("🤖 AGENT STARTING");
-          log("   Agent Name: " + agent.name());
+          log("   Agent Name: " + callbackContext.agentName());
           log("   Invocation ID: " + callbackContext.invocationId());
           callbackContext.branch().ifPresent(branch -> log("   Branch: " + branch));
         });
@@ -144,7 +144,7 @@ public class LoggingPlugin extends BasePlugin {
     return Maybe.fromAction(
         () -> {
           log("🤖 AGENT COMPLETED");
-          log("   Agent Name: " + agent.name());
+          log("   Agent Name: " + callbackContext.agentName());
           log("   Invocation ID: " + callbackContext.invocationId());
         });
   }
@@ -188,9 +188,9 @@ public class LoggingPlugin extends BasePlugin {
 
           if (llmResponse.errorCode().isPresent()) {
             log("   ❌ ERROR - Code: " + llmResponse.errorCode().get());
-            llmResponse.errorMessage().ifPresent(msg -> log("   Error Message: " + msg));
+            log("   Error Message: " + llmResponse.errorMessage().orElse("None"));
           } else {
-            log("   Content: " + formatContent(llmResponse.content()));
+            log("   Content: " + formatContent(llmResponse.content().orElse(null)));
             llmResponse.partial().ifPresent(partial -> log("   Partial: " + partial));
             llmResponse
                 .turnComplete()
@@ -230,7 +230,7 @@ public class LoggingPlugin extends BasePlugin {
           log("🔧 TOOL STARTING");
           log("   Tool Name: " + tool.name());
           log("   Agent: " + toolContext.agentName());
-          toolContext.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
+          log("   Function Call ID: " + toolContext.functionCallId().orElse("None"));
           log("   Arguments: " + formatArgs(toolArgs));
         });
   }
@@ -246,7 +246,7 @@ public class LoggingPlugin extends BasePlugin {
           log("🔧 TOOL COMPLETED");
           log("   Tool Name: " + tool.name());
           log("   Agent: " + toolContext.agentName());
-          toolContext.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
+          log("   Function Call ID: " + toolContext.functionCallId().orElse("None"));
           log("   Result: " + formatArgs(result));
         });
   }
@@ -259,45 +259,46 @@ public class LoggingPlugin extends BasePlugin {
           log("🔧 TOOL ERROR");
           log("   Tool Name: " + tool.name());
           log("   Agent: " + toolContext.agentName());
-          toolContext.functionCallId().ifPresent(id -> log("   Function Call ID: " + id));
+          log("   Function Call ID: " + toolContext.functionCallId().orElse("None"));
           log("   Arguments: " + formatArgs(toolArgs));
           log("   Error: " + error.getMessage());
-          logger.error("[{}] Tool Error", name, error);
         });
   }
 
-  private String formatContent(Optional<Content> contentOptional) {
-    if (contentOptional.isEmpty()) {
+  private String formatContent(@Nullable Content content) {
+    if (content == null || content.parts().isEmpty() || content.parts().get().isEmpty()) {
       return "None";
     }
-    Content content = contentOptional.get();
-    if (content.parts().isEmpty() || content.parts().get().isEmpty()) {
-      return "None";
-    }
-
-    String combinedText =
-        content.parts().get().stream()
-            .map(part -> part.text().orElse(""))
-            .collect(joining("\n"))
-            .trim();
-
-    if (combinedText.length() > MAX_CONTENT_LENGTH) {
-      return combinedText.substring(0, MAX_CONTENT_LENGTH) + "...";
-    }
-    return combinedText;
+    return content.parts().get().stream()
+        .map(
+            part -> {
+              if (part.text().isPresent()) {
+                String text = part.text().get().trim();
+                if (text.length() > MAX_CONTENT_LENGTH) {
+                  text = text.substring(0, MAX_CONTENT_LENGTH) + "...";
+                }
+                return String.format("text: '%s'", text);
+              } else if (part.functionCall().isPresent()) {
+                return String.format("function_call: %s", part.functionCall().get().name());
+              } else if (part.functionResponse().isPresent()) {
+                return String.format("function_response: %s", part.functionResponse().get().name());
+              } else if (part.codeExecutionResult().isPresent()) {
+                return "code_execution_result";
+              } else {
+                return "other_part";
+              }
+            })
+        .collect(joining("\n"));
   }
 
   private String formatArgs(Map<String, Object> args) {
     if (args == null || args.isEmpty()) {
       return "{}";
     }
-    String argsStr =
-        args.entrySet().stream()
-            .map(entry -> entry.getKey() + "=" + entry.getValue())
-            .collect(joining(", "));
-    if (argsStr.length() > MAX_ARGS_LENGTH) {
-      return "{" + argsStr.substring(0, MAX_ARGS_LENGTH) + "...}";
+    String formatted = args.toString();
+    if (formatted.length() > MAX_ARGS_LENGTH) {
+      formatted = formatted.substring(0, MAX_ARGS_LENGTH) + "...}";
     }
-    return "{" + argsStr + "}";
+    return formatted;
   }
 }

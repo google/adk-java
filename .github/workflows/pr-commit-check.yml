@@ -21,7 +21,7 @@ jobs:
       # Step 1: Check out the code
       # This action checks out your repository under $GITHUB_WORKSPACE, so your workflow can access it.
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # We need to fetch all commits to accurately count them.
           # '0' means fetch all history for all branches and tags.

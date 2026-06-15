@@ -41,7 +41,7 @@ public final class VertexAiSearchToolTest {
         assertThrows(IllegalArgumentException.class, () -> VertexAiSearchTool.builder().build());
     assertThat(exception)
         .hasMessageThat()
-        .isEqualTo("Either dataStoreId or searchEngineId must be specified.");
+        .isEqualTo("One and only one of dataStoreId or searchEngineId must not be empty.");
   }
 
   @Test
@@ -52,22 +52,46 @@ public final class VertexAiSearchToolTest {
             () -> VertexAiSearchTool.builder().dataStoreId("ds1").searchEngineId("se1").build());
     assertThat(exception)
         .hasMessageThat()
-        .isEqualTo("Either dataStoreId or searchEngineId must be specified.");
+        .isEqualTo("One and only one of dataStoreId or searchEngineId must not be empty.");
   }
 
   @Test
   public void build_dataStoreSpecsWithoutSearchEngineId_throwsException() {
+    VertexAISearchDataStoreSpec spec =
+        VertexAISearchDataStoreSpec.builder().dataStore("ds1").build();
     IllegalArgumentException exception =
         assertThrows(
             IllegalArgumentException.class,
             () ->
                 VertexAiSearchTool.builder()
                     .dataStoreId("ds1")
-                    .dataStoreSpecs(ImmutableList.of())
+                    .dataStoreSpecs(ImmutableList.of(spec))
                     .build());
     assertThat(exception)
         .hasMessageThat()
-        .isEqualTo("searchEngineId must be specified if dataStoreSpecs is specified.");
+        .isEqualTo("searchEngineId must not be empty if dataStoreSpecs is not empty.");
+  }
+
+  @Test
+  public void build_emptyDataStoreId_throwsException() {
+    IllegalArgumentException exception =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> VertexAiSearchTool.builder().dataStoreId("").build());
+    assertThat(exception)
+        .hasMessageThat()
+        .isEqualTo("One and only one of dataStoreId or searchEngineId must not be empty.");
+  }
+
+  @Test
+  public void build_emptySearchEngineId_throwsException() {
+    IllegalArgumentException exception =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> VertexAiSearchTool.builder().searchEngineId("").build());
+    assertThat(exception)
+        .hasMessageThat()
+        .isEqualTo("One and only one of dataStoreId or searchEngineId must not be empty.");
   }
 
   @Test
@@ -80,6 +104,19 @@ public final class VertexAiSearchToolTest {
   public void build_withSearchEngineId_succeeds() {
     VertexAiSearchTool tool = VertexAiSearchTool.builder().searchEngineId("se1").build();
     assertThat(tool.searchEngineId()).hasValue("se1");
+  }
+
+  @Test
+  public void build_withSearchEngineIdAndDataStoreSpecs_succeeds() {
+    VertexAISearchDataStoreSpec spec =
+        VertexAISearchDataStoreSpec.builder().dataStore("ds1").build();
+    VertexAiSearchTool tool =
+        VertexAiSearchTool.builder()
+            .searchEngineId("se1")
+            .dataStoreSpecs(ImmutableList.of(spec))
+            .build();
+    assertThat(tool.searchEngineId()).hasValue("se1");
+    assertThat(tool.dataStoreSpecs()).containsExactly(spec);
   }
 
   @Test
@@ -134,5 +171,19 @@ public final class VertexAiSearchToolTest {
                 .dataStoreSpecs()
                 .get())
         .containsExactly(spec);
+  }
+
+  @Test
+  public void processLlmRequest_nonGeminiModel_throwsException() {
+    VertexAiSearchTool tool = VertexAiSearchTool.builder().searchEngineId("se1").build();
+    LlmRequest.Builder llmRequestBuilder = LlmRequest.builder().model("other-model");
+    tool.processLlmRequest(llmRequestBuilder, ToolContext.builder(invocationContext).build())
+        .test()
+        .assertError(
+            throwable ->
+                throwable instanceof IllegalArgumentException
+                    && throwable
+                        .getMessage()
+                        .equals("Vertex AI Search tool is only supported for Gemini models."));
   }
 }

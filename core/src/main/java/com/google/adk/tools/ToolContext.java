@@ -19,11 +19,12 @@ package com.google.adk.tools;
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
 import com.google.adk.memory.SearchMemoryResponse;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** ToolContext object provides a structured context for executing tools or functions. */
 public class ToolContext extends CallbackContext {
@@ -34,8 +35,9 @@ public class ToolContext extends CallbackContext {
       InvocationContext invocationContext,
       EventActions eventActions,
       Optional<String> functionCallId,
-      Optional<ToolConfirmation> toolConfirmation) {
-    super(invocationContext, eventActions);
+      Optional<ToolConfirmation> toolConfirmation,
+      @Nullable String eventId) {
+    super(invocationContext, eventActions, eventId);
     this.functionCallId = functionCallId;
     this.toolConfirmation = toolConfirmation;
   }
@@ -124,7 +126,8 @@ public class ToolContext extends CallbackContext {
     return new Builder(invocationContext)
         .actions(eventActions)
         .functionCallId(functionCallId.orElse(null))
-        .toolConfirmation(toolConfirmation.orElse(null));
+        .toolConfirmation(toolConfirmation.orElse(null))
+        .eventId(eventId());
   }
 
   @Override
@@ -147,6 +150,7 @@ public class ToolContext extends CallbackContext {
     private EventActions eventActions = EventActions.builder().build(); // Default empty actions
     private Optional<String> functionCallId = Optional.empty();
     private Optional<ToolConfirmation> toolConfirmation = Optional.empty();
+    private String eventId;
 
     private Builder(InvocationContext invocationContext) {
       this.invocationContext = invocationContext;
@@ -170,8 +174,15 @@ public class ToolContext extends CallbackContext {
       return this;
     }
 
+    @CanIgnoreReturnValue
+    public Builder eventId(String eventId) {
+      this.eventId = eventId;
+      return this;
+    }
+
     public ToolContext build() {
-      return new ToolContext(invocationContext, eventActions, functionCallId, toolConfirmation);
+      return new ToolContext(
+          invocationContext, eventActions, functionCallId, toolConfirmation, eventId);
     }
   }
 }

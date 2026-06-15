@@ -291,7 +291,7 @@ public final class ToolResolverTest {
             ConfigurationException.class,
             () -> ToolResolver.resolveTools(toolConfigs, "/test/path"));
 
-    assertThat(exception).hasMessageThat().contains("Failed to resolve tool: non.existent.Tool");
+    assertThat(exception).hasMessageThat().contains("Tool not found: non.existent.Tool");
   }
 
   /** A test tool with multiple methods annotated with @Schema. */

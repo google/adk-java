@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.cfg.MutableConfigOverride;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.Optional;
@@ -29,23 +30,33 @@ import java.util.Optional;
 /** The base class for the types that needs JSON serialization/deserialization capability. */
 public abstract class JsonBaseModel {
 
-  private static final ObjectMapper objectMapper = new ObjectMapper();
+  private static final ObjectMapper objectMapper = createObjectMapper();
 
-  static {
-    objectMapper
-        .setSerializationInclusion(JsonInclude.Include.ALWAYS)
-        .setPropertyNamingStrategy(PropertyNamingStrategies.LOWER_CAMEL_CASE)
-        .registerModule(new Jdk8Module())
-        .registerModule(new JavaTimeModule()) // TODO: echo sec module replace, locale
-        .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-        .configOverride(Optional.class)
-        .setInclude(
-            JsonInclude.Value.construct(
-                JsonInclude.Include.NON_ABSENT, JsonInclude.Include.NON_ABSENT));
+  /** Creates the ObjectMapper. */
+  private static ObjectMapper createObjectMapper() {
+    ObjectMapper objectMapper =
+        new ObjectMapper()
+            .setSerializationInclusion(JsonInclude.Include.ALWAYS)
+            .setPropertyNamingStrategy(PropertyNamingStrategies.LOWER_CAMEL_CASE)
+            // Register support for java.util.Optional
+            .registerModule(new Jdk8Module())
+            // Register support for java.util.Date
+            .registerModule(new JavaTimeModule()) // TODO: echo sec module replace, locale
+            // Ignore unknown properties during deserialization
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+    // If a field in a model is of type Optional and its value is null or Optional.empty(), then
+    // that fieldwill be omitted entirely from the serialized JSON output. Fields that contain a
+    // present Optional (e.g., Optional.of("someValue")) will be included as normal.
+    MutableConfigOverride configOverride = objectMapper.configOverride(Optional.class);
+    configOverride.setInclude(
+        JsonInclude.Value.construct(
+            JsonInclude.Include.NON_ABSENT, JsonInclude.Include.NON_ABSENT));
+    return objectMapper;
   }
 
   /** Serializes an object to a Json string. */
-  protected static String toJsonString(Object object) {
+  public static String toJsonString(Object object) {
     try {
       return objectMapper.writeValueAsString(object);
     } catch (JsonProcessingException e) {
@@ -53,10 +64,12 @@ public abstract class JsonBaseModel {
     }
   }
 
+  /** Returns the mutable ObjectMapper instance used by ADK. */
   public static ObjectMapper getMapper() {
-    return JsonBaseModel.objectMapper;
+    return objectMapper;
   }
 
+  /** Serializes this object (i.e., the ObjectMappper instance used by ADK) to a Json string. */
   public String toJson() {
     return toJsonString(this);
   }

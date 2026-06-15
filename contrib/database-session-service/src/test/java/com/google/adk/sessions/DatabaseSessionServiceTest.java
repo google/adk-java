@@ -487,7 +487,7 @@ public class DatabaseSessionServiceTest {
         Event.builder()
             .id(UUID.randomUUID().toString())
             .author("test-author")
-            .content(Optional.empty())
+            .content(null)
             .timestamp(Instant.now().toEpochMilli())
             .build();
 

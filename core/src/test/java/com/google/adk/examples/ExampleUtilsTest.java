@@ -49,17 +49,7 @@ public final class ExampleUtilsTest {
   @Test
   public void buildFewShotFewShot_noExamples() {
     TestExampleProvider exampleProvider = new TestExampleProvider(ImmutableList.of());
-    String expected =
-        """
-        <EXAMPLES>
-        Begin few-shot
-        The following are examples of user queries and model responses using the available tools.
-
-        End few-shot
-        Now, try to follow these examples and complete the following conversation
-        <EXAMPLES>\
-        """;
-    assertThat(ExampleUtils.buildExampleSi(exampleProvider, "test query")).isEqualTo(expected);
+    assertThat(ExampleUtils.buildExampleSi(exampleProvider, "test query")).isEmpty();
   }
 
   @Test

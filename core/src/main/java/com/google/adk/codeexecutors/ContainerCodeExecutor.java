@@ -17,6 +17,8 @@
 
 package com.google.adk.codeexecutors;
 
+import static java.util.Objects.requireNonNullElse;
+
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.ExecCreateCmdResponse;
 import com.github.dockerjava.api.model.Container;
@@ -32,7 +34,6 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
-import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,37 +42,68 @@ public class ContainerCodeExecutor extends BaseCodeExecutor {
   private static final Logger logger = LoggerFactory.getLogger(ContainerCodeExecutor.class);
   private static final String DEFAULT_IMAGE_TAG = "adk-code-executor:latest";
 
-  private final Optional<String> baseUrl;
+  private final String baseUrl;
   private final String image;
-  private final Optional<String> dockerPath;
+  private final String dockerPath;
   private final DockerClient dockerClient;
   private Container container;
 
   /**
-   * Initializes the ContainerCodeExecutor.
+   * Creates a ContainerCodeExecutor from an image.
    *
-   * @param baseUrl Optional. The base url of the user hosted Docker client.
-   * @param image The tag of the predefined image or custom image to run on the container. Either
-   *     dockerPath or image must be set.
-   * @param dockerPath The path to the directory containing the Dockerfile. If set, build the image
-   *     from the dockerfile path instead of using the predefined image. Either dockerPath or image
-   *     must be set.
+   * @param baseUrl The base url of the user hosted Docker client.
+   * @param image The tag of the predefined image or custom image to run on the container.
    */
-  public ContainerCodeExecutor(
-      Optional<String> baseUrl, Optional<String> image, Optional<String> dockerPath) {
-    if (image.isEmpty() && dockerPath.isEmpty()) {
+  public static ContainerCodeExecutor fromImage(String baseUrl, String image) {
+    return new ContainerCodeExecutor(baseUrl, image, null);
+  }
+
+  /**
+   * Creates a ContainerCodeExecutor from an image.
+   *
+   * @param image The tag of the predefined image or custom image to run on the container.
+   */
+  public static ContainerCodeExecutor fromImage(String image) {
+    return new ContainerCodeExecutor(null, image, null);
+  }
+
+  /**
+   * Creates a ContainerCodeExecutor from a Dockerfile path.
+   *
+   * @param baseUrl The base url of the user hosted Docker client.
+   * @param dockerPath The path to the directory containing the Dockerfile.
+   */
+  public static ContainerCodeExecutor fromDockerPath(String baseUrl, String dockerPath) {
+    return new ContainerCodeExecutor(baseUrl, null, dockerPath);
+  }
+
+  /**
+   * Creates a ContainerCodeExecutor from a Dockerfile path.
+   *
+   * @param dockerPath The path to the directory containing the Dockerfile.
+   */
+  public static ContainerCodeExecutor fromDockerPath(String dockerPath) {
+    return new ContainerCodeExecutor(null, null, dockerPath);
+  }
+
+  /**
+   * Initializes the ContainerCodeExecutor. Either dockerPath or image must be set.
+   *
+   * @deprecated Use one of the static factory methods instead.
+   */
+  @Deprecated
+  public ContainerCodeExecutor(String baseUrl, String image, String dockerPath) {
+    if (image == null && dockerPath == null) {
       throw new IllegalArgumentException(
           "Either image or dockerPath must be set for ContainerCodeExecutor.");
     }
     this.baseUrl = baseUrl;
-    this.image = image.orElse(DEFAULT_IMAGE_TAG);
-    this.dockerPath = dockerPath.map(p -> Paths.get(p).toAbsolutePath().toString());
+    this.image = requireNonNullElse(image, DEFAULT_IMAGE_TAG);
+    this.dockerPath = dockerPath == null ? null : Paths.get(dockerPath).toAbsolutePath().toString();
 
-    if (baseUrl.isPresent()) {
+    if (baseUrl != null) {
       var config =
-          DefaultDockerClientConfig.createDefaultConfigBuilder()
-              .withDockerHost(baseUrl.get())
-              .build();
+          DefaultDockerClientConfig.createDefaultConfigBuilder().withDockerHost(baseUrl).build();
       this.dockerClient = DockerClientBuilder.getInstance(config).build();
     } else {
       this.dockerClient = DockerClientBuilder.getInstance().build();
@@ -121,12 +153,12 @@ public class ContainerCodeExecutor extends BaseCodeExecutor {
   }
 
   private void buildDockerImage() {
-    if (dockerPath.isEmpty()) {
+    if (dockerPath == null) {
       throw new IllegalStateException("Docker path is not set.");
     }
-    File dockerfile = new File(dockerPath.get());
+    File dockerfile = new File(dockerPath);
     if (!dockerfile.exists()) {
-      throw new UncheckedIOException(new IOException("Invalid Docker path: " + dockerPath.get()));
+      throw new UncheckedIOException(new IOException("Invalid Docker path: " + dockerPath));
     }
 
     logger.info("Building Docker image...");
@@ -158,7 +190,7 @@ public class ContainerCodeExecutor extends BaseCodeExecutor {
     if (dockerClient == null) {
       throw new IllegalStateException("Docker client is not initialized.");
     }
-    if (dockerPath.isPresent()) {
+    if (dockerPath != null) {
       buildDockerImage();
     } else {
       // If a dockerPath is not provided, always pull the image to ensure it's up-to-date.

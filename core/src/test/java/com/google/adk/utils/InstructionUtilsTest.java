@@ -5,15 +5,12 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
-import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.sessions.State;
-import com.google.genai.types.Content;
 import com.google.genai.types.Part;
-import java.util.Optional;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -23,28 +20,19 @@ import org.junit.runners.JUnit4;
 public final class InstructionUtilsTest {
 
   private InvocationContext templateContext;
-  private InMemorySessionService sessionService;
-  private InMemoryArtifactService artifactService;
-  private InMemoryMemoryService memoryService;
 
   @Before
   public void setUp() {
-    sessionService = new InMemorySessionService();
-    artifactService = new InMemoryArtifactService();
-    memoryService = new InMemoryMemoryService();
+    InMemorySessionService sessionService = new InMemorySessionService();
     templateContext =
-        new InvocationContext(
-            sessionService,
-            artifactService,
-            memoryService,
-            /* liveRequestQueue= */ Optional.empty(),
-            /* branch= */ Optional.empty(),
-            "invocationId",
-            createRootAgent(),
-            sessionService.createSession("test-app", "test-user").blockingGet(),
-            Optional.of(Content.fromParts()),
-            RunConfig.builder().build(),
-            /* endInvocation= */ false);
+        InvocationContext.builder()
+            .sessionService(sessionService)
+            .artifactService(new InMemoryArtifactService())
+            .memoryService(new InMemoryMemoryService())
+            .invocationId("invocationId")
+            .agent(createRootAgent())
+            .session(sessionService.createSession("test-app", "test-user").blockingGet())
+            .build();
   }
 
   @Test
@@ -67,7 +55,7 @@ public final class InstructionUtilsTest {
 
   @Test
   public void injectSessionState_withMultipleStateVariables_replacesStatePlaceholders() {
-    var testContext = InvocationContext.copyOf(templateContext);
+    var testContext = templateContext.toBuilder().build();
     testContext.session().state().put("greeting", "Hi");
     testContext.session().state().put("user", "Alice");
     String template = "Greet the user with: {greeting} {user}.";
@@ -79,7 +67,7 @@ public final class InstructionUtilsTest {
 
   @Test
   public void injectSessionState_stateVariablePlaceholderWithSpaces_trimsAndReplacesVariable() {
-    var testContext = InvocationContext.copyOf(templateContext);
+    var testContext = templateContext.toBuilder().build();
     testContext.session().state().put("name", "James");
     String template = "The user you are helping is: {  name  }.";
 
@@ -90,7 +78,7 @@ public final class InstructionUtilsTest {
 
   @Test
   public void injectSessionState_stateVariablePlaceholderWithMultipleBraces_replacesVariable() {
-    var testContext = InvocationContext.copyOf(templateContext);
+    var testContext = templateContext.toBuilder().build();
     testContext.session().state().put("user:name", "Charlie");
     String template = "Use the user name: {{user:name}}.";
 
@@ -101,7 +89,7 @@ public final class InstructionUtilsTest {
 
   @Test
   public void injectSessionState_stateVariableWithNonStringValue_convertsValueToString() {
-    InvocationContext testContext = InvocationContext.copyOf(templateContext);
+    InvocationContext testContext = templateContext.toBuilder().build();
     testContext.session().state().put("app:count", 123);
     String template = "The current count is: {app:count}.";
 
@@ -121,7 +109,7 @@ public final class InstructionUtilsTest {
 
   @Test
   public void injectSessionState_missingOptionalStateVariable_replacesWithEmptyString() {
-    InvocationContext testContext = InvocationContext.copyOf(templateContext);
+    InvocationContext testContext = templateContext.toBuilder().build();
     testContext.session().state().put("user:first_name", "John");
     testContext.session().state().put("user:last_name", "Doe");
     String template =
@@ -134,10 +122,11 @@ public final class InstructionUtilsTest {
 
   @Test
   public void injectSessionState_withValidArtifact_replacesWithArtifactText() {
-    InvocationContext testContext = InvocationContext.copyOf(templateContext);
+    InvocationContext testContext = templateContext.toBuilder().build();
     Session session = testContext.session();
     var unused =
-        artifactService
+        testContext
+            .artifactService()
             .saveArtifact(
                 session.appName(),
                 session.userId(),
@@ -155,7 +144,7 @@ public final class InstructionUtilsTest {
 
   @Test
   public void injectSessionState_missingNonOptionalArtifact_throwsIllegalArgumentException() {
-    InvocationContext testContext = InvocationContext.copyOf(templateContext);
+    InvocationContext testContext = templateContext.toBuilder().build();
     String template = "Include this knowledge: {artifact.missing_knowledge.txt}.";
 
     assertThrows(
@@ -165,7 +154,7 @@ public final class InstructionUtilsTest {
 
   @Test
   public void injectSessionState_missingOptionalArtifact_replacesWithEmptyString() {
-    InvocationContext testContext = InvocationContext.copyOf(templateContext);
+    InvocationContext testContext = templateContext.toBuilder().build();
     String template = "Include this additional info: {artifact.optional_info.txt?}.";
 
     String result = InstructionUtils.injectSessionState(testContext, template).blockingGet();
@@ -185,7 +174,7 @@ public final class InstructionUtilsTest {
 
   @Test
   public void injectSessionState_stateVariableWithValidPrefix_replacesVariable() {
-    var testContext = InvocationContext.copyOf(templateContext);
+    var testContext = templateContext.toBuilder().build();
     testContext.session().state().put("app:assistant_name", "Trippy");
     String template = "Set the assistant name to: {app:assistant_name}.";
 

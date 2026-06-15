@@ -25,7 +25,6 @@ import com.google.genai.types.Tool;
 import com.google.genai.types.VertexAISearch;
 import com.google.genai.types.VertexAISearchDataStoreSpec;
 import io.reactivex.rxjava3.core.Completable;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -39,7 +38,7 @@ import java.util.Optional;
 public abstract class VertexAiSearchTool extends BaseTool {
   public abstract Optional<String> dataStoreId();
 
-  public abstract Optional<List<VertexAISearchDataStoreSpec>> dataStoreSpecs();
+  public abstract ImmutableList<VertexAISearchDataStoreSpec> dataStoreSpecs();
 
   public abstract Optional<String> searchEngineId();
 
@@ -54,7 +53,7 @@ public abstract class VertexAiSearchTool extends BaseTool {
   public abstract Optional<String> dataStore();
 
   public static Builder builder() {
-    return new AutoValue_VertexAiSearchTool.Builder();
+    return new AutoValue_VertexAiSearchTool.Builder().dataStoreSpecs(ImmutableList.of());
   }
 
   VertexAiSearchTool() {
@@ -80,24 +79,29 @@ public abstract class VertexAiSearchTool extends BaseTool {
     searchEngineId().ifPresent(vertexAiSearchBuilder::engine);
     filter().ifPresent(vertexAiSearchBuilder::filter);
     maxResults().ifPresent(vertexAiSearchBuilder::maxResults);
-    dataStoreSpecs().ifPresent(vertexAiSearchBuilder::dataStoreSpecs);
+    if (!dataStoreSpecs().isEmpty()) {
+      vertexAiSearchBuilder.dataStoreSpecs(dataStoreSpecs());
+    }
 
     Tool retrievalTool =
         Tool.builder()
             .retrieval(Retrieval.builder().vertexAiSearch(vertexAiSearchBuilder.build()).build())
             .build();
-
-    List<Tool> currentTools =
-        new ArrayList<>(
-            llmRequest.config().flatMap(GenerateContentConfig::tools).orElse(ImmutableList.of()));
-    currentTools.add(retrievalTool);
-
+    ImmutableList<Tool> currentTools =
+        ImmutableList.<Tool>builder()
+            .addAll(
+                llmRequest
+                    .config()
+                    .flatMap(GenerateContentConfig::tools)
+                    .orElse(ImmutableList.of()))
+            .add(retrievalTool)
+            .build();
     GenerateContentConfig newConfig =
         llmRequest
             .config()
             .map(GenerateContentConfig::toBuilder)
             .orElse(GenerateContentConfig.builder())
-            .tools(ImmutableList.copyOf(currentTools))
+            .tools(currentTools)
             .build();
     llmRequestBuilder.config(newConfig);
     return Completable.complete();
@@ -126,14 +130,18 @@ public abstract class VertexAiSearchTool extends BaseTool {
 
     public final VertexAiSearchTool build() {
       VertexAiSearchTool tool = autoBuild();
-      if ((tool.dataStoreId().isEmpty() && tool.searchEngineId().isEmpty())
-          || (tool.dataStoreId().isPresent() && tool.searchEngineId().isPresent())) {
+      boolean hasDataStoreId =
+          tool.dataStoreId().isPresent() && !tool.dataStoreId().get().isEmpty();
+      boolean hasSearchEngineId =
+          tool.searchEngineId().isPresent() && !tool.searchEngineId().get().isEmpty();
+      if (hasDataStoreId == hasSearchEngineId) {
         throw new IllegalArgumentException(
-            "Either dataStoreId or searchEngineId must be specified.");
+            "One and only one of dataStoreId or searchEngineId must not be empty.");
       }
-      if (tool.dataStoreSpecs().isPresent() && tool.searchEngineId().isEmpty()) {
+      boolean hasDataStoreSpecs = !tool.dataStoreSpecs().isEmpty();
+      if (hasDataStoreSpecs && !hasSearchEngineId) {
         throw new IllegalArgumentException(
-            "searchEngineId must be specified if dataStoreSpecs is specified.");
+            "searchEngineId must not be empty if dataStoreSpecs is not empty.");
       }
       return tool;
     }

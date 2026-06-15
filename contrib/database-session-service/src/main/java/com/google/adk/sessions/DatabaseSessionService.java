@@ -611,7 +611,7 @@ public class DatabaseSessionService implements BaseSessionService, AutoCloseable
                             .orElse(new ConcurrentHashMap<>());
 
                     if (event.actions() != null && event.actions().stateDelta() != null) {
-                      ConcurrentMap<String, Object> stateDelta = event.actions().stateDelta();
+                      Map<String, Object> stateDelta = event.actions().stateDelta();
 
                       Map<String, Object> appStateDelta = new ConcurrentHashMap<>();
                       Map<String, Object> userStateDelta = new ConcurrentHashMap<>();

@@ -34,7 +34,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.ai.anthropic.AnthropicChatModel;
 import org.springframework.ai.anthropic.AnthropicChatOptions;
-import org.springframework.ai.anthropic.api.AnthropicApi;
 
 /**
  * Integration tests with real Anthropic API.
@@ -53,10 +52,14 @@ class AnthropicApiIntegrationTest {
     Thread.sleep(2000);
 
     // Create Anthropic model using Spring AI's builder pattern
-    AnthropicApi anthropicApi =
-        AnthropicApi.builder().apiKey(System.getenv("ANTHROPIC_API_KEY")).build();
-    AnthropicChatModel anthropicModel =
-        AnthropicChatModel.builder().anthropicApi(anthropicApi).build();
+    var options =
+        AnthropicChatOptions.builder()
+            .model(CLAUDE_MODEL)
+            .maxTokens(1024)
+            .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+            .build();
+
+    AnthropicChatModel anthropicModel = AnthropicChatModel.builder().options(options).build();
 
     // Wrap with SpringAI
     SpringAI springAI = new SpringAI(anthropicModel, CLAUDE_MODEL);
@@ -92,10 +95,14 @@ class AnthropicApiIntegrationTest {
     // Add delay to avoid rapid requests
     Thread.sleep(2000);
 
-    AnthropicApi anthropicApi =
-        AnthropicApi.builder().apiKey(System.getenv("ANTHROPIC_API_KEY")).build();
-    AnthropicChatModel anthropicModel =
-        AnthropicChatModel.builder().anthropicApi(anthropicApi).build();
+    var options =
+        AnthropicChatOptions.builder()
+            .model(CLAUDE_MODEL)
+            .maxTokens(1024)
+            .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+            .build();
+
+    AnthropicChatModel anthropicModel = AnthropicChatModel.builder().options(options).build();
 
     SpringAI springAI = new SpringAI(anthropicModel, CLAUDE_MODEL);
 
@@ -134,10 +141,14 @@ class AnthropicApiIntegrationTest {
 
   @Test
   void testAgentWithToolsAndRealApi() {
-    AnthropicApi anthropicApi =
-        AnthropicApi.builder().apiKey(System.getenv("ANTHROPIC_API_KEY")).build();
-    AnthropicChatModel anthropicModel =
-        AnthropicChatModel.builder().anthropicApi(anthropicApi).build();
+    var options =
+        AnthropicChatOptions.builder()
+            .model(CLAUDE_MODEL)
+            .maxTokens(1024)
+            .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+            .build();
+
+    AnthropicChatModel anthropicModel = AnthropicChatModel.builder().options(options).build();
 
     LlmAgent agent =
         LlmAgent.builder()
@@ -145,9 +156,9 @@ class AnthropicApiIntegrationTest {
             .model(new SpringAI(anthropicModel, CLAUDE_MODEL))
             .instruction(
                 """
-            You are a helpful assistant.
-            When asked about weather, you MUST use the getWeatherInfo function to get current conditions.
-            """)
+                You are a helpful assistant.
+                When asked about weather, you MUST use the getWeatherInfo function to get current conditions.
+                """)
             .tools(FunctionTool.create(WeatherTools.class, "getWeatherInfo"))
             .build();
 
@@ -175,10 +186,13 @@ class AnthropicApiIntegrationTest {
   @Test
   void testDirectComparisonNonStreamingVsStreaming() throws InterruptedException {
     // Test both non-streaming and streaming with the same model to compare behavior
-    AnthropicApi anthropicApi =
-        AnthropicApi.builder().apiKey(System.getenv("ANTHROPIC_API_KEY")).build();
-    AnthropicChatModel anthropicModel =
-        AnthropicChatModel.builder().anthropicApi(anthropicApi).build();
+    var options =
+        AnthropicChatOptions.builder()
+            .model(CLAUDE_MODEL)
+            .maxTokens(1024)
+            .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+            .build();
+    AnthropicChatModel anthropicModel = AnthropicChatModel.builder().options(options).build();
 
     SpringAI springAI = new SpringAI(anthropicModel, CLAUDE_MODEL);
 
@@ -271,13 +285,13 @@ class AnthropicApiIntegrationTest {
   @Test
   void testConfigurationOptions() {
     // Test with custom configuration
-    AnthropicChatOptions options =
-        AnthropicChatOptions.builder().model(CLAUDE_MODEL).temperature(0.7).maxTokens(100).build();
-
-    AnthropicApi anthropicApi =
-        AnthropicApi.builder().apiKey(System.getenv("ANTHROPIC_API_KEY")).build();
-    AnthropicChatModel anthropicModel =
-        AnthropicChatModel.builder().anthropicApi(anthropicApi).defaultOptions(options).build();
+    var options =
+        AnthropicChatOptions.builder()
+            .model(CLAUDE_MODEL)
+            .maxTokens(1024)
+            .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+            .build();
+    AnthropicChatModel anthropicModel = AnthropicChatModel.builder().options(options).build();
 
     SpringAI springAI = new SpringAI(anthropicModel, CLAUDE_MODEL);
 

@@ -21,7 +21,6 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.codeexecutors.CodeExecutionUtils.CodeExecutionInput;
 import com.google.adk.codeexecutors.CodeExecutionUtils.CodeExecutionResult;
 import com.google.common.collect.ImmutableList;
-import java.util.List;
 
 /**
  * Abstract base class for all code executors.
@@ -30,6 +29,13 @@ import java.util.List;
  * the execution results into the final response.
  */
 public abstract class BaseCodeExecutor extends JsonBaseModel {
+
+  private static final ImmutableList<ImmutableList<String>> CODE_BLOCK_DELIMITERS =
+      ImmutableList.of(
+          ImmutableList.of("```tool_code\n", "\n```"), ImmutableList.of("```python\n", "\n```"));
+  private static final ImmutableList<String> EXECUTION_RESULT_DELIMITERS =
+      ImmutableList.of("```tool_output\n", "\n```");
+
   /**
    * If true, extract and process data files from the model request and attach them to the code
    * executor.
@@ -57,6 +63,9 @@ public abstract class BaseCodeExecutor extends JsonBaseModel {
   /**
    * The list of the enclosing delimiters to identify the code blocks.
    *
+   * <p>Each inner list contains a pair of start and end delimiters. This supports multiple pairs of
+   * delimiters.
+   *
    * <p>For example, the delimiter ('```python\n', '\n```') can be used to identify code blocks with
    * the following format:
    *
@@ -66,18 +75,19 @@ public abstract class BaseCodeExecutor extends JsonBaseModel {
    *
    * <p>```
    */
-  public List<List<String>> codeBlockDelimiters() {
-    return ImmutableList.of(
-        ImmutableList.of("```tool_code\n", "\n```"), ImmutableList.of("```python\n", "\n```"));
+  public ImmutableList<ImmutableList<String>> codeBlockDelimiters() {
+    return CODE_BLOCK_DELIMITERS;
   }
 
   /** The delimiters to format the code execution result. */
-  public List<String> executionResultDelimiters() {
-    return ImmutableList.of("```tool_output\n", "\n```");
+  public ImmutableList<String> executionResultDelimiters() {
+    return EXECUTION_RESULT_DELIMITERS;
   }
 
   /**
    * Executes code and return the code execution result.
+   *
+   * <p>This method may perform blocking operations.
    *
    * @param invocationContext The invocation context of the code execution.
    * @param codeExecutionInput The code execution input.

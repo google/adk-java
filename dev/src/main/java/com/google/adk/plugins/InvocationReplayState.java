@@ -16,8 +16,8 @@
 package com.google.adk.plugins;
 
 import com.google.adk.plugins.recordings.Recordings;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Per-invocation replay state to isolate concurrent runs. */
 class InvocationReplayState {
@@ -33,7 +33,7 @@ class InvocationReplayState {
     this.testCasePath = testCasePath;
     this.userMessageIndex = userMessageIndex;
     this.recordings = recordings;
-    this.agentReplayIndices = new HashMap<>();
+    this.agentReplayIndices = new ConcurrentHashMap<>();
   }
 
   public String getTestCasePath() {
@@ -57,7 +57,6 @@ class InvocationReplayState {
   }
 
   public void incrementAgentReplayIndex(String agentName) {
-    int currentIndex = getAgentReplayIndex(agentName);
-    setAgentReplayIndex(agentName, currentIndex + 1);
+    agentReplayIndices.merge(agentName, 1, Integer::sum);
   }
 }

@@ -24,7 +24,9 @@ import com.google.common.collect.Iterables;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FileData;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import com.google.genai.types.UsageMetadata;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
@@ -57,7 +59,9 @@ public final class GeminiUtil {
    * Prepares an {@link LlmRequest} for the GenerateContent API.
    *
    * <p>This method can optionally sanitize the request and ensures that the last content part is
-   * from the user to prompt a model response. It also strips out any parts marked as "thoughts".
+   * from the user to prompt a model response. It also strips out any parts marked as "thoughts" and
+   * removes client-side function call IDs as some LLM APIs reject requests with client-side
+   * function call IDs.
    *
    * @param llmRequest The original {@link LlmRequest}.
    * @param sanitize Whether to sanitize the request to be compatible with the Gemini API backend.
@@ -68,6 +72,7 @@ public final class GeminiUtil {
     if (sanitize) {
       llmRequest = sanitizeRequestForGeminiApi(llmRequest);
     }
+    llmRequest = removeClientFunctionCallId(llmRequest);
     List<Content> contents = ensureModelResponse(llmRequest.contents());
     if (stripThoughts) {
       contents = stripThoughts(contents);
@@ -132,6 +137,50 @@ public final class GeminiUtil {
                 })
             .collect(toImmutableList());
     return requestBuilder.contents(updatedContents).build();
+  }
+
+  /**
+   * Removes client-side function call IDs from the request.
+   *
+   * <p>Client-side function call IDs are internal to the ADK and should not be sent to the model.
+   * This method iterates through the contents and parts, removing the ID from any {@link
+   * com.google.genai.types.FunctionCall} or {@link com.google.genai.types.FunctionResponse} parts.
+   *
+   * @param llmRequest The request to process.
+   * @return A new {@link LlmRequest} with function call IDs removed.
+   */
+  public static LlmRequest removeClientFunctionCallId(LlmRequest llmRequest) {
+    if (llmRequest.contents().isEmpty()) {
+      return llmRequest;
+    }
+
+    ImmutableList<Content> updatedContents =
+        llmRequest.contents().stream()
+            .map(
+                content ->
+                    content.toBuilder()
+                        .parts(
+                            content.parts().orElse(ImmutableList.of()).stream()
+                                .map(GeminiUtil::removeClientFunctionCallIdFromPart)
+                                .collect(toImmutableList()))
+                        .build())
+            .collect(toImmutableList());
+
+    return llmRequest.toBuilder().contents(updatedContents).build();
+  }
+
+  private static Part removeClientFunctionCallIdFromPart(Part part) {
+    if (part.functionCall().isPresent() && part.functionCall().get().id().isPresent()) {
+      return part.toBuilder()
+          .functionCall(part.functionCall().get().toBuilder().clearId().build())
+          .build();
+    }
+    if (part.functionResponse().isPresent() && part.functionResponse().get().id().isPresent()) {
+      return part.toBuilder()
+          .functionResponse(part.functionResponse().get().toBuilder().clearId().build())
+          .build();
+    }
+    return part;
   }
 
   /**
@@ -211,7 +260,7 @@ public final class GeminiUtil {
   }
 
   /** Removes any `Part` that contains only a `thought` from the content list. */
-  public static List<Content> stripThoughts(List<Content> originalContents) {
+  public static ImmutableList<Content> stripThoughts(List<Content> originalContents) {
     return originalContents.stream()
         .map(
             content -> {
@@ -223,5 +272,23 @@ public final class GeminiUtil {
               return content.toBuilder().parts(nonThoughtParts).build();
             })
         .collect(toImmutableList());
+  }
+
+  public static GenerateContentResponseUsageMetadata toGenerateContentResponseUsageMetadata(
+      UsageMetadata usageMetadata) {
+    GenerateContentResponseUsageMetadata.Builder builder =
+        GenerateContentResponseUsageMetadata.builder();
+    usageMetadata.promptTokenCount().ifPresent(builder::promptTokenCount);
+    usageMetadata.cachedContentTokenCount().ifPresent(builder::cachedContentTokenCount);
+    usageMetadata.responseTokenCount().ifPresent(builder::candidatesTokenCount);
+    usageMetadata.toolUsePromptTokenCount().ifPresent(builder::toolUsePromptTokenCount);
+    usageMetadata.thoughtsTokenCount().ifPresent(builder::thoughtsTokenCount);
+    usageMetadata.totalTokenCount().ifPresent(builder::totalTokenCount);
+    usageMetadata.promptTokensDetails().ifPresent(builder::promptTokensDetails);
+    usageMetadata.cacheTokensDetails().ifPresent(builder::cacheTokensDetails);
+    usageMetadata.responseTokensDetails().ifPresent(builder::candidatesTokensDetails);
+    usageMetadata.toolUsePromptTokensDetails().ifPresent(builder::toolUsePromptTokensDetails);
+    usageMetadata.trafficType().ifPresent(builder::trafficType);
+    return builder.build();
   }
 }

@@ -21,9 +21,13 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
+import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -32,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,16 +46,14 @@ import org.slf4j.LoggerFactory;
  * <p>The PluginManager is an internal class that orchestrates the invocation of plugin callbacks at
  * key points in the SDK's execution lifecycle.
  */
-public class PluginManager {
+public class PluginManager extends BasePlugin {
   private static final Logger logger = LoggerFactory.getLogger(PluginManager.class);
-  private final List<BasePlugin> plugins;
+  private final List<Plugin> plugins = new ArrayList<>();
 
-  public PluginManager(List<BasePlugin> plugins) {
-    this.plugins = new ArrayList<>();
+  public PluginManager(@Nullable List<? extends Plugin> plugins) {
+    super("PluginManager");
     if (plugins != null) {
-      for (var plugin : plugins) {
-        this.registerPlugin(plugin);
-      }
+      plugins.forEach(this::registerPlugin);
     }
   }
 
@@ -64,13 +67,13 @@ public class PluginManager {
    * @param plugin The plugin instance to register.
    * @throws IllegalArgumentException If a plugin with the same name is already registered.
    */
-  public void registerPlugin(BasePlugin plugin) {
+  public void registerPlugin(Plugin plugin) {
     if (plugins.stream().anyMatch(p -> p.getName().equals(plugin.getName()))) {
       throw new IllegalArgumentException(
           "Plugin with name '" + plugin.getName() + "' already registered.");
     }
     plugins.add(plugin);
-    logger.info("Plugin '{}' registered.", plugin.getName());
+    logger.trace("Plugin '{}' registered.", plugin.getName());
   }
 
   /**
@@ -79,13 +82,34 @@ public class PluginManager {
    * @param pluginName The name of the plugin to retrieve.
    * @return The plugin instance if found, otherwise {@link Optional#empty()}.
    */
-  public Optional<BasePlugin> getPlugin(String pluginName) {
+  public Optional<Plugin> getPlugin(String pluginName) {
     return plugins.stream().filter(p -> p.getName().equals(pluginName)).findFirst();
+  }
+
+  /**
+   * Returns the list of registered plugins.
+   *
+   * <p>This method is intended for testing purposes only.
+   *
+   * <p>Note that it returns a copy of the plugins list to prevent modification of the original
+   * list.
+   *
+   * @return The list of registered plugins.
+   */
+  @VisibleForTesting
+  public List<Plugin> getPlugins() {
+    return ImmutableList.copyOf(plugins);
   }
 
   // --- Callback Runners ---
 
   public Maybe<Content> runOnUserMessageCallback(
+      InvocationContext invocationContext, Content userMessage) {
+    return onUserMessageCallback(invocationContext, userMessage);
+  }
+
+  @Override
+  public Maybe<Content> onUserMessageCallback(
       InvocationContext invocationContext, Content userMessage) {
     return runMaybeCallbacks(
         plugin -> plugin.onUserMessageCallback(invocationContext, userMessage),
@@ -93,11 +117,18 @@ public class PluginManager {
   }
 
   public Maybe<Content> runBeforeRunCallback(InvocationContext invocationContext) {
+    return beforeRunCallback(invocationContext);
+  }
+
+  @Override
+  public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
     return runMaybeCallbacks(
         plugin -> plugin.beforeRunCallback(invocationContext), "beforeRunCallback");
   }
 
-  public Completable runAfterRunCallback(InvocationContext invocationContext) {
+  @Override
+  public Completable afterRunCallback(InvocationContext invocationContext) {
+    Context capturedContext = Context.current();
     return Flowable.fromIterable(plugins)
         .concatMapCompletable(
             plugin ->
@@ -108,50 +139,74 @@ public class PluginManager {
                             logger.error(
                                 "[{}] Error during callback 'afterRunCallback'",
                                 plugin.getName(),
-                                e)));
+                                e)))
+        .compose(Tracing.withContext(capturedContext));
   }
 
-  public Maybe<Event> runOnEventCallback(InvocationContext invocationContext, Event event) {
+  @Override
+  public Completable close() {
+    Context capturedContext = Context.current();
+    return Flowable.fromIterable(plugins)
+        .concatMapCompletableDelayError(
+            plugin ->
+                plugin
+                    .close()
+                    .doOnError(
+                        e ->
+                            logger.error(
+                                "[{}] Error during callback 'close'", plugin.getName(), e)))
+        .compose(Tracing.withContext(capturedContext));
+  }
+
+  @Override
+  public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
     return runMaybeCallbacks(
         plugin -> plugin.onEventCallback(invocationContext, event), "onEventCallback");
   }
 
-  public Maybe<Content> runBeforeAgentCallback(BaseAgent agent, CallbackContext callbackContext) {
+  @Override
+  public Maybe<Content> beforeAgentCallback(BaseAgent agent, CallbackContext callbackContext) {
     return runMaybeCallbacks(
         plugin -> plugin.beforeAgentCallback(agent, callbackContext), "beforeAgentCallback");
   }
 
-  public Maybe<Content> runAfterAgentCallback(BaseAgent agent, CallbackContext callbackContext) {
+  @Override
+  public Maybe<Content> afterAgentCallback(BaseAgent agent, CallbackContext callbackContext) {
     return runMaybeCallbacks(
         plugin -> plugin.afterAgentCallback(agent, callbackContext), "afterAgentCallback");
   }
 
-  public Maybe<LlmResponse> runBeforeModelCallback(
+  @Override
+  public Maybe<LlmResponse> beforeModelCallback(
       CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
     return runMaybeCallbacks(
         plugin -> plugin.beforeModelCallback(callbackContext, llmRequest), "beforeModelCallback");
   }
 
-  public Maybe<LlmResponse> runAfterModelCallback(
+  @Override
+  public Maybe<LlmResponse> afterModelCallback(
       CallbackContext callbackContext, LlmResponse llmResponse) {
     return runMaybeCallbacks(
         plugin -> plugin.afterModelCallback(callbackContext, llmResponse), "afterModelCallback");
   }
 
-  public Maybe<LlmResponse> runOnModelErrorCallback(
+  @Override
+  public Maybe<LlmResponse> onModelErrorCallback(
       CallbackContext callbackContext, LlmRequest.Builder llmRequest, Throwable error) {
     return runMaybeCallbacks(
         plugin -> plugin.onModelErrorCallback(callbackContext, llmRequest, error),
         "onModelErrorCallback");
   }
 
-  public Maybe<Map<String, Object>> runBeforeToolCallback(
+  @Override
+  public Maybe<Map<String, Object>> beforeToolCallback(
       BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext) {
     return runMaybeCallbacks(
         plugin -> plugin.beforeToolCallback(tool, toolArgs, toolContext), "beforeToolCallback");
   }
 
-  public Maybe<Map<String, Object>> runAfterToolCallback(
+  @Override
+  public Maybe<Map<String, Object>> afterToolCallback(
       BaseTool tool,
       Map<String, Object> toolArgs,
       ToolContext toolContext,
@@ -161,7 +216,8 @@ public class PluginManager {
         "afterToolCallback");
   }
 
-  public Maybe<Map<String, Object>> runOnToolErrorCallback(
+  @Override
+  public Maybe<Map<String, Object>> onToolErrorCallback(
       BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext, Throwable error) {
     return runMaybeCallbacks(
         plugin -> plugin.onToolErrorCallback(tool, toolArgs, toolContext, error),
@@ -176,15 +232,15 @@ public class PluginManager {
    * @return Maybe with the first non-empty result from a plugin, or Empty if all return Empty.
    */
   private <T> Maybe<T> runMaybeCallbacks(
-      Function<BasePlugin, Maybe<T>> callbackExecutor, String callbackName) {
-
+      Function<Plugin, Maybe<T>> callbackExecutor, String callbackName) {
+    Context capturedContext = Context.current();
     return Flowable.fromIterable(this.plugins)
         .concatMapMaybe(
             plugin ->
                 callbackExecutor
                     .apply(plugin)
                     .doOnSuccess(
-                        r ->
+                        unused ->
                             logger.debug(
                                 "Plugin '{}' returned a value for callback '{}', exiting "
                                     + "early.",
@@ -197,6 +253,7 @@ public class PluginManager {
                                 plugin.getName(),
                                 callbackName,
                                 e)))
-        .firstElement();
+        .firstElement()
+        .compose(Tracing.withContext(capturedContext));
   }
 }

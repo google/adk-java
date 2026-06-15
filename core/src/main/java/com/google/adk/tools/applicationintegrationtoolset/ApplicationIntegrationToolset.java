@@ -28,7 +28,7 @@ public class ApplicationIntegrationToolset implements BaseToolset {
   String serviceAccountJson;
   @Nullable String toolNamePrefix;
   @Nullable String toolInstructions;
-  public static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+  public static final ObjectMapper objectMapper = new ObjectMapper();
   private final HttpClient httpClient;
   private final CredentialsHelper credentialsHelper;
 
@@ -118,13 +118,13 @@ public class ApplicationIntegrationToolset implements BaseToolset {
 
   List<String> getPathUrl(String openApiSchemaString) throws Exception {
     List<String> pathUrls = new ArrayList<>();
-    JsonNode topLevelNode = OBJECT_MAPPER.readTree(openApiSchemaString);
+    JsonNode topLevelNode = objectMapper.readTree(openApiSchemaString);
     JsonNode specNode = topLevelNode.path("openApiSpec");
     if (specNode.isMissingNode() || !specNode.isTextual()) {
       throw new IllegalArgumentException(
           "Failed to get OpenApiSpec, please check the project and region for the integration.");
     }
-    JsonNode rootNode = OBJECT_MAPPER.readTree(specNode.asText());
+    JsonNode rootNode = objectMapper.readTree(specNode.asText());
     JsonNode pathsNode = rootNode.path("paths");
     Iterator<Map.Entry<String, JsonNode>> paths = pathsNode.fields();
     while (paths.hasNext()) {
@@ -184,12 +184,12 @@ public class ApplicationIntegrationToolset implements BaseToolset {
               this.serviceAccountJson,
               this.httpClient,
               this.credentialsHelper);
-      ObjectNode parentOpenApiSpec = OBJECT_MAPPER.createObjectNode();
+      ObjectNode parentOpenApiSpec = objectMapper.createObjectNode();
       ObjectNode openApiSpec =
           integrationClient.getOpenApiSpecForConnection(toolNamePrefix, toolInstructions);
-      String openApiSpecString = OBJECT_MAPPER.writeValueAsString(openApiSpec);
+      String openApiSpecString = objectMapper.writeValueAsString(openApiSpec);
       parentOpenApiSpec.put("openApiSpec", openApiSpecString);
-      openApiSchemaString = OBJECT_MAPPER.writeValueAsString(parentOpenApiSpec);
+      openApiSchemaString = objectMapper.writeValueAsString(parentOpenApiSpec);
       List<String> pathUrls = getPathUrl(openApiSchemaString);
       for (String pathUrl : pathUrls) {
         String toolName = integrationClient.getOperationIdFromPathUrl(openApiSchemaString, pathUrl);
@@ -202,7 +202,7 @@ public class ApplicationIntegrationToolset implements BaseToolset {
                   this.serviceAccountJson,
                   this.httpClient,
                   this.credentialsHelper,
-                  OBJECT_MAPPER);
+                  objectMapper);
 
           ConnectionsClient.ConnectionDetails connectionDetails =
               connectionsClient.getConnectionDetails();

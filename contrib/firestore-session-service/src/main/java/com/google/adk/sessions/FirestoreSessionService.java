@@ -50,6 +50,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
+import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -88,7 +89,20 @@ public class FirestoreSessionService implements BaseSessionService {
   /** Creates a new session in Firestore. */
   @Override
   public Single<Session> createSession(
-      String appName, String userId, ConcurrentMap<String, Object> state, String sessionId) {
+      String appName,
+      String userId,
+      @Nullable ConcurrentMap<String, Object> state,
+      @Nullable String sessionId) {
+    return createSession(appName, userId, (Map<String, Object>) state, sessionId);
+  }
+
+  /** Creates a new session in Firestore. */
+  @Override
+  public Single<Session> createSession(
+      String appName,
+      String userId,
+      @Nullable Map<String, Object> state,
+      @Nullable String sessionId) {
     return Single.fromCallable(
         () -> {
           Objects.requireNonNull(appName, "appName cannot be null");
@@ -164,7 +178,8 @@ public class FirestoreSessionService implements BaseSessionService {
               }
 
               // Fetch events based on config
-              GetSessionConfig config = configOpt.orElse(GetSessionConfig.builder().build());
+              GetSessionConfig config =
+                  configOpt.orElseGet(() -> GetSessionConfig.builder().build());
               CollectionReference eventsCollection =
                   document.getReference().collection(EVENTS_SUBCOLLECTION_NAME);
               Query eventsQuery = eventsCollection.orderBy(TIMESTAMP_KEY);

@@ -47,7 +47,7 @@ import java.util.Optional;
 public final class ExampleTool extends BaseTool {
 
   private final Optional<BaseExampleProvider> exampleProvider;
-  private final Optional<List<Example>> examples;
+  private final List<Example> examples;
 
   /** Single private constructor; create via builder or fromConfig. */
   private ExampleTool(Builder builder) {
@@ -57,7 +57,7 @@ public final class ExampleTool extends BaseTool {
             ? "Adds few-shot examples to the request"
             : builder.description);
     this.exampleProvider = builder.provider;
-    this.examples = builder.examples.isEmpty() ? Optional.empty() : Optional.of(builder.examples);
+    this.examples = builder.examples;
   }
 
   @Override
@@ -77,15 +77,17 @@ public final class ExampleTool extends BaseTool {
     final String examplesBlock;
     if (exampleProvider.isPresent()) {
       examplesBlock = ExampleUtils.buildExampleSi(exampleProvider.get(), query);
-    } else if (examples.isPresent()) {
+    } else if (!examples.isEmpty()) {
       // Adapter provider that returns a fixed list irrespective of query
-      BaseExampleProvider provider = q -> examples.get();
+      BaseExampleProvider provider = (unusedQuery) -> examples;
       examplesBlock = ExampleUtils.buildExampleSi(provider, query);
     } else {
       return Completable.complete();
     }
 
-    llmRequestBuilder.appendInstructions(ImmutableList.of(examplesBlock));
+    if (!examplesBlock.isEmpty()) {
+      llmRequestBuilder.appendInstructions(ImmutableList.of(examplesBlock));
+    }
     // Delegate to BaseTool to keep any declaration bookkeeping (none for this tool)
     return super.processLlmRequest(llmRequestBuilder, toolContext);
   }
@@ -100,7 +102,7 @@ public final class ExampleTool extends BaseTool {
     var maybeExamplesProvider = args.getOrEmpty("examples", new TypeReference<String>() {});
     if (maybeExamplesProvider.isPresent()) {
       BaseExampleProvider provider = resolveExampleProvider(maybeExamplesProvider.get());
-      return ExampleTool.builder().setExampleProvider(provider).build();
+      return ExampleTool.builder().exampleProvider(provider).build();
     }
     var maybeListOfExamples = args.getOrEmpty("examples", new TypeReference<List<Example>>() {});
     if (maybeListOfExamples.isPresent()) {
@@ -157,20 +159,33 @@ public final class ExampleTool extends BaseTool {
     return new Builder();
   }
 
+  /** Builder for {@link ExampleTool}. */
   public static final class Builder {
     private final List<Example> examples = new ArrayList<>();
     private String name = "example_tool";
     private String description = "Adds few-shot examples to the request";
     private Optional<BaseExampleProvider> provider = Optional.empty();
 
+    @Deprecated
     @CanIgnoreReturnValue
-    public Builder setName(String name) {
+    public final Builder setName(String name) {
+      return name(name);
+    }
+
+    @CanIgnoreReturnValue
+    public Builder name(String name) {
       this.name = name;
       return this;
     }
 
+    @Deprecated
     @CanIgnoreReturnValue
-    public Builder setDescription(String description) {
+    public final Builder setDescription(String description) {
+      return description(description);
+    }
+
+    @CanIgnoreReturnValue
+    public Builder description(String description) {
       this.description = description;
       return this;
     }
@@ -181,8 +196,14 @@ public final class ExampleTool extends BaseTool {
       return this;
     }
 
+    @Deprecated
     @CanIgnoreReturnValue
-    public Builder setExampleProvider(BaseExampleProvider provider) {
+    public final Builder setExampleProvider(BaseExampleProvider provider) {
+      return exampleProvider(provider);
+    }
+
+    @CanIgnoreReturnValue
+    public Builder exampleProvider(BaseExampleProvider provider) {
       this.provider = Optional.ofNullable(provider);
       return this;
     }

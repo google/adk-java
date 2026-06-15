@@ -22,7 +22,7 @@
     <parent>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-parent</artifactId>
-        <version>0.5.1-SNAPSHOT</version>
+        <version>1.4.1-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
