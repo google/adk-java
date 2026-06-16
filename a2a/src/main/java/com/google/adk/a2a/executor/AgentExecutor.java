@@ -17,6 +17,7 @@ package com.google.adk.a2a.executor;
 
 import static java.util.Objects.requireNonNull;
 
+import com.google.adk.a2a.converters.AdkMetadataKey;
 import com.google.adk.a2a.converters.EventConverter;
 import com.google.adk.a2a.converters.PartConverter;
 import com.google.adk.agents.BaseAgent;
@@ -217,7 +218,8 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
                                 getUserId(ctx),
                                 session.id(),
                                 content,
-                                agentExecutorConfig.runConfig());
+                                agentExecutorConfig.runConfig(),
+                                getStateDelta(ctx));
                           });
                 })
             .concatMap(
@@ -271,6 +273,18 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
 
   private String getUserId(RequestContext ctx) {
     return USER_ID_PREFIX + ctx.getContextId();
+  }
+
+  private Map<String, Object> getStateDelta(RequestContext ctx) {
+    Map<String, Object> metadata = new HashMap<>();
+
+    if (ctx.getTaskId() != null) {
+      metadata.put(AdkMetadataKey.TASK_ID.getType(), ctx.getTaskId());
+    }
+    if (ctx.getContextId() != null) {
+      metadata.put(AdkMetadataKey.CONTEXT_ID.getType(), ctx.getContextId());
+    }
+    return metadata;
   }
 
   private Maybe<Session> prepareSession(
