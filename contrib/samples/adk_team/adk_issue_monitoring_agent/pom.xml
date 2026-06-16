@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ Copyright 2026 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.google.adk</groupId>
+    <artifactId>google-adk-samples-adk-team</artifactId>
+    <version>1.4.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <relativePath>..</relativePath>
+  </parent>
+
+  <artifactId>google-adk-sample-adk-issue-monitoring-agent</artifactId>
+  <name>Google ADK - Sample - ADK Issue Monitoring Agent (Java)</name>
+  <description>
+    AI-powered GitHub issue spam-monitoring agent for the adk-java repository,
+    implemented with the Google ADK for Java. Audits non-maintainer issue
+    comments for spam/SEO/promotional content and, when detected, applies a
+    "spam" label and alerts the maintainers. Runs as a one-shot scan suitable
+    for a scheduled GitHub Actions workflow. Java port of the Python
+    adk_issue_monitoring_agent sample.
+  </description>
+  <packaging>jar</packaging>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <java.version>17</java.version>
+    <exec.mainClass>com.example.adk_team.adk_issue_monitoring_agent.MonitoringAgentMain</exec.mainClass>
+    <google-adk.version>${project.version}</google-adk.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.google.adk</groupId>
+      <artifactId>google-adk</artifactId>
+      <version>${google-adk.version}</version>
+    </dependency>
+    <!-- GitHub client: handles auth, pagination, and JSON so this sample doesn't
+         hand-roll a REST client. -->
+    <dependency>
+      <groupId>org.kohsuke</groupId>
+      <artifactId>github-api</artifactId>
+      <version>1.327</version>
+    </dependency>
+    <!-- Commons Logging is the logging facade github-api binds to at runtime. -->
+    <dependency>
+      <groupId>commons-logging</groupId>
+      <artifactId>commons-logging</artifactId>
+      <version>1.2</version>
+      <scope>runtime</scope>
+    </dependency>
+    <!-- Logging backend so console output works in the workflow run. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>${slf4j.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Test dependencies (versions managed by the parent POM's junit-bom and
+         dependencyManagement). -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-params</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.google.truth</groupId>
+      <artifactId>truth</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>${java.version}</release>
+          <!-- Preserve parameter names so FunctionTool can introspect them
+               without forcing every parameter to be annotated. -->
+          <parameters>true</parameters>
+        </configuration>
+        <executions>
+          <!-- Main sources live in the module root (added via build-helper), so
+               the default-compile would otherwise also pick up test sources under
+               src/test. Exclude them from the main compile; surefire/testCompile
+               handles src/test/java on its own. -->
+          <execution>
+            <id>default-compile</id>
+            <configuration>
+              <excludes>
+                <exclude>src/test/**</exclude>
+              </excludes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <id>add-source</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>add-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>.</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>**/*.jar</exclude>
+            <exclude>**/*.yml</exclude>
+            <exclude>src/test/**</exclude>
+            <exclude>target/**</exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <configuration>
+          <!-- Main sources live in the module root (added via build-helper),
+               which recursively pulls src/test/java into the Javadoc source
+               roots. Exclude the test sources, mirroring the default-compile
+               and maven-source-plugin excludes above; otherwise the -Prelease
+               attach-javadocs goal fails because test-scoped dependencies
+               (JUnit, Truth) are not on the Javadoc classpath. -->
+          <sourceFileExcludes>
+            <sourceFileExclude>src/test/**</sourceFileExclude>
+          </sourceFileExcludes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.2.0</version>
+        <configuration>
+          <mainClass>${exec.mainClass}</mainClass>
+          <classpathScope>runtime</classpathScope>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
