@@ -1,9 +1,11 @@
 package com.google.adk.tools;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.*;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.models.Gemini;
@@ -355,4 +357,46 @@ public final class BaseToolTest {
   }
 
   public record TestToolArgs(int i, String s) {}
+
+  @Test
+  public void testToolConfigJsonSerialization() {
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.put("arg1", "value1");
+    args.put("arg2", 2);
+
+    BaseTool.ToolConfig config = new BaseTool.ToolConfig("testTool", args);
+
+    String json = config.toJson();
+    assertNotNull(json);
+    assertFalse(json.isEmpty());
+
+    assertTrue(json.contains("\"name\":\"testTool\""));
+    assertTrue(json.contains("\"arg1\":\"value1\""));
+    assertTrue(json.contains("\"arg2\":2"));
+  }
+
+  @Test
+  public void testToolConfigJsonDeserialization() throws Exception {
+    String jsonInput =
+        """
+        {
+          "name": "deserializing",
+          "args": {
+            "timeoutMs": 5000,
+            "retryCount": 3
+          }
+        }
+        """;
+
+    BaseTool.ToolConfig config =
+        JsonBaseModel.getMapper().readValue(jsonInput, BaseTool.ToolConfig.class);
+
+    assertNotNull(config);
+    assertEquals("deserializing", config.name());
+
+    assertNotNull(config.args());
+    assertEquals(2, config.args().size());
+    assertEquals(5000, config.args().getAdditionalProperties().get("timeoutMs"));
+    assertEquals(3, config.args().getAdditionalProperties().get("retryCount"));
+  }
 }

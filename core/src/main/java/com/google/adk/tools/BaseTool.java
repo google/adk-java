@@ -21,6 +21,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
@@ -334,8 +335,8 @@ public abstract class BaseTool {
 
   /** Configuration class for a tool definition in YAML/JSON. */
   public static class ToolConfig extends JsonBaseModel {
-    private String name;
-    private ToolArgsConfig args;
+    @JsonProperty private String name;
+    @JsonProperty private ToolArgsConfig args;
 
     public ToolConfig() {}
 
