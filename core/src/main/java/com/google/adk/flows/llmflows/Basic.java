@@ -47,6 +47,8 @@ public final class Basic implements RequestProcessor {
         LiveConnectConfig.builder().responseModalities(context.runConfig().responseModalities());
     Optional.ofNullable(context.runConfig().speechConfig())
         .ifPresent(liveConnectConfigBuilder::speechConfig);
+    Optional.ofNullable(context.runConfig().avatarConfig())
+        .ifPresent(liveConnectConfigBuilder::avatarConfig);
     Optional.ofNullable(context.runConfig().outputAudioTranscription())
         .ifPresent(liveConnectConfigBuilder::outputAudioTranscription);
     Optional.ofNullable(context.runConfig().inputAudioTranscription())

@@ -83,9 +83,11 @@ public final class PartConverter {
     if (a2aPart instanceof TextPart textPart) {
       com.google.genai.types.Part.Builder partBuilder =
           com.google.genai.types.Part.builder().text(textPart.getText());
-      if (textPart.getMetadata() != null
-          && Objects.equals(textPart.getMetadata().get("thought"), Boolean.TRUE)) {
-        partBuilder.thought(true);
+      if (textPart.getMetadata() != null) {
+        partBuilder.partMetadata(textPart.getMetadata());
+        if (Objects.equals(textPart.getMetadata().get("thought"), true)) {
+          partBuilder.thought(true);
+        }
       }
       return partBuilder.build();
     }
@@ -108,14 +110,19 @@ public final class PartConverter {
 
   private static com.google.genai.types.Part convertFilePartToGenAiPart(FilePart filePart) {
     FileContent fileContent = filePart.getFile();
+    Map<String, Object> metadata = filePart.getMetadata();
     if (fileContent instanceof FileWithUri fileWithUri) {
-      return com.google.genai.types.Part.builder()
-          .fileData(
-              FileData.builder()
-                  .fileUri(fileWithUri.uri())
-                  .mimeType(fileWithUri.mimeType())
-                  .build())
-          .build();
+      com.google.genai.types.Part.Builder builder =
+          com.google.genai.types.Part.builder()
+              .fileData(
+                  FileData.builder()
+                      .fileUri(fileWithUri.uri())
+                      .mimeType(fileWithUri.mimeType())
+                      .build());
+      if (metadata != null) {
+        builder.partMetadata(metadata);
+      }
+      return builder.build();
     }
 
     if (fileContent instanceof FileWithBytes fileWithBytes) {
@@ -124,9 +131,13 @@ public final class PartConverter {
         throw new GenAiFieldMissingException("FileWithBytes missing byte content");
       }
       byte[] decoded = Base64.getDecoder().decode(bytesString);
-      return com.google.genai.types.Part.builder()
-          .inlineData(Blob.builder().data(decoded).mimeType(fileWithBytes.mimeType()).build())
-          .build();
+      com.google.genai.types.Part.Builder builder =
+          com.google.genai.types.Part.builder()
+              .inlineData(Blob.builder().data(decoded).mimeType(fileWithBytes.mimeType()).build());
+      if (metadata != null) {
+        builder.partMetadata(metadata);
+      }
+      return builder.build();
     }
 
     throw new IllegalArgumentException("Unsupported FilePart content: " + fileContent.getClass());
@@ -145,9 +156,14 @@ public final class PartConverter {
       String functionName = String.valueOf(data.getOrDefault(NAME_KEY, ""));
       String functionId = String.valueOf(data.getOrDefault(ID_KEY, ""));
       Map<String, Object> args = coerceToMap(data.get(ARGS_KEY));
-      return com.google.genai.types.Part.builder()
-          .functionCall(FunctionCall.builder().name(functionName).id(functionId).args(args).build())
-          .build();
+      com.google.genai.types.Part.Builder builder =
+          com.google.genai.types.Part.builder()
+              .functionCall(
+                  FunctionCall.builder().name(functionName).id(functionId).args(args).build());
+      if (!metadata.isEmpty()) {
+        builder.partMetadata(metadata);
+      }
+      return builder.build();
     }
 
     if ((data.containsKey(NAME_KEY) && data.containsKey(RESPONSE_KEY))
@@ -155,14 +171,18 @@ public final class PartConverter {
       String functionName = String.valueOf(data.getOrDefault(NAME_KEY, ""));
       String functionId = String.valueOf(data.getOrDefault(ID_KEY, ""));
       Map<String, Object> response = coerceToMap(data.get(RESPONSE_KEY));
-      return com.google.genai.types.Part.builder()
-          .functionResponse(
-              FunctionResponse.builder()
-                  .name(functionName)
-                  .id(functionId)
-                  .response(response)
-                  .build())
-          .build();
+      com.google.genai.types.Part.Builder builder =
+          com.google.genai.types.Part.builder()
+              .functionResponse(
+                  FunctionResponse.builder()
+                      .name(functionName)
+                      .id(functionId)
+                      .response(response)
+                      .build());
+      if (!metadata.isEmpty()) {
+        builder.partMetadata(metadata);
+      }
+      return builder.build();
     }
 
     if ((data.containsKey(CODE_KEY) && data.containsKey(LANGUAGE_KEY))
@@ -171,10 +191,14 @@ public final class PartConverter {
       String language =
           String.valueOf(
               data.getOrDefault(LANGUAGE_KEY, Language.Known.LANGUAGE_UNSPECIFIED.toString()));
-      return com.google.genai.types.Part.builder()
-          .executableCode(
-              ExecutableCode.builder().code(code).language(new Language(language)).build())
-          .build();
+      com.google.genai.types.Part.Builder builder =
+          com.google.genai.types.Part.builder()
+              .executableCode(
+                  ExecutableCode.builder().code(code).language(new Language(language)).build());
+      if (!metadata.isEmpty()) {
+        builder.partMetadata(metadata);
+      }
+      return builder.build();
     }
 
     if ((data.containsKey(OUTCOME_KEY) && data.containsKey(OUTPUT_KEY))
@@ -182,15 +206,27 @@ public final class PartConverter {
       String outcome =
           String.valueOf(data.getOrDefault(OUTCOME_KEY, Outcome.Known.OUTCOME_OK).toString());
       String output = String.valueOf(data.getOrDefault(OUTPUT_KEY, ""));
-      return com.google.genai.types.Part.builder()
-          .codeExecutionResult(
-              CodeExecutionResult.builder().outcome(new Outcome(outcome)).output(output).build())
-          .build();
+      com.google.genai.types.Part.Builder builder =
+          com.google.genai.types.Part.builder()
+              .codeExecutionResult(
+                  CodeExecutionResult.builder()
+                      .outcome(new Outcome(outcome))
+                      .output(output)
+                      .build());
+      if (!metadata.isEmpty()) {
+        builder.partMetadata(metadata);
+      }
+      return builder.build();
     }
 
     try {
       String json = objectMapper.writeValueAsString(data);
-      return com.google.genai.types.Part.builder().text(json).build();
+      com.google.genai.types.Part.Builder builder =
+          com.google.genai.types.Part.builder().text(json);
+      if (!metadata.isEmpty()) {
+        builder.partMetadata(metadata);
+      }
+      return builder.build();
     } catch (JsonProcessingException e) {
       throw new IllegalArgumentException("Failed to serialize DataPart payload", e);
     }
@@ -309,10 +345,11 @@ public final class PartConverter {
     if (isPartial) {
       metadata.put(A2AMetadataKey.PARTIAL.getType(), true);
     }
+    part.partMetadata().ifPresent(metadata::putAll);
 
     if (part.text().isPresent()) {
       addValueIfPresent(metadata, "thought", part.thought());
-      return new TextPart(part.text().get(), metadata.buildOrThrow());
+      return new TextPart(part.text().get(), metadata.buildKeepingLast());
     }
 
     if (part.fileData().isPresent() || part.inlineData().isPresent()) {

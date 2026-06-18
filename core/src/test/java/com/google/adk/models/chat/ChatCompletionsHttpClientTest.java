@@ -33,12 +33,14 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.HttpOptions;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.time.Duration;
+import java.util.Base64;
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.MediaType;
@@ -296,10 +298,10 @@ public final class ChatCompletionsHttpClientTest {
 
     testSubscriber.assertNoErrors();
     testSubscriber.assertValueCount(2);
-    assertThat(testSubscriber.values().get(0).content().get().parts().get().get(0).text().get())
-        .isEqualTo("Good1");
-    assertThat(testSubscriber.values().get(1).content().get().parts().get().get(0).text().get())
-        .isEqualTo("Good2");
+    assertThat(testSubscriber.values().get(0).content().get().parts().get().get(0).text())
+        .hasValue("Good1");
+    assertThat(testSubscriber.values().get(1).content().get().parts().get().get(0).text())
+        .hasValue("Good2");
   }
 
   /**
@@ -329,8 +331,8 @@ public final class ChatCompletionsHttpClientTest {
 
     testSubscriber.assertNoErrors();
     testSubscriber.assertValueCount(1);
-    assertThat(testSubscriber.values().get(0).content().get().parts().get().get(0).text().get())
-        .isEqualTo("NoSpace");
+    assertThat(testSubscriber.values().get(0).content().get().parts().get().get(0).text())
+        .hasValue("NoSpace");
   }
 
   // -- Header, error-propagation, and timeout coverage. ----------------------------------
@@ -608,5 +610,80 @@ public final class ChatCompletionsHttpClientTest {
     } catch (ReflectiveOperationException e) {
       throw new LinkageError("Failed to read internal client", e);
     }
+  }
+
+  // -- thought_signature end-to-end through the HTTP layer. ------------------------------
+  //
+  // A single round-trip test that covers the request encoder, the HTTP body writer, the
+  // response decoder, and the ToolCall.applyThoughtSignature site in one shot. Wider
+  // request- and response-side coverage lives in the unit tests in
+  // ChatCompletionsRequestTest and ChatCompletionsResponseTest.
+
+  private static final byte[] httpSigBytes = {0x21, 0x22, 0x23, 0x24};
+  private static final String HTTP_SIG_B64 = Base64.getEncoder().encodeToString(httpSigBytes);
+
+  /**
+   * Round-trip: a {@link Part} with a {@code thoughtSignature} sent on the request must decode
+   * bytewise-equal on the response when the mock server echoes the same base64 string back. This is
+   * the strongest single regression guard for the thought_signature pipeline because it covers the
+   * request encoder, the HTTP body writer, the response decoder, and the {@link
+   * ChatCompletionsCommon.ToolCall#applyThoughtSignature} site in a single test.
+   */
+  @Test
+  public void complete_nonStreaming_thoughtSignatureRoundTrip() throws Exception {
+    // Send a request with a function-call Part carrying httpSigBytes, then mock a response
+    // whose tool_call carries the same base64 signature, and assert the decoded bytes match.
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.builder()
+                                    .functionCall(
+                                        FunctionCall.builder().id("call_rt").name("ping").build())
+                                    .thoughtSignature(httpSigBytes)
+                                    .build()))
+                        .build()))
+            .build();
+
+    String responseBody =
+        String.format(
+            """
+            {
+              "choices": [{
+                "message": {
+                  "role": "assistant",
+                  "tool_calls": [{
+                    "id": "call_rt",
+                    "type": "function",
+                    "function": { "name": "ping", "arguments": "{}" },
+                    "extra_content": {
+                      "google": { "thought_signature": "%s" }
+                    }
+                  }]
+                },
+                "finish_reason": "tool_calls"
+              }]
+            }
+            """,
+            HTTP_SIG_B64);
+    Response mockResponse = createMockResponse(responseBody, JSON);
+
+    ArgumentCaptor<Callback> callbackCaptor = ArgumentCaptor.forClass(Callback.class);
+    doNothing().when(mockCall).enqueue(callbackCaptor.capture());
+
+    TestSubscriber<LlmResponse> testSubscriber = client.complete(llmRequest, false).test();
+    callbackCaptor.getValue().onResponse(mockCall, mockResponse);
+    testSubscriber.await(AWAIT_TIMEOUT.toMillis(), MILLISECONDS);
+
+    testSubscriber.assertNoErrors();
+    LlmResponse response = testSubscriber.values().get(0);
+    Part decodedToolPart = response.content().get().parts().get().get(0);
+    assertThat(decodedToolPart.functionCall().get().id()).hasValue("call_rt");
+    assertThat(decodedToolPart.thoughtSignature().get()).isEqualTo(httpSigBytes);
   }
 }

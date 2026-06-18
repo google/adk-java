@@ -20,6 +20,7 @@ import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
+import com.google.genai.types.AvatarConfig;
 import com.google.genai.types.Modality;
 import com.google.genai.types.SpeechConfig;
 import org.jspecify.annotations.Nullable;
@@ -67,6 +68,8 @@ public abstract class RunConfig {
 
   public abstract ImmutableList<Modality> responseModalities();
 
+  public abstract @Nullable AvatarConfig avatarConfig();
+
   public abstract boolean saveInputBlobsAsArtifacts();
 
   public abstract StreamingMode streamingMode();
@@ -101,6 +104,7 @@ public abstract class RunConfig {
         .maxLlmCalls(runConfig.maxLlmCalls())
         .responseModalities(runConfig.responseModalities())
         .speechConfig(runConfig.speechConfig())
+        .avatarConfig(runConfig.avatarConfig())
         .outputAudioTranscription(runConfig.outputAudioTranscription())
         .inputAudioTranscription(runConfig.inputAudioTranscription())
         .autoCreateSession(runConfig.autoCreateSession());
@@ -127,6 +131,9 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder responseModalities(Iterable<Modality> responseModalities);
+
+    @CanIgnoreReturnValue
+    public abstract Builder avatarConfig(@Nullable AvatarConfig avatarConfig);
 
     @Deprecated
     @CanIgnoreReturnValue
