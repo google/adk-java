@@ -41,7 +41,9 @@ import java.util.stream.Collectors;
  */
 public final class InMemoryReasoningBankService implements BaseReasoningBankService {
 
-  private static final int DEFAULT_MAX_RESULTS = 5;
+  // The paper's retrieval k-ablation shows that injecting more memories monotonically degrades
+  // performance; the default cap is one experience-equivalent (~3 items), not 5.
+  private static final int DEFAULT_MAX_RESULTS = 3;
 
   private static final Pattern WORD_PATTERN = Pattern.compile("[A-Za-z]+");
 

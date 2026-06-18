@@ -229,4 +229,20 @@ public final class InMemoryReasoningBankServiceTest {
     assertThat(response.memoryItems()).hasSize(1);
     assertThat(response.memoryItems().get(0).sourceTraceSuccessful()).isFalse();
   }
+
+  @Test
+  public void search_defaultCap_isThreeItems() {
+    // The paper's k-ablation shows retrieving more memories monotonically hurts; the default cap
+    // should be 3 (one experience-equivalent), not 5.
+    for (int i = 0; i < 4; i++) {
+      service
+          .storeMemoryItem(APP_NAME, item("m" + i).title("pagination guardrail").build())
+          .blockingAwait();
+    }
+
+    SearchReasoningResponse response =
+        service.searchMemoryItems(APP_NAME, "pagination").blockingGet();
+
+    assertThat(response.memoryItems()).hasSize(3);
+  }
 }

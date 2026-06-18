@@ -89,11 +89,45 @@ public abstract class ReasoningMemoryItem {
   @JsonProperty("createdAt")
   public abstract String createdAt();
 
+  /**
+   * Returns the id of the {@link ReasoningTrace} this item was distilled from, or {@code null} if
+   * the item was authored manually.
+   *
+   * <p>Provenance makes a poisoned item locatable and evictable; it is the audit primitive that
+   * every recovery action depends on.
+   */
+  @Nullable
+  @JsonProperty("sourceTraceId")
+  public abstract String sourceTraceId();
+
+  /**
+   * Returns the judge verdict that produced this item (e.g. {@code "SUCCESS"}, {@code "FAILURE"},
+   * {@code "malformed"}), or {@code null} if the item was not distilled by a judge.
+   */
+  @Nullable
+  @JsonProperty("judgeVerdict")
+  public abstract String judgeVerdict();
+
+  /** Returns the judge's confidence in {@code [0, 1]}, or {@code null} if unknown. */
+  @Nullable
+  @JsonProperty("judgeConfidence")
+  public abstract Double judgeConfidence();
+
+  /**
+   * Returns the retrieval trust weight in {@code [0, 1]} (default {@code 1.0}).
+   *
+   * <p>Failure-derived items may be demoted so they surface only when no trusted success item
+   * matches, capping the influence of a bogus guardrail.
+   */
+  @JsonProperty("trust")
+  public abstract double trust();
+
   /** Returns a new builder for creating a {@link ReasoningMemoryItem}. */
   public static Builder builder() {
     return new AutoValue_ReasoningMemoryItem.Builder()
         .tags(ImmutableList.of())
-        .sourceTraceSuccessful(true);
+        .sourceTraceSuccessful(true)
+        .trust(1.0);
   }
 
   /** Creates a new builder with a copy of this item's values. */
@@ -107,7 +141,8 @@ public abstract class ReasoningMemoryItem {
     static Builder create() {
       return new AutoValue_ReasoningMemoryItem.Builder()
           .tags(ImmutableList.of())
-          .sourceTraceSuccessful(true);
+          .sourceTraceSuccessful(true)
+          .trust(1.0);
     }
 
     /** Sets the unique identifier. */
@@ -142,6 +177,22 @@ public abstract class ReasoningMemoryItem {
     public Builder createdAt(Instant instant) {
       return createdAt(instant.toString());
     }
+
+    /** Sets the id of the source trace this item was distilled from. */
+    @JsonProperty("sourceTraceId")
+    public abstract Builder sourceTraceId(@Nullable String sourceTraceId);
+
+    /** Sets the judge verdict that produced this item. */
+    @JsonProperty("judgeVerdict")
+    public abstract Builder judgeVerdict(@Nullable String judgeVerdict);
+
+    /** Sets the judge's confidence in {@code [0, 1]}. */
+    @JsonProperty("judgeConfidence")
+    public abstract Builder judgeConfidence(@Nullable Double judgeConfidence);
+
+    /** Sets the retrieval trust weight in {@code [0, 1]}. */
+    @JsonProperty("trust")
+    public abstract Builder trust(double trust);
 
     /** Builds the immutable {@link ReasoningMemoryItem}. */
     public abstract ReasoningMemoryItem build();

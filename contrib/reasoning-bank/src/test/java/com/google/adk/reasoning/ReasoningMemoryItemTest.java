@@ -99,4 +99,36 @@ public final class ReasoningMemoryItemTest {
     assertThat(modified.sourceTraceSuccessful()).isFalse();
     assertThat(modified.id()).isEqualTo(original.id());
   }
+
+  @Test
+  public void builder_carriesProvenance() {
+    ReasoningMemoryItem item =
+        ReasoningMemoryItem.builder()
+            .id("mem-1")
+            .title("t")
+            .description("d")
+            .content("c")
+            .sourceTraceId("trace-42")
+            .judgeVerdict("FAILURE")
+            .judgeConfidence(0.8)
+            .trust(0.5)
+            .build();
+
+    assertThat(item.sourceTraceId()).isEqualTo("trace-42");
+    assertThat(item.judgeVerdict()).isEqualTo("FAILURE");
+    assertThat(item.judgeConfidence()).isEqualTo(0.8);
+    assertThat(item.trust()).isEqualTo(0.5);
+  }
+
+  @Test
+  public void builder_provenanceDefaults() {
+    ReasoningMemoryItem item =
+        ReasoningMemoryItem.builder().id("mem-1").title("t").description("d").content("c").build();
+
+    // Provenance is optional; trust is fully trusted by default.
+    assertThat(item.sourceTraceId()).isNull();
+    assertThat(item.judgeVerdict()).isNull();
+    assertThat(item.judgeConfidence()).isNull();
+    assertThat(item.trust()).isEqualTo(1.0);
+  }
 }
