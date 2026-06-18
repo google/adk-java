@@ -21,10 +21,12 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
@@ -53,13 +55,35 @@ public final class InMemoryReasoningBankService implements BaseReasoningBankServ
   /** appName → traces. */
   private final Map<String, List<ReasoningTrace>> traces = new ConcurrentHashMap<>();
 
+  private final ConsolidationPolicy consolidationPolicy;
+
+  /** Creates a service with the faithful append-only consolidation policy. */
+  public InMemoryReasoningBankService() {
+    this(ConsolidationPolicy.identity());
+  }
+
+  /** Creates a service with a custom store-time {@link ConsolidationPolicy}. */
+  public InMemoryReasoningBankService(ConsolidationPolicy consolidationPolicy) {
+    this.consolidationPolicy = Objects.requireNonNull(consolidationPolicy, "consolidationPolicy");
+  }
+
   @Override
   public Completable storeMemoryItem(String appName, ReasoningMemoryItem memoryItem) {
     return Completable.fromAction(
-        () ->
-            memoryItems
-                .computeIfAbsent(appName, k -> Collections.synchronizedList(new ArrayList<>()))
-                .add(memoryItem));
+        () -> {
+          List<ReasoningMemoryItem> items =
+              memoryItems.computeIfAbsent(
+                  appName, k -> Collections.synchronizedList(new ArrayList<>()));
+          // Read-modify-write under the same monitor searchMemoryItems locks; identity() keeps this
+          // observationally identical to a plain append.
+          synchronized (items) {
+            List<ReasoningMemoryItem> kept =
+                consolidationPolicy.reconcile(
+                    Collections.unmodifiableList(new ArrayList<>(items)), memoryItem);
+            items.clear();
+            items.addAll(kept);
+          }
+        });
   }
 
   @Override
@@ -104,10 +128,23 @@ public final class InMemoryReasoningBankService implements BaseReasoningBankServ
             }
           }
 
-          scored.sort((a, b) -> Integer.compare(b.score, a.score));
+          // Failure trust-demotion: a failure-derived guardrail surfaces only when NO success item
+          // matched this query, so a bogus guardrail cannot outrank a relevant positive strategy.
+          List<Scored> success = new ArrayList<>();
+          List<Scored> failure = new ArrayList<>();
+          for (Scored s : scored) {
+            (s.item.sourceTraceSuccessful() ? success : failure).add(s);
+          }
+          List<Scored> tier = success.isEmpty() ? failure : success;
+
+          // Rank by score, then by trust() (higher first) as a live tiebreaker.
+          tier.sort(
+              Comparator.<Scored>comparingInt(s -> s.score)
+                  .reversed()
+                  .thenComparing(s -> s.item.trust(), Comparator.reverseOrder()));
 
           List<ReasoningMemoryItem> top =
-              scored.stream().map(s -> s.item).limit(maxResults).collect(Collectors.toList());
+              tier.stream().map(s -> s.item).limit(maxResults).collect(Collectors.toList());
           return SearchReasoningResponse.builder().setMemoryItems(top).build();
         });
   }

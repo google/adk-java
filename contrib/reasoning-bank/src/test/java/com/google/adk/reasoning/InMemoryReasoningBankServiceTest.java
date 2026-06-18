@@ -16,8 +16,10 @@
 package com.google.adk.reasoning;
 
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.stream.Collectors.toList;
 
 import com.google.common.collect.ImmutableList;
+import java.util.List;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -244,5 +246,87 @@ public final class InMemoryReasoningBankServiceTest {
         service.searchMemoryItems(APP_NAME, "pagination").blockingGet();
 
     assertThat(response.memoryItems()).hasSize(3);
+  }
+
+  // ---- failure trust-demotion: a guardrail surfaces only when no success item matched ----------
+
+  @Test
+  public void search_successReplacesEquallyMatchingFailure() {
+    service
+        .storeMemoryItem(APP_NAME, item("s").title("algorithm optimization").build())
+        .blockingAwait();
+    service
+        .storeMemoryItem(
+            APP_NAME,
+            item("f").title("algorithm optimization").sourceTraceSuccessful(false).build())
+        .blockingAwait();
+
+    SearchReasoningResponse response =
+        service.searchMemoryItems(APP_NAME, "algorithm").blockingGet();
+
+    assertThat(response.memoryItems()).hasSize(1);
+    assertThat(response.memoryItems().get(0).id()).isEqualTo("s");
+  }
+
+  @Test
+  public void search_failureReturnedWhenNoSuccessMatches() {
+    service
+        .storeMemoryItem(
+            APP_NAME, item("f").title("rare pitfall").sourceTraceSuccessful(false).build())
+        .blockingAwait();
+
+    SearchReasoningResponse response = service.searchMemoryItems(APP_NAME, "pitfall").blockingGet();
+
+    assertThat(response.memoryItems()).hasSize(1);
+    assertThat(response.memoryItems().get(0).id()).isEqualTo("f");
+  }
+
+  @Test
+  public void search_nonMatchingSuccessDoesNotSuppressMatchingFailure() {
+    // A success item exists but does NOT match this query; the matching failure item must still
+    // surface (the partition is on "no success MATCHED", not "no success exists").
+    service.storeMemoryItem(APP_NAME, item("s").title("alpha strategy").build()).blockingAwait();
+    service
+        .storeMemoryItem(
+            APP_NAME, item("f").title("beta guardrail").sourceTraceSuccessful(false).build())
+        .blockingAwait();
+
+    SearchReasoningResponse response = service.searchMemoryItems(APP_NAME, "beta").blockingGet();
+
+    assertThat(response.memoryItems()).hasSize(1);
+    assertThat(response.memoryItems().get(0).id()).isEqualTo("f");
+  }
+
+  // ---- ConsolidationPolicy wiring --------------------------------------------------------------
+
+  @Test
+  public void defaultConstructor_isAppendOnly() {
+    for (int i = 0; i < 4; i++) {
+      service.storeMemoryItem(APP_NAME, item("m" + i).title("dup keyword").build()).blockingAwait();
+    }
+
+    assertThat(service.searchMemoryItems(APP_NAME, "dup", 100).blockingGet().memoryItems())
+        .hasSize(4);
+  }
+
+  @Test
+  public void storeWithBoundedPolicy_evictsOldestAtStore() {
+    InMemoryReasoningBankService bounded =
+        new InMemoryReasoningBankService(ConsolidationPolicy.boundedByCreatedAt(2));
+    bounded
+        .storeMemoryItem(APP_NAME, item("a").title("dup").createdAt("2025-01-01T00:00:00Z").build())
+        .blockingAwait();
+    bounded
+        .storeMemoryItem(APP_NAME, item("b").title("dup").createdAt("2025-01-02T00:00:00Z").build())
+        .blockingAwait();
+    bounded
+        .storeMemoryItem(APP_NAME, item("c").title("dup").createdAt("2025-01-03T00:00:00Z").build())
+        .blockingAwait();
+
+    List<ReasoningMemoryItem> kept =
+        bounded.searchMemoryItems(APP_NAME, "dup", 100).blockingGet().memoryItems();
+    assertThat(kept).hasSize(2);
+    assertThat(kept.stream().map(ReasoningMemoryItem::id).collect(toList()))
+        .containsExactly("b", "c");
   }
 }

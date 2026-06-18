@@ -41,14 +41,28 @@ that needs the Vertex SDK) is intentionally left to a future sibling module.
   This is **opt-in and triple-gated** (`autoConsolidate` + a judge + an extractor), because enabling
   writes turns a read-only system into a self-modifying one under an imperfect judge.
 
-### Safety: de-privileged injection
+### Safety
 
-Retrieved memory is injected as an **untrusted user content turn wrapped in an escaped fence** —
-never as a system instruction. Distilled memory is a stored, self-feeding channel (a poisoned item
-is re-injected on every future retrieval), so it must not be able to issue instructions to the
-agent. This is a deliberate divergence from the reference, which injects into the system prompt.
-A judge that *errors* yields `INDETERMINATE` and mints nothing, so a non-run never fabricates a
-guardrail.
+Distilled memory is a stored, self-feeding channel — a poisoned item is re-injected on every future
+retrieval — so the module defends the *integrity* of the write/inject path, not just accuracy:
+
+- **De-privileged, fenced injection.** Retrieved memory is prepended as an *untrusted user content
+  turn* inside an escaped fence, never a system instruction (a deliberate divergence from the
+  reference, which injects into the system prompt).
+- **Structural containment.** Each item field is sanitized so it cannot contribute a line boundary
+  or an invisible control character: format/zero-width/bidi controls are stripped, all line and
+  paragraph separators collapse to spaces, and fields are length-capped. Forged bullets, fake
+  preambles, role markers, and confusable/fullwidth fences all collapse to inert inline data.
+- **Abstain on non-run.** A judge that errors yields `INDETERMINATE` and mints nothing, so a
+  non-run never fabricates a guardrail.
+- **Bounded blast radius.** A per-run mint cap limits how much one (possibly wrong) verdict can
+  write; failure-derived guardrails are trust-demoted at retrieval (they surface only when no
+  success item matches the query).
+
+These controls guarantee retrieved memory stays *untrusted data* and cannot escalate into a
+system/instruction position. They do **not** stop a model from reading persuasive text inside an
+item — that is the LLM's own instruction-hierarchy responsibility; the module's job is to never
+present memory as authoritative.
 
 ## Not (yet) implemented
 
@@ -58,8 +72,9 @@ guardrail.
 - **MaTTS rollout fan-out and sequential refinement.** The parallel self-contrast *distillation*
   seam ships (`LlmMemoryExtractor` switches to `PARALLEL_SI` when given >1 trajectory), but running
   k same-task trajectories and the sequential prompts are future work.
-- **Consolidation policy / eviction.** Consolidation is append-only (faithful baseline); provenance
-  fields are in place so a bounded/dedup/decay policy can drop in later.
+- **Eviction policy by default.** Consolidation is append-only by default (faithful baseline). The
+  `ConsolidationPolicy` SPI ships with an `identity()` (append-only) default and a
+  `boundedByCreatedAt(n)` example; dedup/decay policies can drop in without core changes.
 
 ## Example
 
