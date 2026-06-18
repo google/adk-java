@@ -24,7 +24,7 @@ import com.google.adk.memory.SearchMemoryResponse;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** ToolContext object provides a structured context for executing tools or functions. */
 public class ToolContext extends CallbackContext {

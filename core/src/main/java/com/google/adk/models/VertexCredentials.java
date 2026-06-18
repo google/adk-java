@@ -18,8 +18,9 @@ package com.google.adk.models;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auto.value.AutoValue;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Credentials for accessing Gemini models through Vertex. */
 @AutoValue
@@ -39,11 +40,32 @@ public abstract class VertexCredentials {
   @AutoValue.Builder
   public abstract static class Builder {
 
-    public abstract Builder setProject(@Nullable String value);
+    @Deprecated
+    @CanIgnoreReturnValue
+    public final Builder setProject(@Nullable String value) {
+      return project(value);
+    }
 
-    public abstract Builder setLocation(@Nullable String value);
+    @CanIgnoreReturnValue
+    public abstract Builder project(@Nullable String value);
 
-    public abstract Builder setCredentials(@Nullable GoogleCredentials value);
+    @Deprecated
+    @CanIgnoreReturnValue
+    public final Builder setLocation(@Nullable String value) {
+      return location(value);
+    }
+
+    @CanIgnoreReturnValue
+    public abstract Builder location(@Nullable String value);
+
+    @Deprecated
+    @CanIgnoreReturnValue
+    public final Builder setCredentials(@Nullable GoogleCredentials value) {
+      return credentials(value);
+    }
+
+    @CanIgnoreReturnValue
+    public abstract Builder credentials(@Nullable GoogleCredentials value);
 
     public abstract VertexCredentials build();
   }

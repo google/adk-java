@@ -28,6 +28,8 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.plugins.Plugin;
+import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
@@ -41,6 +43,7 @@ import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -143,7 +146,7 @@ public final class AgentToolTest {
     AgentTool agentTool =
         AgentTool.create(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
-                .name("agent name")
+                .name("agent_name")
                 .description("agent description")
                 .inputSchema(inputSchema)
                 .build());
@@ -153,7 +156,7 @@ public final class AgentToolTest {
     assertThat(declaration)
         .isEqualTo(
             FunctionDeclaration.builder()
-                .name("agent name")
+                .name("agent_name")
                 .description("agent description")
                 .parameters(inputSchema)
                 .build());
@@ -164,7 +167,7 @@ public final class AgentToolTest {
     AgentTool agentTool =
         AgentTool.create(
             createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
-                .name("agent name")
+                .name("agent_name")
                 .description("agent description")
                 .build());
 
@@ -173,7 +176,7 @@ public final class AgentToolTest {
     assertThat(declaration)
         .isEqualTo(
             FunctionDeclaration.builder()
-                .name("agent name")
+                .name("agent_name")
                 .description("agent description")
                 .parameters(
                     Schema.builder()
@@ -200,7 +203,7 @@ public final class AgentToolTest {
             .build();
     LlmAgent testAgent =
         createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .inputSchema(inputSchema)
             .build();
@@ -256,7 +259,7 @@ public final class AgentToolTest {
                                     "{\"is_valid\": \"invalid type\", "
                                         + "\"message\": \"success\"}")))
                         .build()))
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .outputSchema(outputSchema)
             .build();
@@ -301,7 +304,7 @@ public final class AgentToolTest {
                                 Part.fromText(
                                     "{\"is_valid\": true, " + "\"message\": \"success\"}")))
                         .build()))
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .inputSchema(inputSchema)
             .outputSchema(outputSchema)
@@ -332,7 +335,7 @@ public final class AgentToolTest {
                                     Part.fromText("First text part. "),
                                     Part.fromText("Second text part.")))
                             .build())))
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .build();
     AgentTool agentTool = AgentTool.create(testAgent);
@@ -358,7 +361,7 @@ public final class AgentToolTest {
                         .build())
                 .build());
     LlmAgent testAgent =
-        createTestAgentBuilder(testLlm).name("agent name").description("agent description").build();
+        createTestAgentBuilder(testLlm).name("agent_name").description("agent description").build();
     AgentTool agentTool = AgentTool.create(testAgent);
     ToolContext toolContext = createToolContext(testAgent);
 
@@ -373,7 +376,7 @@ public final class AgentToolTest {
     LlmAgent testAgent =
         createTestAgentBuilder(
                 createTestLlm(LlmResponse.builder().content(Content.builder().build()).build()))
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .build();
     AgentTool agentTool = AgentTool.create(testAgent);
@@ -394,7 +397,7 @@ public final class AgentToolTest {
                 .build());
     LlmAgent testAgent =
         createTestAgentBuilder(testLlm)
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .inputSchema(
                 Schema.builder()
@@ -422,7 +425,7 @@ public final class AgentToolTest {
                 .content(Content.fromParts(Part.fromText("test response")))
                 .build());
     LlmAgent testAgent =
-        createTestAgentBuilder(testLlm).name("agent name").description("agent description").build();
+        createTestAgentBuilder(testLlm).name("agent_name").description("agent description").build();
     AgentTool agentTool = AgentTool.create(testAgent);
     ToolContext toolContext = createToolContext(testAgent);
 
@@ -447,7 +450,7 @@ public final class AgentToolTest {
                 .build());
     LlmAgent testAgent =
         createTestAgentBuilder(testLlm)
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .afterAgentCallback(afterAgentCallback)
             .build();
@@ -477,7 +480,7 @@ public final class AgentToolTest {
                 .build());
     LlmAgent testAgent =
         createTestAgentBuilder(testLlm)
-            .name("agent name")
+            .name("agent_name")
             .description("agent description")
             .afterAgentCallback(afterAgentCallback)
             .build();
@@ -493,6 +496,46 @@ public final class AgentToolTest {
     // Function.buildResponseEvent() will not include it in the response event.
     assertThat(toolContext.actions().stateDelta()).containsEntry("test_key", "test_value");
     assertThat(toolContext.actions().skipSummarization()).hasValue(true);
+  }
+
+  @Test
+  public void call_withMultipleStateDeltasInResponse_propagatesAllStateDeltas() throws Exception {
+    AfterAgentCallback firstCallback =
+        (callbackContext) -> {
+          callbackContext.state().put("key1", "val1");
+          return Maybe.empty();
+        };
+    AfterAgentCallback secondCallback =
+        (callbackContext) -> {
+          callbackContext.state().put("key2", "val2");
+          return Maybe.empty();
+        };
+    LlmAgent firstAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("first_agent")
+            .afterAgentCallback(firstCallback)
+            .build();
+    LlmAgent secondAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("second_agent")
+            .afterAgentCallback(secondCallback)
+            .build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder()
+            .name("sequence")
+            .description("Process the query through multiple steps")
+            .subAgents(ImmutableList.of(firstAgent, secondAgent))
+            .build();
+    ToolContext toolContext = createToolContext(sequentialAgent);
+    assertThat(toolContext.state()).isEmpty();
+
+    Map<String, Object> unused =
+        AgentTool.create(sequentialAgent)
+            .runAsync(ImmutableMap.of("request", "test"), toolContext)
+            .blockingGet();
+
+    assertThat(toolContext.state()).containsEntry("key1", "val1");
+    assertThat(toolContext.state()).containsEntry("key2", "val2");
   }
 
   @Test
@@ -662,6 +705,169 @@ public final class AgentToolTest {
                 .properties(ImmutableMap.of("request", Schema.builder().type("STRING").build()))
                 .required(ImmutableList.of("request"))
                 .build());
+  }
+
+  @Test
+  public void call_withIncludePluginsTrue_propagatesPlugins() throws Exception {
+    AtomicBoolean callbackCalled = new AtomicBoolean(false);
+    Plugin mockPlugin =
+        new Plugin() {
+          @Override
+          public String getName() {
+            return "mock_plugin";
+          }
+
+          @Override
+          public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
+            callbackCalled.set(true);
+            return Maybe.empty();
+          }
+        };
+    LlmAgent testAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("agent_name")
+            .description("agent description")
+            .build();
+    AgentTool agentTool =
+        AgentTool.create(testAgent, /* skipSummarization= */ false, /* includePlugins= */ true);
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    InvocationContext invocationContext =
+        InvocationContext.builder()
+            .invocationId(InvocationContext.newInvocationContextId())
+            .agent(testAgent)
+            .session(session)
+            .sessionService(sessionService)
+            .pluginManager(new PluginManager(ImmutableList.of(mockPlugin)))
+            .build();
+    ToolContext toolContext = ToolContext.builder(invocationContext).build();
+
+    Map<String, Object> unused =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(callbackCalled.get()).isTrue();
+  }
+
+  @Test
+  public void call_withIncludePluginsFalse_doesNotPropagatePlugins() throws Exception {
+    AtomicBoolean callbackCalled = new AtomicBoolean(false);
+    Plugin mockPlugin =
+        new Plugin() {
+          @Override
+          public String getName() {
+            return "mock_plugin";
+          }
+
+          @Override
+          public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
+            callbackCalled.set(true);
+            return Maybe.empty();
+          }
+        };
+    LlmAgent testAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("agent_name")
+            .description("agent description")
+            .build();
+    AgentTool agentTool =
+        AgentTool.create(testAgent, /* skipSummarization= */ false, /* includePlugins= */ false);
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    InvocationContext invocationContext =
+        InvocationContext.builder()
+            .invocationId(InvocationContext.newInvocationContextId())
+            .agent(testAgent)
+            .session(session)
+            .sessionService(sessionService)
+            .pluginManager(new PluginManager(ImmutableList.of(mockPlugin)))
+            .build();
+    ToolContext toolContext = ToolContext.builder(invocationContext).build();
+
+    Map<String, Object> unused =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(callbackCalled.get()).isFalse();
+  }
+
+  @Test
+  public void call_createWithAgentOnly_defaultsIncludePluginsToFalse() throws Exception {
+    AtomicBoolean callbackCalled = new AtomicBoolean(false);
+    Plugin mockPlugin =
+        new Plugin() {
+          @Override
+          public String getName() {
+            return "mock_plugin";
+          }
+
+          @Override
+          public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
+            callbackCalled.set(true);
+            return Maybe.empty();
+          }
+        };
+    LlmAgent testAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("agent_name")
+            .description("agent description")
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent);
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    InvocationContext invocationContext =
+        InvocationContext.builder()
+            .invocationId(InvocationContext.newInvocationContextId())
+            .agent(testAgent)
+            .session(session)
+            .sessionService(sessionService)
+            .pluginManager(new PluginManager(ImmutableList.of(mockPlugin)))
+            .build();
+    ToolContext toolContext = ToolContext.builder(invocationContext).build();
+
+    Map<String, Object> unused =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(callbackCalled.get()).isFalse();
+  }
+
+  @Test
+  public void call_createWithAgentAndSkipSummarization_defaultsIncludePluginsToFalse()
+      throws Exception {
+    AtomicBoolean callbackCalled = new AtomicBoolean(false);
+    Plugin mockPlugin =
+        new Plugin() {
+          @Override
+          public String getName() {
+            return "mock_plugin";
+          }
+
+          @Override
+          public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
+            callbackCalled.set(true);
+            return Maybe.empty();
+          }
+        };
+    LlmAgent testAgent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .name("agent_name")
+            .description("agent description")
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent, /* skipSummarization= */ true);
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    InvocationContext invocationContext =
+        InvocationContext.builder()
+            .invocationId(InvocationContext.newInvocationContextId())
+            .agent(testAgent)
+            .session(session)
+            .sessionService(sessionService)
+            .pluginManager(new PluginManager(ImmutableList.of(mockPlugin)))
+            .build();
+    ToolContext toolContext = ToolContext.builder(invocationContext).build();
+
+    Map<String, Object> unused =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(callbackCalled.get()).isFalse();
   }
 
   private ToolContext createToolContext(BaseAgent agent) {

@@ -16,6 +16,7 @@
 
 package com.google.adk.models;
 
+import com.google.common.annotations.VisibleForTesting;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -38,6 +39,7 @@ public final class LlmRegistry {
   static {
     registerLlm("gemini-.*", modelName -> Gemini.builder().modelName(modelName).build());
     registerLlm("apigee/.*", modelName -> ApigeeLlm.builder().modelName(modelName).build());
+    registerLlm("gemma-.*", modelName -> Gemini.builder().modelName(modelName).build());
   }
 
   /**
@@ -48,6 +50,17 @@ public final class LlmRegistry {
    */
   public static void registerLlm(String modelNamePattern, LlmFactory factory) {
     llmFactories.put(modelNamePattern, factory);
+  }
+
+  /**
+   * Checks if the given model name matches any of the registered LLM factory patterns.
+   *
+   * @param modelName The model name to check.
+   * @return {@code true} if the model name matches at least one pattern, {@code false} otherwise.
+   */
+  @VisibleForTesting
+  static boolean matchesAnyPattern(String modelName) {
+    return llmFactories.keySet().stream().anyMatch(modelName::matches);
   }
 
   /**

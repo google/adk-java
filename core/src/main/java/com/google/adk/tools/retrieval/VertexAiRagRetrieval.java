@@ -39,8 +39,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,10 +59,10 @@ public class VertexAiRagRetrieval extends BaseRetrievalTool {
   private final RetrieveContextsRequest.VertexRagStore apiVertexRagStore;
 
   public VertexAiRagRetrieval(
-      @Nonnull String name,
-      @Nonnull String description,
-      @Nonnull VertexRagServiceClient vertexRagServiceClient,
-      @Nonnull String parent,
+      String name,
+      String description,
+      VertexRagServiceClient vertexRagServiceClient,
+      String parent,
       @Nullable List<RagResource> ragResources,
       @Nullable Double vectorDistanceThreshold) {
     super(name, description);

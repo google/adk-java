@@ -36,7 +36,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -222,8 +222,7 @@ public class FunctionTool extends BaseTool {
   }
 
   /** Returns the underlying function's {@link Object} instance if present. */
-  @Nullable
-  Object instance() {
+  @Nullable Object instance() {
     return instance;
   }
 
@@ -272,27 +271,43 @@ public class FunctionTool extends BaseTool {
       throws IllegalAccessException, InvocationTargetException {
     Object[] arguments = buildArguments(args, toolContext, null);
     Object result = func.invoke(instance, arguments);
-    if (result == null) {
+    if (result == null || isEmptyOptional(result)) {
       return Maybe.empty();
     } else if (result instanceof Maybe) {
       return ((Maybe<?>) result)
-          .map(
-              data -> objectMapper.convertValue(data, new TypeReference<Map<String, Object>>() {}));
+          .filter(data -> !isEmptyOptional(data))
+          .map(this::convertToMapOrResult);
     } else if (result instanceof Single) {
       return ((Single<?>) result)
-          .map(data -> objectMapper.convertValue(data, new TypeReference<Map<String, Object>>() {}))
-          .toMaybe();
+          .toMaybe()
+          .filter(data -> !isEmptyOptional(data))
+          .map(this::convertToMapOrResult);
     } else {
-      try {
-        return Maybe.just(
-            objectMapper.convertValue(result, new TypeReference<Map<String, Object>>() {}));
-      } catch (IllegalArgumentException e) {
-        // Conversion to map failed, in this case we follow
-        // https://google.github.io/adk-docs/tools-custom/function-tools/#return-type and return
-        // the { "result": $result }
-        return Maybe.just(ImmutableMap.of("result", result));
-      }
+      return Maybe.just(convertToMapOrResult(result));
     }
+  }
+
+  private Map<String, Object> convertToMapOrResult(Object value) {
+    if (value instanceof Optional) {
+      value = ((Optional<?>) value).get();
+    }
+    try {
+      Map<String, Object> map =
+          objectMapper.convertValue(value, new TypeReference<Map<String, Object>>() {});
+      if (map == null) {
+        return ImmutableMap.of();
+      }
+      return map;
+    } catch (IllegalArgumentException e) {
+      // Conversion to map failed, in this case we follow
+      // https://google.github.io/adk-docs/tools-custom/function-tools/#return-type and return
+      // the { "result": $result }
+      return ImmutableMap.of("result", value);
+    }
+  }
+
+  private static boolean isEmptyOptional(Object value) {
+    return value instanceof Optional && ((Optional<?>) value).isEmpty();
   }
 
   @SuppressWarnings("unchecked")
@@ -307,6 +322,21 @@ public class FunctionTool extends BaseTool {
       throw new IllegalArgumentException(
           "callLive was called but the underlying function does not return a Flowable.");
     }
+  }
+
+  @SuppressWarnings("unchecked") // For tool parameter type casting.
+  private @Nullable Object resolveArgumentValue(
+      @Nullable Object argValue, Class<?> paramType, Type parameterizedType, String paramName) {
+    if (paramType.equals(List.class)) {
+      if (argValue instanceof List) {
+        Type type = ((ParameterizedType) parameterizedType).getActualTypeArguments()[0];
+        Class<?> typeArgClass = getTypeClass(type, paramName);
+        return createList((List<Object>) argValue, typeArgClass);
+      }
+    } else if (argValue instanceof Map) {
+      return objectMapper.convertValue(argValue, paramType);
+    }
+    return castValue(argValue, paramType);
   }
 
   @SuppressWarnings("unchecked") // For tool parameter type casting.
@@ -337,9 +367,14 @@ public class FunctionTool extends BaseTool {
         continue;
       }
       Annotations.Schema schema = parameters[i].getAnnotation(Annotations.Schema.class);
+      Class<?> paramType = parameters[i].getType();
       if (!args.containsKey(paramName)) {
         if (schema != null && schema.optional()) {
-          arguments[i] = null;
+          if (paramType.equals(Optional.class)) {
+            arguments[i] = Optional.empty();
+          } else {
+            arguments[i] = null;
+          }
           continue;
         } else {
           throw new IllegalArgumentException(
@@ -348,22 +383,27 @@ public class FunctionTool extends BaseTool {
                   paramName));
         }
       }
-      Class<?> paramType = parameters[i].getType();
       Object argValue = args.get(paramName);
-      if (paramType.equals(List.class)) {
-        if (argValue instanceof List) {
-          Type type =
-              ((ParameterizedType) parameters[i].getParameterizedType())
-                  .getActualTypeArguments()[0];
-          Class<?> typeArgClass = getTypeClass(type, paramName);
-          arguments[i] = createList((List<Object>) argValue, typeArgClass);
-          continue;
+      if (paramType.equals(Optional.class)) {
+        if (argValue == null) {
+          arguments[i] = Optional.empty();
+        } else {
+          Type innerType;
+          Type paramParameterizedType = parameters[i].getParameterizedType();
+          if (paramParameterizedType instanceof ParameterizedType pType) {
+            innerType = pType.getActualTypeArguments()[0];
+          } else {
+            innerType = Object.class;
+          }
+          Class<?> innerClass = getTypeClass(innerType, paramName);
+          Object resolvedValue = resolveArgumentValue(argValue, innerClass, innerType, paramName);
+          arguments[i] = Optional.ofNullable(resolvedValue);
         }
-      } else if (argValue instanceof Map) {
-        arguments[i] = objectMapper.convertValue(argValue, paramType);
-        continue;
+      } else {
+        arguments[i] =
+            resolveArgumentValue(
+                argValue, paramType, parameters[i].getParameterizedType(), paramName);
       }
-      arguments[i] = castValue(argValue, paramType);
     }
     return arguments;
   }

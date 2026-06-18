@@ -21,10 +21,11 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** A {@link State} object that also keeps track of the changes to the state. */
 @SuppressWarnings("ShouldNotSubclass")
@@ -46,16 +47,24 @@ public final class State implements ConcurrentMap<String, Object> {
 
   public State(Map<String, Object> state, @Nullable Map<String, Object> delta) {
     Objects.requireNonNull(state, "state is null");
-    this.state =
-        state instanceof ConcurrentMap
-            ? (ConcurrentMap<String, Object>) state
-            : new ConcurrentHashMap<>(state);
-    this.delta =
-        delta == null
-            ? new ConcurrentHashMap<>()
-            : delta instanceof ConcurrentMap
-                ? (ConcurrentMap<String, Object>) delta
-                : new ConcurrentHashMap<>(delta);
+    this.state = toConcurrentMap(state);
+    this.delta = delta == null ? new ConcurrentHashMap<>() : toConcurrentMap(delta);
+  }
+
+  /**
+   * Converts a map to a concurrent map. Null values are converted to {@link #REMOVED} to avoid
+   * NPEs.
+   *
+   * <p>If the map is already a concurrent map, it is returned as is. Otherwise, a new concurrent
+   * map is created and returned.
+   */
+  private static ConcurrentMap<String, Object> toConcurrentMap(Map<String, Object> map) {
+    if (map instanceof ConcurrentMap) {
+      return (ConcurrentMap<String, Object>) map;
+    }
+    ConcurrentMap<String, Object> concurrentMap = new ConcurrentHashMap<>();
+    map.forEach((key, value) -> concurrentMap.put(key, Optional.ofNullable(value).orElse(REMOVED)));
+    return concurrentMap;
   }
 
   @Override

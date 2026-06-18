@@ -31,8 +31,7 @@ import com.anthropic.models.messages.ToolResultBlockParam;
 import com.anthropic.models.messages.ToolUnion;
 import com.anthropic.models.messages.ToolUseBlockParam;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
+import com.google.adk.JsonBaseModel;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -170,9 +169,16 @@ public class Claude extends BaseLlm {
               .build());
     } else if (part.functionResponse().isPresent()) {
       String content = "";
-      if (part.functionResponse().get().response().isPresent()
-          && part.functionResponse().get().response().get().getOrDefault("result", null) != null) {
-        content = part.functionResponse().get().response().get().get("result").toString();
+      if (part.functionResponse().get().response().isPresent()) {
+        Map<String, Object> responseData = part.functionResponse().get().response().get();
+
+        Object resultObj = responseData.get("result");
+        if (resultObj != null) {
+          content = resultObj.toString();
+        } else {
+          // Fallback to json serialization of the function response.
+          content = serializeToJson(responseData);
+        }
       }
       return ContentBlockParam.ofToolResult(
           ToolResultBlockParam.builder()
@@ -182,6 +188,15 @@ public class Claude extends BaseLlm {
               .build());
     }
     throw new UnsupportedOperationException("Not supported yet.");
+  }
+
+  private String serializeToJson(Object obj) {
+    try {
+      return JsonBaseModel.getMapper().writeValueAsString(obj);
+    } catch (Exception e) {
+      logger.warn("Failed to serialize object to JSON", e);
+      return String.valueOf(obj);
+    }
   }
 
   private void updateTypeString(Map<String, Object> valueDict) {
@@ -221,10 +236,9 @@ public class Claude extends BaseLlm {
           .get()
           .forEach(
               (key, schema) -> {
-                ObjectMapper objectMapper = new ObjectMapper();
-                objectMapper.registerModule(new Jdk8Module());
                 Map<String, Object> schemaMap =
-                    objectMapper.convertValue(schema, new TypeReference<Map<String, Object>>() {});
+                    JsonBaseModel.getMapper()
+                        .convertValue(schema, new TypeReference<Map<String, Object>>() {});
                 updateTypeString(schemaMap);
                 properties.put(key, schemaMap);
               });

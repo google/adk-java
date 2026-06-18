@@ -100,6 +100,8 @@ public class LlmEventSummarizerTest {
                 .get(0)
                 .text())
         .hasValue("Summary");
+    assertThat(compactedEvent.id()).isNotNull();
+    assertThat(compactedEvent.id()).isNotEmpty();
     assertThat(compactedEvent.author()).isEqualTo("user");
     assertThat(compactedEvent.actions()).isNotNull();
     assertThat(compactedEvent.actions().compaction()).isPresent();

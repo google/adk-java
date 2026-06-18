@@ -28,6 +28,7 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import com.google.genai.types.Transcription;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -139,6 +140,47 @@ public final class LlmResponseTest {
     assertThat(deserializedResponse.errorMessage()).isEmpty();
     assertThat(deserializedResponse.interrupted()).isEmpty();
     assertThat(deserializedResponse.usageMetadata()).isEmpty();
+  }
+
+  @Test
+  public void testSerializationAndDeserialization_withTranscriptions()
+      throws JsonProcessingException {
+    Transcription inputTranscription =
+        Transcription.builder().text("user said hello").finished(true).build();
+    Transcription outputTranscription =
+        Transcription.builder().text("model replied hi").finished(false).build();
+    LlmResponse originalResponse =
+        LlmResponse.builder()
+            .content(createSampleContent("hello"))
+            .inputTranscription(inputTranscription)
+            .outputTranscription(outputTranscription)
+            .build();
+
+    String json = originalResponse.toJson();
+    JsonNode jsonNode = objectMapper.readTree(json);
+
+    assertThat(jsonNode.has("inputTranscription")).isTrue();
+    assertThat(jsonNode.get("inputTranscription").get("text").asText())
+        .isEqualTo("user said hello");
+    assertThat(jsonNode.get("inputTranscription").get("finished").asBoolean()).isTrue();
+    assertThat(jsonNode.has("outputTranscription")).isTrue();
+    assertThat(jsonNode.get("outputTranscription").get("text").asText())
+        .isEqualTo("model replied hi");
+    assertThat(jsonNode.get("outputTranscription").get("finished").asBoolean()).isFalse();
+
+    LlmResponse deserializedResponse = LlmResponse.fromJsonString(json, LlmResponse.class);
+
+    assertThat(deserializedResponse).isEqualTo(originalResponse);
+    assertThat(deserializedResponse.inputTranscription()).hasValue(inputTranscription);
+    assertThat(deserializedResponse.outputTranscription()).hasValue(outputTranscription);
+  }
+
+  @Test
+  public void testTranscriptions_emptyByDefault() {
+    LlmResponse response = LlmResponse.builder().content(createSampleContent("hello")).build();
+
+    assertThat(response.inputTranscription()).isEmpty();
+    assertThat(response.outputTranscription()).isEmpty();
   }
 
   @Test

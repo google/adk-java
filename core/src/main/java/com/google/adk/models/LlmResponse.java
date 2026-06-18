@@ -31,9 +31,10 @@ import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponsePromptFeedback;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.Transcription;
 import java.util.List;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Represents a response received from the LLM. */
 @AutoValue
@@ -115,6 +116,20 @@ public abstract class LlmResponse extends JsonBaseModel {
   @JsonProperty("modelVersion")
   public abstract Optional<String> modelVersion();
 
+  /**
+   * Input transcription. The transcription is independent to the model turn which means it doesn't
+   * imply any ordering between transcription and model turn.
+   */
+  @JsonProperty("inputTranscription")
+  public abstract Optional<Transcription> inputTranscription();
+
+  /**
+   * Output transcription. The transcription is independent to the model turn which means it doesn't
+   * imply any ordering between transcription and model turn.
+   */
+  @JsonProperty("outputTranscription")
+  public abstract Optional<Transcription> outputTranscription();
+
   public abstract Builder toBuilder();
 
   /** Builder for constructing {@link LlmResponse} instances. */
@@ -163,6 +178,12 @@ public abstract class LlmResponse extends JsonBaseModel {
 
     @JsonProperty("modelVersion")
     public abstract Builder modelVersion(@Nullable String modelVersion);
+
+    @JsonProperty("inputTranscription")
+    public abstract Builder inputTranscription(@Nullable Transcription inputTranscription);
+
+    @JsonProperty("outputTranscription")
+    public abstract Builder outputTranscription(@Nullable Transcription outputTranscription);
 
     @CanIgnoreReturnValue
     public final Builder response(GenerateContentResponse response) {

@@ -8,6 +8,7 @@ import com.google.adk.JsonBaseModel;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Splitter;
 import com.google.common.collect.Iterables;
+import com.google.common.net.UrlEscapers;
 import com.google.genai.types.HttpOptions;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -18,8 +19,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
-import javax.annotation.Nullable;
 import okhttp3.ResponseBody;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -111,11 +112,12 @@ final class VertexAiClient {
         .flatMapMaybe(VertexAiClient::getJsonResponse);
   }
 
-  Maybe<JsonNode> listEvents(String reasoningEngineId, String sessionId) {
-    return performApiRequest(
-            "GET",
-            "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId + "/events",
-            "")
+  Maybe<JsonNode> listEvents(String reasoningEngineId, String sessionId, @Nullable String filter) {
+    String path = "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId + "/events";
+    if (filter != null) {
+      path += "?filter=" + UrlEscapers.urlFormParameterEscaper().escape(filter);
+    }
+    return performApiRequest("GET", path, "")
         .doOnSuccess(apiResponse -> logger.debug("List events response {}", apiResponse))
         .flatMapMaybe(VertexAiClient::getJsonResponse);
   }

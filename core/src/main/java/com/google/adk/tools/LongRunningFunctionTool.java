@@ -19,7 +19,7 @@ package com.google.adk.tools;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.utils.ComponentRegistry;
 import java.lang.reflect.Method;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** A function tool that returns the result asynchronously. */
 public class LongRunningFunctionTool extends FunctionTool {

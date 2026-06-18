@@ -71,7 +71,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.function.Function;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -129,10 +129,10 @@ public class LlmAgent extends BaseAgent {
         requireNonNullElse(builder.globalInstruction, new Instruction.Static(""));
     this.generateContentConfig = Optional.ofNullable(builder.generateContentConfig);
     this.includeContents = requireNonNullElse(builder.includeContents, IncludeContents.DEFAULT);
-    this.planning = builder.planning != null && builder.planning;
+    this.planning = requireNonNullElse(builder.planning, false);
     this.maxSteps = Optional.ofNullable(builder.maxSteps);
-    this.disallowTransferToParent = builder.disallowTransferToParent;
-    this.disallowTransferToPeers = builder.disallowTransferToPeers;
+    this.disallowTransferToParent = requireNonNullElse(builder.disallowTransferToParent, false);
+    this.disallowTransferToPeers = requireNonNullElse(builder.disallowTransferToPeers, false);
     this.beforeModelCallback = requireNonNullElse(builder.beforeModelCallback, ImmutableList.of());
     this.afterModelCallback = requireNonNullElse(builder.afterModelCallback, ImmutableList.of());
     this.onModelErrorCallback =
@@ -566,8 +566,7 @@ public class LlmAgent extends BaseAgent {
       return this;
     }
 
-    @Nullable
-    private static <B, A> ImmutableList<A> convertCallbacks(
+    private static <B, A> @Nullable ImmutableList<A> convertCallbacks(
         @Nullable List<? extends B> callbacks, Function<B, A> converter, String callbackType) {
       return Optional.ofNullable(callbacks)
           .map(
@@ -594,40 +593,6 @@ public class LlmAgent extends BaseAgent {
           this.disallowTransferToParent != null && this.disallowTransferToParent;
       this.disallowTransferToPeers =
           this.disallowTransferToPeers != null && this.disallowTransferToPeers;
-
-      if (this.outputSchema != null) {
-        if (!this.disallowTransferToParent || !this.disallowTransferToPeers) {
-          logger.warn(
-              "Invalid config for agent {}: outputSchema cannot co-exist with agent transfer"
-                  + " configurations. Setting disallowTransferToParent=true and"
-                  + " disallowTransferToPeers=true.",
-              this.name);
-          this.disallowTransferToParent = true;
-          this.disallowTransferToPeers = true;
-        }
-
-        if (this.subAgents != null && !this.subAgents.isEmpty()) {
-          throw new IllegalArgumentException(
-              "Invalid config for agent "
-                  + this.name
-                  + ": if outputSchema is set, subAgents must be empty to disable agent"
-                  + " transfer.");
-        }
-        if (this.toolsUnion != null && !this.toolsUnion.isEmpty()) {
-          boolean hasOtherTools =
-              this.toolsUnion.stream()
-                  .anyMatch(
-                      tool ->
-                          !(tool instanceof BaseTool baseTool)
-                              || !baseTool.name().equals("example_tool"));
-          if (hasOtherTools) {
-            throw new IllegalArgumentException(
-                "Invalid config for agent "
-                    + this.name
-                    + ": if outputSchema is set, tools must be empty.");
-          }
-        }
-      }
     }
 
     @Override
@@ -806,7 +771,7 @@ public class LlmAgent extends BaseAgent {
     return toolsUnion;
   }
 
-  public ImmutableList<BaseToolset> toolsets() {
+  public List<BaseToolset> toolsets() {
     return toolsets;
   }
 

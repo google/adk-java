@@ -24,6 +24,8 @@ import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
+import com.google.adk.tools.ToolPredicate;
+import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Booleans;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
@@ -32,6 +34,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,7 +54,7 @@ public class McpToolset implements BaseToolset {
   private final McpSessionManager mcpSessionManager;
   private McpSyncClient mcpSession;
   private final ObjectMapper objectMapper;
-  private final Optional<Object> toolFilter;
+  private final @Nullable Object toolFilter;
 
   private static final int MAX_RETRIES = 3;
   private static final long RETRY_DELAY_MILLIS = 100;
@@ -62,17 +65,29 @@ public class McpToolset implements BaseToolset {
    *
    * @param connectionParams The SSE connection parameters to the MCP server.
    * @param objectMapper An ObjectMapper instance for parsing schemas.
-   * @param toolFilter An Optional containing either a ToolPredicate or a List of tool names.
+   * @param toolPredicate A {@link ToolPredicate}
    */
   public McpToolset(
       SseServerParameters connectionParams,
       ObjectMapper objectMapper,
-      Optional<Object> toolFilter) {
-    Objects.requireNonNull(connectionParams);
-    Objects.requireNonNull(objectMapper);
-    this.objectMapper = objectMapper;
-    this.mcpSessionManager = new McpSessionManager(connectionParams);
-    this.toolFilter = toolFilter;
+      ToolPredicate toolPredicate) {
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
+    this.toolFilter = Objects.requireNonNull(toolPredicate);
+  }
+
+  /**
+   * Initializes the McpToolset with SSE server parameters.
+   *
+   * @param connectionParams The SSE connection parameters to the MCP server.
+   * @param objectMapper An ObjectMapper instance for parsing schemas.
+   * @param toolNames A list of tool names
+   */
+  public McpToolset(
+      SseServerParameters connectionParams, ObjectMapper objectMapper, List<String> toolNames) {
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
+    this.toolFilter = ImmutableList.copyOf(toolNames);
   }
 
   /**
@@ -82,7 +97,9 @@ public class McpToolset implements BaseToolset {
    * @param objectMapper An ObjectMapper instance for parsing schemas.
    */
   public McpToolset(SseServerParameters connectionParams, ObjectMapper objectMapper) {
-    this(connectionParams, objectMapper, Optional.empty());
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
+    this.toolFilter = null;
   }
 
   /**
@@ -90,15 +107,27 @@ public class McpToolset implements BaseToolset {
    *
    * @param connectionParams The local server connection parameters to the MCP server.
    * @param objectMapper An ObjectMapper instance for parsing schemas.
-   * @param toolFilter An Optional containing either a ToolPredicate or a List of tool names.
+   * @param toolPredicate A {@link ToolPredicate}
    */
   public McpToolset(
-      ServerParameters connectionParams, ObjectMapper objectMapper, Optional<Object> toolFilter) {
-    Objects.requireNonNull(connectionParams);
-    Objects.requireNonNull(objectMapper);
-    this.objectMapper = objectMapper;
-    this.mcpSessionManager = new McpSessionManager(connectionParams);
-    this.toolFilter = toolFilter;
+      ServerParameters connectionParams, ObjectMapper objectMapper, ToolPredicate toolPredicate) {
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
+    this.toolFilter = Objects.requireNonNull(toolPredicate);
+  }
+
+  /**
+   * Initializes the McpToolset with local server parameters.
+   *
+   * @param connectionParams The local server connection parameters to the MCP server.
+   * @param objectMapper An ObjectMapper instance for parsing schemas.
+   * @param toolNames A list of tool names
+   */
+  public McpToolset(
+      ServerParameters connectionParams, ObjectMapper objectMapper, List<String> toolNames) {
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
+    this.toolFilter = ImmutableList.copyOf(toolNames);
   }
 
   /**
@@ -108,18 +137,9 @@ public class McpToolset implements BaseToolset {
    * @param objectMapper An ObjectMapper instance for parsing schemas.
    */
   public McpToolset(ServerParameters connectionParams, ObjectMapper objectMapper) {
-    this(connectionParams, objectMapper, Optional.empty());
-  }
-
-  /**
-   * Initializes the McpToolset with SSE server parameters, using the ObjectMapper used across the
-   * ADK.
-   *
-   * @param connectionParams The SSE connection parameters to the MCP server.
-   * @param toolFilter An Optional containing either a ToolPredicate or a List of tool names.
-   */
-  public McpToolset(SseServerParameters connectionParams, Optional<Object> toolFilter) {
-    this(connectionParams, JsonBaseModel.getMapper(), toolFilter);
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
+    this.toolFilter = null;
   }
 
   /**
@@ -129,18 +149,7 @@ public class McpToolset implements BaseToolset {
    * @param connectionParams The SSE connection parameters to the MCP server.
    */
   public McpToolset(SseServerParameters connectionParams) {
-    this(connectionParams, JsonBaseModel.getMapper(), Optional.empty());
-  }
-
-  /**
-   * Initializes the McpToolset with local server parameters, using the ObjectMapper used across the
-   * ADK.
-   *
-   * @param connectionParams The local server connection parameters to the MCP server.
-   * @param toolFilter An Optional containing either a ToolPredicate or a List of tool names.
-   */
-  public McpToolset(ServerParameters connectionParams, Optional<Object> toolFilter) {
-    this(connectionParams, JsonBaseModel.getMapper(), toolFilter);
+    this(connectionParams, JsonBaseModel.getMapper());
   }
 
   /**
@@ -150,7 +159,7 @@ public class McpToolset implements BaseToolset {
    * @param connectionParams The local server connection parameters to the MCP server.
    */
   public McpToolset(ServerParameters connectionParams) {
-    this(connectionParams, JsonBaseModel.getMapper(), Optional.empty());
+    this(connectionParams, JsonBaseModel.getMapper());
   }
 
   /**
@@ -158,33 +167,83 @@ public class McpToolset implements BaseToolset {
    *
    * @param mcpSessionManager A McpSessionManager instance for testing.
    * @param objectMapper An ObjectMapper instance for parsing schemas.
-   * @param toolFilter An Optional containing either a ToolPredicate or a List of tool names.
+   * @param toolPredicate A {@link ToolPredicate}
    */
   public McpToolset(
-      McpSessionManager mcpSessionManager, ObjectMapper objectMapper, Optional<Object> toolFilter) {
-    Objects.requireNonNull(mcpSessionManager);
-    Objects.requireNonNull(objectMapper);
-    this.mcpSessionManager = mcpSessionManager;
-    this.objectMapper = objectMapper;
-    this.toolFilter = toolFilter;
+      McpSessionManager mcpSessionManager, ObjectMapper objectMapper, ToolPredicate toolPredicate) {
+    this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.toolFilter = Objects.requireNonNull(toolPredicate);
   }
 
   /**
-   * Initializes the McpToolset with Steamable HTTP server parameters.
+   * Initializes the McpToolset with an McpSessionManager.
+   *
+   * @param mcpSessionManager A McpSessionManager instance for testing.
+   * @param objectMapper An ObjectMapper instance for parsing schemas.
+   * @param toolNames A list of tool names
+   */
+  public McpToolset(
+      McpSessionManager mcpSessionManager, ObjectMapper objectMapper, List<String> toolNames) {
+    this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.toolFilter = ImmutableList.copyOf(toolNames);
+  }
+
+  /**
+   * Initializes the McpToolset with an McpSessionManager and no tool filter.
+   *
+   * @param mcpSessionManager A McpSessionManager instance for testing.
+   * @param objectMapper An ObjectMapper instance for parsing schemas.
+   */
+  public McpToolset(McpSessionManager mcpSessionManager, ObjectMapper objectMapper) {
+    this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.toolFilter = null;
+  }
+
+  /**
+   * Initializes the McpToolset with Streamable HTTP server parameters.
    *
    * @param connectionParams The Streamable HTTP connection parameters to the MCP server.
    * @param objectMapper An ObjectMapper instance for parsing schemas.
-   * @param toolFilter An Optional containing either a ToolPredicate or a List of tool names.
+   * @param toolPredicate A {@link ToolPredicate}
    */
   public McpToolset(
       StreamableHttpServerParameters connectionParams,
       ObjectMapper objectMapper,
-      Optional<Object> toolFilter) {
-    Objects.requireNonNull(connectionParams);
-    Objects.requireNonNull(objectMapper);
-    this.objectMapper = objectMapper;
-    this.mcpSessionManager = new McpSessionManager(connectionParams);
-    this.toolFilter = toolFilter;
+      ToolPredicate toolPredicate) {
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
+    this.toolFilter = Objects.requireNonNull(toolPredicate);
+  }
+
+  /**
+   * Initializes the McpToolset with Streamable HTTP server parameters.
+   *
+   * @param connectionParams The Streamable HTTP connection parameters to the MCP server.
+   * @param objectMapper An ObjectMapper instance for parsing schemas.
+   * @param toolNames A list of tool names
+   */
+  public McpToolset(
+      StreamableHttpServerParameters connectionParams,
+      ObjectMapper objectMapper,
+      List<String> toolNames) {
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
+    this.toolFilter = ImmutableList.copyOf(toolNames);
+  }
+
+  /**
+   * Initializes the McpToolset with Streamable HTTP server parameters and no tool filter.
+   *
+   * @param connectionParams The Streamable HTTP connection parameters to the MCP server.
+   * @param objectMapper An ObjectMapper instance for parsing schemas.
+   */
+  public McpToolset(StreamableHttpServerParameters connectionParams, ObjectMapper objectMapper) {
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
+    this.toolFilter = null;
   }
 
   /**
@@ -194,7 +253,7 @@ public class McpToolset implements BaseToolset {
    * @param connectionParams The Streamable HTTP connection parameters to the MCP server.
    */
   public McpToolset(StreamableHttpServerParameters connectionParams) {
-    this(connectionParams, JsonBaseModel.getMapper(), Optional.empty());
+    this(connectionParams, JsonBaseModel.getMapper());
   }
 
   @Override
@@ -215,8 +274,7 @@ public class McpToolset implements BaseToolset {
                           tool ->
                               new McpTool(
                                   tool, this.mcpSession, this.mcpSessionManager, this.objectMapper))
-                      .filter(
-                          tool -> isToolSelected(tool, toolFilter.orElse(null), readonlyContext)));
+                      .filter(tool -> isToolSelected(tool, toolFilter, readonlyContext)));
             })
         .retryWhen(
             errorObservable ->
@@ -357,16 +415,18 @@ public class McpToolset implements BaseToolset {
                 + " for McpToolset");
       }
 
-      // Convert tool filter to Optional<Object>
-      Optional<Object> toolFilter = Optional.ofNullable(mcpToolsetConfig.toolFilter());
-
+      List<String> toolNames = mcpToolsetConfig.toolFilter();
       Object connectionParameters =
           Optional.<Object>ofNullable(mcpToolsetConfig.stdioConnectionParams())
               .or(() -> Optional.ofNullable(mcpToolsetConfig.sseServerParams()))
               .orElse(mcpToolsetConfig.stdioConnectionParams());
 
       // Create McpToolset with McpSessionManager having appropriate connection parameters
-      return new McpToolset(new McpSessionManager(connectionParameters), mapper, toolFilter);
+      if (toolNames != null) {
+        return new McpToolset(new McpSessionManager(connectionParameters), mapper, toolNames);
+      } else {
+        return new McpToolset(new McpSessionManager(connectionParameters), mapper);
+      }
     } catch (IllegalArgumentException e) {
       throw new ConfigurationException("Failed to parse McpToolsetConfig from ToolArgsConfig", e);
     }

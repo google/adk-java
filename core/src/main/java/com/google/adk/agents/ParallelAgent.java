@@ -16,11 +16,14 @@
 package com.google.adk.agents;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,10 +34,43 @@ import org.slf4j.LoggerFactory;
  * <p>This approach is beneficial for scenarios requiring multiple perspectives or attempts on a
  * single task, such as running different algorithms simultaneously or generating multiple responses
  * for review by a subsequent evaluation agent.
+ *
+ * <p><b>Composition with {@link LlmAgent}s:</b> a {@code ParallelAgent} does not transfer control
+ * back to a parent {@link LlmAgent}. To follow a fan-out with an aggregation step, wrap both in a
+ * {@link SequentialAgent} (used as the root or transferred-to agent). Each parallel sub-agent
+ * publishes via {@code outputKey} and the aggregator reads via {@code {key}} placeholders in its
+ * instruction:
+ *
+ * <pre>{@code
+ * var contacts =
+ *     LlmAgent.builder()
+ *         .name("contacts")
+ *         .model("gemini-flash-latest")
+ *         .instruction("List contacts.")
+ *         .outputKey("contacts")
+ *         .build();
+ * var schedule =
+ *     LlmAgent.builder()
+ *         .name("schedule")
+ *         .model("gemini-flash-latest")
+ *         .instruction("List schedule.")
+ *         .outputKey("schedule")
+ *         .build();
+ * var writer =
+ *     LlmAgent.builder()
+ *         .name("writer")
+ *         .model("gemini-flash-latest")
+ *         .instruction("Write: contacts={contacts}, schedule={schedule}")
+ *         .build();
+ * var gather =
+ *     ParallelAgent.builder().name("gather").subAgents(contacts, schedule).build();
+ * var root = SequentialAgent.builder().name("root").subAgents(gather, writer).build();
+ * }</pre>
  */
 public class ParallelAgent extends BaseAgent {
 
   private static final Logger logger = LoggerFactory.getLogger(ParallelAgent.class);
+  private final Scheduler scheduler;
 
   /**
    * Constructor for ParallelAgent.
@@ -44,24 +80,35 @@ public class ParallelAgent extends BaseAgent {
    * @param subAgents The list of sub-agents to run in parallel.
    * @param beforeAgentCallback Optional callback before the agent runs.
    * @param afterAgentCallback Optional callback after the agent runs.
+   * @param scheduler The scheduler to use for parallel execution.
    */
   private ParallelAgent(
       String name,
       String description,
       List<? extends BaseAgent> subAgents,
       List<Callbacks.BeforeAgentCallback> beforeAgentCallback,
-      List<Callbacks.AfterAgentCallback> afterAgentCallback) {
+      List<Callbacks.AfterAgentCallback> afterAgentCallback,
+      Scheduler scheduler) {
 
     super(name, description, subAgents, beforeAgentCallback, afterAgentCallback);
+    this.scheduler = scheduler;
   }
 
   /** Builder for {@link ParallelAgent}. */
   public static class Builder extends BaseAgent.Builder<Builder> {
 
+    private Scheduler scheduler = Schedulers.io();
+
+    @CanIgnoreReturnValue
+    public Builder scheduler(Scheduler scheduler) {
+      this.scheduler = scheduler;
+      return this;
+    }
+
     @Override
     public ParallelAgent build() {
       return new ParallelAgent(
-          name, description, subAgents, beforeAgentCallback, afterAgentCallback);
+          name, description, subAgents, beforeAgentCallback, afterAgentCallback, scheduler);
     }
   }
 
@@ -129,10 +176,12 @@ public class ParallelAgent extends BaseAgent {
     }
 
     var updatedInvocationContext = setBranchForCurrentAgent(this, invocationContext);
-    return Flowable.merge(
-        currentSubAgents.stream()
-            .map(subAgent -> subAgent.runAsync(updatedInvocationContext))
-            .collect(toImmutableList()));
+    List<Flowable<Event>> agentFlowables = new ArrayList<>();
+    for (BaseAgent subAgent : currentSubAgents) {
+      agentFlowables.add(subAgent.runAsync(updatedInvocationContext).subscribeOn(scheduler));
+    }
+    return Flowable.merge(agentFlowables)
+        .takeUntil((Event event) -> event.actions().escalate().orElse(false));
   }
 
   /**

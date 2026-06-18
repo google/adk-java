@@ -53,7 +53,7 @@ public interface ResponseProcessor {
     public static ResponseProcessingResult create(
         LlmResponse updatedResponse, Iterable<Event> events, String transferToAgent) {
       return new AutoValue_ResponseProcessor_ResponseProcessingResult(
-          updatedResponse, events, Optional.of(transferToAgent));
+          updatedResponse, events, Optional.ofNullable(transferToAgent));
     }
 
     public static ResponseProcessingResult create(

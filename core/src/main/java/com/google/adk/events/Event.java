@@ -33,15 +33,17 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.Transcription;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 // TODO - b/413761119 update Agent.java when resolved.
+
 /** Represents an event in a session. */
 @JsonDeserialize(builder = Event.Builder.class)
 public class Event extends JsonBaseModel {
@@ -64,6 +66,9 @@ public class Event extends JsonBaseModel {
   private @Nullable GroundingMetadata groundingMetadata;
   private @Nullable List<CustomMetadata> customMetadata;
   private @Nullable String modelVersion;
+  private @Nullable Transcription inputTranscription;
+  private @Nullable Transcription outputTranscription;
+
   private long timestamp;
 
   private Event() {}
@@ -266,6 +271,32 @@ public class Event extends JsonBaseModel {
     this.modelVersion = modelVersion;
   }
 
+  /**
+   * Input transcription. The transcription is independent to the model turn which means it doesn't
+   * imply any ordering between transcription and model turn.
+   */
+  @JsonProperty("inputTranscription")
+  public Optional<Transcription> inputTranscription() {
+    return Optional.ofNullable(inputTranscription);
+  }
+
+  public void setInputTranscription(@Nullable Transcription inputTranscription) {
+    this.inputTranscription = inputTranscription;
+  }
+
+  /**
+   * Output transcription. The transcription is independent to the model turn which means it doesn't
+   * imply any ordering between transcription and model turn.
+   */
+  @JsonProperty("outputTranscription")
+  public Optional<Transcription> outputTranscription() {
+    return Optional.ofNullable(outputTranscription);
+  }
+
+  public void setOutputTranscription(@Nullable Transcription outputTranscription) {
+    this.outputTranscription = outputTranscription;
+  }
+
   /** The timestamp of the event. */
   @JsonProperty("timestamp")
   public long timestamp() {
@@ -348,7 +379,7 @@ public class Event extends JsonBaseModel {
     private String invocationId;
     private String author;
     private @Nullable Content content;
-    private EventActions actions;
+    private @Nullable EventActions actions;
     private @Nullable Set<String> longRunningToolIds;
     private @Nullable Boolean partial;
     private @Nullable Boolean turnComplete;
@@ -362,6 +393,8 @@ public class Event extends JsonBaseModel {
     private @Nullable GroundingMetadata groundingMetadata;
     private @Nullable List<CustomMetadata> customMetadata;
     private @Nullable String modelVersion;
+    private @Nullable Transcription inputTranscription;
+    private @Nullable Transcription outputTranscription;
     private @Nullable Long timestamp;
 
     @JsonCreator
@@ -399,7 +432,7 @@ public class Event extends JsonBaseModel {
 
     @CanIgnoreReturnValue
     @JsonProperty("actions")
-    public Builder actions(EventActions value) {
+    public Builder actions(@Nullable EventActions value) {
       this.actions = value;
       return this;
     }
@@ -520,6 +553,20 @@ public class Event extends JsonBaseModel {
       return this;
     }
 
+    @CanIgnoreReturnValue
+    @JsonProperty("inputTranscription")
+    public Builder inputTranscription(@Nullable Transcription value) {
+      this.inputTranscription = value;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    @JsonProperty("outputTranscription")
+    public Builder outputTranscription(@Nullable Transcription value) {
+      this.outputTranscription = value;
+      return this;
+    }
+
     public Event build() {
       Event event = new Event();
       event.setId(id);
@@ -541,6 +588,8 @@ public class Event extends JsonBaseModel {
       event.setModelVersion(modelVersion);
       event.setActions(actions().orElseGet(() -> EventActions.builder().build()));
       event.setTimestamp(timestamp().orElseGet(() -> Instant.now().toEpochMilli()));
+      event.setInputTranscription(inputTranscription);
+      event.setOutputTranscription(outputTranscription);
       return event;
     }
   }
@@ -575,7 +624,9 @@ public class Event extends JsonBaseModel {
             .branch(this.branch)
             .groundingMetadata(this.groundingMetadata)
             .customMetadata(this.customMetadata)
-            .modelVersion(this.modelVersion);
+            .modelVersion(this.modelVersion)
+            .inputTranscription(this.inputTranscription)
+            .outputTranscription(this.outputTranscription);
     if (this.timestamp != 0) {
       builder.timestamp(this.timestamp);
     }
@@ -608,7 +659,9 @@ public class Event extends JsonBaseModel {
         && Objects.equals(branch, other.branch)
         && Objects.equals(groundingMetadata, other.groundingMetadata)
         && Objects.equals(customMetadata, other.customMetadata)
-        && Objects.equals(modelVersion, other.modelVersion);
+        && Objects.equals(modelVersion, other.modelVersion)
+        && Objects.equals(inputTranscription, other.inputTranscription)
+        && Objects.equals(outputTranscription, other.outputTranscription);
   }
 
   @Override
@@ -637,6 +690,8 @@ public class Event extends JsonBaseModel {
         groundingMetadata,
         customMetadata,
         modelVersion,
+        inputTranscription,
+        outputTranscription,
         timestamp);
   }
 }

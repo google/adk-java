@@ -25,9 +25,12 @@ import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
@@ -35,6 +38,7 @@ import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -43,9 +47,11 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import com.google.genai.types.Transcription;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
@@ -642,6 +648,94 @@ public final class BaseLlmFlowTest {
   }
 
   @Test
+  public void postprocess_onlyInputTranscription_returnsEvent() {
+    Transcription inputTranscription =
+        Transcription.builder().text("user said hello").finished(true).build();
+    LlmResponse llmResponse = LlmResponse.builder().inputTranscription(inputTranscription).build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(createTestLlm(llmResponse)));
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    Event baseEvent =
+        Event.builder()
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .build();
+
+    List<Event> events =
+        baseLlmFlow
+            .postprocess(
+                invocationContext,
+                baseEvent,
+                LlmRequest.builder().build(),
+                llmResponse,
+                Context.current())
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(1);
+    Event event = getOnlyElement(events);
+    assertThat(event.inputTranscription()).hasValue(inputTranscription);
+    assertThat(event.outputTranscription()).isEmpty();
+  }
+
+  @Test
+  public void postprocess_onlyOutputTranscription_returnsEvent() {
+    Transcription outputTranscription =
+        Transcription.builder().text("model replied hi").finished(false).build();
+    LlmResponse llmResponse =
+        LlmResponse.builder().outputTranscription(outputTranscription).build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(createTestLlm(llmResponse)));
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    Event baseEvent =
+        Event.builder()
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .build();
+
+    List<Event> events =
+        baseLlmFlow
+            .postprocess(
+                invocationContext,
+                baseEvent,
+                LlmRequest.builder().build(),
+                llmResponse,
+                Context.current())
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(1);
+    Event event = getOnlyElement(events);
+    assertThat(event.outputTranscription()).hasValue(outputTranscription);
+    assertThat(event.inputTranscription()).isEmpty();
+  }
+
+  @Test
+  public void run_responseWithTranscriptions_propagatesTranscriptionsToEvent() {
+    Transcription inputTranscription =
+        Transcription.builder().text("user said hello").finished(true).build();
+    Transcription outputTranscription =
+        Transcription.builder().text("model replied hi").finished(true).build();
+    Content content = Content.fromParts(Part.fromText("model replied hi"));
+    LlmResponse llmResponse =
+        LlmResponse.builder()
+            .content(content)
+            .inputTranscription(inputTranscription)
+            .outputTranscription(outputTranscription)
+            .build();
+    TestLlm testLlm = createTestLlm(llmResponse);
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> events = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    Event event = getOnlyElement(events);
+    assertThat(event.inputTranscription()).hasValue(inputTranscription);
+    assertThat(event.outputTranscription()).hasValue(outputTranscription);
+  }
+
+  @Test
   public void postprocess_noResponseProcessors_onlyUsageMetadata_returnsEvent() {
     GenerateContentResponseUsageMetadata usageMetadata =
         createGenerateContentResponseUsageMetadata().build();
@@ -672,5 +766,113 @@ public final class BaseLlmFlowTest {
     assertThat(event.usageMetadata()).hasValue(usageMetadata);
     assertThat(event.author()).isEqualTo(invocationContext.agent().name());
     assertThat(event.invocationId()).isEqualTo(invocationContext.invocationId());
+  }
+
+  @Test
+  public void getRequestProcessorFromTools_sequentiallyAppliesToolProcessors() {
+    BaseTool tool1 =
+        new BaseTool("tool1", "test tool 1") {
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder builder, ToolContext toolContext) {
+            return Completable.fromAction(
+                () -> builder.appendInstructions(ImmutableList.of("instruction1")));
+          }
+        };
+    BaseTool tool2 =
+        new BaseTool("tool2", "test tool 2") {
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder builder, ToolContext toolContext) {
+            return Completable.fromAction(
+                () -> builder.appendInstructions(ImmutableList.of("instruction2")));
+          }
+        };
+
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .tools(tool1, tool2)
+            .build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    RequestProcessor requestProcessor = baseLlmFlow.getRequestProcessorFromTools(agent);
+
+    LlmRequest processedRequest =
+        requestProcessor
+            .processRequest(invocationContext, LlmRequest.builder().build())
+            .map(RequestProcessingResult::updatedRequest)
+            .blockingGet();
+
+    assertThat(processedRequest.getSystemInstructions())
+        .containsExactly("instruction1\n\ninstruction2");
+  }
+
+  @Test
+  public void getRequestProcessorFromTools_appliesToolsetAndItsToolsProcessors() {
+    BaseTool tool1 =
+        new BaseTool("tool1", "test tool 1") {
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder builder, ToolContext toolContext) {
+            return Completable.fromAction(
+                () -> builder.appendInstructions(ImmutableList.of("tool-instruction")));
+          }
+        };
+
+    BaseToolset toolset =
+        new BaseToolset() {
+          @Override
+          public Flowable<BaseTool> getTools(ReadonlyContext readonlyContext) {
+            return Flowable.just(tool1);
+          }
+
+          @Override
+          public Completable processLlmRequest(
+              LlmRequest.Builder builder, ToolContext toolContext) {
+            return Completable.fromAction(
+                () -> builder.appendInstructions(ImmutableList.of("toolset-instruction")));
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build())).tools(toolset).build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    RequestProcessor requestProcessor = baseLlmFlow.getRequestProcessorFromTools(agent);
+
+    LlmRequest processedRequest =
+        requestProcessor
+            .processRequest(invocationContext, LlmRequest.builder().build())
+            .map(RequestProcessingResult::updatedRequest)
+            .blockingGet();
+
+    assertThat(processedRequest.getSystemInstructions())
+        .containsExactly("toolset-instruction\n\ntool-instruction");
+  }
+
+  @Test
+  public void getRequestProcessorFromTools_throwsOnUnsupportedType() {
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .tools("unsupported-tool-type-string")
+            .build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    RequestProcessor requestProcessor = baseLlmFlow.getRequestProcessorFromTools(agent);
+
+    LlmRequest request = LlmRequest.builder().build();
+    IllegalArgumentException thrown =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> requestProcessor.processRequest(invocationContext, request));
+    assertThat(thrown)
+        .hasMessageThat()
+        .contains("Object in tools list is not of a supported type: java.lang.String");
   }
 }

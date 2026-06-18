@@ -73,7 +73,7 @@ public final class ExampleToolTest {
 
   @Test
   public void processLlmRequest_withProvider_appendsFewShot() {
-    ExampleTool tool = ExampleTool.builder().setExampleProvider(ProviderHolder.EXAMPLES).build();
+    ExampleTool tool = ExampleTool.builder().exampleProvider(ProviderHolder.EXAMPLES).build();
 
     InvocationContext ctx = buildInvocationContext();
     LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");

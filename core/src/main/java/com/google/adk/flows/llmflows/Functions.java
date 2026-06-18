@@ -29,11 +29,12 @@ import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
+import com.google.adk.telemetry.Instrumentation;
+import com.google.adk.telemetry.Instrumentation.ToolExecution;
 import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
-import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -45,9 +46,11 @@ import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Function;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -141,9 +144,12 @@ public final class Functions {
       Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
 
+    List<FunctionCall> validFunctionCalls = new ArrayList<>();
     for (FunctionCall functionCall : functionCalls) {
       if (!tools.containsKey(functionCall.name().get())) {
-        throw new VerifyException("Tool not found: " + functionCall.name().get());
+        logger.warn("Tool not found: {}", functionCall.name().get());
+      } else {
+        validFunctionCalls.add(functionCall);
       }
     }
 
@@ -151,15 +157,8 @@ public final class Functions {
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         getFunctionCallMapper(invocationContext, tools, toolConfirmations, false, parentContext);
 
-    Observable<Event> functionResponseEventsObservable;
-    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
-      functionResponseEventsObservable =
-          Observable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
-    } else {
-      functionResponseEventsObservable =
-          Observable.fromIterable(functionCalls)
-              .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
-    }
+    Observable<Event> functionResponseEventsObservable =
+        buildToolExecutionObservable(invocationContext, validFunctionCalls, functionCallMapper);
     return functionResponseEventsObservable
         .toList()
         .toMaybe()
@@ -178,8 +177,12 @@ public final class Functions {
 
               if (events.size() > 1) {
                 return Maybe.just(mergedEvent)
-                    .doOnSuccess(event -> Tracing.traceToolResponse(event.id(), event))
-                    .compose(Tracing.<Event>trace("tool_response").setParent(parentContext));
+                    .compose(
+                        Tracing.<Event>trace("execute_tool (merged)")
+                            .setParent(parentContext)
+                            .onSuccess(
+                                (span, event) ->
+                                    Tracing.traceMergedToolCalls(span, event.id(), event)));
               }
               return Maybe.just(mergedEvent);
             });
@@ -205,9 +208,12 @@ public final class Functions {
       Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
 
+    List<FunctionCall> validFunctionCalls = new ArrayList<>();
     for (FunctionCall functionCall : functionCalls) {
       if (!tools.containsKey(functionCall.name().get())) {
-        throw new VerifyException("Tool not found: " + functionCall.name().get());
+        logger.warn("Tool not found: {}", functionCall.name().get());
+      } else {
+        validFunctionCalls.add(functionCall);
       }
     }
 
@@ -215,15 +221,8 @@ public final class Functions {
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         getFunctionCallMapper(invocationContext, tools, toolConfirmations, true, parentContext);
 
-    Observable<Event> responseEventsObservable;
-    if (invocationContext.runConfig().toolExecutionMode() == ToolExecutionMode.SEQUENTIAL) {
-      responseEventsObservable =
-          Observable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
-    } else {
-      responseEventsObservable =
-          Observable.fromIterable(functionCalls)
-              .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
-    }
+    Observable<Event> responseEventsObservable =
+        buildToolExecutionObservable(invocationContext, validFunctionCalls, functionCallMapper);
 
     return responseEventsObservable
         .toList()
@@ -234,8 +233,53 @@ public final class Functions {
               if (events.isEmpty()) {
                 return Maybe.empty();
               }
-              return Maybe.just(Functions.mergeParallelFunctionResponseEvents(events).orElse(null));
+              return Maybe.fromOptional(Functions.mergeParallelFunctionResponseEvents(events));
             });
+  }
+
+  /**
+   * Builds the tool-execution {@link Observable} for the configured {@link ToolExecutionMode}.
+   *
+   * <ul>
+   *   <li>{@link ToolExecutionMode#SEQUENTIAL} (or a single call, where parallelism is moot) uses
+   *       {@code concatMapMaybe}: each tool is subscribed only after the previous one completes.
+   *   <li>{@link ToolExecutionMode#PARALLEL} (the default) uses {@code concatMapEager}: all tools
+   *       are subscribed eagerly on the caller thread. Async tools therefore run concurrently, but
+   *       tools that block the subscribing thread still execute sequentially. This matches the
+   *       historical behavior of the default mode.
+   *   <li>{@link ToolExecutionMode#PARALLEL_SUBSCRIBE} uses {@code concatMapEager} and additionally
+   *       subscribes each tool on a worker scheduler, so blocking tools also run concurrently.
+   *       {@code concatMapEager} preserves input order required by {@link
+   *       #mergeParallelFunctionResponseEvents}.
+   * </ul>
+   */
+  private static Observable<Event> buildToolExecutionObservable(
+      InvocationContext invocationContext,
+      List<FunctionCall> validFunctionCalls,
+      Function<FunctionCall, Maybe<Event>> functionCallMapper) {
+    ToolExecutionMode mode = invocationContext.runConfig().toolExecutionMode();
+    boolean sequential = mode == ToolExecutionMode.SEQUENTIAL || validFunctionCalls.size() <= 1;
+    if (sequential) {
+      return Observable.fromIterable(validFunctionCalls).concatMapMaybe(functionCallMapper);
+    }
+    if (mode == ToolExecutionMode.PARALLEL_SUBSCRIBE) {
+      Scheduler scheduler = resolveToolExecutionScheduler(invocationContext);
+      return Observable.fromIterable(validFunctionCalls)
+          .concatMapEager(
+              call -> functionCallMapper.apply(call).toObservable().subscribeOn(scheduler));
+    }
+    // PARALLEL (and NONE, which defaults to PARALLEL): eager subscribe on the caller thread,
+    // without offloading to a worker. Async tools run concurrently; blocking tools still block.
+    return Observable.fromIterable(validFunctionCalls)
+        .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
+  }
+
+  /** Agent executor if set, otherwise the IO scheduler. */
+  private static Scheduler resolveToolExecutionScheduler(InvocationContext invocationContext) {
+    if (invocationContext.agent() instanceof LlmAgent llmAgent) {
+      return llmAgent.executor().map(Schedulers::from).orElse(Schedulers.io());
+    }
+    return Schedulers.io();
   }
 
   private static Function<FunctionCall, Maybe<Event>> getFunctionCallMapper(
@@ -269,10 +313,8 @@ public final class Functions {
                                                   tool,
                                                   toolContext,
                                                   functionCall,
-                                                  functionArgs,
-                                                  parentContext)
-                                              : callTool(
-                                                  tool, functionArgs, toolContext, parentContext))
+                                                  functionArgs)
+                                              : callTool(tool, functionArgs, toolContext))
                                   .compose(Tracing.withContext(parentContext)));
 
                   return postProcessFunctionResult(
@@ -296,8 +338,7 @@ public final class Functions {
       BaseTool tool,
       ToolContext toolContext,
       FunctionCall functionCall,
-      Map<String, Object> args,
-      Context parentContext) {
+      Map<String, Object> args) {
     // Case 1: Handle a call to stopStreaming
     if (functionCall.name().get().equals("stopStreaming") && args.containsKey("functionName")) {
       String functionNameToStop = (String) args.get("functionName");
@@ -365,7 +406,7 @@ public final class Functions {
     }
 
     // Case 3: Fallback for regular, non-streaming tools
-    return callTool(tool, args, toolContext, parentContext);
+    return callTool(tool, args, toolContext);
   }
 
   public static Set<String> getLongRunningFunctionCalls(
@@ -391,6 +432,25 @@ public final class Functions {
       ToolContext toolContext,
       boolean isLive,
       Context parentContext) {
+    return Maybe.using(
+        () ->
+            Instrumentation.recordToolExecution(
+                tool, invocationContext.agent(), functionArgs, parentContext),
+        toolExecution ->
+            processFunctionResult(
+                    maybeFunctionResult, invocationContext, tool, functionArgs, toolContext, isLive)
+                .doOnSuccess(event -> toolExecution.context().setFunctionResponseEvent(event))
+                .doOnError(toolExecution::setError),
+        ToolExecution::close);
+  }
+
+  private static Maybe<Event> processFunctionResult(
+      Maybe<Map<String, Object>> maybeFunctionResult,
+      InvocationContext invocationContext,
+      BaseTool tool,
+      Map<String, Object> functionArgs,
+      ToolContext toolContext,
+      boolean isLive) {
     return maybeFunctionResult
         .map(Optional::of)
         .defaultIfEmpty(Optional.empty())
@@ -426,12 +486,9 @@ public final class Functions {
                         Event event =
                             buildResponseEvent(
                                 tool, finalFunctionResult, toolContext, invocationContext);
-                        Tracing.traceToolResponse(event.id(), event);
                         return Maybe.just(event);
                       });
-            })
-        .compose(
-            Tracing.<Event>trace("tool_response [" + tool.name() + "]").setParent(parentContext));
+            });
   }
 
   private static Optional<Event> mergeParallelFunctionResponseEvents(
@@ -579,17 +636,10 @@ public final class Functions {
   }
 
   private static Maybe<Map<String, Object>> callTool(
-      BaseTool tool, Map<String, Object> args, ToolContext toolContext, Context parentContext) {
+      BaseTool tool, Map<String, Object> args, ToolContext toolContext) {
     return tool.runAsync(args, toolContext)
         .toMaybe()
-        .doOnSubscribe(
-            d ->
-                Tracing.traceToolCall(
-                    tool.name(), tool.description(), tool.getClass().getSimpleName(), args))
         .doOnError(t -> Span.current().recordException(t))
-        .compose(
-            Tracing.<Map<String, Object>>trace("tool_call [" + tool.name() + "]")
-                .setParent(parentContext))
         .onErrorResumeNext(
             e ->
                 Maybe.error(

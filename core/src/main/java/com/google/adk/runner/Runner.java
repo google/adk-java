@@ -16,6 +16,8 @@
 
 package com.google.adk.runner;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+
 import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.ContextCacheConfig;
@@ -28,6 +30,7 @@ import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.flows.llmflows.PersistBarrier;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.Model;
 import com.google.adk.plugins.Plugin;
@@ -45,6 +48,9 @@ import com.google.adk.tools.FunctionTool;
 import com.google.adk.utils.CollectionUtils;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.MapMaker;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
 import com.google.genai.types.Content;
@@ -57,14 +63,17 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-import javax.annotation.Nullable;
+import java.util.concurrent.ConcurrentMap;
+import org.jspecify.annotations.Nullable;
 
 /** The main class for the GenAI Agents runner. */
 public class Runner {
@@ -76,6 +85,8 @@ public class Runner {
   private final PluginManager pluginManager;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
+  private final ConcurrentMap<String, Completable> activeSessionCompletables =
+      new MapMaker().weakValues().makeMap();
 
   /** Builder for {@link Runner}. */
   public static class Builder {
@@ -380,25 +391,57 @@ public class Runner {
       Content newMessage,
       RunConfig runConfig,
       @Nullable Map<String, Object> stateDelta) {
+    Flowable<Event> result =
+        Flowable.defer(
+                () ->
+                    this.sessionService
+                        .getSession(appName, userId, sessionId, Optional.empty())
+                        .switchIfEmpty(
+                            Single.defer(
+                                () -> {
+                                  if (runConfig.autoCreateSession()) {
+                                    return this.sessionService.createSession(
+                                        appName, userId, (Map<String, Object>) null, sessionId);
+                                  }
+                                  return Single.error(
+                                      new IllegalArgumentException(
+                                          String.format(
+                                              "Session not found: %s for user %s",
+                                              sessionId, userId)));
+                                }))
+                        .flatMapPublisher(
+                            session ->
+                                this.runAsyncImpl(session, newMessage, runConfig, stateDelta)))
+            .compose(Tracing.trace("invocation"));
+
     return Flowable.defer(
-            () ->
-                this.sessionService
-                    .getSession(appName, userId, sessionId, Optional.empty())
-                    .switchIfEmpty(
-                        Single.defer(
-                            () -> {
-                              if (runConfig.autoCreateSession()) {
-                                return this.sessionService.createSession(
-                                    appName, userId, (Map<String, Object>) null, sessionId);
-                              }
-                              return Single.error(
-                                  new IllegalArgumentException(
-                                      String.format(
-                                          "Session not found: %s for user %s", sessionId, userId)));
-                            }))
-                    .flatMapPublisher(
-                        session -> this.runAsyncImpl(session, newMessage, runConfig, stateDelta)))
-        .compose(Tracing.trace("invocation"));
+        () -> {
+          if (sessionId == null) {
+            return result;
+          }
+
+          CompletableSubject requestCompletion = CompletableSubject.create();
+
+          Completable[] previousHolder = new Completable[1];
+
+          activeSessionCompletables.compute(
+              sessionId,
+              (key, current) -> {
+                previousHolder[0] = current;
+                return requestCompletion;
+              });
+
+          Completable previous = previousHolder[0];
+
+          Flowable<Event> sequenced =
+              (previous == null) ? result : previous.onErrorComplete().andThen(result);
+
+          return sequenced.doFinally(
+              () -> {
+                requestCompletion.onComplete();
+                activeSessionCompletables.remove(sessionId, requestCompletion);
+              });
+        });
   }
 
   /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
@@ -426,36 +469,6 @@ public class Runner {
   }
 
   /**
-   * See {@link #runAsync(Session, Content, RunConfig, Map)}.
-   *
-   * @deprecated Use runAsync with sessionId.
-   */
-  @Deprecated(since = "0.4.0", forRemoval = true)
-  public Flowable<Event> runAsync(Session session, Content newMessage, RunConfig runConfig) {
-    return runAsync(session, newMessage, runConfig, /* stateDelta= */ null);
-  }
-
-  /**
-   * Runs the agent asynchronously using a provided Session object.
-   *
-   * @param session The session to run the agent in.
-   * @param newMessage The new message from the user to process.
-   * @param runConfig Configuration for the agent run.
-   * @param stateDelta Optional map of state updates to merge into the session for this run.
-   * @return A Flowable stream of {@link Event} objects generated by the agent during execution.
-   * @deprecated Use runAsync with sessionId.
-   */
-  @Deprecated(since = "0.4.0", forRemoval = true)
-  public Flowable<Event> runAsync(
-      Session session,
-      Content newMessage,
-      RunConfig runConfig,
-      @Nullable Map<String, Object> stateDelta) {
-    return runAsyncImpl(session, newMessage, runConfig, stateDelta)
-        .compose(Tracing.trace("invocation"));
-  }
-
-  /**
    * Runs the agent asynchronously using a provided Session object.
    *
    * @param session The session to run the agent in.
@@ -478,6 +491,12 @@ public class Runner {
               BaseAgent rootAgent = this.agent;
               String invocationId = InvocationContext.newInvocationContextId();
 
+              // Pre-merge stateDelta so onUserMessageCallback can access it.
+              // Safe: session is a copy; persistence still happens via appendNewMessageToSession.
+              if (stateDelta != null && !stateDelta.isEmpty()) {
+                stateDelta.forEach((key, value) -> session.state().put(key, value));
+              }
+
               // Create initial context
               InvocationContext initialContext =
                   newInvocationContextBuilder(session)
@@ -499,23 +518,9 @@ public class Runner {
                               runConfig.saveInputBlobsAsArtifacts(),
                               stateDelta))
                   .flatMapPublisher(
-                      event -> {
-                        // Get the updated session after the message and state delta are
-                        // applied
-                        return this.sessionService
-                            .getSession(
-                                session.appName(), session.userId(), session.id(), Optional.empty())
-                            .flatMapPublisher(
-                                updatedSession ->
-                                    runAgentWithFreshSession(
-                                        session,
-                                        updatedSession,
-                                        event,
-                                        invocationId,
-                                        runConfig,
-                                        rootAgent))
-                            .compose(Tracing.<Event>withContext(capturedContext));
-                      });
+                      event ->
+                          runAgentWithUpdatedSession(initialContext, session, event, rootAgent)
+                              .compose(Tracing.<Event>withContext(capturedContext)));
             })
         .doOnError(
             throwable -> {
@@ -525,19 +530,27 @@ public class Runner {
             });
   }
 
-  private Flowable<Event> runAgentWithFreshSession(
-      Session session,
-      Session updatedSession,
-      Event event,
-      String invocationId,
-      RunConfig runConfig,
-      BaseAgent rootAgent) {
+  /**
+   * Runs the agent with the updated session state.
+   *
+   * <p>This method is called after the user message has been persistent in the session. It creates
+   * a final {@link InvocationContext} that inherits state from the {@code initialContext} but uses
+   * the {@code updatedSession} to ensure the agent can access the latest conversation history.
+   *
+   * @param initialContext the context from the start of the invocation, used to preserve metadata
+   *     and callback data.
+   * @param updatedSession the session object containing the latest message.
+   * @param event the event representing the user message that was just appended.
+   * @param rootAgent the agent to be executed.
+   * @return a stream of events from the agent execution and subsequent plugin callbacks.
+   */
+  private Flowable<Event> runAgentWithUpdatedSession(
+      InvocationContext initialContext, Session updatedSession, Event event, BaseAgent rootAgent) {
     // Create context with updated session for beforeRunCallback
     InvocationContext contextWithUpdatedSession =
-        newInvocationContextBuilder(updatedSession)
-            .invocationId(invocationId)
+        initialContext.toBuilder()
+            .session(updatedSession)
             .agent(this.findAgentToRun(updatedSession, rootAgent))
-            .runConfig(runConfig)
             .userContent(event.content().orElseGet(Content::fromParts))
             .build();
 
@@ -554,19 +567,32 @@ public class Runner {
                         .content(content)
                         .build());
 
+    // Let BaseLlmFlow block each step until this Runner has persisted the prior step's events.
+    PersistBarrier.enable(contextWithUpdatedSession);
+
     // Agent execution
     Flowable<Event> agentEvents =
         contextWithUpdatedSession
             .agent()
             .runAsync(contextWithUpdatedSession)
-            .flatMap(
+            .concatMap(
                 agentEvent ->
                     this.sessionService
                         .appendEvent(updatedSession, agentEvent)
+                        // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
+                        // sole appendEvent caller (see PersistBarrier).
+                        .doOnSuccess(
+                            unusedEvent ->
+                                PersistBarrier.markPersisted(
+                                    contextWithUpdatedSession, agentEvent.id()))
+                        .doOnError(
+                            error ->
+                                PersistBarrier.markFailed(
+                                    contextWithUpdatedSession, agentEvent.id(), error))
                         .flatMap(
                             registeredEvent -> {
                               // TODO: remove this hack after deprecating runAsync with Session.
-                              copySessionStates(updatedSession, session);
+                              copySessionStates(updatedSession, initialContext.session());
                               return contextWithUpdatedSession
                                   .pluginManager()
                                   .onEventCallback(contextWithUpdatedSession, registeredEvent)
@@ -609,19 +635,18 @@ public class Runner {
     if (liveRequestQueue != null) {
       // Default to AUDIO modality if not specified.
       if (CollectionUtils.isNullOrEmpty(runConfig.responseModalities())) {
-        runConfigBuilder.setResponseModalities(
-            ImmutableList.of(new Modality(Modality.Known.AUDIO)));
+        runConfigBuilder.responseModalities(ImmutableList.of(new Modality(Modality.Known.AUDIO)));
         if (runConfig.outputAudioTranscription() == null) {
-          runConfigBuilder.setOutputAudioTranscription(AudioTranscriptionConfig.builder().build());
+          runConfigBuilder.outputAudioTranscription(AudioTranscriptionConfig.builder().build());
         }
       } else if (!runConfig.responseModalities().contains(new Modality(Modality.Known.TEXT))) {
         if (runConfig.outputAudioTranscription() == null) {
-          runConfigBuilder.setOutputAudioTranscription(AudioTranscriptionConfig.builder().build());
+          runConfigBuilder.outputAudioTranscription(AudioTranscriptionConfig.builder().build());
         }
       }
       // Need input transcription for agent transferring in live mode.
       if (runConfig.inputAudioTranscription() == null) {
-        runConfigBuilder.setInputAudioTranscription(AudioTranscriptionConfig.builder().build());
+        runConfigBuilder.inputAudioTranscription(AudioTranscriptionConfig.builder().build());
       }
     }
     InvocationContext.Builder builder =
@@ -736,18 +761,6 @@ public class Runner {
   }
 
   /**
-   * Runs the agent asynchronously with a default user ID.
-   *
-   * @return stream of generated events.
-   */
-  @Deprecated(since = "0.5.0", forRemoval = true)
-  public Flowable<Event> runWithSessionId(
-      String sessionId, Content newMessage, RunConfig runConfig) {
-    // TODO(b/410859954): Add user_id to getter or method signature. Assuming "tmp-user" for now.
-    return this.runAsync("tmp-user", sessionId, newMessage, runConfig);
-  }
-
-  /**
    * Checks if the agent and its parent chain allow transfer up the tree.
    *
    * @return true if transferable, false otherwise.
@@ -769,17 +782,23 @@ public class Runner {
     return true;
   }
 
-  /**
-   * Returns the agent that should handle the next request based on session history.
-   *
-   * @return agent to run.
-   */
+  /** Returns the agent that should handle the next request based on session history. */
   private BaseAgent findAgentToRun(Session session, BaseAgent rootAgent) {
+    // Route function responses back to the originating function-call author so HITL tool
+    // confirmations resume the sub-agent even through non-LlmAgent ancestors.
+    Optional<BaseAgent> functionCallAuthor = findFunctionCallAuthor(session, rootAgent);
+    if (functionCallAuthor.isPresent()) {
+      return functionCallAuthor.get();
+    }
+
     List<Event> events = new ArrayList<>(session.events());
     Collections.reverse(events);
 
     for (Event event : events) {
       String author = event.author();
+      if (author == null) {
+        continue;
+      }
       if (author.equals("user")) {
         continue;
       }
@@ -800,6 +819,39 @@ public class Runner {
     }
 
     return rootAgent;
+  }
+
+  /**
+   * If the last event is a function response, returns the agent that emitted the matching function
+   * call (by id), or empty if no match is found in the agent tree.
+   */
+  private static Optional<BaseAgent> findFunctionCallAuthor(Session session, BaseAgent rootAgent) {
+    List<Event> events = session.events();
+    if (events.isEmpty()) {
+      return Optional.empty();
+    }
+    ImmutableSet<String> functionResponseIds =
+        Iterables.getLast(events).functionResponses().stream()
+            .map(fr -> fr.id().orElse(null))
+            .filter(Objects::nonNull)
+            .collect(toImmutableSet());
+
+    // Iterate in reverse to prefer the most recent matching call, mirroring Python ADK's
+    // find_event_by_function_call_id. Function call IDs are unique in normal flows, so this
+    // is defense-in-depth and not covered by mutation testing.
+    List<Event> precedingEvents = new ArrayList<>(events.subList(0, events.size() - 1));
+    Collections.reverse(precedingEvents);
+    for (Event event : precedingEvents) {
+      boolean matches =
+          event.functionCalls().stream()
+              .map(fc -> fc.id().orElse(null))
+              .filter(Objects::nonNull)
+              .anyMatch(functionResponseIds::contains);
+      if (matches && event.author() != null) {
+        return rootAgent.findAgent(event.author());
+      }
+    }
+    return Optional.empty();
   }
 
   private void addActiveStreamingTools(InvocationContext invocationContext, List<BaseTool> tools) {

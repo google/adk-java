@@ -40,7 +40,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
-import javax.annotation.Nonnull;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,11 +51,11 @@ public abstract class BaseTool {
   private final boolean isLongRunning;
   private final HashMap<String, Object> customMetadata;
 
-  protected BaseTool(@Nonnull String name, @Nonnull String description) {
+  protected BaseTool(String name, String description) {
     this(name, description, /* isLongRunning= */ false);
   }
 
-  protected BaseTool(@Nonnull String name, @Nonnull String description, boolean isLongRunning) {
+  protected BaseTool(String name, String description, boolean isLongRunning) {
     this.name = name;
     this.description = description;
     this.isLongRunning = isLongRunning;

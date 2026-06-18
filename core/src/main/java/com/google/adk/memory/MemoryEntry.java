@@ -22,7 +22,7 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.auto.value.AutoValue;
 import com.google.genai.types.Content;
 import java.time.Instant;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Represents one memory entry. */
 @AutoValue

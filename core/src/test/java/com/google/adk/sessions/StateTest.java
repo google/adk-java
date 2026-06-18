@@ -6,7 +6,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -20,11 +19,6 @@ public class StateTest {
     assertThat(state.hasDelta()).isFalse();
     state.put("key", "value");
     assertThat(state.hasDelta()).isTrue();
-  }
-
-  @Test
-  public void constructor_nullState_throwsException() {
-    Assert.assertThrows(NullPointerException.class, () -> new State(null, new HashMap<>()));
   }
 
   @Test
@@ -46,5 +40,15 @@ public class StateTest {
     assertThat(state.hasDelta()).isFalse();
     state.put("key", "value");
     assertThat(state.hasDelta()).isTrue();
+  }
+
+  @Test
+  public void constructor_stateMapWithNullValues_replacesWithRemoved() {
+    Map<String, Object> stateMap = new HashMap<>();
+    stateMap.put("key1", "value1");
+    stateMap.put("key2", null);
+    State state = new State(stateMap);
+    assertThat(state).containsEntry("key1", "value1");
+    assertThat(state).containsEntry("key2", State.REMOVED);
   }
 }

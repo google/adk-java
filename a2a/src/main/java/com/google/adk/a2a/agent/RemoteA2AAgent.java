@@ -28,6 +28,7 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
+import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
@@ -35,7 +36,6 @@ import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.Part;
 import io.a2a.client.Client;
 import io.a2a.client.ClientEvent;
-import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskEvent;
 import io.a2a.client.TaskUpdateEvent;
 import io.a2a.spec.A2AClientException;
@@ -328,9 +328,9 @@ public class RemoteA2AAgent extends BaseAgent {
             emitter.onNext(event);
           });
 
-      // For non-streaming communication, complete the flow; for streaming, wait until the client
-      // marks the completion.
-      if (isCompleted(clientEvent) || !streaming) {
+      // Wait until the client receives a status payload marking the completion of the task
+      // regardless of the underlying streaming or non-streaming protocol configuration.
+      if (isCompleted(clientEvent)) {
         // Only complete the flow once.
         if (!done) {
           emitAggregatedEventAndClearBuffer(clientEvent);
@@ -539,6 +539,11 @@ public class RemoteA2AAgent extends BaseAgent {
   protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
     throw new UnsupportedOperationException(
         "runLiveImpl for " + getClass() + " via A2A is not implemented.");
+  }
+
+  @Override
+  public AgentOrigin toolOrigin() {
+    return AgentOrigin.A2A;
   }
 
   /** Exception thrown when the agent card cannot be resolved. */

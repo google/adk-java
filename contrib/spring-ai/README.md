@@ -18,21 +18,21 @@ To use ADK Java with the Spring AI integration in your application, add the foll
     <dependency>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk</artifactId>
-        <version>0.3.1-SNAPSHOT</version>
+        <version>1.0.1-rc.1-SNAPSHOT</version>
     </dependency>
 
     <!-- ADK Spring AI Integration -->
     <dependency>
         <groupId>com.google.adk</groupId>
         <artifactId>google-adk-spring-ai</artifactId>
-        <version>0.3.1-SNAPSHOT</version>
+        <version>1.0.1-rc.1-SNAPSHOT</version>
     </dependency>
 
     <!-- Spring AI BOM for version management -->
     <dependency>
         <groupId>org.springframework.ai</groupId>
         <artifactId>spring-ai-bom</artifactId>
-        <version>1.1.0-M3</version>
+        <version>2.0.0-M3</version>
         <type>pom</type>
         <scope>import</scope>
     </dependency>
@@ -109,14 +109,14 @@ Add the Spring AI provider dependencies for the AI services you want to use:
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.0</version>
+        <version>4.0.2</version>
         <relativePath/>
     </parent>
 
     <properties>
         <java.version>17</java.version>
-        <spring-ai.version>1.1.0-M3</spring-ai.version>
-        <adk.version>0.3.1-SNAPSHOT</adk.version>
+        <spring-ai.version>2.0.0-M3</spring-ai.version>
+        <adk.version>1.0.1-rc.1-SNAPSHOT</adk.version>
     </properties>
 
     <dependencyManagement>
@@ -271,7 +271,7 @@ public class MyAdkSpringAiApplication {
             .anthropicApi(anthropicApi)
             .build();
 
-        return new SpringAI(chatModel, "claude-3-5-sonnet-20241022");
+        return new SpringAI(chatModel, "claude-sonnet-4-6");
     }
 
     @Bean
@@ -312,7 +312,7 @@ spring:
       api-key: ${ANTHROPIC_API_KEY}
       chat:
         options:
-          model: claude-3-5-sonnet-20241022
+          model: claude-sonnet-4-6
           temperature: 0.7
 
 # ADK Spring AI Configuration
@@ -365,13 +365,13 @@ The main adapter class that implements `BaseLlm` and wraps Spring AI `ChatModel`
 **Usage:**
 ```java
 // With ChatModel only
-SpringAI springAI = new SpringAI(chatModel, "claude-sonnet-4-20250514");
+SpringAI springAI = new SpringAI(chatModel, "claude-sonnet-4-6");
 
 // With both ChatModel and StreamingChatModel
-SpringAI springAI = new SpringAI(chatModel, streamingChatModel, "claude-sonnet-4-20250514");
+SpringAI springAI = new SpringAI(chatModel, streamingChatModel, "claude-sonnet-4-6");
 
 // With observability configuration
-SpringAI springAI = new SpringAI(chatModel, "claude-sonnet-4-20250514", observabilityConfig);
+SpringAI springAI = new SpringAI(chatModel, "claude-sonnet-4-6", observabilityConfig);
 ```
 
 #### 2. MessageConverter (MessageConverter.java)
@@ -533,7 +533,7 @@ The library works with any Spring AI provider:
    - Features: Chat, streaming, function calling, embeddings
 
 2. **Anthropic** (`spring-ai-anthropic`)
-   - Models: Claude 3.5 Sonnet, Claude 3 Haiku
+   - Models: Claude 4.x Sonnet, Claude 4.x Haiku
    - Features: Chat, streaming, function calling
    - **Note:** Requires proper function schema registration
 
@@ -563,7 +563,7 @@ The library works with any Spring AI provider:
 
 #### Anthropic
 - **Function Calling:** Requires explicit schema registration using `inputSchema()` method
-- **Model Names:** Use full model names like `claude-3-5-sonnet-20241022`
+- **Model Names:** Use full model names like `claude-sonnet-4-6`
 - **API Key:** Requires `ANTHROPIC_API_KEY` environment variable
 
 #### OpenAI

@@ -26,7 +26,7 @@ import com.google.common.base.Preconditions;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Represents a request to be sent to a live connection to the LLM model. */
 @AutoValue

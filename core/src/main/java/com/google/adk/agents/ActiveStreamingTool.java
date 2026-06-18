@@ -18,12 +18,12 @@
 package com.google.adk.agents;
 
 import io.reactivex.rxjava3.disposables.Disposable;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Manages streaming tool related resources during invocation. */
 public class ActiveStreamingTool {
-  @Nullable private Disposable task;
-  @Nullable private LiveRequestQueue stream;
+  private @Nullable Disposable task;
+  private @Nullable LiveRequestQueue stream;
 
   public ActiveStreamingTool(Disposable task) {
     this(task, null);
@@ -41,8 +41,7 @@ public class ActiveStreamingTool {
   public ActiveStreamingTool() {}
 
   /** Returns the active task of this streaming tool. */
-  @Nullable
-  public Disposable task() {
+  public @Nullable Disposable task() {
     return task;
   }
 
@@ -52,8 +51,7 @@ public class ActiveStreamingTool {
   }
 
   /** Returns the active stream of this streaming tool. */
-  @Nullable
-  public LiveRequestQueue stream() {
+  public @Nullable LiveRequestQueue stream() {
     return stream;
   }
 

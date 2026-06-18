@@ -492,6 +492,10 @@ public final class StreamingToolTest {
     List<Event> resEvents =
         runner.runLive(session, liveRequestQueue, BIDI_STREAMING_RUN_CONFIG).toList().blockingGet();
 
+    // Wait for the tool to send its 3 results back to the LLM
+    assertThat(testLlm.waitForStreamingToolResults("monitorStockPrice", 3, Duration.ofSeconds(20)))
+        .isTrue();
+
     assertThat(resEvents).isNotNull();
     assertThat(resEvents).isNotEmpty();
 

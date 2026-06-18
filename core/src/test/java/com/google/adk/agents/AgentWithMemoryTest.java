@@ -41,7 +41,7 @@ public final class AgentWithMemoryTest {
   @Test
   public void agentRemembersUserNameWithMemoryTool() throws Exception {
     String userId = "test-user";
-    String agentName = "test-agent";
+    String agentName = "test_agent";
 
     Part functionCall =
         Part.builder()
@@ -101,7 +101,7 @@ public final class AgentWithMemoryTest {
     Session updatedSession =
         runner
             .sessionService()
-            .getSession("test-agent", userId, sessionId, Optional.empty())
+            .getSession("test_agent", userId, sessionId, Optional.empty())
             .blockingGet();
 
     // Save the updated session to memory so we can bring it up on the next request.

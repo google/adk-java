@@ -18,7 +18,7 @@ package com.google.adk.tools;
 
 import com.google.adk.agents.ReadonlyContext;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Functional interface to decide whether a tool should be exposed to the LLM based on the current

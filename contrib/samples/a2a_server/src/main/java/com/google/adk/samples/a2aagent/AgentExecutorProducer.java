@@ -1,6 +1,7 @@
 package com.google.adk.samples.a2aagent;
 
 import com.google.adk.a2a.executor.AgentExecutorConfig;
+import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.samples.a2aagent.agent.Agent;
 import com.google.adk.sessions.InMemorySessionService;
 import io.a2a.server.agentexecution.AgentExecutor;
@@ -18,10 +19,12 @@ public class AgentExecutorProducer {
   @Produces
   public AgentExecutor agentExecutor() {
     InMemorySessionService sessionService = new InMemorySessionService();
+    InMemoryArtifactService artifactService = new InMemoryArtifactService();
     return new com.google.adk.a2a.executor.AgentExecutor.Builder()
         .agent(Agent.ROOT_AGENT)
         .appName(appName)
         .sessionService(sessionService)
+        .artifactService(artifactService)
         .agentExecutorConfig(AgentExecutorConfig.builder().build())
         .build();
   }

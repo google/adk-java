@@ -102,7 +102,7 @@ public final class ExampleTool extends BaseTool {
     var maybeExamplesProvider = args.getOrEmpty("examples", new TypeReference<String>() {});
     if (maybeExamplesProvider.isPresent()) {
       BaseExampleProvider provider = resolveExampleProvider(maybeExamplesProvider.get());
-      return ExampleTool.builder().setExampleProvider(provider).build();
+      return ExampleTool.builder().exampleProvider(provider).build();
     }
     var maybeListOfExamples = args.getOrEmpty("examples", new TypeReference<List<Example>>() {});
     if (maybeListOfExamples.isPresent()) {
@@ -166,14 +166,26 @@ public final class ExampleTool extends BaseTool {
     private String description = "Adds few-shot examples to the request";
     private Optional<BaseExampleProvider> provider = Optional.empty();
 
+    @Deprecated
     @CanIgnoreReturnValue
-    public Builder setName(String name) {
+    public final Builder setName(String name) {
+      return name(name);
+    }
+
+    @CanIgnoreReturnValue
+    public Builder name(String name) {
       this.name = name;
       return this;
     }
 
+    @Deprecated
     @CanIgnoreReturnValue
-    public Builder setDescription(String description) {
+    public final Builder setDescription(String description) {
+      return description(description);
+    }
+
+    @CanIgnoreReturnValue
+    public Builder description(String description) {
       this.description = description;
       return this;
     }
@@ -184,8 +196,14 @@ public final class ExampleTool extends BaseTool {
       return this;
     }
 
+    @Deprecated
     @CanIgnoreReturnValue
-    public Builder setExampleProvider(BaseExampleProvider provider) {
+    public final Builder setExampleProvider(BaseExampleProvider provider) {
+      return exampleProvider(provider);
+    }
+
+    @CanIgnoreReturnValue
+    public Builder exampleProvider(BaseExampleProvider provider) {
       this.provider = Optional.ofNullable(provider);
       return this;
     }

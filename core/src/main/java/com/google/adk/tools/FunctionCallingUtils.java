@@ -188,6 +188,14 @@ public final class FunctionCallingUtils {
    */
   private static Schema buildSchemaRecursive(
       JavaType javaType, SchemaGenerationContext context, ObjectMapper objectMapper) {
+    if (Optional.class.isAssignableFrom(javaType.getRawClass())) {
+      JavaType containedType = javaType.containedType(0);
+      if (containedType == null) {
+        return Schema.builder().type("OBJECT").nullable(true).build();
+      }
+      Schema innerSchema = buildSchemaRecursive(containedType, context, objectMapper);
+      return innerSchema.toBuilder().nullable(true).build();
+    }
     if (context.isProcessing(javaType)) {
       logger.warn("Type {} is recursive. Omitting from schema.", javaType.toCanonical());
       return Schema.builder()

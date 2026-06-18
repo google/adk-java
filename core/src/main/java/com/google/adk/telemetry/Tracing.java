@@ -33,6 +33,7 @@ import com.google.genai.types.Part;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
@@ -61,6 +62,7 @@ import java.util.Optional;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
@@ -76,6 +78,11 @@ import org.slf4j.LoggerFactory;
 public class Tracing {
 
   private static final Logger log = LoggerFactory.getLogger(Tracing.class);
+
+  private static final String INVOKE_AGENT_OPERATION = "invoke_agent";
+  private static final String EXECUTE_TOOL_OPERATION = "execute_tool";
+  private static final String SEND_DATA_OPERATION = "send_data";
+  private static final String CALL_LLM_OPERATION = "call_llm";
 
   private static final AttributeKey<List<String>> GEN_AI_RESPONSE_FINISH_REASONS =
       AttributeKey.stringArrayKey("gen_ai.response.finish_reasons");
@@ -134,15 +141,6 @@ public class Tracing {
 
   private Tracing() {}
 
-  private static void traceWithSpan(String methodName, Consumer<Span> traceAction) {
-    Span span = Span.current();
-    if (!span.getSpanContext().isValid()) {
-      log.trace("{}: No valid span in current context.", methodName);
-      return;
-    }
-    traceAction.accept(span);
-  }
-
   private static void setInvocationAttributes(
       Span span, InvocationContext invocationContext, String eventId) {
     span.setAttribute(ADK_INVOCATION_ID, invocationContext.invocationId());
@@ -157,12 +155,6 @@ public class Tracing {
           "InvocationContext session or session ID is null, cannot set {}",
           ADK_SESSION_ID.getKey());
     }
-  }
-
-  private static void setToolExecutionAttributes(Span span) {
-    span.setAttribute(GEN_AI_OPERATION_NAME, "execute_tool");
-    span.setAttribute(ADK_LLM_REQUEST, "{}");
-    span.setAttribute(ADK_LLM_RESPONSE, "{}");
   }
 
   private static void setJsonAttribute(Span span, AttributeKey<String> key, Object value) {
@@ -198,7 +190,7 @@ public class Tracing {
    */
   public static void traceAgentInvocation(
       Span span, String agentName, String agentDescription, InvocationContext invocationContext) {
-    span.setAttribute(GEN_AI_OPERATION_NAME, "invoke_agent");
+    span.setAttribute(GEN_AI_OPERATION_NAME, INVOKE_AGENT_OPERATION);
     span.setAttribute(GEN_AI_AGENT_DESCRIPTION, agentDescription);
     span.setAttribute(GEN_AI_AGENT_NAME, agentName);
     if (invocationContext.session() != null && invocationContext.session().id() != null) {
@@ -207,58 +199,62 @@ public class Tracing {
   }
 
   /**
-   * Traces tool call arguments.
+   * Traces a tool execution, including its arguments, response, and any potential error.
    *
-   * @param args The arguments to the tool call.
+   * @param span The span representing the tool execution.
+   * @param toolName The name of the tool.
+   * @param toolDescription The tool's description.
+   * @param toolType The tool's type (e.g., "FunctionTool").
+   * @param args The arguments passed to the tool.
+   * @param functionResponseEvent The event containing the tool's response, if successful.
+   * @param error The exception thrown during execution, if any.
    */
-  public static void traceToolCall(
-      String toolName, String toolDescription, String toolType, Map<String, Object> args) {
-    traceWithSpan(
-        "traceToolCall",
-        span -> {
-          setToolExecutionAttributes(span);
-          span.setAttribute(GEN_AI_TOOL_NAME, toolName);
-          span.setAttribute(GEN_AI_TOOL_DESCRIPTION, toolDescription);
-          span.setAttribute(GEN_AI_TOOL_TYPE, toolType);
+  public static void traceToolExecution(
+      Span span,
+      String toolName,
+      String toolDescription,
+      String toolType,
+      Map<String, Object> args,
+      @Nullable Event functionResponseEvent,
+      @Nullable Throwable error) {
+    span.setAttribute(GEN_AI_OPERATION_NAME, EXECUTE_TOOL_OPERATION);
+    span.setAttribute(GEN_AI_TOOL_NAME, toolName);
+    span.setAttribute(GEN_AI_TOOL_DESCRIPTION, toolDescription);
+    span.setAttribute(GEN_AI_TOOL_TYPE, toolType);
 
-          setJsonAttribute(span, ADK_TOOL_CALL_ARGS, args);
-        });
-  }
+    setJsonAttribute(span, ADK_TOOL_CALL_ARGS, args);
 
-  /**
-   * Traces tool response event.
-   *
-   * @param eventId The ID of the event.
-   * @param functionResponseEvent The function response event.
-   */
-  public static void traceToolResponse(String eventId, Event functionResponseEvent) {
-    traceWithSpan(
-        "traceToolResponse",
-        span -> {
-          setToolExecutionAttributes(span);
-          span.setAttribute(ADK_EVENT_ID, eventId);
+    if (functionResponseEvent != null) {
+      span.setAttribute(ADK_EVENT_ID, functionResponseEvent.id());
+      FunctionResponse functionResponse =
+          functionResponseEvent.functionResponses().stream().findFirst().orElse(null);
 
-          FunctionResponse functionResponse =
-              functionResponseEvent.functionResponses().stream().findFirst().orElse(null);
+      String toolCallId = "<not specified>";
+      Object toolResponse = "<not specified>";
+      if (functionResponse != null) {
+        toolCallId = functionResponse.id().orElse(toolCallId);
+        if (functionResponse.response().isPresent()) {
+          toolResponse = functionResponse.response().get();
+        }
+      }
+      span.setAttribute(GEN_AI_TOOL_CALL_ID, toolCallId);
+      Object finalToolResponse =
+          (toolResponse instanceof Map) ? toolResponse : ImmutableMap.of("result", toolResponse);
+      setJsonAttribute(span, ADK_TOOL_RESPONSE, finalToolResponse);
+    } else {
+      // Set placeholder if no response event is available (e.g., due to an error)
+      span.setAttribute(GEN_AI_TOOL_CALL_ID, "<not specified>");
+      setJsonAttribute(span, ADK_TOOL_RESPONSE, "{}");
+    }
 
-          String toolCallId = "<not specified>";
-          Object toolResponse = "<not specified>";
-          if (functionResponse != null) {
-            toolCallId = functionResponse.id().orElse(toolCallId);
-            if (functionResponse.response().isPresent()) {
-              toolResponse = functionResponse.response().get();
-            }
-          }
+    // Also set empty LLM attributes for UI compatibility, like in traceToolResponse
+    span.setAttribute(ADK_LLM_REQUEST, "{}");
+    span.setAttribute(ADK_LLM_RESPONSE, "{}");
 
-          span.setAttribute(GEN_AI_TOOL_CALL_ID, toolCallId);
-
-          Object finalToolResponse =
-              (toolResponse instanceof Map)
-                  ? toolResponse
-                  : ImmutableMap.of("result", toolResponse);
-
-          setJsonAttribute(span, ADK_TOOL_RESPONSE, finalToolResponse);
-        });
+    if (error != null) {
+      span.setStatus(StatusCode.ERROR, error.getMessage());
+      span.recordException(error);
+    }
   }
 
   /**
@@ -303,14 +299,21 @@ public class Tracing {
       InvocationContext invocationContext,
       String eventId,
       LlmRequest llmRequest,
-      LlmResponse llmResponse) {
+      LlmResponse llmResponse,
+      @Nullable Exception error) {
     span.setAttribute(GEN_AI_SYSTEM, "gcp.vertex.agent");
+    span.setAttribute(GEN_AI_OPERATION_NAME, CALL_LLM_OPERATION);
     llmRequest.model().ifPresent(modelName -> span.setAttribute(GEN_AI_REQUEST_MODEL, modelName));
 
     setInvocationAttributes(span, invocationContext, eventId);
 
     setJsonAttribute(span, ADK_LLM_REQUEST, buildLlmRequestForTrace(llmRequest));
     setJsonAttribute(span, ADK_LLM_RESPONSE, llmResponse);
+
+    if (error != null) {
+      span.setStatus(StatusCode.ERROR, error.getMessage());
+      span.recordException(error);
+    }
 
     llmRequest
         .config()
@@ -352,18 +355,45 @@ public class Tracing {
    * @param data A list of content objects being sent.
    */
   public static void traceSendData(
-      InvocationContext invocationContext, String eventId, List<Content> data) {
-    traceWithSpan(
-        "traceSendData",
-        span -> {
-          setInvocationAttributes(span, invocationContext, eventId);
+      Span span, InvocationContext invocationContext, String eventId, List<Content> data) {
+    if (!span.getSpanContext().isValid()) {
+      log.trace("traceSendData: No valid span in current context.");
+      return;
+    }
+    setInvocationAttributes(span, invocationContext, eventId);
+    span.setAttribute(GEN_AI_OPERATION_NAME, SEND_DATA_OPERATION);
 
-          ImmutableList<Content> safeData =
-              Optional.ofNullable(data).orElse(ImmutableList.of()).stream()
-                  .filter(Objects::nonNull)
-                  .collect(toImmutableList());
-          setJsonAttribute(span, ADK_DATA, safeData);
-        });
+    ImmutableList<Content> safeData =
+        Optional.ofNullable(data).orElse(ImmutableList.of()).stream()
+            .filter(Objects::nonNull)
+            .collect(toImmutableList());
+    setJsonAttribute(span, ADK_DATA, safeData);
+  }
+
+  /**
+   * Traces merged tool call events.
+   *
+   * <p>Calling this function is not needed for telemetry purposes. This is provided for preventing
+   * /debug/trace requests (typically sent by web UI).
+   *
+   * @param responseEventId The ID of the response event.
+   * @param functionResponseEvent The merged response event.
+   */
+  public static void traceMergedToolCalls(
+      Span span, String responseEventId, Event functionResponseEvent) {
+    if (!span.getSpanContext().isValid()) {
+      log.trace("traceMergedToolCalls: No valid span in current context.");
+      return;
+    }
+    span.setAttribute(GEN_AI_OPERATION_NAME, EXECUTE_TOOL_OPERATION);
+    span.setAttribute(GEN_AI_TOOL_NAME, "(merged tools)");
+    span.setAttribute(GEN_AI_TOOL_DESCRIPTION, "(merged tools)");
+    span.setAttribute(GEN_AI_TOOL_CALL_ID, responseEventId);
+    span.setAttribute(ADK_TOOL_CALL_ARGS, "N/A");
+    span.setAttribute(ADK_EVENT_ID, responseEventId);
+    setJsonAttribute(span, ADK_TOOL_RESPONSE, functionResponseEvent);
+    span.setAttribute(ADK_LLM_REQUEST, "{}");
+    span.setAttribute(ADK_LLM_RESPONSE, "{}");
   }
 
   /**

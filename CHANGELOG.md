@@ -1,5 +1,180 @@
 # Changelog
 
+## [1.4.0](https://github.com/google/adk-java/compare/v1.3.0...v1.4.0) (2026-05-29)
+
+
+### Features
+
+* Add GcsOffloader for asynchronously uploading content to Google Cloud Storage ([51c9d1a](https://github.com/google/adk-java/commit/51c9d1a98dd029a33c732508bd10903f4c451f45))
+* Add GcsOffloader for asynchronously uploading content to Google Cloud Storage ([5bad20a](https://github.com/google/adk-java/commit/5bad20aff179c1fd091cd6f14d5fc1d730023d70))
+* Add GcsOffloader for asynchronously uploading content to Google Cloud Storage ([a1d2c1c](https://github.com/google/adk-java/commit/a1d2c1cd2799f8729bc736a2fc0117286e31c1dd))
+* Add JSON cycle detection ([1685a4e](https://github.com/google/adk-java/commit/1685a4e88cc619f1f20445e262bf18287bbf6572))
+* Add streaming support for ChatCompletionsHTTPClient ([384a0c5](https://github.com/google/adk-java/commit/384a0c58e3c3bd76ef8ef1c0c872fa35008eac81))
+* Add telemetry and metrics recording capabilities ([cc3b9ce](https://github.com/google/adk-java/commit/cc3b9cebd2e5d44870514354870da61bbf724490))
+* Add tools and toolset to use SkillSource in ADK agents ([198b2fb](https://github.com/google/adk-java/commit/198b2fb4128f8bd938a64db151f3176ad61afb4f))
+* Add tools and toolset to use SkillSource in ADK agents ([5ee51fd](https://github.com/google/adk-java/commit/5ee51fd1f3ecd9445fa559ee66fe426df7008ea8))
+* Add tools and toolset to use SkillSource in ADK agents ([83a4b71](https://github.com/google/adk-java/commit/83a4b71d11ab5ae0d119730086436b3c96127fd2))
+* Introduce max span limit to ApiServerSpanExporter ([ae13073](https://github.com/google/adk-java/commit/ae130738fd6e695b362b98155ea2e63b9a5bc5da))
+* refactor OpenTelemetry (OTel) instrumentation within the ADK core, moving from manual span management to structured helper classes ([e6fe9aa](https://github.com/google/adk-java/commit/e6fe9aa42311bfba3283f6a2c7b9e7d8ed58aedb))
+
+
+### Bug Fixes
+
+* adjust default ToolExecutionMode to SEQUENTIAL as it was actual and widely used behavior for all ADK Java users before parallel tool execution fix ([fe88217](https://github.com/google/adk-java/commit/fe88217a67d0855ad13f1b3295aaa7a0f2ec84c9))
+* inject Dev UI tracer into core engine for embedded telemetry ([8bccc3b](https://github.com/google/adk-java/commit/8bccc3b97147f9ba7debb767c512c04553a6cc9f))
+* introduce PARALLEL_SUBSCRIBE ToolExecutionMode; restore previous PARALLEL semantics ([d3e7f31](https://github.com/google/adk-java/commit/d3e7f31725bdd81f4adbab4910a7916760df269a))
+* **mcp:** honor custom URL sub-paths in StreamableHttpServerParameters ([a0c4b7b](https://github.com/google/adk-java/commit/a0c4b7bfbcfbd219878c5113bb8ceee2f4c85ce0))
+* pre-merge stateDelta before onUserMessageCallback in Runner ([f1155ec](https://github.com/google/adk-java/commit/f1155ec37325bfb16941cd6b08ea4f14cb468775))
+* Resolve IllegalArgumentException for text MIME types in LangChain4j adapter ([6ad2043](https://github.com/google/adk-java/commit/6ad204372ea8afd330132507f1598d669a8f8b66))
+* revert "Suppress empty-text-only chunks from streaming responses while preserving carried metadata" ([69638df](https://github.com/google/adk-java/commit/69638df9ccd9939ba358672fdb00f0c0e88ffc71))
+* route HITL confirmation back to originating sub-agent in workflow agents ([d608909](https://github.com/google/adk-java/commit/d6089093e7f625e70fd88c61e99abccbf77eca1b))
+* run tools concurrently in PARALLEL ToolExecutionMode ([020499b](https://github.com/google/adk-java/commit/020499b8bb00638385df9e8a80af302e1a47c36a))
+* Suppress empty-text-only chunks from streaming responses while preserving carried metadata ([b4791ef](https://github.com/google/adk-java/commit/b4791ef362840e79d008221f272992532c4732cd))
+
+
+### Documentation
+
+* clarify LlmAgent composition for workflow agents ([49ff63b](https://github.com/google/adk-java/commit/49ff63b3c8bab29cf71d34cc1d41be91c1bfde6f))
+
+## [1.3.0](https://github.com/google/adk-java/compare/v1.2.0...v1.3.0) (2026-05-13)
+
+
+### Features
+
+* Add ChatCompletionsHTTPClient and support for non-streaming requests ([9529c1a](https://github.com/google/adk-java/commit/9529c1aeecb324e1c00c6bd105df2a0e9f67ed26))
+* Add conversion from LlmRequest to ChatCompletionsRequest ([d37f6ee](https://github.com/google/adk-java/commit/d37f6ee6d8ec036154593b734f1a3b080847cfea))
+* Add SkillSource interface and implementations for loading skills ([509c4aa](https://github.com/google/adk-java/commit/509c4aa75fdc752c2758a1761cbd8946075b310c))
+* Add support for refusal content using "[[REFUSAL]]:" prefix ([e9184c9](https://github.com/google/adk-java/commit/e9184c9846d97f65907667aa2a6bbac1f65fed64))
+* Refactor BigQueryAgentAnalyticsPlugin for async in preparation for GCS offloading ([d837ef0](https://github.com/google/adk-java/commit/d837ef0164cedd284af6caee84911569109ab7e3))
+
+
+### Bug Fixes
+
+* Account for nulls in EventActions and State ([582cf7c](https://github.com/google/adk-java/commit/582cf7c2b6534afaf5edfa501391191478d8d8ea))
+* upgrade Mockito and JaCoCo for Java 25 compatibility ([8574fc5](https://github.com/google/adk-java/commit/8574fc5bb6ac7edae99306b06c0a610f7da60048))
+
+## [1.2.0](https://github.com/google/adk-java/compare/v1.1.0...v1.2.0) (2026-04-24)
+
+
+### Features
+
+* Add telemetry headers ([4009905](https://github.com/google/adk-java/commit/40099057e2b59f34e868da4c34dcd9c1194b2fde))
+* Adding functionality to support customer content formating ([52323b4](https://github.com/google/adk-java/commit/52323b44c89f233e2dd794aee33df8ba5318790e))
+* Allowing McpAsycToolset Builder to take in a McpSessionManager ([78766c1](https://github.com/google/adk-java/commit/78766c179192ff8e560502e0365b45f87ecac433))
+* Forward state delta from all events to parent session instead of just the last event ([f4cd1b7](https://github.com/google/adk-java/commit/f4cd1b754b62fcbf82da22aabc695911d416e51a))
+* Implement BigQuery auto-schema upgrade and view creation ([14027d1](https://github.com/google/adk-java/commit/14027d1545237675a507706d792825356575f73c))
+* Make BigQueryAgentAnalyticsPlugin state per-invocation ([629c390](https://github.com/google/adk-java/commit/629c390de9ca0ec49cba18a0689d299f9261c1fa))
+* Support ChatCompletionChunk to LlmResponse conversion ([589328e](https://github.com/google/adk-java/commit/589328ea747ad4a994223af5789320e171ea2aa7))
+* Support plugins in Java AgentTool similar to Python's implementation ([02a08a1](https://github.com/google/adk-java/commit/02a08a10f087975491d55a29329d6011362925ce))
+
+
+### Bug Fixes
+
+* Allow BuiltInCodeExecutor for Gemini 3 models ([1a3dd61](https://github.com/google/adk-java/commit/1a3dd612217a05e2f8fff69720087ed1136a09ab))
+* Fix ADK Runner race condition for sequential tool execution ([69680bb](https://github.com/google/adk-java/commit/69680bbeae11578199eca4efcaf5ecddea2dd552))
+* Fix ADK Runner race condition for sequential tool execution ([9031cad](https://github.com/google/adk-java/commit/9031cadc0e53cad8e4fe141e1d9d2bb19a431a12))
+* Removing deprecated Optional methods ([8ef99f9](https://github.com/google/adk-java/commit/8ef99f999c11c1dbf3331563a0566e14188a68f2))
+
+## [1.1.0](https://github.com/google/adk-java/compare/v1.0.0...v1.1.0) (2026-04-10)
+
+
+### Features
+
+* Add ChatCompletionsRequest object ([88eb0f5](https://github.com/google/adk-java/commit/88eb0f523c14266840ffc4b3d9ed827c9cdb1510))
+* Add ChatCompletionsResponse object ([55becb8](https://github.com/google/adk-java/commit/55becb81b6dcc15a9a82ec842a0096132813ae64))
+* Add ChatCompletionsResponse to LlmResponse conversion ([ec88c64](https://github.com/google/adk-java/commit/ec88c64d311946c1d427c4374be75d6163160478))
+* add README for ADK LangChain4j integration library ([f861ef9](https://github.com/google/adk-java/commit/f861ef9c0d5c6a5ef27e7be1d8ac27a399ba6fad))
+* add support for Gemma models in LlmRegistry ([9d6cc80](https://github.com/google/adk-java/commit/9d6cc80660d81fc217d058b7c8edb1ff906e2c30))
+* add transcription in event ([cb9d2e3](https://github.com/google/adk-java/commit/cb9d2e3e9225c550fd1f1a1445cebe569d30a20a))
+* Implement Trace management, add HITL support ([7407e37](https://github.com/google/adk-java/commit/7407e37a043f7b25a66663eb04a6bafbef620583))
+* Support Sub-agent Escalation event in Parallel Agent (Issue [#561](https://github.com/google/adk-java/issues/561)) ([88c8b0e](https://github.com/google/adk-java/commit/88c8b0e5a4863fa623fa17ff616d13570b60c4d0))
+* Update event IDs in BaseLlmFlow's post processing section ([d0e1085](https://github.com/google/adk-java/commit/d0e108510487d97d186052caa164649e1c90f176))
+
+
+### Bug Fixes
+
+* Fix A2A protocol chunk streaming and task completion states ([c95f669](https://github.com/google/adk-java/commit/c95f669bb6fbadbf07d62a8ff8a3e533e17032f4))
+* Fix critical race condition in ADK Runner ([51f4d1f](https://github.com/google/adk-java/commit/51f4d1f9a4d4d67a92f4a97989e5bd1ab24910e1))
+* Fix critical race condition in ADK Runner ([3091156](https://github.com/google/adk-java/commit/30911560ff2f928e40f6de9426c7c8295b16bacb))
+* Fix race condition and stale session in ADK Runner ([7964e93](https://github.com/google/adk-java/commit/7964e93dc12c3d24079facfd5d64ed913ec082aa))
+
+## [1.0.0](https://github.com/google/adk-java/compare/v1.0.0-rc.1...v1.0.0) (2026-03-30)
+
+
+### Features
+
+* add `InMemoryArtifactService` to `AgentExecutor` and update `pom.xml` dependencies ([24f8d5e](https://github.com/google/adk-java/commit/24f8d5e2562e1c0812ce6e248500797d9801fafd))
+* enabling output_schema and tools to coexist ([40ca6a7](https://github.com/google/adk-java/commit/40ca6a7c5163f711e02a54163d6066f7cd86e64d))
+
+
+### Bug Fixes
+
+* add media/image support in Spring AI MessageConverter ([8ab7f07](https://github.com/google/adk-java/commit/8ab7f072cdaa363e07b7a786044376c021c4c009)), closes [#705](https://github.com/google/adk-java/issues/705)
+* add schema validation to SetModelResponseTool (issue [#587](https://github.com/google/adk-java/issues/587) already implemented, but adding tests from PR [#603](https://github.com/google/adk-java/issues/603)) ([cdc5199](https://github.com/google/adk-java/commit/cdc5199eb0f92cb95db2ee7ff139d67317968457))
+* Ensure callbackContextData is preserved across session update ([d1e05ca](https://github.com/google/adk-java/commit/d1e05caf524b7cafb3f321550659296ea70d9286))
+* **firestore:** Remove hardcoded dependency version ([6a5a55e](https://github.com/google/adk-java/commit/6a5a55eb3e531c6f8a7083712308c4800f680ca5))
+* Fixing tracing for function calls ([84dff10](https://github.com/google/adk-java/commit/84dff10a3ee7f47e30a40409e56b5e9365c69815))
+* handle null `AiMessage.text()` to prevent NPE and add unit test (PR [#1035](https://github.com/google/adk-java/issues/1035)) ([3e21e7a](https://github.com/google/adk-java/commit/3e21e7ac46b634341819b3543388a38caef85516))
+* parallel agent execution ([677b6d7](https://github.com/google/adk-java/commit/677b6d7452aa28fab42d554d18c150d59ca88eec))
+* Removing deprecated methods from Runner ([3633a7d](https://github.com/google/adk-java/commit/3633a7dd071265087ea2ff148d419969b0c888ef))
+* resolve MCP tool parsing errors in Claude integration ([5a2abbf](https://github.com/google/adk-java/commit/5a2abbfe6f9e4e1ebdd5b918e34fcdb144603b5a))
+* revert changes to AbstractMcpTool, maintaining backwards compatible text_output field in the response ([5f34d59](https://github.com/google/adk-java/commit/5f34d598435a2a8d875a5dbb14344c201db0e75f))
+* Using App conformant agent names ([f3eb936](https://github.com/google/adk-java/commit/f3eb936772740b7dc7a803a40d0d39fdbccc4af4))
+
+
+### Documentation
+
+* add pull request template ([6bb721b](https://github.com/google/adk-java/commit/6bb721b9a6000dac9dfda498fb6dd2c45862e25c))
+
+
+### Miscellaneous Chores
+
+* set release version to 1.0.0 ([dd1c941](https://github.com/google/adk-java/commit/dd1c94184835838fa47de024cf458c2ea0786aff))
+* set version to 1.0.0-rc.2 ([678b496](https://github.com/google/adk-java/commit/678b49653fa93606e2e57926213f0facaf9d6666))
+
+## [1.0.0-rc.1](https://github.com/google/adk-java/compare/v0.9.0...v1.0.0-rc.1) (2026-03-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove McpToolset constructors taking Optional parameters
+* remove deprecated Example processor
+
+### Features
+
+* add handling the a2a metadata in the RemoteA2AAgent; Add the enum type for the metadata keys ([e51f911](https://github.com/google/adk-java/commit/e51f9112050955657da0dfc3aedc00f90ad739ec))
+* add type-safe runAsync methods to BaseTool ([b8cb7e2](https://github.com/google/adk-java/commit/b8cb7e2db6d5ce20f4d7a1b237bdc155563cf4bd))
+* Enhance LangChain4j to support MCP tools with parametersJsonSchema ([2c71ba1](https://github.com/google/adk-java/commit/2c71ba1332e052189115cd4644b7a473c31ed414))
+* fixing context propagation for agent transfers ([9a08076](https://github.com/google/adk-java/commit/9a080763d83c319f539d1bacac4595d13b299e7e))
+* Implement basic version of BigQuery Agent Analytics Plugin ([c8ab0f9](https://github.com/google/adk-java/commit/c8ab0f96b09a6c9636728d634c62695fcd622246))
+* init AGENTS.md file ([7ebeb07](https://github.com/google/adk-java/commit/7ebeb07bf2ee72475484d8a31ccf7b4c601dda96))
+* Propagating the otel context ([8556d4a](https://github.com/google/adk-java/commit/8556d4af16ff04c6e3b678dcfc3d4bb232abc550))
+* remove McpToolset constructors taking Optional parameters ([dbb1394](https://github.com/google/adk-java/commit/dbb139439d38157b4b9af38c52824b1e8405a495))
+* Return List instead of ImmutableList in CallbackUtil methods ([8af5e03](https://github.com/google/adk-java/commit/8af5e03811dfd548830df43103c81a592c8bf361))
+* update requestedAuthConfigs and its builder to be of general Map types ([f145c74](https://github.com/google/adk-java/commit/f145c744482b6b25f29a0b718bd452065e39d930))
+* Update return type of App.plugins() from ImmutableList to List ([8ba4bfe](https://github.com/google/adk-java/commit/8ba4bfed3fa7045f3344329de7a39acddc64ee30))
+* Update return type of toolsets() from ImmutableList to List ([cd56902](https://github.com/google/adk-java/commit/cd56902b803d4f7a1f3c718529842823d9e4370a))
+* update Session.state() and its builder to be of general Map types ([4b9b99a](https://github.com/google/adk-java/commit/4b9b99ae7149a465ba2ae9b7496e01f669786553))
+* update stateDelta builder input to Map from ConcurrentMap ([0d1e5c7](https://github.com/google/adk-java/commit/0d1e5c7b0c42cea66b178cf8fedf08a8c20f7fd0))
+
+
+### Bug Fixes
+
+* fix null handling in runAsyncImpl ([567fdf0](https://github.com/google/adk-java/commit/567fdf048fee49afc86ca5d7d35f55424a6016ba))
+* improve processRequest_concurrentReadAndWrite_noException test case ([4eb3613](https://github.com/google/adk-java/commit/4eb3613b65cb1334e9432960d0f864ef09829c23))
+* include saveArtifact invocations in event chain ([551c31f](https://github.com/google/adk-java/commit/551c31f495aafde8568461cc0aa0973d7df7e5ac))
+* prevent ConcurrentModificationException when session events are modified by another thread during iteration ([fca43fb](https://github.com/google/adk-java/commit/fca43fbb9684ec8d080e437761f6bb4e38adf255))
+* Relaxing constraints for output schema ([d7e03ee](https://github.com/google/adk-java/commit/d7e03eeb067b83abd2afa3ea9bb5fc1c16143245))
+* Removing deprecated methods in Runner ([0af82e6](https://github.com/google/adk-java/commit/0af82e61a3c0dbbd95166a10b450cb507115ab60))
+* Use ConcurrentHashMap in InvocationReplayState ([94de7f1](https://github.com/google/adk-java/commit/94de7f199f86b39bdb7cce6e9800eb05008a8953)), closes [#1009](https://github.com/google/adk-java/issues/1009)
+* workaround for the client config streaming settings are not respected ([#983](https://github.com/google/adk-java/issues/983)) ([3ba04d3](https://github.com/google/adk-java/commit/3ba04d33dc8f2ef8b151abe1be4d1c8b7afcc25a))
+
+
+### Miscellaneous Chores
+
+* remove deprecated Example processor ([28a8cd0](https://github.com/google/adk-java/commit/28a8cd04ca9348dbe51a15d2be3a2b5307394174))
+* set version to 1.0.0-rc.1 ([dc5d794](https://github.com/google/adk-java/commit/dc5d794c066571c7d87f006767bd32298e2a3ba8))
+
 ## [0.9.0](https://github.com/google/adk-java/compare/v0.8.0...v0.9.0) (2026-03-13)
 
 

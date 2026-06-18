@@ -42,7 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** {@link RequestProcessor} that populates content in request for LLM flows. */
 public final class Contents implements RequestProcessor {

@@ -24,7 +24,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.List;
 import java.util.regex.Pattern;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Represents an LLM-backed agentic application.
@@ -40,8 +40,8 @@ public class App {
   private final String name;
   private final BaseAgent rootAgent;
   private final ImmutableList<? extends Plugin> plugins;
-  @Nullable private final EventsCompactionConfig eventsCompactionConfig;
-  @Nullable private final ContextCacheConfig contextCacheConfig;
+  private final @Nullable EventsCompactionConfig eventsCompactionConfig;
+  private final @Nullable ContextCacheConfig contextCacheConfig;
 
   private App(
       String name,
@@ -64,7 +64,7 @@ public class App {
     return rootAgent;
   }
 
-  public ImmutableList<? extends Plugin> plugins() {
+  public List<? extends Plugin> plugins() {
     return plugins;
   }
 

@@ -18,7 +18,7 @@ package com.google.adk.summarizer;
 
 import com.google.auto.value.AutoBuilder;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Configuration for event compaction.

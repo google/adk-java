@@ -19,6 +19,8 @@ package com.google.adk.tools;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.NullNode;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.ToolConfirmation;
@@ -36,6 +38,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -331,6 +334,283 @@ public final class FunctionToolTest {
     Map<String, Object> result = tool.runAsync(ImmutableMap.of("pojo", pojo), null).blockingGet();
 
     assertThat(result).containsExactly("field1", "abc", "field2", 123);
+  }
+
+  @Test
+  public void call_withPojoParamWithOptionalFields_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "pojoParamWithOptionalFields");
+    PojoWithFields nestedPojo = new PojoWithFields();
+    nestedPojo.field1 = "abc";
+    nestedPojo.field2 = 123;
+    Map<String, Object> pojoMap = new HashMap<>();
+    pojoMap.put("optionalField", "hello");
+    pojoMap.put("optionalPojo", nestedPojo);
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("pojo", pojoMap), null).blockingGet();
+
+    assertThat(result)
+        .containsExactly(
+            "optionalFieldPresent",
+            true,
+            "optionalFieldValue",
+            "hello",
+            "optionalPojoPresent",
+            true,
+            "optionalPojoValueField1",
+            "abc",
+            "optionalPojoValueField2",
+            123);
+  }
+
+  @Test
+  public void call_withPojoParamWithOptionalFields_missing() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "pojoParamWithOptionalFields");
+    Map<String, Object> pojoMap = new HashMap<>();
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("pojo", pojoMap), null).blockingGet();
+
+    assertThat(result).containsExactly("optionalFieldPresent", false, "optionalPojoPresent", false);
+  }
+
+  @Test
+  public void call_withOptionalReturn_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", true), null).blockingGet();
+
+    assertThat(result).containsExactly("result", "hello");
+  }
+
+  @Test
+  public void call_withOptionalReturn_empty() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", false), null).blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void call_withOptionalPojoReturn_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalPojoReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", true), null).blockingGet();
+
+    assertThat(result).containsExactly("field1", "abc", "field2", 123);
+  }
+
+  @Test
+  public void call_withOptionalPojoReturn_empty() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalPojoReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", false), null).blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void call_withPojoOptionalFields_bothPresent() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithPojoOptionalFields");
+
+    Map<String, Object> result =
+        tool.runAsync(
+                ImmutableMap.of("includeOptionalField", true, "includeOptionalPojo", true), null)
+            .blockingGet();
+
+    assertThat(result)
+        .containsExactly(
+            "optionalField",
+            "hello",
+            "optionalPojo",
+            ImmutableMap.of("field1", "abc", "field2", 999));
+  }
+
+  @Test
+  public void call_withPojoOptionalFields_bothEmpty() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithPojoOptionalFields");
+
+    Map<String, Object> result =
+        tool.runAsync(
+                ImmutableMap.of("includeOptionalField", false, "includeOptionalPojo", false), null)
+            .blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void call_withMaybeOptionalReturn_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithMaybeOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", true), null).blockingGet();
+
+    assertThat(result).containsExactly("result", "hello");
+  }
+
+  @Test
+  public void call_withMaybeOptionalReturn_empty() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithMaybeOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", false), null).blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void call_withSingleOptionalReturn_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithSingleOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", true), null).blockingGet();
+
+    assertThat(result).containsExactly("result", "hello");
+  }
+
+  @Test
+  public void call_withSingleOptionalReturn_empty() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithSingleOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", false), null).blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void create_withPojoParamWithOptionalFields() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "pojoParamWithOptionalFields");
+
+    assertThat(tool).isNotNull();
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.of(
+                        "pojo",
+                        Schema.builder()
+                            .type("OBJECT")
+                            .properties(
+                                ImmutableMap.of(
+                                    "optionalField",
+                                    Schema.builder().type("STRING").nullable(true).build(),
+                                    "optionalPojo",
+                                    Schema.builder()
+                                        .type("OBJECT")
+                                        .nullable(true)
+                                        .properties(
+                                            ImmutableMap.of(
+                                                "field1",
+                                                Schema.builder().type("STRING").build(),
+                                                "field2",
+                                                Schema.builder().type("INTEGER").build()))
+                                        .build()))
+                            .build()))
+                .required(ImmutableList.of("pojo"))
+                .build());
+  }
+
+  @Test
+  public void create_withOptionalTypeParameter() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalTypeParameter");
+
+    assertThat(tool).isNotNull();
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.of(
+                        "optionalParam",
+                        Schema.builder()
+                            .type("STRING")
+                            .nullable(true)
+                            .description("An Optional type parameter")
+                            .build()))
+                .required(ImmutableList.of())
+                .build());
+  }
+
+  @Test
+  public void call_withOptionalTypeParameter_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalTypeParameter");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("optionalParam", "hello"), null).blockingGet();
+
+    assertThat(result).containsExactly("present", true, "value", "hello");
+  }
+
+  @Test
+  public void call_withOptionalTypeParameter_missing() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalTypeParameter");
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), null).blockingGet();
+
+    assertThat(result).containsExactly("present", false);
+  }
+
+  @Test
+  public void call_withListPojoParam() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "listPojoParam");
+    List<Map<String, Object>> listArg =
+        ImmutableList.of(
+            ImmutableMap.of("field1", "v1", "field2", 1),
+            ImmutableMap.of("field1", "v2", "field2", 2));
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("list", listArg), null).blockingGet();
+
+    assertThat(result).containsExactly("firstField1", "v1", "count", 2);
+  }
+
+  @Test
+  public void create_withRawOptionalParameter() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithRawOptional");
+    assertThat(tool).isNotNull();
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.of(
+                        "rawOpt", Schema.builder().type("OBJECT").nullable(true).build()))
+                .required(ImmutableList.of())
+                .build());
+  }
+
+  @Test
+  public void call_withRawOptionalParameter_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithRawOptional");
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of("rawOpt", "x"), null).blockingGet();
+    assertThat(result).containsExactly("present", true);
+  }
+
+  @Test
+  public void call_withOptionalTypeParameter_null() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalTypeParameter");
+
+    Map<String, Object> args = new HashMap<>();
+    args.put("optionalParam", null);
+    Map<String, Object> result = tool.runAsync(args, null).blockingGet();
+
+    assertThat(result).containsExactly("present", false);
+  }
+
+  @Test
+  public void call_withNullNodeReturnValue_returnsEmptyMap() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionThatReturnsNullNode");
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), null).blockingGet();
+
+    assertThat(result).isEmpty();
   }
 
   @Test
@@ -798,6 +1078,39 @@ public final class FunctionToolTest {
       return ImmutableMap.of("field1", pojo.getField1(), "field2", pojo.getField2());
     }
 
+    public static ImmutableMap<String, Object> pojoParamWithOptionalFields(
+        PojoWithOptionalFields pojo) {
+      ImmutableMap.Builder<String, Object> builder = ImmutableMap.builder();
+      builder.put("optionalFieldPresent", pojo.optionalField.isPresent());
+      if (pojo.optionalField.isPresent()) {
+        builder.put("optionalFieldValue", pojo.optionalField.get());
+      }
+      builder.put("optionalPojoPresent", pojo.optionalPojo.isPresent());
+      if (pojo.optionalPojo.isPresent()) {
+        builder
+            .put("optionalPojoValueField1", pojo.optionalPojo.get().field1)
+            .put("optionalPojoValueField2", pojo.optionalPojo.get().field2);
+      }
+      return builder.buildOrThrow();
+    }
+
+    public static ImmutableMap<String, Object> functionWithOptionalTypeParameter(
+        @Annotations.Schema(
+                name = "optionalParam",
+                description = "An Optional type parameter",
+                optional = true)
+            Optional<String> optionalParam) {
+      ImmutableMap.Builder<String, Object> builder = ImmutableMap.builder();
+      if (optionalParam != null) {
+        if (optionalParam.isPresent()) {
+          builder.put("present", true).put("value", optionalParam.get());
+        } else {
+          builder.put("present", false);
+        }
+      }
+      return builder.buildOrThrow();
+    }
+
     public static void processDiamond(DiamondTop top) {}
 
     public static Maybe<Map<String, Object>> returnsMaybeMap() {
@@ -899,11 +1212,71 @@ public final class FunctionToolTest {
           .put("toolContext", toolContext.toString())
           .buildOrThrow();
     }
+
+    public static Optional<String> functionWithOptionalReturn(boolean returnPresent) {
+      return returnPresent ? Optional.of("hello") : Optional.empty();
+    }
+
+    public static Optional<PojoWithFields> functionWithOptionalPojoReturn(boolean returnPresent) {
+      if (returnPresent) {
+        PojoWithFields pojo = new PojoWithFields();
+        pojo.field1 = "abc";
+        pojo.field2 = 123;
+        return Optional.of(pojo);
+      } else {
+        return Optional.empty();
+      }
+    }
+
+    public static PojoWithOptionalFields functionWithPojoOptionalFields(
+        boolean includeOptionalField, boolean includeOptionalPojo) {
+      PojoWithOptionalFields pojo = new PojoWithOptionalFields();
+      if (includeOptionalField) {
+        pojo.optionalField = Optional.of("hello");
+      }
+      if (includeOptionalPojo) {
+        PojoWithFields inner = new PojoWithFields();
+        inner.field1 = "abc";
+        inner.field2 = 999;
+        pojo.optionalPojo = Optional.of(inner);
+      }
+      return pojo;
+    }
+
+    public static Maybe<Optional<String>> functionWithMaybeOptionalReturn(boolean returnPresent) {
+      return Maybe.just(returnPresent ? Optional.of("hello") : Optional.empty());
+    }
+
+    public static Single<Optional<String>> functionWithSingleOptionalReturn(boolean returnPresent) {
+      return Single.just(returnPresent ? Optional.of("hello") : Optional.empty());
+    }
+
+    public static ImmutableMap<String, Object> listPojoParam(List<PojoWithFields> list) {
+      if (list == null || list.isEmpty()) {
+        return ImmutableMap.of("count", 0);
+      }
+      return ImmutableMap.of("firstField1", list.get(0).field1, "count", list.size());
+    }
+
+    @SuppressWarnings("rawtypes")
+    public static ImmutableMap<String, Object> functionWithRawOptional(
+        @Annotations.Schema(name = "rawOpt", optional = true) Optional rawOpt) {
+      return ImmutableMap.of("present", rawOpt != null && rawOpt.isPresent());
+    }
+
+    public static JsonNode functionThatReturnsNullNode() {
+      return NullNode.getInstance();
+    }
   }
 
   public static class PojoWithFields {
     public String field1;
     public int field2;
+  }
+
+  public static class PojoWithOptionalFields {
+    public Optional<String> optionalField = Optional.empty();
+    public Optional<PojoWithFields> optionalPojo = Optional.empty();
   }
 
   public static class PojoWithGettersAndSetters {

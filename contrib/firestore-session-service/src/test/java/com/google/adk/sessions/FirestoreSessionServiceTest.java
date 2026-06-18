@@ -47,15 +47,11 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.observers.TestObserver;
 import java.time.Instant;
-import java.util.AbstractMap;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -530,44 +526,6 @@ public class FirestoreSessionServiceTest {
         });
   }
 
-  /**
-   * A wrapper class that implements ConcurrentMap but delegates to a HashMap. This is a workaround
-   * to allow putting null values, which ConcurrentHashMap forbids, for testing state removal logic.
-   */
-  private static class HashMapAsConcurrentMap<K, V> extends AbstractMap<K, V>
-      implements ConcurrentMap<K, V> {
-    private final HashMap<K, V> map;
-
-    public HashMapAsConcurrentMap(Map<K, V> map) {
-      this.map = new HashMap<>(map);
-    }
-
-    @Override
-    public Set<Entry<K, V>> entrySet() {
-      return map.entrySet();
-    }
-
-    @Override
-    public V putIfAbsent(K key, V value) {
-      return map.putIfAbsent(key, value);
-    }
-
-    @Override
-    public boolean remove(Object key, Object value) {
-      return map.remove(key, value);
-    }
-
-    @Override
-    public boolean replace(K key, V oldValue, V newValue) {
-      return map.replace(key, oldValue, newValue);
-    }
-
-    @Override
-    public V replace(K key, V value) {
-      return map.replace(key, value);
-    }
-  }
-
   /** Tests that appendEvent with only app state deltas updates the correct stores. */
   @Test
   void appendEvent_withAppOnlyStateDeltas_updatesCorrectStores() {
@@ -660,63 +618,6 @@ public class FirestoreSessionServiceTest {
     // Verify that app state and session state are not updated
     verify(mockAppStateDocRef, never()).set(anyMap(), any(SetOptions.class));
     verify(mockSessionDocRef, never()).update(eq(Constants.KEY_STATE), any());
-  }
-
-  /**
-   * Tests that appendEvent with all types of state deltas updates the correct stores and session
-   * state.
-   */
-  @Test
-  void appendEvent_withAllStateDeltas_updatesCorrectStores() {
-    // Arrange
-    Session session =
-        Session.builder(SESSION_ID)
-            .appName(APP_NAME)
-            .userId(USER_ID)
-            .state(new ConcurrentHashMap<>()) // The session state itself must be concurrent
-            .build();
-    session.state().put("keyToRemove", "someValue");
-
-    Map<String, Object> stateDeltaMap = new HashMap<>();
-    stateDeltaMap.put("sessionKey", "sessionValue");
-    stateDeltaMap.put("_app_appKey", "appValue");
-    stateDeltaMap.put("_user_userKey", "userValue");
-    stateDeltaMap.put("keyToRemove", null);
-
-    // Use the wrapper to satisfy the ConcurrentMap interface for the builder
-    EventActions actions =
-        EventActions.builder().stateDelta(new HashMapAsConcurrentMap<>(stateDeltaMap)).build();
-
-    Event event =
-        Event.builder()
-            .author("model")
-            .content(Content.builder().parts(List.of(Part.fromText("..."))).build())
-            .actions(actions)
-            .build();
-
-    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
-    when(mockEventsCollection.document()).thenReturn(mockEventDocRef);
-    when(mockEventDocRef.getId()).thenReturn(EVENT_ID);
-    // THIS IS THE MISSING MOCK: Stub the call to get the document by its specific ID.
-    when(mockEventsCollection.document(EVENT_ID)).thenReturn(mockEventDocRef);
-    // Add the missing mock for the final session update call
-    when(mockSessionDocRef.update(anyMap()))
-        .thenReturn(ApiFutures.immediateFuture(mockWriteResult));
-
-    // Act
-    sessionService.appendEvent(session, event).test().assertComplete();
-
-    // Assert
-    assertThat(session.state()).containsEntry("sessionKey", "sessionValue");
-    assertThat(session.state()).doesNotContainKey("keyToRemove");
-
-    ArgumentCaptor<Map<String, Object>> appStateCaptor = ArgumentCaptor.forClass(Map.class);
-    verify(mockAppStateDocRef).set(appStateCaptor.capture(), any(SetOptions.class));
-    assertThat(appStateCaptor.getValue()).containsEntry("appKey", "appValue");
-
-    ArgumentCaptor<Map<String, Object>> userStateCaptor = ArgumentCaptor.forClass(Map.class);
-    verify(mockUserStateUserDocRef).set(userStateCaptor.capture(), any(SetOptions.class));
-    assertThat(userStateCaptor.getValue()).containsEntry("userKey", "userValue");
   }
 
   /** Tests that getSession skips malformed events and returns only the well-formed ones. */

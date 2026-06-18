@@ -38,7 +38,10 @@ import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.telemetry.Tracing;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.ToolContext;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.FunctionResponse;
@@ -58,6 +61,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -96,20 +100,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
     Context currentContext = Context.current();
     LlmAgent agent = (LlmAgent) context.agent();
 
-    RequestProcessor toolsProcessor =
-        (ctx, req) -> {
-          LlmRequest.Builder builder = req.toBuilder();
-          return agent
-              .canonicalTools(new ReadonlyContext(ctx))
-              .concatMapCompletable(
-                  tool -> tool.processLlmRequest(builder, ToolContext.builder(ctx).build()))
-              .andThen(
-                  Single.fromCallable(
-                      () -> RequestProcessingResult.create(builder.build(), ImmutableList.of())));
-        };
-
     Iterable<RequestProcessor> allProcessors =
-        Iterables.concat(requestProcessors, ImmutableList.of(toolsProcessor));
+        Iterables.concat(requestProcessors, ImmutableList.of(getRequestProcessorFromTools(agent)));
 
     return Flowable.fromIterable(allProcessors)
         .concatMap(
@@ -119,6 +111,58 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     .doOnSuccess(result -> llmRequestRef.set(result.updatedRequest()))
                     .flattenAsFlowable(
                         result -> result.events() != null ? result.events() : ImmutableList.of()));
+  }
+
+  /**
+   * Constructs a {@link RequestProcessor} that sequentially applies the {@code processLlmRequest}
+   * methods of all tools and toolsets associated with this agent to the incoming {@link
+   * LlmRequest}.
+   *
+   * @return A {@link RequestProcessor} that applies tool-specific modifications to LLM requests.
+   */
+  @VisibleForTesting
+  RequestProcessor getRequestProcessorFromTools(LlmAgent agent) {
+    return (context, request) -> {
+      ReadonlyContext readonlyContext = new ReadonlyContext(context);
+      List<BiFunction<LlmRequest.Builder, ToolContext, Completable>> processors = new ArrayList<>();
+
+      for (Object toolOrToolset : agent.toolsUnion()) {
+        if (toolOrToolset instanceof BaseTool baseTool) {
+          processors.add(
+              (builder, ctx) -> {
+                Completable c = baseTool.processLlmRequest(builder, ctx);
+                return c == null ? Completable.complete() : c;
+              });
+        } else if (toolOrToolset instanceof BaseToolset baseToolset) {
+          // First apply the toolset's own request processor, then unwrap all tools from the toolset
+          // and apply each individual tool's request processor sequentially.
+          processors.add(
+              (builder, ctx) -> {
+                Completable c = baseToolset.processLlmRequest(builder, ctx);
+                Completable toolsetProcessor = c == null ? Completable.complete() : c;
+                return toolsetProcessor
+                    .andThen(baseToolset.getTools(readonlyContext))
+                    .concatMapCompletable(
+                        b -> {
+                          Completable tc = b.processLlmRequest(builder, ctx);
+                          return tc == null ? Completable.complete() : tc;
+                        });
+              });
+        } else {
+          throw new IllegalArgumentException(
+              "Object in tools list is not of a supported type: "
+                  + toolOrToolset.getClass().getName());
+        }
+      }
+
+      LlmRequest.Builder builder = request.toBuilder();
+      ToolContext toolContext = ToolContext.builder(context).build();
+      return Flowable.fromIterable(processors)
+          .concatMapCompletable(f -> f.apply(builder, toolContext))
+          .andThen(
+              Single.fromCallable(
+                  () -> RequestProcessingResult.create(builder.build(), ImmutableList.of())));
+    };
   }
 
   /**
@@ -233,7 +277,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                           callLlmContext)
                                       .doOnSubscribe(
                                           s ->
-                                              Tracing.traceCallLlm(
+                                              traceCallLlm(
                                                   span,
                                                   context,
                                                   eventForCallbackUsage.id(),
@@ -415,6 +459,11 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                 })
                             .concatMap(
                                 event -> {
+                                  // Update event ID for the new resulting events
+                                  String oldId = event.id();
+                                  String newId = Event.generateEventId();
+                                  logger.debug("Resetting event ID from {} to {}", oldId, newId);
+                                  event = event.toBuilder().id(newId).build();
                                   Flowable<Event> postProcessedEvents = Flowable.just(event);
                                   if (event.actions().transferToAgent().isPresent()) {
                                     String agentToTransfer =
@@ -430,7 +479,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                                   "Agent not found: " + agentToTransfer)));
                                     }
                                     return postProcessedEvents.concatWith(
-                                        Flowable.defer(() -> nextAgent.get().runAsync(context)));
+                                        nextAgent
+                                            .get()
+                                            .runAsync(context)
+                                            .compose(Tracing.withContext(spanContext)));
                                   }
                                   return postProcessedEvents;
                                 });
@@ -471,7 +523,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     return Flowable.empty();
                   } else {
                     logger.debug("Continuing to next step of the flow.");
-                    return run(spanContext, invocationContext, stepsCompleted + 1);
+                    // Wait until the Runner has persisted this step's events so the next step's
+                    // request is not built from a stale session (see PersistBarrier).
+                    return PersistBarrier.awaitPersisted(invocationContext, eventList)
+                        .andThen(run(spanContext, invocationContext, stepsCompleted + 1));
                   }
                 }));
   }
@@ -488,6 +543,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
   public Flowable<Event> runLive(InvocationContext invocationContext) {
     AtomicReference<LlmRequest> llmRequestRef = new AtomicReference<>(LlmRequest.builder().build());
     Flowable<Event> preprocessEvents = preprocess(invocationContext, llmRequestRef);
+    // Capture agent context at assembly time to use as parent for agent transfer at subscription
+    // time. See Flowable.defer() usages below.
     Context spanContext = Context.current();
 
     return preprocessEvents.concatWith(
@@ -513,6 +570,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                           .doOnComplete(
                               () ->
                                   Tracing.traceSendData(
+                                      Span.current(),
                                       invocationContext,
                                       eventIdForSendData,
                                       llmRequestAfterPreprocess.contents()))
@@ -522,6 +580,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                 span.setStatus(StatusCode.ERROR, error.getMessage());
                                 span.recordException(error);
                                 Tracing.traceSendData(
+                                    Span.current(),
                                     invocationContext,
                                     eventIdForSendData,
                                     llmRequestAfterPreprocess.contents());
@@ -608,7 +667,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                     "Agent not found: " + event.actions().transferToAgent().get());
                               }
                               Flowable<Event> nextAgentEvents =
-                                  nextAgent.get().runLive(invocationContext);
+                                  nextAgent
+                                      .get()
+                                      .runLive(invocationContext)
+                                      .compose(Tracing.withContext(spanContext));
                               events = Flowable.concat(events, nextAgentEvents);
                             }
                             return events;
@@ -658,7 +720,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
         && updatedResponse.errorCode().isEmpty()
         && !updatedResponse.interrupted().orElse(false)
         && !updatedResponse.turnComplete().orElse(false)
-        && updatedResponse.usageMetadata().isEmpty()) {
+        && updatedResponse.usageMetadata().isEmpty()
+        && updatedResponse.inputTranscription().isEmpty()
+        && updatedResponse.outputTranscription().isEmpty()) {
       return processorEvents;
     }
 
@@ -680,13 +744,31 @@ public abstract class BaseLlmFlow implements BaseFlow {
                 Optional<Event> toolConfirmationEvent =
                     Functions.generateRequestConfirmationEvent(
                         context, modelResponseEvent, functionResponseEvent);
-                return toolConfirmationEvent.isPresent()
-                    ? Flowable.just(toolConfirmationEvent.get(), functionResponseEvent)
-                    : Flowable.just(functionResponseEvent);
+                List<Event> events = new ArrayList<>();
+                toolConfirmationEvent.ifPresent(events::add);
+                events.add(functionResponseEvent);
+                OutputSchema.getStructuredModelResponse(functionResponseEvent)
+                    .ifPresent(
+                        json ->
+                            events.add(OutputSchema.createFinalModelResponseEvent(context, json)));
+                return Flowable.fromIterable(events);
               });
     }
 
     return processorEvents.concatWith(Flowable.just(modelResponseEvent)).concatWith(functionEvents);
+  }
+
+  /**
+   * Traces an LLM call without an associated exception. This is an overload for {@link
+   * Tracing#traceCallLlm} for successful calls.
+   */
+  private void traceCallLlm(
+      Span span,
+      InvocationContext context,
+      String eventId,
+      LlmRequest llmRequest,
+      LlmResponse llmResponse) {
+    Tracing.traceCallLlm(span, context, eventId, llmRequest, llmResponse, null);
   }
 
   private Event buildModelResponseEvent(
@@ -703,7 +785,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
             .avgLogprobs(llmResponse.avgLogprobs().orElse(null))
             .finishReason(llmResponse.finishReason().orElse(null))
             .usageMetadata(llmResponse.usageMetadata().orElse(null))
-            .modelVersion(llmResponse.modelVersion().orElse(null));
+            .modelVersion(llmResponse.modelVersion().orElse(null))
+            .inputTranscription(llmResponse.inputTranscription().orElse(null))
+            .outputTranscription(llmResponse.outputTranscription().orElse(null));
 
     Event event = eventBuilder.build();
 

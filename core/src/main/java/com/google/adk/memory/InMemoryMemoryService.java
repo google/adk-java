@@ -130,7 +130,7 @@ public final class InMemoryMemoryService implements BaseMemoryService {
           }
 
           return SearchMemoryResponse.builder()
-              .setMemories(ImmutableList.copyOf(matchingMemories))
+              .memories(ImmutableList.copyOf(matchingMemories))
               .build();
         });
   }

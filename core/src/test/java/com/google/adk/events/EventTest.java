@@ -26,6 +26,7 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import com.google.genai.types.Transcription;
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Test;
@@ -190,6 +191,81 @@ public final class EventTest {
     String json = EVENT.toJson();
     Event deserializedEvent = Event.fromJson(json);
     assertThat(deserializedEvent).isEqualTo(EVENT);
+  }
+
+  @Test
+  public void event_builder_with_transcriptions_works() {
+    Transcription inputTranscription =
+        Transcription.builder().text("user said hello").finished(true).build();
+    Transcription outputTranscription =
+        Transcription.builder().text("model said hi").finished(false).build();
+    Event event =
+        Event.builder()
+            .id("event_id")
+            .invocationId("invocation_id")
+            .author("agent")
+            .timestamp(123456789L)
+            .inputTranscription(inputTranscription)
+            .outputTranscription(outputTranscription)
+            .build();
+
+    assertThat(event.inputTranscription()).hasValue(inputTranscription);
+    assertThat(event.outputTranscription()).hasValue(outputTranscription);
+  }
+
+  @Test
+  public void event_transcriptions_empty_by_default() {
+    Event event =
+        Event.builder().id("event_id").invocationId("invocation_id").author("agent").build();
+
+    assertThat(event.inputTranscription()).isEmpty();
+    assertThat(event.outputTranscription()).isEmpty();
+  }
+
+  @Test
+  public void event_equals_differentiates_transcriptions() {
+    Transcription transcription = Transcription.builder().text("hello").finished(true).build();
+    Event eventWithTranscription =
+        Event.builder()
+            .id("event_id")
+            .invocationId("invocation_id")
+            .author("agent")
+            .timestamp(123456789L)
+            .inputTranscription(transcription)
+            .build();
+    Event eventWithoutTranscription =
+        Event.builder()
+            .id("event_id")
+            .invocationId("invocation_id")
+            .author("agent")
+            .timestamp(123456789L)
+            .build();
+
+    assertThat(eventWithTranscription).isNotEqualTo(eventWithoutTranscription);
+  }
+
+  @Test
+  public void event_json_serialization_with_transcriptions_works() throws Exception {
+    Transcription inputTranscription =
+        Transcription.builder().text("user said hello").finished(true).build();
+    Transcription outputTranscription =
+        Transcription.builder().text("model said hi").finished(false).build();
+    Event event =
+        Event.builder()
+            .id("event_id")
+            .invocationId("invocation_id")
+            .author("agent")
+            .timestamp(123456789L)
+            .inputTranscription(inputTranscription)
+            .outputTranscription(outputTranscription)
+            .build();
+
+    String json = event.toJson();
+    Event deserialized = Event.fromJson(json);
+
+    assertThat(deserialized).isEqualTo(event);
+    assertThat(deserialized.inputTranscription()).hasValue(inputTranscription);
+    assertThat(deserialized.outputTranscription()).hasValue(outputTranscription);
   }
 
   @Test
