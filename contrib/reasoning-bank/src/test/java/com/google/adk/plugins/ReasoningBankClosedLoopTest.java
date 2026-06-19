@@ -127,4 +127,45 @@ public final class ReasoningBankClosedLoopTest {
         .blockingSubscribe();
     assertThat(agentLlm.lastUserText()).doesNotContain("<<<BEGIN_MEMORY>>>");
   }
+
+  @Test
+  public void successItem_suppressesFailureGuardrail_inInjection() {
+    FakeLlm agentLlm = FakeLlm.returningText("answer");
+    InMemoryReasoningBankService service = new InMemoryReasoningBankService();
+
+    // Both match KEYWORD; success must win the retrieval tier and be the one injected.
+    service
+        .storeMemoryItem(
+            APP_NAME,
+            ReasoningMemoryItem.builder()
+                .id("success")
+                .title("Pagination strategy")
+                .description("d")
+                .content("SUCCESS_MARKER prefer cursor paging.")
+                .sourceTraceSuccessful(true)
+                .build())
+        .blockingAwait();
+    service
+        .storeMemoryItem(
+            APP_NAME,
+            ReasoningMemoryItem.builder()
+                .id("failure")
+                .title("Pagination guardrail")
+                .description("d")
+                .content("FAILURE_MARKER verify page id.")
+                .sourceTraceSuccessful(false)
+                .build())
+        .blockingAwait();
+
+    ReasoningBankPlugin plugin = new ReasoningBankPlugin(service, APP_NAME); // retrieve-only
+    InMemoryRunner runner = new InMemoryRunner(agent(agentLlm), APP_NAME, List.of(plugin));
+    Session session = runner.sessionService().createSession(APP_NAME, USER_ID).blockingGet();
+
+    runner
+        .runAsync(USER_ID, session.id(), userText("A " + KEYWORD + " question."))
+        .blockingSubscribe();
+
+    assertThat(agentLlm.lastUserText()).contains("SUCCESS_MARKER");
+    assertThat(agentLlm.lastUserText()).doesNotContain("FAILURE_MARKER");
+  }
 }
