@@ -24,15 +24,44 @@ mvn -pl contrib/samples/reasoningbank exec:java
 
 ## What it does
 
-The demo creates a `bugfixer` agent backed by `gemini-2.5-flash` with no tools and no access to
-source code. It is given a failure-leaning task — listing every method in `com.acme.OrderService`
-that can throw `NullPointerException` with exact line numbers — that the agent cannot ground because
-it has no visibility into the codebase. After the agent responds, the `ReasoningBankPlugin`
-automatically runs the judge (`LlmTrajectoryJudge`), which tends to return `FAILURE` on
-ungroundable exhaustive claims. If a failure verdict is issued, the `LlmMemoryExtractor` distills
-the trajectory into a guardrail memory item and stores it in the `InMemoryReasoningBankService`.
-The demo then prints that distilled guardrail so you can see the complete closed loop: run ->
-judge -> extract -> store.
+The demo drives the ReasoningBank closed loop explicitly so each stage is visible in the output:
+
+1. **Run**: A tool-less `BugFixAssistant` agent backed by `gemini-2.5-flash` attempts a
+   failure-leaning task — listing every method in `com.acme.OrderService` that can throw
+   `NullPointerException` with exact line numbers. The agent has no tools and no access to source
+   code, so it cannot ground the exhaustive claim.
+
+2. **Judge**: `LlmTrajectoryJudge` evaluates the trajectory and prints both the verdict outcome
+   (`SUCCESS`, `FAILURE`, or `INDETERMINATE`) and the judge's full rationale (`thoughts`). This
+   makes a real grounding failure distinguishable from a parse artifact. A strict rubric requiring
+   completeness, grounding, and right-target tends to return `FAILURE` on ungroundable exhaustive
+   claims.
+
+3. **Extract**: `LlmMemoryExtractor` distills the judged trajectory into memory items labeled
+   `GUARDRAIL (from failure)` or `strategy` based on the verdict, with title, description, and
+   content printed for each.
+
+4. **Store**: All distilled items are stored in `InMemoryReasoningBankService`.
+
+5. **Retrieval precheck**: The first item is immediately queried by its own title, confirming it is
+   retrievable. This uses the item's exact title as the probe (not task-literal keywords), which
+   guarantees a match against the bag-of-words index.
+
+The demo also wires a retrieve-only `ReasoningBankPlugin(bank, APP)` into the `InMemoryRunner` to
+show that the plugin is ready to inject past memory into future runs — it is a no-op on this first
+empty-bank run, which is expected.
+
+## Production wiring
+
+In production, register a fully wired plugin to make consolidation automatic:
+
+```java
+new ReasoningBankPlugin(bank, appName, judge, extractor, /* autoConsolidate= */ true)
+```
+
+This makes the judge → extract → store pipeline run automatically after every agent invocation,
+without explicit orchestration. The behavior is proven deterministically (no API key required) by
+`ReasoningBankClosedLoopTest` in the `google-adk-reasoning-bank` module.
 
 ## Note
 
