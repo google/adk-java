@@ -31,13 +31,13 @@ import java.util.List;
  * A deterministic {@link BaseLlm} test double that returns canned model text (or an error) and
  * records the last request it received.
  */
-final class FakeLlm extends BaseLlm {
+public final class FakeLlm extends BaseLlm {
 
   private final List<LlmResponse> responses;
   private final RuntimeException error;
 
   /** The most recent request passed to {@link #generateContent}, for prompt-routing assertions. */
-  LlmRequest lastRequest;
+  public LlmRequest lastRequest;
 
   private FakeLlm(List<LlmResponse> responses, RuntimeException error) {
     super("fake-model");
@@ -46,7 +46,7 @@ final class FakeLlm extends BaseLlm {
   }
 
   /** Emits one model turn per supplied text. */
-  static FakeLlm returningText(String... texts) {
+  public static FakeLlm returningText(String... texts) {
     List<LlmResponse> responses = new ArrayList<>();
     for (String text : texts) {
       responses.add(
@@ -62,17 +62,17 @@ final class FakeLlm extends BaseLlm {
   }
 
   /** Emits no content at all (empty stream). */
-  static FakeLlm returningNothing() {
+  public static FakeLlm returningNothing() {
     return new FakeLlm(ImmutableList.of(), null);
   }
 
   /** Fails the stream with the given error. */
-  static FakeLlm erroring(RuntimeException error) {
+  public static FakeLlm erroring(RuntimeException error) {
     return new FakeLlm(ImmutableList.of(), error);
   }
 
   /** Returns the text of the user turn in the last request (joined across parts). */
-  String lastUserText() {
+  public String lastUserText() {
     StringBuilder sb = new StringBuilder();
     for (Content content : lastRequest.contents()) {
       content.parts().ifPresent(parts -> parts.forEach(part -> part.text().ifPresent(sb::append)));
@@ -81,7 +81,7 @@ final class FakeLlm extends BaseLlm {
   }
 
   /** Returns the system-instruction text of the last request (joined across parts). */
-  String lastSystemText() {
+  public String lastSystemText() {
     StringBuilder sb = new StringBuilder();
     lastRequest
         .config()
