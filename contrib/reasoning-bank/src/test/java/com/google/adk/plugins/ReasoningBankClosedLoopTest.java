@@ -167,5 +167,6 @@ public final class ReasoningBankClosedLoopTest {
 
     assertThat(agentLlm.lastUserText()).contains("SUCCESS_MARKER");
     assertThat(agentLlm.lastUserText()).doesNotContain("FAILURE_MARKER");
+    assertThat(agentLlm.lastUserText()).contains("<<<BEGIN_MEMORY>>>");
   }
 }
