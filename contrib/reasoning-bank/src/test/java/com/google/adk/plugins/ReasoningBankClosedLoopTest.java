@@ -108,4 +108,23 @@ public final class ReasoningBankClosedLoopTest {
     assertThat(systemChannel).doesNotContain("<<<BEGIN_MEMORY>>>");
     assertThat(systemChannel).doesNotContain("Verify the page id");
   }
+
+  @Test
+  public void retrieveOnlyPlugin_storesNothing_andInjectsNoMemory() {
+    FakeLlm agentLlm = FakeLlm.returningText("answer");
+    InMemoryReasoningBankService service = new InMemoryReasoningBankService();
+    // Retrieve-only: no judge/extractor, autoConsolidate=false (triple-gate closed).
+    ReasoningBankPlugin plugin = new ReasoningBankPlugin(service, APP_NAME);
+
+    InMemoryRunner runner = new InMemoryRunner(agent(agentLlm), APP_NAME, List.of(plugin));
+    Session session = runner.sessionService().createSession(APP_NAME, USER_ID).blockingGet();
+
+    runner.runAsync(USER_ID, session.id(), userText("Fix a bug.")).blockingSubscribe();
+    assertThat(service.searchMemoryItems(APP_NAME, "bug").blockingGet().memoryItems()).isEmpty();
+
+    runner
+        .runAsync(USER_ID, session.id(), userText("Another " + KEYWORD + " bug."))
+        .blockingSubscribe();
+    assertThat(agentLlm.lastUserText()).doesNotContain("<<<BEGIN_MEMORY>>>");
+  }
 }
