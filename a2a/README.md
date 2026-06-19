@@ -75,9 +75,10 @@ graph LR
   builder for discovery metadata so clients and services share the same view.
 - `converters/*` hold all mapping logic: `RequestConverter` generates ADK
   events from spec messages, `ResponseConverter` performs the reverse and wraps
-  results, `PartConverter` translates individual parts, and
-  `ConversationPreprocessor` splits prior history versus the user turn. Nothing
-  in here depends on any transport framework.
+  results, `PartConverter` translates individual parts (including support for
+  serializing generic `DataParts` with `<a2a_datapart_json>` tags for parity
+  with Python/Go ADK), and `ConversationPreprocessor` splits prior history
+  versus the user turn. Nothing in here depends on any transport framework.
 
 None of these classes depend on Spring or JSON-specific wiring (apart from the
 sample HTTP client), so they can be imported directly by other transports or

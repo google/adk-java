@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.1](https://github.com/google/adk-java/compare/v1.4.0...v1.4.1) (Unreleased)
+
+### Features
+
+*   **a2a**: Add support for serializing/deserializing generic `DataParts` with `<a2a_datapart_json>` tags for parity with Python and Go ADK implementations.
+*   **samples**: Add `AdkDocsReleaseAnalyzerAgent` sample for autonomous documentation analysis between releases.
+
+### Bug Fixes
+
+*   **core**: Ensure proper resource cleanup in `StreamHandle`.
+*   **core**: Initialize unique event ID when creating compaction events in `EventManager`.
+*   **demo**: Update `SecureClientDemo` with more examples and fix resource paths.
+
 ## [1.4.0](https://github.com/google/adk-java/compare/v1.3.0...v1.4.0) (2026-05-29)
 
 

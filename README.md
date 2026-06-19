@@ -40,6 +40,10 @@ debugging, versioning, and deployment anywhere – from your laptop to the cloud
 -   **Modular Multi-Agent Systems**: Design scalable applications by composing
     multiple specialized agents into flexible hierarchies.
 
+-   **Autonomous Documentation Analysis**: Includes specialized agents like
+    `AdkDocsReleaseAnalyzerAgent` to automatically identify and propose
+    documentation updates between code releases.
+
 ## 🚀 Installation
 
 If you're using Maven, add the following to your dependencies:
