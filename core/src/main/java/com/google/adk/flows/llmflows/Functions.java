@@ -29,8 +29,7 @@ import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
-import com.google.adk.telemetry.Instrumentation;
-import com.google.adk.telemetry.Instrumentation.ToolExecution;
+import com.google.adk.telemetry.Instrumentation.ToolExecutionTransformer;
 import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
@@ -290,43 +289,42 @@ public final class Functions {
       Context parentContext) {
     return functionCall ->
         Maybe.defer(
-                () -> {
-                  BaseTool tool = tools.get(functionCall.name().get());
-                  ToolContext toolContext =
-                      ToolContext.builder(invocationContext)
-                          .functionCallId(functionCall.id().orElse(""))
-                          .toolConfirmation(
-                              functionCall.id().map(toolConfirmations::get).orElse(null))
-                          .build();
+            () -> {
+              BaseTool tool = tools.get(functionCall.name().get());
+              ToolContext toolContext =
+                  ToolContext.builder(invocationContext)
+                      .functionCallId(functionCall.id().orElse(""))
+                      .toolConfirmation(functionCall.id().map(toolConfirmations::get).orElse(null))
+                      .build();
 
-                  Map<String, Object> functionArgs =
-                      functionCall.args().map(HashMap::new).orElse(new HashMap<>());
+              Map<String, Object> functionArgs =
+                  functionCall.args().map(HashMap::new).orElse(new HashMap<>());
 
-                  Maybe<Map<String, Object>> maybeFunctionResult =
-                      maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
-                          .switchIfEmpty(
-                              Maybe.defer(
-                                      () ->
-                                          isLive
-                                              ? processFunctionLive(
-                                                  invocationContext,
-                                                  tool,
-                                                  toolContext,
-                                                  functionCall,
-                                                  functionArgs)
-                                              : callTool(tool, functionArgs, toolContext))
-                                  .compose(Tracing.withContext(parentContext)));
+              Maybe<Map<String, Object>> maybeFunctionResult =
+                  maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
+                      .switchIfEmpty(
+                          Maybe.defer(
+                              () ->
+                                  isLive
+                                      ? processFunctionLive(
+                                          invocationContext,
+                                          tool,
+                                          toolContext,
+                                          functionCall,
+                                          functionArgs)
+                                      : callTool(tool, functionArgs, toolContext)));
 
-                  return postProcessFunctionResult(
+              return processFunctionResult(
                       maybeFunctionResult,
                       invocationContext,
                       tool,
                       functionArgs,
                       toolContext,
-                      isLive,
-                      parentContext);
-                })
-            .compose(Tracing.withContext(parentContext));
+                      isLive)
+                  .compose(
+                      new ToolExecutionTransformer(
+                          tool, invocationContext.agent(), functionArgs, parentContext));
+            });
   }
 
   /**
@@ -422,26 +420,6 @@ public final class Functions {
       }
     }
     return longRunningFunctionCalls;
-  }
-
-  private static Maybe<Event> postProcessFunctionResult(
-      Maybe<Map<String, Object>> maybeFunctionResult,
-      InvocationContext invocationContext,
-      BaseTool tool,
-      Map<String, Object> functionArgs,
-      ToolContext toolContext,
-      boolean isLive,
-      Context parentContext) {
-    return Maybe.using(
-        () ->
-            Instrumentation.recordToolExecution(
-                tool, invocationContext.agent(), functionArgs, parentContext),
-        toolExecution ->
-            processFunctionResult(
-                    maybeFunctionResult, invocationContext, tool, functionArgs, toolContext, isLive)
-                .doOnSuccess(event -> toolExecution.context().setFunctionResponseEvent(event))
-                .doOnError(toolExecution::setError),
-        ToolExecution::close);
   }
 
   private static Maybe<Event> processFunctionResult(

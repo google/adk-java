@@ -17,6 +17,7 @@
 package com.google.adk.telemetry;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
@@ -24,6 +25,8 @@ import com.google.adk.events.Event;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.sessions.SessionKey;
+import com.google.adk.telemetry.Instrumentation.AgentInvocationTransformer;
+import com.google.adk.telemetry.Instrumentation.ToolExecutionTransformer;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
@@ -33,11 +36,13 @@ import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.sdk.metrics.data.HistogramPointData;
 import io.opentelemetry.sdk.metrics.data.MetricData;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 import java.util.Map;
@@ -116,11 +121,15 @@ public final class InstrumentationTest {
 
   @Test
   public void recordAgentInvocation_success() {
-    try (Instrumentation.AgentInvocation invocation =
-        Instrumentation.recordAgentInvocation(invocationContext, testAgent)) {
-      assertThat(invocation.context()).isNotNull();
-      assertThat(invocation.context().otelContext()).isNotNull();
-    }
+    Event testEvent = Event.builder().id("test-event").build();
+
+    List<Event> result =
+        Flowable.just(testEvent)
+            .compose(
+                new AgentInvocationTransformer(invocationContext, testAgent, Context.current()))
+            .toList()
+            .blockingGet();
+    assertThat(result).containsExactly(testEvent);
 
     // Verify trace span
     List<SpanData> spans = openTelemetryRule.getSpans();
@@ -143,10 +152,14 @@ public final class InstrumentationTest {
   @Test
   public void recordAgentInvocation_withError() {
     RuntimeException testException = new RuntimeException("test error");
-    try (Instrumentation.AgentInvocation invocation =
-        Instrumentation.recordAgentInvocation(invocationContext, testAgent)) {
-      invocation.setError(testException);
-    }
+    assertThrows(
+        RuntimeException.class,
+        () ->
+            Flowable.<Event>error(testException)
+                .compose(
+                    new AgentInvocationTransformer(invocationContext, testAgent, Context.current()))
+                .toList()
+                .blockingGet());
 
     List<SpanData> spans = openTelemetryRule.getSpans();
     assertThat(spans).hasSize(1);
@@ -162,12 +175,15 @@ public final class InstrumentationTest {
   @Test
   public void recordToolExecution_success() {
     TestTool testTool = new TestTool();
+    Event testEvent = Event.builder().id("test-event").build();
 
-    try (Instrumentation.ToolExecution execution =
-        Instrumentation.recordToolExecution(
-            testTool, testAgent, ImmutableMap.of("arg1", "value1"))) {
-      assertThat(execution.context()).isNotNull();
-    }
+    Event result =
+        Maybe.just(testEvent)
+            .compose(
+                new ToolExecutionTransformer(
+                    testTool, testAgent, ImmutableMap.of("arg1", "value1"), Context.current()))
+            .blockingGet();
+    assertThat(result).isNotNull();
 
     List<SpanData> spans = openTelemetryRule.getSpans();
     assertThat(spans).hasSize(1);

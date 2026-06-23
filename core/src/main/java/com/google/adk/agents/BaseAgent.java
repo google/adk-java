@@ -24,8 +24,7 @@ import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.events.Event;
 import com.google.adk.plugins.Plugin;
-import com.google.adk.telemetry.Instrumentation;
-import com.google.adk.telemetry.Instrumentation.AgentInvocation;
+import com.google.adk.telemetry.Instrumentation.AgentInvocationTransformer;
 import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -324,39 +323,30 @@ public abstract class BaseAgent {
       InvocationContext parentContext,
       Function<InvocationContext, Flowable<Event>> runImplementation) {
     Context otelContext = Context.current();
-    return Flowable.using(
-        () ->
-            Instrumentation.recordAgentInvocation(
-                createInvocationContext(parentContext), this, otelContext),
-        agentInvocation -> {
-          InvocationContext invocationContext = agentInvocation.getCtx();
-          Flowable<Event> mainAndAfterEvents =
-              Flowable.defer(() -> runImplementation.apply(invocationContext))
-                  .concatWith(
-                      Flowable.defer(
-                          () ->
-                              callCallback(
-                                      afterCallbacksToFunctions(
-                                          invocationContext.pluginManager(), afterAgentCallback),
-                                      invocationContext)
-                                  .toFlowable()));
+    InvocationContext invocationContext = createInvocationContext(parentContext);
+    Flowable<Event> mainAndAfterEvents =
+        Flowable.defer(() -> runImplementation.apply(invocationContext))
+            .concatWith(
+                Flowable.defer(
+                    () ->
+                        callCallback(
+                                afterCallbacksToFunctions(
+                                    invocationContext.pluginManager(), afterAgentCallback),
+                                invocationContext)
+                            .toFlowable()));
 
-          return callCallback(
-                  beforeCallbacksToFunctions(
-                      invocationContext.pluginManager(), beforeAgentCallback),
-                  invocationContext)
-              .flatMapPublisher(
-                  beforeEvent -> {
-                    if (invocationContext.endInvocation()) {
-                      return Flowable.just(beforeEvent);
-                    }
-                    return Flowable.just(beforeEvent).concatWith(mainAndAfterEvents);
-                  })
-              .switchIfEmpty(mainAndAfterEvents)
-              .doOnNext(agentInvocation::addEvent)
-              .doOnError(agentInvocation::setError);
-        },
-        AgentInvocation::close);
+    return callCallback(
+            beforeCallbacksToFunctions(invocationContext.pluginManager(), beforeAgentCallback),
+            invocationContext)
+        .flatMapPublisher(
+            beforeEvent -> {
+              if (invocationContext.endInvocation()) {
+                return Flowable.just(beforeEvent);
+              }
+              return Flowable.just(beforeEvent).concatWith(mainAndAfterEvents);
+            })
+        .switchIfEmpty(mainAndAfterEvents)
+        .compose(new AgentInvocationTransformer(invocationContext, this, otelContext));
   }
 
   /**
