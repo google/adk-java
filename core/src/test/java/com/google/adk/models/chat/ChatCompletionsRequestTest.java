@@ -710,10 +710,8 @@ public final class ChatCompletionsRequestTest {
     assertThat(extraContent).containsKey("google");
     @SuppressWarnings("unchecked") // This code won't run in production and it is a JSON object.
     Map<String, Object> google = (Map<String, Object>) extraContent.get("google");
-    assertThat(google).containsKey("thought_signature");
-    Object sigObj = google.get("thought_signature");
-    assertThat(sigObj).isInstanceOf(String.class);
-    assertThat(Base64.getDecoder().decode((String) sigObj)).isEqualTo(expected);
+    String expectedB64 = Base64.getEncoder().encodeToString(expected);
+    assertThat(google).containsEntry("thought_signature", expectedB64);
   }
 
   @Test
