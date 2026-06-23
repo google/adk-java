@@ -1,0 +1,83 @@
+name: Analyze New Release for ADK Docs Updates
+
+on:
+  # Runs on every new release.
+  release:
+    types: [published]
+  # Manual trigger for testing and retrying.
+  workflow_dispatch:
+    inputs:
+      start_tag:
+        description: 'Older release tag (base), e.g. v0.1.0'
+        required: false
+        type: string
+      end_tag:
+        description: 'Newer release tag (head), e.g. v0.2.0'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run: preview only. Set to false to actually create the issue and PRs.'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  analyze-new-release-for-adk-docs-updates:
+    runs-on: ubuntu-latest
+    # These permissions apply to this repo's GITHUB_TOKEN (used only for checkout).
+    # The agent writes issues, branches and pull requests to the docs repo via the
+    # ADK_TRIAGE_AGENT PAT, which must have issues + pull-requests + contents write there.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Run the ADK Docs Release Analyzer
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY_FOR_DOCS_AGENTS }}
+          GOOGLE_GENAI_USE_VERTEXAI: '0'
+          DOC_OWNER: 'google'
+          CODE_OWNER: 'google'
+          DOC_REPO: 'adk-docs'
+          CODE_REPO: 'adk-java'
+          ANALYZER_START_TAG: ${{ github.event.inputs.start_tag }}
+          ANALYZER_END_TAG: ${{ github.event.inputs.end_tag }}
+          # Defaults to dry-run (preview only). Flip to false via manual dispatch
+          # to actually create the issue and PRs.
+          ANALYZER_DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${ANALYZER_DRY_RUN}" == "false" ]]; then
+            args="--no-dry-run"
+          else
+            args="--dry-run"
+          fi
+          if [[ -n "${ANALYZER_START_TAG:-}" ]]; then
+            args="${args} --start-tag ${ANALYZER_START_TAG}"
+          fi
+          if [[ -n "${ANALYZER_END_TAG:-}" ]]; then
+            args="${args} --end-tag ${ANALYZER_END_TAG}"
+          fi
+          # Install ADK libs + sample, then run exec:java scoped to this module
+          # (exec:java with -am would also run on the parent, which has no mainClass).
+          ./mvnw -q -pl contrib/samples/github/adkreleasedocs -am install -DskipTests
+          ./mvnw -q -pl contrib/samples/github/adkreleasedocs exec:java \
+            -Dexec.args="${args}"

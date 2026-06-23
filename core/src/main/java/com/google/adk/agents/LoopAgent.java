@@ -30,6 +30,30 @@ import org.slf4j.LoggerFactory;
  *
  * <p>The loop continues until a sub-agent escalates, or until the maximum number of iterations is
  * reached (if specified).
+ *
+ * <p><b>Composition with {@link LlmAgent}s:</b> a {@code LoopAgent} does not transfer control back
+ * to a parent {@link LlmAgent}. To react to loop results, place the {@code LoopAgent} and the
+ * follow-up {@link LlmAgent} as siblings inside a {@link SequentialAgent}. Loop sub-agents publish
+ * via {@code outputKey} and the follow-up reads via {@code {key}} placeholders in its instruction:
+ *
+ * <pre>{@code
+ * var refiner =
+ *     LlmAgent.builder()
+ *         .name("refiner")
+ *         .model("gemini-flash-latest")
+ *         .instruction("Refine: {draft?}")
+ *         .outputKey("draft")
+ *         .build();
+ * var publisher =
+ *     LlmAgent.builder()
+ *         .name("publisher")
+ *         .model("gemini-flash-latest")
+ *         .instruction("Publish: {draft}")
+ *         .build();
+ * var loop =
+ *     LoopAgent.builder().name("loop").subAgents(refiner).maxIterations(3).build();
+ * var root = SequentialAgent.builder().name("root").subAgents(loop, publisher).build();
+ * }</pre>
  */
 public class LoopAgent extends BaseAgent {
   private static final Logger logger = LoggerFactory.getLogger(LoopAgent.class);

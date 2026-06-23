@@ -114,6 +114,10 @@ public class Tracing {
       AttributeKey.longKey("gen_ai.usage.input_tokens");
   private static final AttributeKey<Long> GEN_AI_USAGE_OUTPUT_TOKENS =
       AttributeKey.longKey("gen_ai.usage.output_tokens");
+  private static final AttributeKey<Long> GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS =
+      AttributeKey.longKey("gen_ai.usage.cache_read.input_tokens");
+  private static final AttributeKey<Long> GEN_AI_USAGE_REASONING_OUTPUT_TOKENS =
+      AttributeKey.longKey("gen_ai.usage.reasoning.output_tokens");
 
   private static final AttributeKey<String> ADK_TOOL_CALL_ARGS =
       AttributeKey.stringKey("gcp.vertex.agent.tool_call_args");
@@ -216,7 +220,7 @@ public class Tracing {
       String toolType,
       Map<String, Object> args,
       @Nullable Event functionResponseEvent,
-      @Nullable Exception error) {
+      @Nullable Throwable error) {
     span.setAttribute(GEN_AI_OPERATION_NAME, EXECUTE_TOOL_OPERATION);
     span.setAttribute(GEN_AI_TOOL_NAME, toolName);
     span.setAttribute(GEN_AI_TOOL_DESCRIPTION, toolDescription);
@@ -335,10 +339,23 @@ public class Tracing {
               usage
                   .promptTokenCount()
                   .ifPresent(tokens -> span.setAttribute(GEN_AI_USAGE_INPUT_TOKENS, (long) tokens));
+              // According to OpenTelemetry Semantic Conventions:
+              // https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/docs/registry/attributes/gen-ai.md
+              // gen_ai.usage.reasoning.output_tokens (thoughts_token_count) SHOULD be included in
+              // gen_ai.usage.output_tokens.
+              Optional<Integer> candidates = usage.candidatesTokenCount();
+              Optional<Integer> thoughts = usage.thoughtsTokenCount();
+              if (candidates.isPresent() || thoughts.isPresent()) {
+                span.setAttribute(
+                    GEN_AI_USAGE_OUTPUT_TOKENS, (long) candidates.orElse(0) + thoughts.orElse(0));
+              }
+              thoughts.ifPresent(
+                  tokens -> span.setAttribute(GEN_AI_USAGE_REASONING_OUTPUT_TOKENS, (long) tokens));
               usage
-                  .candidatesTokenCount()
+                  .cachedContentTokenCount()
                   .ifPresent(
-                      tokens -> span.setAttribute(GEN_AI_USAGE_OUTPUT_TOKENS, (long) tokens));
+                      tokens ->
+                          span.setAttribute(GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS, (long) tokens));
             });
     llmResponse
         .finishReason()

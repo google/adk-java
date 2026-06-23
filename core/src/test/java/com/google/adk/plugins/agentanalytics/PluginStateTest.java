@@ -17,6 +17,7 @@
 package com.google.adk.plugins.agentanalytics;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
@@ -28,10 +29,14 @@ import com.google.api.core.ApiFutures;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
+import com.google.common.util.concurrent.Uninterruptibles;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -62,10 +67,6 @@ public final class PluginStateTest {
     @Override
     protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
       mockWriteClient = mock(BigQueryWriteClient.class);
-      return mockWriteClient;
-    }
-
-    BigQueryWriteClient getMockWriteClient() {
       return mockWriteClient;
     }
 
@@ -100,6 +101,11 @@ public final class PluginStateTest {
   public void tearDown() {
     pluginLogger.removeHandler(mockHandler);
     pluginLogger.setLevel(originalLevel);
+  }
+
+  @Test
+  public void getGcsOffloader_emptyBucketName_returnsNull() {
+    assertNull(pluginState.getGcsOffloader(config));
   }
 
   @Test
@@ -207,7 +213,9 @@ public final class PluginStateTest {
 
     // Wait for cleanup side effects which run after terminal signal.
     long deadline = Instant.now().plusMillis(1000).toEpochMilli();
-    while (!pluginState.isProcessed(invocationId) && Instant.now().toEpochMilli() < deadline) {
+    while ((!pluginState.getBatchProcessors().isEmpty()
+            || !pluginState.getTraceManagers().isEmpty())
+        && Instant.now().toEpochMilli() < deadline) {
       try {
         Thread.sleep(10);
       } catch (InterruptedException e) {
@@ -241,5 +249,52 @@ public final class PluginStateTest {
     assertTrue(pluginState.getBatchProcessors().isEmpty());
     assertTrue(pluginState.getTraceManagers().isEmpty());
     assertTrue(pluginState.getExecutor().isShutdown());
+  }
+
+  @Test
+  public void close_respectsRemainingTimeoutBudget() throws Exception {
+    config = config.toBuilder().shutdownTimeout(Duration.ofMillis(500)).build();
+    pluginState = new TestPluginState(config);
+
+    ExecutorService mockOffloadExecutor = mock(ExecutorService.class);
+    Field field = PluginState.class.getDeclaredField("offloadExecutor");
+    field.setAccessible(true);
+    field.set(pluginState, mockOffloadExecutor);
+
+    pluginState
+        .getExecutor()
+        .execute(
+            () -> {
+              Uninterruptibles.sleepUninterruptibly(Duration.ofMillis(200));
+            });
+
+    when(mockOffloadExecutor.awaitTermination(any(Long.class), any(TimeUnit.class)))
+        .thenReturn(true);
+
+    pluginState.close().test().awaitDone(2, SECONDS);
+
+    ArgumentCaptor<Long> timeoutCaptor = ArgumentCaptor.forClass(Long.class);
+    verify(mockOffloadExecutor).awaitTermination(timeoutCaptor.capture(), any(TimeUnit.class));
+
+    long capturedTimeout = timeoutCaptor.getValue();
+    assertTrue("Timeout should be less than 400", capturedTimeout < 400);
+    assertTrue("Timeout should be greater than 100", capturedTimeout > 100);
+  }
+
+  @Test
+  public void close_closesGcsOffloader() throws Exception {
+    GcsOffloader mockOffloader = mock(GcsOffloader.class);
+    BigQueryLoggerConfig gcsConfig = config.toBuilder().gcsBucketName("test-bucket").build();
+    PluginState gcsState =
+        new TestPluginState(gcsConfig) {
+          @Override
+          protected GcsOffloader getGcsOffloader(BigQueryLoggerConfig config) {
+            return mockOffloader;
+          }
+        };
+
+    gcsState.close().test().assertComplete();
+
+    verify(mockOffloader).close();
   }
 }

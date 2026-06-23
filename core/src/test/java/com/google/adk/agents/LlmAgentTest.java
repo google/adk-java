@@ -440,7 +440,7 @@ public final class LlmAgentTest {
   }
 
   @Test
-  public void close_closesToolsetsOnException() throws Exception {
+  public void close_closesToolsetsOnException() {
     ClosableToolset toolset1 =
         new ClosableToolset() {
           @Override
@@ -494,7 +494,7 @@ public final class LlmAgentTest {
     List<SpanData> spans = openTelemetryRule.getSpans();
     SpanData agentSpan = findSpanByName(spans, "invoke_agent test agent");
     List<SpanData> llmSpans = findSpansByName(spans, "call_llm");
-    List<SpanData> toolSpans = findSpansByName(spans, "execute_tool [echo_tool]");
+    List<SpanData> toolSpans = findSpansByName(spans, "execute_tool echo_tool");
 
     assertThat(llmSpans).hasSize(2);
     assertThat(toolSpans).hasSize(1);

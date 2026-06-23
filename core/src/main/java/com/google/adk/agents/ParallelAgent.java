@@ -34,6 +34,38 @@ import org.slf4j.LoggerFactory;
  * <p>This approach is beneficial for scenarios requiring multiple perspectives or attempts on a
  * single task, such as running different algorithms simultaneously or generating multiple responses
  * for review by a subsequent evaluation agent.
+ *
+ * <p><b>Composition with {@link LlmAgent}s:</b> a {@code ParallelAgent} does not transfer control
+ * back to a parent {@link LlmAgent}. To follow a fan-out with an aggregation step, wrap both in a
+ * {@link SequentialAgent} (used as the root or transferred-to agent). Each parallel sub-agent
+ * publishes via {@code outputKey} and the aggregator reads via {@code {key}} placeholders in its
+ * instruction:
+ *
+ * <pre>{@code
+ * var contacts =
+ *     LlmAgent.builder()
+ *         .name("contacts")
+ *         .model("gemini-flash-latest")
+ *         .instruction("List contacts.")
+ *         .outputKey("contacts")
+ *         .build();
+ * var schedule =
+ *     LlmAgent.builder()
+ *         .name("schedule")
+ *         .model("gemini-flash-latest")
+ *         .instruction("List schedule.")
+ *         .outputKey("schedule")
+ *         .build();
+ * var writer =
+ *     LlmAgent.builder()
+ *         .name("writer")
+ *         .model("gemini-flash-latest")
+ *         .instruction("Write: contacts={contacts}, schedule={schedule}")
+ *         .build();
+ * var gather =
+ *     ParallelAgent.builder().name("gather").subAgents(contacts, schedule).build();
+ * var root = SequentialAgent.builder().name("root").subAgents(gather, writer).build();
+ * }</pre>
  */
 public class ParallelAgent extends BaseAgent {
 

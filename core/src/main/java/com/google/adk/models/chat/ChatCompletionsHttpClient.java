@@ -46,14 +46,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * An HTTP client for interacting with OpenAI-compatible chat completions endpoints.
- *
- * <p>Supports both non-streaming responses (single {@link LlmResponse} emission) and streaming
- * Server-Sent Events (SSE) responses (multiple incremental {@link LlmResponse} emissions). See the
- * <a href="https://developers.openai.com/api/reference/resources/chat">OpenAI Chat Completions API
- * reference</a> for the wire protocol.
+ * An OkHttp-based implementation of {@link ChatCompletionsClient} that targets OpenAI-compatible
+ * chat completions endpoints. Both non-streaming responses (single {@link LlmResponse} emission)
+ * and streaming Server-Sent Events (SSE) responses (multiple incremental {@link LlmResponse}
+ * emissions) are supported.
  */
-public final class ChatCompletionsHttpClient {
+public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
   private static final Logger logger = LoggerFactory.getLogger(ChatCompletionsHttpClient.class);
   private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
 
@@ -178,26 +176,25 @@ public final class ChatCompletionsHttpClient {
     return timeoutMs == 0L ? Duration.ZERO : Duration.ofMillis(timeoutMs);
   }
 
-  /**
-   * Generates a conversational response from the chat completions endpoint based on the provided
-   * messages. This encapsulates building the HTTP payload, sending the request to the completions
-   * endpoint, and initiating the handling of complete calls.
-   *
-   * @param llmRequest The request containing the model, configuration, and sequence of messages.
-   * @param stream Whether to request a streaming response.
-   * @return A {@link Flowable} emitting the discrete (or combined) {@link LlmResponse} objects.
-   */
+  @Override
   public Flowable<LlmResponse> complete(LlmRequest llmRequest, boolean stream) {
     return Flowable.defer(
         () -> {
+          String effectiveModelName = llmRequest.model().orElse("?");
+          logger.trace("Chat Completion Request Contents: {}", llmRequest.contents());
+          llmRequest.config().ifPresent(c -> logger.trace("Chat Completion Request Config: {}", c));
+
           ChatCompletionsRequest dtoRequest =
               ChatCompletionsRequest.fromLlmRequest(llmRequest, stream);
           String jsonPayload = objectMapper.writeValueAsString(dtoRequest);
-          logger.trace(
-              "Chat Completion Request: model={}, stream={}, messagesCount={}",
-              dtoRequest.model,
-              dtoRequest.stream,
-              dtoRequest.messages != null ? dtoRequest.messages.size() : 0);
+          logger.trace("Chat Completion Request JSON: {}", jsonPayload);
+
+          if (stream) {
+            logger.debug(
+                "Sending streaming chat-completion request to model {}", effectiveModelName);
+          } else {
+            logger.debug("Sending chat-completion request to model {}", effectiveModelName);
+          }
 
           Request.Builder requestBuilder =
               new Request.Builder().url(completionsUrl).post(RequestBody.create(jsonPayload, JSON));
@@ -209,11 +206,7 @@ public final class ChatCompletionsHttpClient {
           requestBuilder.header("Content-Type", JSON.toString());
 
           Request request = requestBuilder.build();
-          if (stream) {
-            return createStreamingFlowable(request);
-          } else {
-            return createNonStreamingFlowable(request);
-          }
+          return stream ? createStreamingFlowable(request) : createNonStreamingFlowable(request);
         });
   }
 
@@ -274,10 +267,14 @@ public final class ChatCompletionsHttpClient {
                       // A single malformed chunk must not abort the entire stream. Log a
                       // warning and continue.
                       try {
+                        logger.trace("Raw streaming chat-completion chunk: {}", data);
                         ChatCompletionsResponse.ChatCompletionChunk chunk =
                             objectMapper.readValue(
                                 data, ChatCompletionsResponse.ChatCompletionChunk.class);
                         ImmutableList<LlmResponse> responses = collection.processChunk(chunk);
+                        if (!responses.isEmpty()) {
+                          logger.trace("Responses to emit: {}", responses);
+                        }
                         for (LlmResponse resp : responses) {
                           emitter.onNext(resp);
                         }
@@ -341,9 +338,12 @@ public final class ChatCompletionsHttpClient {
         }
 
         String jsonResponse = body.string();
+        logger.trace("Raw non-streaming chat-completion response: {}", jsonResponse);
         ChatCompletionsResponse.ChatCompletion completion =
             objectMapper.readValue(jsonResponse, ChatCompletionsResponse.ChatCompletion.class);
-        emitter.onNext(completion.toLlmResponse());
+        LlmResponse llmResponse = completion.toLlmResponse();
+        logger.trace("Response to emit: {}", llmResponse);
+        emitter.onNext(llmResponse);
         emitter.onComplete();
       } catch (Exception e) {
         emitter.tryOnError(e);

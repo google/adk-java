@@ -100,6 +100,7 @@ public final class LlmEventSummarizer implements BaseEventSummarizer {
                         .map(
                             compaction ->
                                 Event.builder()
+                                    .id(Event.generateEventId())
                                     .author("user")
                                     .actions(EventActions.builder().compaction(compaction).build())
                                     .invocationId(Event.generateEventId())

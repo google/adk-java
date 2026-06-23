@@ -38,7 +38,10 @@ import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.telemetry.Tracing;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.ToolContext;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.FunctionResponse;
@@ -58,6 +61,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -96,20 +100,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
     Context currentContext = Context.current();
     LlmAgent agent = (LlmAgent) context.agent();
 
-    RequestProcessor toolsProcessor =
-        (ctx, req) -> {
-          LlmRequest.Builder builder = req.toBuilder();
-          return agent
-              .canonicalTools(new ReadonlyContext(ctx))
-              .concatMapCompletable(
-                  tool -> tool.processLlmRequest(builder, ToolContext.builder(ctx).build()))
-              .andThen(
-                  Single.fromCallable(
-                      () -> RequestProcessingResult.create(builder.build(), ImmutableList.of())));
-        };
-
     Iterable<RequestProcessor> allProcessors =
-        Iterables.concat(requestProcessors, ImmutableList.of(toolsProcessor));
+        Iterables.concat(requestProcessors, ImmutableList.of(getRequestProcessorFromTools(agent)));
 
     return Flowable.fromIterable(allProcessors)
         .concatMap(
@@ -119,6 +111,58 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     .doOnSuccess(result -> llmRequestRef.set(result.updatedRequest()))
                     .flattenAsFlowable(
                         result -> result.events() != null ? result.events() : ImmutableList.of()));
+  }
+
+  /**
+   * Constructs a {@link RequestProcessor} that sequentially applies the {@code processLlmRequest}
+   * methods of all tools and toolsets associated with this agent to the incoming {@link
+   * LlmRequest}.
+   *
+   * @return A {@link RequestProcessor} that applies tool-specific modifications to LLM requests.
+   */
+  @VisibleForTesting
+  RequestProcessor getRequestProcessorFromTools(LlmAgent agent) {
+    return (context, request) -> {
+      ReadonlyContext readonlyContext = new ReadonlyContext(context);
+      List<BiFunction<LlmRequest.Builder, ToolContext, Completable>> processors = new ArrayList<>();
+
+      for (Object toolOrToolset : agent.toolsUnion()) {
+        if (toolOrToolset instanceof BaseTool baseTool) {
+          processors.add(
+              (builder, ctx) -> {
+                Completable c = baseTool.processLlmRequest(builder, ctx);
+                return c == null ? Completable.complete() : c;
+              });
+        } else if (toolOrToolset instanceof BaseToolset baseToolset) {
+          // First apply the toolset's own request processor, then unwrap all tools from the toolset
+          // and apply each individual tool's request processor sequentially.
+          processors.add(
+              (builder, ctx) -> {
+                Completable c = baseToolset.processLlmRequest(builder, ctx);
+                Completable toolsetProcessor = c == null ? Completable.complete() : c;
+                return toolsetProcessor
+                    .andThen(baseToolset.getTools(readonlyContext))
+                    .concatMapCompletable(
+                        b -> {
+                          Completable tc = b.processLlmRequest(builder, ctx);
+                          return tc == null ? Completable.complete() : tc;
+                        });
+              });
+        } else {
+          throw new IllegalArgumentException(
+              "Object in tools list is not of a supported type: "
+                  + toolOrToolset.getClass().getName());
+        }
+      }
+
+      LlmRequest.Builder builder = request.toBuilder();
+      ToolContext toolContext = ToolContext.builder(context).build();
+      return Flowable.fromIterable(processors)
+          .concatMapCompletable(f -> f.apply(builder, toolContext))
+          .andThen(
+              Single.fromCallable(
+                  () -> RequestProcessingResult.create(builder.build(), ImmutableList.of())));
+    };
   }
 
   /**
@@ -435,12 +479,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                                   "Agent not found: " + agentToTransfer)));
                                     }
                                     return postProcessedEvents.concatWith(
-                                        Flowable.defer(
-                                            () -> {
-                                              try (Scope s = spanContext.makeCurrent()) {
-                                                return nextAgent.get().runAsync(context);
-                                              }
-                                            }));
+                                        nextAgent
+                                            .get()
+                                            .runAsync(context)
+                                            .compose(Tracing.withContext(spanContext)));
                                   }
                                   return postProcessedEvents;
                                 });
@@ -481,7 +523,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     return Flowable.empty();
                   } else {
                     logger.debug("Continuing to next step of the flow.");
-                    return run(spanContext, invocationContext, stepsCompleted + 1);
+                    // Wait until the Runner has persisted this step's events so the next step's
+                    // request is not built from a stale session (see PersistBarrier).
+                    return PersistBarrier.awaitPersisted(invocationContext, eventList)
+                        .andThen(run(spanContext, invocationContext, stepsCompleted + 1));
                   }
                 }));
   }
@@ -622,12 +667,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                     "Agent not found: " + event.actions().transferToAgent().get());
                               }
                               Flowable<Event> nextAgentEvents =
-                                  Flowable.defer(
-                                      () -> {
-                                        try (Scope s = spanContext.makeCurrent()) {
-                                          return nextAgent.get().runLive(invocationContext);
-                                        }
-                                      });
+                                  nextAgent
+                                      .get()
+                                      .runLive(invocationContext)
+                                      .compose(Tracing.withContext(spanContext));
                               events = Flowable.concat(events, nextAgentEvents);
                             }
                             return events;

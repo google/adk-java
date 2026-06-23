@@ -16,16 +16,24 @@
 
 package com.google.adk.plugins.agentanalytics;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FileData;
 import com.google.genai.types.FunctionCall;
@@ -33,6 +41,7 @@ import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -49,7 +58,8 @@ public class JsonFormatterTest {
                     Content.fromParts(Part.fromText("hello")).toBuilder().role("user").build()))
             .build();
 
-    Parser.ParsedContent result = new Parser(100).parse(request).get();
+    Parser.ParsedContent result =
+        new Parser(null, 100, null, true).parse(request, "trace", "span").get();
 
     assertTrue(result.content().has("prompt"));
     ArrayNode prompt = (ArrayNode) result.content().get("prompt");
@@ -69,7 +79,8 @@ public class JsonFormatterTest {
                     .build())
             .build();
 
-    Parser.ParsedContent result = new Parser(100).parse(request).get();
+    Parser.ParsedContent result =
+        new Parser(null, 100, null, true).parse(request, "trace", "span").get();
 
     assertTrue(result.content().has("system_prompt"));
     assertEquals("be helpful", result.content().get("system_prompt").asText());
@@ -79,7 +90,8 @@ public class JsonFormatterTest {
   @Test
   public void parse_string_truncates() throws Exception {
     String longString = "this is a very long string that should be truncated";
-    Parser.ParsedContent result = new Parser(24).parse(longString).get();
+    Parser.ParsedContent result =
+        new Parser(null, 24, null, true).parse(longString, "trace", "span").get();
 
     assertTrue(result.isTruncated());
     assertEquals("this is a ...[truncated]", result.content().asText());
@@ -89,7 +101,8 @@ public class JsonFormatterTest {
   public void parse_map_truncatesNested() throws Exception {
     ImmutableMap<String, Object> map =
         ImmutableMap.of("key", "this is a very long value that should definitely be truncated");
-    Parser.ParsedContent result = new Parser(24).parse(map).get();
+    Parser.ParsedContent result =
+        new Parser(null, 24, null, true).parse(map, "trace", "span").get();
 
     assertTrue(result.isTruncated());
     assertEquals("this is a ...[truncated]", result.content().get("key").asText());
@@ -98,7 +111,8 @@ public class JsonFormatterTest {
   @Test
   public void parse_content_returnsSummary() throws Exception {
     Content content = Content.fromParts(Part.fromText("part 1"), Part.fromText("part 2"));
-    Parser.ParsedContent result = new Parser(100).parse(content).get();
+    Parser.ParsedContent result =
+        new Parser(null, 100, null, true).parse(content, "trace", "span").get();
 
     assertEquals("part 1 | part 2", result.content().get("text_summary").asText());
     assertEquals(2, result.parts().size());
@@ -109,7 +123,8 @@ public class JsonFormatterTest {
     FileData fileData =
         FileData.builder().fileUri("gs://bucket/file.txt").mimeType("text/plain").build();
     Content content = Content.fromParts(Part.builder().fileData(fileData).build());
-    Parser.ParsedContent result = new Parser(100).parse(content).get();
+    Parser.ParsedContent result =
+        new Parser(null, 100, null, true).parse(content, "trace", "span").get();
 
     assertEquals(1, result.parts().size());
     JsonNode partData = result.parts().get(0);
@@ -122,7 +137,8 @@ public class JsonFormatterTest {
   public void parse_content_withFunctionCall() throws Exception {
     FunctionCall fc = FunctionCall.builder().name("myFunction").build();
     Content content = Content.fromParts(Part.builder().functionCall(fc).build());
-    Parser.ParsedContent result = new Parser(100).parse(content).get();
+    Parser.ParsedContent result =
+        new Parser(null, 100, null, true).parse(content, "trace", "span").get();
 
     assertEquals(1, result.parts().size());
     JsonNode partData = result.parts().get(0);
@@ -135,7 +151,8 @@ public class JsonFormatterTest {
   public void parse_list_truncatesElements() throws Exception {
     List<String> list =
         Arrays.asList("short", "this is a very long string that should be truncated");
-    Parser.ParsedContent result = new Parser(24).parse(list).get();
+    Parser.ParsedContent result =
+        new Parser(null, 24, null, true).parse(list, "trace", "span").get();
 
     assertTrue(result.isTruncated());
     JsonNode arrayNode = result.content();
@@ -143,6 +160,44 @@ public class JsonFormatterTest {
     assertEquals(2, arrayNode.size());
     assertEquals("short", arrayNode.get(0).asText());
     assertEquals("this is a ...[truncated]", arrayNode.get(1).asText());
+  }
+
+  @Test
+  public void parse_withOffloader_offloadsLargeText() throws Exception {
+    GcsOffloader offloader = mock(GcsOffloader.class);
+    when(offloader.uploadContent(anyString(), anyString(), anyString()))
+        .thenReturn(CompletableFuture.completedFuture("gs://mock-bucket/path"));
+
+    Content content =
+        Content.fromParts(Part.fromText("this text is longer than 10 characters".repeat(100)));
+    Parser.ParsedContent result =
+        new Parser(offloader, 10, "conn", true).parse(content, "trace", "span").get();
+
+    assertEquals(1, result.parts().size());
+    JsonNode partData = result.parts().get(0);
+    assertEquals("GCS_REFERENCE", partData.get("storage_mode").asText());
+    assertEquals("gs://mock-bucket/path", partData.get("uri").asText());
+    assertTrue(partData.get("text").asText().contains("[OFFLOADED]"));
+    assertEquals("conn", partData.get("object_ref").get("authorizer").asText());
+  }
+
+  @Test
+  public void parse_withOffloader_offloadsBinaryData() throws Exception {
+    GcsOffloader offloader = mock(GcsOffloader.class);
+    when(offloader.uploadContent(any(byte[].class), anyString(), anyString()))
+        .thenReturn(CompletableFuture.completedFuture("gs://mock-bucket/image.png"));
+
+    Blob blob = Blob.builder().data("fake-image".getBytes(UTF_8)).mimeType("image/png").build();
+    Content content = Content.fromParts(Part.builder().inlineData(blob).build());
+    Parser.ParsedContent result =
+        new Parser(offloader, 100, "conn", true).parse(content, "trace", "span").get();
+
+    assertEquals(1, result.parts().size());
+    JsonNode partData = result.parts().get(0);
+    assertEquals("GCS_REFERENCE", partData.get("storage_mode").asText());
+    assertEquals("gs://mock-bucket/image.png", partData.get("uri").asText());
+    assertEquals("image/png", partData.get("mime_type").asText());
+    assertEquals("[MEDIA OFFLOADED]", partData.get("text").asText());
   }
 
   @Test
@@ -188,7 +243,8 @@ public class JsonFormatterTest {
     // "こんにちはこんにちは" is 30 bytes, but 10 characters.
     String nihongo = "こんにちはこんにちは";
     // With budget 20, effective budget is 6, so only 2 characters (6 bytes) should be kept.
-    Parser.ParsedContent result = new Parser(20).parse(nihongo).get();
+    Parser.ParsedContent result =
+        new Parser(null, 20, null, true).parse(nihongo, "trace", "span").get();
 
     assertTrue(result.isTruncated());
     assertEquals("こん...[truncated]", result.content().asText());
@@ -197,9 +253,23 @@ public class JsonFormatterTest {
   @Test
   public void parse_multibyteContent_truncatesBasedOnBytes() throws Exception {
     Content content = Content.fromParts(Part.fromText("こんにちはこんにちは"));
-    Parser.ParsedContent result = new Parser(20).parse(content).get();
+    Parser.ParsedContent result =
+        new Parser(null, 20, null, true).parse(content, "trace", "span").get();
 
     assertTrue(result.isTruncated());
     assertEquals("こん...[truncated]", result.content().get("text_summary").asText());
+  }
+
+  @Test
+  public void smartTruncate_withCycle_detectsCycle() {
+    ObjectMapper mapper = new ObjectMapper();
+    ObjectNode node = mapper.createObjectNode();
+    node.set("child", node);
+
+    // Verify that smartTruncate handles circular JsonNode structures by detecting the cycle.
+    JsonFormatter.TruncationResult result = JsonFormatter.smartTruncate(node, 100);
+
+    assertTrue(result.isTruncated());
+    assertEquals("[cycle detected]", result.node().get("child").asText());
   }
 }

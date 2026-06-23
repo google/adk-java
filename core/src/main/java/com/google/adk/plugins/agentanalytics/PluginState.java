@@ -3,6 +3,7 @@ package com.google.adk.plugins.agentanalytics;
 import static com.google.adk.plugins.agentanalytics.BigQueryUtils.getVersionHeaderValue;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.retrying.RetrySettings;
@@ -21,21 +22,35 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import org.jspecify.annotations.Nullable;
 import org.threeten.bp.Duration;
+import org.threeten.bp.Instant;
 
 /** Manages state for the BigQueryAgentAnalyticsPlugin. */
 class PluginState {
   private static final Logger logger = Logger.getLogger(PluginState.class.getName());
+  private static final int GCS_OFFLOAD_CORE_POOL_SIZE = 2;
+  private static final int GCS_OFFLOAD_MAX_THREADS = 10;
+  // Max number of tasks in the queue before we start rejecting tasks and executing them in the
+  // caller thread.
+  private static final int GCS_OFFLOAD_QUEUE_SIZE = 100;
+  // Idle time before threads are terminated.
+  private static final int GCS_OFFLOAD_IDLE_TIME_SECONDS = 30;
+
   private final BigQueryLoggerConfig config;
   private final ScheduledExecutorService executor;
+  private final ExecutorService offloadExecutor;
   private final BigQueryWriteClient writeClient;
   private static final AtomicLong threadCounter = new AtomicLong(0);
   // Map of invocation ID to BatchProcessor.
@@ -45,6 +60,7 @@ class PluginState {
   private final ConcurrentHashMap<String, TraceManager> traceManagers = new ConcurrentHashMap<>();
   // Cache of invocation ID to Boolean indicating invocation ID has been processed.
   private final Cache<String, Boolean> processedInvocations;
+  private final GcsOffloader offloader;
   private final Parser parser;
   private final ConcurrentHashMap<String, Set<CompletableFuture<Void>>> pendingTasks =
       new ConcurrentHashMap<>();
@@ -54,6 +70,7 @@ class PluginState {
     this.executor =
         Executors.newScheduledThreadPool(
             2, r -> new Thread(r, "bq-analytics-plugin-" + threadCounter.getAndIncrement()));
+    this.offloadExecutor = createGcsOffloadThreadPool();
     // One write client per plugin instance, shared by all invocations.
     this.writeClient = createWriteClient(config);
     this.processedInvocations =
@@ -61,7 +78,25 @@ class PluginState {
             .maximumSize(10000)
             .expireAfterWrite(java.time.Duration.ofMinutes(10))
             .build();
-    this.parser = new Parser(config.maxContentLength());
+    this.offloader = getGcsOffloader(config);
+    this.parser =
+        new Parser(
+            offloader,
+            config.maxContentLength(),
+            config.connectionId().orElse(null),
+            config.logMultiModalContent());
+  }
+
+  private static ExecutorService createGcsOffloadThreadPool() {
+    return new ThreadPoolExecutor(
+        GCS_OFFLOAD_CORE_POOL_SIZE, // The lower limit of threads.
+        GCS_OFFLOAD_MAX_THREADS, // The upper limit of threads.
+        GCS_OFFLOAD_IDLE_TIME_SECONDS, // Time to keep idle threads alive.
+        SECONDS,
+        new ArrayBlockingQueue<>(GCS_OFFLOAD_QUEUE_SIZE), // workQueue: Hand off tasks directly.
+        r -> new Thread(r, "bq-analytics-plugin-offload-" + threadCounter.getAndIncrement()),
+        // Reject tasks if the queue is full.
+        new ThreadPoolExecutor.AbortPolicy());
   }
 
   ScheduledExecutorService getExecutor() {
@@ -142,6 +177,14 @@ class PluginState {
         });
   }
 
+  protected @Nullable GcsOffloader getGcsOffloader(BigQueryLoggerConfig config) {
+    if (config.gcsBucketName().isEmpty()) {
+      return null;
+    }
+    return new GcsOffloader(
+        config.projectId(), config.gcsBucketName(), offloadExecutor, config.credentials(), null);
+  }
+
   Parser getParser() {
     return parser;
   }
@@ -174,7 +217,8 @@ class PluginState {
     batchProcessors.clear();
   }
 
-  private Set<CompletableFuture<Void>> getPendingTasksForInvocation(String invocationId) {
+  @VisibleForTesting
+  protected Set<CompletableFuture<Void>> getPendingTasksForInvocation(String invocationId) {
     return pendingTasks.computeIfAbsent(invocationId, k -> ConcurrentHashMap.newKeySet());
   }
 
@@ -263,12 +307,33 @@ class PluginState {
               }
               try {
                 executor.shutdown();
-                if (!executor.awaitTermination(config.shutdownTimeout().toMillis(), MILLISECONDS)) {
+                offloadExecutor.shutdown();
+                long totalTimeoutMillis = config.shutdownTimeout().toMillis();
+                Instant startTime = Instant.now();
+                if (!executor.awaitTermination(totalTimeoutMillis, MILLISECONDS)) {
                   executor.shutdownNow();
+                }
+                long elapsedTimeMillis = Duration.between(startTime, Instant.now()).toMillis();
+                long remainingMillis = totalTimeoutMillis - elapsedTimeMillis;
+                if (remainingMillis > 0) {
+                  if (!offloadExecutor.awaitTermination(remainingMillis, MILLISECONDS)) {
+                    offloadExecutor.shutdownNow();
+                  }
+                } else {
+                  offloadExecutor.shutdownNow();
                 }
               } catch (InterruptedException e) {
                 executor.shutdownNow();
+                offloadExecutor.shutdownNow();
                 Thread.currentThread().interrupt();
+              }
+
+              try {
+                if (offloader != null) {
+                  offloader.close();
+                }
+              } catch (Exception e) {
+                logger.log(Level.WARNING, "Failed to close GCS offloader", e);
               }
             });
   }

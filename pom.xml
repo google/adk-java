@@ -17,7 +17,7 @@
 
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk-parent</artifactId>
-  <version>1.3.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+  <version>1.5.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   <packaging>pom</packaging>
 
   <name>Google Agent Development Kit Maven Parent POM</name>
@@ -52,7 +52,7 @@
     <otel.version>1.51.0</otel.version>
     <mcp.version>1.1.2</mcp.version>
     <errorprone.version>2.47.0</errorprone.version>
-    <google.genai.version>1.44.0</google.genai.version>
+    <google.genai.version>1.58.0</google.genai.version>
     <protobuf.version>4.33.5</protobuf.version>
     <junit.version>5.11.4</junit.version>
     <mockito.version>5.23.0</mockito.version>

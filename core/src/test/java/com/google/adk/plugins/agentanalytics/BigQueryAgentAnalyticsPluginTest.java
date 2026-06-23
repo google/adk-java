@@ -17,24 +17,29 @@
 package com.google.adk.plugins.agentanalytics;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.sessions.Session;
@@ -56,10 +61,15 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
+import com.google.cloud.storage.BlobInfo;
+import com.google.cloud.storage.Storage;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
@@ -551,6 +561,247 @@ public class BigQueryAgentAnalyticsPluginTest {
   }
 
   @Test
+  public void onEventCallback_withA2AMetadata_emitsA2AInteraction() throws Exception {
+    Event event =
+        Event.builder()
+            .author("agent_author")
+            .customMetadata(
+                ImmutableList.of(
+                    CustomMetadata.builder().key("a2a:task_id").stringValue("task-123").build(),
+                    CustomMetadata.builder()
+                        .key("a2a:response")
+                        .stringValue("a2a_payload")
+                        .build()))
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
+
+    Map<String, Object> a2aRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("A2A_INTERACTION row not found in queue", a2aRow);
+    assertEquals("A2A_INTERACTION", a2aRow.get("event_type"));
+    assertEquals("agent_name", a2aRow.get("agent"));
+
+    // Assert the stored content is a scalar containing the A2A response
+    JsonNode contentNode = (JsonNode) a2aRow.get("content");
+    assertNotNull("A2A response content should not be null", contentNode);
+    assertTrue(contentNode.isTextual());
+    assertEquals("a2a_payload", contentNode.asText());
+
+    ObjectNode attributes = (ObjectNode) a2aRow.get("attributes");
+    ObjectNode a2aMetadata = (ObjectNode) attributes.get("a2a_metadata");
+
+    // Assert keys present and absent in a2a_metadata
+    assertNotNull("a2a_metadata should not be null", a2aMetadata);
+    assertEquals("task-123", a2aMetadata.get("a2a:task_id").asText());
+    assertFalse(
+        "a2a:response should be excluded from a2a_metadata to avoid duplication",
+        a2aMetadata.has("a2a:response"));
+  }
+
+  @Test
+  public void onEventCallback_agentResponse_emitsAgentResponse() throws Exception {
+    Event event =
+        Event.builder()
+            .id("evt-id")
+            .author("agent_author")
+            .branch("branch-val")
+            .content(Content.fromParts(Part.fromText("agent final answer")))
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
+
+    Map<String, Object> agentResponseRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("AGENT_RESPONSE row not found in queue", agentResponseRow);
+    assertEquals("AGENT_RESPONSE", agentResponseRow.get("event_type"));
+    assertEquals("agent_name", agentResponseRow.get("agent"));
+
+    // Assert that the stored content actually has a scalar at $.text_summary
+    JsonNode contentNode = (JsonNode) agentResponseRow.get("content");
+    assertTrue("content should contain 'text_summary'", contentNode.has("text_summary"));
+    assertEquals("agent final answer", contentNode.get("text_summary").asText());
+
+    ObjectNode attributes = (ObjectNode) agentResponseRow.get("attributes");
+    assertEquals("evt-id", attributes.get("source_event_id").asText());
+    assertEquals("agent_author", attributes.get("source_event_author").asText());
+    assertEquals("branch-val", attributes.get("source_event_branch").asText());
+  }
+
+  @Test
+  public void onEventCallback_skipSummarizationAndFunctionCall_doesNotEmitAgentResponse()
+      throws Exception {
+    Event event =
+        Event.builder()
+            .id("evt-id")
+            .author("agent_author")
+            .branch("branch-val")
+            .actions(EventActions.builder().skipSummarization(true).build())
+            .content(
+                Content.builder()
+                    .parts(
+                        Part.fromText("agent final answer"),
+                        Part.builder()
+                            .functionCall(FunctionCall.builder().name("my_tool").build())
+                            .build())
+                    .build())
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
+
+    Map<String, Object> nextRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNull("No AGENT_RESPONSE row should be emitted", nextRow);
+  }
+
+  @Test
+  public void onEventCallback_longRunningToolIdsPresent_doesNotEmitAgentResponse()
+      throws Exception {
+    Event event =
+        Event.builder()
+            .id("evt-id")
+            .author("agent_author")
+            .branch("branch-val")
+            .actions(EventActions.builder().skipSummarization(true).build())
+            .longRunningToolIds(ImmutableSet.of("long_running_tool_id"))
+            .content(Content.builder().parts(Part.fromText("agent final answer")).build())
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
+
+    Map<String, Object> nextRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNull("No AGENT_RESPONSE row should be emitted", nextRow);
+  }
+
+  @Test
+  public void onEventCallback_withA2ARequestOnlyMetadata_emitsA2AInteraction() throws Exception {
+    Event event =
+        Event.builder()
+            .author("agent_author")
+            .customMetadata(
+                ImmutableList.of(
+                    CustomMetadata.builder().key("a2a:task_id").stringValue("task-456").build(),
+                    CustomMetadata.builder().key("a2a:context_id").stringValue("ctx-789").build(),
+                    CustomMetadata.builder().key("a2a:request").stringValue("req_payload").build()))
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+
+    Map<String, Object> a2aRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("A2A_INTERACTION row not found in queue", a2aRow);
+    assertEquals("A2A_INTERACTION", a2aRow.get("event_type"));
+    assertEquals("agent_name", a2aRow.get("agent"));
+    assertFalse(
+        "Content should not contain a2a_response payload since it was absent",
+        a2aRow.containsKey("content"));
+    ObjectNode attributes = (ObjectNode) a2aRow.get("attributes");
+    ObjectNode a2aMetadata = (ObjectNode) attributes.get("a2a_metadata");
+
+    // Assert keys present and absent in a2a_metadata
+    assertEquals("task-456", a2aMetadata.get("a2a:task_id").asText());
+    assertEquals("ctx-789", a2aMetadata.get("a2a:context_id").asText());
+    assertEquals("req_payload", a2aMetadata.get("a2a:request").asText());
+    assertFalse(a2aMetadata.has("a2a:response"));
+  }
+
+  @Test
+  public void onEventCallback_agentResponse_filtersThoughtAndAppliesTruncation() throws Exception {
+    Event event =
+        Event.builder()
+            .author("agent_author")
+            .content(
+                Content.builder()
+                    .parts(
+                        Part.builder().text("internal reasoning process").thought(true).build(),
+                        Part.fromText("this text is very long and will exceed the limit"))
+                    .build())
+            .build();
+
+    BigQueryLoggerConfig customConfig = config.toBuilder().maxContentLength(20).build();
+    PluginState customState =
+        new PluginState(customConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin customPlugin =
+        new BigQueryAgentAnalyticsPlugin(customConfig, mockBigQuery, customState);
+
+    customPlugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            customState
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    // Consume STATE_DELTA
+    Map<String, Object> stateDeltaRow = customState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+
+    // Get AGENT_RESPONSE
+    Map<String, Object> agentResponseRow =
+        customState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("AGENT_RESPONSE row not found in queue", agentResponseRow);
+    assertEquals("AGENT_RESPONSE", agentResponseRow.get("event_type"));
+
+    // Check content and truncation behavior on the parsed JSON object
+    JsonNode contentNode = (JsonNode) agentResponseRow.get("content");
+    assertTrue("content should contain 'text_summary'", contentNode.has("text_summary"));
+    String textSummary = contentNode.get("text_summary").asText();
+
+    assertTrue("Content should be marked as truncated", textSummary.contains("truncated"));
+    assertFalse("Thought part should be filtered out", textSummary.contains("reasoning"));
+    assertEquals(true, agentResponseRow.get("is_truncated"));
+  }
+
+  @Test
   public void onModelErrorCallback_populatesCorrectFields() throws Exception {
     CallbackContext mockCallbackContext = mock(CallbackContext.class);
     when(mockCallbackContext.invocationContext()).thenReturn(mockInvocationContext);
@@ -587,6 +838,7 @@ public class BigQueryAgentAnalyticsPluginTest {
             .promptTokenCount(10)
             .candidatesTokenCount(20)
             .totalTokenCount(30)
+            .cachedContentTokenCount(5)
             .build();
 
     GenerateContentResponse response =
@@ -625,6 +877,8 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertEquals("v1", attributes.get("model_version").asText());
     ObjectNode usageAttr = (ObjectNode) attributes.get("usage_metadata");
     assertEquals(10, usageAttr.get("prompt").asInt());
+    assertEquals(5, usageAttr.get("cached_content_token_count").asInt());
+
     assertEquals(false, row.get("is_truncated"));
     assertNotNull(row.get("parent_span_id"));
     ObjectNode latencyMs = (ObjectNode) row.get("latency_ms");
@@ -802,6 +1056,7 @@ public class BigQueryAgentAnalyticsPluginTest {
         (content, eventType) -> {
           throw new RuntimeException("Formatter error");
         };
+
     BigQueryLoggerConfig formattedConfig = config.toBuilder().contentFormatter(formatter).build();
     PluginState formattedState =
         new PluginState(formattedConfig) {
@@ -946,6 +1201,14 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertTrue(
         queries.stream()
             .anyMatch(q -> q.contains("CREATE OR REPLACE VIEW `project.dataset.v_llm_response`")));
+    assertTrue(
+        queries.stream()
+            .anyMatch(
+                q -> q.contains("CREATE OR REPLACE VIEW `project.dataset.v_a2a_interaction`")));
+    assertTrue(
+        queries.stream()
+            .anyMatch(
+                q -> q.contains("CREATE OR REPLACE VIEW `project.dataset.v_agent_response`")));
   }
 
   @Test
@@ -1040,6 +1303,133 @@ public class BigQueryAgentAnalyticsPluginTest {
     latch.await();
     assertEquals(numInvocations, processors.size());
     testExecutor.shutdown();
+  }
+
+  @Test
+  public void logEvent_offloadsToGcs_whenLargeContent() throws Exception {
+    GcsOffloader mockOffloader = mock(GcsOffloader.class);
+    when(mockOffloader.uploadContent(anyString(), anyString(), anyString()))
+        .thenReturn(CompletableFuture.completedFuture("gs://test-bucket/large.txt"));
+
+    BigQueryLoggerConfig gcsConfig = config.toBuilder().gcsBucketName("test-bucket").build();
+    PluginState gcsState =
+        new PluginState(gcsConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+
+          @Override
+          protected GcsOffloader getGcsOffloader(BigQueryLoggerConfig config) {
+            return mockOffloader;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin gcsPlugin =
+        new BigQueryAgentAnalyticsPlugin(gcsConfig, mockBigQuery, gcsState);
+
+    // Large text (> 32KB default threshold)
+    String largeText = "a".repeat(40000);
+    Content content = Content.fromParts(Part.fromText(largeText));
+    gcsPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    verify(mockOffloader, atLeastOnce()).uploadContent(anyString(), anyString(), anyString());
+
+    Map<String, Object> row = gcsState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(row);
+    @SuppressWarnings("unchecked") // Test only
+    List<JsonNode> contentParts = (List<JsonNode>) row.get("content_parts");
+    assertEquals("GCS_REFERENCE", contentParts.get(0).get("storage_mode").asText());
+    assertEquals("gs://test-bucket/large.txt", contentParts.get(0).get("uri").asText());
+  }
+
+  @Test
+  public void logEvent_offloadsToGcs_whenMultimodalContent() throws Exception {
+    GcsOffloader mockOffloader = mock(GcsOffloader.class);
+    when(mockOffloader.uploadContent(any(byte[].class), anyString(), anyString()))
+        .thenReturn(CompletableFuture.completedFuture("gs://test-bucket/image.png"));
+
+    BigQueryLoggerConfig gcsConfig = config.toBuilder().gcsBucketName("test-bucket").build();
+    PluginState gcsState =
+        new PluginState(gcsConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+
+          @Override
+          protected GcsOffloader getGcsOffloader(BigQueryLoggerConfig config) {
+            return mockOffloader;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin gcsPlugin =
+        new BigQueryAgentAnalyticsPlugin(gcsConfig, mockBigQuery, gcsState);
+
+    Content content = Content.fromParts(Part.fromBytes("test-data".getBytes(UTF_8), "image/png"));
+    gcsPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    verify(mockOffloader, atLeastOnce()).uploadContent(any(byte[].class), anyString(), anyString());
+
+    Map<String, Object> row = gcsState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(row);
+    @SuppressWarnings("unchecked") // Test only
+    List<JsonNode> contentParts = (List<JsonNode>) row.get("content_parts");
+    assertEquals("GCS_REFERENCE", contentParts.get(0).get("storage_mode").asText());
+    assertEquals("gs://test-bucket/image.png", contentParts.get(0).get("uri").asText());
+  }
+
+  @Test
+  public void logEvent_integrationWithRealGcsOffloader_whenLargeContent() throws Exception {
+    Storage mockStorage = mock(Storage.class);
+
+    BigQueryLoggerConfig gcsConfig = config.toBuilder().gcsBucketName("test-bucket").build();
+    PluginState gcsState =
+        new PluginState(gcsConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+
+          @Override
+          protected GcsOffloader getGcsOffloader(BigQueryLoggerConfig config) {
+            return new GcsOffloader(
+                config.projectId(),
+                config.gcsBucketName(),
+                Runnable::run, // Use direct executor for synchronous execution
+                config.credentials(),
+                mockStorage);
+          }
+        };
+    BigQueryAgentAnalyticsPlugin gcsPlugin =
+        new BigQueryAgentAnalyticsPlugin(gcsConfig, mockBigQuery, gcsState);
+
+    // Large text (> 32KB default threshold)
+    String largeText = "a".repeat(40000);
+    Content content = Content.fromParts(Part.fromText(largeText));
+    gcsPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    verify(mockStorage, atLeastOnce()).create(any(BlobInfo.class), any(byte[].class));
+
+    Map<String, Object> row = gcsState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(row);
+    @SuppressWarnings("unchecked") // Test only
+    List<JsonNode> contentParts = (List<JsonNode>) row.get("content_parts");
+    assertEquals("GCS_REFERENCE", contentParts.get(0).get("storage_mode").asText());
+    assertTrue(contentParts.get(0).get("uri").asText().startsWith("gs://test-bucket/"));
   }
 
   private static class FakeAgent extends BaseAgent {

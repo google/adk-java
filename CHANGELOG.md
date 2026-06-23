@@ -1,5 +1,69 @@
 # Changelog
 
+## [1.5.0](https://github.com/google/adk-java/compare/v1.4.0...v1.5.0) (2026-06-20)
+
+
+### Features
+
+* add avatar config support to the live streaming flow ([fb9274e](https://github.com/google/adk-java/commit/fb9274e37d20f57deee303346884d5e16b02be41))
+* add GitHub release-docs analyzer (Java) ([792d2f4](https://github.com/google/adk-java/commit/792d2f404c0da73b4ca0cd77c3a2838cd2b8e185))
+* Add thought signature support for chat completions ([287987a](https://github.com/google/adk-java/commit/287987a182203f1333299adffe9cf2d281ac94b7))
+* bump google-genai dependency to 1.58.0 ([3abcf4f](https://github.com/google/adk-java/commit/3abcf4fbbe024c563ec7762b26fca4d7c72cda6a))
+* Enhance BigQuery Agent Analytics Plugin with new event types ([ec93f50](https://github.com/google/adk-java/commit/ec93f50f10125f5a3728d372e16be4530f12553f))
+* support optional types in function tool parameters ([9a06dd3](https://github.com/google/adk-java/commit/9a06dd34dc823af54d3ea229a0d141768593d376))
+* Update token usage reporting to include thoughts and cache tokens ([436b802](https://github.com/google/adk-java/commit/436b80246b97b149c931e8eea07fc5737db8ad01))
+
+
+### Bug Fixes
+
+* Bypass redundant getSession read in ADK Runner ([aaedcaf](https://github.com/google/adk-java/commit/aaedcaf9877b62a34001009727cdaaa1df03c03d))
+* convert unsupported artifact MIME types to text ([a60c246](https://github.com/google/adk-java/commit/a60c246de7ebf42530ad06674c086d416b0377ba))
+* initialize event ID when creating compaction events ([fc480ec](https://github.com/google/adk-java/commit/fc480eccbdbe864812f30724678d8879682d76ca))
+* SkillMdPath should be public ([29d3203](https://github.com/google/adk-java/commit/29d3203a6fab4268a3588acddde7b59c73f7b624))
+* stop dropping the latest event(s) in VertexAiSessionService.getSession ([987ef4e](https://github.com/google/adk-java/commit/987ef4e9d169cdde5afa736aa920f207863c10b9))
+* wait for the Runner to persist a step's events before the ADK flow's next step (sequential-tool-execution race) ([0a40557](https://github.com/google/adk-java/commit/0a405576a14393a4131f014defc354b44644c4f0))
+
+
+### Performance Improvements
+
+* filter session events server-side by afterTimestamp in VertexAiSessionService.getSession ([e12baa2](https://github.com/google/adk-java/commit/e12baa28f7be17564ab122ba73072d7772e25601))
+
+## [1.4.0](https://github.com/google/adk-java/compare/v1.3.0...v1.4.0) (2026-05-29)
+
+
+### Features
+
+* Add GcsOffloader for asynchronously uploading content to Google Cloud Storage ([51c9d1a](https://github.com/google/adk-java/commit/51c9d1a98dd029a33c732508bd10903f4c451f45))
+* Add GcsOffloader for asynchronously uploading content to Google Cloud Storage ([5bad20a](https://github.com/google/adk-java/commit/5bad20aff179c1fd091cd6f14d5fc1d730023d70))
+* Add GcsOffloader for asynchronously uploading content to Google Cloud Storage ([a1d2c1c](https://github.com/google/adk-java/commit/a1d2c1cd2799f8729bc736a2fc0117286e31c1dd))
+* Add JSON cycle detection ([1685a4e](https://github.com/google/adk-java/commit/1685a4e88cc619f1f20445e262bf18287bbf6572))
+* Add streaming support for ChatCompletionsHTTPClient ([384a0c5](https://github.com/google/adk-java/commit/384a0c58e3c3bd76ef8ef1c0c872fa35008eac81))
+* Add telemetry and metrics recording capabilities ([cc3b9ce](https://github.com/google/adk-java/commit/cc3b9cebd2e5d44870514354870da61bbf724490))
+* Add tools and toolset to use SkillSource in ADK agents ([198b2fb](https://github.com/google/adk-java/commit/198b2fb4128f8bd938a64db151f3176ad61afb4f))
+* Add tools and toolset to use SkillSource in ADK agents ([5ee51fd](https://github.com/google/adk-java/commit/5ee51fd1f3ecd9445fa559ee66fe426df7008ea8))
+* Add tools and toolset to use SkillSource in ADK agents ([83a4b71](https://github.com/google/adk-java/commit/83a4b71d11ab5ae0d119730086436b3c96127fd2))
+* Introduce max span limit to ApiServerSpanExporter ([ae13073](https://github.com/google/adk-java/commit/ae130738fd6e695b362b98155ea2e63b9a5bc5da))
+* refactor OpenTelemetry (OTel) instrumentation within the ADK core, moving from manual span management to structured helper classes ([e6fe9aa](https://github.com/google/adk-java/commit/e6fe9aa42311bfba3283f6a2c7b9e7d8ed58aedb))
+
+
+### Bug Fixes
+
+* adjust default ToolExecutionMode to SEQUENTIAL as it was actual and widely used behavior for all ADK Java users before parallel tool execution fix ([fe88217](https://github.com/google/adk-java/commit/fe88217a67d0855ad13f1b3295aaa7a0f2ec84c9))
+* inject Dev UI tracer into core engine for embedded telemetry ([8bccc3b](https://github.com/google/adk-java/commit/8bccc3b97147f9ba7debb767c512c04553a6cc9f))
+* introduce PARALLEL_SUBSCRIBE ToolExecutionMode; restore previous PARALLEL semantics ([d3e7f31](https://github.com/google/adk-java/commit/d3e7f31725bdd81f4adbab4910a7916760df269a))
+* **mcp:** honor custom URL sub-paths in StreamableHttpServerParameters ([a0c4b7b](https://github.com/google/adk-java/commit/a0c4b7bfbcfbd219878c5113bb8ceee2f4c85ce0))
+* pre-merge stateDelta before onUserMessageCallback in Runner ([f1155ec](https://github.com/google/adk-java/commit/f1155ec37325bfb16941cd6b08ea4f14cb468775))
+* Resolve IllegalArgumentException for text MIME types in LangChain4j adapter ([6ad2043](https://github.com/google/adk-java/commit/6ad204372ea8afd330132507f1598d669a8f8b66))
+* revert "Suppress empty-text-only chunks from streaming responses while preserving carried metadata" ([69638df](https://github.com/google/adk-java/commit/69638df9ccd9939ba358672fdb00f0c0e88ffc71))
+* route HITL confirmation back to originating sub-agent in workflow agents ([d608909](https://github.com/google/adk-java/commit/d6089093e7f625e70fd88c61e99abccbf77eca1b))
+* run tools concurrently in PARALLEL ToolExecutionMode ([020499b](https://github.com/google/adk-java/commit/020499b8bb00638385df9e8a80af302e1a47c36a))
+* Suppress empty-text-only chunks from streaming responses while preserving carried metadata ([b4791ef](https://github.com/google/adk-java/commit/b4791ef362840e79d008221f272992532c4732cd))
+
+
+### Documentation
+
+* clarify LlmAgent composition for workflow agents ([49ff63b](https://github.com/google/adk-java/commit/49ff63b3c8bab29cf71d34cc1d41be91c1bfde6f))
+
 ## [1.3.0](https://github.com/google/adk-java/compare/v1.2.0...v1.3.0) (2026-05-13)
 
 

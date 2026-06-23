@@ -16,6 +16,8 @@
 
 package com.google.adk.skills;
 
+import static com.google.adk.skills.SkillSourceException.SKILL_FORMAT_ERROR;
+import static com.google.adk.skills.SkillSourceException.SKILL_LOAD_ERROR;
 import static java.nio.channels.Channels.newReader;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
@@ -42,7 +44,7 @@ public abstract class AbstractSkillSource<PathT> implements SkillSource {
   private static final ObjectMapper yamlMapper = new ObjectMapper(new YAMLFactory());
 
   /** A container class that holds a skill's name and the path to its SKILL.md file. */
-  protected final class SkillMdPath {
+  public static final class SkillMdPath<PathT> {
 
     private final String name;
     private final PathT mdPath;
@@ -53,8 +55,7 @@ public abstract class AbstractSkillSource<PathT> implements SkillSource {
      * @param name the name of the skill
      * @param mdPath the path to the SKILL.md file
      */
-    @SuppressWarnings("ProtectedMembersInFinalClass")
-    protected SkillMdPath(String name, PathT mdPath) {
+    public SkillMdPath(String name, PathT mdPath) {
       this.name = name;
       this.mdPath = mdPath;
     }
@@ -82,12 +83,14 @@ public abstract class AbstractSkillSource<PathT> implements SkillSource {
       Frontmatter frontmatter = yamlMapper.readValue(yaml, Frontmatter.class);
       if (!frontmatter.name().equals(skillName)) {
         throw new SkillSourceException(
-            "Skill name '%s' does not match directory name '%s'."
-                .formatted(frontmatter.name(), skillName));
+            "Skill name in the frontmatter '%s' does not match skill name '%s'."
+                .formatted(frontmatter.name(), skillName),
+            SKILL_LOAD_ERROR);
       }
       return frontmatter;
     } catch (IOException e) {
-      throw new SkillSourceException("Cannot load frontmatter for skill '" + skillName + "'", e);
+      throw new SkillSourceException(
+          "Cannot load frontmatter for skill '" + skillName + "'", SKILL_LOAD_ERROR, e);
     }
   }
 
@@ -100,7 +103,9 @@ public abstract class AbstractSkillSource<PathT> implements SkillSource {
                 return readInstructions(reader);
               } catch (IOException e) {
                 throw new SkillSourceException(
-                    "Failed to load instruction for skill '" + skillName + "'", e);
+                    "Failed to load instruction for skill '" + skillName + "'",
+                    SKILL_LOAD_ERROR,
+                    e);
               }
             });
   }
@@ -121,7 +126,7 @@ public abstract class AbstractSkillSource<PathT> implements SkillSource {
   /**
    * Returns a {@link Flowable} of skills as a pair of skill name and the path to the SKILL.md file.
    */
-  protected abstract Flowable<SkillMdPath> listSkills();
+  protected abstract Flowable<SkillMdPath<PathT>> listSkills();
 
   /** Returns the path to the SKILL.md file for the given skill. */
   protected abstract Single<PathT> findSkillMdPath(String skillName);
@@ -140,7 +145,8 @@ public abstract class AbstractSkillSource<PathT> implements SkillSource {
       throws IOException, SkillSourceException {
     String line = reader.readLine();
     if (line == null || !line.trim().equals(THREE_DASHES)) {
-      throw new SkillSourceException("Skill file must start with " + THREE_DASHES);
+      throw new SkillSourceException(
+          "Skill file must start with " + THREE_DASHES, SKILL_FORMAT_ERROR);
     }
 
     StringBuilder sb = new StringBuilder();
@@ -151,14 +157,15 @@ public abstract class AbstractSkillSource<PathT> implements SkillSource {
       sb.append(line).append("\n");
     }
     throw new SkillSourceException(
-        "Skill file frontmatter not properly closed with " + THREE_DASHES);
+        "Skill file frontmatter not properly closed with " + THREE_DASHES, SKILL_FORMAT_ERROR);
   }
 
   private String readInstructions(BufferedReader reader) throws IOException, SkillSourceException {
     // Skip the frontmatter block
     String line = reader.readLine();
     if (line == null || !line.trim().equals(THREE_DASHES)) {
-      throw new SkillSourceException("Skill file must start with " + THREE_DASHES);
+      throw new SkillSourceException(
+          "Skill file must start with " + THREE_DASHES, SKILL_FORMAT_ERROR);
     }
     boolean dashClosed = false;
     while ((line = reader.readLine()) != null) {
@@ -169,7 +176,7 @@ public abstract class AbstractSkillSource<PathT> implements SkillSource {
     }
     if (!dashClosed) {
       throw new SkillSourceException(
-          "Skill file frontmatter not properly closed with " + THREE_DASHES);
+          "Skill file frontmatter not properly closed with " + THREE_DASHES, SKILL_FORMAT_ERROR);
     }
     // Read the instructions till the end of the file
     StringBuilder sb = new StringBuilder();

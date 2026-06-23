@@ -4,6 +4,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.events.Event;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -30,7 +33,8 @@ class MockApiAnswer implements Answer<ApiResponse> {
   private static final Pattern APPEND_EVENT_REGEX =
       Pattern.compile("^reasoningEngines/([^/]+)/sessions/([^/]+):appendEvent$");
   private static final Pattern EVENTS_REGEX =
-      Pattern.compile("^reasoningEngines/([^/]+)/sessions/([^/]+)/events$");
+      Pattern.compile("^reasoningEngines/([^/]+)/sessions/([^/]+)/events(?:\\?filter=(.*))?$");
+  private static final Pattern TIMESTAMP_FILTER_REGEX = Pattern.compile("timestamp>=\"(.*)\"");
   private static final MediaType JSON_MEDIA_TYPE =
       MediaType.parse("application/json; charset=utf-8");
 
@@ -200,8 +204,16 @@ class MockApiAnswer implements Answer<ApiResponse> {
       return null;
     }
     String sessionId = matcher.group(2);
+    // The client URL-escapes the filter value; decode it as the real server would.
+    String filter =
+        matcher.group(3) == null
+            ? null
+            : URLDecoder.decode(matcher.group(3), StandardCharsets.UTF_8);
     String eventData = eventMap.get(sessionId);
     if (eventData != null) {
+      if (filter != null) {
+        eventData = applyTimestampFilter(eventData, filter);
+      }
       return responseWithBody(
           String.format(
               """
@@ -214,6 +226,25 @@ class MockApiAnswer implements Answer<ApiResponse> {
       // Return an empty list if no events are found for the session
       return responseWithBody("{}");
     }
+  }
+
+  /** Emulates the server-side inclusive {@code timestamp>=} filter on the events list. */
+  private static String applyTimestampFilter(String eventData, String filter) throws Exception {
+    Matcher filterMatcher = TIMESTAMP_FILTER_REGEX.matcher(filter);
+    if (!filterMatcher.matches()) {
+      return eventData;
+    }
+    Instant threshold = Instant.parse(filterMatcher.group(1));
+    List<Map<String, Object>> events =
+        mapper.readValue(eventData, new TypeReference<List<Map<String, Object>>>() {});
+    List<Map<String, Object>> kept = new ArrayList<>();
+    for (Map<String, Object> event : events) {
+      Instant timestamp = Instant.parse((String) event.get("timestamp"));
+      if (!timestamp.isBefore(threshold)) {
+        kept.add(event);
+      }
+    }
+    return mapper.writeValueAsString(kept);
   }
 
   private ApiResponse handleGetLro(String path) {

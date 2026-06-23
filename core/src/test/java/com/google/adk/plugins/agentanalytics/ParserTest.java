@@ -38,13 +38,13 @@ public final class ParserTest {
 
   @Before
   public void setUp() {
-    parser = new Parser(100);
+    parser = new Parser(null, 100, "connectionId", true);
   }
 
   @Test
   public void parse_part_coversLine280() throws Exception {
     Part part = Part.fromText("test part");
-    CompletableFuture<Parser.ParsedContent> future = parser.parse(part);
+    CompletableFuture<Parser.ParsedContent> future = parser.parse(part, "traceId", "spanId");
     Parser.ParsedContent result = future.get();
 
     assertEquals("{\"text_summary\":\"test part\"}", result.content().toString());
@@ -56,7 +56,7 @@ public final class ParserTest {
   public void parse_part_withInlineData_coversProcessPart() throws Exception {
     Blob blob = Blob.builder().mimeType("image/png").data(new byte[] {1, 2, 3}).build();
     Part part = Part.builder().inlineData(blob).build();
-    CompletableFuture<Parser.ParsedContent> future = parser.parse(part);
+    CompletableFuture<Parser.ParsedContent> future = parser.parse(part, "traceId", "spanId");
     Parser.ParsedContent result = future.get();
 
     assertEquals(1, result.parts().size());
@@ -104,7 +104,7 @@ public final class ParserTest {
 
     // Call private method using helper if necessary, but parseContentObject is private.
     // However, parse(Object content, ...) calls it.
-    CompletableFuture<Parser.ParsedContent> future = parser.parse(content);
+    CompletableFuture<Parser.ParsedContent> future = parser.parse(content, "traceId", "spanId");
     Parser.ParsedContent result = future.get();
 
     assertTrue(result.isTruncated());

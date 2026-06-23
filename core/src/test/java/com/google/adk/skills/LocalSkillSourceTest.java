@@ -224,6 +224,8 @@ public final class LocalSkillSourceTest {
     var single = source.loadResource("my-skill", "non-existent.txt");
     RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
     assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.RESOURCE_NOT_FOUND);
   }
 
   @Test
@@ -234,6 +236,8 @@ public final class LocalSkillSourceTest {
     var single = source.loadFrontmatter("non-existent");
     RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
     assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.SKILL_NOT_FOUND);
   }
 
   @Test
@@ -249,5 +253,125 @@ public final class LocalSkillSourceTest {
     var single = source.listFrontmatters();
     RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
     assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.SKILL_LOAD_ERROR);
+  }
+
+  @Test
+  public void testLoadFrontmatter_missingStartDashes() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    Path skillDir = skillsBase.resolve("my-skill");
+    Files.createDirectory(skillDir);
+    Files.writeString(
+        skillDir.resolve("SKILL.md"),
+        """
+        name: my-skill
+        description: This is a test skill
+        ---
+        body
+        """);
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+    var single = source.loadFrontmatter("my-skill");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    assertThat(exception)
+        .hasCauseThat()
+        .hasMessageThat()
+        .contains("Skill file must start with ---");
+  }
+
+  @Test
+  public void testLoadInstructions_missingStartDashes() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    Path skillDir = skillsBase.resolve("my-skill");
+    Files.createDirectory(skillDir);
+    Files.writeString(
+        skillDir.resolve("SKILL.md"),
+        """
+        name: my-skill
+        description: Test
+        ---
+        Some Markdown Body
+        """);
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+    var single = source.loadInstructions("my-skill");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    assertThat(exception)
+        .hasCauseThat()
+        .hasMessageThat()
+        .contains("Skill file must start with ---");
+  }
+
+  @Test
+  public void testLoadFrontmatter_nameMismatch() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    Path skillDir = skillsBase.resolve("my-skill");
+    Files.createDirectory(skillDir);
+    Files.writeString(
+        skillDir.resolve("SKILL.md"),
+        """
+        ---
+        name: other-skill
+        description: This is a test skill
+        ---
+        body
+        """);
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+    var single = source.loadFrontmatter("my-skill");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    assertThat(exception)
+        .hasCauseThat()
+        .hasMessageThat()
+        .contains(
+            "Skill name in the frontmatter 'other-skill' does not match skill name 'my-skill'.");
+  }
+
+  @Test
+  public void testLoadFrontmatter_emptyFile() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    Path skillDir = skillsBase.resolve("my-skill");
+    Files.createDirectory(skillDir);
+    Files.writeString(skillDir.resolve("SKILL.md"), "");
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+    var single = source.loadFrontmatter("my-skill");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    assertThat(exception)
+        .hasCauseThat()
+        .hasMessageThat()
+        .contains("Skill file must start with ---");
+  }
+
+  @Test
+  public void testLoadInstructions_emptyFile() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    Path skillDir = skillsBase.resolve("my-skill");
+    Files.createDirectory(skillDir);
+    Files.writeString(skillDir.resolve("SKILL.md"), "");
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+    var single = source.loadInstructions("my-skill");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    assertThat(exception)
+        .hasCauseThat()
+        .hasMessageThat()
+        .contains("Skill file must start with ---");
   }
 }

@@ -55,15 +55,19 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -253,7 +257,10 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       parseFuture =
           state
               .getParser()
-              .parse(content)
+              .parse(
+                  content,
+                  traceIds.traceId(),
+                  traceIds.spanId() != null ? traceIds.spanId() : "no_span")
               .thenAccept(
                   parsedContent -> {
                     row.put(
@@ -493,6 +500,84 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
         }
       }
     }
+
+    // --- A2A interaction logging ---
+    if (event.customMetadata().isPresent()) {
+      Map<String, Object> a2aKeys = new HashMap<>();
+      for (CustomMetadata cm : event.customMetadata().get()) {
+        if (cm.key().isPresent() && cm.key().get().startsWith(BigQueryUtils.A2A_PREFIX)) {
+          cm.stringValue().ifPresent(val -> a2aKeys.put(cm.key().get(), val));
+        }
+      }
+      if (a2aKeys.containsKey(BigQueryUtils.A2A_REQUEST_KEY)
+          || a2aKeys.containsKey(BigQueryUtils.A2A_RESPONSE_KEY)) {
+        Object responsePayload = a2aKeys.get(BigQueryUtils.A2A_RESPONSE_KEY);
+        Object contentObject = null;
+        boolean contentTruncated = false;
+        if (responsePayload != null) {
+          TruncationResult responseTruncated =
+              smartTruncate(responsePayload, config.maxContentLength());
+          contentObject = toJavaObject(responseTruncated.node());
+          contentTruncated = responseTruncated.isTruncated();
+        }
+
+        // Exclude a2a:response from a2a_metadata to save storage space and avoid duplication
+        Map<String, Object> a2aMetaKeys = new HashMap<>(a2aKeys);
+        a2aMetaKeys.remove(BigQueryUtils.A2A_RESPONSE_KEY);
+        TruncationResult a2aTruncated = smartTruncate(a2aMetaKeys, config.maxContentLength());
+
+        Map<String, Object> extraAttributes = new HashMap<>();
+        Object a2aMeta = toJavaObject(a2aTruncated.node());
+        if (a2aMeta != null) {
+          extraAttributes.put("a2a_metadata", a2aMeta);
+        }
+
+        logCompletable =
+            logCompletable.andThen(
+                logEvent(
+                    "A2A_INTERACTION",
+                    invocationContext,
+                    contentObject,
+                    a2aTruncated.isTruncated() || contentTruncated,
+                    Optional.of(EventData.builder().setExtraAttributes(extraAttributes).build())));
+      }
+    }
+
+    // --- Final agent response logging ---
+    if (isFinalAgentResponse(event)) {
+      List<Part> visibleParts = new ArrayList<>();
+      for (Part part : event.content().get().parts().get()) {
+        if (part.text().isPresent() && !part.thought().orElse(false)) {
+          visibleParts.add(part);
+        }
+      }
+      if (!visibleParts.isEmpty()) {
+        Content visibleContent =
+            Content.builder()
+                .role(event.content().get().role().orElse("model"))
+                .parts(visibleParts)
+                .build();
+
+        Map<String, Object> extraAttributes = new HashMap<>();
+        if (event.id() != null) {
+          extraAttributes.put("source_event_id", event.id());
+        }
+        if (event.author() != null) {
+          extraAttributes.put("source_event_author", event.author());
+        }
+        event.branch().ifPresent(branch -> extraAttributes.put("source_event_branch", branch));
+
+        logCompletable =
+            logCompletable.andThen(
+                logEvent(
+                    "AGENT_RESPONSE",
+                    invocationContext,
+                    visibleContent,
+                    false,
+                    Optional.of(EventData.builder().setExtraAttributes(extraAttributes).build())));
+      }
+    }
+
     return logCompletable.andThen(Maybe.empty());
   }
 
@@ -632,6 +717,9 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
               usage.promptTokenCount().ifPresent(c -> usageDict.put("prompt", c));
               usage.candidatesTokenCount().ifPresent(c -> usageDict.put("completion", c));
               usage.totalTokenCount().ifPresent(c -> usageDict.put("total", c));
+              usage
+                  .cachedContentTokenCount()
+                  .ifPresent(c -> usageDict.put("cached_content_token_count", c));
             });
 
     InvocationContext invocationContext = callbackContext.invocationContext();
@@ -854,5 +942,23 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       return "LOCAL";
     }
     return "UNKNOWN";
+  }
+
+  /**
+   * Returns true if the event represents a final agent response.
+   *
+   * <p>We verify finalResponse() along with empty checks for partial, function calls/responses, and
+   * long-running tool IDs. This is required because finalResponse() would otherwise return true
+   * even for thought-only, short-circuited skipSummarization() events (which ADK treats as
+   * invisible internal reasoning and should not be logged as agent responses).
+   */
+  private boolean isFinalAgentResponse(Event event) {
+    return event.content().isPresent()
+        && event.content().get().parts().isPresent()
+        && event.finalResponse()
+        && !event.partial().orElse(false)
+        && event.functionCalls().isEmpty()
+        && event.functionResponses().isEmpty()
+        && event.longRunningToolIds().map(Set::isEmpty).orElse(true);
   }
 }

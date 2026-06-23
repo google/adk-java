@@ -16,6 +16,10 @@
 
 package com.google.adk.skills;
 
+import static com.google.adk.skills.SkillSourceException.RESOURCE_LOAD_ERROR;
+import static com.google.adk.skills.SkillSourceException.RESOURCE_NOT_FOUND;
+import static com.google.adk.skills.SkillSourceException.SKILL_LOAD_ERROR;
+import static com.google.adk.skills.SkillSourceException.SKILL_NOT_FOUND;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.nio.file.Files.isDirectory;
 
@@ -43,14 +47,16 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
   public Single<ImmutableList<String>> listResources(String skillName, String resourceDirectory) {
     Path skillDir = skillsBasePath.resolve(skillName);
     if (!isDirectory(skillDir)) {
-      return Single.error(new SkillSourceException("Skill not found: " + skillName));
+      return Single.error(
+          new SkillSourceException("Skill not found: " + skillName, SKILL_NOT_FOUND));
     }
     Path resourceDir = skillDir.resolve(resourceDirectory);
     if (!isDirectory(resourceDir)) {
       return Single.error(
           new SkillSourceException(
               "Resource directory '%s' not found for skill '%s'"
-                  .formatted(resourceDirectory, skillName)));
+                  .formatted(resourceDirectory, skillName),
+              RESOURCE_NOT_FOUND));
     }
 
     return Single.fromCallable(
@@ -67,28 +73,33 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
             t ->
                 Single.error(
                     new SkillSourceException(
-                        "Failed to traverse resource directory: " + resourceDirectory, t)));
+                        "Failed to traverse resource directory: " + resourceDirectory,
+                        RESOURCE_LOAD_ERROR,
+                        t)));
   }
 
   @Override
   @SuppressWarnings("StreamResourceLeak")
-  protected Flowable<SkillMdPath> listSkills() {
+  protected Flowable<SkillMdPath<Path>> listSkills() {
     return Flowable.using(() -> Files.list(skillsBasePath), Flowable::fromStream, Stream::close)
         .onErrorResumeNext(
             t ->
                 Flowable.error(
                     new SkillSourceException(
-                        "Failed to list skills in directory: " + skillsBasePath, t)))
+                        "Failed to list skills in directory: " + skillsBasePath,
+                        SKILL_LOAD_ERROR,
+                        t)))
         .filter(Files::isDirectory)
         .mapOptional(this::findSkillMd)
-        .map(skillMd -> new SkillMdPath(skillMd.getParent().getFileName().toString(), skillMd));
+        .map(skillMd -> new SkillMdPath<>(skillMd.getParent().getFileName().toString(), skillMd));
   }
 
   @Override
   protected Single<Path> findResourcePath(String skillName, String resourcePath) {
     Path file = skillsBasePath.resolve(skillName).resolve(resourcePath);
     if (!Files.exists(file)) {
-      return Single.error(new SkillSourceException("Resource not found: " + file));
+      return Single.error(
+          new SkillSourceException("Resource not found: " + file, RESOURCE_NOT_FOUND));
     }
     return Single.just(file);
   }
@@ -97,11 +108,13 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
   protected Single<Path> findSkillMdPath(String skillName) {
     Path skillDir = skillsBasePath.resolve(skillName);
     if (!isDirectory(skillDir)) {
-      return Single.error(new SkillSourceException("Skill directory not found: " + skillName));
+      return Single.error(
+          new SkillSourceException("Skill directory not found: " + skillName, SKILL_NOT_FOUND));
     }
     return Maybe.fromOptional(findSkillMd(skillDir))
         .switchIfEmpty(
-            Single.error(new SkillSourceException("SKILL.md not found in " + skillName)));
+            Single.error(
+                new SkillSourceException("SKILL.md not found in " + skillName, SKILL_NOT_FOUND)));
   }
 
   @Override

@@ -164,9 +164,14 @@ public final class VertexAiSessionService implements BaseSessionService {
 
   @Override
   public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
+    return listEventsInternal(appName, sessionId, /* filter= */ null);
+  }
+
+  private Single<ListEventsResponse> listEventsInternal(
+      String appName, String sessionId, @Nullable String filter) {
     String reasoningEngineId = parseReasoningEngineId(appName);
     return client
-        .listEvents(reasoningEngineId, sessionId)
+        .listEvents(reasoningEngineId, sessionId, filter)
         .map(this::parseListEventsResponse)
         .defaultIfEmpty(ListEventsResponse.builder().build());
   }
@@ -212,7 +217,7 @@ public final class VertexAiSessionService implements BaseSessionService {
                         new TypeReference<ConcurrentMap<String, Object>>() {}));
               }
 
-              return listEvents(appName, userId, sessionId)
+              return listEventsInternal(appName, sessionId, afterTimestampFilter(config))
                   .map(
                       response -> {
                         Session.Builder sessionBuilder =
@@ -225,44 +230,43 @@ public final class VertexAiSessionService implements BaseSessionService {
                         if (events.isEmpty()) {
                           return sessionBuilder.build();
                         }
-                        events = filterEvents(events, updateTimestamp, config);
+                        events = filterEvents(events, config);
                         return sessionBuilder.events(events).build();
                       })
                   .toMaybe();
             });
   }
 
+  /**
+   * Builds the server-side events filter for {@code afterTimestamp}, mirroring the Python and Go
+   * implementations (inclusive {@code timestamp>=}). The filter is only applied when {@code
+   * numRecentEvents} is not set, matching the precedence in {@link #filterEvents}.
+   */
+  private static @Nullable String afterTimestampFilter(Optional<GetSessionConfig> config) {
+    if (config.isPresent()
+        && config.get().numRecentEvents().isEmpty()
+        && config.get().afterTimestamp().isPresent()) {
+      return "timestamp>=\"" + config.get().afterTimestamp().get() + "\"";
+    }
+    return null;
+  }
+
   private static List<Event> filterEvents(
-      List<Event> originalEvents,
-      @Nullable Instant updateTimestamp,
-      Optional<GetSessionConfig> config) {
+      List<Event> originalEvents, Optional<GetSessionConfig> config) {
+    // Preserve the full event stream that Vertex AI returns. Event timestamps are
+    // assigned client-side while updateTime is assigned server-side, so filtering
+    // on updateTime could silently drop the most recently appended event(s).
+    // afterTimestamp is filtered server-side (see afterTimestampFilter), so only
+    // numRecentEvents is applied here.
     List<Event> events =
         originalEvents.stream()
-            .filter(
-                event ->
-                    updateTimestamp == null
-                        || Instant.ofEpochMilli(event.timestamp()).isBefore(updateTimestamp))
-            .sorted(Comparator.comparing(Event::timestamp))
+            .sorted(Comparator.comparingLong(Event::timestamp))
             .collect(toCollection(ArrayList::new));
 
-    if (config.isPresent()) {
-      if (config.get().numRecentEvents().isPresent()) {
-        int numRecentEvents = config.get().numRecentEvents().get();
-        if (events.size() > numRecentEvents) {
-          events = events.subList(events.size() - numRecentEvents, events.size());
-        }
-      } else if (config.get().afterTimestamp().isPresent()) {
-        Instant afterTimestamp = config.get().afterTimestamp().get();
-        int i = events.size() - 1;
-        while (i >= 0) {
-          if (Instant.ofEpochMilli(events.get(i).timestamp()).isBefore(afterTimestamp)) {
-            break;
-          }
-          i -= 1;
-        }
-        if (i >= 0) {
-          events = events.subList(i, events.size());
-        }
+    if (config.isPresent() && config.get().numRecentEvents().isPresent()) {
+      int numRecentEvents = config.get().numRecentEvents().get();
+      if (events.size() > numRecentEvents) {
+        events = events.subList(events.size() - numRecentEvents, events.size());
       }
     }
     return events;

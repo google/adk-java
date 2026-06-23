@@ -19,6 +19,7 @@ package com.google.adk.plugins.agentanalytics;
 import static com.google.adk.plugins.agentanalytics.JsonFormatter.mapper;
 import static com.google.adk.plugins.agentanalytics.JsonFormatter.smartTruncate;
 import static com.google.adk.plugins.agentanalytics.JsonFormatter.truncate;
+import static com.google.adk.plugins.agentanalytics.JsonFormatter.truncateAndAddSuffix;
 import static com.google.adk.plugins.agentanalytics.JsonFormatter.truncateWithStatus;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -39,16 +40,40 @@ import com.google.genai.types.Part;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import org.jspecify.annotations.Nullable;
+import org.threeten.bp.Instant;
+import org.threeten.bp.LocalDate;
+import org.threeten.bp.ZoneOffset;
 
 /** Utility for parsing content for BigQuery logging. */
 final class Parser {
+  private static final String DEFAULT_EXTENSION = ".bin";
+  private static final int MAX_OFFLOADED_TEXT_LENGTH = 200;
+  private static final Logger logger = Logger.getLogger(Parser.class.getName());
+  private static final int INLINE_TEXT_LIMIT = 32 * 1024; // 32KB limit
+  private static final String UPLOAD_FAILED_MESSAGE = "[UPLOAD FAILED]";
+  private static final String MEDIA_OFFLOADED_MESSAGE = "[MEDIA OFFLOADED]";
   private static final String BINARY_DATA_MESSAGE = "[BINARY DATA]";
-  private final int maxLength;
+  private static final String TEXT_OFFLOADED_SUFFIX = "... [OFFLOADED]";
 
-  Parser(int maxLength) {
+  private final @Nullable GcsOffloader offloader;
+  private final int maxLength;
+  private final @Nullable String connectionId;
+  private final boolean logMultiModalContent;
+
+  Parser(
+      @Nullable GcsOffloader offloader,
+      int maxLength,
+      @Nullable String connectionId,
+      boolean logMultiModalContent) {
+    this.offloader = offloader;
     this.maxLength = maxLength;
+    this.connectionId = connectionId;
+    this.logMultiModalContent = logMultiModalContent;
   }
 
   @AutoValue
@@ -152,9 +177,11 @@ final class Parser {
    * Parses content into JSON payload and content parts, matching Python implementation.
    *
    * @param content the content to parse
+   * @param traceId the trace ID for GCS path
+   * @param spanId the span ID for GCS path
    * @return a CompletableFuture of ParsedContent object
    */
-  CompletableFuture<ParsedContent> parse(Object content) {
+  CompletableFuture<ParsedContent> parse(Object content, String traceId, String spanId) {
     if (content instanceof LlmRequest llmRequest) {
       ObjectNode jsonPayload = mapper.createObjectNode();
       ArrayNode messages = mapper.createArrayNode();
@@ -162,13 +189,15 @@ final class Parser {
       List<Content> contents = llmRequest.contents();
 
       for (Content c : contents) {
-        futures.add(parseContentObject(c));
+        futures.add(parseContentObject(c, traceId, spanId));
       }
 
       CompletableFuture<ParsedContentObject> systemFuture = null;
       if (llmRequest.config().isPresent()
           && llmRequest.config().get().systemInstruction().isPresent()) {
-        systemFuture = parseContentObject(llmRequest.config().get().systemInstruction().get());
+        systemFuture =
+            parseContentObject(
+                llmRequest.config().get().systemInstruction().get(), traceId, spanId);
         futures.add(systemFuture);
       }
       CompletableFuture<ParsedContentObject> finalSystemFuture = systemFuture;
@@ -202,7 +231,7 @@ final class Parser {
     }
     if (content instanceof LlmResponse llmResponse) {
       ObjectNode jsonPayload = mapper.createObjectNode();
-      return parseContentObject(llmResponse.content().orElse(null))
+      return parseContentObject(llmResponse.content().orElse(null), traceId, spanId)
           .thenApply(
               parsed -> {
                 ObjectNode summaryNode = mapper.createObjectNode();
@@ -225,7 +254,7 @@ final class Parser {
               });
     }
     if (content instanceof Content || content instanceof Part) {
-      return parseContentObject(content)
+      return parseContentObject(content, traceId, spanId)
           .thenApply(
               parsed -> {
                 ObjectNode summaryNode = mapper.createObjectNode();
@@ -249,10 +278,13 @@ final class Parser {
    * Parses a Content or Part object into summary text and content parts.
    *
    * @param content the Content or Part object to parse
+   * @param traceId the trace ID for GCS path
+   * @param spanId the span ID for GCS path
    * @return a CompletableFuture of ParsedContentObject containing parts, summary, and truncation
    *     flag
    */
-  private CompletableFuture<ParsedContentObject> parseContentObject(Object content) {
+  private CompletableFuture<ParsedContentObject> parseContentObject(
+      Object content, String traceId, String spanId) {
     List<Part> parts;
     if (content instanceof Content c) {
       parts = c.parts().orElse(ImmutableList.of());
@@ -265,7 +297,7 @@ final class Parser {
 
     List<CompletableFuture<TruncationResult>> partFutures = new ArrayList<>();
     for (int i = 0; i < parts.size(); i++) {
-      partFutures.add(processPart(parts.get(i), i));
+      partFutures.add(processPart(parts.get(i), i, traceId, spanId));
     }
 
     return CompletableFuture.allOf(partFutures.toArray(new CompletableFuture<?>[0]))
@@ -295,7 +327,8 @@ final class Parser {
             });
   }
 
-  private CompletableFuture<TruncationResult> processPart(Part part, int index) {
+  private CompletableFuture<TruncationResult> processPart(
+      Part part, int index, String traceId, String spanId) {
     ContentPart.Builder partBuilder =
         ContentPart.builder()
             .setPartIndex(index)
@@ -320,17 +353,88 @@ final class Parser {
     if (part.inlineData().isPresent()) {
       Blob blob = part.inlineData().get();
       String mimeType = blob.mimeType().orElse("application/octet-stream");
-      partBuilder.setText(BINARY_DATA_MESSAGE).setMimeType(mimeType);
-      return CompletableFuture.completedFuture(
-          TruncationResult.create(mapper.valueToTree(partBuilder.build()), false));
+      if (logMultiModalContent && offloader != null) {
+        String ext = MimeTypeMapper.getExtension(mimeType);
+        if (ext.isEmpty()) {
+          ext = DEFAULT_EXTENSION;
+        }
+
+        String path =
+            String.format(
+                "%s/%s/%s_p%d_%s%s",
+                getLocalDate(), traceId, spanId, index, UUID.randomUUID(), ext);
+        return offloader
+            .uploadContent(blob.data().orElse(new byte[0]), mimeType, path)
+            .handle(
+                (uri, ex) -> {
+                  if (ex != null) {
+                    logger.log(Level.WARNING, "Failed to offload content to GCS", ex);
+                    partBuilder.setText(UPLOAD_FAILED_MESSAGE);
+                  } else {
+                    ObjectNode details = mapper.createObjectNode();
+                    ObjectNode gcsMetadata = details.putObject("gcs_metadata");
+                    gcsMetadata.put("content_type", mimeType);
+
+                    partBuilder
+                        .setStorageMode("GCS_REFERENCE")
+                        .setUri(uri)
+                        .setMimeType(mimeType)
+                        .setText(MEDIA_OFFLOADED_MESSAGE)
+                        .setObjectRef(
+                            mapper.valueToTree(ObjectRef.create(uri, null, connectionId, details)));
+                  }
+                  return TruncationResult.create(mapper.valueToTree(partBuilder.build()), false);
+                });
+      } else {
+        partBuilder.setText(BINARY_DATA_MESSAGE).setMimeType(mimeType);
+        return CompletableFuture.completedFuture(
+            TruncationResult.create(mapper.valueToTree(partBuilder.build()), false));
+      }
     }
     // CASE C: Text
     if (part.text().isPresent()) {
       String text = part.text().get();
-      TruncationResult res = truncateWithStatus(text, maxLength);
-      partBuilder.setText(res.node().asText());
-      return CompletableFuture.completedFuture(
-          TruncationResult.create(mapper.valueToTree(partBuilder.build()), res.isTruncated()));
+      int textLen = Utf8.encodedLength(text);
+      int offloadThreshold = Math.min(INLINE_TEXT_LIMIT, maxLength);
+
+      if (offloader != null && textLen > offloadThreshold) {
+
+        String path =
+            String.format(
+                "%s/%s/%s_p%d_%s.txt", getLocalDate(), traceId, spanId, index, UUID.randomUUID());
+        return offloader
+            .uploadContent(text, "text/plain", path)
+            .handle(
+                (uri, ex) -> {
+                  if (ex != null) {
+                    logger.log(Level.WARNING, "Failed to offload text to GCS", ex);
+                    TruncationResult res = truncateWithStatus(text, maxLength);
+                    partBuilder.setText(res.node().asText());
+                    return TruncationResult.create(
+                        mapper.valueToTree(partBuilder.build()), res.isTruncated());
+                  } else {
+                    ObjectNode details = mapper.createObjectNode();
+                    ObjectNode gcsMetadata = details.putObject("gcs_metadata");
+                    gcsMetadata.put("content_type", "text/plain");
+
+                    partBuilder
+                        .setStorageMode("GCS_REFERENCE")
+                        .setUri(uri)
+                        .setMimeType("text/plain")
+                        .setText(
+                            truncateAndAddSuffix(
+                                text, MAX_OFFLOADED_TEXT_LENGTH, TEXT_OFFLOADED_SUFFIX))
+                        .setObjectRef(
+                            mapper.valueToTree(ObjectRef.create(uri, null, connectionId, details)));
+                    return TruncationResult.create(mapper.valueToTree(partBuilder.build()), true);
+                  }
+                });
+      } else {
+        TruncationResult res = truncateWithStatus(text, maxLength);
+        partBuilder.setText(res.node().asText());
+        return CompletableFuture.completedFuture(
+            TruncationResult.create(mapper.valueToTree(partBuilder.build()), res.isTruncated()));
+      }
     }
     if (part.functionCall().isPresent()) {
       FunctionCall fc = part.functionCall().get();
@@ -378,5 +482,9 @@ final class Parser {
       partsArray.add(partObj);
     }
     return partsArray;
+  }
+
+  private LocalDate getLocalDate() {
+    return Instant.now().atZone(ZoneOffset.UTC).toLocalDate();
   }
 }
