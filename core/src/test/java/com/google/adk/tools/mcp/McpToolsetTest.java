@@ -31,6 +31,7 @@ import com.google.adk.tools.mcp.McpToolset.McpToolsetConfig;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.List;
@@ -50,7 +51,7 @@ public class McpToolsetTest {
   @Mock private McpSyncClient mockMcpSyncClient;
   @Mock private ReadonlyContext mockReadonlyContext;
 
-  private static final McpJsonMapper jsonMapper = McpJsonMapper.getDefault();
+  private static final McpJsonMapper jsonMapper = McpJsonDefaults.getMapper();
 
   private static final ImmutableMap<String, Object> STDIO_SERVER_PARAMS =
       ImmutableMap.of(

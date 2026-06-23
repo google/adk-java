@@ -4,6 +4,9 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -29,6 +32,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
@@ -378,5 +382,141 @@ public class VertexAiSessionServiceTest {
 
     assertThat(updatedSession.state()).containsExactly("key1", "value1");
     assertThat(updatedSession.state()).doesNotContainKey("key2");
+  }
+
+  @Test
+  public void getSession_eventTimestampAfterUpdateTime_doesNotDropEvent() {
+    // Regression test: event timestamps are assigned client-side while the
+    // session updateTime is assigned server-side, so clock skew can make the
+    // latest event newer than updateTime. Such events must not be dropped by
+    // getSession().
+    sessionMap.put("5", mockSessionJson("5", "2024-12-12T12:12:12.000000Z"));
+    eventMap.put(
+        "5",
+        mockEventsJson(
+            mockEventJson("before", "2024-12-12T12:12:11.000000Z"),
+            mockEventJson("after", "2024-12-12T12:12:12.500000Z")));
+
+    Session session =
+        vertexAiSessionService.getSession("123", "user", "5", Optional.empty()).blockingGet();
+
+    assertThat(session.events().stream().map(Event::id))
+        .containsExactly("before", "after")
+        .inOrder();
+  }
+
+  @Test
+  public void getSession_afterTimestampConfig_keepsEventsAtOrAfterThreshold() {
+    sessionMap.put("6", mockSessionJson("6", "2024-12-12T12:00:30.000000Z"));
+    eventMap.put(
+        "6",
+        mockEventsJson(
+            mockEventJson("e1", "2024-12-12T12:00:05.000000Z"),
+            mockEventJson("e2", "2024-12-12T12:00:10.000000Z"),
+            mockEventJson("e3", "2024-12-12T12:00:15.000000Z")));
+    GetSessionConfig config =
+        GetSessionConfig.builder()
+            .afterTimestamp(Instant.parse("2024-12-12T12:00:10.000000Z"))
+            .build();
+
+    Session session =
+        vertexAiSessionService.getSession("123", "user", "6", Optional.of(config)).blockingGet();
+
+    // The threshold is inclusive: e2 (== afterTimestamp) and e3 are kept, e1 is
+    // dropped.
+    assertThat(session.events().stream().map(Event::id)).containsExactly("e2", "e3").inOrder();
+  }
+
+  @Test
+  public void getSession_afterTimestampBetweenEvents_dropsEventsBeforeThreshold() {
+    sessionMap.put("8", mockSessionJson("8", "2024-12-12T12:00:30.000000Z"));
+    eventMap.put(
+        "8",
+        mockEventsJson(
+            mockEventJson("e1", "2024-12-12T12:00:05.000000Z"),
+            mockEventJson("e2", "2024-12-12T12:00:10.000000Z"),
+            mockEventJson("e3", "2024-12-12T12:00:15.000000Z")));
+    GetSessionConfig config =
+        GetSessionConfig.builder()
+            .afterTimestamp(Instant.parse("2024-12-12T12:00:12.000000Z"))
+            .build();
+
+    Session session =
+        vertexAiSessionService.getSession("123", "user", "8", Optional.of(config)).blockingGet();
+
+    // afterTimestamp falls strictly between e2 and e3, so only e3 is kept.
+    assertThat(session.events().stream().map(Event::id)).containsExactly("e3");
+  }
+
+  @Test
+  public void getSession_afterTimestampConfig_urlEscapesFilterInRequest() {
+    sessionMap.put("9", mockSessionJson("9", "2024-12-12T12:00:30.000000Z"));
+    eventMap.put("9", mockEventsJson(mockEventJson("e1", "2024-12-12T12:00:15.000000Z")));
+    GetSessionConfig config =
+        GetSessionConfig.builder()
+            .afterTimestamp(Instant.parse("2024-12-12T12:00:10.000000Z"))
+            .build();
+
+    Object unused =
+        vertexAiSessionService.getSession("123", "user", "9", Optional.of(config)).blockingGet();
+
+    ArgumentCaptor<String> pathCaptor = ArgumentCaptor.forClass(String.class);
+    verify(mockApiClient, atLeastOnce()).request(eq("GET"), pathCaptor.capture(), eq(""));
+    String eventsPath =
+        pathCaptor.getAllValues().stream()
+            .filter(path -> path.contains("/events"))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("No list-events request was made"));
+    // The filter operator and quotes are URL-escaped (>= -> %3E%3D, " -> %22),
+    // not sent raw.
+    assertThat(eventsPath).contains("filter=timestamp%3E%3D%22");
+    assertThat(eventsPath).doesNotContain("timestamp>=");
+  }
+
+  @Test
+  public void getSession_numRecentEventsConfig_returnsMostRecentEvents() {
+    sessionMap.put("7", mockSessionJson("7", "2024-12-12T12:00:30.000000Z"));
+    eventMap.put(
+        "7",
+        mockEventsJson(
+            mockEventJson("e1", "2024-12-12T12:00:05.000000Z"),
+            mockEventJson("e2", "2024-12-12T12:00:10.000000Z"),
+            mockEventJson("e3", "2024-12-12T12:00:15.000000Z")));
+    GetSessionConfig config = GetSessionConfig.builder().numRecentEvents(2).build();
+
+    Session session =
+        vertexAiSessionService.getSession("123", "user", "7", Optional.of(config)).blockingGet();
+
+    assertThat(session.events().stream().map(Event::id)).containsExactly("e2", "e3").inOrder();
+  }
+
+  private static String mockSessionJson(String sessionId, String updateTime) {
+    return String.format(
+        """
+        {
+          "name" : "reasoningEngines/123/sessions/%s",
+          "userId" : "user",
+          "updateTime" : "%s"
+        }\
+        """,
+        sessionId, updateTime);
+  }
+
+  private static String mockEventJson(String eventId, String timestamp) {
+    return String.format(
+        """
+        {
+          "name" : "reasoningEngines/123/sessions/x/events/%s",
+          "invocationId" : "%s",
+          "author" : "agent",
+          "timestamp" : "%s",
+          "content" : { "role" : "model", "parts" : [ { "text" : "%s" } ] }
+        }\
+        """,
+        eventId, eventId, timestamp, eventId);
+  }
+
+  private static String mockEventsJson(String... events) {
+    return "[" + String.join(",", events) + "]";
   }
 }

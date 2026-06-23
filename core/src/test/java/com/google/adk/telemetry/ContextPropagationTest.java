@@ -359,6 +359,46 @@ public class ContextPropagationTest {
   }
 
   @Test
+  public void testTraceCallLlm_withReasoningAndCacheTokens() {
+    Span span = tracer.spanBuilder("test-reasoning").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      LlmRequest llmRequest =
+          LlmRequest.builder()
+              .model("gemini-pro")
+              .contents(ImmutableList.of(Content.fromParts(Part.fromText("hello"))))
+              .config(GenerateContentConfig.builder().topP(0.9f).maxOutputTokens(100).build())
+              .build();
+      LlmResponse llmResponse =
+          LlmResponse.builder()
+              .content(Content.builder().parts(Part.fromText("world")).build())
+              .finishReason(new FinishReason(FinishReason.Known.STOP))
+              .usageMetadata(
+                  GenerateContentResponseUsageMetadata.builder()
+                      .promptTokenCount(10)
+                      .cachedContentTokenCount(5)
+                      .candidatesTokenCount(20)
+                      .thoughtsTokenCount(15)
+                      .totalTokenCount(50)
+                      .build())
+              .build();
+      Tracing.traceCallLlm(
+          span, buildInvocationContext(), "event-1", llmRequest, llmResponse, null);
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    SpanData spanData = spans.get(0);
+    Attributes attrs = spanData.getAttributes();
+    assertEquals(10L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.input_tokens")));
+    assertEquals(35L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.output_tokens")));
+    assertEquals(
+        5L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.cache_read.input_tokens")));
+    assertEquals(
+        15L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.reasoning.output_tokens")));
+  }
+
+  @Test
   public void testTraceSendData() {
     Span span = tracer.spanBuilder("test").startSpan();
     try (Scope scope = span.makeCurrent()) {
@@ -471,7 +511,7 @@ public class ContextPropagationTest {
     // invocation
     // └── invoke_agent test_agent
     //     ├── call_llm
-    //     │   └── execute_tool [search_flights]
+    //     │   └── execute_tool search_flights
     //     └── call_llm
 
     SearchFlightsTool searchFlightsTool = new SearchFlightsTool();
@@ -499,7 +539,7 @@ public class ContextPropagationTest {
 
     SpanData invocation = findSpanByName("invocation");
     SpanData invokeAgent = findSpanByName("invoke_agent test_agent");
-    SpanData toolResponse = findSpanByName("execute_tool [search_flights]");
+    SpanData toolResponse = findSpanByName("execute_tool search_flights");
     List<SpanData> callLlmSpans =
         openTelemetryRule.getSpans().stream()
             .filter(s -> s.getName().equals("call_llm"))
@@ -515,7 +555,7 @@ public class ContextPropagationTest {
     assertParent(invocation, invokeAgent);
     //     ├── call_llm 1
     assertParent(invokeAgent, callLlm1);
-    //     │   └── execute_tool [search_flights]
+    //     │   └── execute_tool search_flights
     assertParent(callLlm1, toolResponse);
     //     └── call_llm 2
     assertParent(invokeAgent, callLlm2);
@@ -546,7 +586,7 @@ public class ContextPropagationTest {
     // invocation
     // └── invoke_agent AgentA
     //     ├── call_llm
-    //     │   └── execute_tool [transfer_to_agent]
+    //     │   └── execute_tool transfer_to_agent
     //     └── invoke_agent AgentB
     //         └── call_llm
     TestLlm llm =
@@ -573,7 +613,7 @@ public class ContextPropagationTest {
 
     SpanData invocation = findSpanByName("invocation");
     SpanData agentASpan = findSpanByName("invoke_agent AgentA");
-    SpanData executeTool = findSpanByName("execute_tool [transfer_to_agent]");
+    SpanData executeTool = findSpanByName("execute_tool transfer_to_agent");
     SpanData agentBSpan = findSpanByName("invoke_agent AgentB");
 
     List<SpanData> callLlmSpans =
@@ -586,10 +626,17 @@ public class ContextPropagationTest {
     SpanData agentACallLlm1 = callLlmSpans.get(0);
     SpanData agentBCallLlm = callLlmSpans.get(1);
 
+    // Assert hierarchy:
+    // invocation
+    // └── invoke_agent AgentA
     assertParent(invocation, agentASpan);
+    //     └── call_llm 1
     assertParent(agentASpan, agentACallLlm1);
+    //         ├── execute_tool transfer_to_agent
     assertParent(agentACallLlm1, executeTool);
-    assertParent(agentASpan, agentBSpan);
+    //         └── invoke_agent AgentB
+    assertParent(agentACallLlm1, agentBSpan);
+    //             └── call_llm 2
     assertParent(agentBSpan, agentBCallLlm);
   }
 

@@ -993,4 +993,156 @@ class LangChain4jTest {
     assertThat(response.content()).isPresent();
     assertThat(response.content().get().parts().orElse(List.of())).isEmpty();
   }
+
+  @Test
+  @DisplayName("Should parse text/plain inlineData as TextContent without exception")
+  void testGenerateContentWithTextPlainInlineData() {
+    final String textPayload = "Hello, plain text.";
+    final Blob textBlob =
+        Blob.builder()
+            .mimeType("text/plain")
+            .data(textPayload.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+            .build();
+    final Part textPart = Part.builder().inlineData(textBlob).build();
+
+    final LlmRequest llmRequest =
+        LlmRequest.builder().contents(List.of(Content.fromParts(textPart))).build();
+
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    final AiMessage aiMessage = AiMessage.from("Acknowledged.");
+    when(chatResponse.aiMessage()).thenReturn(aiMessage);
+    when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+
+    langChain4j.generateContent(llmRequest, false).blockingFirst();
+
+    final ArgumentCaptor<ChatRequest> requestCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+    verify(chatModel).chat(requestCaptor.capture());
+    final ChatRequest capturedRequest = requestCaptor.getValue();
+
+    assertThat(capturedRequest.messages()).hasSize(1);
+    assertThat(capturedRequest.messages().get(0)).isInstanceOf(UserMessage.class);
+    final UserMessage userMessage = (UserMessage) capturedRequest.messages().get(0);
+
+    assertThat(userMessage.contents()).hasSize(1);
+    assertThat(userMessage.contents().get(0))
+        .isInstanceOf(dev.langchain4j.data.message.TextContent.class);
+
+    final dev.langchain4j.data.message.TextContent textContent =
+        (dev.langchain4j.data.message.TextContent) userMessage.contents().get(0);
+    assertThat(textContent.text()).isEqualTo(textPayload);
+  }
+
+  @Test
+  @DisplayName("Should parse application/json inlineData as TextContent without exception")
+  void testGenerateContentWithApplicationJsonInlineData() {
+    final String jsonPayload = "{\"key\":\"value\"}";
+    final Blob jsonBlob =
+        Blob.builder()
+            .mimeType("application/json")
+            .data(jsonPayload.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+            .build();
+    final Part jsonPart = Part.builder().inlineData(jsonBlob).build();
+
+    final LlmRequest llmRequest =
+        LlmRequest.builder().contents(List.of(Content.fromParts(jsonPart))).build();
+
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    final AiMessage aiMessage = AiMessage.from("Parsed JSON.");
+    when(chatResponse.aiMessage()).thenReturn(aiMessage);
+    when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+
+    langChain4j.generateContent(llmRequest, false).blockingFirst();
+
+    final ArgumentCaptor<ChatRequest> requestCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+    verify(chatModel).chat(requestCaptor.capture());
+    final ChatRequest capturedRequest = requestCaptor.getValue();
+
+    final UserMessage userMessage = (UserMessage) capturedRequest.messages().get(0);
+    final dev.langchain4j.data.message.TextContent textContent =
+        (dev.langchain4j.data.message.TextContent) userMessage.contents().get(0);
+    assertThat(textContent.text()).isEqualTo(jsonPayload);
+  }
+
+  @Test
+  @DisplayName(
+      "Should throw IllegalArgumentException for genuinely unsupported inlineData mime types")
+  void testGenerateContentWithUnsupportedMimeType() {
+    final Blob unsupportedBlob =
+        Blob.builder().mimeType("application/x-yaml").data(new byte[] {1, 2, 3, 4}).build();
+    final Part unsupportedPart = Part.builder().inlineData(unsupportedBlob).build();
+
+    final LlmRequest llmRequest =
+        LlmRequest.builder().contents(List.of(Content.fromParts(unsupportedPart))).build();
+
+    assertThatThrownBy(() -> langChain4j.generateContent(llmRequest, false).blockingFirst())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unknown or unhandled mime type: application/x-yaml");
+  }
+
+  @Test
+  @DisplayName("Should extract and apply explicit charset from mimeType (e.g., UTF-16)")
+  void testGenerateContentWithExplicitCharset() {
+    final String textPayload = "Hello, this is strictly UTF-16 encoded text.";
+
+    final byte[] utf16Bytes = textPayload.getBytes(java.nio.charset.StandardCharsets.UTF_16);
+
+    final Blob textBlob =
+        Blob.builder().mimeType("text/plain; charset=utf-16").data(utf16Bytes).build();
+    final Part textPart = Part.builder().inlineData(textBlob).build();
+
+    final LlmRequest llmRequest =
+        LlmRequest.builder().contents(List.of(Content.fromParts(textPart))).build();
+
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    final AiMessage aiMessage = AiMessage.from("Acknowledged.");
+    when(chatResponse.aiMessage()).thenReturn(aiMessage);
+    when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+
+    langChain4j.generateContent(llmRequest, false).blockingFirst();
+
+    final ArgumentCaptor<ChatRequest> requestCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+    verify(chatModel).chat(requestCaptor.capture());
+    final ChatRequest capturedRequest = requestCaptor.getValue();
+
+    final UserMessage userMessage = (UserMessage) capturedRequest.messages().get(0);
+    final dev.langchain4j.data.message.TextContent textContent =
+        (dev.langchain4j.data.message.TextContent) userMessage.contents().get(0);
+
+    assertThat(textContent.text()).isEqualTo(textPayload);
+  }
+
+  @Test
+  @DisplayName("Should safely fallback to UTF-8 if provided charset is malformed or unsupported")
+  void testGenerateContentWithMalformedCharsetFallback() {
+    final String textPayload = "{\"status\": \"fallback to UTF-8 successful\"}";
+
+    final byte[] utf8Bytes = textPayload.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+    final Blob jsonBlob =
+        Blob.builder()
+            .mimeType("application/json; charset=not-a-real-charset-12345")
+            .data(utf8Bytes)
+            .build();
+    final Part jsonPart = Part.builder().inlineData(jsonBlob).build();
+
+    final LlmRequest llmRequest =
+        LlmRequest.builder().contents(List.of(Content.fromParts(jsonPart))).build();
+
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    final AiMessage aiMessage = AiMessage.from("Fallback verified.");
+    when(chatResponse.aiMessage()).thenReturn(aiMessage);
+    when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+
+    langChain4j.generateContent(llmRequest, false).blockingFirst();
+
+    final ArgumentCaptor<ChatRequest> requestCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+    verify(chatModel).chat(requestCaptor.capture());
+    final ChatRequest capturedRequest = requestCaptor.getValue();
+
+    final UserMessage userMessage = (UserMessage) capturedRequest.messages().get(0);
+    final dev.langchain4j.data.message.TextContent textContent =
+        (dev.langchain4j.data.message.TextContent) userMessage.contents().get(0);
+
+    assertThat(textContent.text()).isEqualTo(textPayload);
+  }
 }

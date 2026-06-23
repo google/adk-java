@@ -289,10 +289,16 @@ public class EventActions extends JsonBaseModel {
     @CanIgnoreReturnValue
     @JsonProperty("stateDelta")
     public Builder stateDelta(@Nullable Map<String, Object> value) {
-      if (value == null) {
-        this.stateDelta = new ConcurrentHashMap<>();
-      } else {
-        this.stateDelta = new ConcurrentHashMap<>(value);
+      this.stateDelta = new ConcurrentHashMap<>();
+      if (value != null) {
+        // Convert null values to State.REMOVED to avoid NPEs.
+        value
+            .entrySet()
+            .forEach(
+                entry -> {
+                  stateDelta.put(
+                      entry.getKey(), Optional.ofNullable(entry.getValue()).orElse(State.REMOVED));
+                });
       }
       return this;
     }

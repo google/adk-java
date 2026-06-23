@@ -20,6 +20,7 @@ import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
+import com.google.genai.types.AvatarConfig;
 import com.google.genai.types.Modality;
 import com.google.genai.types.SpeechConfig;
 import org.jspecify.annotations.Nullable;
@@ -39,24 +40,35 @@ public abstract class RunConfig {
   }
 
   /**
-   * Tool execution mode for the runner, when they are multiple tools requested (by the models or
-   * callbacks).
+   * Execution mode when the model requests multiple tools.
    *
-   * <p>NONE: default to PARALLEL.
+   * <p>NONE: defaults to PARALLEL.
    *
-   * <p>SEQUENTIAL: Multiple tools are executed in the order they are requested.
+   * <p>SEQUENTIAL: tools execute strictly in request order on the caller thread; each tool must
+   * complete (including any asynchronous work) before the next one is subscribed to.
    *
-   * <p>PARALLEL: Multiple tools are executed in parallel.
+   * <p>PARALLEL: tools are subscribed to eagerly on the caller thread (i.e. all are kicked off
+   * up-front), but no worker threads are introduced. Tools that are truly asynchronous (e.g. they
+   * return a {@code Single} backed by I/O or another scheduler) will run concurrently; tools that
+   * block the subscribing thread (e.g. {@code Single.fromCallable} that performs blocking work)
+   * will still execute sequentially. This preserves the historical default behavior.
+   *
+   * <p>PARALLEL_SUBSCRIBE: like {@code PARALLEL}, but every tool is additionally subscribed on a
+   * worker thread, so blocking tools also run concurrently. Tool implementations must be
+   * thread-safe. The worker is the agent's executor when set, otherwise the RxJava IO scheduler.
    */
   public enum ToolExecutionMode {
     NONE,
     SEQUENTIAL,
-    PARALLEL
+    PARALLEL,
+    PARALLEL_SUBSCRIBE
   }
 
   public abstract @Nullable SpeechConfig speechConfig();
 
   public abstract ImmutableList<Modality> responseModalities();
+
+  public abstract @Nullable AvatarConfig avatarConfig();
 
   public abstract boolean saveInputBlobsAsArtifacts();
 
@@ -92,6 +104,7 @@ public abstract class RunConfig {
         .maxLlmCalls(runConfig.maxLlmCalls())
         .responseModalities(runConfig.responseModalities())
         .speechConfig(runConfig.speechConfig())
+        .avatarConfig(runConfig.avatarConfig())
         .outputAudioTranscription(runConfig.outputAudioTranscription())
         .inputAudioTranscription(runConfig.inputAudioTranscription())
         .autoCreateSession(runConfig.autoCreateSession());
@@ -118,6 +131,9 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder responseModalities(Iterable<Modality> responseModalities);
+
+    @CanIgnoreReturnValue
+    public abstract Builder avatarConfig(@Nullable AvatarConfig avatarConfig);
 
     @Deprecated
     @CanIgnoreReturnValue

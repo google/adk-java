@@ -17,23 +17,29 @@
 package com.google.adk.plugins.agentanalytics;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.sessions.Session;
@@ -55,14 +61,18 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
+import com.google.cloud.storage.BlobInfo;
+import com.google.cloud.storage.Storage;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
-import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanContext;
 import io.opentelemetry.api.trace.Tracer;
@@ -75,7 +85,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.BiFunction;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -113,6 +129,7 @@ public class BigQueryAgentAnalyticsPluginTest {
   private BaseAgent fakeAgent;
 
   private BigQueryLoggerConfig config;
+  private PluginState state;
   private BigQueryAgentAnalyticsPlugin plugin;
   private Handler mockHandler;
   private Tracer tracer;
@@ -140,23 +157,20 @@ public class BigQueryAgentAnalyticsPluginTest {
     when(mockWriter.append(any(ArrowRecordBatch.class)))
         .thenReturn(ApiFutures.immediateFuture(AppendRowsResponse.getDefaultInstance()));
 
-    plugin =
-        new BigQueryAgentAnalyticsPlugin(config, mockBigQuery) {
+    state =
+        new PluginState(config) {
           @Override
           protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
             return mockWriteClient;
           }
 
           @Override
-          protected StreamWriter createWriter(BigQueryLoggerConfig config) {
+          protected StreamWriter createWriter() {
             return mockWriter;
           }
-
-          @Override
-          protected TraceManager createTraceManager() {
-            return new TraceManager(tracer);
-          }
         };
+
+    plugin = new BigQueryAgentAnalyticsPlugin(config, mockBigQuery, state);
 
     Session session = Session.builder("session_id").appName("test_app").userId("test_user").build();
     when(mockInvocationContext.session()).thenReturn(session);
@@ -183,23 +197,95 @@ public class BigQueryAgentAnalyticsPluginTest {
     Content content = Content.builder().build();
 
     plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
-    plugin.batchProcessor.flush();
+    state.getBatchProcessor("invocation_id").flush();
 
     verify(mockWriter, atLeastOnce()).append(any(ArrowRecordBatch.class));
+  }
+
+  @Test
+  public void onUserMessageCallback_ensuresInvocationSpan() throws Exception {
+    Content content = Content.builder().build();
+
+    // Verify initial state
+    assertTrue(state.getTraceManager("invocation_id").getCurrentSpanId().isEmpty());
+
+    plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    // Verify that ensureInvocationSpan was called and created a span
+    assertTrue(state.getTraceManager("invocation_id").getCurrentSpanId().isPresent());
   }
 
   @Test
   public void beforeRunCallback_appendsToWriter() throws Exception {
     plugin.beforeRunCallback(mockInvocationContext).blockingSubscribe();
-    plugin.batchProcessor.flush();
+    state.getBatchProcessor("invocation_id").flush();
 
     verify(mockWriter, atLeastOnce()).append(any(ArrowRecordBatch.class));
   }
 
   @Test
-  public void afterRunCallback_flushesAndAppends() throws Exception {
+  public void beforeRunCallback_ensuresInvocationSpan() throws Exception {
+    // Verify initial state
+    assertTrue(state.getTraceManager("invocation_id").getCurrentSpanId().isEmpty());
+
+    plugin.beforeRunCallback(mockInvocationContext).blockingSubscribe();
+
+    // Verify that ensureInvocationSpan was called and created a span
+    assertTrue(state.getTraceManager("invocation_id").getCurrentSpanId().isPresent());
+  }
+
+  @Test
+  public void beforeRunCallback_addPendingTask() throws Exception {
+    final boolean[] addPendingTaskCalled = {false};
+    PluginState customState =
+        new PluginState(config) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+
+          @Override
+          void addPendingTask(String invocationId, CompletableFuture<Void> task) {
+            super.addPendingTask(invocationId, task);
+            addPendingTaskCalled[0] = true;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin customPlugin =
+        new BigQueryAgentAnalyticsPlugin(config, mockBigQuery, customState);
+
+    customPlugin.beforeRunCallback(mockInvocationContext).blockingSubscribe();
+
+    assertTrue("addPendingTask should have been called", addPendingTaskCalled[0]);
+  }
+
+  @Test
+  public void afterRunCallback_waitsForPendingTasks() throws Exception {
+    CompletableFuture<Void> pendingTask = new CompletableFuture<>();
+    String invocationId = "invocation_id";
+
+    // Manually add a pending task to the state
+    state.addPendingTask(invocationId, pendingTask);
+
+    // Complete the task after a short delay
+    var unused =
+        Executors.newSingleThreadScheduledExecutor()
+            .schedule(() -> pendingTask.complete(null), 100, MILLISECONDS);
+
+    // afterRunCallback should wait for the pending task
     plugin.afterRunCallback(mockInvocationContext).blockingSubscribe();
-    plugin.batchProcessor.flush();
+
+    assertTrue("Pending task should be completed after afterRunCallback", pendingTask.isDone());
+  }
+
+  @Test
+  public void afterRunCallback_flushesAndAppends() throws Exception {
+    plugin.beforeRunCallback(mockInvocationContext).blockingSubscribe();
+    plugin.afterRunCallback(mockInvocationContext).blockingSubscribe();
 
     verify(mockWriter, atLeastOnce()).append(any(ArrowRecordBatch.class));
   }
@@ -213,7 +299,7 @@ public class BigQueryAgentAnalyticsPluginTest {
             .tableName("test-table")
             .build();
 
-    String streamName = plugin.getStreamName(config);
+    String streamName = state.getStreamName(config);
 
     assertEquals(
         "projects/test-project/datasets/test-dataset/tables/test-table/streams/_default",
@@ -223,7 +309,8 @@ public class BigQueryAgentAnalyticsPluginTest {
   @Test
   public void formatContentParts_populatesCorrectFields() {
     Content content = Content.fromParts(Part.fromText("hello"));
-    ArrayNode nodes = JsonFormatter.formatContentParts(Optional.of(content), 100);
+    ArrayNode nodes = state.getParser().formatContentParts(Optional.of(content));
+
     assertEquals(1, nodes.size());
     ObjectNode node = (ObjectNode) nodes.get(0);
     assertEquals(0, node.get("part_index").asInt());
@@ -253,7 +340,7 @@ public class BigQueryAgentAnalyticsPluginTest {
       // Should not throw exception
       plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
 
-      plugin.batchProcessor.flush();
+      state.getBatchProcessor("invocation_id").flush();
 
       ArgumentCaptor<LogRecord> captor = ArgumentCaptor.forClass(LogRecord.class);
       verify(mockHandler, atLeastOnce()).publish(captor.capture());
@@ -280,7 +367,7 @@ public class BigQueryAgentAnalyticsPluginTest {
     plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
 
     // Flush should handle the failed future from writer.append()
-    plugin.batchProcessor.flush();
+    state.getBatchProcessor("invocation_id").flush();
 
     verify(mockWriter, atLeastOnce()).append(any(ArrowRecordBatch.class));
     ArgumentCaptor<LogRecord> captor = ArgumentCaptor.forClass(LogRecord.class);
@@ -350,7 +437,8 @@ public class BigQueryAgentAnalyticsPluginTest {
               ArrowRecordBatch recordedBatch = invocation.getArgument(0);
               Schema schema = BigQuerySchema.getArrowSchema();
               try (VectorSchemaRoot root =
-                  VectorSchemaRoot.create(schema, plugin.batchProcessor.allocator)) {
+                  VectorSchemaRoot.create(
+                      schema, state.getBatchProcessor("invocation_id").allocator)) {
                 VectorLoader loader = new VectorLoader(root);
                 loader.load(recordedBatch);
 
@@ -411,7 +499,7 @@ public class BigQueryAgentAnalyticsPluginTest {
 
     Content content = Content.fromParts(Part.fromText("test message"));
     plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
-    plugin.batchProcessor.flush();
+    state.getBatchProcessor("invocation_id").flush();
 
     assertTrue(failureMessage[0], checksPassed[0]);
   }
@@ -429,12 +517,12 @@ public class BigQueryAgentAnalyticsPluginTest {
     Span mockSpan = Span.wrap(mockSpanContext);
 
     try (Scope scope = mockSpan.makeCurrent()) {
-      plugin.traceManager.attachCurrentSpan();
+      state.getTraceManager("invocation_id").attachCurrentSpan();
 
       Content content = Content.builder().build();
       plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
 
-      Map<String, Object> row = plugin.batchProcessor.queue.poll();
+      Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
       assertNotNull("Row not found in queue", row);
       assertEquals(traceId, row.get("trace_id"));
       assertEquals(spanId, row.get("span_id"));
@@ -447,7 +535,7 @@ public class BigQueryAgentAnalyticsPluginTest {
     Content content = Content.fromParts(part);
     plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
 
-    plugin.batchProcessor.flush();
+    state.getBatchProcessor("invocation_id").flush();
 
     verify(mockWriter, atLeastOnce()).append(any(ArrowRecordBatch.class));
   }
@@ -462,7 +550,7 @@ public class BigQueryAgentAnalyticsPluginTest {
 
     plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
 
-    Map<String, Object> row = plugin.batchProcessor.queue.poll();
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull("Row not found in queue", row);
     assertEquals("STATE_DELTA", row.get("event_type"));
     assertEquals("agent_name", row.get("agent"));
@@ -473,25 +561,271 @@ public class BigQueryAgentAnalyticsPluginTest {
   }
 
   @Test
+  public void onEventCallback_withA2AMetadata_emitsA2AInteraction() throws Exception {
+    Event event =
+        Event.builder()
+            .author("agent_author")
+            .customMetadata(
+                ImmutableList.of(
+                    CustomMetadata.builder().key("a2a:task_id").stringValue("task-123").build(),
+                    CustomMetadata.builder()
+                        .key("a2a:response")
+                        .stringValue("a2a_payload")
+                        .build()))
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
+
+    Map<String, Object> a2aRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("A2A_INTERACTION row not found in queue", a2aRow);
+    assertEquals("A2A_INTERACTION", a2aRow.get("event_type"));
+    assertEquals("agent_name", a2aRow.get("agent"));
+
+    // Assert the stored content is a scalar containing the A2A response
+    JsonNode contentNode = (JsonNode) a2aRow.get("content");
+    assertNotNull("A2A response content should not be null", contentNode);
+    assertTrue(contentNode.isTextual());
+    assertEquals("a2a_payload", contentNode.asText());
+
+    ObjectNode attributes = (ObjectNode) a2aRow.get("attributes");
+    ObjectNode a2aMetadata = (ObjectNode) attributes.get("a2a_metadata");
+
+    // Assert keys present and absent in a2a_metadata
+    assertNotNull("a2a_metadata should not be null", a2aMetadata);
+    assertEquals("task-123", a2aMetadata.get("a2a:task_id").asText());
+    assertFalse(
+        "a2a:response should be excluded from a2a_metadata to avoid duplication",
+        a2aMetadata.has("a2a:response"));
+  }
+
+  @Test
+  public void onEventCallback_agentResponse_emitsAgentResponse() throws Exception {
+    Event event =
+        Event.builder()
+            .id("evt-id")
+            .author("agent_author")
+            .branch("branch-val")
+            .content(Content.fromParts(Part.fromText("agent final answer")))
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
+
+    Map<String, Object> agentResponseRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("AGENT_RESPONSE row not found in queue", agentResponseRow);
+    assertEquals("AGENT_RESPONSE", agentResponseRow.get("event_type"));
+    assertEquals("agent_name", agentResponseRow.get("agent"));
+
+    // Assert that the stored content actually has a scalar at $.text_summary
+    JsonNode contentNode = (JsonNode) agentResponseRow.get("content");
+    assertTrue("content should contain 'text_summary'", contentNode.has("text_summary"));
+    assertEquals("agent final answer", contentNode.get("text_summary").asText());
+
+    ObjectNode attributes = (ObjectNode) agentResponseRow.get("attributes");
+    assertEquals("evt-id", attributes.get("source_event_id").asText());
+    assertEquals("agent_author", attributes.get("source_event_author").asText());
+    assertEquals("branch-val", attributes.get("source_event_branch").asText());
+  }
+
+  @Test
+  public void onEventCallback_skipSummarizationAndFunctionCall_doesNotEmitAgentResponse()
+      throws Exception {
+    Event event =
+        Event.builder()
+            .id("evt-id")
+            .author("agent_author")
+            .branch("branch-val")
+            .actions(EventActions.builder().skipSummarization(true).build())
+            .content(
+                Content.builder()
+                    .parts(
+                        Part.fromText("agent final answer"),
+                        Part.builder()
+                            .functionCall(FunctionCall.builder().name("my_tool").build())
+                            .build())
+                    .build())
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
+
+    Map<String, Object> nextRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNull("No AGENT_RESPONSE row should be emitted", nextRow);
+  }
+
+  @Test
+  public void onEventCallback_longRunningToolIdsPresent_doesNotEmitAgentResponse()
+      throws Exception {
+    Event event =
+        Event.builder()
+            .id("evt-id")
+            .author("agent_author")
+            .branch("branch-val")
+            .actions(EventActions.builder().skipSummarization(true).build())
+            .longRunningToolIds(ImmutableSet.of("long_running_tool_id"))
+            .content(Content.builder().parts(Part.fromText("agent final answer")).build())
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
+
+    Map<String, Object> nextRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNull("No AGENT_RESPONSE row should be emitted", nextRow);
+  }
+
+  @Test
+  public void onEventCallback_withA2ARequestOnlyMetadata_emitsA2AInteraction() throws Exception {
+    Event event =
+        Event.builder()
+            .author("agent_author")
+            .customMetadata(
+                ImmutableList.of(
+                    CustomMetadata.builder().key("a2a:task_id").stringValue("task-456").build(),
+                    CustomMetadata.builder().key("a2a:context_id").stringValue("ctx-789").build(),
+                    CustomMetadata.builder().key("a2a:request").stringValue("req_payload").build()))
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+
+    Map<String, Object> a2aRow = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("A2A_INTERACTION row not found in queue", a2aRow);
+    assertEquals("A2A_INTERACTION", a2aRow.get("event_type"));
+    assertEquals("agent_name", a2aRow.get("agent"));
+    assertFalse(
+        "Content should not contain a2a_response payload since it was absent",
+        a2aRow.containsKey("content"));
+    ObjectNode attributes = (ObjectNode) a2aRow.get("attributes");
+    ObjectNode a2aMetadata = (ObjectNode) attributes.get("a2a_metadata");
+
+    // Assert keys present and absent in a2a_metadata
+    assertEquals("task-456", a2aMetadata.get("a2a:task_id").asText());
+    assertEquals("ctx-789", a2aMetadata.get("a2a:context_id").asText());
+    assertEquals("req_payload", a2aMetadata.get("a2a:request").asText());
+    assertFalse(a2aMetadata.has("a2a:response"));
+  }
+
+  @Test
+  public void onEventCallback_agentResponse_filtersThoughtAndAppliesTruncation() throws Exception {
+    Event event =
+        Event.builder()
+            .author("agent_author")
+            .content(
+                Content.builder()
+                    .parts(
+                        Part.builder().text("internal reasoning process").thought(true).build(),
+                        Part.fromText("this text is very long and will exceed the limit"))
+                    .build())
+            .build();
+
+    BigQueryLoggerConfig customConfig = config.toBuilder().maxContentLength(20).build();
+    PluginState customState =
+        new PluginState(customConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin customPlugin =
+        new BigQueryAgentAnalyticsPlugin(customConfig, mockBigQuery, customState);
+
+    customPlugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            customState
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    // Consume STATE_DELTA
+    Map<String, Object> stateDeltaRow = customState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(stateDeltaRow);
+
+    // Get AGENT_RESPONSE
+    Map<String, Object> agentResponseRow =
+        customState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("AGENT_RESPONSE row not found in queue", agentResponseRow);
+    assertEquals("AGENT_RESPONSE", agentResponseRow.get("event_type"));
+
+    // Check content and truncation behavior on the parsed JSON object
+    JsonNode contentNode = (JsonNode) agentResponseRow.get("content");
+    assertTrue("content should contain 'text_summary'", contentNode.has("text_summary"));
+    String textSummary = contentNode.get("text_summary").asText();
+
+    assertTrue("Content should be marked as truncated", textSummary.contains("truncated"));
+    assertFalse("Thought part should be filtered out", textSummary.contains("reasoning"));
+    assertEquals(true, agentResponseRow.get("is_truncated"));
+  }
+
+  @Test
   public void onModelErrorCallback_populatesCorrectFields() throws Exception {
     CallbackContext mockCallbackContext = mock(CallbackContext.class);
     when(mockCallbackContext.invocationContext()).thenReturn(mockInvocationContext);
     LlmRequest.Builder mockLlmRequestBuilder = mock(LlmRequest.Builder.class);
     Throwable error = new RuntimeException("model error message");
 
-    plugin.traceManager.pushSpan("llm_request");
+    state.getTraceManager("invocation_id").pushSpan("llm_request");
     plugin
         .onModelErrorCallback(mockCallbackContext, mockLlmRequestBuilder, error)
         .blockingSubscribe();
 
-    Map<String, Object> row = plugin.batchProcessor.queue.poll();
+    Map<String, Object> row = plugin.getState().getBatchProcessor("invocation_id").queue.poll();
     assertNotNull("Row not found in queue", row);
     assertEquals("LLM_ERROR", row.get("event_type"));
     assertEquals("agent_name", row.get("agent"));
     assertEquals("ERROR", row.get("status"));
     assertEquals("model error message", row.get("error_message"));
     assertNotNull(row.get("latency_ms"));
-    assertEquals(false, row.get("is_truncated"));
+    assertFalse("Row should not contain content when it is null", row.containsKey("content"));
+    assertFalse(
+        "Row should not contain content_parts when it is null", row.containsKey("content_parts"));
+    assertFalse(
+        "Row should not contain is_truncated when content is null",
+        row.containsKey("is_truncated"));
   }
 
   @Test
@@ -504,6 +838,7 @@ public class BigQueryAgentAnalyticsPluginTest {
             .promptTokenCount(10)
             .candidatesTokenCount(20)
             .totalTokenCount(30)
+            .cachedContentTokenCount(5)
             .build();
 
     GenerateContentResponse response =
@@ -524,13 +859,13 @@ public class BigQueryAgentAnalyticsPluginTest {
         tracer.spanBuilder("ambient").setParent(Context.current().with(parentSpan)).startSpan();
     // Set valid ambient span context
     try (Scope scope = ambientSpan.makeCurrent()) {
-      plugin.traceManager.pushSpan("parent_request");
-      plugin.traceManager.pushSpan("llm_request");
+      state.getTraceManager("invocation_id").pushSpan("parent_request");
+      state.getTraceManager("invocation_id").pushSpan("llm_request");
       plugin.afterModelCallback(mockCallbackContext, adkResponse).blockingSubscribe();
     } finally {
       ambientSpan.end();
     }
-    Map<String, Object> row = plugin.batchProcessor.queue.poll();
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull("Row not found in queue", row);
     assertEquals("LLM_RESPONSE", row.get("event_type"));
     ObjectNode contentMap = (ObjectNode) row.get("content");
@@ -542,6 +877,8 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertEquals("v1", attributes.get("model_version").asText());
     ObjectNode usageAttr = (ObjectNode) attributes.get("usage_metadata");
     assertEquals(10, usageAttr.get("prompt").asInt());
+    assertEquals(5, usageAttr.get("cached_content_token_count").asInt());
+
     assertEquals(false, row.get("is_truncated"));
     assertNotNull(row.get("parent_span_id"));
     ObjectNode latencyMs = (ObjectNode) row.get("latency_ms");
@@ -562,10 +899,10 @@ public class BigQueryAgentAnalyticsPluginTest {
     ImmutableMap<String, Object> toolArgs = ImmutableMap.of("arg1", "value1");
     ImmutableMap<String, Object> result = ImmutableMap.of("res1", "value2");
 
-    plugin.traceManager.pushSpan("tool_request");
+    state.getTraceManager("invocation_id").pushSpan("tool_request");
     plugin.afterToolCallback(mockTool, toolArgs, mockToolContext, result).blockingSubscribe();
 
-    Map<String, Object> row = plugin.batchProcessor.queue.poll();
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull("Row not found in queue", row);
     assertEquals("TOOL_COMPLETED", row.get("event_type"));
     assertEquals("agent_name", row.get("agent"));
@@ -592,12 +929,12 @@ public class BigQueryAgentAnalyticsPluginTest {
 
     AgentTool a2aTool = AgentTool.create(a2aAgent);
 
-    plugin.traceManager.pushSpan("tool_request");
+    state.getTraceManager("invocation_id").pushSpan("tool_request");
     plugin
         .afterToolCallback(a2aTool, ImmutableMap.of(), mockToolContext, ImmutableMap.of())
         .blockingSubscribe();
 
-    Map<String, Object> row = plugin.batchProcessor.queue.poll();
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull(row);
     ObjectNode contentMap = (ObjectNode) row.get("content");
     assertEquals("A2A", contentMap.get("tool_origin").asText());
@@ -609,7 +946,7 @@ public class BigQueryAgentAnalyticsPluginTest {
     Content content = Content.fromParts(Part.fromText("test message"));
     plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
 
-    Map<String, Object> row = plugin.batchProcessor.queue.poll();
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull(row);
     ObjectNode attributes = (ObjectNode) row.get("attributes");
     assertTrue("attributes should contain session_metadata", attributes.has("session_metadata"));
@@ -622,32 +959,131 @@ public class BigQueryAgentAnalyticsPluginTest {
   @Test
   public void logEvent_excludesSessionMetadata_whenDisabled() throws Exception {
     BigQueryLoggerConfig disabledConfig = config.toBuilder().logSessionMetadata(false).build();
-    BigQueryAgentAnalyticsPlugin disabledPlugin =
-        new BigQueryAgentAnalyticsPlugin(disabledConfig, mockBigQuery) {
+    PluginState disabledState =
+        new PluginState(disabledConfig) {
           @Override
           protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
             return mockWriteClient;
           }
 
           @Override
-          protected StreamWriter createWriter(BigQueryLoggerConfig config) {
+          protected StreamWriter createWriter() {
             return mockWriter;
           }
-
-          @Override
-          protected TraceManager createTraceManager() {
-            return new TraceManager(GlobalOpenTelemetry.getTracer("test-plugin-disabled"));
-          }
         };
+    BigQueryAgentAnalyticsPlugin disabledPlugin =
+        new BigQueryAgentAnalyticsPlugin(disabledConfig, mockBigQuery, disabledState);
 
     Content content = Content.fromParts(Part.fromText("test message"));
     disabledPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
 
-    Map<String, Object> row = disabledPlugin.batchProcessor.queue.poll();
+    Map<String, Object> row = disabledState.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull(row);
     ObjectNode attributes = (ObjectNode) row.get("attributes");
     assertFalse(
         "attributes should not contain session_metadata", attributes.has("session_metadata"));
+  }
+
+  @Test
+  public void logEvent_usesContentFormatter_whenConfigured() throws Exception {
+    BiFunction<Object, String, Object> formatter =
+        (content, eventType) -> {
+          if (Objects.equals(eventType, "USER_MESSAGE_RECEIVED") && content instanceof Content) {
+            return "Formatted: " + content;
+          }
+          return content;
+        };
+
+    BigQueryLoggerConfig formattedConfig = config.toBuilder().contentFormatter(formatter).build();
+    PluginState formattedState =
+        new PluginState(formattedConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin formattedPlugin =
+        new BigQueryAgentAnalyticsPlugin(formattedConfig, mockBigQuery, formattedState);
+
+    Content content = Content.fromParts(Part.fromText("test message"));
+    formattedPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    Map<String, Object> row = formattedState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(row);
+    assertTrue(row.get("content").toString().contains("Formatted: "));
+  }
+
+  @Test
+  public void logEvent_handlesNullContentFromFormatter() throws Exception {
+    BiFunction<Object, String, Object> formatter = (content, eventType) -> null;
+
+    BigQueryLoggerConfig formattedConfig = config.toBuilder().contentFormatter(formatter).build();
+    PluginState formattedState =
+        new PluginState(formattedConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin formattedPlugin =
+        new BigQueryAgentAnalyticsPlugin(formattedConfig, mockBigQuery, formattedState);
+
+    Content content = Content.fromParts(Part.fromText("test message"));
+    formattedPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    Map<String, Object> row = formattedState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(row);
+    assertFalse(
+        "Row should not contain content when formatter returns null", row.containsKey("content"));
+    assertFalse(
+        "Row should not contain content_parts when formatter returns null",
+        row.containsKey("content_parts"));
+  }
+
+  @Test
+  public void logEvent_handlesExceptionFromFormatter() throws Exception {
+    BiFunction<Object, String, Object> formatter =
+        (content, eventType) -> {
+          throw new RuntimeException("Formatter error");
+        };
+
+    BigQueryLoggerConfig formattedConfig = config.toBuilder().contentFormatter(formatter).build();
+    PluginState formattedState =
+        new PluginState(formattedConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin formattedPlugin =
+        new BigQueryAgentAnalyticsPlugin(formattedConfig, mockBigQuery, formattedState);
+
+    Content content = Content.fromParts(Part.fromText("test message"));
+    formattedPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    Map<String, Object> row = formattedState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(row);
+    assertFalse(
+        "Row should not contain content when formatter throws exception",
+        row.containsKey("content"));
+    assertFalse(
+        "Row should not contain content_parts when formatter throws exception",
+        row.containsKey("content_parts"));
   }
 
   @Test
@@ -765,6 +1201,235 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertTrue(
         queries.stream()
             .anyMatch(q -> q.contains("CREATE OR REPLACE VIEW `project.dataset.v_llm_response`")));
+    assertTrue(
+        queries.stream()
+            .anyMatch(
+                q -> q.contains("CREATE OR REPLACE VIEW `project.dataset.v_a2a_interaction`")));
+    assertTrue(
+        queries.stream()
+            .anyMatch(
+                q -> q.contains("CREATE OR REPLACE VIEW `project.dataset.v_agent_response`")));
+  }
+
+  @Test
+  public void multipleInvocations_logsCorrectly() throws Exception {
+    BigQueryLoggerConfig testConfig = config.toBuilder().batchSize(10).build();
+    PluginState testState =
+        new PluginState(testConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin testPlugin =
+        new BigQueryAgentAnalyticsPlugin(testConfig, mockBigQuery, testState);
+
+    InvocationContext context1 = mock(InvocationContext.class);
+    when(context1.invocationId()).thenReturn("inv-1");
+    when(context1.agent()).thenReturn(fakeAgent);
+    when(context1.session()).thenReturn(Session.builder("s1").build());
+
+    InvocationContext context2 = mock(InvocationContext.class);
+    when(context2.invocationId()).thenReturn("inv-2");
+    when(context2.agent()).thenReturn(fakeAgent);
+    when(context2.session()).thenReturn(Session.builder("s2").build());
+
+    var unused1 = testPlugin.beforeRunCallback(context1).blockingGet();
+    var unused2 =
+        testPlugin
+            .onUserMessageCallback(context1, Content.fromParts(Part.fromText("msg1")))
+            .blockingGet();
+
+    var unused3 = testPlugin.beforeRunCallback(context2).blockingGet();
+    var unused4 =
+        testPlugin
+            .onUserMessageCallback(context2, Content.fromParts(Part.fromText("msg2")))
+            .blockingGet();
+
+    // Verify processors are created and have correct data in their queues
+    BatchProcessor p1 = testState.getBatchProcessor("inv-1");
+    BatchProcessor p2 = testState.getBatchProcessor("inv-2");
+
+    assertNotNull("Processor for inv-1 should exist", p1);
+    assertNotNull("Processor for inv-2 should exist", p2);
+    assertFalse("Queue for inv-1 should not be empty", p1.queue.isEmpty());
+    assertFalse("Queue for inv-2 should not be empty", p2.queue.isEmpty());
+
+    assertTrue(
+        "All logs for inv-1 should have correct invocation_id",
+        p1.queue.stream().allMatch(row -> row.get("invocation_id").equals("inv-1")));
+    assertTrue(
+        "All logs for inv-2 should have correct invocation_id",
+        p2.queue.stream().allMatch(row -> row.get("invocation_id").equals("inv-2")));
+
+    // Now flush and verify writer was called
+    testPlugin.afterRunCallback(context1).blockingAwait();
+    testPlugin.afterRunCallback(context2).blockingAwait();
+
+    verify(mockWriter, atLeastOnce()).append(any(ArrowRecordBatch.class));
+  }
+
+  @Test
+  public void logEvent_createsUniqueProcessorPerInvocation() throws Exception {
+    int numInvocations = 5;
+    ExecutorService testExecutor = Executors.newFixedThreadPool(numInvocations);
+    Set<BatchProcessor> processors = ConcurrentHashMap.newKeySet();
+    CountDownLatch latch = new CountDownLatch(numInvocations);
+
+    for (int i = 0; i < numInvocations; i++) {
+      final String invocationId = "inv-" + i;
+      testExecutor.execute(
+          () -> {
+            try {
+              InvocationContext context = mock(InvocationContext.class);
+              when(context.invocationId()).thenReturn(invocationId);
+              when(context.agent()).thenReturn(fakeAgent);
+              Session session = Session.builder("s").build();
+              when(context.session()).thenReturn(session);
+
+              plugin.beforeRunCallback(context).blockingSubscribe();
+              processors.add(state.getBatchProcessor(invocationId));
+            } finally {
+              latch.countDown();
+            }
+          });
+    }
+
+    latch.await();
+    assertEquals(numInvocations, processors.size());
+    testExecutor.shutdown();
+  }
+
+  @Test
+  public void logEvent_offloadsToGcs_whenLargeContent() throws Exception {
+    GcsOffloader mockOffloader = mock(GcsOffloader.class);
+    when(mockOffloader.uploadContent(anyString(), anyString(), anyString()))
+        .thenReturn(CompletableFuture.completedFuture("gs://test-bucket/large.txt"));
+
+    BigQueryLoggerConfig gcsConfig = config.toBuilder().gcsBucketName("test-bucket").build();
+    PluginState gcsState =
+        new PluginState(gcsConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+
+          @Override
+          protected GcsOffloader getGcsOffloader(BigQueryLoggerConfig config) {
+            return mockOffloader;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin gcsPlugin =
+        new BigQueryAgentAnalyticsPlugin(gcsConfig, mockBigQuery, gcsState);
+
+    // Large text (> 32KB default threshold)
+    String largeText = "a".repeat(40000);
+    Content content = Content.fromParts(Part.fromText(largeText));
+    gcsPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    verify(mockOffloader, atLeastOnce()).uploadContent(anyString(), anyString(), anyString());
+
+    Map<String, Object> row = gcsState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(row);
+    @SuppressWarnings("unchecked") // Test only
+    List<JsonNode> contentParts = (List<JsonNode>) row.get("content_parts");
+    assertEquals("GCS_REFERENCE", contentParts.get(0).get("storage_mode").asText());
+    assertEquals("gs://test-bucket/large.txt", contentParts.get(0).get("uri").asText());
+  }
+
+  @Test
+  public void logEvent_offloadsToGcs_whenMultimodalContent() throws Exception {
+    GcsOffloader mockOffloader = mock(GcsOffloader.class);
+    when(mockOffloader.uploadContent(any(byte[].class), anyString(), anyString()))
+        .thenReturn(CompletableFuture.completedFuture("gs://test-bucket/image.png"));
+
+    BigQueryLoggerConfig gcsConfig = config.toBuilder().gcsBucketName("test-bucket").build();
+    PluginState gcsState =
+        new PluginState(gcsConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+
+          @Override
+          protected GcsOffloader getGcsOffloader(BigQueryLoggerConfig config) {
+            return mockOffloader;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin gcsPlugin =
+        new BigQueryAgentAnalyticsPlugin(gcsConfig, mockBigQuery, gcsState);
+
+    Content content = Content.fromParts(Part.fromBytes("test-data".getBytes(UTF_8), "image/png"));
+    gcsPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    verify(mockOffloader, atLeastOnce()).uploadContent(any(byte[].class), anyString(), anyString());
+
+    Map<String, Object> row = gcsState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(row);
+    @SuppressWarnings("unchecked") // Test only
+    List<JsonNode> contentParts = (List<JsonNode>) row.get("content_parts");
+    assertEquals("GCS_REFERENCE", contentParts.get(0).get("storage_mode").asText());
+    assertEquals("gs://test-bucket/image.png", contentParts.get(0).get("uri").asText());
+  }
+
+  @Test
+  public void logEvent_integrationWithRealGcsOffloader_whenLargeContent() throws Exception {
+    Storage mockStorage = mock(Storage.class);
+
+    BigQueryLoggerConfig gcsConfig = config.toBuilder().gcsBucketName("test-bucket").build();
+    PluginState gcsState =
+        new PluginState(gcsConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+
+          @Override
+          protected GcsOffloader getGcsOffloader(BigQueryLoggerConfig config) {
+            return new GcsOffloader(
+                config.projectId(),
+                config.gcsBucketName(),
+                Runnable::run, // Use direct executor for synchronous execution
+                config.credentials(),
+                mockStorage);
+          }
+        };
+    BigQueryAgentAnalyticsPlugin gcsPlugin =
+        new BigQueryAgentAnalyticsPlugin(gcsConfig, mockBigQuery, gcsState);
+
+    // Large text (> 32KB default threshold)
+    String largeText = "a".repeat(40000);
+    Content content = Content.fromParts(Part.fromText(largeText));
+    gcsPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    verify(mockStorage, atLeastOnce()).create(any(BlobInfo.class), any(byte[].class));
+
+    Map<String, Object> row = gcsState.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull(row);
+    @SuppressWarnings("unchecked") // Test only
+    List<JsonNode> contentParts = (List<JsonNode>) row.get("content_parts");
+    assertEquals("GCS_REFERENCE", contentParts.get(0).get("storage_mode").asText());
+    assertTrue(contentParts.get(0).get("uri").asText().startsWith("gs://test-bucket/"));
   }
 
   private static class FakeAgent extends BaseAgent {

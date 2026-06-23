@@ -70,6 +70,7 @@ import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.output.TokenUsage;
 import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Flowable;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -77,10 +78,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @AutoValue
 public abstract class LangChain4j extends BaseLlm {
 
+  private static final Logger logger = LoggerFactory.getLogger(LangChain4j.class);
   private static final TypeReference<Map<String, Object>> MAP_TYPE_REFERENCE =
       new TypeReference<>() {};
 
@@ -388,13 +392,12 @@ public abstract class LangChain4j extends BaseLlm {
                       .mimeType(mimeType)
                       .build());
         } else if (mimeType.startsWith("text/")
-            || "application/json".equals(mimeType)
-            || mimeType.endsWith("+json")
-            || mimeType.endsWith("+xml")) {
+            || mimeType.startsWith("application/json")
+            || mimeType.contains("+json")
+            || mimeType.contains("+xml")) {
           // TODO are there missing text based mime types?
           // TODO should we assume UTF_8?
-          lc4jContents.add(
-              TextContent.from(new String(bytes, java.nio.charset.StandardCharsets.UTF_8)));
+          lc4jContent = TextContent.from(new String(bytes, extractCharset(mimeType)));
         }
 
         if (lc4jContent != null) {
@@ -417,6 +420,22 @@ public abstract class LangChain4j extends BaseLlm {
           .toList();
     } else {
       return List.of(UserMessage.from(lc4jContents));
+    }
+  }
+
+  private Charset extractCharset(String mimeType) {
+    String charSetString = "charset=";
+    if (mimeType == null || !mimeType.toLowerCase().contains(charSetString)) {
+      return java.nio.charset.StandardCharsets.UTF_8;
+    }
+    try {
+      String[] parts = mimeType.toLowerCase().split(charSetString);
+      String charsetName = parts[1].split(";")[0].trim().replace("\"", "").replace("'", "");
+      return java.nio.charset.Charset.forName(charsetName);
+    } catch (IllegalArgumentException e) {
+      logger.warn(
+          "Invalid charset extracted from mimeType: '{}'. Falling back to UTF-8.", mimeType);
+      return java.nio.charset.StandardCharsets.UTF_8;
     }
   }
 

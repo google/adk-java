@@ -1,0 +1,89 @@
+# Triages newly-opened (and reopened/edited) adk-java pull requests with the ADK
+# PR Triaging Agent sample under contrib/samples/github/adkprtriaging. The agent
+# labels the PR and, when it falls short of the contribution guidelines, posts a
+# single comment asking the author for the missing context.
+#
+# Required repository secrets:
+#   - GOOGLE_API_KEY    : Gemini API key (or wire up Vertex AI credentials and
+#                         set GOOGLE_GENAI_USE_VERTEXAI=TRUE).
+# Labeling/commenting uses the built-in GITHUB_TOKEN (no secret to manage); the
+# `permissions:` block below grants it the `pull-requests: write` scope it needs.
+# Swap in a PAT only if you specifically want triage actions attributed to a
+# distinct bot identity.
+#
+# Security note: this workflow uses `pull_request_target`, so it runs with the
+# base repository's token/secrets. It deliberately relies on the DEFAULT checkout
+# (the base branch) and never checks out the PR head, so untrusted PR code is
+# never executed — the agent only reads the PR through the GitHub API. The agent
+# additionally treats the PR title/body/diff as untrusted data, binds its writes
+# to the triggering PR number and a fixed label allowlist, and pins writes to
+# this repository (see the sample's README for the full threat model).
+name: ADK PR Triaging Agent
+
+on:
+  pull_request_target:
+    types: [opened, reopened, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'The pull request number to triage'
+        required: true
+        type: 'string'
+
+# Serialize runs that touch the same PR so a re-trigger (e.g. an "edited" event)
+# can't race an in-flight run on the same PR (which, with label appends, could
+# duplicate labels or comments).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  agent-triage-pull-request:
+    runs-on: ubuntu-latest
+    # Only run on the upstream repo, for newly-opened/reopened/edited PRs or a
+    # manual dispatch.
+    if: >-
+      github.repository == 'google/adk-java' && (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.action == 'opened' ||
+        github.event.action == 'reopened' ||
+        github.event.action == 'edited'
+      )
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      # Default checkout: the base branch (trusted code), NOT the PR head.
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run PR Triaging Agent
+        env:
+          # Built-in token scoped by the `permissions:` block above. Replace with a
+          # PAT (e.g. ${{ secrets.ADK_TRIAGE_AGENT }}) only if you need a distinct
+          # bot identity for the label/comment actions.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: '0'
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          INTERACTIVE: '0'
+          # Defaults to a dry run (logs intended labels/comments without writing).
+          # Verify the pipeline, then set DRY_RUN to '0' to go live.
+          DRY_RUN: '1'
+          EVENT_NAME: ${{ github.event_name }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+        run: |
+          # Install the ADK libs + this sample, then run exec:java scoped to this
+          # module (exec:java with -am would also run on the parent/core modules,
+          # which have no mainClass).
+          ./mvnw -B -q -pl contrib/samples/github/adkprtriaging -am install -DskipTests
+          ./mvnw -B -q -pl contrib/samples/github/adkprtriaging exec:java

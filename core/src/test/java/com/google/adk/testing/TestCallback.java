@@ -91,7 +91,7 @@ public final class TestCallback<T> {
         Flowable.defer(
             () -> {
               markAsCalled();
-              return Flowable.just(Event.builder().content(content).build());
+              return Flowable.just(Event.builder().author("testAgent").content(content).build());
             });
   }
 
@@ -111,7 +111,7 @@ public final class TestCallback<T> {
         Flowable.defer(
             () -> {
               markAsCalled();
-              return Flowable.just(Event.builder().content(content).build());
+              return Flowable.just(Event.builder().author("testAgent").content(content).build());
             });
   }
 

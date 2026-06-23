@@ -20,11 +20,14 @@ import com.google.common.base.Strings;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.jspecify.annotations.Nullable;
 
 /** Utility class for model names. */
 public final class ModelNameUtils {
   private static final String GEMINI_PREFIX = "gemini-";
   private static final Pattern GEMINI_2_PATTERN = Pattern.compile("^gemini-2\\..*");
+  private static final Pattern GEMINI_VERSION_PATTERN =
+      Pattern.compile("^gemini-(\\d+)(?:\\.(\\d+))?.*");
   private static final String GEMINI_CLASS = "com.google.adk.models.Gemini";
   private static final Pattern PATH_PATTERN =
       Pattern.compile("^projects/[^/]+/locations/[^/]+/publishers/[^/]+/models/(.+)$");
@@ -37,6 +40,28 @@ public final class ModelNameUtils {
 
   public static boolean isGemini2Model(String modelString) {
     return matchesModelPattern(modelString, GEMINI_2_PATTERN);
+  }
+
+  public static boolean isGemini2OrAbove(@Nullable String modelString) {
+    return isGeminiVersionOrAbove(modelString, 2, 0);
+  }
+
+  private static boolean isGeminiVersionOrAbove(
+      @Nullable String modelString, int minMajor, int minMinor) {
+    if (modelString == null) {
+      return false;
+    }
+    String modelName = extractModelName(modelString);
+    Matcher matcher = GEMINI_VERSION_PATTERN.matcher(modelName);
+    if (matcher.matches()) {
+      int major = Integer.parseInt(matcher.group(1));
+      int minor = matcher.group(2) != null ? Integer.parseInt(matcher.group(2)) : 0;
+      if (major > minMajor) {
+        return true;
+      }
+      return major == minMajor && minor >= minMinor;
+    }
+    return false;
   }
 
   private static boolean matchesModelPattern(String modelString, Pattern pattern) {

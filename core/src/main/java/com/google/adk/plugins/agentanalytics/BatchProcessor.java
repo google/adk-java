@@ -249,7 +249,7 @@ class BatchProcessor implements AutoCloseable {
 
   @Override
   public void close() {
-    if (this.queue != null && !this.queue.isEmpty()) {
+    while (this.queue != null && !this.queue.isEmpty()) {
       this.flush();
     }
     if (this.allocator != null) {

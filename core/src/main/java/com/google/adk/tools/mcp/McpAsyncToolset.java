@@ -16,6 +16,8 @@
 
 package com.google.adk.tools.mcp;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.ReadonlyContext;
@@ -23,7 +25,6 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.NamedToolPredicate;
 import com.google.adk.tools.ToolPredicate;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.modelcontextprotocol.client.McpAsyncClient;
@@ -64,21 +65,31 @@ public class McpAsyncToolset implements BaseToolset {
   private final @Nullable Object toolFilter;
   private final AtomicReference<Mono<List<McpAsyncTool>>> mcpTools = new AtomicReference<>();
 
+  public static Builder builder() {
+    return new Builder();
+  }
+
   /** Builder for McpAsyncToolset */
   public static class Builder {
-    private Object connectionParams = null;
+    private McpSessionManager mcpSessionManager = null;
     private ObjectMapper objectMapper = null;
     private @Nullable Object toolFilter = null;
 
     @CanIgnoreReturnValue
     public Builder connectionParams(ServerParameters connectionParams) {
-      this.connectionParams = connectionParams;
+      this.mcpSessionManager = new McpSessionManager(connectionParams);
       return this;
     }
 
     @CanIgnoreReturnValue
     public Builder connectionParams(SseServerParameters connectionParams) {
-      this.connectionParams = connectionParams;
+      this.mcpSessionManager = new McpSessionManager(connectionParams);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder mcpSessionManager(McpSessionManager mcpSessionManager) {
+      this.mcpSessionManager = mcpSessionManager;
       return this;
     }
 
@@ -90,7 +101,7 @@ public class McpAsyncToolset implements BaseToolset {
 
     @CanIgnoreReturnValue
     public Builder toolFilter(List<String> toolNames) {
-      this.toolFilter = new NamedToolPredicate(Preconditions.checkNotNull(toolNames));
+      this.toolFilter = new NamedToolPredicate(checkNotNull(toolNames));
       return this;
     }
 
@@ -104,14 +115,8 @@ public class McpAsyncToolset implements BaseToolset {
       if (objectMapper == null) {
         objectMapper = JsonBaseModel.getMapper();
       }
-      if (connectionParams instanceof ServerParameters setSelectedParams) {
-        return new McpAsyncToolset(setSelectedParams, objectMapper, toolFilter);
-      } else if (connectionParams instanceof SseServerParameters sseServerParameters) {
-        return new McpAsyncToolset(sseServerParameters, objectMapper, toolFilter);
-      } else {
-        throw new IllegalArgumentException(
-            "connectionParams must be either ServerParameters or SseServerParameters");
-      }
+      checkNotNull(mcpSessionManager, "Connection params must be set");
+      return new McpAsyncToolset(mcpSessionManager, objectMapper, toolFilter);
     }
   }
 
@@ -123,29 +128,11 @@ public class McpAsyncToolset implements BaseToolset {
    * @param toolFilter Either a ToolPredicate or a List of tool names.
    */
   McpAsyncToolset(
-      SseServerParameters connectionParams,
-      ObjectMapper objectMapper,
-      @Nullable Object toolFilter) {
-    Objects.requireNonNull(connectionParams);
+      McpSessionManager mcpSessionManager, ObjectMapper objectMapper, @Nullable Object toolFilter) {
+    Objects.requireNonNull(mcpSessionManager);
     Objects.requireNonNull(objectMapper);
     this.objectMapper = objectMapper;
-    this.mcpSessionManager = new McpSessionManager(connectionParams);
-    this.toolFilter = toolFilter;
-  }
-
-  /**
-   * Initializes the McpAsyncToolset with local server parameters.
-   *
-   * @param connectionParams The local server connection parameters to the MCP server.
-   * @param objectMapper An ObjectMapper instance for parsing schemas.
-   * @param toolFilter Either a ToolPredicate or a List of tool names or null.
-   */
-  McpAsyncToolset(
-      ServerParameters connectionParams, ObjectMapper objectMapper, @Nullable Object toolFilter) {
-    Objects.requireNonNull(connectionParams);
-    Objects.requireNonNull(objectMapper);
-    this.objectMapper = objectMapper;
-    this.mcpSessionManager = new McpSessionManager(connectionParams);
+    this.mcpSessionManager = mcpSessionManager;
     this.toolFilter = toolFilter;
   }
 

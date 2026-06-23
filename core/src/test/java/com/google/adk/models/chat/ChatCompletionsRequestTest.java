@@ -17,11 +17,30 @@
 package com.google.adk.models.chat;
 
 import static com.google.common.truth.Truth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.JsonBaseModel;
+import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
-import java.util.HashMap;
+import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Blob;
+import com.google.genai.types.Content;
+import com.google.genai.types.FileData;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionCallingConfig;
+import com.google.genai.types.FunctionCallingConfigMode.Known;
+import com.google.genai.types.FunctionDeclaration;
+import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.Part;
+import com.google.genai.types.Tool;
+import com.google.genai.types.ToolConfig;
+import java.util.AbstractMap;
+import java.util.Base64;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -34,17 +53,17 @@ public final class ChatCompletionsRequestTest {
 
   @Before
   public void setUp() {
-    objectMapper = new ObjectMapper();
+    objectMapper = JsonBaseModel.getMapper();
   }
 
   @Test
   public void testSerializeChatCompletionRequest_standard() throws Exception {
-    ChatCompletionsRequest request = new ChatCompletionsRequest();
-    request.model = "gemini-3-flash-preview";
-
     ChatCompletionsRequest.Message message = new ChatCompletionsRequest.Message();
     message.role = "user";
     message.content = new ChatCompletionsRequest.MessageContent("Hello");
+
+    ChatCompletionsRequest request = new ChatCompletionsRequest();
+    request.model = "gemini-3-flash-preview";
     request.messages = ImmutableList.of(message);
 
     String json = objectMapper.writeValueAsString(request);
@@ -56,24 +75,20 @@ public final class ChatCompletionsRequestTest {
 
   @Test
   public void testSerializeChatCompletionRequest_withExtraBody() throws Exception {
-    ChatCompletionsRequest request = new ChatCompletionsRequest();
-    request.model = "gemini-3-flash-preview";
-
     ChatCompletionsRequest.Message message = new ChatCompletionsRequest.Message();
     message.role = "user";
     message.content = new ChatCompletionsRequest.MessageContent("Explain to me how AI works");
+
+    ImmutableMap<String, Object> extraBody =
+        ImmutableMap.of(
+            "google",
+            ImmutableMap.of(
+                "thinking_config",
+                ImmutableMap.of("thinking_level", "low", "include_thoughts", true)));
+
+    ChatCompletionsRequest request = new ChatCompletionsRequest();
+    request.model = "gemini-3-flash-preview";
     request.messages = ImmutableList.of(message);
-
-    Map<String, Object> thinkingConfig = new HashMap<>();
-    thinkingConfig.put("thinking_level", "low");
-    thinkingConfig.put("include_thoughts", true);
-
-    Map<String, Object> google = new HashMap<>();
-    google.put("thinking_config", thinkingConfig);
-
-    Map<String, Object> extraBody = new HashMap<>();
-    extraBody.put("google", google);
-
     request.extraBody = extraBody;
 
     String json = objectMapper.writeValueAsString(request);
@@ -85,9 +100,6 @@ public final class ChatCompletionsRequestTest {
 
   @Test
   public void testSerializeChatCompletionRequest_withToolCallsAndExtraContent() throws Exception {
-    ChatCompletionsRequest request = new ChatCompletionsRequest();
-    request.model = "gemini-3-flash-preview";
-
     ChatCompletionsRequest.Message userMessage = new ChatCompletionsRequest.Message();
     userMessage.role = "user";
     userMessage.content = new ChatCompletionsRequest.MessageContent("Check flight status");
@@ -104,11 +116,8 @@ public final class ChatCompletionsRequestTest {
     function.arguments = "{\"flight\":\"AA100\"}";
     toolCall.function = function;
 
-    Map<String, Object> google = new HashMap<>();
-    google.put("thought_signature", "<SIGNATURE_A>");
-
-    Map<String, Object> extraContent = new HashMap<>();
-    extraContent.put("google", google);
+    ImmutableMap<String, Object> extraContent =
+        ImmutableMap.of("google", ImmutableMap.of("thought_signature", "<SIGNATURE_A>"));
 
     toolCall.extraContent = extraContent;
 
@@ -120,6 +129,8 @@ public final class ChatCompletionsRequestTest {
     toolMessage.toolCallId = "function-call-1";
     toolMessage.content = new ChatCompletionsRequest.MessageContent("{\"status\":\"delayed\"}");
 
+    ChatCompletionsRequest request = new ChatCompletionsRequest();
+    request.model = "gemini-3-flash-preview";
     request.messages = ImmutableList.of(userMessage, modelMessage, toolMessage);
 
     String json = objectMapper.writeValueAsString(request);
@@ -134,45 +145,38 @@ public final class ChatCompletionsRequestTest {
 
   @Test
   public void testSerializeChatCompletionRequest_comprehensive() throws Exception {
-    ChatCompletionsRequest request = new ChatCompletionsRequest();
-    request.model = "gemini-3-flash-preview";
-
-    // Developer message with name
     ChatCompletionsRequest.Message devMsg = new ChatCompletionsRequest.Message();
     devMsg.role = "developer";
     devMsg.content = new ChatCompletionsRequest.MessageContent("System instruction");
     devMsg.name = "system-bot";
 
-    request.messages = ImmutableList.of(devMsg);
-
-    // Response Format JSON Schema
     ChatCompletionsRequest.ResponseFormatJsonSchema format =
         new ChatCompletionsRequest.ResponseFormatJsonSchema();
     format.jsonSchema = new ChatCompletionsRequest.ResponseFormatJsonSchema.JsonSchema();
     format.jsonSchema.name = "MySchema";
     format.jsonSchema.strict = true;
-    request.responseFormat = format;
 
-    // Tool Choice Named
     ChatCompletionsRequest.NamedToolChoice choice = new ChatCompletionsRequest.NamedToolChoice();
     choice.function = new ChatCompletionsRequest.NamedToolChoice.FunctionName();
     choice.function.name = "my_function";
+
+    ChatCompletionsRequest request = new ChatCompletionsRequest();
+    request.model = "gemini-3-flash-preview";
+    request.messages = ImmutableList.of(devMsg);
+    request.responseFormat = format;
     request.toolChoice = choice;
 
     String json = objectMapper.writeValueAsString(request);
 
-    // Assert Developer Message
     assertThat(json).contains("\"role\":\"developer\"");
     assertThat(json).contains("\"name\":\"system-bot\"");
     assertThat(json).contains("\"content\":\"System instruction\"");
 
-    // Assert Response Format
     assertThat(json).contains("\"response_format\":{");
     assertThat(json).contains("\"type\":\"json_schema\"");
     assertThat(json).contains("\"name\":\"MySchema\"");
     assertThat(json).contains("\"strict\":true");
 
-    // Assert Tool Choice
     assertThat(json).contains("\"tool_choice\":{");
     assertThat(json).contains("\"type\":\"function\"");
     assertThat(json).contains("\"name\":\"my_function\"");
@@ -182,7 +186,7 @@ public final class ChatCompletionsRequestTest {
   public void testSerializeChatCompletionRequest_withToolChoiceMode() throws Exception {
     ChatCompletionsRequest request = new ChatCompletionsRequest();
     request.model = "gemini-3-flash-preview";
-
+    request.messages = ImmutableList.of();
     request.toolChoice = new ChatCompletionsRequest.ToolChoiceMode("none");
 
     String json = objectMapper.writeValueAsString(request);
@@ -192,13 +196,15 @@ public final class ChatCompletionsRequestTest {
 
   @Test
   public void testSerializeChatCompletionRequest_withStopAndVoice() throws Exception {
-    ChatCompletionsRequest request = new ChatCompletionsRequest();
-    request.model = "gemini-3-flash-preview";
-
-    request.stop = new ChatCompletionsRequest.StopCondition("STOP");
+    ChatCompletionsRequest.StopCondition stop = new ChatCompletionsRequest.StopCondition("STOP");
 
     ChatCompletionsRequest.AudioParam audio = new ChatCompletionsRequest.AudioParam();
     audio.voice = new ChatCompletionsRequest.VoiceConfig("alloy");
+
+    ChatCompletionsRequest request = new ChatCompletionsRequest();
+    request.model = "gemini-3-flash-preview";
+    request.messages = ImmutableList.of();
+    request.stop = stop;
     request.audio = audio;
 
     String json = objectMapper.writeValueAsString(request);
@@ -211,11 +217,634 @@ public final class ChatCompletionsRequestTest {
   public void testSerializeChatCompletionRequest_withStopList() throws Exception {
     ChatCompletionsRequest request = new ChatCompletionsRequest();
     request.model = "gemini-3-flash-preview";
-
+    request.messages = ImmutableList.of();
     request.stop = new ChatCompletionsRequest.StopCondition(ImmutableList.of("STOP1", "STOP2"));
 
     String json = objectMapper.writeValueAsString(request);
 
     assertThat(json).contains("\"stop\":[\"STOP1\",\"STOP2\"]");
+  }
+
+  @Test
+  public void testFromLlmRequest_basic() throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("user")
+                        .parts(ImmutableList.of(Part.fromText("Hello")))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.model).isEqualTo("gemini-1.5-pro");
+    assertThat(request.stream).isFalse();
+    assertThat(request.messages).hasSize(1);
+    assertThat(request.messages.get(0).role).isEqualTo("user");
+    assertThat(request.messages.get(0).content.getValue()).isEqualTo("Hello");
+  }
+
+  @Test
+  public void testFromLlmRequest_withRefusal() throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.fromText("Regular text response"),
+                                Part.fromText(
+                                    ChatCompletionsCommon.REFUSAL_PREFIX + "I cannot do that.")))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message message = request.messages.get(0);
+    assertThat(message.role).isEqualTo("assistant");
+    assertThat(message.refusal).isEqualTo("I cannot do that.");
+    assertThat(message.content.getValue()).isEqualTo("Regular text response");
+  }
+
+  @Test
+  public void testFromLlmRequest_withRefusalEmbeddedAfterNewline() throws Exception {
+    // A single Part containing both content and refusal, separated by "\n[[REFUSAL]]: ".
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.fromText(
+                                    "Partial text answer\n"
+                                        + ChatCompletionsCommon.REFUSAL_PREFIX
+                                        + "System error or refusal")))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message message = request.messages.get(0);
+    assertThat(message.role).isEqualTo("assistant");
+    assertThat(message.content.getValue()).isEqualTo("Partial text answer");
+    assertThat(message.refusal).isEqualTo("System error or refusal");
+  }
+
+  @Test
+  public void testFromLlmRequest_withMultipleRefusalsJoinedWithNewline() throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.fromText(ChatCompletionsCommon.REFUSAL_PREFIX + "First"),
+                                Part.fromText(ChatCompletionsCommon.REFUSAL_PREFIX + "Second")))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message message = request.messages.get(0);
+    assertThat(message.role).isEqualTo("assistant");
+    assertThat(message.refusal).isEqualTo("First\nSecond");
+    assertThat(message.content).isNull();
+  }
+
+  @Test
+  public void testFromLlmRequest_withRefusalOnlyHasNullContent() throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.fromText(
+                                    ChatCompletionsCommon.REFUSAL_PREFIX + "Only a refusal")))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message message = request.messages.get(0);
+    assertThat(message.role).isEqualTo("assistant");
+    assertThat(message.refusal).isEqualTo("Only a refusal");
+    assertThat(message.content).isNull();
+  }
+
+  @Test
+  public void testFromLlmRequest_withRefusalPrefixAfterEmptyContentLine() throws Exception {
+    // Edge case: text begins with "\n[[REFUSAL]]: ..." -- empty content before the prefix.
+    // Expectation: no content part, refusal populated.
+    String text = "\n" + ChatCompletionsCommon.REFUSAL_PREFIX + "Refusal only";
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(ImmutableList.of(Part.fromText(text)))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message message = request.messages.get(0);
+    assertThat(message.refusal).isEqualTo("Refusal only");
+    assertThat(message.content).isNull();
+  }
+
+  @Test
+  public void testFromLlmRequest_withRefusalPrefixMidLineIsNotSplit() throws Exception {
+    // The prefix is intentionally NOT recognized mid-line without a preceding newline.
+    String inlineText = "foo " + ChatCompletionsCommon.REFUSAL_PREFIX + "bar";
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(ImmutableList.of(Part.fromText(inlineText)))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message message = request.messages.get(0);
+    assertThat(message.refusal).isNull();
+    assertThat(message.content.getValue()).isEqualTo(inlineText);
+  }
+
+  @Test
+  public void testFromLlmRequest_withSystemInstruction() throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gpt-4")
+            .config(
+                GenerateContentConfig.builder()
+                    .systemInstruction(
+                        Content.builder()
+                            .parts(ImmutableList.of(Part.fromText("Be helpful")))
+                            .build())
+                    .temperature(0.7f)
+                    .topP(0.9f)
+                    .maxOutputTokens(100)
+                    .stopSequences(ImmutableList.of("END"))
+                    .candidateCount(2)
+                    .presencePenalty(0.5f)
+                    .frequencyPenalty(0.3f)
+                    .seed(12345)
+                    .tools(
+                        ImmutableList.of(
+                            Tool.builder()
+                                .functionDeclarations(
+                                    ImmutableList.of(
+                                        FunctionDeclaration.builder()
+                                            .name("get_weather")
+                                            .description("Get current weather")
+                                            .build()))
+                                .build()))
+                    .toolConfig(
+                        ToolConfig.builder()
+                            .functionCallingConfig(
+                                FunctionCallingConfig.builder().mode(Known.ANY).build())
+                            .build())
+                    .build())
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("user")
+                        .parts(ImmutableList.of(Part.fromText("Hello")))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(2);
+    assertThat(request.messages.get(0).role).isEqualTo("system");
+    assertThat(request.messages.get(0).content.getValue()).isEqualTo("Be helpful");
+    assertThat(request.temperature).isWithin(0.001).of(0.7);
+    assertThat(request.topP).isWithin(0.001).of(0.9);
+    assertThat(request.maxCompletionTokens).isEqualTo(100);
+    assertThat((List<?>) request.stop.getValue()).containsExactly("END");
+    assertThat(request.n).isEqualTo(2);
+    assertThat(request.presencePenalty).isWithin(0.001).of(0.5);
+    assertThat(request.frequencyPenalty).isWithin(0.001).of(0.3);
+    assertThat(request.seed).isEqualTo(12345L);
+    assertThat(request.tools).hasSize(1);
+    assertThat(request.tools.get(0).function.name).isEqualTo("get_weather");
+    assertThat(request.tools.get(0).function.description).isEqualTo("Get current weather");
+    assertThat(((ChatCompletionsRequest.ToolChoiceMode) request.toolChoice).getMode())
+        .isEqualTo("required");
+  }
+
+  @Test
+  public void testFromLlmRequest_withInlineData() throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("user")
+                        .parts(
+                            ImmutableList.of(
+                                Part.builder()
+                                    .inlineData(
+                                        Blob.builder()
+                                            .mimeType("image/jpeg")
+                                            .data("base64data".getBytes(UTF_8))
+                                            .build())
+                                    .build()))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message msg = request.messages.get(0);
+
+    @SuppressWarnings(
+        "unchecked") // Safe in unit tests and this is the expected type from msg.content
+    List<ChatCompletionsRequest.ContentPart> parts =
+        (List<ChatCompletionsRequest.ContentPart>) msg.content.getValue();
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).type).isEqualTo("image_url");
+    assertThat(parts.get(0).imageUrl.url).contains("base64,");
+  }
+
+  @Test
+  public void testFromLlmRequest_withFileData() throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("user")
+                        .parts(
+                            ImmutableList.of(
+                                Part.builder()
+                                    .fileData(
+                                        FileData.builder()
+                                            .fileUri("gs://bucket/file.jpg")
+                                            .mimeType("image/jpeg")
+                                            .build())
+                                    .build()))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message msg = request.messages.get(0);
+
+    @SuppressWarnings(
+        "unchecked") // Safe in unit tests and this is the expected type from msg.content
+    List<ChatCompletionsRequest.ContentPart> parts =
+        (List<ChatCompletionsRequest.ContentPart>) msg.content.getValue();
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).type).isEqualTo("image_url");
+    assertThat(parts.get(0).imageUrl.url).isEqualTo("gs://bucket/file.jpg");
+  }
+
+  @Test
+  public void testFromLlmRequest_withFunctionCall() throws Exception {
+    ImmutableMap<String, Object> args = ImmutableMap.of("location", "Paris");
+
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.builder()
+                                    .functionCall(
+                                        FunctionCall.builder()
+                                            .id("call_123")
+                                            .name("get_weather")
+                                            .args(args)
+                                            .build())
+                                    .build()))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message msg = request.messages.get(0);
+    assertThat(msg.role).isEqualTo("assistant");
+    assertThat(msg.toolCalls).hasSize(1);
+    assertThat(msg.toolCalls.get(0).id).isEqualTo("call_123");
+    assertThat(msg.toolCalls.get(0).type).isEqualTo("function");
+    assertThat(msg.toolCalls.get(0).function.name).isEqualTo("get_weather");
+    assertThat(msg.toolCalls.get(0).function.arguments).isEqualTo("{\"location\":\"Paris\"}");
+  }
+
+  @Test
+  public void testFromLlmRequest_withStreamOptions() throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder().model("gemini-1.5-pro").contents(ImmutableList.of()).build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, true);
+
+    assertThat(request.stream).isTrue();
+    assertThat(request.streamOptions).isNotNull();
+    assertThat(request.streamOptions.includeUsage).isTrue();
+  }
+
+  private static class BadMap extends AbstractMap<String, Object> {
+    @Override
+    public Set<Entry<String, Object>> entrySet() {
+      throw new RuntimeException("Serialization failed!");
+    }
+  }
+
+  @Test
+  public void testFromLlmRequest_withFunctionResponse() throws Exception {
+    ImmutableMap<String, Object> respData = ImmutableMap.of("result", "ok");
+
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("tool")
+                        .parts(
+                            ImmutableList.<Part>of(
+                                Part.builder()
+                                    .functionResponse(
+                                        FunctionResponse.builder()
+                                            .id("call_999")
+                                            .response(respData)
+                                            .build())
+                                    .build(),
+                                Part.builder()
+                                    .functionResponse(FunctionResponse.builder().build())
+                                    .build(),
+                                Part.builder()
+                                    .functionResponse(
+                                        FunctionResponse.builder()
+                                            .id("call_faulty")
+                                            .response(new BadMap())
+                                            .build())
+                                    .build()))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(3);
+    assertThat(request.messages.get(0).role).isEqualTo("tool");
+    assertThat(request.messages.get(0).toolCallId).isEqualTo("call_999");
+    assertThat(request.messages.get(0).content.getValue()).isEqualTo("{\"result\":\"ok\"}");
+
+    assertThat(request.messages.get(1).role).isEqualTo("tool");
+    assertThat(request.messages.get(1).toolCallId).isEmpty();
+    assertThat(request.messages.get(1).content).isNull();
+
+    assertThat(request.messages.get(2).role).isEqualTo("tool");
+    assertThat(request.messages.get(2).toolCallId).isEqualTo("call_faulty");
+    assertThat(request.messages.get(2).content).isNull();
+  }
+
+  @Test
+  public void testFromLlmRequest_withConfigSchemaAndLogprobs() throws Exception {
+    ImmutableMap<String, Object> schemaDef = ImmutableMap.of("type", "object");
+
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .config(
+                GenerateContentConfig.builder()
+                    .responseJsonSchema(schemaDef)
+                    .responseLogprobs(true)
+                    .logprobs(5)
+                    .build())
+            .contents(ImmutableList.of())
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.responseFormat)
+        .isInstanceOf(ChatCompletionsRequest.ResponseFormatJsonSchema.class);
+    ChatCompletionsRequest.ResponseFormatJsonSchema format =
+        (ChatCompletionsRequest.ResponseFormatJsonSchema) request.responseFormat;
+    assertThat(format.jsonSchema.name).isEqualTo("response_schema");
+    assertThat(format.jsonSchema.strict).isTrue();
+    assertThat(format.jsonSchema.schema).isEqualTo(schemaDef);
+    assertThat(request.logprobs).isTrue();
+    assertThat(request.topLogprobs).isEqualTo(5);
+  }
+
+  @Test
+  public void testFromLlmRequest_withConfigResponseMimeTypeJson() throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .config(GenerateContentConfig.builder().responseMimeType("application/json").build())
+            .contents(ImmutableList.of())
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.responseFormat)
+        .isInstanceOf(ChatCompletionsRequest.ResponseFormatJsonObject.class);
+  }
+
+  // ----- thought_signature round-trip on the request side ----------------------------------
+  //
+  // The four chat source files share a single contract for round-tripping Gemini's
+  // thought_signature bytes back to the OpenAI-compatible endpoint:
+  //   - Text Parts:        Part.thoughtSignature() bytes (first text Part only) -->
+  //                        message.extra_content.google.thought_signature (base64 string).
+  //   - functionCall Parts: Part.thoughtSignature() bytes -->
+  //                         toolCall.extra_content.google.thought_signature (base64 string).
+  //   - Tool/role=tool turns: extra_content is dropped (the turn becomes a tool message and any
+  //                           captured signature is not echoed).
+  //
+  // The tests below exercise the encoding pipeline end-to-end via fromLlmRequest, complementing
+  // the existing DTO-level Jackson serialization test
+  // (testSerializeChatCompletionRequest_withToolCallsAndExtraContent) which uses a literal
+  // string and does NOT exercise byte[] handling or the conversion site.
+
+  private static final byte[] signatureBytesText = {0x01, 0x02, 0x03, 0x04};
+  private static final byte[] signatureBytesFnCall = {0x10, 0x20, 0x30, 0x40, 0x50};
+  private static final byte[] signatureBytesSecondText = {(byte) 0xff, (byte) 0xfe};
+
+  /**
+   * Asserts {@code msg.extraContent == {google: {thought_signature: base64(expected)}}} so all
+   * thought_signature encode tests share a single, precise comparison and never fall into substring
+   * matching.
+   */
+  private static void assertThoughtSignatureExtraContent(
+      Map<String, Object> extraContent, byte[] expected) {
+    assertThat(extraContent).isNotNull();
+    assertThat(extraContent).containsKey("google");
+    @SuppressWarnings("unchecked") // This code won't run in production and it is a JSON object.
+    Map<String, Object> google = (Map<String, Object>) extraContent.get("google");
+    assertThat(google).containsKey("thought_signature");
+    Object sigObj = google.get("thought_signature");
+    assertThat(sigObj).isInstanceOf(String.class);
+    assertThat(Base64.getDecoder().decode((String) sigObj)).isEqualTo(expected);
+  }
+
+  @Test
+  public void testFromLlmRequest_textPart_withThoughtSignature_encodesAsMessageExtraContent()
+      throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.builder()
+                                    .text("here is the answer")
+                                    .thoughtSignature(signatureBytesText)
+                                    .build()))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message msg = request.messages.get(0);
+    assertThat(msg.role).isEqualTo("assistant");
+    assertThat(msg.content.getValue()).isEqualTo("here is the answer");
+    assertThoughtSignatureExtraContent(msg.extraContent, signatureBytesText);
+  }
+
+  @Test
+  public void testFromLlmRequest_multipleTextParts_firstSignatureWins() throws Exception {
+    // processContent captures only the FIRST text Part's signature. Verifies that a second
+    // signature on a later text Part is silently dropped, matching the source contract at
+    // ChatCompletionsRequest.processContent around line 377.
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.builder()
+                                    .text("first")
+                                    .thoughtSignature(signatureBytesText)
+                                    .build(),
+                                Part.builder()
+                                    .text("second")
+                                    .thoughtSignature(signatureBytesSecondText)
+                                    .build()))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message msg = request.messages.get(0);
+    assertThoughtSignatureExtraContent(msg.extraContent, signatureBytesText);
+  }
+
+  @Test
+  public void
+      testFromLlmRequest_functionCallPart_withThoughtSignature_encodesAsToolCallExtraContent()
+          throws Exception {
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("model")
+                        .parts(
+                            ImmutableList.of(
+                                Part.builder()
+                                    .functionCall(
+                                        FunctionCall.builder()
+                                            .id("call_42")
+                                            .name("get_weather")
+                                            .args(ImmutableMap.of("city", "Tokyo"))
+                                            .build())
+                                    .thoughtSignature(signatureBytesFnCall)
+                                    .build()))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message msg = request.messages.get(0);
+    assertThat(msg.toolCalls).hasSize(1);
+    ChatCompletionsCommon.ToolCall toolCall = msg.toolCalls.get(0);
+    assertThat(toolCall.id).isEqualTo("call_42");
+    assertThat(toolCall.function.name).isEqualTo("get_weather");
+    assertThoughtSignatureExtraContent(toolCall.extraContent, signatureBytesFnCall);
+    // The message-level extraContent must remain null when there is no text Part with a sig.
+    assertThat(msg.extraContent).isNull();
+  }
+
+  @Test
+  public void testFromLlmRequest_functionResponseTurn_dropsSignature() throws Exception {
+    // role=tool turns return early in processContent and yield zero or more "tool" Messages
+    // built from function responses. Any thought_signature on the source Parts -- which would
+    // not make sense on a tool turn anyway -- must NOT leak into the emitted tool Messages
+    // via extra_content.
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .contents(
+                ImmutableList.of(
+                    Content.builder()
+                        .role("tool")
+                        .parts(
+                            ImmutableList.<Part>of(
+                                Part.builder()
+                                    .functionResponse(
+                                        FunctionResponse.builder()
+                                            .id("call_x")
+                                            .response(ImmutableMap.of("ok", true))
+                                            .build())
+                                    .thoughtSignature(signatureBytesText)
+                                    .build()))
+                        .build()))
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message toolMsg = request.messages.get(0);
+    assertThat(toolMsg.role).isEqualTo("tool");
+    assertThat(toolMsg.extraContent).isNull();
   }
 }

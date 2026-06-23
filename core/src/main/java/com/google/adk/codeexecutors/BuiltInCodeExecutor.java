@@ -43,7 +43,7 @@ public class BuiltInCodeExecutor extends BaseCodeExecutor {
   /** Pre-process the LLM request for Gemini 2.0+ models to use the code execution tool. */
   public void processLlmRequest(LlmRequest.Builder llmRequestBuilder) {
     LlmRequest llmRequest = llmRequestBuilder.build();
-    if (ModelNameUtils.isGemini2Model(llmRequest.model().orElse(null))) {
+    if (llmRequest.model().map(ModelNameUtils::isGemini2OrAbove).orElse(false)) {
       GenerateContentConfig.Builder configBuilder =
           llmRequest.config().map(c -> c.toBuilder()).orElseGet(GenerateContentConfig::builder);
       ImmutableList.Builder<Tool> toolsBuilder = ImmutableList.<Tool>builder();

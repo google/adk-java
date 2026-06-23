@@ -22,7 +22,9 @@ import com.google.adk.JsonBaseModel;
 import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
@@ -31,7 +33,9 @@ import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Observable;
 import io.reactivex.rxjava3.core.Single;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -55,6 +59,12 @@ import java.util.Optional;
  */
 public final class LoadArtifactsTool extends BaseTool {
   public static final LoadArtifactsTool INSTANCE = new LoadArtifactsTool();
+  private static final ImmutableList<String> GEMINI_SUPPORTED_INLINE_MIME_PREFIXES =
+      ImmutableList.of("image/", "audio/", "video/");
+  private static final ImmutableSet<String> GEMINI_SUPPORTED_INLINE_MIME_TYPES =
+      ImmutableSet.of("application/pdf");
+  private static final ImmutableSet<String> TEXT_LIKE_MIME_TYPES =
+      ImmutableSet.of("application/csv", "application/json", "application/xml");
 
   public LoadArtifactsTool() {
     super("load_artifacts", "Loads the artifacts and adds them to the session.");
@@ -177,15 +187,75 @@ public final class LoadArtifactsTool extends BaseTool {
                         appendArtifactToLlmRequest(
                             llmRequestBuilder,
                             "Artifact " + artifactName + " is:",
+                            artifactName,
                             actualArtifact)));
   }
 
   private void appendArtifactToLlmRequest(
-      LlmRequest.Builder llmRequestBuilder, String prefix, Part artifact) {
+      LlmRequest.Builder llmRequestBuilder, String prefix, String artifactName, Part artifact) {
     llmRequestBuilder.contents(
         ImmutableList.<Content>builder()
             .addAll(llmRequestBuilder.build().contents())
-            .add(Content.fromParts(Part.fromText(prefix), artifact))
+            .add(Content.fromParts(Part.fromText(prefix), asSafePartForLlm(artifact, artifactName)))
             .build());
+  }
+
+  private static String normalizeMimeType(String mimeType) {
+    if (mimeType == null) {
+      return "";
+    }
+    int separatorIndex = mimeType.indexOf(';');
+    if (separatorIndex >= 0) {
+      mimeType = mimeType.substring(0, separatorIndex);
+    }
+    return mimeType.trim();
+  }
+
+  private static boolean isInlineMimeTypeSupported(String mimeType) {
+    String normalized = normalizeMimeType(mimeType);
+    if (normalized.isEmpty()) {
+      return false;
+    }
+    if (GEMINI_SUPPORTED_INLINE_MIME_TYPES.contains(normalized)) {
+      return true;
+    }
+    return GEMINI_SUPPORTED_INLINE_MIME_PREFIXES.stream().anyMatch(normalized::startsWith);
+  }
+
+  private static Part asSafePartForLlm(Part artifact, String artifactName) {
+    Optional<Blob> inlineData = artifact.inlineData();
+    if (inlineData.isEmpty()) {
+      return artifact;
+    }
+
+    Blob blob = inlineData.get();
+    if (isInlineMimeTypeSupported(blob.mimeType().orElse(null))) {
+      return artifact;
+    }
+
+    String mimeType = normalizeMimeType(blob.mimeType().orElse(null));
+    if (mimeType.isEmpty()) {
+      mimeType = "application/octet-stream";
+    }
+
+    Optional<byte[]> data = blob.data();
+    if (data.isEmpty()) {
+      return Part.fromText(
+          String.format(
+              "[Artifact: %s, type: %s. No inline data was provided.]", artifactName, mimeType));
+    }
+
+    if (mimeType.startsWith("text/") || TEXT_LIKE_MIME_TYPES.contains(mimeType)) {
+      return Part.fromText(new String(data.get(), StandardCharsets.UTF_8));
+    }
+
+    double sizeKb = data.get().length / 1024.0;
+    return Part.fromText(
+        String.format(
+            Locale.US,
+            "[Binary artifact: %s, type: %s, size: %.1f KB. Content cannot be displayed inline.]",
+            artifactName,
+            mimeType,
+            sizeKb));
   }
 }

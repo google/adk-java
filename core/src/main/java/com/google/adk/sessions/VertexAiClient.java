@@ -8,6 +8,7 @@ import com.google.adk.JsonBaseModel;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Splitter;
 import com.google.common.collect.Iterables;
+import com.google.common.net.UrlEscapers;
 import com.google.genai.types.HttpOptions;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;

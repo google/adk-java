@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ Copyright 2026 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.google.adk</groupId>
+        <artifactId>google-adk-samples</artifactId>
+        <version>1.5.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+        <relativePath>../..</relativePath>
+    </parent>
+
+    <groupId>com.google.adk.samples</groupId>
+    <artifactId>google-adk-sample-adk-pr-triaging-agent</artifactId>
+    <name>Google ADK - Sample - ADK PR Triaging Agent</name>
+    <description>
+        AI-powered GitHub pull request triaging agent for the adk-java repository, implemented with
+        the Google ADK for Java. Labels pull requests and checks them against the contribution
+        guidelines. Runs in both interactive mode (local CLI / adk web) and unattended GitHub
+        Actions workflow mode. Runnable via com.example.adkprtriaging.AdkPrTriagingAgentRun.
+    </description>
+    <packaging>jar</packaging>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <java.version>17</java.version>
+        <!-- Main class for exec-maven-plugin -->
+        <exec.mainClass>com.example.adkprtriaging.AdkPrTriagingAgentRun</exec.mainClass>
+        <google-adk.version>${project.version}</google-adk.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.google.adk</groupId>
+            <artifactId>google-adk</artifactId>
+            <version>${google-adk.version}</version>
+        </dependency>
+        <!-- GitHub REST API client used by the shared GitHubTools, so we don't hand-roll one. -->
+        <dependency>
+            <groupId>org.kohsuke</groupId>
+            <artifactId>github-api</artifactId>
+            <version>1.330</version>
+        </dependency>
+        <dependency>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+            <version>1.2</version>
+        </dependency>
+        <!-- Logging backend so console output works in both interactive and workflow modes. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Test dependencies (versions managed by the parent POM's junit-bom and
+             dependencyManagement). -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.google.truth</groupId>
+            <artifactId>truth</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                    <!-- Preserve parameter names so FunctionTool can introspect them without
+                         forcing every parameter to be annotated. -->
+                    <parameters>true</parameters>
+                </configuration>
+                <executions>
+                    <!-- The shared github/ directory is on the source path (see build-helper
+                         below), so restrict the main compile to this sample's files plus the
+                         shared GitHubTools.java; otherwise the sibling samples and this module's
+                         own test sources under github/ would also be compiled here. -->
+                    <execution>
+                        <id>default-compile</id>
+                        <configuration>
+                            <includes>
+                                <include>GitHubTools.java</include>
+                                <include>adkprtriaging/*.java</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <id>add-source</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <!-- Compile this sample plus the shared GitHubTools.java that
+                                     lives in the parent github/ directory (no extra module). -->
+                                <source>..</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <configuration>
+                    <!-- The github/ source root recursively includes sibling samples and this
+                         module's test sources; keep them out of the -Prelease sources jar. -->
+                    <excludes>
+                        <exclude>**/*.jar</exclude>
+                        <exclude>**/*.yml</exclude>
+                        <exclude>adktriaging/**</exclude>
+                        <exclude>adkreleasedocs/**</exclude>
+                        <exclude>**/src/test/**</exclude>
+                        <exclude>target/**</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <configuration>
+                    <!-- Mirror the source/compile excludes above: the github/ source root pulls in
+                         sibling samples and test sources, whose (test-scoped) dependencies are not
+                         on the Javadoc classpath, so the -Prelease attach-javadocs goal would
+                         otherwise fail. -->
+                    <sourceFileExcludes>
+                        <sourceFileExclude>adktriaging/**</sourceFileExclude>
+                        <sourceFileExclude>adkreleasedocs/**</sourceFileExclude>
+                        <sourceFileExclude>**/src/test/**</sourceFileExclude>
+                    </sourceFileExcludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.2.0</version>
+                <configuration>
+                    <mainClass>${exec.mainClass}</mainClass>
+                    <classpathScope>runtime</classpathScope>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

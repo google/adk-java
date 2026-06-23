@@ -24,6 +24,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -127,6 +128,33 @@ public final class EventActionsTest {
     eventActions.removeStateByKey("key1");
 
     assertThat(eventActions.stateDelta()).containsExactly("key1", State.REMOVED);
+  }
+
+  @Test
+  public void builderStateDelta_withNullMap_initializesEmptyMap() {
+    EventActions eventActions = EventActions.builder().stateDelta(null).build();
+
+    assertThat(eventActions.stateDelta()).isEmpty();
+  }
+
+  @Test
+  public void builderStateDelta_withNullValue_marksKeyAsRemoved() {
+    Map<String, Object> inputDelta = new HashMap<>();
+    inputDelta.put("key1", "value1");
+    inputDelta.put("key2", null);
+
+    EventActions eventActions = EventActions.builder().stateDelta(inputDelta).build();
+
+    assertThat(eventActions.stateDelta()).containsExactly("key1", "value1", "key2", State.REMOVED);
+  }
+
+  @Test
+  public void jsonDeserialization_withNullValueInStateDelta_deserializesAsRemoved()
+      throws Exception {
+    String json = "{\"stateDelta\":{\"key1\":\"value1\",\"key2\":null}}";
+    EventActions deserialized = EventActions.fromJsonString(json, EventActions.class);
+
+    assertThat(deserialized.stateDelta()).containsExactly("key1", "value1", "key2", State.REMOVED);
   }
 
   @Test

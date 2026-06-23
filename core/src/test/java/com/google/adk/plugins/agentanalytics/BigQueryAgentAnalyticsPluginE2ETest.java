@@ -19,6 +19,7 @@ package com.google.adk.plugins.agentanalytics;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -63,6 +64,7 @@ public final class BigQueryAgentAnalyticsPluginE2ETest {
   private StreamWriter mockWriter;
   private BigQueryWriteClient mockWriteClient;
   private BigQueryLoggerConfig config;
+  private PluginState state;
   private BigQueryAgentAnalyticsPlugin plugin;
   private Runner runner;
   private BaseAgent fakeAgent;
@@ -92,26 +94,34 @@ public final class BigQueryAgentAnalyticsPluginE2ETest {
     when(mockWriter.append(any(ArrowRecordBatch.class)))
         .thenReturn(ApiFutures.immediateFuture(AppendRowsResponse.getDefaultInstance()));
 
-    plugin =
-        new BigQueryAgentAnalyticsPlugin(config, mockBigQuery) {
+    state =
+        new PluginState(config) {
           @Override
           protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
             return mockWriteClient;
           }
 
           @Override
-          protected StreamWriter createWriter(BigQueryLoggerConfig config) {
+          protected StreamWriter createWriter() {
             return mockWriter;
           }
+
+          @Override
+          protected BatchProcessor removeProcessor(String invocationId) {
+            return null;
+          }
         };
+
+    plugin = new BigQueryAgentAnalyticsPlugin(config, mockBigQuery, state);
 
     when(mockWriter.append(any(ArrowRecordBatch.class)))
         .thenAnswer(
             invocation -> {
               ArrowRecordBatch recordedBatch = invocation.getArgument(0);
+              BatchProcessor batchProcessor = state.getBatchProcessors().iterator().next();
               try (VectorSchemaRoot root =
                   VectorSchemaRoot.create(
-                      BigQuerySchema.getArrowSchema(), plugin.batchProcessor.allocator)) {
+                      BigQuerySchema.getArrowSchema(), batchProcessor.allocator)) {
                 VectorLoader loader = new VectorLoader(root);
                 loader.load(recordedBatch);
                 for (int i = 0; i < root.getRowCount(); i++) {
@@ -150,8 +160,9 @@ public final class BigQueryAgentAnalyticsPluginE2ETest {
 
     // Ensure everything is flushed. The BatchProcessor flushes asynchronously sometimes,
     // but the direct flush() call should help. We wait up to 2 seconds for all 5 expected events.
+    BatchProcessor batchProcessor = state.getBatchProcessors().iterator().next();
     for (int i = 0; i < 20 && capturedRows.size() < 5; i++) {
-      plugin.batchProcessor.flush();
+      batchProcessor.flush();
       if (capturedRows.size() < 5) {
         Thread.sleep(100);
       }
@@ -190,7 +201,8 @@ public final class BigQueryAgentAnalyticsPluginE2ETest {
     assertEquals("user", agentStartingRow.get("user_id"));
     assertNotNull("invocation_id should be populated", agentStartingRow.get("invocation_id"));
     assertTrue("timestamp should be positive", (Long) agentStartingRow.get("timestamp") > 0);
-    assertEquals(false, agentStartingRow.get("is_truncated"));
+    // AGENT_STARTING is not a content-bearing event, so is_truncated is not set and should be null.
+    assertNull(agentStartingRow.get("is_truncated"));
 
     // Verify content for USER_MESSAGE_RECEIVED
     Map<String, Object> userMessageRow =

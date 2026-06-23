@@ -24,7 +24,8 @@ import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.events.Event;
 import com.google.adk.plugins.Plugin;
-import com.google.adk.telemetry.Tracing;
+import com.google.adk.telemetry.Instrumentation;
+import com.google.adk.telemetry.Instrumentation.AgentInvocation;
 import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -322,11 +323,13 @@ public abstract class BaseAgent {
   private Flowable<Event> run(
       InvocationContext parentContext,
       Function<InvocationContext, Flowable<Event>> runImplementation) {
-    Context parentSpanContext = Context.current();
-    return Flowable.defer(
-        () -> {
-          InvocationContext invocationContext = createInvocationContext(parentContext);
-
+    Context otelContext = Context.current();
+    return Flowable.using(
+        () ->
+            Instrumentation.recordAgentInvocation(
+                createInvocationContext(parentContext), this, otelContext),
+        agentInvocation -> {
+          InvocationContext invocationContext = agentInvocation.getCtx();
           Flowable<Event> mainAndAfterEvents =
               Flowable.defer(() -> runImplementation.apply(invocationContext))
                   .concatWith(
@@ -350,14 +353,10 @@ public abstract class BaseAgent {
                     return Flowable.just(beforeEvent).concatWith(mainAndAfterEvents);
                   })
               .switchIfEmpty(mainAndAfterEvents)
-              .compose(
-                  Tracing.<Event>trace("invoke_agent " + name())
-                      .setParent(parentSpanContext)
-                      .configure(
-                          span ->
-                              Tracing.traceAgentInvocation(
-                                  span, name(), description(), invocationContext)));
-        });
+              .doOnNext(agentInvocation::addEvent)
+              .doOnError(agentInvocation::setError);
+        },
+        AgentInvocation::close);
   }
 
   /**

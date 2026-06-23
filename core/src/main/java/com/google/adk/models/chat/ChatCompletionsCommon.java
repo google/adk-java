@@ -25,6 +25,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Part;
 import java.util.Base64;
 import java.util.Map;
+import java.util.Objects;
 import org.jspecify.annotations.Nullable;
 
 /** Shared models for Chat Completions Request and Response. */
@@ -44,6 +45,50 @@ final class ChatCompletionsCommon {
   public static final String METADATA_KEY_OBJECT = "object";
   public static final String METADATA_KEY_SYSTEM_FINGERPRINT = "system_fingerprint";
   public static final String METADATA_KEY_SERVICE_TIER = "service_tier";
+
+  /**
+   * Prefix used to mark refusal content in a text Part, since there is no dedicated field for
+   * refusal content in the Gemini API.
+   */
+  static final String REFUSAL_PREFIX = "[[REFUSAL]]: ";
+
+  /**
+   * Result of splitting a text part into its non-refusal content and refusal content. Either
+   * component may be {@code null} when absent.
+   */
+  record RefusalSplit(@Nullable String content, @Nullable String refusal) {}
+
+  /**
+   * Splits a text Part value into a content portion and a refusal portion based on the {@link
+   * #REFUSAL_PREFIX} sentinel:
+   *
+   * <ul>
+   *   <li>If {@code text} starts with the prefix, the entire suffix becomes the refusal and the
+   *       content is {@code null}.
+   *   <li>If {@code text} contains {@code "\n" + REFUSAL_PREFIX} (i.e., the prefix on its own line
+   *       after some content), the text is split: everything before the newline is content,
+   *       everything after the prefix is refusal.
+   *   <li>Otherwise the text is returned as content with no refusal. The prefix is intentionally
+   *       NOT recognized mid-line without a preceding newline.
+   * </ul>
+   *
+   * @param text the raw text from a {@link Part#text()}.
+   * @return a {@link RefusalSplit} with the content and refusal portions.
+   */
+  static RefusalSplit parseRefusalPrefix(String text) {
+    Objects.requireNonNull(text, "text cannot be null");
+    if (text.startsWith(REFUSAL_PREFIX)) {
+      return new RefusalSplit(null, text.substring(REFUSAL_PREFIX.length()));
+    }
+    String separator = "\n" + REFUSAL_PREFIX;
+    int index = text.indexOf(separator);
+    if (index >= 0) {
+      String before = text.substring(0, index);
+      String after = text.substring(index + separator.length());
+      return new RefusalSplit(before.isEmpty() ? null : before, after);
+    }
+    return new RefusalSplit(text, null);
+  }
 
   /**
    * See
@@ -136,7 +181,7 @@ final class ChatCompletionsCommon {
       if (name != null) {
         fcBuilder.name(name);
       }
-      if (arguments != null) {
+      if (arguments != null && !arguments.isEmpty()) {
         try {
           Map<String, Object> args =
               objectMapper.readValue(arguments, new TypeReference<Map<String, Object>>() {});

@@ -22,6 +22,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static java.util.stream.Collectors.toCollection;
 
+import com.google.adk.Version;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.Field;
@@ -45,6 +46,12 @@ import java.util.logging.Logger;
 /** Utility for managing BigQuery schema upgrades and analytics views. */
 final class BigQueryUtils {
   private static final Logger logger = Logger.getLogger(BigQueryUtils.class.getName());
+
+  static final String A2A_PREFIX = "a2a:";
+  static final String A2A_REQUEST_KEY = "a2a:request";
+  static final String A2A_RESPONSE_KEY = "a2a:response";
+  static final String A2A_TASK_ID_KEY = "a2a:task_id";
+  static final String A2A_CONTEXT_ID_KEY = "a2a:context_id";
 
   private static final ImmutableList<String> VIEW_COMMON_COLUMNS =
       ImmutableList.of(
@@ -81,6 +88,12 @@ final class BigQueryUtils {
                   "CAST(JSON_VALUE(content, '$.usage.completion') AS INT64) AS"
                       + " usage_completion_tokens",
                   "CAST(JSON_VALUE(content, '$.usage.total') AS INT64) AS usage_total_tokens",
+                  "CAST(JSON_VALUE(attributes, '$.usage_metadata.cached_content_token_count') AS"
+                      + " INT64) AS usage_cached_tokens",
+                  "SAFE_DIVIDE(CAST(JSON_VALUE(attributes,"
+                      + " '$.usage_metadata.cached_content_token_count') AS INT64),"
+                      + "CAST(JSON_VALUE(content, '$.usage.prompt') AS INT64)) AS"
+                      + " context_cache_hit_rate",
                   "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
                   "CAST(JSON_VALUE(latency_ms, '$.time_to_first_token_ms') AS INT64) AS ttft_ms",
                   "JSON_VALUE(attributes, '$.model_version') AS model_version",
@@ -134,7 +147,37 @@ final class BigQueryUtils {
               ImmutableList.of(
                   "JSON_VALUE(content, '$.tool') AS tool_name",
                   "JSON_QUERY(content, '$.args') AS tool_args"))
+          .put(
+              "A2A_INTERACTION",
+              ImmutableList.of(
+                  "content AS response_content",
+                  "JSON_VALUE(attributes, '$.a2a_metadata.\""
+                      + A2A_TASK_ID_KEY
+                      + "\"') AS"
+                      + " a2a_task_id",
+                  "JSON_VALUE(attributes, '$.a2a_metadata.\""
+                      + A2A_CONTEXT_ID_KEY
+                      + "\"') AS"
+                      + " a2a_context_id",
+                  "JSON_QUERY(attributes, '$.a2a_metadata.\""
+                      + A2A_REQUEST_KEY
+                      + "\"') AS"
+                      + " a2a_request"))
+          .put(
+              "AGENT_RESPONSE",
+              ImmutableList.of(
+                  "JSON_VALUE(content, '$.text_summary') AS text_summary",
+                  "JSON_VALUE(attributes, '$.source_event_id') AS source_event_id",
+                  "JSON_VALUE(attributes, '$.source_event_author') AS source_event_author",
+                  "JSON_VALUE(attributes, '$.source_event_branch') AS source_event_branch"))
           .buildOrThrow();
+
+  private static final String FRAMEWORK_PREFIX = "google-adk-bq-logger-java";
+
+  /** Returns the telemetry header value. */
+  static String getVersionHeaderValue() {
+    return FRAMEWORK_PREFIX + "/" + Version.JAVA_ADK_VERSION;
+  }
 
   /** Creates and/or replaces the analytics views in BigQuery. */
   static void createAnalyticsViews(BigQuery bigQuery, BigQueryLoggerConfig config) {

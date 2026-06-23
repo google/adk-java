@@ -22,25 +22,41 @@ import static org.junit.Assert.assertThrows;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.events.Event;
+import com.google.adk.telemetry.Metrics;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestCallback;
 import com.google.adk.testing.TestUtils;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.metrics.Meter;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.metrics.SdkMeterProvider;
+import io.opentelemetry.sdk.metrics.data.HistogramPointData;
+import io.opentelemetry.sdk.metrics.data.MetricData;
+import io.opentelemetry.sdk.testing.exporter.InMemoryMetricReader;
+import io.opentelemetry.sdk.testing.time.TestClock;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public final class BaseAgentTest {
-
   private static final String TEST_AGENT_NAME = "testAgent";
   private static final String TEST_AGENT_DESCRIPTION = "A test agent";
+
+  private InMemoryMetricReader inMemoryMetricReader;
+  private TestClock testClock;
+  private Meter originalMeter;
 
   private static class ClosableTestAgent extends TestBaseAgent {
     final AtomicBoolean closed = new AtomicBoolean(false);
@@ -53,6 +69,35 @@ public final class BaseAgentTest {
     public Completable close() {
       closed.set(true);
       return super.close();
+    }
+  }
+
+  @Before
+  public void setUp() {
+    GlobalOpenTelemetry.resetForTest();
+    testClock = TestClock.create();
+    inMemoryMetricReader = InMemoryMetricReader.create();
+    SdkMeterProvider sdkMeterProvider =
+        SdkMeterProvider.builder()
+            .registerMetricReader(inMemoryMetricReader)
+            .setClock(testClock)
+            .build();
+
+    OpenTelemetrySdk openTelemetrySdk =
+        OpenTelemetrySdk.builder()
+            .setTracerProvider(SdkTracerProvider.builder().build())
+            .setMeterProvider(sdkMeterProvider)
+            .build();
+
+    GlobalOpenTelemetry.set(openTelemetrySdk);
+    originalMeter = GlobalOpenTelemetry.getMeter("gcp.vertex.agent");
+    Metrics.setMeterForTesting(openTelemetrySdk.getMeter("gcp.vertex.agent"));
+  }
+
+  @After
+  public void tearDown() {
+    if (originalMeter != null) {
+      Metrics.setMeterForTesting(originalMeter);
     }
   }
 
@@ -173,6 +218,36 @@ public final class BaseAgentTest {
     assertThat(results).hasSize(1);
     assertThat(results.get(0).content()).hasValue(runAsyncImplContent);
     assertThat(runAsyncImpl.wasCalled()).isTrue();
+    MetricData durationMetric = findMetricByName("gen_ai.agent.invocation.duration");
+    assertThat(durationMetric.getUnit()).isEqualTo("ms");
+    HistogramPointData durationPoint =
+        durationMetric.getHistogramData().getPoints().iterator().next();
+    assertThat(durationPoint.getAttributes().get(AttributeKey.stringKey("gen_ai.agent.name")))
+        .isEqualTo("testAgent");
+
+    MetricData reqSizeMetric = findMetricByName("gen_ai.agent.request.size");
+    assertThat(reqSizeMetric.getUnit()).isEqualTo("By");
+    HistogramPointData reqSizePoint =
+        reqSizeMetric.getHistogramData().getPoints().iterator().next();
+    assertThat(reqSizePoint.getSum()).isEqualTo(12.0);
+    assertThat(reqSizePoint.getAttributes().get(AttributeKey.stringKey("gen_ai.agent.name")))
+        .isEqualTo("testAgent");
+
+    MetricData respSizeMetric = findMetricByName("gen_ai.agent.response.size");
+    assertThat(respSizeMetric.getUnit()).isEqualTo("By");
+    HistogramPointData respSizePoint =
+        respSizeMetric.getHistogramData().getPoints().iterator().next();
+    assertThat(respSizePoint.getSum()).isEqualTo(11.0);
+    assertThat(respSizePoint.getAttributes().get(AttributeKey.stringKey("gen_ai.agent.name")))
+        .isEqualTo("testAgent");
+
+    MetricData workflowStepsMetric = findMetricByName("gen_ai.agent.workflow.steps");
+    assertThat(workflowStepsMetric.getUnit()).isEqualTo("1");
+    HistogramPointData workflowStepsPoint =
+        workflowStepsMetric.getHistogramData().getPoints().iterator().next();
+    assertThat(workflowStepsPoint.getSum()).isEqualTo(1.0);
+    assertThat(workflowStepsPoint.getAttributes().get(AttributeKey.stringKey("gen_ai.agent.name")))
+        .isEqualTo("testAgent");
   }
 
   @Test
@@ -626,5 +701,12 @@ public final class BaseAgentTest {
     assertThat(agent.closed.get()).isTrue();
     assertThat(subAgent.closed.get()).isTrue();
     assertThat(subSubAgent.closed.get()).isTrue();
+  }
+
+  private MetricData findMetricByName(String name) {
+    return inMemoryMetricReader.collectAllMetrics().stream()
+        .filter(m -> m.getName().equals(name))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("Metric not found: " + name));
   }
 }
