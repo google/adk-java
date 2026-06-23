@@ -20,8 +20,8 @@ import static java.util.stream.Collectors.toCollection;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
