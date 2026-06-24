@@ -468,26 +468,6 @@ public class Tracing {
   }
 
   /**
-   * Returns a transformer that traces an agent invocation.
-   *
-   * @param spanName The name of the span to create.
-   * @param agentName The name of the agent.
-   * @param agentDescription The description of the agent.
-   * @param invocationContext The invocation context.
-   * @param <T> The type of the stream.
-   * @return A TracerProvider configured for agent invocation.
-   */
-  public static <T> TracerProvider<T> traceAgent(
-      String spanName,
-      String agentName,
-      String agentDescription,
-      InvocationContext invocationContext) {
-    return new TracerProvider<T>(spanName)
-        .configure(
-            span -> traceAgentInvocation(span, agentName, agentDescription, invocationContext));
-  }
-
-  /**
    * A transformer that manages an OpenTelemetry span and scope for RxJava streams.
    *
    * @param <T> The type of the stream.
@@ -535,11 +515,11 @@ public class Tracing {
     }
 
     private final class TracingLifecycle {
-      private Span span;
-      private Scope scope;
+      final Span span;
+      final Scope scope;
 
       @SuppressWarnings("MustBeClosedChecker")
-      void start() {
+      TracingLifecycle() {
         span = tracer.spanBuilder(spanName).setParent(getParentContext()).startSpan();
         spanConfigurers.forEach(c -> c.accept(span));
         scope = span.makeCurrent();
@@ -557,50 +537,40 @@ public class Tracing {
 
     @Override
     public Publisher<T> apply(Flowable<T> upstream) {
-      return Flowable.defer(
-          () -> {
-            TracingLifecycle lifecycle = new TracingLifecycle();
-            Flowable<T> pipeline = upstream.doOnSubscribe(s -> lifecycle.start());
-            if (onSuccessConsumer != null) {
-              pipeline = pipeline.doOnNext(t -> onSuccessConsumer.accept(lifecycle.span, t));
-            }
-            return pipeline.doFinally(lifecycle::end);
-          });
+      return Flowable.using(
+          TracingLifecycle::new,
+          lifecycle ->
+              onSuccessConsumer != null
+                  ? upstream.doOnNext(t -> onSuccessConsumer.accept(lifecycle.span, t))
+                  : upstream,
+          TracingLifecycle::end);
     }
 
     @Override
     public SingleSource<T> apply(Single<T> upstream) {
-      return Single.defer(
-          () -> {
-            TracingLifecycle lifecycle = new TracingLifecycle();
-            Single<T> pipeline = upstream.doOnSubscribe(s -> lifecycle.start());
-            if (onSuccessConsumer != null) {
-              pipeline = pipeline.doOnSuccess(t -> onSuccessConsumer.accept(lifecycle.span, t));
-            }
-            return pipeline.doFinally(lifecycle::end);
-          });
+      return Single.using(
+          TracingLifecycle::new,
+          lifecycle ->
+              onSuccessConsumer != null
+                  ? upstream.doOnSuccess(t -> onSuccessConsumer.accept(lifecycle.span, t))
+                  : upstream,
+          TracingLifecycle::end);
     }
 
     @Override
     public MaybeSource<T> apply(Maybe<T> upstream) {
-      return Maybe.defer(
-          () -> {
-            TracingLifecycle lifecycle = new TracingLifecycle();
-            Maybe<T> pipeline = upstream.doOnSubscribe(s -> lifecycle.start());
-            if (onSuccessConsumer != null) {
-              pipeline = pipeline.doOnSuccess(t -> onSuccessConsumer.accept(lifecycle.span, t));
-            }
-            return pipeline.doFinally(lifecycle::end);
-          });
+      return Maybe.using(
+          TracingLifecycle::new,
+          lifecycle ->
+              onSuccessConsumer != null
+                  ? upstream.doOnSuccess(t -> onSuccessConsumer.accept(lifecycle.span, t))
+                  : upstream,
+          TracingLifecycle::end);
     }
 
     @Override
     public CompletableSource apply(Completable upstream) {
-      return Completable.defer(
-          () -> {
-            TracingLifecycle lifecycle = new TracingLifecycle();
-            return upstream.doOnSubscribe(s -> lifecycle.start()).doFinally(lifecycle::end);
-          });
+      return Completable.using(TracingLifecycle::new, lifecycle -> upstream, TracingLifecycle::end);
     }
   }
 

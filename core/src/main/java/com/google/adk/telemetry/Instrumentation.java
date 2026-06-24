@@ -24,6 +24,11 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
+import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.FlowableTransformer;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.MaybeSource;
+import io.reactivex.rxjava3.core.MaybeTransformer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -31,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.jspecify.annotations.Nullable;
+import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,7 +73,7 @@ public final class Instrumentation {
   public abstract static class ClosableTelemetryScope implements AutoCloseable {
     protected final long startTimeNanos;
     protected final Span span;
-    protected final Scope scope;
+    protected Scope scope;
     protected final TelemetryContext telemetryContext;
     protected @Nullable Throwable caughtError;
     protected final AtomicBoolean closed = new AtomicBoolean(false);
@@ -78,6 +84,11 @@ public final class Instrumentation {
       this.span = span;
       this.scope = span.makeCurrent();
       this.telemetryContext = new TelemetryContext(Context.current());
+    }
+
+    @SuppressWarnings("MustBeClosedChecker")
+    public void makeCurrent() {
+      this.scope = span.makeCurrent();
     }
 
     public TelemetryContext context() {
@@ -134,10 +145,6 @@ public final class Instrumentation {
       this.agent = agent;
       this.ctx = ctx;
       Tracing.traceAgentInvocation(span, agent.name(), agent.description(), ctx);
-    }
-
-    public InvocationContext getCtx() {
-      return ctx;
     }
 
     public void addEvent(Event event) {
@@ -203,24 +210,53 @@ public final class Instrumentation {
     }
   }
 
-  /** Creates an AgentInvocation context to record agent invocation telemetry. */
-  public static AgentInvocation recordAgentInvocation(InvocationContext ctx, BaseAgent agent) {
-    return recordAgentInvocation(ctx, agent, Context.current());
+  /** A transformer that manages an AgentInvocation telemetry scope for RxJava streams. */
+  public static final class AgentInvocationTransformer
+      implements FlowableTransformer<Event, Event> {
+    private final AgentInvocation agentInvocation;
+
+    public AgentInvocationTransformer(
+        InvocationContext ctx, BaseAgent agent, Context parentContext) {
+      this.agentInvocation = new AgentInvocation(ctx, agent, parentContext);
+    }
+
+    @Override
+    public Publisher<Event> apply(Flowable<Event> upstream) {
+      return Flowable.using(
+          () -> {
+            agentInvocation.makeCurrent();
+            return agentInvocation;
+          },
+          agentInvocation ->
+              upstream.doOnNext(agentInvocation::addEvent).doOnError(agentInvocation::setError),
+          AgentInvocation::close);
+    }
   }
 
-  public static AgentInvocation recordAgentInvocation(
-      InvocationContext ctx, BaseAgent agent, Context parentContext) {
-    return new AgentInvocation(ctx, agent, parentContext);
-  }
+  /** A transformer that manages a ToolExecution telemetry scope for RxJava Maybe streams. */
+  public static final class ToolExecutionTransformer implements MaybeTransformer<Event, Event> {
+    private final BaseTool tool;
+    private final BaseAgent agent;
+    private final Map<String, Object> functionArgs;
+    private final Context parentContext;
 
-  /** Creates a ToolExecution context to record tool execution telemetry. */
-  public static ToolExecution recordToolExecution(
-      BaseTool tool, BaseAgent agent, Map<String, Object> functionArgs) {
-    return recordToolExecution(tool, agent, functionArgs, Context.current());
-  }
+    public ToolExecutionTransformer(
+        BaseTool tool, BaseAgent agent, Map<String, Object> functionArgs, Context parentContext) {
+      this.tool = tool;
+      this.agent = agent;
+      this.functionArgs = functionArgs;
+      this.parentContext = parentContext;
+    }
 
-  public static ToolExecution recordToolExecution(
-      BaseTool tool, BaseAgent agent, Map<String, Object> functionArgs, Context parentContext) {
-    return new ToolExecution(tool, agent, functionArgs, parentContext);
+    @Override
+    public MaybeSource<Event> apply(Maybe<Event> upstream) {
+      return Maybe.using(
+          () -> new ToolExecution(tool, agent, functionArgs, parentContext),
+          toolExecution ->
+              upstream
+                  .doOnSuccess(event -> toolExecution.context().setFunctionResponseEvent(event))
+                  .doOnError(toolExecution::setError),
+          ToolExecution::close);
+    }
   }
 }
