@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        java-version: ["17", "21"]
+        java-version: ["17", "21", "25"]
 
     steps:
       - name: Checkout code
