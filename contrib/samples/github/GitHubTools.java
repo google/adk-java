@@ -31,6 +31,7 @@ import org.kohsuke.github.GHFileNotFoundException;
 import org.kohsuke.github.GHIssue;
 import org.kohsuke.github.GHIssueComment;
 import org.kohsuke.github.GHIssueState;
+import org.kohsuke.github.GHIssueStateReason;
 import org.kohsuke.github.GHLabel;
 import org.kohsuke.github.GHPullRequest;
 import org.kohsuke.github.GHPullRequestCommitDetail;
@@ -48,7 +49,8 @@ import org.kohsuke.github.GitHubBuilder;
  *
  * <p>The tools cover the operations needed by the ADK GitHub automation samples: reading releases,
  * diffs and file contents; searching code; listing and reading issues; creating issues and pull
- * requests; labelling/assigning issues; and reading, labelling and commenting on pull requests.
+ * requests; labelling/assigning issues; commenting on or closing issues; and reading, labelling and
+ * commenting on pull requests.
  *
  * <p>Defense in depth against prompt injection: the agents read untrusted GitHub content (diffs,
  * file contents, issue/PR titles) and could be steered into harmful writes. Independently of the
@@ -849,6 +851,73 @@ public final class GitHubTools {
       // Best effort: leave commit statuses out if they cannot be read.
     }
     return checks;
+  }
+
+  @Schema(
+      name = "add_comment_to_issue",
+      description = "Posts a comment on an issue. Returns the created comment's html_url.")
+  public static Map<String, Object> addCommentToIssue(
+      @Schema(name = "repo_owner", description = "The repository owner.") String repoOwner,
+      @Schema(name = "repo_name", description = "The repository name.") String repoName,
+      @Schema(name = "issue_number", description = "The issue number to comment on.")
+          int issueNumber,
+      @Schema(name = "body", description = "The Markdown body of the comment.") String body) {
+    if (body == null || body.isEmpty()) {
+      return error("Comment body must not be empty.");
+    }
+    String targetError = writeTargetError(repoOwner, repoName);
+    if (targetError != null) {
+      return error(targetError);
+    }
+    if (dryRun) {
+      return dryRunPreview(
+          "DRY RUN: no comment was posted. Set DRY_RUN=0 to comment on issues for real.",
+          "issue_number",
+          issueNumber,
+          "body",
+          body);
+    }
+    try {
+      GHRepository repo = connect().getRepository(repoOwner + "/" + repoName);
+      GHIssueComment comment = repo.getIssue(issueNumber).comment(body);
+      Map<String, Object> result = new LinkedHashMap<>();
+      result.put("issue_number", issueNumber);
+      result.put("html_url", comment.getHtmlUrl() == null ? "" : comment.getHtmlUrl().toString());
+      return success(result);
+    } catch (IOException | GHException e) {
+      return error("Failed to comment on issue #" + issueNumber + ": " + e.getMessage());
+    }
+  }
+
+  @Schema(
+      name = "close_issue",
+      description =
+          "Closes an issue as 'not planned' (the state used for stale/won't-do issues). Succeeds as"
+              + " a no-op if the issue is already closed.")
+  public static Map<String, Object> closeIssue(
+      @Schema(name = "repo_owner", description = "The repository owner.") String repoOwner,
+      @Schema(name = "repo_name", description = "The repository name.") String repoName,
+      @Schema(name = "issue_number", description = "The issue number to close.") int issueNumber) {
+    String targetError = writeTargetError(repoOwner, repoName);
+    if (targetError != null) {
+      return error(targetError);
+    }
+    if (dryRun) {
+      return dryRunPreview(
+          "DRY RUN: no issue was closed. Set DRY_RUN=0 to close issues for real.",
+          "issue_number",
+          issueNumber);
+    }
+    try {
+      GHRepository repo = connect().getRepository(repoOwner + "/" + repoName);
+      repo.getIssue(issueNumber).close(GHIssueStateReason.NOT_PLANNED);
+      Map<String, Object> result = new LinkedHashMap<>();
+      result.put("issue_number", issueNumber);
+      result.put("state", "closed");
+      return success(result);
+    } catch (IOException | GHException e) {
+      return error("Failed to close issue #" + issueNumber + ": " + e.getMessage());
+    }
   }
 
   /** Formats an issue into the compact map (number, title, body, html_url, labels, assignees). */

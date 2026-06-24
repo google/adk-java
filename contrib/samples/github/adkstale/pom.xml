@@ -25,13 +25,14 @@
     </parent>
 
     <groupId>com.google.adk.samples</groupId>
-    <artifactId>google-adk-sample-adk-pr-triaging-agent</artifactId>
-    <name>Google ADK - Sample - ADK PR Triaging Agent</name>
+    <artifactId>google-adk-sample-adk-stale-agent</artifactId>
+    <name>Google ADK - Sample - ADK Stale Issue Auditor</name>
     <description>
-        AI-powered GitHub pull request triaging agent for the adk-java repository, implemented with
-        the Google ADK for Java. Labels pull requests and checks them against the contribution
-        guidelines. Runs in both interactive mode (local CLI / adk web) and unattended GitHub
-        Actions workflow mode. Runnable via com.example.adkprtriaging.AdkPrTriagingAgentRun.
+        AI-powered GitHub stale issue auditor for the adk-java repository, implemented with the
+        Google ADK for Java. Reconstructs each issue's history via GraphQL and uses Gemini to decide
+        whether to mark it stale, close it, or remove the stale label. Runs in both interactive mode
+        (local CLI / adk web) and unattended GitHub Actions workflow mode. Runnable via
+        com.example.adkstale.AdkStaleAgentRun.
     </description>
     <packaging>jar</packaging>
 
@@ -39,7 +40,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <java.version>17</java.version>
         <!-- Main class for exec-maven-plugin -->
-        <exec.mainClass>com.example.adkprtriaging.AdkPrTriagingAgentRun</exec.mainClass>
+        <exec.mainClass>com.example.adkstale.AdkStaleAgentRun</exec.mainClass>
         <google-adk.version>${project.version}</google-adk.version>
     </properties>
 
@@ -54,6 +55,12 @@
             <groupId>org.kohsuke</groupId>
             <artifactId>github-api</artifactId>
             <version>1.330</version>
+        </dependency>
+        <!-- Parses the GraphQL/REST JSON responses fetched via the JDK HttpClient. Version is
+             managed by the parent POM's jackson-bom import. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
         </dependency>
         <dependency>
             <groupId>commons-logging</groupId>
@@ -115,7 +122,7 @@
                         <configuration>
                             <includes>
                                 <include>GitHubTools.java</include>
-                                <include>adkprtriaging/*.java</include>
+                                <include>adkstale/*.java</include>
                             </includes>
                         </configuration>
                     </execution>
@@ -151,9 +158,9 @@
                     <excludes>
                         <exclude>**/*.jar</exclude>
                         <exclude>**/*.yml</exclude>
-                        <exclude>adktriaging/**</exclude>
+                        <exclude>adkprtriaging/**</exclude>
                         <exclude>adkreleasedocs/**</exclude>
-                        <exclude>adkstale/**</exclude>
+                        <exclude>adktriaging/**</exclude>
                         <exclude>**/src/test/**</exclude>
                         <exclude>target/**</exclude>
                     </excludes>
@@ -168,9 +175,9 @@
                          on the Javadoc classpath, so the -Prelease attach-javadocs goal would
                          otherwise fail. -->
                     <sourceFileExcludes>
-                        <sourceFileExclude>adktriaging/**</sourceFileExclude>
+                        <sourceFileExclude>adkprtriaging/**</sourceFileExclude>
                         <sourceFileExclude>adkreleasedocs/**</sourceFileExclude>
-                        <sourceFileExclude>adkstale/**</sourceFileExclude>
+                        <sourceFileExclude>adktriaging/**</sourceFileExclude>
                         <sourceFileExclude>**/src/test/**</sourceFileExclude>
                     </sourceFileExcludes>
                 </configuration>

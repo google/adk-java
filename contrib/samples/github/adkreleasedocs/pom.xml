@@ -124,6 +124,7 @@
                     <excludes>
                         <exclude>**/*.jar</exclude>
                         <exclude>adkprtriaging/**</exclude>
+                        <exclude>adkstale/**</exclude>
                         <exclude>adktriaging/**</exclude>
                         <exclude>target/**</exclude>
                     </excludes>
@@ -139,6 +140,7 @@
                          would otherwise fail. -->
                     <sourceFileExcludes>
                         <sourceFileExclude>adkprtriaging/**</sourceFileExclude>
+                        <sourceFileExclude>adkstale/**</sourceFileExclude>
                         <sourceFileExclude>adktriaging/**</sourceFileExclude>
                     </sourceFileExcludes>
                 </configuration>

@@ -152,6 +152,7 @@
                         <exclude>**/*.yml</exclude>
                         <exclude>adkprtriaging/**</exclude>
                         <exclude>adkreleasedocs/**</exclude>
+                        <exclude>adkstale/**</exclude>
                         <exclude>**/src/test/**</exclude>
                         <exclude>target/**</exclude>
                     </excludes>
@@ -168,6 +169,7 @@
                     <sourceFileExcludes>
                         <sourceFileExclude>adkprtriaging/**</sourceFileExclude>
                         <sourceFileExclude>adkreleasedocs/**</sourceFileExclude>
+                        <sourceFileExclude>adkstale/**</sourceFileExclude>
                         <sourceFileExclude>**/src/test/**</sourceFileExclude>
                     </sourceFileExcludes>
                 </configuration>
