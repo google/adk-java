@@ -50,7 +50,7 @@ public final class SchemaUtils {
       case STRING:
         return value instanceof String;
       case INTEGER:
-        return value instanceof Integer;
+        return value instanceof Integer || value instanceof Long;
       case BOOLEAN:
         return value instanceof Boolean;
       case NUMBER:

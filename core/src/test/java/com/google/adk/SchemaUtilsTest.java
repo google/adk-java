@@ -80,4 +80,22 @@ public final class SchemaUtilsTest {
         IllegalArgumentException.class,
         () -> SchemaUtils.validateMapOnSchema(args, schema, /* isInput= */ true));
   }
+
+  @Test
+  public void validateMapOnSchema_integerField_allowsIntegerAndLong() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("intField", Schema.builder().type("INTEGER").build()))
+            .build();
+
+    Map<String, Object> args = new HashMap<>();
+    args.put("intField", 1234567890123L);
+
+    // Should not throw exception
+    SchemaUtils.validateMapOnSchema(args, schema, /* isInput= */ true);
+
+    args.put("intField", 123);
+    SchemaUtils.validateMapOnSchema(args, schema, /* isInput= */ true);
+  }
 }
