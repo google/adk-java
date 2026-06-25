@@ -1,0 +1,89 @@
+# Scans adk-java issues for spam/promotional content with the ADK Issue
+# Monitoring (Spam Detection) Agent sample under
+# contrib/samples/github/adkspam.
+#
+# Required repository secrets:
+#   - GOOGLE_API_KEY    : Gemini API key (or wire up Vertex AI credentials and
+#                         set GOOGLE_GENAI_USE_VERTEXAI=TRUE).
+# Labeling/commenting uses the built-in GITHUB_TOKEN (no secret to manage); the
+# `permissions:` block below grants it the `issues: write` scope it needs. Swap
+# in a PAT only if you specifically want the spam label/alert comment attributed
+# to a distinct bot identity.
+#
+# NOTE: the `spam` label (or whatever SPAM_LABEL_NAME is set to) must already
+# exist in the repository's labels; the agent applies it but does not create it.
+name: ADK Issue Monitoring (Spam Detection) Agent
+
+on:
+  issues:
+    types: [opened]
+  schedule:
+    # Run daily at 06:00 UTC, matching the Python issue-monitor workflow.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      full_scan:
+        description: 'Audit ALL open issues (not just those updated in the last 24h).'
+        required: false
+        default: false
+        type: boolean
+
+# Serialize runs that touch the same issue so the scheduled sweep can't race a
+# per-issue run on that issue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  agent-scan-issues:
+    runs-on: ubuntu-latest
+    # Only run on the upstream repo, for newly-opened issues, the scheduled
+    # sweep, or a manual dispatch.
+    if: >-
+      github.repository == 'google/adk-java' && (
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        github.event.action == 'opened'
+      )
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run Spam Detection Agent
+        env:
+          # Built-in token scoped by the `permissions:` block above. Replace with a
+          # PAT (e.g. ${{ secrets.ADK_TRIAGE_AGENT }}) only if you need a distinct
+          # bot identity for the label/comment actions.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: '0'
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          INTERACTIVE: '0'
+          # Defaults to a dry run (logs intended labels/comments without writing).
+          # Verify the pipeline, then set DRY_RUN to '0' to go live.
+          DRY_RUN: '1'
+          EVENT_NAME: ${{ github.event_name }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          # Mapped to the manual-dispatch checkbox. On the daily schedule this is
+          # empty, so only issues updated in the last 24h are audited.
+          INITIAL_FULL_SCAN: ${{ github.event.inputs.full_scan }}
+        run: |
+          # Install the ADK libs + this sample, then run exec:java scoped to this
+          # module (exec:java with -am would also run on the parent/core modules,
+          # which have no mainClass).
+          ./mvnw -B -q -pl contrib/samples/github/adkspam -am install -DskipTests
+          ./mvnw -B -q -pl contrib/samples/github/adkspam exec:java

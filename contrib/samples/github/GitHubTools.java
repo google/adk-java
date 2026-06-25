@@ -15,7 +15,10 @@ package com.example.github;
 
 import com.google.adk.tools.Annotations.Schema;
 import java.io.IOException;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -48,9 +51,9 @@ import org.kohsuke.github.GitHubBuilder;
  * Reads {@code GITHUB_TOKEN} from the environment; callers set {@link #dryRun} to gate writes.
  *
  * <p>The tools cover the operations needed by the ADK GitHub automation samples: reading releases,
- * diffs and file contents; searching code; listing and reading issues; creating issues and pull
- * requests; labelling/assigning issues; commenting on or closing issues; and reading, labelling and
- * commenting on pull requests.
+ * diffs and file contents; searching code; listing and reading issues and their comments; listing
+ * repository collaborators; creating issues and pull requests; labelling/assigning issues;
+ * commenting on or closing issues; and reading, labelling and commenting on pull requests.
  *
  * <p>Defense in depth against prompt injection: the agents read untrusted GitHub content (diffs,
  * file contents, issue/PR titles) and could be steered into harmful writes. Independently of the
@@ -81,6 +84,13 @@ public final class GitHubTools {
 
   private static final int MAX_SEARCH_RESULTS = 50;
   private static final int MAX_ISSUES_LISTED = 100;
+
+  /**
+   * Upper bound for {@link #listOpenIssuesUpdatedSince}. Higher than {@link #MAX_ISSUES_LISTED}
+   * because the spam-detection sweep audits the whole open backlog, not just a triage batch.
+   */
+  private static final int MAX_ISSUES_SCANNED = 500;
+
   private static final String DOCS_UPDATES_LABEL = "docs updates";
   private static final String STATUS_KEY = "status";
   private static final String STATUS_SUCCESS = "success";
@@ -495,6 +505,60 @@ public final class GitHubTools {
   }
 
   @Schema(
+      name = "list_open_issues_updated_since",
+      description =
+          "Lists OPEN issues (excluding pull requests) for a repository, optionally restricted to"
+              + " those updated at or after an ISO-8601 timestamp (e.g. 2026-01-01T00:00:00Z). Each"
+              + " entry has the issue's number, title, body, html_url, author, labels and"
+              + " assignees. Pass an empty updated_since to list all open issues.")
+  public static Map<String, Object> listOpenIssuesUpdatedSince(
+      @Schema(name = "repo_owner", description = "The repository owner.") String repoOwner,
+      @Schema(name = "repo_name", description = "The repository name.") String repoName,
+      @Schema(
+              name = "updated_since",
+              description =
+                  "Only include issues updated at or after this ISO-8601 instant. May be empty to"
+                      + " disable the filter.",
+              optional = true)
+          String updatedSince,
+      @Schema(
+              name = "max_results",
+              description = "Maximum number of issues to return (capped at 500).",
+              optional = true)
+          Integer maxResults) {
+    int limit =
+        (maxResults == null || maxResults <= 0)
+            ? MAX_ISSUES_SCANNED
+            : Math.min(maxResults, MAX_ISSUES_SCANNED);
+    Date since = parseInstantOrNull(updatedSince);
+    if (updatedSince != null && !updatedSince.isBlank() && since == null) {
+      return error("updated_since '" + updatedSince + "' is not a valid ISO-8601 instant.");
+    }
+    try {
+      GHRepository repo = connect().getRepository(repoOwner + "/" + repoName);
+      org.kohsuke.github.GHIssueQueryBuilder.ForRepository query = repo.queryIssues();
+      query.state(GHIssueState.OPEN);
+      if (since != null) {
+        query.since(since);
+      }
+      query.pageSize(100);
+      List<Map<String, Object>> issues = new ArrayList<>();
+      for (GHIssue issue : query.list()) {
+        if (issue.isPullRequest()) {
+          continue;
+        }
+        issues.add(formatIssue(issue));
+        if (issues.size() >= limit) {
+          break;
+        }
+      }
+      return success("issues", issues);
+    } catch (IOException | GHException e) {
+      return error("Failed to list issues: " + e.getMessage());
+    }
+  }
+
+  @Schema(
       name = "get_issue",
       description =
           "Fetches a single OPEN or closed issue by number, returning its number, title, body,"
@@ -514,6 +578,53 @@ public final class GitHubTools {
       return error("Issue #" + issueNumber + " was not found.");
     } catch (IOException | GHException e) {
       return error("Failed to get issue #" + issueNumber + ": " + e.getMessage());
+    }
+  }
+
+  @Schema(
+      name = "get_issue_comments",
+      description =
+          "Lists all comments on an issue (oldest first), each with the comment author's login,"
+              + " body and html_url. Use this to inspect a thread for spam or to check whether the"
+              + " bot has already commented.")
+  public static Map<String, Object> getIssueComments(
+      @Schema(name = "repo_owner", description = "The repository owner.") String repoOwner,
+      @Schema(name = "repo_name", description = "The repository name.") String repoName,
+      @Schema(name = "issue_number", description = "The issue number whose comments to fetch.")
+          int issueNumber) {
+    try {
+      GHRepository repo = connect().getRepository(repoOwner + "/" + repoName);
+      GHIssue issue = repo.getIssue(issueNumber);
+      List<Map<String, Object>> comments = new ArrayList<>();
+      for (GHIssueComment comment : issue.getComments()) {
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("author", commentAuthorLogin(comment));
+        info.put("body", comment.getBody() == null ? "" : comment.getBody());
+        info.put("html_url", comment.getHtmlUrl() == null ? "" : comment.getHtmlUrl().toString());
+        comments.add(info);
+      }
+      return success("comments", comments);
+    } catch (GHFileNotFoundException e) {
+      return error("Issue #" + issueNumber + " was not found.");
+    } catch (IOException | GHException e) {
+      return error("Failed to get comments for issue #" + issueNumber + ": " + e.getMessage());
+    }
+  }
+
+  @Schema(
+      name = "list_repository_collaborators",
+      description =
+          "Lists the login handles of the repository's collaborators (repo insiders). Used to skip"
+              + " content authored by maintainers when auditing for spam.")
+  public static Map<String, Object> listRepositoryCollaborators(
+      @Schema(name = "repo_owner", description = "The repository owner.") String repoOwner,
+      @Schema(name = "repo_name", description = "The repository name.") String repoName) {
+    try {
+      GHRepository repo = connect().getRepository(repoOwner + "/" + repoName);
+      List<String> collaborators = new ArrayList<>(repo.getCollaboratorNames());
+      return success("collaborators", collaborators);
+    } catch (IOException | GHException e) {
+      return error("Failed to list collaborators: " + e.getMessage());
     }
   }
 
@@ -920,13 +1031,18 @@ public final class GitHubTools {
     }
   }
 
-  /** Formats an issue into the compact map (number, title, body, html_url, labels, assignees). */
+  /**
+   * Formats an issue into the compact map (number, title, body, html_url, author, labels,
+   * assignees). {@code author} is the login of the issue opener (empty when unavailable), used by
+   * the spam-detection sample to skip issues opened by maintainers/bots.
+   */
   private static Map<String, Object> formatIssue(GHIssue issue) {
     Map<String, Object> info = new LinkedHashMap<>();
     info.put("number", issue.getNumber());
     info.put("title", issue.getTitle());
     info.put("body", issue.getBody() == null ? "" : issue.getBody());
     info.put("html_url", issue.getHtmlUrl() == null ? "" : issue.getHtmlUrl().toString());
+    info.put("author", issueAuthorLogin(issue));
     List<String> labels = new ArrayList<>();
     for (GHLabel label : issue.getLabels()) {
       labels.add(label.getName());
@@ -938,6 +1054,22 @@ public final class GitHubTools {
     }
     info.put("assignees", assignees);
     return info;
+  }
+
+  /** Returns the login of the issue's author, or {@code ""} if it cannot be determined. */
+  private static String issueAuthorLogin(GHIssue issue) {
+    try {
+      GHUser user = issue.getUser();
+      return user == null || user.getLogin() == null ? "" : user.getLogin();
+    } catch (IOException | GHException e) {
+      return "";
+    }
+  }
+
+  /** Returns the login of a comment's author, or {@code ""} if it cannot be determined. */
+  private static String commentAuthorLogin(GHIssueComment comment) {
+    String name = comment.getUserName();
+    return name == null ? "" : name;
   }
 
   private static boolean hasDocsLabel(GHIssue issue) {
@@ -996,6 +1128,21 @@ public final class GitHubTools {
       return "file path '" + path + "' must be a Markdown (.md/.mdx) documentation file.";
     }
     return null;
+  }
+
+  /**
+   * Parses an ISO-8601 instant (e.g. {@code 2026-01-01T00:00:00Z}) into a {@link Date}, returning
+   * {@code null} when {@code value} is null/blank or not a valid instant.
+   */
+  private static Date parseInstantOrNull(String value) {
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    try {
+      return Date.from(Instant.parse(value.trim()));
+    } catch (DateTimeParseException e) {
+      return null;
+    }
   }
 
   /** Connects to GitHub using GITHUB_TOKEN from the environment (anonymous if unset). */

@@ -21,6 +21,7 @@
     <module>configagent</module>
     <module>github/adkprtriaging</module>
     <module>github/adkreleasedocs</module>
+    <module>github/adkspam</module>
     <module>github/adkstale</module>
     <module>github/adktriaging</module>
     <module>helloworld</module>

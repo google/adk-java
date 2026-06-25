@@ -124,6 +124,7 @@
                     <excludes>
                         <exclude>**/*.jar</exclude>
                         <exclude>adkprtriaging/**</exclude>
+                        <exclude>adkspam/**</exclude>
                         <exclude>adkstale/**</exclude>
                         <exclude>adktriaging/**</exclude>
                         <exclude>target/**</exclude>
@@ -140,6 +141,7 @@
                          would otherwise fail. -->
                     <sourceFileExcludes>
                         <sourceFileExclude>adkprtriaging/**</sourceFileExclude>
+                        <sourceFileExclude>adkspam/**</sourceFileExclude>
                         <sourceFileExclude>adkstale/**</sourceFileExclude>
                         <sourceFileExclude>adktriaging/**</sourceFileExclude>
                     </sourceFileExcludes>
