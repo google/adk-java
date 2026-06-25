@@ -29,7 +29,7 @@
     <description>Spring AI integration for the Agent Development Kit.</description>
 
     <properties>
-        <spring-ai.version>2.0.0-M3</spring-ai.version>
+        <spring-ai.version>2.0.0</spring-ai.version>
         <testcontainers.version>1.21.3</testcontainers.version>
     </properties>
 
@@ -126,17 +126,7 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-vertex-ai-gemini</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-google-genai</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-azure-openai</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

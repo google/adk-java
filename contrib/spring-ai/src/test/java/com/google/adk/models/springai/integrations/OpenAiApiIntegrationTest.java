@@ -34,7 +34,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
-import org.springframework.ai.openai.api.OpenAiApi;
 
 /**
  * Integration tests with real OpenAI API.
@@ -50,8 +49,14 @@ class OpenAiApiIntegrationTest {
   @Test
   void testSimpleAgentWithRealOpenAiApi() {
     // Create OpenAI model using Spring AI's builder pattern
-    OpenAiApi openAiApi = OpenAiApi.builder().apiKey(System.getenv("OPENAI_API_KEY")).build();
-    OpenAiChatModel openAiModel = OpenAiChatModel.builder().openAiApi(openAiApi).build();
+    OpenAiChatModel openAiModel =
+        OpenAiChatModel.builder()
+            .options(
+                OpenAiChatOptions.builder()
+                    .apiKey(System.getenv("OPENAI_API_KEY"))
+                    .model(GPT_MODEL)
+                    .build())
+            .build();
 
     // Wrap with SpringAI
     SpringAI springAI = new SpringAI(openAiModel, GPT_MODEL);
@@ -84,8 +89,14 @@ class OpenAiApiIntegrationTest {
 
   @Test
   void testStreamingWithRealOpenAiApi() {
-    OpenAiApi openAiApi = OpenAiApi.builder().apiKey(System.getenv("OPENAI_API_KEY")).build();
-    OpenAiChatModel openAiModel = OpenAiChatModel.builder().openAiApi(openAiApi).build();
+    OpenAiChatModel openAiModel =
+        OpenAiChatModel.builder()
+            .options(
+                OpenAiChatOptions.builder()
+                    .apiKey(System.getenv("OPENAI_API_KEY"))
+                    .model(GPT_MODEL)
+                    .build())
+            .build();
 
     SpringAI springAI = new SpringAI(openAiModel, GPT_MODEL);
 
@@ -124,8 +135,14 @@ class OpenAiApiIntegrationTest {
 
   @Test
   void testAgentWithToolsAndRealApi() {
-    OpenAiApi openAiApi = OpenAiApi.builder().apiKey(System.getenv("OPENAI_API_KEY")).build();
-    OpenAiChatModel openAiModel = OpenAiChatModel.builder().openAiApi(openAiApi).build();
+    OpenAiChatModel openAiModel =
+        OpenAiChatModel.builder()
+            .options(
+                OpenAiChatOptions.builder()
+                    .apiKey(System.getenv("OPENAI_API_KEY"))
+                    .model(GPT_MODEL)
+                    .build())
+            .build();
 
     LlmAgent agent =
         LlmAgent.builder()
@@ -164,11 +181,14 @@ class OpenAiApiIntegrationTest {
   void testConfigurationOptions() {
     // Test with custom configuration
     OpenAiChatOptions options =
-        OpenAiChatOptions.builder().model(GPT_MODEL).temperature(0.7).maxTokens(100).build();
+        OpenAiChatOptions.builder()
+            .apiKey(System.getenv("OPENAI_API_KEY"))
+            .model(GPT_MODEL)
+            .temperature(0.7)
+            .maxTokens(100)
+            .build();
 
-    OpenAiApi openAiApi = OpenAiApi.builder().apiKey(System.getenv("OPENAI_API_KEY")).build();
-    OpenAiChatModel openAiModel =
-        OpenAiChatModel.builder().openAiApi(openAiApi).defaultOptions(options).build();
+    OpenAiChatModel openAiModel = OpenAiChatModel.builder().options(options).build();
 
     SpringAI springAI = new SpringAI(openAiModel, GPT_MODEL);
 
