@@ -24,9 +24,9 @@ on:
 jobs:
   analyze-new-release-for-adk-docs-updates:
     runs-on: ubuntu-latest
-    # These permissions apply to this repo's GITHUB_TOKEN (used only for checkout).
-    # The agent writes issues, branches and pull requests to the docs repo via the
-    # ADK_TRIAGE_AGENT PAT, which must have issues + pull-requests + contents write there.
+    # Dry-run reads only (this repo + the public docs repo) and skips writes, so
+    # the built-in GITHUB_TOKEN suffices. For --no-dry-run, use a PAT with write
+    # access to the docs repo.
     permissions:
       contents: read
 
@@ -50,8 +50,10 @@ jobs:
 
       - name: Run the ADK Docs Release Analyzer
         env:
-          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY_FOR_DOCS_AGENTS }}
+          # Built-in token is enough for dry-run (read-only). For --no-dry-run, use a
+          # PAT with docs-repo write access, e.g. ${{ secrets.ADK_TRIAGE_AGENT }}.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GOOGLE_GENAI_USE_VERTEXAI: '0'
           DOC_OWNER: 'google'
           CODE_OWNER: 'google'
@@ -78,6 +80,6 @@ jobs:
           fi
           # Install ADK libs + sample, then run exec:java scoped to this module
           # (exec:java with -am would also run on the parent, which has no mainClass).
-          ./mvnw -q -pl contrib/samples/github/adkreleasedocs -am install -DskipTests
-          ./mvnw -q -pl contrib/samples/github/adkreleasedocs exec:java \
+          ./mvnw -B -q -pl contrib/samples/github/adkreleasedocs -am install -DskipTests
+          ./mvnw -B -q -pl contrib/samples/github/adkreleasedocs exec:java \
             -Dexec.args="${args}"
