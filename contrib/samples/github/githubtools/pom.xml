@@ -25,22 +25,17 @@
     </parent>
 
     <groupId>com.google.adk.samples</groupId>
-    <artifactId>google-adk-sample-adk-issue-monitoring-agent</artifactId>
-    <name>Google ADK - Sample - ADK Issue Monitoring (Spam Detection) Agent</name>
+    <artifactId>google-adk-sample-github-tools</artifactId>
+    <name>Google ADK - Sample - Shared GitHub Tools</name>
     <description>
-        AI-powered GitHub issue monitoring (spam detection) agent for the adk-java repository,
-        implemented with the Google ADK for Java. Scans issue threads for spam/promotional content
-        and flags suspicious issues for human review. Runs in both interactive mode (local CLI /
-        adk web) and unattended GitHub Actions workflow mode. Runnable via
-        com.example.adkspam.SpamDetectionAgentRun.
+        Shared GitHubTools library used by the ADK GitHub agent samples (issue triaging, PR triaging,
+        stale auditor, docs release analyzer). Wraps the org.kohsuke github-api as ADK FunctionTools.
     </description>
     <packaging>jar</packaging>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <java.version>17</java.version>
-        <!-- Main class for exec-maven-plugin -->
-        <exec.mainClass>com.example.adkspam.SpamDetectionAgentRun</exec.mainClass>
         <google-adk.version>${project.version}</google-adk.version>
         <!-- Helper/sample module: not published to Maven Central. -->
         <skipPublishing>true</skipPublishing>
@@ -52,40 +47,16 @@
             <artifactId>google-adk</artifactId>
             <version>${google-adk.version}</version>
         </dependency>
-        <!-- Shared GitHubTools (wraps the org.kohsuke github-api). -->
+        <!-- GitHub REST API client wrapped by GitHubTools. -->
         <dependency>
-            <groupId>com.google.adk.samples</groupId>
-            <artifactId>google-adk-sample-github-tools</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <!-- Logging backend for console output. -->
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <version>${slf4j.version}</version>
-            <scope>runtime</scope>
-        </dependency>
-
-        <!-- Test dependencies (versions from the parent POM). -->
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-api</artifactId>
-            <scope>test</scope>
+            <groupId>org.kohsuke</groupId>
+            <artifactId>github-api</artifactId>
+            <version>1.330</version>
         </dependency>
         <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-params</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-engine</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.google.truth</groupId>
-            <artifactId>truth</artifactId>
-            <scope>test</scope>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+            <version>1.2</version>
         </dependency>
     </dependencies>
 
@@ -100,15 +71,6 @@
                     <target>${java.version}</target>
                     <!-- Preserve parameter names for FunctionTool introspection. -->
                     <parameters>true</parameters>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>3.2.0</version>
-                <configuration>
-                    <mainClass>${exec.mainClass}</mainClass>
-                    <classpathScope>runtime</classpathScope>
                 </configuration>
             </plugin>
         </plugins>

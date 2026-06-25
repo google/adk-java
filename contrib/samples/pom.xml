@@ -19,6 +19,7 @@
     <module>a2a_basic</module>
     <module>a2a_server</module>
     <module>configagent</module>
+    <module>github/githubtools</module>
     <module>github/adkprtriaging</module>
     <module>github/adkreleasedocs</module>
     <module>github/adkspam</module>

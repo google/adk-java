@@ -42,6 +42,8 @@
         <!-- Main class for exec-maven-plugin -->
         <exec.mainClass>com.example.adkstale.AdkStaleAgentRun</exec.mainClass>
         <google-adk.version>${project.version}</google-adk.version>
+        <!-- Helper/sample module: not published to Maven Central. -->
+        <skipPublishing>true</skipPublishing>
     </properties>
 
     <dependencies>
@@ -50,24 +52,18 @@
             <artifactId>google-adk</artifactId>
             <version>${google-adk.version}</version>
         </dependency>
-        <!-- GitHub REST API client used by the shared GitHubTools, so we don't hand-roll one. -->
+        <!-- Shared GitHubTools (wraps the org.kohsuke github-api). -->
         <dependency>
-            <groupId>org.kohsuke</groupId>
-            <artifactId>github-api</artifactId>
-            <version>1.330</version>
+            <groupId>com.google.adk.samples</groupId>
+            <artifactId>google-adk-sample-github-tools</artifactId>
+            <version>${project.version}</version>
         </dependency>
-        <!-- Parses the GraphQL/REST JSON responses fetched via the JDK HttpClient. Version is
-             managed by the parent POM's jackson-bom import. -->
+        <!-- Parses GraphQL/REST JSON; version from the parent jackson-bom. -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
-        <dependency>
-            <groupId>commons-logging</groupId>
-            <artifactId>commons-logging</artifactId>
-            <version>1.2</version>
-        </dependency>
-        <!-- Logging backend so console output works in both interactive and workflow modes. -->
+        <!-- Logging backend for console output. -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
@@ -75,8 +71,7 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Test dependencies (versions managed by the parent POM's junit-bom and
-             dependencyManagement). -->
+        <!-- Test dependencies (versions from the parent POM). -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
@@ -108,80 +103,8 @@
                 <configuration>
                     <source>${java.version}</source>
                     <target>${java.version}</target>
-                    <!-- Preserve parameter names so FunctionTool can introspect them without
-                         forcing every parameter to be annotated. -->
+                    <!-- Preserve parameter names for FunctionTool introspection. -->
                     <parameters>true</parameters>
-                </configuration>
-                <executions>
-                    <!-- The shared github/ directory is on the source path (see build-helper
-                         below), so restrict the main compile to this sample's files plus the
-                         shared GitHubTools.java; otherwise the sibling samples and this module's
-                         own test sources under github/ would also be compiled here. -->
-                    <execution>
-                        <id>default-compile</id>
-                        <configuration>
-                            <includes>
-                                <include>GitHubTools.java</include>
-                                <include>adkstale/*.java</include>
-                            </includes>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>build-helper-maven-plugin</artifactId>
-                <version>3.6.0</version>
-                <executions>
-                    <execution>
-                        <id>add-source</id>
-                        <phase>generate-sources</phase>
-                        <goals>
-                            <goal>add-source</goal>
-                        </goals>
-                        <configuration>
-                            <sources>
-                                <!-- Compile this sample plus the shared GitHubTools.java that
-                                     lives in the parent github/ directory (no extra module). -->
-                                <source>..</source>
-                            </sources>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-source-plugin</artifactId>
-                <configuration>
-                    <!-- The github/ source root recursively includes sibling samples and this
-                         module's test sources; keep them out of the -Prelease sources jar. -->
-                    <excludes>
-                        <exclude>**/*.jar</exclude>
-                        <exclude>**/*.yml</exclude>
-                        <exclude>adkprtriaging/**</exclude>
-                        <exclude>adkreleasedocs/**</exclude>
-                        <exclude>adkspam/**</exclude>
-                        <exclude>adktriaging/**</exclude>
-                        <exclude>**/src/test/**</exclude>
-                        <exclude>target/**</exclude>
-                    </excludes>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-javadoc-plugin</artifactId>
-                <configuration>
-                    <!-- Mirror the source/compile excludes above: the github/ source root pulls in
-                         sibling samples and test sources, whose (test-scoped) dependencies are not
-                         on the Javadoc classpath, so the -Prelease attach-javadocs goal would
-                         otherwise fail. -->
-                    <sourceFileExcludes>
-                        <sourceFileExclude>adkprtriaging/**</sourceFileExclude>
-                        <sourceFileExclude>adkreleasedocs/**</sourceFileExclude>
-                        <sourceFileExclude>adkspam/**</sourceFileExclude>
-                        <sourceFileExclude>adktriaging/**</sourceFileExclude>
-                        <sourceFileExclude>**/src/test/**</sourceFileExclude>
-                    </sourceFileExcludes>
                 </configuration>
             </plugin>
             <plugin>
