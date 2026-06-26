@@ -90,6 +90,7 @@ import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -98,6 +99,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.jspecify.annotations.Nullable;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -2598,5 +2600,83 @@ public final class RunnerTest {
     assertThat(artifactsSavedCounter.get()).isEqualTo(2);
     // agent was run
     assertThat(simplifyEvents(events.values())).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void runAsync_partialEvent_streamedButNotPassedToSessionService() {
+    // The model streams a partial event followed by the final aggregated event in one turn.
+    LlmResponse partialResponse =
+        LlmResponse.builder()
+            .content(Content.builder().role("model").parts(Part.fromText("partial")).build())
+            .partial(true)
+            .build();
+    LlmResponse finalResponse =
+        LlmResponse.builder()
+            .content(Content.builder().role("model").parts(Part.fromText("final")).build())
+            .build();
+    TestLlm testLlm = new TestLlm(() -> Flowable.just(partialResponse, finalResponse));
+    LlmAgent agent = createTestAgent(testLlm);
+    RecordingSessionService sessionService = new RecordingSessionService();
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .sessionService(sessionService)
+            .build();
+    Session session = sessionService.createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner.runAsync("user", session.id(), createContent("hi")).toList().blockingGet();
+
+    // The partial event is still streamed to the caller.
+    assertThat(events.stream().anyMatch(event -> event.partial().orElse(false))).isTrue();
+    // Mirroring ADK Python's Runner, partial events are never handed to the session service, so
+    // managed services (e.g. VertexAiSessionService) cannot persist duplicates.
+    assertThat(sessionService.appendedEvents.stream().anyMatch(e -> e.partial().orElse(false)))
+        .isFalse();
+  }
+
+  /** A session service that records every event passed to {@code appendEvent} for assertions. */
+  private static final class RecordingSessionService implements BaseSessionService {
+    private final InMemorySessionService delegate = new InMemorySessionService();
+    final List<Event> appendedEvents = Collections.synchronizedList(new ArrayList<>());
+
+    @Override
+    public Single<Event> appendEvent(Session session, Event event) {
+      appendedEvents.add(event);
+      return delegate.appendEvent(session, event);
+    }
+
+    // BaseSessionService's only abstract createSession overload is deprecated, so implementing and
+    // delegating to it is unavoidable.
+    @SuppressWarnings("deprecation")
+    @Override
+    public Single<Session> createSession(
+        String appName,
+        String userId,
+        @Nullable ConcurrentMap<String, Object> state,
+        @Nullable String sessionId) {
+      return delegate.createSession(appName, userId, state, sessionId);
+    }
+
+    @Override
+    public Maybe<Session> getSession(
+        String appName, String userId, String sessionId, Optional<GetSessionConfig> config) {
+      return delegate.getSession(appName, userId, sessionId, config);
+    }
+
+    @Override
+    public Single<ListSessionsResponse> listSessions(String appName, String userId) {
+      return delegate.listSessions(appName, userId);
+    }
+
+    @Override
+    public Completable deleteSession(String appName, String userId, String sessionId) {
+      return delegate.deleteSession(appName, userId, sessionId);
+    }
+
+    @Override
+    public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
+      return delegate.listEvents(appName, userId, sessionId);
+    }
   }
 }

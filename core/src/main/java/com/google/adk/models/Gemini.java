@@ -19,6 +19,7 @@ package com.google.adk.models;
 import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 
 import com.google.adk.Version;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.Client;
@@ -26,17 +27,22 @@ import com.google.genai.ResponseStream;
 import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.HttpOptions;
 import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.Part;
+import com.google.genai.types.PartialArg;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -223,24 +229,9 @@ public class Gemini extends BaseLlm {
               effectiveModelName, llmRequest.contents(), config);
 
       return Flowable.defer(
-              () ->
-                  processRawResponses(
-                      Flowable.fromFuture(streamFuture).flatMapIterable(iterable -> iterable)))
-          .filter(
-              llmResponse ->
-                  llmResponse
-                      .content()
-                      .flatMap(Content::parts)
-                      .map(
-                          parts ->
-                              !parts.isEmpty()
-                                  && parts.stream()
-                                      .anyMatch(
-                                          p ->
-                                              p.functionCall().isPresent()
-                                                  || p.functionResponse().isPresent()
-                                                  || p.text().isPresent()))
-                      .orElse(false));
+          () ->
+              processRawResponses(
+                  Flowable.fromFuture(streamFuture).flatMapIterable(iterable -> iterable)));
     } else {
       logger.debug("Sending generateContent request to model {}", effectiveModelName);
       return Flowable.fromFuture(
@@ -253,109 +244,7 @@ public class Gemini extends BaseLlm {
   }
 
   static Flowable<LlmResponse> processRawResponses(Flowable<GenerateContentResponse> rawResponses) {
-    final StringBuilder accumulatedText = new StringBuilder();
-    final StringBuilder accumulatedThoughtText = new StringBuilder();
-    // Array to bypass final local variable reassignment in lambda.
-    final GenerateContentResponse[] lastRawResponseHolder = {null};
-    return rawResponses
-        .concatMap(
-            rawResponse -> {
-              lastRawResponseHolder[0] = rawResponse;
-              logger.trace("Raw streaming response: {}", rawResponse);
-
-              List<LlmResponse> responsesToEmit = new ArrayList<>();
-              LlmResponse currentProcessedLlmResponse = LlmResponse.create(rawResponse);
-              Optional<Part> part = GeminiUtil.getPart0FromLlmResponse(currentProcessedLlmResponse);
-              String currentTextChunk = part.flatMap(Part::text).orElse("");
-
-              if (!currentTextChunk.isBlank()) {
-                if (part.get().thought().orElse(false)) {
-                  accumulatedThoughtText.append(currentTextChunk);
-                  responsesToEmit.add(
-                      thinkingResponseFromText(currentTextChunk).toBuilder()
-                          .usageMetadata(currentProcessedLlmResponse.usageMetadata().orElse(null))
-                          .partial(true)
-                          .build());
-                } else {
-                  accumulatedText.append(currentTextChunk);
-                  responsesToEmit.add(
-                      responseFromText(currentTextChunk).toBuilder()
-                          .usageMetadata(currentProcessedLlmResponse.usageMetadata().orElse(null))
-                          .partial(true)
-                          .build());
-                }
-              } else {
-                if (accumulatedThoughtText.length() > 0
-                    && GeminiUtil.shouldEmitAccumulatedText(currentProcessedLlmResponse)) {
-                  LlmResponse aggregatedThoughtResponse =
-                      thinkingResponseFromText(accumulatedThoughtText.toString());
-                  responsesToEmit.add(aggregatedThoughtResponse);
-                  accumulatedThoughtText.setLength(0);
-                }
-                if (accumulatedText.length() > 0
-                    && GeminiUtil.shouldEmitAccumulatedText(currentProcessedLlmResponse)) {
-                  LlmResponse aggregatedTextResponse = responseFromText(accumulatedText.toString());
-                  responsesToEmit.add(aggregatedTextResponse);
-                  accumulatedText.setLength(0);
-                }
-                responsesToEmit.add(currentProcessedLlmResponse);
-              }
-              logger.debug("Responses to emit: {}", responsesToEmit);
-              return Flowable.fromIterable(responsesToEmit);
-            })
-        .concatWith(
-            Flowable.defer(
-                () -> {
-                  GenerateContentResponse finalRawResp = lastRawResponseHolder[0];
-                  if (finalRawResp == null) {
-                    return Flowable.empty();
-                  }
-                  boolean isStop =
-                      finalRawResp
-                          .candidates()
-                          .flatMap(candidates -> candidates.stream().findFirst())
-                          .flatMap(Candidate::finishReason)
-                          .map(finishReason -> finishReason.knownEnum() == FinishReason.Known.STOP)
-                          .orElse(false);
-
-                  if (isStop) {
-                    List<LlmResponse> finalResponses = new ArrayList<>();
-                    if (accumulatedThoughtText.length() > 0) {
-                      finalResponses.add(
-                          thinkingResponseFromText(accumulatedThoughtText.toString()).toBuilder()
-                              .usageMetadata(
-                                  accumulatedText.length() > 0
-                                      ? null
-                                      : finalRawResp.usageMetadata().orElse(null))
-                              .build());
-                    }
-                    if (accumulatedText.length() > 0) {
-                      finalResponses.add(
-                          responseFromText(accumulatedText.toString()).toBuilder()
-                              .usageMetadata(finalRawResp.usageMetadata().orElse(null))
-                              .build());
-                    }
-
-                    return Flowable.fromIterable(finalResponses);
-                  }
-                  return Flowable.empty();
-                }));
-  }
-
-  private static LlmResponse responseFromText(String accumulatedText) {
-    return LlmResponse.builder()
-        .content(Content.builder().role("model").parts(Part.fromText(accumulatedText)).build())
-        .build();
-  }
-
-  private static LlmResponse thinkingResponseFromText(String accumulatedThoughtText) {
-    return LlmResponse.builder()
-        .content(
-            Content.builder()
-                .role("model")
-                .parts(Part.fromText(accumulatedThoughtText).toBuilder().thought(true).build())
-                .build())
-        .build();
+    return Flowable.defer(() -> new StreamingResponseAggregator().process(rawResponses));
   }
 
   @Override
@@ -371,5 +260,343 @@ public class Gemini extends BaseLlm {
     logger.trace("Connection Config: {}", liveConnectConfig);
 
     return new GeminiLlmConnection(apiClient, effectiveModelName, liveConnectConfig);
+  }
+
+  private static final class StreamingResponseAggregator {
+    private final List<Part> accumulatedSequence = new ArrayList<>();
+    private final StringBuilder currentTextBuffer = new StringBuilder();
+    // Always reassigned in accumulateParts() before it is read; the initializer is never observed.
+    private boolean currentTextIsThought = false;
+    private byte[] currentThoughtSignature = null;
+    private GenerateContentResponse lastRawResponse = null;
+
+    // Streaming function-call accumulation state. When the model streams a function call across
+    // multiple chunks (via partialArgs/willContinue), its arguments are accumulated here and a
+    // single complete function-call part is flushed to accumulatedSequence once it completes.
+    private String currentFcName = null;
+    private Map<String, Object> currentFcArgs = new LinkedHashMap<>();
+    private String currentFcId = null;
+
+    /**
+     * Processes a stream of raw responses, emitting partial and aggregated {@link LlmResponse}s.
+     */
+    private Flowable<LlmResponse> process(Flowable<GenerateContentResponse> rawResponses) {
+      return rawResponses
+          .concatMap(this::processRawResponse)
+          .concatWith(Flowable.defer(this::processFinalResponse));
+    }
+
+    /**
+     * Processes a single raw streaming chunk, accumulating parts and emitting intermediate
+     * responses.
+     */
+    private Flowable<LlmResponse> processRawResponse(GenerateContentResponse rawResponse) {
+      lastRawResponse = rawResponse;
+      logger.trace("Raw streaming response: {}", rawResponse);
+
+      LlmResponse currentProcessedLlmResponse = LlmResponse.create(rawResponse);
+      List<Part> parts =
+          currentProcessedLlmResponse.content().flatMap(Content::parts).orElse(ImmutableList.of());
+
+      // Assign an ID to every function-call part up front, mirroring ADK Python's
+      // StreamingResponseAggregator: the same ID is reused in the partial and final responses so
+      // consumers can correlate them.
+      List<Part> partsWithIds = ensureFunctionCallIds(parts);
+
+      if (accumulateParts(partsWithIds)) {
+        // partsWithIds is non-empty here, so the chunk's content (and its role) is present. Rebuild
+        // the partial content from the parts-with-IDs so its FC ID matches the final event.
+        Content.Builder rebuilt = Content.builder().parts(partsWithIds);
+        currentProcessedLlmResponse.content().flatMap(Content::role).ifPresent(rebuilt::role);
+        return Flowable.just(
+            currentProcessedLlmResponse.toBuilder().content(rebuilt.build()).partial(true).build());
+      }
+
+      // If the chunk has no text or function calls (e.g. metadata-only or empty), we suppress it
+      // during streaming so it doesn't emit an empty partial response.
+      // Exception: If this is a standalone empty chunk in an otherwise completely empty stream
+      // (and not a STOP chunk), we emit it directly as a non-partial empty response.
+      if (!isStop(currentProcessedLlmResponse)
+          && accumulatedSequence.isEmpty()
+          && currentTextBuffer.isEmpty()) {
+        return Flowable.just(currentProcessedLlmResponse.toBuilder().partial(null).build());
+      }
+
+      return Flowable.empty();
+    }
+
+    /**
+     * Returns a list of parts where every function-call part has a non-empty ID. If a part's
+     * function call already has an ID, the original part is preserved; otherwise a new part with a
+     * client-generated ID is substituted. Non-FC parts are passed through unchanged.
+     */
+    private static List<Part> ensureFunctionCallIds(List<Part> parts) {
+      List<Part> result = new ArrayList<>(parts.size());
+      for (Part part : parts) {
+        if (part.functionCall().isPresent()) {
+          FunctionCall fc = part.functionCall().get();
+          if (fc.id().map(String::isEmpty).orElse(true)) {
+            FunctionCall withId = fc.toBuilder().id(generateClientFunctionCallId()).build();
+            result.add(part.toBuilder().functionCall(withId).build());
+            continue;
+          }
+        }
+        result.add(part);
+      }
+      return result;
+    }
+
+    /**
+     * Generates a unique client-side function-call ID. Format matches {@code
+     * com.google.adk.flows.llmflows.Functions#generateClientFunctionCallId()} so downstream code
+     * that already sees IDs with the {@code "adk-"} prefix continues to work.
+     */
+    private static String generateClientFunctionCallId() {
+      return "adk-" + UUID.randomUUID();
+    }
+
+    /**
+     * Accumulates text and function calls from incoming parts. Function-call parts passed to this
+     * method are expected to already have IDs (see {@link #ensureFunctionCallIds}).
+     *
+     * @return true if any text or function call was present, false otherwise.
+     */
+    private boolean accumulateParts(List<Part> parts) {
+      boolean hasTextOrFc = false;
+      for (Part part : parts) {
+        part.thoughtSignature().ifPresent(sig -> currentThoughtSignature = sig);
+        String text = part.text().orElse("");
+        if (!text.isEmpty()) {
+          hasTextOrFc = true;
+          boolean isThought = part.thought().orElse(false);
+          // Immediately flush the active text buffer to preserve the exact interleaved blocks of
+          // text/thoughts.
+          if (!currentTextBuffer.isEmpty() && isThought != currentTextIsThought) {
+            flushTextBufferToSequence();
+          }
+          if (currentTextBuffer.isEmpty()) {
+            currentTextIsThought = isThought;
+          }
+          currentTextBuffer.append(text);
+        }
+        if (part.functionCall().isPresent()) {
+          hasTextOrFc = true;
+          processFunctionCallPart(part);
+        }
+      }
+      return hasTextOrFc;
+    }
+
+    /**
+     * Processes a function-call part, mirroring ADK Python's {@code _process_function_call_part}. A
+     * function call whose arguments are streamed across chunks (it carries {@code partialArgs} or
+     * {@code willContinue=true}) is accumulated and flushed as a single complete part once it
+     * finishes; a complete (non-streaming) function call is appended directly.
+     */
+    private void processFunctionCallPart(Part part) {
+      FunctionCall fc = part.functionCall().get();
+      boolean streaming =
+          fc.partialArgs().map(args -> !args.isEmpty()).orElse(false)
+              || fc.willContinue().orElse(false);
+      if (streaming) {
+        // Capture the thought signature from the first chunk that carries one.
+        if (part.thoughtSignature().isPresent() && currentThoughtSignature == null) {
+          currentThoughtSignature = part.thoughtSignature().get();
+        }
+        processStreamingFunctionCall(fc);
+      } else if (fc.name().filter(name -> !name.isEmpty()).isPresent()) {
+        // Complete function call. Skip empty calls, which are only streaming end markers. The part
+        // already has an ID assigned by ensureFunctionCallIds.
+        flushTextBufferToSequence();
+        accumulatedSequence.add(part);
+      }
+    }
+
+    /**
+     * Accumulates one chunk of a streamed function call, mirroring ADK Python's {@code
+     * _process_streaming_function_call}: merges the function name/ID and each {@code partialArg}
+     * (by JSONPath) into {@link #currentFcArgs}, then flushes the completed call once {@code
+     * willContinue} is no longer set.
+     */
+    private void processStreamingFunctionCall(FunctionCall fc) {
+      fc.name().filter(name -> !name.isEmpty()).ifPresent(name -> currentFcName = name);
+      // Use the first ID seen (the model's, if provided, otherwise a generated one) for the whole
+      // call so the partial and final events correlate.
+      if (currentFcId == null) {
+        currentFcId =
+            fc.id().filter(id -> !id.isEmpty()).orElseGet(() -> generateClientFunctionCallId());
+      }
+      for (PartialArg partialArg : fc.partialArgs().orElse(ImmutableList.of())) {
+        String jsonPath = partialArg.jsonPath().orElse("");
+        if (jsonPath.isEmpty()) {
+          continue;
+        }
+        applyPartialArg(partialArg, jsonPath);
+      }
+      if (!fc.willContinue().orElse(false)) {
+        flushTextBufferToSequence();
+        flushFunctionCallToSequence();
+      }
+    }
+
+    /**
+     * Applies a single {@link PartialArg} to {@link #currentFcArgs} at {@code jsonPath}, mirroring
+     * ADK Python's {@code _get_value_from_partial_arg}: string chunks are appended to any existing
+     * string at the path, while number/bool/null values overwrite.
+     */
+    private void applyPartialArg(PartialArg partialArg, String jsonPath) {
+      if (partialArg.stringValue().isPresent()) {
+        Object existing = getValueByJsonPath(jsonPath);
+        String chunk = partialArg.stringValue().get();
+        setValueByJsonPath(jsonPath, existing instanceof String s ? s + chunk : chunk);
+      } else if (partialArg.numberValue().isPresent()) {
+        setValueByJsonPath(jsonPath, partialArg.numberValue().get());
+      } else if (partialArg.boolValue().isPresent()) {
+        setValueByJsonPath(jsonPath, partialArg.boolValue().get());
+      } else if (partialArg.nullValue().isPresent()) {
+        setValueByJsonPath(jsonPath, null);
+      }
+    }
+
+    /**
+     * Returns the value currently stored at {@code jsonPath} in {@link #currentFcArgs}, or null.
+     */
+    private @Nullable Object getValueByJsonPath(String jsonPath) {
+      Object current = currentFcArgs;
+      for (String key : splitJsonPath(jsonPath)) {
+        if (current instanceof Map<?, ?> map && map.containsKey(key)) {
+          current = map.get(key);
+        } else {
+          return null;
+        }
+      }
+      return current;
+    }
+
+    /**
+     * Sets {@code value} at {@code jsonPath} in {@link #currentFcArgs}, creating maps as needed.
+     */
+    @SuppressWarnings("unchecked")
+    private void setValueByJsonPath(String jsonPath, Object value) {
+      String[] keys = splitJsonPath(jsonPath);
+      Map<String, Object> current = currentFcArgs;
+      for (int i = 0; i < keys.length - 1; i++) {
+        Object next = current.get(keys[i]);
+        if (!(next instanceof Map)) {
+          next = new LinkedHashMap<>();
+          current.put(keys[i], next);
+        }
+        current = (Map<String, Object>) next;
+      }
+      current.put(keys[keys.length - 1], value);
+    }
+
+    /** Splits a JSONPath such as {@code "$.location.city"} into its component keys. */
+    private static String[] splitJsonPath(String jsonPath) {
+      String path = jsonPath.startsWith("$.") ? jsonPath.substring(2) : jsonPath;
+      return path.split("\\.");
+    }
+
+    /**
+     * Flushes the accumulated streamed function call (if any) to {@link #accumulatedSequence} as a
+     * single complete part, mirroring ADK Python's {@code _flush_function_call_to_sequence}.
+     */
+    private void flushFunctionCallToSequence() {
+      if (currentFcName == null) {
+        return;
+      }
+      FunctionCall.Builder fcBuilder =
+          FunctionCall.builder().name(currentFcName).args(new LinkedHashMap<>(currentFcArgs));
+      if (currentFcId != null) {
+        fcBuilder.id(currentFcId);
+      }
+      Part.Builder partBuilder = Part.builder().functionCall(fcBuilder.build());
+      if (currentThoughtSignature != null) {
+        partBuilder.thoughtSignature(currentThoughtSignature);
+      }
+      accumulatedSequence.add(partBuilder.build());
+      currentFcName = null;
+      currentFcArgs = new LinkedHashMap<>();
+      currentFcId = null;
+      currentThoughtSignature = null;
+    }
+
+    /** Flushes any accumulated text or thought content in the buffer as a new {@link Part}. */
+    private void flushTextBufferToSequence() {
+      if (!currentTextBuffer.isEmpty()) {
+        Part.Builder partBuilder =
+            Part.builder().text(currentTextBuffer.toString()).thought(currentTextIsThought);
+        if (currentThoughtSignature != null) {
+          partBuilder.thoughtSignature(currentThoughtSignature);
+          currentThoughtSignature = null;
+        }
+        accumulatedSequence.add(partBuilder.build());
+        currentTextBuffer.setLength(0);
+        currentTextIsThought = false;
+      }
+    }
+
+    /**
+     * Emits the final aggregated, non-partial response with all accumulated parts (thoughts, text,
+     * function calls). Mirrors ADK Python's {@code StreamingResponseAggregator.close()}: emitted
+     * even without a finish reason so accumulated content is never dropped; a non-STOP finish
+     * reason is surfaced as an error.
+     */
+    private Flowable<LlmResponse> processFinalResponse() {
+      if (lastRawResponse == null) {
+        return Flowable.empty();
+      }
+      LlmResponse currentResponse = LlmResponse.create(lastRawResponse);
+
+      flushTextBufferToSequence();
+      // Flush any in-progress streamed function call whose stream ended before completing.
+      flushFunctionCallToSequence();
+
+      // Nothing accumulated and no finish reason: any empty/metadata chunk already streamed, skip.
+      boolean hasFinishReason = currentResponse.finishReason().isPresent();
+      if (accumulatedSequence.isEmpty() && !hasFinishReason) {
+        return Flowable.empty();
+      }
+
+      LlmResponse.Builder finalResponseBuilder = currentResponse.toBuilder().partial(null);
+      if (hasFinishReason && !isStop(currentResponse)) {
+        finalResponseBuilder.errorCode(currentResponse.finishReason().get());
+        lastRawResponse
+            .candidates()
+            .filter(candidates -> !candidates.isEmpty())
+            .map(candidates -> candidates.get(0))
+            .flatMap(Candidate::finishMessage)
+            .ifPresent(finalResponseBuilder::errorMessage);
+      }
+
+      if (accumulatedSequence.isEmpty()) {
+        return Flowable.just(finalResponseBuilder.build());
+      }
+
+      // If the final chunk carries a thoughtSignature (e.g. from a preceding function call or
+      // thought), attach it to the last accumulated part in the sequence.
+      GeminiUtil.getPart0FromLlmResponse(currentResponse)
+          .flatMap(Part::thoughtSignature)
+          .ifPresent(
+              signature -> {
+                int targetIndex = accumulatedSequence.size() - 1;
+                Part targetPart = accumulatedSequence.get(targetIndex);
+                accumulatedSequence.set(
+                    targetIndex, targetPart.toBuilder().thoughtSignature(signature).build());
+              });
+
+      return Flowable.just(
+          finalResponseBuilder
+              .content(Content.builder().role("model").parts(accumulatedSequence).build())
+              .build());
+    }
+
+    /** Checks whether the response finish reason indicates the stream has finished with STOP. */
+    private static boolean isStop(LlmResponse response) {
+      return response
+          .finishReason()
+          .map(reason -> reason.knownEnum() == FinishReason.Known.STOP)
+          .orElse(false);
+    }
   }
 }

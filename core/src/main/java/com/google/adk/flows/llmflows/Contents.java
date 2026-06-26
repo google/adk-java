@@ -16,6 +16,7 @@
 
 package com.google.adk.flows.llmflows;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -57,13 +58,6 @@ public final class Contents implements RequestProcessor {
     }
     LlmAgent llmAgent = (LlmAgent) context.agent();
 
-    String modelName;
-    try {
-      modelName = llmAgent.resolvedModel().modelName().orElse("");
-    } catch (IllegalStateException e) {
-      modelName = "";
-    }
-
     ImmutableList<Event> sessionEvents;
     synchronized (context.session().events()) {
       sessionEvents = ImmutableList.copyOf(context.session().events());
@@ -75,17 +69,13 @@ public final class Contents implements RequestProcessor {
               request.toBuilder()
                   .contents(
                       getCurrentTurnContents(
-                          context.branch().orElse(null),
-                          sessionEvents,
-                          context.agent().name(),
-                          modelName))
+                          context.branch().orElse(null), sessionEvents, context.agent().name()))
                   .build(),
               ImmutableList.of()));
     }
 
     ImmutableList<Content> contents =
-        getContents(
-            context.branch().orElse(null), sessionEvents, context.agent().name(), modelName);
+        getContents(context.branch().orElse(null), sessionEvents, context.agent().name());
 
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(
@@ -94,19 +84,19 @@ public final class Contents implements RequestProcessor {
 
   /** Gets contents for the current turn only (no conversation history). */
   private ImmutableList<Content> getCurrentTurnContents(
-      @Nullable String currentBranch, List<Event> events, String agentName, String modelName) {
+      @Nullable String currentBranch, List<Event> events, String agentName) {
     // Find the latest event that starts the current turn and process from there.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
       if (event.author().equals("user") || isOtherAgentReply(agentName, event)) {
-        return getContents(currentBranch, events.subList(i, events.size()), agentName, modelName);
+        return getContents(currentBranch, events.subList(i, events.size()), agentName);
       }
     }
     return ImmutableList.of();
   }
 
   private ImmutableList<Content> getContents(
-      @Nullable String currentBranch, List<Event> events, String agentName, String modelName) {
+      @Nullable String currentBranch, List<Event> events, String agentName) {
     List<Event> filteredEvents = new ArrayList<>();
     boolean hasCompactEvent = false;
 
@@ -148,7 +138,7 @@ public final class Contents implements RequestProcessor {
     }
 
     List<Event> resultEvents = rearrangeEventsForLatestFunctionResponse(filteredEvents);
-    resultEvents = rearrangeEventsForAsyncFunctionResponsesInHistory(resultEvents, modelName);
+    resultEvents = rearrangeEventsForAsyncFunctionResponsesInHistory(resultEvents);
 
     return resultEvents.stream()
         .map(Event::content)
@@ -564,8 +554,7 @@ public final class Contents implements RequestProcessor {
     return resultEvents;
   }
 
-  private static List<Event> rearrangeEventsForAsyncFunctionResponsesInHistory(
-      List<Event> events, String modelName) {
+  private static List<Event> rearrangeEventsForAsyncFunctionResponsesInHistory(List<Event> events) {
     Map<String, Integer> functionCallIdToResponseEventIndex = new HashMap<>();
     for (int i = 0; i < events.size(); i++) {
       final int index = i;
@@ -592,11 +581,6 @@ public final class Contents implements RequestProcessor {
     List<Event> resultEvents = new ArrayList<>();
     // Keep track of response events already added to avoid duplicates when merging
     Set<Integer> processedResponseIndices = new HashSet<>();
-    List<Event> responseEventsBuffer = new ArrayList<>();
-
-    // Gemini 3 requires function calls to be grouped first and only then function responses:
-    // FC1 FC2 FR1 FR2
-    boolean shouldBufferResponseEvents = modelName.contains("gemini-3");
 
     for (int i = 0; i < events.size(); i++) {
       Event event = events.get(i);
@@ -641,44 +625,18 @@ public final class Contents implements RequestProcessor {
 
           for (int index : sortedIndices) {
             if (processedResponseIndices.add(index)) { // Add index and check if it was newly added
-              responseEventsBuffer.add(events.get(index));
               responseEventsToAdd.add(events.get(index));
             }
           }
 
-          if (!shouldBufferResponseEvents) {
-            if (responseEventsToAdd.size() == 1) {
-              resultEvents.add(responseEventsToAdd.get(0));
-            } else if (responseEventsToAdd.size() > 1) {
-              resultEvents.add(mergeFunctionResponseEvents(responseEventsToAdd));
-            }
+          if (responseEventsToAdd.size() == 1) {
+            resultEvents.add(responseEventsToAdd.get(0));
+          } else if (responseEventsToAdd.size() > 1) {
+            resultEvents.add(mergeFunctionResponseEvents(responseEventsToAdd));
           }
         }
       } else {
-        // gemini-3 specific part: buffer response events
-        if (shouldBufferResponseEvents) {
-          if (!responseEventsBuffer.isEmpty()) {
-            if (responseEventsBuffer.size() == 1) {
-              resultEvents.add(responseEventsBuffer.get(0));
-            } else {
-              resultEvents.add(mergeFunctionResponseEvents(responseEventsBuffer));
-            }
-            responseEventsBuffer.clear();
-          }
-        }
         resultEvents.add(event);
-      }
-    }
-
-    // gemini-3 specific part: buffer response events
-    if (shouldBufferResponseEvents) {
-      if (!responseEventsBuffer.isEmpty()) {
-        if (responseEventsBuffer.size() == 1) {
-          resultEvents.add(responseEventsBuffer.get(0));
-        } else {
-          resultEvents.add(mergeFunctionResponseEvents(responseEventsBuffer));
-        }
-        responseEventsBuffer.clear();
       }
     }
 
@@ -702,9 +660,8 @@ public final class Contents implements RequestProcessor {
    *     appended to the part list of the initial function response event.
    */
   private static Event mergeFunctionResponseEvents(List<Event> functionResponseEvents) {
-    if (functionResponseEvents.isEmpty()) {
-      throw new IllegalArgumentException("At least one functionResponse event is required.");
-    }
+    checkArgument(
+        !functionResponseEvents.isEmpty(), "At least one functionResponse event is required.");
     if (functionResponseEvents.size() == 1) {
       return functionResponseEvents.get(0);
     }
@@ -719,10 +676,9 @@ public final class Contents implements RequestProcessor {
             .parts()
             .orElseThrow(() -> new IllegalArgumentException("Base event content must have parts."));
 
-    if (baseParts.isEmpty()) {
-      throw new IllegalArgumentException(
-          "There should be at least one functionResponse part in the base event.");
-    }
+    checkArgument(
+        !baseParts.isEmpty(),
+        "There should be at least one functionResponse part in the base event.");
     List<Part> partsInMergedEvent = new ArrayList<>(baseParts);
 
     Map<String, Integer> partIndicesInMergedEvent = new HashMap<>();

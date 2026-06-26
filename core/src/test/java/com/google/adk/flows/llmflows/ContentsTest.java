@@ -550,7 +550,7 @@ public final class ContentsTest {
   }
 
   @Test
-  public void rearrangeHistory_gemini3interleavedFCFR_groupsFcAndFr() {
+  public void rearrangeHistory_gemini3SequentialCalls_preservesInterleavedOrder() {
     Event u1 = createUserEvent("u1", "Query");
     Event fc1 = createFunctionCallEvent("fc1", "tool1", "call1");
     Event fr1 = createFunctionResponseEvent("fr1", "tool1", "call1");
@@ -561,16 +561,66 @@ public final class ContentsTest {
 
     List<Content> result = runContentsProcessorWithModelName(inputEvents, "gemini-3-flash-exp");
 
-    assertThat(result).hasSize(4);
-    assertThat(result.get(0)).isEqualTo(u1.content().get());
-    assertThat(result.get(1)).isEqualTo(fc1.content().get());
-    assertThat(result.get(2)).isEqualTo(fc2.content().get());
-    Content mergedContent = result.get(3);
+    assertThat(result).isEqualTo(eventsToContents(inputEvents));
+  }
+
+  @Test
+  public void rearrangeHistory_sequentialCalls_preservesInterleavedOrder() {
+    Event u1 = createUserEvent("u1", "Query");
+    Event fc1 = createFunctionCallEvent("fc1", "tool1", "call1");
+    Event fr1 = createFunctionResponseEvent("fr1", "tool1", "call1");
+    Event fc2 = createFunctionCallEvent("fc2", "tool2", "call2");
+    Event fr2 = createFunctionResponseEvent("fr2", "tool2", "call2");
+
+    ImmutableList<Event> inputEvents = ImmutableList.of(u1, fc1, fr1, fc2, fr2);
+
+    List<Content> result = runContentsProcessor(inputEvents);
+
+    assertThat(result).isEqualTo(eventsToContents(inputEvents));
+  }
+
+  @Test
+  public void rearrangeHistory_parallelCallsSeparateResponseEvents_mergesResponses() {
+    Event fcEvent = createParallelFunctionCallEvent("fc1", "tool1", "call1", "tool2", "call2");
+    Event frEvent1 = createFunctionResponseEvent("fr1", "tool1", "call1");
+    Event frEvent2 = createFunctionResponseEvent("fr2", "tool2", "call2");
+    ImmutableList<Event> inputEvents =
+        ImmutableList.of(createUserEvent("u1", "Query"), fcEvent, frEvent1, frEvent2);
+
+    List<Content> result = runContentsProcessorWithModelName(inputEvents, "gemini-3-flash-exp");
+
+    assertThat(result).hasSize(3); // u1, fc1, merged_fr
+    assertThat(result.get(0)).isEqualTo(inputEvents.get(0).content().get());
+    assertThat(result.get(1)).isEqualTo(inputEvents.get(1).content().get());
+    Content mergedContent = result.get(2);
     assertThat(mergedContent.parts().get()).hasSize(2);
     assertThat(mergedContent.parts().get().get(0).functionResponse().get().name())
         .hasValue("tool1");
     assertThat(mergedContent.parts().get().get(1).functionResponse().get().name())
         .hasValue("tool2");
+  }
+
+  @Test
+  public void rearrangeHistory_parallelCallsSeparateResponseEventsInHistory_mergesResponses() {
+    Event fcEvent = createParallelFunctionCallEvent("fc1", "tool1", "call1", "tool2", "call2");
+    Event frEvent1 = createFunctionResponseEvent("fr1", "tool1", "call1");
+    Event frEvent2 = createFunctionResponseEvent("fr2", "tool2", "call2");
+    Event u2 = createUserEvent("u2", "Second Query");
+    ImmutableList<Event> inputEvents =
+        ImmutableList.of(createUserEvent("u1", "Query"), fcEvent, frEvent1, frEvent2, u2);
+
+    List<Content> result = runContentsProcessor(inputEvents);
+
+    assertThat(result).hasSize(4); // u1, fc1, merged_fr, u2
+    assertThat(result.get(0)).isEqualTo(inputEvents.get(0).content().get());
+    assertThat(result.get(1)).isEqualTo(inputEvents.get(1).content().get());
+    Content mergedContent = result.get(2);
+    assertThat(mergedContent.parts().get()).hasSize(2);
+    assertThat(mergedContent.parts().get().get(0).functionResponse().get().name())
+        .hasValue("tool1");
+    assertThat(mergedContent.parts().get().get(1).functionResponse().get().name())
+        .hasValue("tool2");
+    assertThat(result.get(3)).isEqualTo(inputEvents.get(4).content().get());
   }
 
   @Test

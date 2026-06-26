@@ -16,6 +16,8 @@
 
 package com.google.adk.runner;
 
+import static com.google.common.base.Preconditions.checkArgument;
+
 import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.ContextCacheConfig;
@@ -353,9 +355,7 @@ public class Runner {
       InvocationContext invocationContext,
       boolean saveInputBlobsAsArtifacts,
       @Nullable Map<String, Object> stateDelta) {
-    if (newMessage.parts().isEmpty()) {
-      throw new IllegalArgumentException("No parts in the new_message.");
-    }
+    checkArgument(newMessage.parts().isPresent(), "No parts in the new_message.");
 
     Completable saveArtifactsFlow = Completable.complete();
     if (this.artifactService != null && saveInputBlobsAsArtifacts) {
@@ -609,29 +609,37 @@ public class Runner {
             .agent()
             .runAsync(contextWithUpdatedSession)
             .concatMap(
-                agentEvent ->
-                    this.sessionService
-                        .appendEvent(updatedSession, agentEvent)
-                        // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
-                        // sole appendEvent caller (see PersistBarrier).
-                        .doOnSuccess(
-                            unusedEvent ->
-                                PersistBarrier.markPersisted(
-                                    contextWithUpdatedSession, agentEvent.id()))
-                        .doOnError(
-                            error ->
-                                PersistBarrier.markFailed(
-                                    contextWithUpdatedSession, agentEvent.id(), error))
-                        .flatMap(
-                            registeredEvent -> {
-                              // TODO: remove this hack after deprecating runAsync with Session.
-                              copySessionStates(updatedSession, initialContext.session());
-                              return contextWithUpdatedSession
-                                  .pluginManager()
-                                  .onEventCallback(contextWithUpdatedSession, registeredEvent)
-                                  .defaultIfEmpty(registeredEvent);
-                            })
-                        .toFlowable());
+                agentEvent -> {
+                  // Mirror ADK Python (runners.py): partial events are streamed to the caller but
+                  // never persisted, so managed session services (e.g. VertexAiSessionService) do
+                  // not store a duplicate of the function call/text that the final aggregated event
+                  // already carries. Nothing to persist, so resolve the barrier immediately.
+                  Single<Event> persistStep =
+                      agentEvent.partial().orElse(false)
+                          ? Single.just(agentEvent)
+                          : this.sessionService.appendEvent(updatedSession, agentEvent);
+                  return persistStep
+                      // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
+                      // sole appendEvent caller (see PersistBarrier).
+                      .doOnSuccess(
+                          unusedEvent ->
+                              PersistBarrier.markPersisted(
+                                  contextWithUpdatedSession, agentEvent.id()))
+                      .doOnError(
+                          error ->
+                              PersistBarrier.markFailed(
+                                  contextWithUpdatedSession, agentEvent.id(), error))
+                      .flatMap(
+                          registeredEvent -> {
+                            // TODO: remove this hack after deprecating runAsync with Session.
+                            copySessionStates(updatedSession, initialContext.session());
+                            return contextWithUpdatedSession
+                                .pluginManager()
+                                .onEventCallback(contextWithUpdatedSession, registeredEvent)
+                                .defaultIfEmpty(registeredEvent);
+                          })
+                      .toFlowable();
+                });
 
     // If beforeRunCallback returns content, emit it and skip agent
     Context capturedContext = Context.current();

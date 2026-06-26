@@ -44,6 +44,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
@@ -219,6 +220,103 @@ public final class BaseLlmFlowTest {
         events.get(1).content().get(),
         Content.fromParts(Part.fromFunctionResponse("my_function", testResponse)));
     assertThat(events.get(2).content()).hasValue(secondContent);
+  }
+
+  @Test
+  public void run_withPartialFunctionCall_doesNotExecuteTool() {
+    Content partialContent =
+        Content.fromParts(Part.fromFunctionCall("my_function", ImmutableMap.of("arg1", "value1")));
+    LlmResponse partialResponse =
+        LlmResponse.builder().content(partialContent).partial(true).build();
+    TestLlm testLlm = createTestLlm(partialResponse);
+    ImmutableMap<String, Object> testResponse =
+        ImmutableMap.<String, Object>of("response", "response for my_function");
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm)
+                .tools(ImmutableList.of(new TestTool("my_function", testResponse)))
+                .build());
+    BaseLlmFlow baseLlmFlow =
+        createBaseLlmFlow(
+            /* requestProcessors= */ ImmutableList.of(),
+            /* responseProcessors= */ ImmutableList.of(),
+            /* maxSteps= */ Optional.of(1));
+
+    List<Event> events = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).partial()).hasValue(true);
+    assertThat(events.get(0).functionCalls()).hasSize(1);
+  }
+
+  // End-to-end: when the Gemini aggregator emits a partial event and a final aggregated event for
+  // the same function call, both must share the same function-call ID so consumers can correlate
+  // them. Mirrors ADK Python's progressive SSE contract. Simulates the post-aggregator stream (FC
+  // ID pre-populated, same Part reused across both events).
+  @Test
+  public void run_streamingFunctionCallWithPrePopulatedId_partialAndFinalShareFunctionCallId() {
+    // The aggregator (Gemini.processRawResponses) pre-populates the function call ID. Both the
+    // partial event and the final aggregated event reference the same Part with the same ID.
+    Part fcPartWithId =
+        Part.builder()
+            .functionCall(
+                FunctionCall.builder()
+                    .id("adk-fixed-id-for-test")
+                    .name("my_function")
+                    .args(ImmutableMap.of("arg1", "value1"))
+                    .build())
+            .build();
+    Content fcContent = Content.builder().role("model").parts(fcPartWithId).build();
+    LlmResponse partialResponse = LlmResponse.builder().content(fcContent).partial(true).build();
+    LlmResponse aggregatedResponse =
+        LlmResponse.builder().content(fcContent).partial(false).build();
+    Content secondContent =
+        Content.fromParts(Part.fromText("LLM response after function response"));
+    TestLlm testLlm =
+        createTestLlm(
+            // First LLM call: SSE-style stream with partial + aggregated FC events.
+            Flowable.just(partialResponse, aggregatedResponse),
+            // Second LLM call: final text response after the tool executes.
+            Flowable.just(createLlmResponse(secondContent)));
+    ImmutableMap<String, Object> testResponse =
+        ImmutableMap.<String, Object>of("response", "response for my_function");
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm)
+                .tools(ImmutableList.of(new TestTool("my_function", testResponse)))
+                .build());
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> events = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    Event partialFcEvent = null;
+    Event aggregatedFcEvent = null;
+    int totalFunctionResponses = 0;
+    for (Event e : events) {
+      if (!e.functionCalls().isEmpty()) {
+        if (e.partial().orElse(false)) {
+          partialFcEvent = e;
+        } else {
+          aggregatedFcEvent = e;
+        }
+      }
+      totalFunctionResponses += e.functionResponses().size();
+    }
+
+    // Tool executes exactly once (only the non-partial event triggers execution).
+    assertThat(totalFunctionResponses).isEqualTo(1);
+
+    // Both events carry the function call (this matches ADK Python's progressive SSE behavior).
+    assertThat(partialFcEvent).isNotNull();
+    assertThat(aggregatedFcEvent).isNotNull();
+    assertThat(partialFcEvent.functionCalls()).hasSize(1);
+    assertThat(aggregatedFcEvent.functionCalls()).hasSize(1);
+
+    // The FC IDs must match so consumers can correlate/dedupe.
+    String partialId = partialFcEvent.functionCalls().get(0).id().orElseThrow();
+    String aggregatedId = aggregatedFcEvent.functionCalls().get(0).id().orElseThrow();
+    assertThat(partialId).isEqualTo(aggregatedId);
+    assertThat(partialId).isEqualTo("adk-fixed-id-for-test");
   }
 
   @Test
