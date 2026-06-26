@@ -43,9 +43,12 @@ import com.google.adk.agents.Callbacks.AfterModelCallback;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.LoopAgent;
+import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
@@ -2046,6 +2049,407 @@ public final class RunnerTest {
             "child_agent: FunctionResponse(name=echoTool, response={message=hello})",
             "child_agent: Response after user confirmed.")
         .inOrder();
+  }
+
+  // OSS HITL: after an adk_request_confirmation resumes sub-agent B in a SequentialAgent(A, B, C),
+  // the workflow must advance to C without re-running the already completed A.
+  @Test
+  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
+  public void runAsync_withToolConfirmation_inSequentialAgent_runsLaterSubAgentsAfterResume() {
+    LlmAgent agentA =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("agent A done")))
+            .name("a_agent")
+            .build();
+    // With resumability on, B pauses right after requesting confirmation (no extra model call), so
+    // a
+    // single follow-up response covers the resume.
+    TestLlm bTestLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("Response after user confirmed."));
+    LlmAgent agentB =
+        createTestAgentBuilder(bTestLlm)
+            .name("b_agent")
+            .tools(FunctionTool.create(Tools.class, "echoTool", /* requireConfirmation= */ true))
+            .build();
+    LlmAgent agentC =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("agent C done")))
+            .name("c_agent")
+            .build();
+    SequentialAgent workflowAgent =
+        SequentialAgent.builder()
+            .name("workflow_agent")
+            .subAgents(ImmutableList.of(agentA, agentB, agentC))
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(workflowAgent)
+                    .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .build())
+            .build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> eventsBeforeConfirmation =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
+            .toList()
+            .blockingGet();
+
+    // Turn 1: A runs, B pauses for confirmation, and C must not run yet.
+    assertThat(simplifyEvents(eventsBeforeConfirmation)).contains("a_agent: agent A done");
+    assertThat(simplifyEvents(eventsBeforeConfirmation)).doesNotContain("c_agent: agent C done");
+
+    FunctionCall askUserConfirmationFunctionCall =
+        Iterables.getOnlyElement(
+            eventsBeforeConfirmation.stream()
+                .map(Functions::getAskUserConfirmationFunctionCalls)
+                .filter(functionCalls -> !functionCalls.isEmpty())
+                .findFirst()
+                .get());
+    List<Event> eventsAfterConfirmation =
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                Content.fromParts(
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .id(askUserConfirmationFunctionCall.id().get())
+                                .name(askUserConfirmationFunctionCall.name().get())
+                                .response(ImmutableMap.of("confirmed", true)))
+                        .build()))
+            .toList()
+            .blockingGet();
+
+    // Turn 2: B resumes and executes the tool, then C runs. A is not re-run.
+    assertThat(simplifyEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "b_agent: FunctionResponse(name=echoTool, response={message=hello})",
+            "b_agent: Response after user confirmed.",
+            "c_agent: agent C done")
+        .inOrder();
+  }
+
+  // Long-running-call HITL: a pending long-running function call (not the confirmation flow) pauses
+  // SequentialAgent(A, B, C) after B; on resume B continues and C runs, without re-running A.
+  @Test
+  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
+  public void runAsync_withLongRunningCall_inSequentialAgent_runsLaterSubAgentsAfterResume() {
+    LlmAgent agentA =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("agent A done")))
+            .name("a_agent")
+            .build();
+    // With resumability on, B pauses right after the long-running call (no extra model call), so a
+    // single follow-up response covers the resume.
+    TestLlm bTestLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("agent B resumed"));
+    LlmAgent agentB =
+        createTestAgentBuilder(bTestLlm)
+            .name("b_agent")
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "echoTool",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build();
+    LlmAgent agentC =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("agent C done")))
+            .name("c_agent")
+            .build();
+    SequentialAgent workflowAgent =
+        SequentialAgent.builder()
+            .name("workflow_agent")
+            .subAgents(ImmutableList.of(agentA, agentB, agentC))
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(workflowAgent)
+                    .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .build())
+            .build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> eventsBeforeResume =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
+            .toList()
+            .blockingGet();
+
+    // Turn 1: A runs, B issues the long-running call and pauses; C must not run yet. B must not
+    // make
+    // a further model call after the pending call.
+    assertThat(simplifyEvents(eventsBeforeResume)).contains("a_agent: agent A done");
+    assertThat(simplifyEvents(eventsBeforeResume)).doesNotContain("b_agent: agent B resumed");
+    assertThat(simplifyEvents(eventsBeforeResume)).doesNotContain("c_agent: agent C done");
+
+    List<Event> eventsAfterResume =
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                Content.fromParts(
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .id("lro_call_id")
+                                .name("echoTool")
+                                .response(ImmutableMap.of("message", "hello")))
+                        .build()))
+            .toList()
+            .blockingGet();
+
+    // Turn 2: B resumes from the long-running response, then C runs. A is not re-run.
+    assertThat(simplifyEvents(eventsAfterResume))
+        .containsExactly("b_agent: agent B resumed", "c_agent: agent C done")
+        .inOrder();
+  }
+
+  // Regression: a pending long-running call must pause the LLM flow after a single model call when
+  // resumability is on. Before the flow-level pause, the flow kept re-calling the model (re-issuing
+  // the call), burning tokens. The scripted model would re-issue the call if the flow did not
+  // pause;
+  // we assert exactly one model call was made and the later responses were never consumed.
+  @Test
+  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
+  public void runAsync_withLongRunningCall_resumable_pausesAfterSingleModelCall() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            // Extra responses the flow must NOT consume; reaching them means it looped.
+            createFunctionCallLlmResponse(
+                "lro_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("should not be reached"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .name("agent")
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "echoTool",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .build())
+            .build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
+            .toList()
+            .blockingGet();
+
+    // The flow paused after the single long-running call instead of re-calling the model.
+    assertThat(testLlm.getRequests()).hasSize(1);
+    assertThat(simplifyEvents(events)).doesNotContain("agent: should not be reached");
+  }
+
+  // Gating: with resumability OFF (default) the flow does NOT pause on a long-running call; it
+  // keeps
+  // calling the model as before. Pairs with the resumable test above.
+  @Test
+  public void runAsync_withLongRunningCall_resumabilityDisabled_doesNotPause() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("after pending call"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .name("agent")
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "echoTool",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(agent).build()).build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
+            .toList()
+            .blockingGet();
+
+    // No pause: the flow made a second model call and surfaced its response.
+    assertThat(testLlm.getRequests()).hasSize(2);
+    assertThat(simplifyEvents(events)).contains("agent: after pending call");
+  }
+
+  // A pending long-running call must stop a resumable LoopAgent after the current iteration rather
+  // than looping again (re-calling the model every iteration), matching Python ADK v1.
+  @Test
+  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
+  public void runAsync_loopAgentWithLongRunningSubAgent_resumable_stopsAfterFirstIteration() {
+    AtomicInteger calls = new AtomicInteger();
+    TestLlm loopLlm =
+        createTestLlm(
+            () ->
+                calls.incrementAndGet() <= 5
+                    ? Flowable.just(
+                        createFunctionCallLlmResponse(
+                            "lro_call_id", "echoTool", ImmutableMap.of("message", "hello")))
+                    : Flowable.just(createTextLlmResponse("stop")));
+    LlmAgent inner =
+        createTestAgentBuilder(loopLlm)
+            .name("inner")
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "echoTool",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build();
+    LoopAgent loop =
+        LoopAgent.builder()
+            .name("loop")
+            .subAgents(ImmutableList.of(inner))
+            .maxIterations(3)
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(loop)
+                    .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .build())
+            .build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> unused =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
+            .toList()
+            .blockingGet();
+
+    // Paused after the first iteration: one model call, not maxIterations.
+    assertThat(loopLlm.getRequests()).hasSize(1);
+  }
+
+  // In a resumable ParallelAgent, a pending long-running call pauses only its own branch (via the
+  // flow); other branches still complete. ParallelAgent needs no special handling, matching Python
+  // ADK v1 (cancelling siblings would diverge).
+  @Test
+  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
+  public void runAsync_parallelAgentWithLongRunningBranch_resumable_otherBranchCompletes() {
+    TestLlm longRunningLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("unexpected"));
+    LlmAgent longRunningBranch =
+        createTestAgentBuilder(longRunningLlm)
+            .name("long_running_branch")
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "echoTool",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build();
+    LlmAgent plainBranch =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("plain branch done")))
+            .name("plain_branch")
+            .build();
+    ParallelAgent parallel =
+        ParallelAgent.builder()
+            .name("parallel")
+            .subAgents(ImmutableList.of(longRunningBranch, plainBranch))
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(parallel)
+                    .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .build())
+            .build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
+            .toList()
+            .blockingGet();
+
+    // The long-running branch paused after one model call; the other branch still completed.
+    assertThat(longRunningLlm.getRequests()).hasSize(1);
+    assertThat(simplifyEvents(events)).contains("plain_branch: plain branch done");
+  }
+
+  // Resumability disabled (default): a SequentialAgent(A, B, C) does not pause on B's HITL call, so
+  // all sub-agents run in the same turn — matching Python ADK v1 with resumability disabled.
+  @Test
+  public void
+      runAsync_withToolConfirmation_inSequentialAgent_resumabilityDisabled_runsAllSubAgents() {
+    LlmAgent agentA =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("agent A done")))
+            .name("a_agent")
+            .build();
+    TestLlm bTestLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("Response after observing tool needs confirmation."));
+    LlmAgent agentB =
+        createTestAgentBuilder(bTestLlm)
+            .name("b_agent")
+            .tools(FunctionTool.create(Tools.class, "echoTool", /* requireConfirmation= */ true))
+            .build();
+    LlmAgent agentC =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("agent C done")))
+            .name("c_agent")
+            .build();
+    SequentialAgent workflowAgent =
+        SequentialAgent.builder()
+            .name("workflow_agent")
+            .subAgents(ImmutableList.of(agentA, agentB, agentC))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(workflowAgent).build()).build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(events)).contains("a_agent: agent A done");
+    assertThat(simplifyEvents(events)).contains("c_agent: agent C done");
+  }
+
+  // ResumabilityConfig is off by default and reflects the configured value.
+  @Test
+  @SuppressWarnings("deprecation") // ResumabilityConfig is intentionally deprecated (partial).
+  public void resumabilityConfig_defaultsToNotResumable() {
+    assertThat(ResumabilityConfig.builder().build().isResumable()).isFalse();
+    assertThat(ResumabilityConfig.builder().resumable(true).build().isResumable()).isTrue();
   }
 
   // Orphan function responses (id not matching any prior call) should fall back to the root agent.

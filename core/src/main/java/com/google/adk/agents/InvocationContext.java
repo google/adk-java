@@ -18,6 +18,7 @@ package com.google.adk.agents;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
@@ -36,6 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.jspecify.annotations.Nullable;
 
 /** The context for an agent invocation. */
+@SuppressWarnings("deprecation") // Plumbs the deprecated ResumabilityConfig.
 public class InvocationContext {
 
   private final BaseSessionService sessionService;
@@ -50,6 +52,7 @@ public class InvocationContext {
   private final RunConfig runConfig;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
+  private final @Nullable ResumabilityConfig resumabilityConfig;
   private final InvocationCostManager invocationCostManager;
   private final Map<String, Object> callbackContextData;
 
@@ -73,6 +76,7 @@ public class InvocationContext {
     this.endInvocation = builder.endInvocation;
     this.eventsCompactionConfig = builder.eventsCompactionConfig;
     this.contextCacheConfig = builder.contextCacheConfig;
+    this.resumabilityConfig = builder.resumabilityConfig;
     this.invocationCostManager = builder.invocationCostManager;
     // Don't copy the callback context data.  This should be the same instance for the full
     // invocation invocation so that Plugins can access the same data it during the invocation
@@ -217,6 +221,14 @@ public class InvocationContext {
     return Optional.ofNullable(contextCacheConfig);
   }
 
+  /**
+   * Returns whether the current invocation is resumable. Mirrors Python ADK v1's {@code
+   * InvocationContext.is_resumable}.
+   */
+  public boolean isResumable() {
+    return resumabilityConfig != null && resumabilityConfig.isResumable();
+  }
+
   private static class InvocationCostManager {
     private int numberOfLlmCalls = 0;
 
@@ -270,6 +282,7 @@ public class InvocationContext {
       this.endInvocation = context.endInvocation;
       this.eventsCompactionConfig = context.eventsCompactionConfig;
       this.contextCacheConfig = context.contextCacheConfig;
+      this.resumabilityConfig = context.resumabilityConfig;
       this.invocationCostManager = context.invocationCostManager;
       // Don't copy the callback context data.  This should be the same instance for the full
       // invocation invocation so that Plugins can access the same data it during the invocation
@@ -292,6 +305,7 @@ public class InvocationContext {
     private boolean endInvocation = false;
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
     @Nullable private ContextCacheConfig contextCacheConfig;
+    private @Nullable ResumabilityConfig resumabilityConfig;
     private InvocationCostManager invocationCostManager = new InvocationCostManager();
     private Map<String, Object> callbackContextData = new ConcurrentHashMap<>();
 
@@ -464,6 +478,18 @@ public class InvocationContext {
     }
 
     /**
+     * Sets the resumability configuration for the invocation.
+     *
+     * @param resumabilityConfig the resumability configuration.
+     * @return this builder instance for chaining.
+     */
+    @CanIgnoreReturnValue
+    public Builder resumabilityConfig(@Nullable ResumabilityConfig resumabilityConfig) {
+      this.resumabilityConfig = resumabilityConfig;
+      return this;
+    }
+
+    /**
      * Sets the callback context data for the invocation.
      *
      * @param callbackContextData the callback context data.
@@ -530,6 +556,7 @@ public class InvocationContext {
         && Objects.equals(runConfig, that.runConfig)
         && Objects.equals(eventsCompactionConfig, that.eventsCompactionConfig)
         && Objects.equals(contextCacheConfig, that.contextCacheConfig)
+        && Objects.equals(resumabilityConfig, that.resumabilityConfig)
         && Objects.equals(invocationCostManager, that.invocationCostManager)
         && Objects.equals(callbackContextData, that.callbackContextData);
   }
@@ -552,6 +579,7 @@ public class InvocationContext {
         endInvocation,
         eventsCompactionConfig,
         contextCacheConfig,
+        resumabilityConfig,
         invocationCostManager,
         callbackContextData);
   }

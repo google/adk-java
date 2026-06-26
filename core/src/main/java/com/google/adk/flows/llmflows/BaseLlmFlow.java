@@ -521,6 +521,13 @@ public abstract class BaseLlmFlow implements BaseFlow {
                         "Ending flow execution based on final response, endInvocation action or"
                             + " empty event list.");
                     return Flowable.empty();
+                  } else if (invocationContext.isResumable()
+                      && Functions.hasPendingLongRunningCall(eventList)) {
+                    // When resumable, a pending long-running call (e.g. HITL) pauses the flow
+                    // instead of calling the model again, matching Python ADK v1 and avoiding a
+                    // runaway re-issue loop. The disabled path is unchanged.
+                    logger.debug("Pausing flow execution on a pending long-running call.");
+                    return Flowable.empty();
                   } else {
                     logger.debug("Continuing to next step of the flow.");
                     // Wait until the Runner has persisted this step's events so the next step's

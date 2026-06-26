@@ -37,6 +37,8 @@ import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -422,6 +424,64 @@ public final class Functions {
       }
     }
     return longRunningFunctionCalls;
+  }
+
+  /**
+   * Returns the most recent function-call event whose call id matches a function response in the
+   * last event, or empty. Mirrors Python ADK's {@code find_matching_function_call}.
+   */
+  public static Optional<Event> findMatchingFunctionCallEvent(List<Event> events) {
+    if (events.isEmpty()) {
+      return Optional.empty();
+    }
+    Set<String> responseIds = new HashSet<>();
+    for (FunctionResponse functionResponse : Iterables.getLast(events).functionResponses()) {
+      functionResponse.id().ifPresent(responseIds::add);
+    }
+    if (responseIds.isEmpty()) {
+      return Optional.empty();
+    }
+    for (int i = events.size() - 2; i >= 0; i--) {
+      Event event = events.get(i);
+      for (FunctionCall functionCall : event.functionCalls()) {
+        if (functionCall.id().isPresent() && responseIds.contains(functionCall.id().get())) {
+          return Optional.of(event);
+        }
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Returns whether the event emits a long-running function call still awaiting a response (e.g. a
+   * HITL request). Mirrors Python ADK v1's {@code should_pause_invocation}.
+   */
+  public static boolean hasPendingLongRunningCall(Event event) {
+    Set<String> longRunningToolIds = event.longRunningToolIds().orElse(ImmutableSet.of());
+    if (longRunningToolIds.isEmpty()) {
+      return false;
+    }
+    for (FunctionCall functionCall : event.functionCalls()) {
+      if (functionCall.id().isPresent() && longRunningToolIds.contains(functionCall.id().get())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns whether the last one or two events hold a pending long-running call, meaning a
+   * resumable flow should pause instead of calling the model again. Mirrors Python ADK v1's
+   * flow-level pause check on {@code events[-1]} and {@code events[-2]}.
+   */
+  static boolean hasPendingLongRunningCall(List<Event> events) {
+    int from = Math.max(0, events.size() - 2);
+    for (int i = events.size() - 1; i >= from; i--) {
+      if (hasPendingLongRunningCall(events.get(i))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static Maybe<Event> postProcessFunctionResult(
