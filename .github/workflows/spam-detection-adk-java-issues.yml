@@ -76,8 +76,8 @@ jobs:
           DRY_RUN: '1'
           EVENT_NAME: ${{ github.event_name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          # ISSUE_TITLE removed: prevents prompt injection; agent fetches via GitHub API
+          # ISSUE_BODY removed: prevents prompt injection; agent fetches via GitHub API
           # Mapped to the manual-dispatch checkbox. On the daily schedule this is
           # empty, so only issues updated in the last 24h are audited.
           INITIAL_FULL_SCAN: ${{ github.event.inputs.full_scan }}
