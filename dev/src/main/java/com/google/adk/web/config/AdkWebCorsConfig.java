@@ -46,7 +46,7 @@ public class AdkWebCorsConfig {
   public CorsConfigurationSource corsConfigurationSource(AdkWebCorsProperties corsProperties) {
     CorsConfiguration configuration = new CorsConfiguration();
 
-    configuration.setAllowedOrigins(corsProperties.origins());
+    configuration.setAllowedOriginPatterns(corsProperties.origins());
     configuration.setAllowedMethods(corsProperties.methods());
     configuration.setAllowedHeaders(corsProperties.headers());
     configuration.setAllowCredentials(corsProperties.allowCredentials());

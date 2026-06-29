@@ -37,7 +37,7 @@ public record AdkWebCorsProperties(
     origins =
         origins != null && !origins.isEmpty()
             ? origins
-            : List.of("http://localhost:8080", "http://127.0.0.1:8080");
+            : List.of("http://localhost:[*]", "http://127.0.0.1:[*]");
     methods =
         methods != null && !methods.isEmpty()
             ? methods

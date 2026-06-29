@@ -42,6 +42,6 @@ public class WebSocketConfig implements WebSocketConfigurer {
   public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
     registry
         .addHandler(liveWebSocketHandler, "/run_live")
-        .setAllowedOrigins(corsProperties.origins().toArray(new String[0]));
+        .setAllowedOriginPatterns(corsProperties.origins().toArray(new String[0]));
   }
 }
