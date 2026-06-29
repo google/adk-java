@@ -518,9 +518,9 @@ public class Runner {
     Preconditions.checkNotNull(session, "session cannot be null");
     Preconditions.checkNotNull(newMessage, "newMessage cannot be null");
     Preconditions.checkNotNull(runConfig, "runConfig cannot be null");
-    Context capturedContext = Context.current();
     return Flowable.defer(
             () -> {
+              Context capturedContext = Context.current();
               BaseAgent rootAgent = this.agent;
               String invocationId = InvocationContext.newInvocationContextId();
 
