@@ -19,6 +19,12 @@ on:
     # Run daily at 06:00 UTC.
     - cron: '0 6 * * *'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: preview only. Set to false to actually create the issue and PRs.'
+        required: false
+        default: true
+        type: boolean
 
 # Serialize runs so an in-flight daily sweep can't overlap a manual dispatch and
 # act on the same issues twice.
@@ -62,8 +68,8 @@ jobs:
           REPO: ${{ github.event.repository.name }}
           INTERACTIVE: '0'
           # Defaults to a dry run (logs intended comments/labels/closures without
-          # writing). Verify the pipeline, then set DRY_RUN to '0' to go live.
-          DRY_RUN: '1'
+          # writing). Flip to false via manual dispatch to actually mark as stale.
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
           EVENT_NAME: ${{ github.event_name }}
           # Max number of stale-candidate issues to audit per run.
           ISSUE_COUNT_TO_PROCESS: '20'
