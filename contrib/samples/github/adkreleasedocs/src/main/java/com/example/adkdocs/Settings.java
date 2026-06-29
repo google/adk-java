@@ -24,6 +24,9 @@ final class Settings {
   static final String DOC_REPO = envOrDefault("DOC_REPO", "adk-docs");
   static final String CODE_REPO = envOrDefault("CODE_REPO", "adk-java");
 
+  /** Implementation language documented by this analyzer; docs stay single-language. */
+  static final String CODE_LANGUAGE = envOrDefault("CODE_LANGUAGE", "Java");
+
   /** Only changes under this path in the code repo are analyzed. */
   static final String CODE_SOURCE_PATH_FILTER =
       envOrDefault("CODE_SOURCE_PATH_FILTER", "core/src/main/java/");

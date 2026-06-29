@@ -334,16 +334,28 @@ public final class GitHubTools {
   @Schema(
       name = "find_doc_issues",
       description =
-          "Lists OPEN issues in a repository that carry the 'docs updates' label. Call this before"
-              + " creating an issue to avoid filing a duplicate for the same release range.")
+          "Lists OPEN issues in a repository that carry the 'docs updates' label, restricted to a"
+              + " single code repository's release issues. Call this before creating an issue to"
+              + " avoid filing a duplicate for the same release range.")
   public static Map<String, Object> findDocIssues(
       @Schema(name = "repo_owner", description = "The repository owner.") String repoOwner,
-      @Schema(name = "repo_name", description = "The repository name.") String repoName) {
+      @Schema(name = "repo_name", description = "The repository name.") String repoName,
+      @Schema(
+              name = "code_repo",
+              description =
+                  "Only return issues whose title mentions this code repository (e.g."
+                      + " \"adk-java\"), so results stay scoped to one language. Pass an empty"
+                      + " string for no filter.")
+          String codeRepo) {
     try {
       GHRepository repo = connect().getRepository(repoOwner + "/" + repoName);
+      String filter = codeRepo == null ? "" : codeRepo.trim().toLowerCase(Locale.ROOT);
       List<Map<String, Object>> issues = new ArrayList<>();
       for (GHIssue issue : repo.getIssues(GHIssueState.OPEN)) {
         if (issue.isPullRequest() || !hasDocsLabel(issue)) {
+          continue;
+        }
+        if (!issue.getTitle().toLowerCase(Locale.ROOT).contains(filter)) {
           continue;
         }
         Map<String, Object> info = new LinkedHashMap<>();

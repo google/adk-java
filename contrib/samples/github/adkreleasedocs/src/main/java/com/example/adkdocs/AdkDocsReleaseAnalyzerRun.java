@@ -51,6 +51,8 @@ public final class AdkDocsReleaseAnalyzerRun implements Runnable {
       names = "--dry-run",
       negatable = true,
       defaultValue = "true",
+      // Keeps "--dry-run" = true; without it picocli assigns the opposite of defaultValue.
+      fallbackValue = "true",
       description =
           "Preview the issue without creating it (default). Use --no-dry-run to file it for real.")
   private boolean dryRun;
