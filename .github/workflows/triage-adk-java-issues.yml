@@ -17,6 +17,12 @@ on:
     # Run every 6 hours to triage untriaged issues.
     - cron: '0 */6 * * *'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: preview only. Set to false to actually create the issue and PRs.'
+        required: false
+        default: true
+        type: boolean
 
 # Serialize runs that touch the same issue so the scheduled batch sweep can't race
 # a per-issue run on that issue (which, with label appends, could duplicate labels).
@@ -63,7 +69,7 @@ jobs:
           INTERACTIVE: '0'
           # Defaults to a dry run (logs intended labels/assignees without writing).
           # Verify the pipeline, then set DRY_RUN to '0' to go live.
-          DRY_RUN: '1'
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
           EVENT_NAME: ${{ github.event_name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}

@@ -27,6 +27,11 @@ on:
         required: false
         default: false
         type: boolean
+      dry_run:
+        description: 'Dry run: preview only. Set to false to actually create the issue and PRs.'
+        required: false
+        default: true
+        type: boolean
 
 # Serialize runs that touch the same issue so the scheduled sweep can't race a
 # per-issue run on that issue.
@@ -73,7 +78,7 @@ jobs:
           INTERACTIVE: '0'
           # Defaults to a dry run (logs intended labels/comments without writing).
           # Verify the pipeline, then set DRY_RUN to '0' to go live.
-          DRY_RUN: '1'
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
           EVENT_NAME: ${{ github.event_name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
