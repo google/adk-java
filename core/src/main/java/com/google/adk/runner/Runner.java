@@ -24,6 +24,7 @@ import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.Resumable;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
@@ -810,13 +811,7 @@ public class Runner {
   private boolean isTransferableAcrossAgentTree(BaseAgent agentToRun) {
     BaseAgent current = agentToRun;
     while (current != null) {
-      // Agents eligible to transfer must have an LLM-based agent parent.
-      if (!(current instanceof LlmAgent)) {
-        return false;
-      }
-      // If any agent can't transfer to its parent, the chain is broken.
-      LlmAgent agent = (LlmAgent) current;
-      if (agent.disallowTransferToParent()) {
+      if (!(current instanceof Resumable resumableAgent) || !resumableAgent.isResumable()) {
         return false;
       }
       current = current.parentAgent();
