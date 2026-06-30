@@ -61,7 +61,7 @@ public final class GoogleSearchTool extends BaseTool {
     ImmutableList.Builder<Tool> updatedToolsBuilder = ImmutableList.builder();
     updatedToolsBuilder.addAll(existingTools);
 
-    String model = llmRequestBuilder.build().model().get();
+    String model = llmRequestBuilder.build().model().orElse(null);
     if (model != null && (model.startsWith("gemini-2") || model.startsWith("gemini-3"))) {
 
       updatedToolsBuilder.add(Tool.builder().googleSearch(GoogleSearch.builder().build()).build());

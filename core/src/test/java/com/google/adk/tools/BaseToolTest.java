@@ -356,6 +356,16 @@ public final class BaseToolTest {
     testObserver.assertValue(expected);
   }
 
+  @Test
+  public void testProcessLlmRequest_WithNoModel_DoesNotThrowsException() {
+    GoogleSearchTool tool = GoogleSearchTool.INSTANCE;
+    LlmRequest.Builder requestBuilder = LlmRequest.builder();
+
+    tool.processLlmRequest(requestBuilder, null);
+
+    assertNotNull(requestBuilder);
+  }
+
   public record TestToolArgs(int i, String s) {}
 
   @Test
