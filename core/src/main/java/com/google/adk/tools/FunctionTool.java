@@ -450,8 +450,11 @@ public class FunctionTool extends BaseTool {
       }
     }
     if (type.equals(Long.class) || type.equals(long.class)) {
-      if (value instanceof Long || value instanceof Integer) {
+      if (value instanceof Long) {
         return value;
+      }
+      if (value instanceof Integer i) {
+        return i.longValue();
       }
     } else if (type.equals(Double.class) || type.equals(double.class)) {
       if (value instanceof Double d) {

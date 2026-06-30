@@ -300,6 +300,31 @@ public final class FunctionToolTest {
   }
 
   @Test
+  public void call_withPrimitiveLongParam_whenModelProvidesInteger_succeeds() throws Exception {
+    // When the model returns a small integer (e.g. 42), Jackson deserializes it as Integer.
+    // Primitive long was never broken — Java reflection auto-widens int to long.
+    FunctionTool tool = FunctionTool.create(Functions.class, "echoPrimitiveLong");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("value", Integer.valueOf(42)), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("value", 42L);
+  }
+
+  @Test
+  public void call_withBoxedLongParam_whenModelProvidesInteger_succeeds() throws Exception {
+    // When the model returns a small integer (e.g. 42), Jackson deserializes it as Integer.
+    // Boxed Long was broken before the fix — castValue() returned the raw Integer, causing
+    // reflection to throw IllegalArgumentException (Integer is not assignable to Long).
+    FunctionTool tool = FunctionTool.create(Functions.class, "echoBoxedLong");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("value", Integer.valueOf(42)), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("value", 42L);
+  }
+
+  @Test
   public void create_withPojoParamWithFields() {
     FunctionTool tool = FunctionTool.create(Functions.class, "pojoParamWithFields");
 
@@ -1062,6 +1087,14 @@ public final class FunctionToolTest {
           .put("mapParam", mapParam)
           .put("toolContext", toolContext.toString())
           .buildOrThrow();
+    }
+
+    public static ImmutableMap<String, Object> echoPrimitiveLong(long value) {
+      return ImmutableMap.of("value", value);
+    }
+
+    public static ImmutableMap<String, Object> echoBoxedLong(Long value) {
+      return ImmutableMap.of("value", value);
     }
 
     public static ImmutableMap<String, Object> returnsParameterizedList(
