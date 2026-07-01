@@ -43,8 +43,10 @@ import java.util.logging.Logger;
 public final class TraceManager {
   private static final Logger logger = Logger.getLogger(TraceManager.class.getName());
 
+  static final String DEFAULT_ROOT_AGENT_NAME = "_bq_analytics_root_agent_name";
+
   private final ConcurrentLinkedDeque<SpanRecord> records = new ConcurrentLinkedDeque<>();
-  private String rootAgentName = "_bq_analytics_root_agent_name";
+  private String rootAgentName = DEFAULT_ROOT_AGENT_NAME;
   private String activeInvocationId = "_bq_analytics_active_invocation_id";
 
   private final Tracer tracer;
@@ -103,8 +105,26 @@ public final class TraceManager {
   }
 
   public void initTrace(InvocationContext context) {
-    String rootAgentName = context.agent().rootAgent().name();
-    this.rootAgentName = rootAgentName;
+    var rootAgent = context.agent().rootAgent();
+    if (rootAgent != null && rootAgent.name() != null) {
+      this.rootAgentName = rootAgent.name();
+    }
+  }
+
+  /**
+   * Sets the root agent name from the invocation context if it is still the sentinel default.
+   * Null-safe: workflow-driven callbacks with no current agent leave the sentinel in place for a
+   * later event to resolve.
+   */
+  public void initTraceIfNeeded(InvocationContext context) {
+    if (!DEFAULT_ROOT_AGENT_NAME.equals(rootAgentName)) {
+      return;
+    }
+    try {
+      initTrace(context);
+    } catch (RuntimeException e) {
+      // Leave the sentinel; a subsequent event may be able to resolve the root agent.
+    }
   }
 
   public String getTraceId(InvocationContext context) {
@@ -173,7 +193,7 @@ public final class TraceManager {
       if (currentInv.equals(activeInvocationId)) {
         return;
       }
-      logger.info("Clearing stale span records from previous invocation.");
+      logger.fine("Clearing stale span records from previous invocation.");
       clearStack();
     }
 

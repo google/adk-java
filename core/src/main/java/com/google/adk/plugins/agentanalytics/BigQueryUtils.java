@@ -16,8 +16,6 @@
 
 package com.google.adk.plugins.agentanalytics;
 
-import static com.google.adk.plugins.agentanalytics.BigQuerySchema.SCHEMA_VERSION;
-import static com.google.adk.plugins.agentanalytics.BigQuerySchema.SCHEMA_VERSION_LABEL_KEY;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static java.util.stream.Collectors.toCollection;
@@ -179,8 +177,27 @@ final class BigQueryUtils {
     return FRAMEWORK_PREFIX + "/" + Version.JAVA_ADK_VERSION;
   }
 
+  private static final java.util.regex.Pattern SAFE_IDENTIFIER =
+      java.util.regex.Pattern.compile("[A-Za-z0-9_\\-]+");
+
+  private static boolean isSafeIdentifier(String id) {
+    return id != null && SAFE_IDENTIFIER.matcher(id).matches();
+  }
+
   /** Creates and/or replaces the analytics views in BigQuery. */
   static void createAnalyticsViews(BigQuery bigQuery, BigQueryLoggerConfig config) {
+    // View DDL is assembled by string interpolation; refuse to build it if any operator-supplied
+    // identifier contains characters (backticks, quotes, dots, semicolons) that could break or
+    // redirect the statement.
+    if (!isSafeIdentifier(config.projectId())
+        || !isSafeIdentifier(config.datasetId())
+        || !isSafeIdentifier(config.tableName())
+        || !isSafeIdentifier(config.viewPrefix())) {
+      logger.warning(
+          "Skipping analytics view creation: project/dataset/table/viewPrefix contains characters"
+              + " that are unsafe to interpolate into DDL.");
+      return;
+    }
     for (Map.Entry<String, ImmutableList<String>> entry : EVENT_VIEW_DEFS.entrySet()) {
       String eventType = entry.getKey();
       ImmutableList<String> extraCols = entry.getValue();
@@ -215,17 +232,11 @@ final class BigQueryUtils {
     }
   }
 
-  /** Adds missing columns to an existing table if the schema version has changed. */
+  /** Adds missing columns to an existing table if the actual schema is behind the desired schema. */
   static void maybeUpgradeSchema(BigQuery bigQuery, Table existingTable) {
-    String storedVersion =
-        Optional.ofNullable(existingTable.getLabels())
-            .map(labels -> labels.get(SCHEMA_VERSION_LABEL_KEY))
-            .orElse("");
-
-    if (storedVersion.equals(SCHEMA_VERSION)) {
-      return;
-    }
-
+    // Always diff the actual table schema against the desired schema rather than trusting the
+    // stored version label alone: a table stamped with the current label can still be missing
+    // columns (e.g. it was created by an older build), and those must be reconciled.
     SchemaDiff diff =
         schemaFieldsMatch(
             existingTable.getDefinition().getSchema().getFields(),
@@ -314,6 +325,21 @@ final class BigQueryUtils {
                   .setType(StandardSQLTypeName.STRUCT, FieldList.of(mergedSub))
                   .build());
         }
+      } else if (!desiredField
+          .getType()
+          .getStandardType()
+          .equals(existingField.getType().getStandardType())) {
+        // Additive auto-upgrade cannot reconcile a type change on an existing column. Surface it
+        // instead of silently ignoring it, since it will otherwise appear later as opaque Storage
+        // Write append failures.
+        logger.warning(
+            String.format(
+                "Incompatible schema drift on column '%s': table has %s but the plugin expects %s."
+                    + " This cannot be auto-upgraded; writes may fail until the column is fixed"
+                    + " manually.",
+                desiredField.getName(),
+                existingField.getType().getStandardType(),
+                desiredField.getType().getStandardType()));
       }
     }
     return new SchemaDiff(ImmutableList.copyOf(newFields), ImmutableList.copyOf(updatedRecords));
