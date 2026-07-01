@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -545,6 +546,7 @@ public class BigQueryAgentAnalyticsPluginTest {
     Event event =
         Event.builder()
             .author("agent_author")
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("key", "new_value")).build())
             .content(Content.fromParts(Part.fromText("event content")))
             .build();
 
@@ -556,8 +558,20 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertEquals("agent_name", row.get("agent"));
     ObjectNode attributes = (ObjectNode) row.get("attributes");
     assertEquals("agent_author", attributes.get("author").asText());
+    assertEquals("new_value", attributes.get("state_delta").get("key").asText());
     assertTrue(row.get("content").toString().contains("event content"));
     assertEquals(false, row.get("is_truncated"));
+  }
+
+  @Test
+  public void onEventCallback_emptyStateDelta_doesNotEmitStateDelta() throws Exception {
+    Event event = Event.builder().author("agent_author").build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+
+    assertNull(
+        "No STATE_DELTA row should be emitted for an empty state delta",
+        state.getBatchProcessor("invocation_id").queue.poll());
   }
 
   @Test
@@ -580,10 +594,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .getPendingTasksForInvocation("invocation_id")
                 .toArray(new CompletableFuture<?>[0]))
         .join();
-
-    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
-    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
 
     Map<String, Object> a2aRow = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull("A2A_INTERACTION row not found in queue", a2aRow);
@@ -623,10 +633,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .getPendingTasksForInvocation("invocation_id")
                 .toArray(new CompletableFuture<?>[0]))
         .join();
-
-    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
-    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
 
     Map<String, Object> agentResponseRow = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull("AGENT_RESPONSE row not found in queue", agentResponseRow);
@@ -670,10 +676,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .toArray(new CompletableFuture<?>[0]))
         .join();
 
-    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
-    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
-
     Map<String, Object> nextRow = state.getBatchProcessor("invocation_id").queue.poll();
     assertNull("No AGENT_RESPONSE row should be emitted", nextRow);
   }
@@ -698,10 +700,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .toArray(new CompletableFuture<?>[0]))
         .join();
 
-    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
-    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
-
     Map<String, Object> nextRow = state.getBatchProcessor("invocation_id").queue.poll();
     assertNull("No AGENT_RESPONSE row should be emitted", nextRow);
   }
@@ -724,9 +722,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .getPendingTasksForInvocation("invocation_id")
                 .toArray(new CompletableFuture<?>[0]))
         .join();
-
-    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
 
     Map<String, Object> a2aRow = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull("A2A_INTERACTION row not found in queue", a2aRow);
@@ -780,10 +775,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .getPendingTasksForInvocation("invocation_id")
                 .toArray(new CompletableFuture<?>[0]))
         .join();
-
-    // Consume STATE_DELTA
-    Map<String, Object> stateDeltaRow = customState.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
 
     // Get AGENT_RESPONSE
     Map<String, Object> agentResponseRow =
@@ -1171,6 +1162,55 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertNotNull(contentParts.getSubFields().get("storage_mode"));
 
     verify(mockBigQuery).update(any(Table.class));
+  }
+
+  @Test
+  public void maybeUpgradeSchema_warnsOnStructModeDrift() throws Exception {
+    Table mockTable = mock(Table.class);
+    when(mockTable.getTableId()).thenReturn(TableId.of("project", "dataset", "table"));
+    when(mockTable.getLabels()).thenReturn(ImmutableMap.of());
+
+    // Existing table has 'content_parts' as a NULLABLE STRUCT instead of the expected REPEATED
+    ImmutableList<com.google.cloud.bigquery.Field> initialFields =
+        BigQuerySchema.getEventsSchema().getFields().stream()
+            .map(
+                f ->
+                    f.getName().equals("content_parts")
+                        ? f.toBuilder()
+                            .setMode(com.google.cloud.bigquery.Field.Mode.NULLABLE)
+                            .build()
+                        : f)
+            .collect(toImmutableList());
+
+    StandardTableDefinition tableDefinition =
+        StandardTableDefinition.newBuilder()
+            .setSchema(com.google.cloud.bigquery.Schema.of(initialFields))
+            .build();
+    when(mockTable.getDefinition()).thenReturn(tableDefinition);
+
+    Logger logger = Logger.getLogger(BigQueryUtils.class.getName());
+    Handler mockLogHandler = mock(Handler.class);
+    logger.addHandler(mockLogHandler);
+    try {
+      BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
+    } finally {
+      logger.removeHandler(mockLogHandler);
+    }
+
+    ArgumentCaptor<LogRecord> captor = ArgumentCaptor.forClass(LogRecord.class);
+    verify(mockLogHandler, atLeastOnce()).publish(captor.capture());
+    assertTrue(
+        "Should have warned about STRUCT mode drift on content_parts",
+        captor.getAllValues().stream()
+            .anyMatch(
+                record ->
+                    Objects.equals(record.getLevel(), Level.WARNING)
+                        && record
+                            .getMessage()
+                            .contains("Incompatible schema drift on column 'content_parts'")));
+
+    // Mode drift alone is not auto-upgradeable, so no table update should be attempted.
+    verify(mockBigQuery, never()).update(any(Table.class));
   }
 
   @Test

@@ -232,7 +232,9 @@ final class BigQueryUtils {
     }
   }
 
-  /** Adds missing columns to an existing table if the actual schema is behind the desired schema. */
+  /**
+   * Adds missing columns to an existing table if the actual schema is behind the desired schema.
+   */
   static boolean maybeUpgradeSchema(BigQuery bigQuery, Table existingTable) {
     // Always diff the actual table schema against the desired schema rather than trusting the
     // stored version label alone: a table stamped with the current label can still be missing
@@ -310,6 +312,9 @@ final class BigQueryUtils {
       } else if (desiredField.getType().getStandardType().equals(StandardSQLTypeName.STRUCT)
           && existingField.getType().getStandardType().equals(StandardSQLTypeName.STRUCT)
           && desiredField.getSubFields() != null) {
+        // Mode drift on the STRUCT column itself (e.g. NULLABLE vs REPEATED) is just as
+        // un-upgradeable as on a scalar; check it before recursing into subfields.
+        warnOnIncompatibleDrift(existingField, desiredField);
 
         SchemaDiff subDiff =
             schemaFieldsMatch(existingField.getSubFields(), desiredField.getSubFields());
@@ -333,31 +338,32 @@ final class BigQueryUtils {
                   .build());
         }
       } else {
-        // Additive auto-upgrade cannot reconcile a type or mode change on an existing column
-        // (including nested non-STRUCT fields, since this method recurses into STRUCTs). Surface
-        // it instead of silently ignoring it, since it otherwise appears later as opaque Storage
-        // Write append failures.
-        boolean typeDrift =
-            !desiredField
-                .getType()
-                .getStandardType()
-                .equals(existingField.getType().getStandardType());
-        boolean modeDrift = !modesEqual(existingField.getMode(), desiredField.getMode());
-        if (typeDrift || modeDrift) {
-          logger.warning(
-              String.format(
-                  "Incompatible schema drift on column '%s': table has %s/%s but the plugin expects"
-                      + " %s/%s. This cannot be auto-upgraded; writes may fail until the column is"
-                      + " fixed manually.",
-                  desiredField.getName(),
-                  existingField.getType().getStandardType(),
-                  normalizeMode(existingField.getMode()),
-                  desiredField.getType().getStandardType(),
-                  normalizeMode(desiredField.getMode())));
-        }
+        warnOnIncompatibleDrift(existingField, desiredField);
       }
     }
     return new SchemaDiff(ImmutableList.copyOf(newFields), ImmutableList.copyOf(updatedRecords));
+  }
+
+  // Additive auto-upgrade cannot reconcile a type or mode change on an existing column
+  // (including nested non-STRUCT fields, since schemaFieldsMatch recurses into STRUCTs). Surface
+  // it instead of silently ignoring it, since it otherwise appears later as opaque Storage
+  // Write append failures.
+  private static void warnOnIncompatibleDrift(Field existingField, Field desiredField) {
+    boolean typeDrift =
+        !desiredField.getType().getStandardType().equals(existingField.getType().getStandardType());
+    boolean modeDrift = !modesEqual(existingField.getMode(), desiredField.getMode());
+    if (typeDrift || modeDrift) {
+      logger.warning(
+          String.format(
+              "Incompatible schema drift on column '%s': table has %s/%s but the plugin expects"
+                  + " %s/%s. This cannot be auto-upgraded; writes may fail until the column is"
+                  + " fixed manually.",
+              desiredField.getName(),
+              existingField.getType().getStandardType(),
+              normalizeMode(existingField.getMode()),
+              desiredField.getType().getStandardType(),
+              normalizeMode(desiredField.getMode())));
+    }
   }
 
   // BigQuery leaves Field.getMode() null to mean NULLABLE; normalize before comparing.
