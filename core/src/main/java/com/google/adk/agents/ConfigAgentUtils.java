@@ -247,12 +247,18 @@ public final class ConfigAgentUtils {
       BaseAgentConfig.AgentRefConfig subAgentConfig, Path configDir) throws ConfigurationException {
 
     String configPath = subAgentConfig.configPath().trim();
-    Path subAgentConfigPath;
 
     if (Path.of(configPath).isAbsolute()) {
-      subAgentConfigPath = Path.of(configPath);
-    } else {
-      subAgentConfigPath = configDir.resolve(configPath);
+      throw new ConfigurationException(
+          "Absolute paths are not allowed in AgentTool config_path: " + configPath);
+    }
+
+    Path subAgentConfigPath = configDir.resolve(configPath).normalize().toAbsolutePath();
+    Path canonicalConfigDir = configDir.normalize().toAbsolutePath();
+
+    if (!subAgentConfigPath.startsWith(canonicalConfigDir)) {
+      throw new ConfigurationException(
+          "Path traversal detected: config_path resolves outside agent directory: " + configPath);
     }
 
     if (!Files.exists(subAgentConfigPath)) {
