@@ -24,7 +24,6 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanContext;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
-import io.opentelemetry.sdk.trace.ReadableSpan;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Iterator;
@@ -243,22 +242,6 @@ public final class TraceManager {
             .map(SpanRecord::spanId)
             .orElse(null);
     return SpanIds.create(spanId, parentId);
-  }
-
-  Optional<SpanIds> getAmbientSpanAndParent() {
-    Span ambient = Span.current();
-    if (!ambient.getSpanContext().isValid()) {
-      return Optional.empty();
-    }
-    String spanId = ambient.getSpanContext().getSpanId();
-    String parentSpanId = null;
-    if (ambient instanceof ReadableSpan readableSpan) {
-      SpanContext parentCtx = readableSpan.getParentSpanContext();
-      if (parentCtx != null && parentCtx.isValid()) {
-        parentSpanId = parentCtx.getSpanId();
-      }
-    }
-    return Optional.of(SpanIds.create(spanId, parentSpanId));
   }
 
   public Optional<String> getCurrentSpanId() {

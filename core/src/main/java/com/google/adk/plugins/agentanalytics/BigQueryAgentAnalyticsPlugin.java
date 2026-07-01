@@ -387,8 +387,11 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
         eventData
             .flatMap(EventData::traceIdOverride)
             .orElseGet(() -> traceManager.getTraceId(invocationContext));
-    Optional<SpanIds> ambientSpanIds = traceManager.getAmbientSpanAndParent();
-    SpanIds spanIds = ambientSpanIds.orElse(traceManager.getCurrentSpanAndParent());
+    // span_id / parent_span_id must reference the BQAA internal execution tree (spans that are
+    // written as rows), not an ambient OpenTelemetry framework span that is never logged as a row.
+    // Otherwise parent_span_id would dangle. Ambient OTel still governs trace_id (via getTraceId)
+    // for cross-system correlation.
+    SpanIds spanIds = traceManager.getCurrentSpanAndParent();
 
     return new ResolvedTraceIds(
         traceId,
@@ -481,15 +484,13 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     EventData.Builder eventDataBuilder = EventData.builder();
     eventDataBuilder.setTraceIdOverride(traceId);
     eventDataBuilder.setLatency(popped.get().duration());
-    // Only override span IDs when no ambient OTel span exists.
-    // Keep STARTING/COMPLETED pairs consistent.
-    if (!traceManager.hasAmbientSpan()) {
-      if (parentSpanId.isPresent()) {
-        eventDataBuilder.setParentSpanIdOverride(parentSpanId.get());
-      }
-      if (popped.get().spanId() != null) {
-        eventDataBuilder.setSpanIdOverride(popped.get().spanId());
-      }
+    // Always record the internal execution-tree span so the STARTING/COMPLETED pair stays
+    // internally joinable and parent_span_id references a logged row, regardless of ambient OTel.
+    if (parentSpanId.isPresent()) {
+      eventDataBuilder.setParentSpanIdOverride(parentSpanId.get());
+    }
+    if (popped.get().spanId() != null) {
+      eventDataBuilder.setSpanIdOverride(popped.get().spanId());
     }
     return Optional.of(eventDataBuilder.build());
   }
@@ -860,8 +861,9 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       }
     }
 
-    boolean hasAmbient = traceManager.hasAmbientSpan();
-    boolean useOverride = isPopped && !hasAmbient;
+    // Always record the internal execution-tree span for the final response so parent_span_id
+    // references a logged row, regardless of any ambient OpenTelemetry span.
+    boolean useOverride = isPopped;
 
     EventData.Builder eventDataBuilder = EventData.builder();
     if (!duration.isZero()) {
@@ -909,19 +911,17 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     SpanIds spanIds = traceManager.getCurrentSpanAndParent();
     String parentSpanId = spanIds.spanId().orElse(null);
 
-    boolean hasAmbient = traceManager.hasAmbientSpan();
     EventData.Builder eventDataBuilder =
         EventData.builder().setStatus("ERROR").setErrorMessage(error.getMessage());
     if (popped.isPresent()) {
       eventDataBuilder.setLatency(popped.get().duration());
     }
-    if (!hasAmbient) {
-      if (spanId != null) {
-        eventDataBuilder.setSpanIdOverride(spanId);
-      }
-      if (parentSpanId != null) {
-        eventDataBuilder.setParentSpanIdOverride(parentSpanId);
-      }
+    // Always record the internal execution-tree span so parent_span_id references a logged row.
+    if (spanId != null) {
+      eventDataBuilder.setSpanIdOverride(spanId);
+    }
+    if (parentSpanId != null) {
+      eventDataBuilder.setParentSpanIdOverride(parentSpanId);
     }
     return logEvent("LLM_ERROR", invocationContext, null, Optional.of(eventDataBuilder.build()))
         .andThen(Maybe.empty());
@@ -966,16 +966,14 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
             getToolOrigin(tool));
 
     SpanIds spanIds = traceManager.getCurrentSpanAndParent();
-    boolean hasAmbient = traceManager.hasAmbientSpan();
 
     EventData.Builder eventDataBuilder = EventData.builder();
     if (popped.isPresent()) {
       eventDataBuilder.setLatency(popped.get().duration());
     }
-    if (!hasAmbient) {
-      popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
-      spanIds.spanId().ifPresent(eventDataBuilder::setParentSpanIdOverride);
-    }
+    // Always record the internal execution-tree span so parent_span_id references a logged row.
+    popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
+    spanIds.spanId().ifPresent(eventDataBuilder::setParentSpanIdOverride);
 
     return logEvent(
             "TOOL_COMPLETED",
@@ -1008,17 +1006,15 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
             .buildOrThrow();
 
     SpanIds spanIds = traceManager.getCurrentSpanAndParent();
-    boolean hasAmbient = traceManager.hasAmbientSpan();
 
     EventData.Builder eventDataBuilder =
         EventData.builder().setStatus("ERROR").setErrorMessage(error.getMessage());
     if (popped.isPresent()) {
       eventDataBuilder.setLatency(popped.get().duration());
     }
-    if (!hasAmbient) {
-      popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
-      spanIds.spanId().ifPresent(eventDataBuilder::setParentSpanIdOverride);
-    }
+    // Always record the internal execution-tree span so parent_span_id references a logged row.
+    popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
+    spanIds.spanId().ifPresent(eventDataBuilder::setParentSpanIdOverride);
 
     return logEvent(
             "TOOL_ERROR",

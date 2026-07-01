@@ -227,4 +227,19 @@ public class TraceManagerTest {
     traceManager.clearStack();
     assertTrue(traceManager.getCurrentSpanAndParent().spanId().isEmpty());
   }
+
+  @Test
+  public void initTraceIfNeeded_setsRootAgentNameFromContext() {
+    assertEquals(TraceManager.DEFAULT_ROOT_AGENT_NAME, traceManager.getRootAgentName());
+    traceManager.initTraceIfNeeded(mockContext);
+    assertEquals("test-agent", traceManager.getRootAgentName());
+  }
+
+  @Test
+  public void initTraceIfNeeded_nullAgent_keepsSentinel() {
+    InvocationContext ctx = mock(InvocationContext.class);
+    when(ctx.agent()).thenReturn(null);
+    traceManager.initTraceIfNeeded(ctx);
+    assertEquals(TraceManager.DEFAULT_ROOT_AGENT_NAME, traceManager.getRootAgentName());
+  }
 }
