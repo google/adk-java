@@ -233,7 +233,7 @@ final class BigQueryUtils {
   }
 
   /** Adds missing columns to an existing table if the actual schema is behind the desired schema. */
-  static void maybeUpgradeSchema(BigQuery bigQuery, Table existingTable) {
+  static boolean maybeUpgradeSchema(BigQuery bigQuery, Table existingTable) {
     // Always diff the actual table schema against the desired schema rather than trusting the
     // stored version label alone: a table stamped with the current label can still be missing
     // columns (e.g. it was created by an older build), and those must be reconciled.
@@ -242,7 +242,12 @@ final class BigQueryUtils {
             existingTable.getDefinition().getSchema().getFields(),
             BigQuerySchema.getEventsSchema().getFields());
 
-    if (!diff.newTopLevelFields().isEmpty() || !diff.updatedRecordFields().isEmpty()) {
+    if (diff.newTopLevelFields().isEmpty() && diff.updatedRecordFields().isEmpty()) {
+      // Nothing to reconcile; the table already satisfies the desired schema.
+      return true;
+    }
+
+    {
       ImmutableMap<String, Field> updatedFields =
           diff.updatedRecordFields().stream().collect(toImmutableMap(Field::getName, f -> f));
       ImmutableSet<String> updatedNames = updatedFields.keySet();
@@ -281,9 +286,11 @@ final class BigQueryUtils {
                 .build();
 
         var unused = bigQuery.update(updatedTable);
+        return true;
       } catch (BigQueryException e) {
         logger.log(
             Level.WARNING, "Schema auto-upgrade failed for " + existingTable.getTableId(), e);
+        return false;
       }
     }
   }
@@ -325,24 +332,41 @@ final class BigQueryUtils {
                   .setType(StandardSQLTypeName.STRUCT, FieldList.of(mergedSub))
                   .build());
         }
-      } else if (!desiredField
-          .getType()
-          .getStandardType()
-          .equals(existingField.getType().getStandardType())) {
-        // Additive auto-upgrade cannot reconcile a type change on an existing column. Surface it
-        // instead of silently ignoring it, since it will otherwise appear later as opaque Storage
+      } else {
+        // Additive auto-upgrade cannot reconcile a type or mode change on an existing column
+        // (including nested non-STRUCT fields, since this method recurses into STRUCTs). Surface
+        // it instead of silently ignoring it, since it otherwise appears later as opaque Storage
         // Write append failures.
-        logger.warning(
-            String.format(
-                "Incompatible schema drift on column '%s': table has %s but the plugin expects %s."
-                    + " This cannot be auto-upgraded; writes may fail until the column is fixed"
-                    + " manually.",
-                desiredField.getName(),
-                existingField.getType().getStandardType(),
-                desiredField.getType().getStandardType()));
+        boolean typeDrift =
+            !desiredField
+                .getType()
+                .getStandardType()
+                .equals(existingField.getType().getStandardType());
+        boolean modeDrift = !modesEqual(existingField.getMode(), desiredField.getMode());
+        if (typeDrift || modeDrift) {
+          logger.warning(
+              String.format(
+                  "Incompatible schema drift on column '%s': table has %s/%s but the plugin expects"
+                      + " %s/%s. This cannot be auto-upgraded; writes may fail until the column is"
+                      + " fixed manually.",
+                  desiredField.getName(),
+                  existingField.getType().getStandardType(),
+                  normalizeMode(existingField.getMode()),
+                  desiredField.getType().getStandardType(),
+                  normalizeMode(desiredField.getMode())));
+        }
       }
     }
     return new SchemaDiff(ImmutableList.copyOf(newFields), ImmutableList.copyOf(updatedRecords));
+  }
+
+  // BigQuery leaves Field.getMode() null to mean NULLABLE; normalize before comparing.
+  private static Field.Mode normalizeMode(Field.Mode mode) {
+    return mode == null ? Field.Mode.NULLABLE : mode;
+  }
+
+  private static boolean modesEqual(Field.Mode a, Field.Mode b) {
+    return normalizeMode(a) == normalizeMode(b);
   }
 
   private record SchemaDiff(

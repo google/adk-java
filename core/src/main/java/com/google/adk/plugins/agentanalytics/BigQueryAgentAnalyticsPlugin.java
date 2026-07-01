@@ -215,10 +215,14 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
             throw e;
           }
         }
+        tableReady = true;
       } else if (config.autoSchemaUpgrade()) {
-        maybeUpgradeSchema(bigQuery, table);
+        // Only treat the table as ready if the schema upgrade actually succeeded, so a failed
+        // upgrade is retried on a later event instead of being masked by tableEnsured=true.
+        tableReady = maybeUpgradeSchema(bigQuery, table);
+      } else {
+        tableReady = true;
       }
-      tableReady = true;
     } catch (BigQueryException e) {
       processBigQueryException(e, "Failed to check or create/upgrade BigQuery table: " + tableId);
     } catch (RuntimeException e) {
@@ -289,7 +293,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     Map<String, Object> row = new HashMap<>();
     row.put("timestamp", Instant.now());
     row.put("event_type", eventType);
-    row.put("agent", resolveAgentName(invocationContext));
+    row.put("agent", resolveAgentName(invocationContext, eventData));
     row.put("session_id", invocationContext.session().id());
     row.put("invocation_id", invocationContext.invocationId());
     row.put("user_id", invocationContext.userId());
@@ -352,18 +356,28 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
 
   /**
    * Resolves the agent name defensively. Workflow-driven callbacks may have no current agent; fall
-   * back to a sentinel rather than letting an NPE drop the row.
+   * back to the event author (via {@code EventData.fallbackAgentName}, mirroring the Python plugin)
+   * and finally to a sentinel, rather than letting an NPE drop the row.
    */
-  private static String resolveAgentName(InvocationContext invocationContext) {
+  private static String resolveAgentName(
+      InvocationContext invocationContext, Optional<EventData> eventData) {
     try {
       BaseAgent agent = invocationContext.agent();
       if (agent != null && agent.name() != null) {
         return agent.name();
       }
     } catch (RuntimeException e) {
-      // Fall through to the sentinel below.
+      // Fall through to the author/sentinel fallback below.
     }
-    return "unknown";
+    return eventData.flatMap(EventData::fallbackAgentName).orElse("unknown");
+  }
+
+  private static EventData.Builder withFallbackAgent(
+      EventData.Builder builder, @Nullable String author) {
+    if (author != null && !author.isEmpty()) {
+      builder.setFallbackAgentName(author);
+    }
+    return builder;
   }
 
   private ResolvedTraceIds getResolvedTraceIds(
@@ -525,12 +539,14 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     Completable logCompletable = Completable.complete();
     if (!event.actions().stateDelta().isEmpty()) {
       EventData.Builder eventDataBuilder =
-          EventData.builder()
-              .setExtraAttributes(
-                  ImmutableMap.<String, Object>builder()
-                      .put("state_delta", event.actions().stateDelta())
-                      .put("author", event.author())
-                      .buildOrThrow());
+          withFallbackAgent(
+              EventData.builder()
+                  .setExtraAttributes(
+                      ImmutableMap.<String, Object>builder()
+                          .put("state_delta", event.actions().stateDelta())
+                          .put("author", event.author())
+                          .buildOrThrow()),
+              event.author());
       logCompletable =
           logEvent(
               "STATE_DELTA",
@@ -618,7 +634,11 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
                     invocationContext,
                     contentObject,
                     a2aTruncated.isTruncated() || contentTruncated,
-                    Optional.of(EventData.builder().setExtraAttributes(extraAttributes).build())));
+                    Optional.of(
+                        withFallbackAgent(
+                                EventData.builder().setExtraAttributes(extraAttributes),
+                                event.author())
+                            .build())));
       }
     }
 
@@ -653,7 +673,11 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
                     invocationContext,
                     visibleContent,
                     false,
-                    Optional.of(EventData.builder().setExtraAttributes(extraAttributes).build())));
+                    Optional.of(
+                        withFallbackAgent(
+                                EventData.builder().setExtraAttributes(extraAttributes),
+                                event.author())
+                            .build())));
       }
     }
 

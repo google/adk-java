@@ -47,6 +47,10 @@ abstract class EventData {
 
   abstract Optional<String> traceIdOverride();
 
+  // Fallback name for the `agent` column when the InvocationContext has no current agent (e.g.
+  // workflow-driven callbacks). Mirrors the Python plugin's fallback to Event.author.
+  abstract Optional<String> fallbackAgentName();
+
   static Builder builder() {
     return new AutoValue_EventData.Builder().setStatus("OK").setExtraAttributes(ImmutableMap.of());
   }
@@ -74,6 +78,8 @@ abstract class EventData {
     abstract Builder setExtraAttributes(Map<String, Object> value);
 
     abstract Builder setTraceIdOverride(String value);
+
+    abstract Builder setFallbackAgentName(String value);
 
     abstract EventData build();
   }
