@@ -272,4 +272,68 @@ public class JsonFormatterTest {
     assertTrue(result.isTruncated());
     assertEquals("[cycle detected]", result.node().get("child").asText());
   }
+
+  @Test
+  public void smartTruncate_redactsSensitiveTopLevelKeys() {
+    ImmutableMap<String, Object> map =
+        ImmutableMap.of("api_key", "sk-secret", "password", "hunter2", "keep", "value");
+    JsonFormatter.TruncationResult result = JsonFormatter.smartTruncate(map, 5000);
+
+    JsonNode node = result.node();
+    assertEquals("[REDACTED]", node.get("api_key").asText());
+    assertEquals("[REDACTED]", node.get("password").asText());
+    assertEquals("value", node.get("keep").asText());
+    // Redaction must not flip the truncation flag.
+    assertFalse(result.isTruncated());
+  }
+
+  @Test
+  public void smartTruncate_redactsCaseInsensitiveAndTempPrefixKeys() {
+    ImmutableMap<String, Object> map =
+        ImmutableMap.of("Access_Token", "abc", "temp:scratch", "xyz", "keep", "ok");
+    JsonNode node = JsonFormatter.smartTruncate(map, 5000).node();
+
+    assertEquals("[REDACTED]", node.get("Access_Token").asText());
+    assertEquals("[REDACTED]", node.get("temp:scratch").asText());
+    assertEquals("ok", node.get("keep").asText());
+  }
+
+  @Test
+  public void smartTruncate_redactsNestedSensitiveKeys() {
+    ImmutableMap<String, Object> map =
+        ImmutableMap.of("outer", ImmutableMap.of("client_secret", "s", "ok", "v"));
+    JsonNode node = JsonFormatter.smartTruncate(map, 5000).node();
+
+    assertEquals("[REDACTED]", node.get("outer").get("client_secret").asText());
+    assertEquals("v", node.get("outer").get("ok").asText());
+  }
+
+  @Test
+  public void smartTruncate_depthGuard_replacesDeepSubtreeWithSentinel() {
+    java.util.Map<String, Object> root = new java.util.HashMap<>();
+    java.util.Map<String, Object> cur = root;
+    for (int i = 0; i < 300; i++) {
+      java.util.Map<String, Object> next = new java.util.HashMap<>();
+      cur.put("child", next);
+      cur = next;
+    }
+
+    JsonFormatter.TruncationResult result = JsonFormatter.smartTruncate(root, 5000);
+    assertTrue(result.isTruncated());
+
+    JsonNode node = result.node();
+    boolean foundSentinel = false;
+    for (int i = 0; i < 400; i++) {
+      JsonNode child = node.get("child");
+      if (child == null) {
+        break;
+      }
+      if (child.isTextual() && JsonFormatter.MAX_DEPTH_MESSAGE.equals(child.asText())) {
+        foundSentinel = true;
+        break;
+      }
+      node = child;
+    }
+    assertTrue("Expected the max-depth sentinel in the deep chain", foundSentinel);
+  }
 }
