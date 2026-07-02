@@ -477,6 +477,7 @@ public class Tracing {
    * @param <T> The type of the stream.
    * @return A TracerProvider configured for agent invocation.
    */
+  @Deprecated // Use trace() instead and configure the span manually.
   public static <T> TracerProvider<T> traceAgent(
       String spanName,
       String agentName,
@@ -555,6 +556,12 @@ public class Tracing {
       }
     }
 
+    /**
+     * Applies tracing to a {@link Flowable} stream.
+     *
+     * @param upstream The upstream Flowable.
+     * @return A Publisher with tracing lifecycle management.
+     */
     @Override
     public Publisher<T> apply(Flowable<T> upstream) {
       return Flowable.defer(
@@ -569,6 +576,12 @@ public class Tracing {
           });
     }
 
+    /**
+     * Applies tracing to a {@link Single} stream.
+     *
+     * @param upstream The upstream Single.
+     * @return A SingleSource with tracing lifecycle management.
+     */
     @Override
     public SingleSource<T> apply(Single<T> upstream) {
       return Single.defer(
@@ -583,6 +596,12 @@ public class Tracing {
           });
     }
 
+    /**
+     * Applies tracing to a {@link Maybe} stream.
+     *
+     * @param upstream The upstream Maybe.
+     * @return A MaybeSource with tracing lifecycle management.
+     */
     @Override
     public MaybeSource<T> apply(Maybe<T> upstream) {
       return Maybe.defer(
@@ -597,6 +616,12 @@ public class Tracing {
           });
     }
 
+    /**
+     * Applies tracing to a {@link Completable} stream.
+     *
+     * @param upstream The upstream Completable.
+     * @return A CompletableSource with tracing lifecycle management.
+     */
     @Override
     public CompletableSource apply(Completable upstream) {
       return Completable.defer(
@@ -636,21 +661,45 @@ public class Tracing {
       this.context = context;
     }
 
+    /**
+     * Applies context re-activation to a {@link Flowable} stream.
+     *
+     * @param upstream The upstream Flowable.
+     * @return A Publisher wrapped with context re-activation.
+     */
     @Override
     public Publisher<T> apply(Flowable<T> upstream) {
       return upstream.lift(subscriber -> TracingObserver.wrap(context, subscriber));
     }
 
+    /**
+     * Applies context re-activation to a {@link Single} stream.
+     *
+     * @param upstream The upstream Single.
+     * @return A SingleSource wrapped with context re-activation.
+     */
     @Override
     public SingleSource<T> apply(Single<T> upstream) {
       return upstream.lift(observer -> TracingObserver.wrap(context, observer));
     }
 
+    /**
+     * Applies context re-activation to a {@link Maybe} stream.
+     *
+     * @param upstream The upstream Maybe.
+     * @return A MaybeSource wrapped with context re-activation.
+     */
     @Override
     public MaybeSource<T> apply(Maybe<T> upstream) {
       return upstream.lift(observer -> TracingObserver.wrap(context, observer));
     }
 
+    /**
+     * Applies context re-activation to a {@link Completable} stream.
+     *
+     * @param upstream The upstream Completable.
+     * @return A CompletableSource wrapped with context re-activation.
+     */
     @Override
     public CompletableSource apply(Completable upstream) {
       return upstream.lift(observer -> TracingObserver.wrap(context, observer));
