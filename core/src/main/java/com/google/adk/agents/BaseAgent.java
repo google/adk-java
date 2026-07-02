@@ -35,6 +35,7 @@ import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -43,9 +44,13 @@ import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Base class for all agents. */
 public abstract class BaseAgent {
+
+  private static final Logger logger = LoggerFactory.getLogger(BaseAgent.class);
 
   // Pattern for valid agent names.
   private static final String IDENTIFIER_REGEX = "^_?[a-zA-Z0-9]*([. _-][a-zA-Z0-9]+)*$";
@@ -342,6 +347,7 @@ public abstract class BaseAgent {
                                       invocationContext)
                                   .toFlowable()));
 
+          Instant[] startTime = new Instant[1];
           return callCallback(
                   beforeCallbacksToFunctions(
                       invocationContext.pluginManager(), beforeAgentCallback),
@@ -354,6 +360,27 @@ public abstract class BaseAgent {
                     return Flowable.just(beforeEvent).concatWith(mainAndAfterEvents);
                   })
               .switchIfEmpty(mainAndAfterEvents)
+              .doOnSubscribe(
+                  subscription -> {
+                    startTime[0] = Instant.now();
+                    logger.info("ADK Agent {} started execution", name);
+                  })
+              .doOnTerminate(
+                  () -> {
+                    if (startTime[0] != null) {
+                      long elapsed =
+                          java.time.Duration.between(startTime[0], Instant.now()).toMillis();
+                      logger.info("ADK Agent {} finished execution: elapsed={} ms", name, elapsed);
+                    }
+                  })
+              .doOnCancel(
+                  () -> {
+                    if (startTime[0] != null) {
+                      long elapsed =
+                          java.time.Duration.between(startTime[0], Instant.now()).toMillis();
+                      logger.info("ADK Agent {} cancelled execution: elapsed={} ms", name, elapsed);
+                    }
+                  })
               .doOnNext(agentInvocation::addEvent)
               .doOnError(agentInvocation::setError);
         },
