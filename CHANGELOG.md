@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.6.0](https://github.com/google/adk-java/compare/v1.5.0...v1.6.0) (2026-07-02)
+
+
+### Features
+
+* Add ADK Issue Monitoring (Spam Detection) Agent sample for Java ([fd45dda](https://github.com/google/adk-java/commit/fd45dda7c07dfd241ff6650d41a323857bfd632e))
+* Add ADK Java Issue Triaging Agent sample ([fa94438](https://github.com/google/adk-java/commit/fa9443825bf9ecbaa6af5ee28f3fad8d162d74fa))
+* Add ADK PR Triaging Agent for google/adk-java ([f14f644](https://github.com/google/adk-java/commit/f14f6442c5a0f11d7772d8c47d92cc23013d0010))
+* Add chat-completions API support to ApigeeLlm ([df73784](https://github.com/google/adk-java/commit/df737840299cd2369a699abb4bd6028d7da1a630))
+* Add ClassPathSkillSource to load skills from the Java classpath ([587073a](https://github.com/google/adk-java/commit/587073a23ea781efd44990ad440b52caace3db4f))
+* Adds the ADK Stale Issue Auditor sample ([b6bd2dd](https://github.com/google/adk-java/commit/b6bd2dde4b1e26896815a23c686c9068b10e5397))
+* advance SequentialAgent to later sub-agents after a HITL resume when resumability is enabled ([407478b](https://github.com/google/adk-java/commit/407478bc131721c23318a3f8e8a06521490494e9))
+* Updated Spring AI to 2.0.0, ECJ, build works with Java 25 ([3f6665b](https://github.com/google/adk-java/commit/3f6665b2734d6c3a610c069f30fa305ea137f35a))
+
+
+### Bug Fixes
+
+* **core:** allow Long values to match INTEGER schema type ([a6d41cf](https://github.com/google/adk-java/commit/a6d41cff76682bc16b9871f3f3fd5a11cb1cccf9))
+* **gemini:** align streaming function-call handling with ADK Python ([37bb5e6](https://github.com/google/adk-java/commit/37bb5e6a7b01470d9f07a7b03ac3019bb7ddcc14))
+* ignore usage-only responses outside bidi ([a6cb87a](https://github.com/google/adk-java/commit/a6cb87ae2016c6de25d2b8a7ae369c5e95a43d92))
+* Make dry_run configurable for ADK Java PR triage, spam detection, and issue triage workflows ([4225b07](https://github.com/google/adk-java/commit/4225b07ed356b5fc0a70c0620b42cbef297d722d))
+* Make stale issue workflow configurable for dry runs ([d0edd41](https://github.com/google/adk-java/commit/d0edd41bfa30388f03092d70813e1136cee3295d))
+* map ChatResponse usage metadata to LlmResponse ([71f6929](https://github.com/google/adk-java/commit/71f69293ecfe2eb92b48b3cc9d58b60c71758481))
+* map token usage metadata for Anthropic Claude model ([f76c5f9](https://github.com/google/adk-java/commit/f76c5f98ce15759723b1e21f4c0c6485a1c810fd))
+* Move @JsonCreator inside LiveRequest Builder ([d667db8](https://github.com/google/adk-java/commit/d667db8e4f18633f15e5fd375f45b036c2801048))
+* Resolve NPE when McpTool description is null ([8ed64ea](https://github.com/google/adk-java/commit/8ed64ea2ad4cfecc71faf16d150c7c80da13ac1a))
+* Safely handle empty model in GoogleSearchTool request processor ([e255192](https://github.com/google/adk-java/commit/e255192b293980ab843616dbd459ee48d5debff7))
+* scope ADK Java docs release analyzer to a single language ([07a2ec9](https://github.com/google/adk-java/commit/07a2ec992713a4e215c93539ea1866d9469e78fd))
+* use daemon threads in OkHttp dispatchers to allow graceful JVM shutdown ([9b046b6](https://github.com/google/adk-java/commit/9b046b6a3f72ff279fe852899d92627983baa2c2))
+* Use existing secrets and built-in token in ADK docs release analyzer workflow ([456234f](https://github.com/google/adk-java/commit/456234f264f519796609bbfc0556932b34a7f7a0))
+* widen Integer to Long in castValue() for boxed Long parameter ([bc32948](https://github.com/google/adk-java/commit/bc32948b462e8cc17c366c661f29564aade5c93e))
+
 ## [1.5.0](https://github.com/google/adk-java/compare/v1.4.0...v1.5.0) (2026-06-20)
 
 
