@@ -4,11 +4,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
@@ -23,19 +19,11 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.a2a.server.agentexecution.RequestContext;
 import io.a2a.server.events.EventQueue;
-import io.a2a.spec.Message;
-import io.a2a.spec.TaskArtifactUpdateEvent;
-import io.a2a.spec.TaskState;
-import io.a2a.spec.TaskStatus;
-import io.a2a.spec.TaskStatusUpdateEvent;
-import io.a2a.spec.TextPart;
+import io.a2a.spec.*;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -350,10 +338,15 @@ public final class AgentExecutorTest {
             .parts(ImmutableList.of(new TextPart("trigger")))
             .build();
 
+    MessageSendParams params = mock(MessageSendParams.class);
+    when(params.message()).thenReturn(message);
+    when(params.metadata()).thenReturn(ImmutableMap.of("key", "value"));
+
     RequestContext ctx = mock(RequestContext.class);
     when(ctx.getMessage()).thenReturn(message);
     when(ctx.getTaskId()).thenReturn("task-" + UUID.randomUUID());
     when(ctx.getContextId()).thenReturn("ctx-" + UUID.randomUUID());
+    when(ctx.getParams()).thenReturn(params);
     return ctx;
   }
 
