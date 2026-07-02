@@ -45,12 +45,21 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
 
   @Override
   public Single<ImmutableList<String>> listResources(String skillName, String resourceDirectory) {
-    Path skillDir = skillsBasePath.resolve(skillName);
+    Path skillDir = skillsBasePath.resolve(skillName).normalize();
     if (!isDirectory(skillDir)) {
       return Single.error(
           new SkillSourceException("Skill not found: " + skillName, SKILL_NOT_FOUND));
     }
-    Path resourceDir = skillDir.resolve(resourceDirectory);
+    Path resourceDir = skillDir.resolve(resourceDirectory).normalize();
+    // Prevent path traversal: the resolved resource directory must remain inside
+    // the skill's own directory. A raw string prefix check on the input is not
+    // sufficient because "references/../../../../etc" bypasses it.
+    if (!resourceDir.startsWith(skillDir)) {
+      return Single.error(
+          new SkillSourceException(
+              "Path traversal detected in resource directory: " + resourceDirectory,
+              RESOURCE_NOT_FOUND));
+    }
     if (!isDirectory(resourceDir)) {
       return Single.error(
           new SkillSourceException(
@@ -96,7 +105,16 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
 
   @Override
   protected Single<Path> findResourcePath(String skillName, String resourcePath) {
-    Path file = skillsBasePath.resolve(skillName).resolve(resourcePath);
+    Path base = skillsBasePath.resolve(skillName).normalize();
+    Path file = base.resolve(resourcePath).normalize();
+    // Enforce boundary: the resolved path must remain inside the skill's base
+    // directory. Without this check, a payload like
+    // "references/../../../../etc/passwd" passes the startsWith("references/")
+    // prefix check in LoadSkillResourceTool but resolves outside skillsBasePath.
+    if (!file.startsWith(base)) {
+      return Single.error(
+          new SkillSourceException("Path traversal detected: " + resourcePath, RESOURCE_NOT_FOUND));
+    }
     if (!Files.exists(file)) {
       return Single.error(
           new SkillSourceException("Resource not found: " + file, RESOURCE_NOT_FOUND));

@@ -374,4 +374,91 @@ public final class LocalSkillSourceTest {
         .hasMessageThat()
         .contains("Skill file must start with ---");
   }
+
+  @Test
+  public void testLoadResource_pathTraversalBlocked() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    Path skillDir = skillsBase.resolve("my-skill");
+    Files.createDirectory(skillDir);
+    Files.createDirectory(skillDir.resolve("references"));
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+    // "references/../../../../etc/passwd" passes startsWith("references/") but escapes skillsBase
+    var single = source.loadResource("my-skill", "references/../../../../etc/passwd");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.RESOURCE_NOT_FOUND);
+    assertThat(cause).hasMessageThat().contains("Path traversal detected");
+  }
+
+  @Test
+  public void testLoadResource_pathTraversalWithDoubleDotOnly() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    Path skillDir = skillsBase.resolve("my-skill");
+    Files.createDirectory(skillDir);
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+    var single = source.loadResource("my-skill", "../../outside.txt");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.RESOURCE_NOT_FOUND);
+    assertThat(cause).hasMessageThat().contains("Path traversal detected");
+  }
+
+  @Test
+  public void testLoadResource_legitimatePathNotBlocked() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    Path skillDir = skillsBase.resolve("my-skill");
+    Files.createDirectory(skillDir);
+    Path referencesDir = skillDir.resolve("references");
+    Files.createDirectory(referencesDir);
+    Files.writeString(referencesDir.resolve("readme.md"), "legitimate content");
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+    ByteSource resource = source.loadResource("my-skill", "references/readme.md").blockingGet();
+    assertThat(new String(resource.read(), UTF_8)).isEqualTo("legitimate content");
+  }
+
+  @Test
+  public void testListResources_pathTraversalInResourceDirectoryBlocked() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    Path skillDir = skillsBase.resolve("my-skill");
+    Files.createDirectory(skillDir);
+    Files.createDirectory(skillDir.resolve("references"));
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+    var single = source.listResources("my-skill", "references/../../../../etc");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.RESOURCE_NOT_FOUND);
+    assertThat(cause).hasMessageThat().contains("Path traversal detected");
+  }
+
+  @Test
+  public void testListResources_dotDotResourceDirectoryBlocked() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    Path skillDir = skillsBase.resolve("my-skill");
+    Files.createDirectory(skillDir);
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+    var single = source.listResources("my-skill", "../other-skill");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.RESOURCE_NOT_FOUND);
+    assertThat(cause).hasMessageThat().contains("Path traversal detected");
+  }
 }
