@@ -56,10 +56,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5
         with:
           distribution: temurin
           java-version: '17'
@@ -81,8 +81,9 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
           EVENT_NAME: ${{ github.event_name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          # ISSUE_TITLE and ISSUE_BODY intentionally omitted: passing raw GitHub event
+          # content directly as env vars is a prompt-injection vector. The agent
+          # must fetch issue content via the GitHub API using ISSUE_NUMBER instead.
           # Mapped to the manual-dispatch checkbox. On the daily schedule this is
           # empty, so only issues updated in the last 24h are audited.
           INITIAL_FULL_SCAN: ${{ github.event.inputs.full_scan }}
