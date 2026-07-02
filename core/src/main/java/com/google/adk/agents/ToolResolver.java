@@ -25,6 +25,7 @@ import com.google.adk.tools.BaseTool.ToolConfig;
 import com.google.adk.tools.BaseToolset;
 import com.google.adk.utils.ComponentRegistry;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -40,6 +41,35 @@ import org.slf4j.LoggerFactory;
 final class ToolResolver {
 
   private static final Logger logger = LoggerFactory.getLogger(LlmAgent.class);
+
+  /**
+   * Allowlist of trusted package prefixes for dynamic class loading from YAML configs.
+   *
+   * <p>Security: Only classes from these packages can be loaded via reflection when specified in
+   * YAML agent configurations. This prevents arbitrary class loading attacks where a malicious YAML
+   * config could specify dangerous classes (e.g., Runtime, ProcessBuilder) to achieve code
+   * execution. This is the Java equivalent of CVE-2026-4810 in adk-python.
+   */
+  private static final ImmutableSet<String> ALLOWED_CLASS_PREFIXES =
+      ImmutableSet.of("com.google.adk.", "google.adk.");
+
+  /**
+   * Validates that a class name is from an allowed package before dynamic loading.
+   *
+   * @param className the fully qualified class name to validate
+   * @return true if the class is from an allowed package
+   */
+  static boolean isAllowedClassForLoading(String className) {
+    if (isNullOrEmpty(className)) {
+      return false;
+    }
+    for (String prefix : ALLOWED_CLASS_PREFIXES) {
+      if (className.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   private ToolResolver() {}
 
@@ -270,6 +300,11 @@ final class ToolResolver {
     if (toolsetClassOpt.isPresent()) {
       toolsetClass = toolsetClassOpt.get();
     } else if (isJavaQualifiedName(className)) {
+      // Security: Only allow class loading from trusted ADK packages
+      if (!isAllowedClassForLoading(className)) {
+        logger.warn("Blocked dynamic class loading from untrusted package: {}", className);
+        return null;
+      }
       // Try reflection to get class
       try {
         Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
@@ -345,6 +380,12 @@ final class ToolResolver {
     String className = toolsetName.substring(0, lastDotIndex);
     String fieldName = toolsetName.substring(lastDotIndex + 1);
 
+    // Security: Only allow class loading from trusted ADK packages
+    if (!isAllowedClassForLoading(className)) {
+      logger.warn("Blocked dynamic class loading from untrusted package: {}", className);
+      return null;
+    }
+
     Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
 
     try {
@@ -395,6 +436,11 @@ final class ToolResolver {
     if (classOpt.isPresent()) {
       toolClass = classOpt.get();
     } else if (isJavaQualifiedName(className)) {
+      // Security: Only allow class loading from trusted ADK packages
+      if (!isAllowedClassForLoading(className)) {
+        logger.warn("Blocked dynamic class loading from untrusted package: {}", className);
+        return null;
+      }
       // Try reflection to get class
       try {
         Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
@@ -435,7 +481,8 @@ final class ToolResolver {
     // No args provided or empty args, try default constructor
     try {
       Constructor<? extends BaseTool> constructor = toolClass.getDeclaredConstructor();
-      constructor.setAccessible(true);
+      // Security: Do not call setAccessible(true) — only use public constructors
+      // to prevent bypassing access controls on non-public classes.
       return constructor.newInstance();
     } catch (NoSuchMethodException e) {
       throw new ConfigurationException(
@@ -490,6 +537,12 @@ final class ToolResolver {
 
     String className = toolName.substring(0, lastDotIndex);
     String fieldName = toolName.substring(lastDotIndex + 1);
+
+    // Security: Only allow class loading from trusted ADK packages
+    if (!isAllowedClassForLoading(className)) {
+      logger.warn("Blocked dynamic class loading from untrusted package: {}", className);
+      return null;
+    }
 
     Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
 
