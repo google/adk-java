@@ -18,6 +18,8 @@ package com.google.adk.telemetry;
 
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 import com.google.adk.agents.BaseAgent;
@@ -62,6 +64,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
@@ -127,6 +130,30 @@ public class ContextPropagationTest {
     SpanData flowableSpanData = findSpanByName("flowable");
     assertParent(parentSpanData, flowableSpanData);
     assertTrue(flowableSpanData.hasEnded());
+  }
+
+  @Test
+  public void testTraceFlowableLazy() throws InterruptedException {
+    Span flowableSpan = tracer.spanBuilder("flowable-lazy").startSpan();
+    AtomicBoolean supplierCalled = new AtomicBoolean(false);
+    Flowable<Integer> flowable =
+        Tracing.traceFlowable(
+            Context.current().with(flowableSpan),
+            flowableSpan,
+            () -> {
+              supplierCalled.set(true);
+              assertEquals(
+                  flowableSpan.getSpanContext().getSpanId(),
+                  Span.current().getSpanContext().getSpanId());
+              return Flowable.just(1);
+            });
+    assertFalse(supplierCalled.get());
+    assertNotEquals(
+        flowableSpan.getSpanContext().getSpanId(), Span.current().getSpanContext().getSpanId());
+
+    flowable.test().await().assertComplete();
+    assertTrue(supplierCalled.get());
+    assertTrue(findSpanByName("flowable-lazy").hasEnded());
   }
 
   @Test
@@ -640,7 +667,7 @@ public class ContextPropagationTest {
     List<SpanData> callLlmSpans =
         openTelemetryRule.getSpans().stream()
             .filter(s -> s.getName().equals("call_llm"))
-            .sorted(Comparator.comparing(SpanData::getStartEpochNanos))
+            .sorted(Comparator.comparingLong(SpanData::getStartEpochNanos))
             .toList();
     assertThat(callLlmSpans).hasSize(2);
     SpanData callLlm1 = callLlmSpans.get(0);
@@ -716,7 +743,7 @@ public class ContextPropagationTest {
     List<SpanData> callLlmSpans =
         openTelemetryRule.getSpans().stream()
             .filter(s -> s.getName().equals("call_llm"))
-            .sorted(Comparator.comparing(SpanData::getStartEpochNanos))
+            .sorted(Comparator.comparingLong(SpanData::getStartEpochNanos))
             .toList();
     assertThat(callLlmSpans).hasSize(2);
 

@@ -434,8 +434,8 @@ public class Tracing {
    * scope before the Flowable subscribes, causing Context.current() to return ROOT in nested
    * operations and breaking parent-child span relationships (fragmenting traces).
    *
-   * <p>The scope is properly closed via doFinally when the stream terminates, ensuring no resource
-   * leaks regardless of completion mode (success, error, or cancellation).
+   * <p>The scope is properly closed via RxJava using when the stream terminates, ensuring no
+   * resource leaks regardless of completion mode (success, error, or cancellation).
    *
    * @param spanContext The context containing the span to activate
    * @param span The span to end when the stream completes
@@ -443,17 +443,16 @@ public class Tracing {
    * @param <T> The type of items emitted by the Flowable
    * @return Flowable with OpenTelemetry scope lifecycle management
    */
-  @SuppressWarnings("MustBeClosedChecker") // Scope lifecycle managed by RxJava doFinally
+  @SuppressWarnings("MustBeClosedChecker") // Scope lifecycle managed by RxJava using
   public static <T> Flowable<T> traceFlowable(
       Context spanContext, Span span, Supplier<Flowable<T>> flowableSupplier) {
-    Scope scope = spanContext.makeCurrent();
-    return flowableSupplier
-        .get()
-        .doFinally(
-            () -> {
-              scope.close();
-              span.end();
-            });
+    return Flowable.using(
+        spanContext::makeCurrent,
+        scope -> flowableSupplier.get(),
+        scope -> {
+          scope.close();
+          span.end();
+        });
   }
 
   /**
@@ -536,11 +535,11 @@ public class Tracing {
     }
 
     private final class TracingLifecycle {
-      private Span span;
-      private Scope scope;
+      private final Span span;
+      private final Scope scope;
 
       @SuppressWarnings("MustBeClosedChecker")
-      void start() {
+      TracingLifecycle() {
         span = tracer.spanBuilder(spanName).setParent(getParentContext()).startSpan();
         spanConfigurers.forEach(c -> c.accept(span));
         scope = span.makeCurrent();
@@ -564,16 +563,16 @@ public class Tracing {
      */
     @Override
     public Publisher<T> apply(Flowable<T> upstream) {
-      return Flowable.defer(
-          () -> {
-            TracingLifecycle lifecycle = new TracingLifecycle();
-            lifecycle.start();
+      return Flowable.using(
+          TracingLifecycle::new,
+          lifecycle -> {
             Flowable<T> pipeline = upstream;
             if (onSuccessConsumer != null) {
               pipeline = pipeline.doOnNext(t -> onSuccessConsumer.accept(lifecycle.span, t));
             }
-            return pipeline.doFinally(lifecycle::end);
-          });
+            return pipeline;
+          },
+          TracingLifecycle::end);
     }
 
     /**
@@ -584,16 +583,16 @@ public class Tracing {
      */
     @Override
     public SingleSource<T> apply(Single<T> upstream) {
-      return Single.defer(
-          () -> {
-            TracingLifecycle lifecycle = new TracingLifecycle();
-            lifecycle.start();
+      return Single.using(
+          TracingLifecycle::new,
+          lifecycle -> {
             Single<T> pipeline = upstream;
             if (onSuccessConsumer != null) {
               pipeline = pipeline.doOnSuccess(t -> onSuccessConsumer.accept(lifecycle.span, t));
             }
-            return pipeline.doFinally(lifecycle::end);
-          });
+            return pipeline;
+          },
+          TracingLifecycle::end);
     }
 
     /**
@@ -604,16 +603,16 @@ public class Tracing {
      */
     @Override
     public MaybeSource<T> apply(Maybe<T> upstream) {
-      return Maybe.defer(
-          () -> {
-            TracingLifecycle lifecycle = new TracingLifecycle();
-            lifecycle.start();
+      return Maybe.using(
+          TracingLifecycle::new,
+          lifecycle -> {
             Maybe<T> pipeline = upstream;
             if (onSuccessConsumer != null) {
               pipeline = pipeline.doOnSuccess(t -> onSuccessConsumer.accept(lifecycle.span, t));
             }
-            return pipeline.doFinally(lifecycle::end);
-          });
+            return pipeline;
+          },
+          TracingLifecycle::end);
     }
 
     /**
@@ -624,12 +623,7 @@ public class Tracing {
      */
     @Override
     public CompletableSource apply(Completable upstream) {
-      return Completable.defer(
-          () -> {
-            TracingLifecycle lifecycle = new TracingLifecycle();
-            lifecycle.start();
-            return upstream.doFinally(lifecycle::end);
-          });
+      return Completable.using(TracingLifecycle::new, lifecycle -> upstream, TracingLifecycle::end);
     }
   }
 
@@ -669,7 +663,7 @@ public class Tracing {
      */
     @Override
     public Publisher<T> apply(Flowable<T> upstream) {
-      return upstream.lift(subscriber -> TracingObserver.wrap(context, subscriber));
+      return upstream.lift(subscriber -> new TracingObserver<>(context, subscriber));
     }
 
     /**
@@ -680,7 +674,7 @@ public class Tracing {
      */
     @Override
     public SingleSource<T> apply(Single<T> upstream) {
-      return upstream.lift(observer -> TracingObserver.wrap(context, observer));
+      return upstream.lift(observer -> new TracingObserver<>(context, observer));
     }
 
     /**
@@ -691,7 +685,7 @@ public class Tracing {
      */
     @Override
     public MaybeSource<T> apply(Maybe<T> upstream) {
-      return upstream.lift(observer -> TracingObserver.wrap(context, observer));
+      return upstream.lift(observer -> new TracingObserver<>(context, observer));
     }
 
     /**
@@ -702,7 +696,7 @@ public class Tracing {
      */
     @Override
     public CompletableSource apply(Completable upstream) {
-      return upstream.lift(observer -> TracingObserver.wrap(context, observer));
+      return upstream.lift(observer -> new TracingObserver<>(context, observer));
     }
   }
 
@@ -739,20 +733,20 @@ public class Tracing {
       this.completableObserver = completableObserver;
     }
 
-    static <T> TracingObserver<T> wrap(Context context, Subscriber<? super T> subscriber) {
-      return new TracingObserver<>(context, subscriber, null, null, null);
+    TracingObserver(Context context, Subscriber<? super T> subscriber) {
+      this(context, subscriber, null, null, null);
     }
 
-    static <T> TracingObserver<T> wrap(Context context, SingleObserver<? super T> observer) {
-      return new TracingObserver<>(context, null, observer, null, null);
+    TracingObserver(Context context, SingleObserver<? super T> observer) {
+      this(context, null, observer, null, null);
     }
 
-    static <T> TracingObserver<T> wrap(Context context, MaybeObserver<? super T> observer) {
-      return new TracingObserver<>(context, null, null, observer, null);
+    TracingObserver(Context context, MaybeObserver<? super T> observer) {
+      this(context, null, null, observer, null);
     }
 
-    static <T> TracingObserver<T> wrap(Context context, CompletableObserver observer) {
-      return new TracingObserver<>(context, null, null, null, observer);
+    TracingObserver(Context context, CompletableObserver observer) {
+      this(context, null, null, null, observer);
     }
 
     private void runInContext(Runnable action) {

@@ -427,6 +427,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
    * @throws LlmCallsLimitExceededException if the agent exceeds allowed LLM invocations.
    * @throws IllegalStateException if a transfer agent is specified but not found.
    */
+  @SuppressWarnings("MustBeClosedChecker") // Scope lifecycle managed by RxJava using
   private Flowable<Event> runOneStep(Context spanContext, InvocationContext context) {
     AtomicReference<LlmRequest> llmRequestRef = new AtomicReference<>(LlmRequest.builder().build());
 
@@ -560,11 +561,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
    * @return A {@link Flowable} of {@link Event}s streamed in real-time.
    */
   @Override
+  @SuppressWarnings("MustBeClosedChecker") // Scope lifecycle managed by RxJava using
   public Flowable<Event> runLive(InvocationContext invocationContext) {
     AtomicReference<LlmRequest> llmRequestRef = new AtomicReference<>(LlmRequest.builder().build());
     Flowable<Event> preprocessEvents = preprocess(invocationContext, llmRequestRef);
     // Capture agent context at assembly time to use as parent for agent transfer at subscription
-    // time. See Flowable.defer() usages below.
+    // time. See Flowable.using() usages below.
     Context spanContext = Context.current();
 
     return preprocessEvents.concatWith(
@@ -687,12 +689,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                     "Agent not found: " + event.actions().transferToAgent().get());
                               }
                               Flowable<Event> nextAgentEvents =
-                                  Flowable.defer(
-                                      () -> {
-                                        try (Scope scope = spanContext.makeCurrent()) {
-                                          return nextAgent.get().runLive(invocationContext);
-                                        }
-                                      });
+                                  Flowable.using(
+                                      spanContext::makeCurrent,
+                                      scope -> nextAgent.get().runLive(invocationContext),
+                                      Scope::close);
                               events = Flowable.concat(events, nextAgentEvents);
                             }
                             return events;
@@ -757,28 +757,30 @@ public abstract class BaseLlmFlow implements BaseFlow {
       return processorEvents.concatWith(Flowable.just(modelResponseEvent));
     }
 
-    Flowable<Event> functionEvents;
-    try (Scope scope = parentContext.makeCurrent()) {
-      Maybe<Event> maybeFunctionResponseEvent =
-          context.runConfig().streamingMode() == StreamingMode.BIDI
-              ? Functions.handleFunctionCallsLive(context, modelResponseEvent, llmRequest.tools())
-              : Functions.handleFunctionCalls(context, modelResponseEvent, llmRequest.tools());
-      functionEvents =
-          maybeFunctionResponseEvent.flatMapPublisher(
-              functionResponseEvent -> {
-                Optional<Event> toolConfirmationEvent =
-                    Functions.generateRequestConfirmationEvent(
-                        context, modelResponseEvent, functionResponseEvent);
-                List<Event> events = new ArrayList<>();
-                toolConfirmationEvent.ifPresent(events::add);
-                events.add(functionResponseEvent);
-                OutputSchema.getStructuredModelResponse(functionResponseEvent)
-                    .ifPresent(
-                        json ->
-                            events.add(OutputSchema.createFinalModelResponseEvent(context, json)));
-                return Flowable.fromIterable(events);
-              });
-    }
+    Flowable<Event> functionEvents =
+        Maybe.defer(
+                () ->
+                    context.runConfig().streamingMode() == StreamingMode.BIDI
+                        ? Functions.handleFunctionCallsLive(
+                            context, modelResponseEvent, llmRequest.tools())
+                        : Functions.handleFunctionCalls(
+                            context, modelResponseEvent, llmRequest.tools()))
+            .compose(Tracing.withContext(parentContext))
+            .flatMapPublisher(
+                functionResponseEvent -> {
+                  Optional<Event> toolConfirmationEvent =
+                      Functions.generateRequestConfirmationEvent(
+                          context, modelResponseEvent, functionResponseEvent);
+                  List<Event> events = new ArrayList<>();
+                  toolConfirmationEvent.ifPresent(events::add);
+                  events.add(functionResponseEvent);
+                  OutputSchema.getStructuredModelResponse(functionResponseEvent)
+                      .ifPresent(
+                          json ->
+                              events.add(
+                                  OutputSchema.createFinalModelResponseEvent(context, json)));
+                  return Flowable.fromIterable(events);
+                });
 
     return processorEvents.concatWith(Flowable.just(modelResponseEvent)).concatWith(functionEvents);
   }
