@@ -1,0 +1,526 @@
+# Changelog
+
+## [1.4.0](https://github.com/google/adk-java/compare/v1.3.0...v1.4.0) (2026-05-29)
+
+
+### Features
+
+* Add GcsOffloader for asynchronously uploading content to Google Cloud Storage ([51c9d1a](https://github.com/google/adk-java/commit/51c9d1a98dd029a33c732508bd10903f4c451f45))
+* Add GcsOffloader for asynchronously uploading content to Google Cloud Storage ([5bad20a](https://github.com/google/adk-java/commit/5bad20aff179c1fd091cd6f14d5fc1d730023d70))
+* Add GcsOffloader for asynchronously uploading content to Google Cloud Storage ([a1d2c1c](https://github.com/google/adk-java/commit/a1d2c1cd2799f8729bc736a2fc0117286e31c1dd))
+* Add JSON cycle detection ([1685a4e](https://github.com/google/adk-java/commit/1685a4e88cc619f1f20445e262bf18287bbf6572))
+* Add streaming support for ChatCompletionsHTTPClient ([384a0c5](https://github.com/google/adk-java/commit/384a0c58e3c3bd76ef8ef1c0c872fa35008eac81))
+* Add telemetry and metrics recording capabilities ([cc3b9ce](https://github.com/google/adk-java/commit/cc3b9cebd2e5d44870514354870da61bbf724490))
+* Add tools and toolset to use SkillSource in ADK agents ([198b2fb](https://github.com/google/adk-java/commit/198b2fb4128f8bd938a64db151f3176ad61afb4f))
+* Add tools and toolset to use SkillSource in ADK agents ([5ee51fd](https://github.com/google/adk-java/commit/5ee51fd1f3ecd9445fa559ee66fe426df7008ea8))
+* Add tools and toolset to use SkillSource in ADK agents ([83a4b71](https://github.com/google/adk-java/commit/83a4b71d11ab5ae0d119730086436b3c96127fd2))
+* Introduce max span limit to ApiServerSpanExporter ([ae13073](https://github.com/google/adk-java/commit/ae130738fd6e695b362b98155ea2e63b9a5bc5da))
+* refactor OpenTelemetry (OTel) instrumentation within the ADK core, moving from manual span management to structured helper classes ([e6fe9aa](https://github.com/google/adk-java/commit/e6fe9aa42311bfba3283f6a2c7b9e7d8ed58aedb))
+
+
+### Bug Fixes
+
+* adjust default ToolExecutionMode to SEQUENTIAL as it was actual and widely used behavior for all ADK Java users before parallel tool execution fix ([fe88217](https://github.com/google/adk-java/commit/fe88217a67d0855ad13f1b3295aaa7a0f2ec84c9))
+* inject Dev UI tracer into core engine for embedded telemetry ([8bccc3b](https://github.com/google/adk-java/commit/8bccc3b97147f9ba7debb767c512c04553a6cc9f))
+* introduce PARALLEL_SUBSCRIBE ToolExecutionMode; restore previous PARALLEL semantics ([d3e7f31](https://github.com/google/adk-java/commit/d3e7f31725bdd81f4adbab4910a7916760df269a))
+* **mcp:** honor custom URL sub-paths in StreamableHttpServerParameters ([a0c4b7b](https://github.com/google/adk-java/commit/a0c4b7bfbcfbd219878c5113bb8ceee2f4c85ce0))
+* pre-merge stateDelta before onUserMessageCallback in Runner ([f1155ec](https://github.com/google/adk-java/commit/f1155ec37325bfb16941cd6b08ea4f14cb468775))
+* Resolve IllegalArgumentException for text MIME types in LangChain4j adapter ([6ad2043](https://github.com/google/adk-java/commit/6ad204372ea8afd330132507f1598d669a8f8b66))
+* revert "Suppress empty-text-only chunks from streaming responses while preserving carried metadata" ([69638df](https://github.com/google/adk-java/commit/69638df9ccd9939ba358672fdb00f0c0e88ffc71))
+* route HITL confirmation back to originating sub-agent in workflow agents ([d608909](https://github.com/google/adk-java/commit/d6089093e7f625e70fd88c61e99abccbf77eca1b))
+* run tools concurrently in PARALLEL ToolExecutionMode ([020499b](https://github.com/google/adk-java/commit/020499b8bb00638385df9e8a80af302e1a47c36a))
+* Suppress empty-text-only chunks from streaming responses while preserving carried metadata ([b4791ef](https://github.com/google/adk-java/commit/b4791ef362840e79d008221f272992532c4732cd))
+
+
+### Documentation
+
+* clarify LlmAgent composition for workflow agents ([49ff63b](https://github.com/google/adk-java/commit/49ff63b3c8bab29cf71d34cc1d41be91c1bfde6f))
+
+## [1.3.0](https://github.com/google/adk-java/compare/v1.2.0...v1.3.0) (2026-05-13)
+
+
+### Features
+
+* Add ChatCompletionsHTTPClient and support for non-streaming requests ([9529c1a](https://github.com/google/adk-java/commit/9529c1aeecb324e1c00c6bd105df2a0e9f67ed26))
+* Add conversion from LlmRequest to ChatCompletionsRequest ([d37f6ee](https://github.com/google/adk-java/commit/d37f6ee6d8ec036154593b734f1a3b080847cfea))
+* Add SkillSource interface and implementations for loading skills ([509c4aa](https://github.com/google/adk-java/commit/509c4aa75fdc752c2758a1761cbd8946075b310c))
+* Add support for refusal content using "[[REFUSAL]]:" prefix ([e9184c9](https://github.com/google/adk-java/commit/e9184c9846d97f65907667aa2a6bbac1f65fed64))
+* Refactor BigQueryAgentAnalyticsPlugin for async in preparation for GCS offloading ([d837ef0](https://github.com/google/adk-java/commit/d837ef0164cedd284af6caee84911569109ab7e3))
+
+
+### Bug Fixes
+
+* Account for nulls in EventActions and State ([582cf7c](https://github.com/google/adk-java/commit/582cf7c2b6534afaf5edfa501391191478d8d8ea))
+* upgrade Mockito and JaCoCo for Java 25 compatibility ([8574fc5](https://github.com/google/adk-java/commit/8574fc5bb6ac7edae99306b06c0a610f7da60048))
+
+## [1.2.0](https://github.com/google/adk-java/compare/v1.1.0...v1.2.0) (2026-04-24)
+
+
+### Features
+
+* Add telemetry headers ([4009905](https://github.com/google/adk-java/commit/40099057e2b59f34e868da4c34dcd9c1194b2fde))
+* Adding functionality to support customer content formating ([52323b4](https://github.com/google/adk-java/commit/52323b44c89f233e2dd794aee33df8ba5318790e))
+* Allowing McpAsycToolset Builder to take in a McpSessionManager ([78766c1](https://github.com/google/adk-java/commit/78766c179192ff8e560502e0365b45f87ecac433))
+* Forward state delta from all events to parent session instead of just the last event ([f4cd1b7](https://github.com/google/adk-java/commit/f4cd1b754b62fcbf82da22aabc695911d416e51a))
+* Implement BigQuery auto-schema upgrade and view creation ([14027d1](https://github.com/google/adk-java/commit/14027d1545237675a507706d792825356575f73c))
+* Make BigQueryAgentAnalyticsPlugin state per-invocation ([629c390](https://github.com/google/adk-java/commit/629c390de9ca0ec49cba18a0689d299f9261c1fa))
+* Support ChatCompletionChunk to LlmResponse conversion ([589328e](https://github.com/google/adk-java/commit/589328ea747ad4a994223af5789320e171ea2aa7))
+* Support plugins in Java AgentTool similar to Python's implementation ([02a08a1](https://github.com/google/adk-java/commit/02a08a10f087975491d55a29329d6011362925ce))
+
+
+### Bug Fixes
+
+* Allow BuiltInCodeExecutor for Gemini 3 models ([1a3dd61](https://github.com/google/adk-java/commit/1a3dd612217a05e2f8fff69720087ed1136a09ab))
+* Fix ADK Runner race condition for sequential tool execution ([69680bb](https://github.com/google/adk-java/commit/69680bbeae11578199eca4efcaf5ecddea2dd552))
+* Fix ADK Runner race condition for sequential tool execution ([9031cad](https://github.com/google/adk-java/commit/9031cadc0e53cad8e4fe141e1d9d2bb19a431a12))
+* Removing deprecated Optional methods ([8ef99f9](https://github.com/google/adk-java/commit/8ef99f999c11c1dbf3331563a0566e14188a68f2))
+
+## [1.1.0](https://github.com/google/adk-java/compare/v1.0.0...v1.1.0) (2026-04-10)
+
+
+### Features
+
+* Add ChatCompletionsRequest object ([88eb0f5](https://github.com/google/adk-java/commit/88eb0f523c14266840ffc4b3d9ed827c9cdb1510))
+* Add ChatCompletionsResponse object ([55becb8](https://github.com/google/adk-java/commit/55becb81b6dcc15a9a82ec842a0096132813ae64))
+* Add ChatCompletionsResponse to LlmResponse conversion ([ec88c64](https://github.com/google/adk-java/commit/ec88c64d311946c1d427c4374be75d6163160478))
+* add README for ADK LangChain4j integration library ([f861ef9](https://github.com/google/adk-java/commit/f861ef9c0d5c6a5ef27e7be1d8ac27a399ba6fad))
+* add support for Gemma models in LlmRegistry ([9d6cc80](https://github.com/google/adk-java/commit/9d6cc80660d81fc217d058b7c8edb1ff906e2c30))
+* add transcription in event ([cb9d2e3](https://github.com/google/adk-java/commit/cb9d2e3e9225c550fd1f1a1445cebe569d30a20a))
+* Implement Trace management, add HITL support ([7407e37](https://github.com/google/adk-java/commit/7407e37a043f7b25a66663eb04a6bafbef620583))
+* Support Sub-agent Escalation event in Parallel Agent (Issue [#561](https://github.com/google/adk-java/issues/561)) ([88c8b0e](https://github.com/google/adk-java/commit/88c8b0e5a4863fa623fa17ff616d13570b60c4d0))
+* Update event IDs in BaseLlmFlow's post processing section ([d0e1085](https://github.com/google/adk-java/commit/d0e108510487d97d186052caa164649e1c90f176))
+
+
+### Bug Fixes
+
+* Fix A2A protocol chunk streaming and task completion states ([c95f669](https://github.com/google/adk-java/commit/c95f669bb6fbadbf07d62a8ff8a3e533e17032f4))
+* Fix critical race condition in ADK Runner ([51f4d1f](https://github.com/google/adk-java/commit/51f4d1f9a4d4d67a92f4a97989e5bd1ab24910e1))
+* Fix critical race condition in ADK Runner ([3091156](https://github.com/google/adk-java/commit/30911560ff2f928e40f6de9426c7c8295b16bacb))
+* Fix race condition and stale session in ADK Runner ([7964e93](https://github.com/google/adk-java/commit/7964e93dc12c3d24079facfd5d64ed913ec082aa))
+
+## [1.0.0](https://github.com/google/adk-java/compare/v1.0.0-rc.1...v1.0.0) (2026-03-30)
+
+
+### Features
+
+* add `InMemoryArtifactService` to `AgentExecutor` and update `pom.xml` dependencies ([24f8d5e](https://github.com/google/adk-java/commit/24f8d5e2562e1c0812ce6e248500797d9801fafd))
+* enabling output_schema and tools to coexist ([40ca6a7](https://github.com/google/adk-java/commit/40ca6a7c5163f711e02a54163d6066f7cd86e64d))
+
+
+### Bug Fixes
+
+* add media/image support in Spring AI MessageConverter ([8ab7f07](https://github.com/google/adk-java/commit/8ab7f072cdaa363e07b7a786044376c021c4c009)), closes [#705](https://github.com/google/adk-java/issues/705)
+* add schema validation to SetModelResponseTool (issue [#587](https://github.com/google/adk-java/issues/587) already implemented, but adding tests from PR [#603](https://github.com/google/adk-java/issues/603)) ([cdc5199](https://github.com/google/adk-java/commit/cdc5199eb0f92cb95db2ee7ff139d67317968457))
+* Ensure callbackContextData is preserved across session update ([d1e05ca](https://github.com/google/adk-java/commit/d1e05caf524b7cafb3f321550659296ea70d9286))
+* **firestore:** Remove hardcoded dependency version ([6a5a55e](https://github.com/google/adk-java/commit/6a5a55eb3e531c6f8a7083712308c4800f680ca5))
+* Fixing tracing for function calls ([84dff10](https://github.com/google/adk-java/commit/84dff10a3ee7f47e30a40409e56b5e9365c69815))
+* handle null `AiMessage.text()` to prevent NPE and add unit test (PR [#1035](https://github.com/google/adk-java/issues/1035)) ([3e21e7a](https://github.com/google/adk-java/commit/3e21e7ac46b634341819b3543388a38caef85516))
+* parallel agent execution ([677b6d7](https://github.com/google/adk-java/commit/677b6d7452aa28fab42d554d18c150d59ca88eec))
+* Removing deprecated methods from Runner ([3633a7d](https://github.com/google/adk-java/commit/3633a7dd071265087ea2ff148d419969b0c888ef))
+* resolve MCP tool parsing errors in Claude integration ([5a2abbf](https://github.com/google/adk-java/commit/5a2abbfe6f9e4e1ebdd5b918e34fcdb144603b5a))
+* revert changes to AbstractMcpTool, maintaining backwards compatible text_output field in the response ([5f34d59](https://github.com/google/adk-java/commit/5f34d598435a2a8d875a5dbb14344c201db0e75f))
+* Using App conformant agent names ([f3eb936](https://github.com/google/adk-java/commit/f3eb936772740b7dc7a803a40d0d39fdbccc4af4))
+
+
+### Documentation
+
+* add pull request template ([6bb721b](https://github.com/google/adk-java/commit/6bb721b9a6000dac9dfda498fb6dd2c45862e25c))
+
+
+### Miscellaneous Chores
+
+* set release version to 1.0.0 ([dd1c941](https://github.com/google/adk-java/commit/dd1c94184835838fa47de024cf458c2ea0786aff))
+* set version to 1.0.0-rc.2 ([678b496](https://github.com/google/adk-java/commit/678b49653fa93606e2e57926213f0facaf9d6666))
+
+## [1.0.0-rc.1](https://github.com/google/adk-java/compare/v0.9.0...v1.0.0-rc.1) (2026-03-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove McpToolset constructors taking Optional parameters
+* remove deprecated Example processor
+
+### Features
+
+* add handling the a2a metadata in the RemoteA2AAgent; Add the enum type for the metadata keys ([e51f911](https://github.com/google/adk-java/commit/e51f9112050955657da0dfc3aedc00f90ad739ec))
+* add type-safe runAsync methods to BaseTool ([b8cb7e2](https://github.com/google/adk-java/commit/b8cb7e2db6d5ce20f4d7a1b237bdc155563cf4bd))
+* Enhance LangChain4j to support MCP tools with parametersJsonSchema ([2c71ba1](https://github.com/google/adk-java/commit/2c71ba1332e052189115cd4644b7a473c31ed414))
+* fixing context propagation for agent transfers ([9a08076](https://github.com/google/adk-java/commit/9a080763d83c319f539d1bacac4595d13b299e7e))
+* Implement basic version of BigQuery Agent Analytics Plugin ([c8ab0f9](https://github.com/google/adk-java/commit/c8ab0f96b09a6c9636728d634c62695fcd622246))
+* init AGENTS.md file ([7ebeb07](https://github.com/google/adk-java/commit/7ebeb07bf2ee72475484d8a31ccf7b4c601dda96))
+* Propagating the otel context ([8556d4a](https://github.com/google/adk-java/commit/8556d4af16ff04c6e3b678dcfc3d4bb232abc550))
+* remove McpToolset constructors taking Optional parameters ([dbb1394](https://github.com/google/adk-java/commit/dbb139439d38157b4b9af38c52824b1e8405a495))
+* Return List instead of ImmutableList in CallbackUtil methods ([8af5e03](https://github.com/google/adk-java/commit/8af5e03811dfd548830df43103c81a592c8bf361))
+* update requestedAuthConfigs and its builder to be of general Map types ([f145c74](https://github.com/google/adk-java/commit/f145c744482b6b25f29a0b718bd452065e39d930))
+* Update return type of App.plugins() from ImmutableList to List ([8ba4bfe](https://github.com/google/adk-java/commit/8ba4bfed3fa7045f3344329de7a39acddc64ee30))
+* Update return type of toolsets() from ImmutableList to List ([cd56902](https://github.com/google/adk-java/commit/cd56902b803d4f7a1f3c718529842823d9e4370a))
+* update Session.state() and its builder to be of general Map types ([4b9b99a](https://github.com/google/adk-java/commit/4b9b99ae7149a465ba2ae9b7496e01f669786553))
+* update stateDelta builder input to Map from ConcurrentMap ([0d1e5c7](https://github.com/google/adk-java/commit/0d1e5c7b0c42cea66b178cf8fedf08a8c20f7fd0))
+
+
+### Bug Fixes
+
+* fix null handling in runAsyncImpl ([567fdf0](https://github.com/google/adk-java/commit/567fdf048fee49afc86ca5d7d35f55424a6016ba))
+* improve processRequest_concurrentReadAndWrite_noException test case ([4eb3613](https://github.com/google/adk-java/commit/4eb3613b65cb1334e9432960d0f864ef09829c23))
+* include saveArtifact invocations in event chain ([551c31f](https://github.com/google/adk-java/commit/551c31f495aafde8568461cc0aa0973d7df7e5ac))
+* prevent ConcurrentModificationException when session events are modified by another thread during iteration ([fca43fb](https://github.com/google/adk-java/commit/fca43fbb9684ec8d080e437761f6bb4e38adf255))
+* Relaxing constraints for output schema ([d7e03ee](https://github.com/google/adk-java/commit/d7e03eeb067b83abd2afa3ea9bb5fc1c16143245))
+* Removing deprecated methods in Runner ([0af82e6](https://github.com/google/adk-java/commit/0af82e61a3c0dbbd95166a10b450cb507115ab60))
+* Use ConcurrentHashMap in InvocationReplayState ([94de7f1](https://github.com/google/adk-java/commit/94de7f199f86b39bdb7cce6e9800eb05008a8953)), closes [#1009](https://github.com/google/adk-java/issues/1009)
+* workaround for the client config streaming settings are not respected ([#983](https://github.com/google/adk-java/issues/983)) ([3ba04d3](https://github.com/google/adk-java/commit/3ba04d33dc8f2ef8b151abe1be4d1c8b7afcc25a))
+
+
+### Miscellaneous Chores
+
+* remove deprecated Example processor ([28a8cd0](https://github.com/google/adk-java/commit/28a8cd04ca9348dbe51a15d2be3a2b5307394174))
+* set version to 1.0.0-rc.1 ([dc5d794](https://github.com/google/adk-java/commit/dc5d794c066571c7d87f006767bd32298e2a3ba8))
+
+## [0.9.0](https://github.com/google/adk-java/compare/v0.8.0...v0.9.0) (2026-03-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* refactor ApiClient constructors hierarchy to remove Optional parameters
+* remove deprecated LlmAgent.canonicalTools method
+* remove deprecated LoadArtifactsTool.loadArtifacts method
+* update LoopAgent's maxIteration field and methods to be @Nullable instead of Optional
+* Remove Optional parameters in EventActions
+* remove deprecated url method in ComputerState.Builder
+* Remove deprecated create method in ResponseProcessor
+* remove McpAsyncToolset constructors
+* use @Nullable fields in Event class
+* remove methods with Optional params from VertexCredential.Builder
+
+### Features
+
+* add formatting to the RemoteA2A agent so it filters out the previous agent responses and updates the context of the function calls and responses ([0d6dd55](https://github.com/google/adk-java/commit/0d6dd55f4870007e79db23e21bd261879dbfba79))
+* add multiple LLM responses to LLM recordings for conformance tests ([bdfb7a7](https://github.com/google/adk-java/commit/bdfb7a72188ce6e72c12c16c0abedb824b846160))
+* add support for gemini models in VertexAiRagRetrieval ([924fb71](https://github.com/google/adk-java/commit/924fb7174855b46a58be43373c1a29284c47dfa8))
+* Fixing the spans produced by agent calls to have the right parent spans ([3c8f488](https://github.com/google/adk-java/commit/3c8f4886f0e4c76abdbeb64a348bfccd5c16120e))
+* Fixing the spans produced by agent calls to have the right parent spans ([973f887](https://github.com/google/adk-java/commit/973f88743cabebcd2e6e7a8d5f141142b596dbbb))
+* refactor ApiClient constructors hierarchy to remove Optional parameters ([910d727](https://github.com/google/adk-java/commit/910d727f1981498151dea4cb91b9e5836f91e3ba))
+* Remove deprecated create method in ResponseProcessor ([5e1e1d4](https://github.com/google/adk-java/commit/5e1e1d434fa1f3931af30194422800757de96cb6))
+* remove deprecated LlmAgent.canonicalTools method ([aabf15a](https://github.com/google/adk-java/commit/aabf15a526ba525cdb47c74c246c178eff1851d5))
+* remove deprecated LoadArtifactsTool.loadArtifacts method ([bc38558](https://github.com/google/adk-java/commit/bc385589057a6daf0209a335280bf19d20b2126b))
+* remove deprecated url method in ComputerState.Builder ([a86ede0](https://github.com/google/adk-java/commit/a86ede007c3442ed73ee08a5c6ad0e2efa12998a))
+* remove executionId method that takes Optional param from CodeExecutionUtils ([be3b3f8](https://github.com/google/adk-java/commit/be3b3f8360888ea1f13796969bb19893c32727e0))
+* remove McpAsyncToolset constructors ([82ef5ac](https://github.com/google/adk-java/commit/82ef5ac2689e01676aa95d2616e3b4d8463e573e))
+* remove methods with Optional params from VertexCredential.Builder ([0b9057c](https://github.com/google/adk-java/commit/0b9057c9ccab98ea58597ec55b8168e32ac7c9a6))
+* Remove Optional parameters in EventActions ([b8316b1](https://github.com/google/adk-java/commit/b8316b1944ce17cc9208963cc09d900c379444c6))
+* replace Optional type of version in BaseArtifactService.loadArtifact with Nullable ([5fd4c53](https://github.com/google/adk-java/commit/5fd4c53c88e977d004b9eee8fa3697625ec85f47))
+* Trigger traceCallLlm to set call_llm attributes before span ends ([d9d84ee](https://github.com/google/adk-java/commit/d9d84ee67406cce8eeb66abcf1be24fad9c58e29))
+* Update converters for task and artifact events; add long running tools ids ([9ce78d7](https://github.com/google/adk-java/commit/9ce78d7c3e1b0fb6d8d4fdce9052a572ffb9e515))
+* update LoopAgent's maxIteration field and methods to be @Nullable instead of Optional ([e0d833b](https://github.com/google/adk-java/commit/e0d833b337e958e299d0d11a03f6bfa1468731bc))
+* update return type for artifactDelta getter and setter to Map from ConcurrentMap ([d1d5539](https://github.com/google/adk-java/commit/d1d5539ef763b6bfd5057c6ea0f2591225a98535))
+* update return type for requestedToolConfirmations getter and setter to Map from ConcurrentMap ([143b656](https://github.com/google/adk-java/commit/143b656949d61363d135e0b74ef5696e78eb270a))
+* update return type for stateDelta() to Map from ConcurrentMap ([3f6504e](https://github.com/google/adk-java/commit/3f6504e9416f9f644ef431e612ec983b9a2edd9d))
+* update State constructors to accept general Map types ([c6fdb63](https://github.com/google/adk-java/commit/c6fdb63c92e2f3481a01cfeafa946b6dce728c51))
+* use @Nullable fields in Event class ([67b602f](https://github.com/google/adk-java/commit/67b602f245f564238ea22298a37bf70049e56a12))
+
+
+### Bug Fixes
+
+* Explicitly setting the otel parent spans in agents, llm flow and function calls ([20f863f](https://github.com/google/adk-java/commit/20f863f716f653979551c481d85d4e7fa56a35da))
+* Make sure that `InvocationContext.callbackContextData` remains the same instance ([14ee28b](https://github.com/google/adk-java/commit/14ee28ba593a9f6f5f7b9bb6003441539fe33a18))
+* Removing deprecated InvocationContext methods ([41f5af0](https://github.com/google/adk-java/commit/41f5af0dceb78501ca8b94e434e4d751f608a699))
+* Removing deprecated methods in Runner ([0d8e22d](https://github.com/google/adk-java/commit/0d8e22d6e9fe4e8d29c87d485915ba51a22eb350))
+* Removing deprecated methods in Runner ([b857f01](https://github.com/google/adk-java/commit/b857f010a0f51df0eb25ecdc364465ffdd9fef65))
+
+
+### Miscellaneous Chores
+
+* override new version to 0.9.0 ([a47b651](https://github.com/google/adk-java/commit/a47b651b5c4868a603fd79df164b70bc712c3a80))
+
+## [0.8.0](https://github.com/google/adk-java/compare/v0.7.0...v0.8.0) (2026-03-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove methods with Optional params from LiveRequest.Builder
+* remove deprecated methods accepting Optional params in InvocationContext
+* remove deprecated BaseToolset.isToolSelected method
+* remove Optional parameters from LlmResponse.Builder's methods
+* remove support for legacy `transferToAgent`, superseded by `transfer_to_agent`
+
+### Features
+
+* add callbacks functionality to the agent executor ([7e8f9dc](https://github.com/google/adk-java/commit/7e8f9dcf82fe7e62aee625fbfaa8673d238ff184))
+* add example on how to expose agent via A2A protocol ([e3ea378](https://github.com/google/adk-java/commit/e3ea378051e5c4e5e5031657467145779e42db55))
+* Adding a Builder for EventsCompactionConfig ([05fbcfc](https://github.com/google/adk-java/commit/05fbcfc933923ae711cd12e7fc9e587fd8e2685c))
+* Adding a SessionKey for typeSafety ([d899f6f](https://github.com/google/adk-java/commit/d899f6f4ad52c84cb4ac8c90d0dc88c22487029c))
+* Adding plugin(Plugin... p) helper methods on App and Runner builders ([dc1a192](https://github.com/google/adk-java/commit/dc1a192a81a92870aa5a4af27a9dc90e81cdaf67))
+* implement partial event aggregation in RemoteA2AAgent ([e064067](https://github.com/google/adk-java/commit/e0640673d212b9849d312953f192f8da51fae85b))
+* remove deprecated BaseToolset.isToolSelected method ([d2f1145](https://github.com/google/adk-java/commit/d2f11456c3a99edd43b3dc0d04743ae7e9390ded))
+* remove deprecated methods accepting Optional params in InvocationContext ([88153c8](https://github.com/google/adk-java/commit/88153c833697a9b9c6ec735a69f48a92cbdfc54b))
+* remove methods with Optional params from LiveRequest.Builder ([84c62a4](https://github.com/google/adk-java/commit/84c62a48ef7b62641722824fe5ba1200606b7b17))
+* remove Optional parameters from LlmResponse.Builder's methods ([a3ac436](https://github.com/google/adk-java/commit/a3ac436bcfa241e90c07485e5da918ec8dbc2b4a))
+
+
+### Bug Fixes
+
+* Allow injecting ObjectMapper in FunctionTool, default to ObjectMapper (re. [#473](https://github.com/google/adk-java/issues/473)) ([71b1070](https://github.com/google/adk-java/commit/71b10701e753bddaa96d5e6579b759d2b9bb3e92))
+* downgrade otel.version to 1.51.0 ([117fedf](https://github.com/google/adk-java/commit/117fedf672bb67c4b078ac75ee81a7710452c5b5))
+* Ensure Gemini 3.1 models have events correctly buffered ([acffdb9](https://github.com/google/adk-java/commit/acffdb96bcd8133af99cb0b9426665ba73a83bbc))
+* Exit from rearrangeEventsForLatestFunctionResponse if size of events is less than 2 ([5bc3ef8](https://github.com/google/adk-java/commit/5bc3ef89e62eb3f32ba7e45657c9e40c88c3a5e9))
+* Fixed issue where events were marked empty if the first part had an empty text; now checks all parts for meaningful content ([a0cba25](https://github.com/google/adk-java/commit/a0cba25d691f4be72bea22b0649ecf2d2c110736))
+* prepare JSON serialization for Jackson 2.20.2 and Spring Boot 4.0.2 upgrades ([8c6591b](https://github.com/google/adk-java/commit/8c6591bc4ad86c376cdd70e1bb64f359fbf22fe9))
+
+
+### Miscellaneous Chores
+
+* revert: switch release please secret to use adk-java-releases-bot's token ([7eafd1b](https://github.com/google/adk-java/commit/7eafd1bd9b16e9ed83dfbc3d0983cfc415c0aaec))
+
+
+### Code Refactoring
+
+* remove support for legacy `transferToAgent`, superseded by `transfer_to_agent` ([c1ccb2e](https://github.com/google/adk-java/commit/c1ccb2e9d375fedcd7dbb594300e66a1a0488a91))
+
+## [0.7.0](https://github.com/google/adk-java/compare/v0.6.0...v0.7.0) (2026-02-27)
+
+
+### Features
+
+* Add ComputerUse tool ([d733a48](https://github.com/google/adk-java/commit/d733a480a7a787cb7c32fd3470ab978ca3eb574c))
+* add the AgentExecutor config ([e0f7137](https://github.com/google/adk-java/commit/e0f7137253c9bd929fe3ea899e32f4b61f994986))
+* drop gemini-1 support in GoogleSearchTool ([15255b4](https://github.com/google/adk-java/commit/15255b48285819c7d3aedb4470e91f37d1bcfaf4))
+* Extend url_context support to Gemini 3 in Java ADK ([2c9d4dd](https://github.com/google/adk-java/commit/2c9d4dd5eafe8efe3a2fb099b58e2d0f1d9cad98))
+* Extend url_context support to Gemini 3 in Java ADK ([5f5869f](https://github.com/google/adk-java/commit/5f5869f67200831dcbb7ac10ad0d7f44410bc096))
+* Handle final and error TaskStatusUpdateEvents ([746e857](https://github.com/google/adk-java/commit/746e857d97c6f356ffe5c20be0ccae85d5a8f989))
+* remove model restrictions in BuiltInCodeExecutionTool ([1a593a9](https://github.com/google/adk-java/commit/1a593a996607904eed24b64bc63eecd7708710af))
+* Update AgentExecutor so it builds new runner on execute and there is no need to pass the runner instance ([7218295](https://github.com/google/adk-java/commit/72182958586e59ccb3d7490cd207ec2837c5b577))
+
+
+### Bug Fixes
+
+* change Session events list to a threadsafe implementation by default ([0b5ac92](https://github.com/google/adk-java/commit/0b5ac9214926200c3d65d64d8c10489847c29291))
+* deep-merge stateDelta maps when merging EventActions ([ff07474](https://github.com/google/adk-java/commit/ff07474035baec910f0c3fa83b7b1646d8409ffd))
+* drop explicit gemini-1 model version check in GoogleMapsTool ([7953503](https://github.com/google/adk-java/commit/7953503e61c547e40a1e1abbece73a99910766c1))
+* LlmAgent model name resolution and improve Gemini-3 model detection logic ([313ce85](https://github.com/google/adk-java/commit/313ce8590982346bb8ac631b4bf88da76fb849a4))
+* make a mutable copy of function args for the beforeToolCallback invocations ([64d3a77](https://github.com/google/adk-java/commit/64d3a775d68610d20c084678ffdc559cd467e627))
+
+
+### Documentation
+
+* Update a parameter name in a comment ([5262d4a](https://github.com/google/adk-java/commit/5262d4ae3eca533e1a695e6e2e71c5845055ed5d))
+
+## [0.6.0](https://github.com/google/adk-java/compare/v0.5.0...v0.6.0) (2026-02-19)
+
+
+### Features
+
+* Add Compact processor to SingleFlow ([ee459b3](https://github.com/google/adk-java/commit/ee459b3198d19972744514d1e74f076ee2bd32a7))
+* Add Compaction RequestProcessor for event compaction in llm flow ([af1fafe](https://github.com/google/adk-java/commit/af1fafed0470c8afe81679a495ed61664a2cee1a))
+* Add ContextCacheConfig to InvocationContext ([968a9a8](https://github.com/google/adk-java/commit/968a9a8944bd7594efc51ed0b5201804133f350e))
+* Add event compaction config to InvocationContext ([8f7d7ea](https://github.com/google/adk-java/commit/8f7d7eac95cc606b5c5716612d0b08c41f951167))
+* Add event compaction framework in Java ADK ([dd68c85](https://github.com/google/adk-java/commit/dd68c8565ae43e30c2dd02bc956173ab199ebb56))
+* add eventId in CallbackContext and ToolContext ([ac05fde](https://github.com/google/adk-java/commit/ac05fde31ec6a67baf7cacb6144f5912eca029ac))
+* add ExampleTool to ComponentRegistry ([2e1b09f](https://github.com/google/adk-java/commit/2e1b09fdd07fb22839ea91bd109e409b44df4f82))
+* add response converters to support multiple A2A client events ([4e8de90](https://github.com/google/adk-java/commit/4e8de90f13b995c908fc4c6f742bce836e7209db))
+* Add token usage threshold to TailRetentionEventCompactor ([9901307](https://github.com/google/adk-java/commit/9901307b1cb9be75f2262f116388f93cdcf3eeb6))
+* Add tokenThreshold and eventRetentionSize to EventsCompactionConfig ([588b00b](https://github.com/google/adk-java/commit/588b00bbd327e257a78271bf2d929bc52875115f))
+* Add VertexAiSearchTool and AgentTools for search ([b48b194](https://github.com/google/adk-java/commit/b48b194448c6799e08e778c4efa2d9c920f0c1fb))
+* Adding a .close() method to Runner, Agent and Plugins ([495bf95](https://github.com/google/adk-java/commit/495bf95642b9159aa6040868fcaa97fed166035b))
+* Adding a new `ArtifactService.saveAndReloadArtifact()` method ([59e87d3](https://github.com/google/adk-java/commit/59e87d319887c588a1ed7d4ca247cd31dffba2c6))
+* adding a new temporary store of context for callbacks ([ed736cd](https://github.com/google/adk-java/commit/ed736cdf84d8db92dfde947b5ee84e7430f3ae6d))
+* Adding autoCreateSession in Runner ([6dd51cc](https://github.com/google/adk-java/commit/6dd51cc201b15aaa2cebb5372ece647c4484da06))
+* Adding GlobalInstructionPlugin ([72e20b6](https://github.com/google/adk-java/commit/72e20b652b8d697e5dc0605db284e3b637f11bac))
+* Adding OnModelErrorCallback ([dfd2944](https://github.com/google/adk-java/commit/dfd294448528a9e429ddbbb8e650e432b34fafb2))
+* adding resume / event management primitives ([2de03a8](https://github.com/google/adk-java/commit/2de03a86f97eb602dee55270b910d0d425ae75e9))
+* Adding TODO files for reaching idiomatic java ([4ac1dd2](https://github.com/google/adk-java/commit/4ac1dd2b6e480fefd4b0a9198b2e69a9c6334c40))
+* Adding validation to BaseAgent ([5dfc000](https://github.com/google/adk-java/commit/5dfc000c9019b4d11a33b35c71c2a04d1f657bf2))
+* Adding validation to BaseAgent and RunConfig ([503caa6](https://github.com/google/adk-java/commit/503caa6393635a56c672a6592747bcb6e034b8a1))
+* Adding validation to InvocationContext 'session_service', 'invocation_id', ([0502c21](https://github.com/google/adk-java/commit/0502c2141724a238bbf5f7a72e1951cbb401a3e8))
+* Allow EventsCompactionConfig to have a null summarizer initially ([229654e](https://github.com/google/adk-java/commit/229654e20a6ffc733854e3c0de9049bbad494228))
+* enable LoopAgent configuration ([d1a1cea](https://github.com/google/adk-java/commit/d1a1cea4a633f376463d7e47b79bfb67126537ad))
+* EventAction.stateDelta() now has a remove by key variant ([32a6b62](https://github.com/google/adk-java/commit/32a6b625d96e5658be77d5017f10014d8d4036c1))
+* Extend google_search support to Gemini 3 in Java ADK ([ddb00ef](https://github.com/google/adk-java/commit/ddb00efc1a1f531448b9f4dae28d647c6ffdf420))
+* Fix a handful of small changes related to headers, logging and javadoc ([0b63ca3](https://github.com/google/adk-java/commit/0b63ca30294ea05572707c420306ae41bf7d60c7))
+* Forward state delta to parent session ([00d6d30](https://github.com/google/adk-java/commit/00d6d3034e07ceaa738a1ff1384d8fd879339b06))
+* HITL - remove the events between the confirmed FC & its response ([3670555](https://github.com/google/adk-java/commit/367055544509321e845712b89b793c98e0dc510d))
+* HITL - Revert the "Boolean confirmation" changes, we'll fix it differently ([f65e58b](https://github.com/google/adk-java/commit/f65e58bd73ea33b38d5fe43c897b01216ac34ac6))
+* **HITL:** Declining a proposal now correctly intercepts the run ([9611f89](https://github.com/google/adk-java/commit/9611f8967e528c6242e17ad3ad5419e0b25fb3fb))
+* **HITL:** Let ADK resume after HITL approval is present ([9611f89](https://github.com/google/adk-java/commit/9611f8967e528c6242e17ad3ad5419e0b25fb3fb))
+* Improving LoggingPlugin ([acfaa04](https://github.com/google/adk-java/commit/acfaa04284dec12fa7245caee11cd7a3d8e4342c))
+* Integrate event compaction in Java ADK runner ([54c826c](https://github.com/google/adk-java/commit/54c826c80c2bfe09056396c2a21f8241f9d2898b))
+* Introduce TailRetentionEventCompactor to compact and retain the tail of the event stream ([efe58d6](https://github.com/google/adk-java/commit/efe58d6e0e5e0ff35d39e56bcb0f57cc6ccc7ccc))
+* Introduce the `App` class for defining agentic applications ([d7c5c6f](https://github.com/google/adk-java/commit/d7c5c6f4bdc2c2b06448af72bc311abf36b8e726))
+* introduces context caching configuration for apps, ported from Python ADK ([12defee](https://github.com/google/adk-java/commit/12defeedbaf6048bc83d484f421131051b7e81a5))
+* new ContextFilterPlugin ([f8e9bc3](https://github.com/google/adk-java/commit/f8e9bc30350082f048cb0ded6226f27f80655602))
+* Refactor EventsCompactionConfig to require a summarizer ([864d606](https://github.com/google/adk-java/commit/864d6066eb98af6567592055f7cd24cb78defaf3))
+* refactor remote A2A agent to use A2A SDK client ([7792233](https://github.com/google/adk-java/commit/7792233832e95dfe1ae93b04d91bd7507c37cc8d))
+* Refine bug and feature request issue templates ([3e74c9a](https://github.com/google/adk-java/commit/3e74c9a960cba6582e914d36925516039d57913c))
+* register GoogleMapsTool in ComponentRegistry ([464f0b2](https://github.com/google/adk-java/commit/464f0b2fc0231dbe161b0b5fe524687bb304cd49))
+* Reorder compaction events in chronological order ([66e2296](https://github.com/google/adk-java/commit/66e22964e67d0756e3351dae93e18aa5ae73f22e))
+* Setting up data structures for pause/resume/rewind ([c6c52c4](https://github.com/google/adk-java/commit/c6c52c43439468eb87fc6a029fa25a46a35dd6e7))
+* Skip post-invocation compaction if parameters not set ([76f86c5](https://github.com/google/adk-java/commit/76f86c54eb1a242e604f7b43e3ee18940168b6ec))
+* Support function calls in LLM event summarizer ([55144ac](https://github.com/google/adk-java/commit/55144aca3c1d77e06cf7101cf2504311c0585ed1))
+* support stdio_connection_params in McpToolset config ([cc1588a](https://github.com/google/adk-java/commit/cc1588a3e669dc670595ecbdebb12dc9d2ae40f0))
+* Token count estimation fallback for tail retention compaction ([3338565](https://github.com/google/adk-java/commit/3338565cff976fdad1eda1fccafef58c9d4a51ba))
+* Update event compaction logic to include events after compaction end times ([ea12505](https://github.com/google/adk-java/commit/ea12505d7c4e22a237db5a8d3f78564ace0b216b))
+* Updating Baseline Code executors ([a3f1763](https://github.com/google/adk-java/commit/a3f176322c47354d5c18d8371cb38bd2dd719904))
+* updating Telemetry ([5ba63f4](https://github.com/google/adk-java/commit/5ba63f4015d369bc58ad7dfe76198acf003e7450))
+* Updating the Tracing implementation and updating BaseAgent.runLive ([8acb1ea](https://github.com/google/adk-java/commit/8acb1eafb099723dfae065d8b9339bb5180aa26f))
+* use Credentials' request metadata to populate headers ([e01df11](https://github.com/google/adk-java/commit/e01df116e311016df92e69487c0a6607b00384bc))
+
+
+### Bug Fixes
+
+* Add name and description to configagent pom.xml ([4948bfc](https://github.com/google/adk-java/commit/4948bfc9a35ea22660f37a6afc3474fab220b630))
+* Align InMemorySessionService listSessions with Python implementation ([9434949](https://github.com/google/adk-java/commit/94349499d03f3a131af4464def4b208db52a8feb))
+* Always use a mutable HashMap for default function arguments ([c6c9557](https://github.com/google/adk-java/commit/c6c9557ff28feece54265fcff82478156afbe67f))
+* emit multiple LlmResponses in GeminiLlmConnection ([7bf55f1](https://github.com/google/adk-java/commit/7bf55f1be6381ae5319bb0532f32c0287461546d))
+* Events for HITL are now emitted correctly ([9611f89](https://github.com/google/adk-java/commit/9611f8967e528c6242e17ad3ad5419e0b25fb3fb))
+* fix linter error ([f49260e](https://github.com/google/adk-java/commit/f49260e05c5d36b85066caf299fda9346b6ff788))
+* Fixing a problem with serializing sessions that broke integration with Vertex AI Session Service ([8190ed3](https://github.com/google/adk-java/commit/8190ed3d78667875ee0772e52b7075dcdaa14963))
+* Fixing a regression in InMemorySessionService ([d11bedf](https://github.com/google/adk-java/commit/d11bedf42976242d1c3dd6b99ebae0babe59535c))
+* Fixing Vertex session storage ([5607f64](https://github.com/google/adk-java/commit/5607f644c95a053bf381c2021879e6f31d5c6bde))
+* HITL endless loop when asking for approvals ([9611f89](https://github.com/google/adk-java/commit/9611f8967e528c6242e17ad3ad5419e0b25fb3fb))
+* include usage_metadata events in live postprocessing ([8137d66](https://github.com/google/adk-java/commit/8137d661d7b29eab066c23b7f302068f82423eb7))
+* javadocs in ResponseConverter ([be35b22](https://github.com/google/adk-java/commit/be35b2277e8291336013623cb9f0c86f62ed1f43))
+* Make FunctionResponses respect the order of FunctionCalls ([a99c75b](https://github.com/google/adk-java/commit/a99c75bf79d86866db26135568bf36b685886659))
+* Making stepsCompleted thread-safe ([d432c64](https://github.com/google/adk-java/commit/d432c6414128cf83eb0211eb18ef058dbbcd1807))
+* Merging of events in rearrangeEventsForAsyncFunctionResponsesInHistory ([67c29e3](https://github.com/google/adk-java/commit/67c29e3a33bda22d8a18a17c99e5abc891bf19f8))
+* Mutate EventActions in-place in AgentTool ([ded5a4e](https://github.com/google/adk-java/commit/ded5a4e760055d3d2bcd74d3bd8f21517821e7d0))
+* pass mutable function args map to beforeToolCallback ([e989ae1](https://github.com/google/adk-java/commit/e989ae1337a84fd6686504050d2a3bf2db15c32c))
+* populate finishReason in LlmResponse ([dace210](https://github.com/google/adk-java/commit/dace2106cd2451d8271c842da13daff65de0922e))
+* Propagate trace context across async boundaries ([279c977](https://github.com/google/adk-java/commit/279c977d9eefda39159dd4bd86acea03a47c6101))
+* recursively extract input/output schema for AgentTool ([7019d39](https://github.com/google/adk-java/commit/7019d39e490cef1b4b443d1755547a3a701bc964))
+* Reduce the logging level ([dd601ca](https://github.com/google/adk-java/commit/dd601ca8ed939d42fa186113bf0dca31c6e4a6db))
+* Remove checking ToolConfirmation from Functions to align with Python SDK ([0724330](https://github.com/google/adk-java/commit/0724330c66d26b2e80e458663ca88bb333c40c2c))
+* remove client-side function call IDs from LlmRequest ([99b5fc2](https://github.com/google/adk-java/commit/99b5fc26d791175e4dad2c818191c8c31e4269f6))
+* Remove obsolete [@param](https://github.com/param) tags from SessionController Javadoc ([a77971a](https://github.com/google/adk-java/commit/a77971a9ac983acbceab15db7eeb36460a0ba759))
+* Replace [@api](https://github.com/api)Note with &lt;p&gt; in Javadoc comments. ([ac16d53](https://github.com/google/adk-java/commit/ac16d53db0d7b0d2a3aa3a12c1db1f819d7c6c21))
+* restore invocationContext() method ([c9e2a5b](https://github.com/google/adk-java/commit/c9e2a5b37b31f5fa0e0a193076f7dc836320de97))
+* revert: Merging of events in rearrangeEventsForAsyncFunctionResponsesInHistory ([101adce](https://github.com/google/adk-java/commit/101adce314dd65328af6ad9281afb46f9b160c1a))
+* update converters package classes ([b66e4a5](https://github.com/google/adk-java/commit/b66e4a5280688a9533ed314103a0b290191a51cf))
+* update EmbeddingModelDiscoveryTest package statement ([adeb9dc](https://github.com/google/adk-java/commit/adeb9dca945004334f4af6a6442e41dd856d1612))
+* Updated BasePlugin JavaDoc for name parameter ([2e59550](https://github.com/google/adk-java/commit/2e59550eff9ad50e81c310ba83b9d49af6bb8987))
+
+
+### Documentation
+
+* Update comment in Runner ([fe00ef8](https://github.com/google/adk-java/commit/fe00ef87f9c7cdf3d1005a411055b90cebdd0c98))
+
+## [0.3.0](https://github.com/google/adk-java/compare/v0.2.0...v0.3.0) (2025-09-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* Allow `beforeModelCallback` to modify the LLM request
+* Integrate Memory Service into ADK runtime
+* This change requires users to update their configurations to provide a service account JSON file. This enables authentication with cloud services.
+
+### Features
+
+* Add BaseToolset and update McpToolset to use the new interface ([2aa474d](https://github.com/google/adk-java/commit/2aa474dc7106849029ab618a3e00304c25965235))
+* Add BaseToolset and update McpToolset to use the new interface ([a211ac4](https://github.com/google/adk-java/commit/a211ac4cdf7914c86ccdd4b67f1c5d6426b22250))
+* Add code executor ([5ffa984](https://github.com/google/adk-java/commit/5ffa9848afda1ba383dc602ed6d0419a5a55afbc))
+* Add configurable CORS support via application.yml properties ([4d4fe25](https://github.com/google/adk-java/commit/4d4fe257730d4f97ef64758a7b751823aa108dbe))
+* Add ContainerCodeExecutor ([a0a1616](https://github.com/google/adk-java/commit/a0a16167162641c6d4134c14aeb8b72acb119cd9))
+* Add CORS configuration for local ADK-Web angular ([4d4fe25](https://github.com/google/adk-java/commit/4d4fe257730d4f97ef64758a7b751823aa108dbe))
+* Add DeepWiki badge to README ([2a44d51](https://github.com/google/adk-java/commit/2a44d51901e634bfed1935fe94d42c8583363bc0))
+* Add GeminiSchemaUtil for converting OpenAPI/MCP `JsonSchema` to `com.google.genai.types.Schema` ([1945fad](https://github.com/google/adk-java/commit/1945fad3e18311cbfd6bf27c80b7d344829a33fc))
+* Add include_contents option to LlmAgentConfig to control inclusion of previous event contents in LLM requests ([2bfbc8f](https://github.com/google/adk-java/commit/2bfbc8fe03f521745528b7277688e3308adbc9b0))
+* add instruction state injection bypass ([a3746ed](https://github.com/google/adk-java/commit/a3746ed46cf8a616c26f440678d854d0500135fb))
+* Add MCP Toolset support for agent configuration ([bdc39f7](https://github.com/google/adk-java/commit/bdc39f738fda8e9f07f929a6b9b4a12a576e0413))
+* Add sessionId() and events() to ReadOnlyContext ([a348a30](https://github.com/google/adk-java/commit/a348a30f0833f17a13d2eea2aa248dbbcbfbc561))
+* Add support for configuring agent callbacks in YAML ([27c0172](https://github.com/google/adk-java/commit/27c01724d6e96da59379e54e3a9dcc138e494b47))
+* Add support for configuring subagents in ADK agents via YAML ([d827eae](https://github.com/google/adk-java/commit/d827eaee3bc2313fac21568acf3f81f152ac9df7))
+* Add support for programmatic sub-agent resolution using 'code' key ([c498d91](https://github.com/google/adk-java/commit/c498d911a6227bfec6df9516c75bc07b7d34fc99))
+* add support for Streamable HTTP Connections to MCP Tools ([bea3244](https://github.com/google/adk-java/commit/bea3244c585012194b80754d476eee1b803dbecd))
+* Add support for streaming tools ([fe1df53](https://github.com/google/adk-java/commit/fe1df539ca1f5d68dfed997405758b5ac5b1b388))
+* Add usage metadata to LLM Response model ([f5b8fda](https://github.com/google/adk-java/commit/f5b8fda31279e60c52416a4a8539915248e8b781))
+* Add VertexAiCodeExecutor ([e5b1fb3](https://github.com/google/adk-java/commit/e5b1fb39339410ffb01ad67b346a7fd60ebd8954))
+* Added JSON Schema for configurable agents ([095eff6](https://github.com/google/adk-java/commit/095eff60e9c42f7dea13e1611f6aa8c14f28d1c8))
+* Added serviceAccountJson as a parameter for toolset ([5ab8b14](https://github.com/google/adk-java/commit/5ab8b1409a7ffe5de8a44f73487f999bcb80d465))
+* Adds `mvn google-adk:web ...` cli via maven plugin to allow users debug agents with Web UI much easier. ([b02c559](https://github.com/google/adk-java/commit/b02c5592fb4f75615908127729af7016a0362495))
+* Adds support for YAML-based basic agents ([9723f8a](https://github.com/google/adk-java/commit/9723f8ac57d657d9a3d469dcb3416f13a1c84398))
+* ADK Plugin Base Class ([dc29535](https://github.com/google/adk-java/commit/dc2953545a633db434f2d83d1f539ffd04bf4014))
+* AgentStaticLoader; like an 🧝 Elve, instead of the 🧙 mage (fixes [#149](https://github.com/google/adk-java/issues/149)) ([5fcd413](https://github.com/google/adk-java/commit/5fcd4136aadb6e3592c643d766e3ea9d8917cb41))
+* Allow LongRunningFunctionTool to be created with an instance ([9bd2bd6](https://github.com/google/adk-java/commit/9bd2bd68875da1e327dee9cc1cbbf23de4070b74))
+* Allow max tokens to be customizable in Claude ([bbf38e3](https://github.com/google/adk-java/commit/bbf38e301c18b14ac459dcf151eb54c9239c51c9))
+* bypass state injection for instructions constructed with an `InstructionProvider` ([ef2931a](https://github.com/google/adk-java/commit/ef2931a83f383cc85f5233ea08caebb35c67e0e5))
+* **config:** Adds `ComponentRegistry` for loading objects in yaml config ([55fffb7](https://github.com/google/adk-java/commit/55fffb753464010f559cce17931d4db3244524db))
+* **config:** Adds `resolveAgentClass`, `resolveToolInstance` and `resolveToolClass` to ComponentRegistry for resolving the 3 type of components ([8c107d2](https://github.com/google/adk-java/commit/8c107d23df3ce112f901fa9858b9839e856b6582))
+* **config:** Supports loading yaml agents in `mvn google-adk@web ...` ([417a8bc](https://github.com/google/adk-java/commit/417a8bcf12bb2c21cf869554335f9649f9ff7a56))
+* Enforce serializable types for FunctionTools ([bd0bb57](https://github.com/google/adk-java/commit/bd0bb576f0d63558bd63492ad543b7adac302525))
+* Implement automatic tool discovery for config-based agents ([a2d9533](https://github.com/google/adk-java/commit/a2d95334cbdfe1c84464ae4777fbb592bfe02b7c))
+* Implement tool configuration loading ([f27f48c](https://github.com/google/adk-java/commit/f27f48c273fb63c3080cd58554e14acf297196f8))
+* Initial tutorials/city-time-weather ([6ce41ef](https://github.com/google/adk-java/commit/6ce41ef318e64212c226884323c425d46a98894e))
+* Integrate Memory Service into ADK runtime ([f4f8309](https://github.com/google/adk-java/commit/f4f8309bb559e7139e3e2955b83b15e0ef4a5f67))
+* Integrating Plugin with ADK ([c037893](https://github.com/google/adk-java/commit/c037893fe3554e37112ad22641b0a4578b06de0f))
+* introduce an experimental parameter to limit number of steps LlmAgent can take ([4983747](https://github.com/google/adk-java/commit/498374717e9d6a3c635365ec2607a89aad8e0a17))
+* Introduce ExampleTool for few-shot examples in LlmAgent ([2162f89](https://github.com/google/adk-java/commit/2162f8908232e42abcdf2d7a8fa848933619fc3e))
+* Introduced ApplicationIntegrationToolset in JavaADK ([e21807c](https://github.com/google/adk-java/commit/e21807c57118c8466a29a876e70e7dcb79a085f2))
+* Introduced ConnectionClient and IntegrationClient to get OPENAPISPEC of connection ([1e114cd](https://github.com/google/adk-java/commit/1e114cd22042fa3b3de252d45a7c291da641d443))
+* JBang! 💥 🤯 ([e10e4f9](https://github.com/google/adk-java/commit/e10e4f9be876064001356df49fa797559c54f944))
+* Make `FunctionDeclaration.buildFunctionDeclaration` public ([5bf9cb0](https://github.com/google/adk-java/commit/5bf9cb0e90cefc6bea737fbb1c7f19db5738d3c8))
+* make readonly context more efficient ([60a1707](https://github.com/google/adk-java/commit/60a1707d53c81f0876db3aa80d5b14941f885019))
+* Make StreamableHttpServerParameters class non-final to allow subclassing ([bc3ae43](https://github.com/google/adk-java/commit/bc3ae4349b1734a532d46368567a9476468e28fa))
+* **maven:** Supports using custom/subclass of ComponentRegistry to provide tools for agents ([7c7d779](https://github.com/google/adk-java/commit/7c7d77964729f8190ac212cdde06f88bd71ac646))
+* pass headers while init mcp client ([744814a](https://github.com/google/adk-java/commit/744814a68fb92894d75a886e966a35f922f6150c))
+* pass timeout config while init mcp client ([d255167](https://github.com/google/adk-java/commit/d255167db1a01aac79ab9a8eb9be130567bc8a91))
+* provide more detailed logs when mcp tool declaration failed. ([4d5b63a](https://github.com/google/adk-java/commit/4d5b63ae184db6f72893e49eb47484ea4eefcc31))
+* Refactors ADK agent loading with a new AgentLoader interface, add CompiledAgentLoader and AgentStaticLoader implementation, move YAML agent loader support to maven_plugin ([0f7904b](https://github.com/google/adk-java/commit/0f7904b903095cfe38822b70d608b4c6899b667a))
+* **SseServerParameters:** Add configuration option for connection endpoint ([83899b9](https://github.com/google/adk-java/commit/83899b98e27bb1b5cf072ca09074e811982757c8))
+* support AsyncMcpTool ([0c50970](https://github.com/google/adk-java/commit/0c509707fa9efd74e7d5e7a5ef2bf7ec31e1c712))
+* support for mcp async toolset ([b867ea2](https://github.com/google/adk-java/commit/b867ea20854fcf57dc83442ac3ab29bc293683e5))
+* update ConfigAgentLoader to load agents from the current directory ([008c196](https://github.com/google/adk-java/commit/008c196cd6abdbdbf605701536b92aabf925a3e1))
+* Update FunctionTool to handle deserializing arbitrary return types ([a33f4da](https://github.com/google/adk-java/commit/a33f4da0ed73b5ab8ff05f18eb84a856e28ad2d1))
+* Update model resolution logic for LLM agents ([4fc83f0](https://github.com/google/adk-java/commit/4fc83f079b630c4dac867989d36f0804f050902c))
+
+
+### Bug Fixes
+
+* `remove` is a state mutation operation and should also be captured in the delta ([1071f1e](https://github.com/google/adk-java/commit/1071f1e12b916e90efb22a07318a9d356b897a7c))
+* Add missing logging for MCP Servers ([e2c4d40](https://github.com/google/adk-java/commit/e2c4d40faf1f8cb20015c82816607bca4f9d63bb))
+* Added `httpclient5` dependency to `pom.xml` to fix ADKWebServer instantiating issue ([62eb2ec](https://github.com/google/adk-java/commit/62eb2ec90945b181871174f9b342a2883689bc4c))
+* Allow `beforeModelCallback` to modify the LLM request ([8e10df2](https://github.com/google/adk-java/commit/8e10df2a543a6ffc1eb91c9ff135ade19bcd975c))
+* Broken Dev UI (fixes [#302](https://github.com/google/adk-java/issues/302)) ([852ebd8](https://github.com/google/adk-java/commit/852ebd88c0720dddf1e7397ef21db3a095bdc101))
+* change scheme to https ([7bc003e](https://github.com/google/adk-java/commit/7bc003e50133aeb18c24e3e60dcccd2762049938))
+* Check input validity before appending to example ([97f02ab](https://github.com/google/adk-java/commit/97f02ab46c538b680387df7f5c7b1dfcc978b0e6))
+* Ensure function call ID is populated before building list of long running function calls ([d204294](https://github.com/google/adk-java/commit/d2042949dc22115294f2fd21433c8b1387044b9b))
+* Exclude image labels when sending requests to Gemini API ([7d10299](https://github.com/google/adk-java/commit/7d1029931c89863619f894e48929c521de3dc047))
+* exclude Thought from being printed as context ([40af9bb](https://github.com/google/adk-java/commit/40af9bb32a058099292075f352d5229dc010d2c6))
+* expose LlmAgent's max steps parameter via a getter ([0431e2b](https://github.com/google/adk-java/commit/0431e2b692adf6e970ea24cf9b7819ed15560dbe))
+* Fix Claude LLM when no tools are provided (fixes [#382](https://github.com/google/adk-java/issues/382)) ([99265cf](https://github.com/google/adk-java/commit/99265cf268be4dbd0a82decf5c48bf57b3725b53))
+* Fix InMemorySessionService timestamp seconds conversion ([21c09ac](https://github.com/google/adk-java/commit/21c09ac1ca50829ed765292c093853b89df20944))
+* Fix the incorrect timestamp in `Event` ([e1214c1](https://github.com/google/adk-java/commit/e1214c136ee40a2843a095a7a7be5acaf7506134))
+* Fix view eval case ([315f354](https://github.com/google/adk-java/commit/315f354ea5880b8b2dbc39fde92d7eb33438e35b))
+* Fixed AgentStaticLoader bean registration using ApplicationContextInitializer and resolved OpenTelemetry double initialization in tests ([87acdf8](https://github.com/google/adk-java/commit/87acdf8083e7c4dc92273dcde0048ee9be2882fd))
+* Flip equals() in LangChain4j for better null safety ([d5c98ad](https://github.com/google/adk-java/commit/d5c98ad1f9a0b6a07fde895bfa7b8f9c0e8e7106))
+* formatting error in LangChain4J test ([c4e363a](https://github.com/google/adk-java/commit/c4e363a8b3c29d039fbf4718c20936f95b609fb5))
+* handle state removals when applying stateDelta in BaseSessionService.appendEvent ([34151c7](https://github.com/google/adk-java/commit/34151c7977e9d997f73e92d3d7d0e413034758db))
+* IncludeContents.None not including user message in request ([c0302b6](https://github.com/google/adk-java/commit/c0302b67716b58213d41fee9ee83876d66483618))
+* Increase default MCP client timeouts to 5 minutes ([d46673e](https://github.com/google/adk-java/commit/d46673e23960360491b69d20fff2e399b0606d09))
+* Increase max output tokens for Claude to 8k ([90b7bf4](https://github.com/google/adk-java/commit/90b7bf47b7bdb80962c64a983779a3a2b1008878))
+* JavaDoc mistake in ParallelAgent ([ff3c803](https://github.com/google/adk-java/commit/ff3c80326be5ea10e4785ff0fc47f087f2cdb193))
+* live agents using Gemini don't call tools ([cca154d](https://github.com/google/adk-java/commit/cca154df3dfdf4da35137d4b356ae474139e66c3))
+* Make BaseMemoryService nullable in Runner ([2955789](https://github.com/google/adk-java/commit/2955789350a65ac081cdfbb4697c7fdd926d32e8))
+* Make sessionService() in InvocationContext public instead of protected ([1ae5639](https://github.com/google/adk-java/commit/1ae5639e5c64f38a2e94018dd6421b2569aeb0bb))
+* missing "model" role in Gemini LLM responses ([13dd978](https://github.com/google/adk-java/commit/13dd9789626249225115af01f149959d9e9880c2))
+* multiple tool requests with langchain4j ([92631a1](https://github.com/google/adk-java/commit/92631a1cb73cf4e04dfe7ca66288acf66d0d00fa))
+* operation should be added irrespective of actions or entities ([55b87ee](https://github.com/google/adk-java/commit/55b87ee4b3f243132308a43abde17b8dba30ff4d))
+* Refactor web server components and agent loaders from maven_plugin to dev module ([9e3723b](https://github.com/google/adk-java/commit/9e3723ba51ea820d643398bfecfb17e822f47aeb))
+* Remove copy/pasta 🍝 in Mcp[Aync]Tool ([d972b87](https://github.com/google/adk-java/commit/d972b87609c1aab5a95b8d75e8a30ba73bdc9869))
+* remove debug logs from base llm flow to prevent accidentally logging user data ([cb95b56](https://github.com/google/adk-java/commit/cb95b56b280c51dc67716fc17e0ded92d0d2c4f5))
+* Remove GeminiSchemaUtil and use JsonSchema directly in FunctionDeclaration ([1a93675](https://github.com/google/adk-java/commit/1a93675e1ea4ce8f637498344a77326a83b1ff35))
+* Remove network package since it is not used ([a3c47bc](https://github.com/google/adk-java/commit/a3c47bcf40fba8e5413b86d2bc026c00ef5550f7))
+* Remove residual web components from maven_plugin ([855da19](https://github.com/google/adk-java/commit/855da19f53c03ba8f458603f6114d015463b170a))
+* Removed `FeatureDecorator` class ([a678cca](https://github.com/google/adk-java/commit/a678ccaa894d9db0f069d8f59c9a46bc1113c88c))
+* reverting incorrect fix handling appendEvent singles ([5a7ab20](https://github.com/google/adk-java/commit/5a7ab202ae26047796d8ff8a5d6bffcebbb6e180))
+* runAsync handles the async response of sessionService.appendEvent ([eb232ee](https://github.com/google/adk-java/commit/eb232ee780c986bfdbae708882c7766854bba5d5))
+* Runner now includes Singles from appendEvent in the Rx graph ([b862ad4](https://github.com/google/adk-java/commit/b862ad45212bcb90696df3a4e35902c0e0abc20e))
+* Same GenAI version in langchain4j as in core ([6ef972d](https://github.com/google/adk-java/commit/6ef972d9801209542b71f905526be1db78afa73e))
+* StreamingToolTest flakiness ([bfdf13c](https://github.com/google/adk-java/commit/bfdf13c147f02022ae45285c25222c4eca790c5e))
+* Support parameterized List parameters for Function tools ([89fb519](https://github.com/google/adk-java/commit/89fb519f1567d519367ee41bb993d4c293cb10c7))
+* **tool:** Fixes ExitLoopTool by adding `Schema` and description ([0099e5f](https://github.com/google/adk-java/commit/0099e5fe45ad340c53b785442eb85b65ce7cedda))
+* Tracking headers not being added to default model use ([2ab2065](https://github.com/google/adk-java/commit/2ab20653c8edf6073bbe6f1e8cb432867cc589f7))
+* use a sentinel object instead of null to indicate removal of keys from state ([f1c0602](https://github.com/google/adk-java/commit/f1c060215d7660253068cf7065be39f514f91598))
+
+
+### Documentation
+
+* Adjust heading levels in WebMojo Javadoc ([62ed9d8](https://github.com/google/adk-java/commit/62ed9d85e35b29fd67e94f1192f3e6e077ad5c11))
+* Clarify Code Format and Single Commit on ADK Java CONTRIBUTING ([d094cc2](https://github.com/google/adk-java/commit/d094cc2abf604f38a7fc27e9206d7f965bf2cd59))
+* remove stale TODO. #non-breaking ([5117b8d](https://github.com/google/adk-java/commit/5117b8d6c3120e7832996892ce08d710a87c8789))

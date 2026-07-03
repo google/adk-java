@@ -1,0 +1,1 @@
+Core ADK library.
