@@ -18,7 +18,6 @@ package com.google.adk.sessions;
 
 import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 
-import com.google.adk.internal.http.HttpClientFactory;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Ascii;
 import com.google.common.base.Strings;
@@ -103,22 +102,8 @@ abstract class ApiClient {
     this.httpClient = createHttpClient(httpOptions.timeout().orElse(null));
   }
 
-  /**
-   * Shared OkHttpClient instance whose connection pool and thread dispatcher are reused across all
-   * {@link ApiClient} subclass instances.
-   *
-   * <p>Even though {@link ApiClient} is abstract, every instantiation of a concrete subclass (e.g.,
-   * GoogleAiClient) triggers this class's constructor. Making this static prevents a severe
-   * resource leak where every new LLM Agent would otherwise spin up a brand new thread pool and TCP
-   * connection pool. Instead, all clients share this pool and fork it via {@link
-   * OkHttpClient#newBuilder()}.
-   */
-  private static final OkHttpClient SHARED_POOL_CLIENT =
-      HttpClientFactory.createSharedHttpClient("ApiClient");
-
   private OkHttpClient createHttpClient(@Nullable Integer timeout) {
-    OkHttpClient.Builder builder = SHARED_POOL_CLIENT.newBuilder();
-
+    OkHttpClient.Builder builder = new OkHttpClient().newBuilder();
     if (timeout != null) {
       builder.connectTimeout(Duration.ofMillis(timeout));
     }
