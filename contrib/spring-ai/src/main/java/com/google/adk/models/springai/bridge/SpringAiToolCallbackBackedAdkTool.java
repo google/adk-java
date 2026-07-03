@@ -16,7 +16,6 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
-import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 import java.util.Map;
@@ -35,15 +34,19 @@ import org.springframework.ai.tool.ToolCallback;
  * {@code FunctionToolCallback}, {@code @Tool}-annotated method callbacks, etc.) into the ADK tool
  * model so they can be attached to an {@link com.google.adk.agents.LlmAgent}.
  *
- * <p>Schema is extracted from {@link ToolCallback#getToolDefinition()}: {@code name}, {@code
- * description}, and the JSON Schema returned by {@code inputSchema()} are mapped into the ADK
- * {@link FunctionDeclaration}/{@link Schema} pair via {@link Schema#fromJson(String)}.
+ * <p><strong>Schema preservation:</strong> the JSON Schema returned by {@code
+ * ToolCallback.getToolDefinition().inputSchema()} is parsed into a structured Map and set via
+ * {@code FunctionDeclaration.parametersJsonSchema(...)} rather than {@code
+ * parameters(Schema.fromJson(...))}. This routes through the faithful branch of the downstream
+ * Spring AI {@code ToolConverter}, preserving {@code items}, {@code enum}, {@code format}, {@code
+ * anyOf}/{@code oneOf}, {@code additionalProperties}, {@code $defs} and {@code $ref} — none of
+ * which survive the {@code parameters(Schema)} path today.
  *
- * <p>Invocation: the ADK runtime calls {@link #runAsync(Map, ToolContext)} with parsed arguments →
- * this class serializes them back to JSON and dispatches to {@link ToolCallback#call(String)},
- * which returns a JSON string. The string is parsed back into a {@code Map<String, Object>} for the
- * ADK flow. When the underlying callback's result is not a JSON object (e.g. a primitive or array),
- * the value is wrapped under a {@code "result"} key.
+ * <p><strong>Invocation & errors:</strong> {@link #runAsync(Map, ToolContext)} serializes args to
+ * JSON, dispatches to {@link ToolCallback#call(String)}, and parses the JSON response back. Any
+ * exception thrown by the callback is caught and translated to {@code Map.of("error", "<message>")}
+ * — matching the shape used by ADK's native {@code AbstractMcpTool.wrapCallResult(...)} — so the
+ * agent flow sees a structured error result instead of a hard failure on the {@link Single}.
  */
 public class SpringAiToolCallbackBackedAdkTool extends BaseTool {
 
@@ -56,26 +59,19 @@ public class SpringAiToolCallbackBackedAdkTool extends BaseTool {
   private final ObjectMapper objectMapper;
   private final Optional<FunctionDeclaration> declaration;
 
-  /** Wraps a Spring AI {@link ToolCallback} as an ADK tool using the default ADK JSON mapper. */
   public SpringAiToolCallbackBackedAdkTool(ToolCallback toolCallback) {
     this(toolCallback, JsonBaseModel.getMapper());
   }
 
-  /** Wraps a Spring AI {@link ToolCallback} as an ADK tool with a custom JSON mapper. */
   public SpringAiToolCallbackBackedAdkTool(ToolCallback toolCallback, ObjectMapper objectMapper) {
     super(
         Objects.requireNonNull(toolCallback, "toolCallback").getToolDefinition().name(),
         toolCallback.getToolDefinition().description());
     this.toolCallback = toolCallback;
     this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
-    this.declaration = buildDeclaration(toolCallback);
+    this.declaration = buildDeclaration(toolCallback, objectMapper);
   }
 
-  /**
-   * Converts every {@link ToolCallback} in the input list into a {@link BaseTool}. Useful when
-   * fanning out a {@code List<ToolCallback>} (e.g. the result of {@code McpToolCallbackProvider})
-   * to an agent's {@code .tools(...)} list.
-   */
   public static List<BaseTool> wrapAll(List<? extends ToolCallback> toolCallbacks) {
     return toolCallbacks.stream()
         .map(SpringAiToolCallbackBackedAdkTool::new)
@@ -95,8 +91,21 @@ public class SpringAiToolCallbackBackedAdkTool extends BaseTool {
           if (logger.isDebugEnabled()) {
             logger.debug("Invoking Spring AI tool '{}' with args: {}", name(), requestJson);
           }
-          String responseJson = toolCallback.call(requestJson);
-          return parseResponse(responseJson);
+          try {
+            String responseJson = toolCallback.call(requestJson);
+            return parseResponse(responseJson);
+          } catch (Exception callFailed) {
+            // Match AbstractMcpTool.wrapCallResult(...) — return a structured error map rather
+            // than propagate the raw exception through the ADK Single, so the agent flow can
+            // observe the failure as a tool result instead of aborting the invocation.
+            logger.warn(
+                "Spring AI tool '{}' invocation failed: {}", name(), callFailed.getMessage());
+            return ImmutableMap.of(
+                "error",
+                callFailed.getMessage() == null
+                    ? callFailed.getClass().getSimpleName()
+                    : callFailed.getMessage());
+          }
         });
   }
 
@@ -107,8 +116,6 @@ public class SpringAiToolCallbackBackedAdkTool extends BaseTool {
     try {
       return objectMapper.readValue(responseJson, MAP_TYPE);
     } catch (Exception notAnObject) {
-      // The callback returned a primitive, array, or arbitrary string. Wrap so the agent gets a
-      // structured result rather than a parse failure.
       Object decoded = tryDecodeAsJsonValue(responseJson);
       return ImmutableMap.of("result", decoded);
     }
@@ -122,12 +129,12 @@ public class SpringAiToolCallbackBackedAdkTool extends BaseTool {
     }
   }
 
-  /** Exposed for tests and downstream tooling. */
   public ToolCallback toolCallback() {
     return toolCallback;
   }
 
-  private static Optional<FunctionDeclaration> buildDeclaration(ToolCallback toolCallback) {
+  private static Optional<FunctionDeclaration> buildDeclaration(
+      ToolCallback toolCallback, ObjectMapper objectMapper) {
     var def = toolCallback.getToolDefinition();
     FunctionDeclaration.Builder builder = FunctionDeclaration.builder().name(def.name());
     if (def.description() != null && !def.description().isBlank()) {
@@ -136,14 +143,18 @@ public class SpringAiToolCallbackBackedAdkTool extends BaseTool {
     String inputSchema = def.inputSchema();
     if (inputSchema != null && !inputSchema.isBlank()) {
       try {
-        builder.parameters(Schema.fromJson(inputSchema));
-      } catch (Exception parseFailed) {
+        // Pass the JSON Schema through verbatim, parsed to a Map (not a raw String).
+        // ToolConverter serializes parametersJsonSchema faithfully — preserving items, enum,
+        // format, anyOf/oneOf, additionalProperties, $defs, $ref. Using parameters(Schema.fromJson)
+        // instead would route through a lossy branch that drops most of those.
+        builder.parametersJsonSchema(objectMapper.readValue(inputSchema, MAP_TYPE));
+      } catch (Exception schemaUnparseable) {
+        // Genuinely malformed JSON: leave parameters unset rather than emit a degraded schema.
         logger.warn(
-            "Could not parse Spring AI tool '{}' input schema as ADK Schema; falling back to raw"
-                + " JSON schema. Cause: {}",
+            "Spring AI tool '{}' has an unparseable input schema; declaring it with no parameter"
+                + " schema. Cause: {}",
             def.name(),
-            parseFailed.getMessage());
-        builder.parametersJsonSchema(inputSchema);
+            schemaUnparseable.getMessage());
       }
     }
     return Optional.of(builder.build());

@@ -399,6 +399,29 @@ LlmAgent agent = LlmAgent.builder()
     .build();
 ```
 
+### Automatic discovery via `SpringAiToolBridgeAutoConfiguration`
+
+The library also ships `SpringAiToolBridgeAutoConfiguration` which auto-discovers **every** `ToolCallback` bean in the Spring context and exposes them as a single `@Bean("springAiTools") List<BaseTool>`. Wiring becomes:
+
+```java
+@Bean
+public LlmAgent rootAgent(
+    SpringAI llm,
+    @Qualifier("springAiTools") List<BaseTool> springAiTools) {
+  return LlmAgent.builder().name("root").model(llm).tools(springAiTools).build();
+}
+```
+
+Active only when at least one `ToolCallback` bean exists (from `spring-ai-starter-mcp-client`, `@Tool` methods, `FunctionToolCallback` beans, etc.).
+
+### Error handling
+
+If the underlying `ToolCallback.call(...)` throws, the bridge catches the exception and returns a structured `Map.of("error", "<message>")` result — matching ADK's native `AbstractMcpTool.wrapCallResult(...)` shape. The agent sees a tool result with an `error` key rather than aborting the invocation. Falls back to the exception's simple class name when the message is null.
+
+### Schema fidelity
+
+The bridge sets `FunctionDeclaration.parametersJsonSchema(Map)` from the parsed JSON schema, **not** `parameters(Schema.fromJson(...))`. This routes through the faithful branch of Spring AI's `ToolConverter` and preserves `items`, `enum`, `format`, `anyOf`/`oneOf`, `additionalProperties`, `$defs` and `$ref`. Unparseable schemas leave the field unset (with a logged warning) rather than emit a degraded or double-encoded schema.
+
 ### Coexistence with ADK's native MCP
 
 ADK ships its own MCP client in `com.google.adk.tools.mcp.*` (CLI / non-Spring-Boot scenarios). The two paths can be mixed at the `.tools(...)` boundary — both produce `BaseTool` instances — but it is strongly recommended to **pick one** in any given application. The Spring AI MCP route is the natural choice for Spring Boot apps because everything is property-driven; ADK's native `McpToolset` remains the right choice for non-Spring usage.
