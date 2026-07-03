@@ -16,6 +16,8 @@
 
 package com.google.adk.web.config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.cors.CorsConfiguration;
@@ -42,8 +44,18 @@ import org.springframework.web.filter.CorsFilter;
 @Configuration
 public class AdkWebCorsConfig {
 
+  private static final Logger logger = LoggerFactory.getLogger(AdkWebCorsConfig.class);
+
   @Bean
   public CorsConfigurationSource corsConfigurationSource(AdkWebCorsProperties corsProperties) {
+    if (corsProperties.origins().contains("*")) {
+      logger.warn(
+          "CORS is configured to allow all origins (\"*\"), which is insecure and intended for"
+              + " local development only. This also applies to the /run_live WebSocket endpoint."
+              + " Set 'adk.web.cors.origins' to an explicit allowlist to restrict which origins"
+              + " may call the server.");
+    }
+
     CorsConfiguration configuration = new CorsConfiguration();
 
     configuration.setAllowedOrigins(corsProperties.origins());
