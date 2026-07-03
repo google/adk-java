@@ -300,13 +300,12 @@ public final class EventTest {
             .invocationId("i1")
             .author("agent")
             .content(Content.fromParts(Part.fromText("hello")))
-            .longRunningToolIds(ImmutableSet.of("tool1"))
             .build();
     assertThat(event.finalResponse()).isTrue();
   }
 
   @Test
-  public void finalResponse_isFalseForEventWithToolCallAndLongRunningToolId() {
+  public void finalResponse_isTrueForEventWithToolCallAndLongRunningToolId() {
     Event event =
         Event.builder()
             .id("e1")
@@ -315,7 +314,8 @@ public final class EventTest {
             .content(Content.fromParts(Part.fromFunctionCall("tool", ImmutableMap.of("k", "v"))))
             .longRunningToolIds(ImmutableSet.of("tool1"))
             .build();
-    assertThat(event.finalResponse()).isFalse();
+    // A pending long-running tool call ends the invocation, so the event is a final response.
+    assertThat(event.finalResponse()).isTrue();
   }
 
   @Test

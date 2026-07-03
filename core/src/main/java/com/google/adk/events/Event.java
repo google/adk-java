@@ -336,10 +336,21 @@ public class Event extends JsonBaseModel {
         .isPresent();
   }
 
+  /**
+   * Returns whether this event carries a pending long-running tool call (e.g. a human-in-the-loop
+   * request) whose result is deferred until the caller supplies it later.
+   */
+  @JsonIgnore
+  public final boolean hasPendingLongRunningToolCall() {
+    return longRunningToolIds().map(ids -> !ids.isEmpty()).orElse(false);
+  }
+
   /** Returns true if this is a final response. */
   @JsonIgnore
   public final boolean finalResponse() {
-    if (actions().skipSummarization().orElse(false)) {
+    // A pending long-running tool call ends the invocation: control returns to the caller, who
+    // supplies the deferred response later. This mirrors Python ADK's is_final_response.
+    if (actions().skipSummarization().orElse(false) || hasPendingLongRunningToolCall()) {
       return true;
     }
     return functionCalls().isEmpty()

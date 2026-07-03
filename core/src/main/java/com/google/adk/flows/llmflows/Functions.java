@@ -540,7 +540,14 @@ public final class Functions {
                   .flatMapMaybe(
                       finalOptionalResult -> {
                         Map<String, Object> finalFunctionResult = finalOptionalResult.orElse(null);
-                        if (tool.longRunning() && finalFunctionResult == null) {
+                        boolean hasNoResult =
+                            finalFunctionResult == null || finalFunctionResult.isEmpty();
+                        if (tool.longRunning() && hasNoResult) {
+                          // A long-running tool with no result yet defers its response, so skip the
+                          // function-response event to avoid re-invoking the model with a
+                          // placeholder. The empty-map case is included because FunctionTool
+                          // coerces
+                          // an absent return into an empty map.
                           return Maybe.empty();
                         }
                         Event event =

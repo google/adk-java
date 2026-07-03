@@ -2301,6 +2301,159 @@ public final class RunnerTest {
     assertThat(simplifyEvents(events)).contains("agent: after pending call");
   }
 
+  // A long-running tool awaiting an external result (real HITL, e.g. human input) returns nothing
+  // yet. The invocation must end after the single model call rather than re-invoking the model with
+  // a placeholder response and looping until the call limit. Matches Python ADK v1: the function
+  // response is skipped and the long-running call event is treated as final.
+  @Test
+  public void runAsync_withLongRunningCall_noImmediateResult_endsAfterSingleModelCall() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "hello")),
+            // Extra response the flow must NOT consume; reaching it means it looped.
+            createTextLlmResponse("should not be reached"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .name("agent")
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "pendingTool",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(agent).build()).build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
+            .toList()
+            .blockingGet();
+
+    // Ended after the single long-running call: no function response, no second model call.
+    assertThat(testLlm.getRequests()).hasSize(1);
+    assertThat(simplifyEvents(events)).doesNotContain("agent: should not be reached");
+  }
+
+  // The long-running call event is now a final response, but it carries no text. An agent with an
+  // outputKey must not overwrite that key with an empty string. Matches ADK Python's output_key
+  // guard, which skips final events that have no text part.
+  @Test
+  public void runAsync_withLongRunningCall_andOutputKey_doesNotWriteEmptyOutput() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "hello")));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .name("agent")
+            .outputKey("result")
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "pendingTool",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(agent).build()).build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).actions().stateDelta()).doesNotContainKey("result");
+  }
+
+  // Mirrors ADK Python's test_functions_long_running.test_async_function: a long-running tool that
+  // reports a non-empty "pending" status drives a multi-turn lifecycle. The initial pending result
+  // is summarized, then the caller injects progress/result function responses over later turns,
+  // each summarized by the model, and the tool executes exactly once across the whole lifecycle.
+  @Test
+  public void runAsync_longRunningCall_multiTurnLifecycle_executesToolOnce() {
+    Tools.pendingProgressToolCalls.set(0);
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingProgressTool", ImmutableMap.of("message", "hi")),
+            createTextLlmResponse("response1"),
+            createTextLlmResponse("response2"),
+            createTextLlmResponse("response3"),
+            createTextLlmResponse("response4"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .name("agent")
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "pendingProgressTool",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(agent).build()).build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    // Turn 1: the model calls the long-running tool; the pending result is summarized.
+    List<Event> turn1 =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("test1")))
+            .toList()
+            .blockingGet();
+    assertThat(testLlm.getRequests()).hasSize(2);
+    assertThat(turn1.get(0).longRunningToolIds().get())
+        .contains(turn1.get(0).functionCalls().get(0).id().get());
+    assertThat(simplifyEvents(turn1))
+        .containsExactly(
+            "agent: FunctionCall(name=pendingProgressTool, args={message=hi})",
+            "agent: FunctionResponse(name=pendingProgressTool, response={status=pending})",
+            "agent: response1")
+        .inOrder();
+    assertThat(Tools.pendingProgressToolCalls.get()).isEqualTo(1);
+
+    // Turn 2: the caller injects a progress update; the model summarizes, tool not re-run.
+    assertThat(simplifyEvents(resumeWithStatus(runner, session, "still waiting")))
+        .containsExactly("agent: response2");
+    assertThat(testLlm.getRequests()).hasSize(3);
+
+    // Turn 3: the caller injects the result.
+    assertThat(simplifyEvents(resumeWithStatus(runner, session, "done")))
+        .containsExactly("agent: response3");
+    assertThat(testLlm.getRequests()).hasSize(4);
+
+    // Turn 4: a further result is still accepted and summarized.
+    assertThat(simplifyEvents(resumeWithStatus(runner, session, "done again")))
+        .containsExactly("agent: response4");
+    assertThat(testLlm.getRequests()).hasSize(5);
+
+    // The tool executed exactly once across the whole lifecycle.
+    assertThat(Tools.pendingProgressToolCalls.get()).isEqualTo(1);
+  }
+
+  private static List<Event> resumeWithStatus(Runner runner, Session session, String status) {
+    return runner
+        .runAsync(
+            "user",
+            session.id(),
+            Content.fromParts(
+                Part.builder()
+                    .functionResponse(
+                        FunctionResponse.builder()
+                            .id("lro_call_id")
+                            .name("pendingProgressTool")
+                            .response(ImmutableMap.of("status", status)))
+                    .build()))
+        .toList()
+        .blockingGet();
+  }
+
   // A pending long-running call must stop a resumable LoopAgent after the current iteration rather
   // than looping again (re-calling the model every iteration), matching Python ADK v1.
   @Test
@@ -2563,6 +2716,23 @@ public final class RunnerTest {
 
     public static ImmutableMap<String, Object> echoTool(String message) {
       return ImmutableMap.of("message", message);
+    }
+
+    // A long-running tool awaiting an external result has nothing to return yet; FunctionTool
+    // coerces the absent return into an empty response.
+    @SuppressWarnings("unused") // Invoked reflectively by FunctionTool.
+    public static @Nullable ImmutableMap<String, Object> pendingTool(String message) {
+      return null;
+    }
+
+    static final AtomicInteger pendingProgressToolCalls = new AtomicInteger(0);
+
+    // A long-running tool that reports progress: it returns a non-empty "pending" status on the
+    // initial call. Counts executions so a test can assert it runs exactly once across turns.
+    @SuppressWarnings("unused") // Invoked reflectively by FunctionTool.
+    public static ImmutableMap<String, Object> pendingProgressTool(String message) {
+      pendingProgressToolCalls.incrementAndGet();
+      return ImmutableMap.of("status", "pending");
     }
   }
 
