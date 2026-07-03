@@ -21,6 +21,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import com.google.genai.types.Blob;
 import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
@@ -29,6 +30,8 @@ import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
+import com.google.genai.types.ToolCall;
+import com.google.genai.types.ToolResponse;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.functions.Predicate;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
@@ -366,6 +369,126 @@ public final class GeminiTest {
     assertThat(first.args().get()).containsExactly("a", "1");
     assertThat(second.name()).hasValue("second");
     assertThat(second.args().get()).containsExactly("b", "2");
+  }
+
+  @Test
+  public void processRawResponses_imageOnlyWithStop_emitsFinalImagePart() {
+    Part imagePart = Part.fromBytes(new byte[] {1, 2, 3}, "image/png");
+    GenerateContentResponse imageWithStop =
+        toResponse(
+            Candidate.builder()
+                .content(Content.builder().role("model").parts(imagePart).build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+
+    ImmutableList<LlmResponse> responses =
+        ImmutableList.copyOf(
+            Gemini.processRawResponses(Flowable.just(imageWithStop)).blockingIterable());
+
+    LlmResponse finalResponse = Iterables.getLast(responses);
+    assertThat(finalResponse.content().get().parts().get()).hasSize(1);
+    assertThat(finalResponse.content().get().parts().get().get(0).inlineData()).isPresent();
+  }
+
+  // Image-generation models return image bytes as an inline-data part, often alongside text.
+  // Regression test: the aggregated response must retain the image, not just the text.
+  @Test
+  public void processRawResponses_textThenImageWithStop_finalKeepsTextAndImage() {
+    Part imagePart = Part.fromBytes(new byte[] {1, 2, 3}, "image/png");
+    GenerateContentResponse textChunk = toResponseWithText("Here is your image:");
+    GenerateContentResponse imageWithStop =
+        toResponse(
+            Candidate.builder()
+                .content(Content.builder().role("model").parts(imagePart).build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+
+    ImmutableList<LlmResponse> responses =
+        ImmutableList.copyOf(
+            Gemini.processRawResponses(Flowable.just(textChunk, imageWithStop)).blockingIterable());
+
+    LlmResponse finalResponse = Iterables.getLast(responses);
+    assertThat(finalResponse.content().get().parts().get()).hasSize(2);
+    assertThat(finalResponse.content().get().parts().get().get(0).text())
+        .hasValue("Here is your image:");
+    assertThat(finalResponse.content().get().parts().get().get(1).inlineData()).isPresent();
+  }
+
+  // The aggregator must pass through any non-text, non-function-call part, not just an allowlist.
+  // These guard the part types that were being silently dropped: server-side tool calls/responses
+  // and function responses. Each uses a text-then-part sequence so the part must survive the final
+  // aggregation (a lone part would otherwise slip through via the empty-sequence fallback).
+  @Test
+  public void processRawResponses_textThenToolCall_finalKeepsBoth() {
+    Part toolCallPart =
+        Part.builder()
+            .toolCall(ToolCall.builder().id("tc-1").args(ImmutableMap.of("q", "weather")).build())
+            .build();
+
+    LlmResponse finalResponse = aggregateTextThenPart(toolCallPart);
+
+    assertThat(finalResponse.content().get().parts().get()).hasSize(2);
+    assertThat(finalResponse.content().get().parts().get().get(1).toolCall()).isPresent();
+  }
+
+  @Test
+  public void processRawResponses_textThenToolResponse_finalKeepsBoth() {
+    Part toolResponsePart =
+        Part.builder()
+            .toolResponse(
+                ToolResponse.builder().id("tc-1").response(ImmutableMap.of("ok", true)).build())
+            .build();
+
+    LlmResponse finalResponse = aggregateTextThenPart(toolResponsePart);
+
+    assertThat(finalResponse.content().get().parts().get()).hasSize(2);
+    assertThat(finalResponse.content().get().parts().get().get(1).toolResponse()).isPresent();
+  }
+
+  @Test
+  public void processRawResponses_textThenFunctionResponse_finalKeepsBoth() {
+    Part functionResponsePart = Part.fromFunctionResponse("my_tool", ImmutableMap.of("result", 42));
+
+    LlmResponse finalResponse = aggregateTextThenPart(functionResponsePart);
+
+    assertThat(finalResponse.content().get().parts().get()).hasSize(2);
+    assertThat(finalResponse.content().get().parts().get().get(1).functionResponse()).isPresent();
+  }
+
+  // Per the Gemini docs, a data part (e.g. inlineData) can carry a thoughtSignature with the
+  // thought
+  // flag unset (multi-turn image editing). The part must be kept verbatim, and its signature must
+  // not leak onto the preceding text part (the docs forbid putting a signature on a part that did
+  // not originally carry one).
+  @Test
+  public void processRawResponses_textThenDataPartWithSignature_keepsSignatureOnDataPartOnly() {
+    Part imageWithSignature =
+        Part.builder()
+            .inlineData(Blob.builder().mimeType("image/png").data(new byte[] {1, 2, 3}).build())
+            .thoughtSignature("sig".getBytes(UTF_8))
+            .build();
+
+    LlmResponse finalResponse = aggregateTextThenPart(imageWithSignature);
+
+    assertThat(finalResponse.content().get().parts().get()).hasSize(2);
+    assertThat(finalResponse.content().get().parts().get().get(0).text())
+        .hasValue("Working on it:");
+    assertThat(finalResponse.content().get().parts().get().get(0).thoughtSignature()).isEmpty();
+    assertThat(finalResponse.content().get().parts().get().get(1).inlineData()).isPresent();
+    assertThat(finalResponse.content().get().parts().get().get(1).thoughtSignature()).isPresent();
+  }
+
+  private LlmResponse aggregateTextThenPart(Part part) {
+    GenerateContentResponse textChunk = toResponseWithText("Working on it:");
+    GenerateContentResponse partWithStop =
+        toResponse(
+            Candidate.builder()
+                .content(Content.builder().role("model").parts(part).build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+    return Iterables.getLast(
+        ImmutableList.copyOf(
+            Gemini.processRawResponses(Flowable.just(textChunk, partWithStop)).blockingIterable()));
   }
 
   @Test

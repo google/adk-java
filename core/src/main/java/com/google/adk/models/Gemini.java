@@ -356,18 +356,24 @@ public class Gemini extends BaseLlm {
     }
 
     /**
-     * Accumulates text and function calls from incoming parts. Function-call parts passed to this
-     * method are expected to already have IDs (see {@link #ensureFunctionCallIds}).
+     * Accumulates content from incoming parts: text, function calls, and any other content part
+     * (inline image/audio data, file data, code execution, server-side tool calls/responses, and
+     * future part types). Standalone thought-signature/thought parts are the one exception: their
+     * signature is captured and re-attached to the last real part in {@link #processFinalResponse},
+     * so they are not emitted on their own. Function-call parts passed to this method are expected
+     * to already have IDs (see {@link #ensureFunctionCallIds}).
      *
-     * @return true if any text or function call was present, false otherwise.
+     * @return true if any content part was present, false otherwise.
      */
     private boolean accumulateParts(List<Part> parts) {
-      boolean hasTextOrFc = false;
+      boolean hasContent = false;
       for (Part part : parts) {
-        part.thoughtSignature().ifPresent(sig -> currentThoughtSignature = sig);
         String text = part.text().orElse("");
         if (!text.isEmpty()) {
-          hasTextOrFc = true;
+          hasContent = true;
+          // The signature belongs to this text; capture it so flushTextBufferToSequence attaches
+          // it.
+          part.thoughtSignature().ifPresent(sig -> currentThoughtSignature = sig);
           boolean isThought = part.thought().orElse(false);
           // Immediately flush the active text buffer to preserve the exact interleaved blocks of
           // text/thoughts.
@@ -378,13 +384,28 @@ public class Gemini extends BaseLlm {
             currentTextIsThought = isThought;
           }
           currentTextBuffer.append(text);
-        }
-        if (part.functionCall().isPresent()) {
-          hasTextOrFc = true;
+        } else if (part.functionCall().isPresent()) {
+          hasContent = true;
           processFunctionCallPart(part);
+        } else if (part.text().isEmpty() && !part.thought().orElse(false)) {
+          // Mirror ADK Python's catch-all: preserve any part that is not text or a function call
+          // (inline image/audio data, file data, code execution, server-side tool calls/responses,
+          // future part types) rather than an allowlist that silently drops unlisted types. Flush
+          // buffered text first so parts keep their order, then append the part verbatim keeping
+          // any
+          // thoughtSignature it carries. The signature is intentionally not captured into
+          // currentThoughtSignature, which would leak it onto the preceding part.
+          hasContent = true;
+          flushTextBufferToSequence();
+          accumulatedSequence.add(part);
+        } else {
+          // Standalone thought/thought-signature part with no renderable content: not emitted on
+          // its
+          // own; capture its signature to re-attach to the last real part in processFinalResponse.
+          part.thoughtSignature().ifPresent(sig -> currentThoughtSignature = sig);
         }
       }
-      return hasTextOrFc;
+      return hasContent;
     }
 
     /**
