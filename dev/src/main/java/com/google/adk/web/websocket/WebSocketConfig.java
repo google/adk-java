@@ -21,6 +21,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
+import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistration;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 
 /** Configuration class for WebSocket handling. */
@@ -40,8 +41,10 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
   @Override
   public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-    registry
-        .addHandler(liveWebSocketHandler, "/run_live")
-        .setAllowedOrigins(corsProperties.origins().toArray(new String[0]));
+    WebSocketHandlerRegistration registration =
+        registry.addHandler(liveWebSocketHandler, "/run_live");
+    if (!corsProperties.origins().isEmpty()) {
+      registration.setAllowedOrigins(corsProperties.origins().toArray(String[]::new));
+    }
   }
 }
