@@ -34,6 +34,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.jspecify.annotations.Nullable;
 
 /** The context for an agent invocation. */
@@ -230,15 +231,15 @@ public class InvocationContext {
   }
 
   private static class InvocationCostManager {
-    private int numberOfLlmCalls = 0;
+    private final AtomicInteger numberOfLlmCalls = new AtomicInteger(0);
 
     void incrementAndEnforceLlmCallsLimit(RunConfig runConfig)
         throws LlmCallsLimitExceededException {
-      this.numberOfLlmCalls++;
+      int currentCount = this.numberOfLlmCalls.incrementAndGet();
 
       if (runConfig != null
           && runConfig.maxLlmCalls() > 0
-          && this.numberOfLlmCalls > runConfig.maxLlmCalls()) {
+          && currentCount > runConfig.maxLlmCalls()) {
         throw new LlmCallsLimitExceededException(
             "Max number of llm calls limit of " + runConfig.maxLlmCalls() + " exceeded");
       }
@@ -252,12 +253,12 @@ public class InvocationContext {
       if (!(o instanceof InvocationCostManager that)) {
         return false;
       }
-      return numberOfLlmCalls == that.numberOfLlmCalls;
+      return numberOfLlmCalls.get() == that.numberOfLlmCalls.get();
     }
 
     @Override
     public int hashCode() {
-      return Integer.hashCode(numberOfLlmCalls);
+      return Integer.hashCode(numberOfLlmCalls.get());
     }
   }
 
