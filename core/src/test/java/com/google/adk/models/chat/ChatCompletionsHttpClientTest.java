@@ -85,7 +85,7 @@ public final class ChatCompletionsHttpClientTest {
   public void setUp() {
     when(mockHttpClient.newCall(any())).thenReturn(mockCall);
     client =
-        ChatCompletionsHttpClient.forTesting(
+        new ChatCompletionsHttpClient(
             HttpOptions.builder().baseUrl("https://example.com/").build(), mockHttpClient);
   }
 
@@ -96,7 +96,7 @@ public final class ChatCompletionsHttpClientTest {
    */
   private ChatCompletionsHttpClient newClientWithMock(HttpOptions options) {
     when(mockHttpClient.newCall(any())).thenReturn(mockCall);
-    return ChatCompletionsHttpClient.forTesting(options, mockHttpClient);
+    return new ChatCompletionsHttpClient(options, mockHttpClient);
   }
 
   private Response createMockResponse(String body, MediaType mediaType) {

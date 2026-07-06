@@ -21,7 +21,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
-import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.HttpOptions;
@@ -68,11 +69,12 @@ public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
   private static final Duration DEFAULT_CALL_TIMEOUT = Duration.ofMinutes(5);
 
   /**
-   * Shared OkHttpClient instance whose connection pool and thread dispatcher are reused across all
-   * {@link ChatCompletionsHttpClient} instances. Each instance forks this client via {@link
-   * OkHttpClient#newBuilder()} to apply per-instance timeouts without leaking pools.
+   * Shared OkHttpClient whose connection pool and dispatcher are reused across all instances (each
+   * forks it via {@link OkHttpClient#newBuilder()} for per-instance timeouts). Memoized so the pool
+   * and its threads are created on first use, not at class load.
    */
-  private static final OkHttpClient SHARED_POOL_CLIENT = new OkHttpClient();
+  private static final Supplier<OkHttpClient> SHARED_POOL_CLIENT =
+      Suppliers.memoize(OkHttpClient::new);
 
   private final OkHttpClient client;
   private final HttpUrl completionsUrl;
@@ -119,7 +121,18 @@ public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
     this(httpOptions, buildClient(httpOptions));
   }
 
-  private ChatCompletionsHttpClient(HttpOptions httpOptions, OkHttpClient client) {
+  /**
+   * Constructs a client backed by a caller-supplied {@link OkHttpClient} instead of the shared,
+   * lazily-created one -- e.g. to add interceptors, share a pool, use a proxy, or inject a mock.
+   * {@code baseUrl} and {@code headers} still come from {@code httpOptions}; timeouts and other
+   * transport settings are owned by {@code client} ({@code httpOptions.timeout()} is ignored).
+   *
+   * @param httpOptions HTTP configuration; {@link HttpOptions#baseUrl()} must be a valid HTTP(S)
+   *     URL
+   * @param client the {@link OkHttpClient} used to issue requests; must not be {@code null}
+   * @throws IllegalArgumentException if {@code httpOptions.baseUrl()} is missing or invalid
+   */
+  public ChatCompletionsHttpClient(HttpOptions httpOptions, OkHttpClient client) {
     Objects.requireNonNull(httpOptions, "httpOptions cannot be null");
     String baseUrl =
         httpOptions
@@ -140,16 +153,7 @@ public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
             .headers()
             .<ImmutableMap<String, String>>map(ImmutableMap::copyOf)
             .orElse(ImmutableMap.of());
-    this.client = client;
-  }
-
-  /**
-   * Test-only factory that injects a custom {@link OkHttpClient} (typically a mock) without
-   * touching production wiring. Production callers should use the public constructor.
-   */
-  @VisibleForTesting
-  static ChatCompletionsHttpClient forTesting(HttpOptions httpOptions, OkHttpClient client) {
-    return new ChatCompletionsHttpClient(httpOptions, client);
+    this.client = Objects.requireNonNull(client, "client cannot be null");
   }
 
   /**
@@ -158,7 +162,7 @@ public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
    */
   private static OkHttpClient buildClient(HttpOptions httpOptions) {
     Objects.requireNonNull(httpOptions, "httpOptions cannot be null");
-    OkHttpClient.Builder builder = SHARED_POOL_CLIENT.newBuilder();
+    OkHttpClient.Builder builder = SHARED_POOL_CLIENT.get().newBuilder();
     builder.connectTimeout(Duration.ZERO);
     builder.readTimeout(Duration.ZERO);
     builder.writeTimeout(Duration.ZERO);
