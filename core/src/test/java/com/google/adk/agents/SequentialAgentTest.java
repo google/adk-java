@@ -26,10 +26,15 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.events.Event;
+import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestLlm;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import java.util.List;
 import org.junit.Test;
@@ -203,5 +208,80 @@ public final class SequentialAgentTest {
     assertThat(capturedContext.session()).isEqualTo(parentContext.session());
     assertThat(capturedContext.agent()).isEqualTo(subAgent);
     assertThat(subAgent.getInvocationCount()).isEqualTo(1);
+  }
+
+  // orElse(0) masks the exact index end to end, so assert the helper directly.
+  @Test
+  public void resumeSubAgentIndex_authorIsFirstSubAgent_returnsZero() {
+    TestBaseAgent first = createSubAgent("first_agent");
+    TestBaseAgent second = createSubAgent("second_agent");
+    SequentialAgent root =
+        SequentialAgent.builder().name("root").subAgents(ImmutableList.of(first, second)).build();
+
+    InvocationContext context = contextResumingCall(root, "first_agent");
+
+    assertThat(WorkflowAgentResumption.resumeSubAgentIndex(context, root.subAgents())).hasValue(0);
+  }
+
+  @Test
+  public void resumeSubAgentIndex_authorNestedInLaterSubAgent_returnsThatSubAgentIndex() {
+    TestBaseAgent first = createSubAgent("first_agent");
+    TestBaseAgent nested = createSubAgent("nested_agent");
+    SequentialAgent branch =
+        SequentialAgent.builder().name("branch_agent").subAgents(ImmutableList.of(nested)).build();
+    SequentialAgent root =
+        SequentialAgent.builder().name("root").subAgents(ImmutableList.of(first, branch)).build();
+
+    InvocationContext context = contextResumingCall(root, "nested_agent");
+
+    assertThat(WorkflowAgentResumption.resumeSubAgentIndex(context, root.subAgents())).hasValue(1);
+  }
+
+  @Test
+  public void resumeSubAgentIndex_noMatchingAuthor_returnsEmpty() {
+    TestBaseAgent first = createSubAgent("first_agent");
+    TestBaseAgent second = createSubAgent("second_agent");
+    SequentialAgent root =
+        SequentialAgent.builder().name("root").subAgents(ImmutableList.of(first, second)).build();
+
+    InvocationContext context = contextResumingCall(root, "unknown_agent");
+
+    assertThat(WorkflowAgentResumption.resumeSubAgentIndex(context, root.subAgents())).isEmpty();
+  }
+
+  // Session ending with a function response that resumes a call authored by callAuthor.
+  private static InvocationContext contextResumingCall(BaseAgent rootAgent, String callAuthor) {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session = sessionService.createSession("test_app", "test-user").blockingGet();
+    Event callEvent =
+        Event.builder()
+            .id("call_event")
+            .invocationId("invocationId")
+            .author(callAuthor)
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(FunctionCall.builder().id("call_id").name("tool").build())
+                        .build()))
+            .build();
+    Event responseEvent =
+        Event.builder()
+            .id("response_event")
+            .invocationId("invocationId")
+            .author("user")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .id("call_id")
+                                .name("tool")
+                                .response(ImmutableMap.of())
+                                .build())
+                        .build()))
+            .build();
+    var unusedCall = sessionService.appendEvent(session, callEvent).blockingGet();
+    var unusedResponse = sessionService.appendEvent(session, responseEvent).blockingGet();
+    return createInvocationContext(rootAgent, sessionService, session);
   }
 }

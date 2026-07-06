@@ -30,6 +30,7 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
+@SuppressWarnings("deprecation") // Exercises the deprecated groupFunctionResponsesInHistory flag.
 public final class RunConfigTest {
 
   @Test
@@ -69,6 +70,8 @@ public final class RunConfigTest {
     assertThat(runConfig.outputAudioTranscription()).isNull();
     assertThat(runConfig.inputAudioTranscription()).isNull();
     assertThat(runConfig.maxLlmCalls()).isEqualTo(500);
+    assertThat(runConfig.autoCreateSession()).isFalse();
+    assertThat(runConfig.groupFunctionResponsesInHistory()).isFalse();
   }
 
   @Test

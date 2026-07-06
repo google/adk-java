@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.5.0](https://github.com/google/adk-java/compare/v1.4.0...v1.5.0) (2026-06-20)
+
+
+### Features
+
+* add avatar config support to the live streaming flow ([fb9274e](https://github.com/google/adk-java/commit/fb9274e37d20f57deee303346884d5e16b02be41))
+* add GitHub release-docs analyzer (Java) ([792d2f4](https://github.com/google/adk-java/commit/792d2f404c0da73b4ca0cd77c3a2838cd2b8e185))
+* Add thought signature support for chat completions ([287987a](https://github.com/google/adk-java/commit/287987a182203f1333299adffe9cf2d281ac94b7))
+* bump google-genai dependency to 1.58.0 ([3abcf4f](https://github.com/google/adk-java/commit/3abcf4fbbe024c563ec7762b26fca4d7c72cda6a))
+* Enhance BigQuery Agent Analytics Plugin with new event types ([ec93f50](https://github.com/google/adk-java/commit/ec93f50f10125f5a3728d372e16be4530f12553f))
+* support optional types in function tool parameters ([9a06dd3](https://github.com/google/adk-java/commit/9a06dd34dc823af54d3ea229a0d141768593d376))
+* Update token usage reporting to include thoughts and cache tokens ([436b802](https://github.com/google/adk-java/commit/436b80246b97b149c931e8eea07fc5737db8ad01))
+
+
+### Bug Fixes
+
+* Bypass redundant getSession read in ADK Runner ([aaedcaf](https://github.com/google/adk-java/commit/aaedcaf9877b62a34001009727cdaaa1df03c03d))
+* convert unsupported artifact MIME types to text ([a60c246](https://github.com/google/adk-java/commit/a60c246de7ebf42530ad06674c086d416b0377ba))
+* initialize event ID when creating compaction events ([fc480ec](https://github.com/google/adk-java/commit/fc480eccbdbe864812f30724678d8879682d76ca))
+* SkillMdPath should be public ([29d3203](https://github.com/google/adk-java/commit/29d3203a6fab4268a3588acddde7b59c73f7b624))
+* stop dropping the latest event(s) in VertexAiSessionService.getSession ([987ef4e](https://github.com/google/adk-java/commit/987ef4e9d169cdde5afa736aa920f207863c10b9))
+* wait for the Runner to persist a step's events before the ADK flow's next step (sequential-tool-execution race) ([0a40557](https://github.com/google/adk-java/commit/0a405576a14393a4131f014defc354b44644c4f0))
+
+
+### Performance Improvements
+
+* filter session events server-side by afterTimestamp in VertexAiSessionService.getSession ([e12baa2](https://github.com/google/adk-java/commit/e12baa28f7be17564ab122ba73072d7772e25601))
+
 ## [1.4.0](https://github.com/google/adk-java/compare/v1.3.0...v1.4.0) (2026-05-29)
 
 

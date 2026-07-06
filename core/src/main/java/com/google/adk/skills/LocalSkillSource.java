@@ -45,12 +45,18 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
 
   @Override
   public Single<ImmutableList<String>> listResources(String skillName, String resourceDirectory) {
-    Path skillDir = skillsBasePath.resolve(skillName);
+    Path skillDir;
+    Path resourceDir;
+    try {
+      skillDir = validatePathWithinBase(skillsBasePath, skillName, SKILL_NOT_FOUND);
+      resourceDir = validatePathWithinBase(skillDir, resourceDirectory, RESOURCE_NOT_FOUND);
+    } catch (SkillSourceException e) {
+      return Single.error(e);
+    }
     if (!isDirectory(skillDir)) {
       return Single.error(
           new SkillSourceException("Skill not found: " + skillName, SKILL_NOT_FOUND));
     }
-    Path resourceDir = skillDir.resolve(resourceDirectory);
     if (!isDirectory(resourceDir)) {
       return Single.error(
           new SkillSourceException(
@@ -96,7 +102,13 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
 
   @Override
   protected Single<Path> findResourcePath(String skillName, String resourcePath) {
-    Path file = skillsBasePath.resolve(skillName).resolve(resourcePath);
+    Path file;
+    try {
+      Path skillDir = validatePathWithinBase(skillsBasePath, skillName, SKILL_NOT_FOUND);
+      file = validatePathWithinBase(skillDir, resourcePath, RESOURCE_NOT_FOUND);
+    } catch (SkillSourceException e) {
+      return Single.error(e);
+    }
     if (!Files.exists(file)) {
       return Single.error(
           new SkillSourceException("Resource not found: " + file, RESOURCE_NOT_FOUND));
@@ -106,7 +118,12 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
 
   @Override
   protected Single<Path> findSkillMdPath(String skillName) {
-    Path skillDir = skillsBasePath.resolve(skillName);
+    Path skillDir;
+    try {
+      skillDir = validatePathWithinBase(skillsBasePath, skillName, SKILL_NOT_FOUND);
+    } catch (SkillSourceException e) {
+      return Single.error(e);
+    }
     if (!isDirectory(skillDir)) {
       return Single.error(
           new SkillSourceException("Skill directory not found: " + skillName, SKILL_NOT_FOUND));
@@ -120,6 +137,24 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
   @Override
   protected ReadableByteChannel openChannel(Path path) throws IOException {
     return Files.newByteChannel(path);
+  }
+
+  private static Path validatePathWithinBase(Path base, String component, String errorCode)
+      throws SkillSourceException {
+    // Parse the component against the base's own filesystem: LocalSkillSource accepts an arbitrary
+    // skillsBasePath, which may come from a non-default provider, so the parse must match the
+    // filesystem base.resolve below uses.
+    if (base.getFileSystem().getPath(component).isAbsolute()) {
+      throw new SkillSourceException("Absolute paths are not allowed: " + component, errorCode);
+    }
+    Path normalizedBase = base.normalize().toAbsolutePath();
+    Path resolved = base.resolve(component).normalize().toAbsolutePath();
+    if (!resolved.startsWith(normalizedBase)) {
+      throw new SkillSourceException(
+          "Path traversal detected; component must not escape its base directory: " + component,
+          errorCode);
+    }
+    return resolved;
   }
 
   private Optional<Path> findSkillMd(Path dir) {

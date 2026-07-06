@@ -15,6 +15,7 @@
  */
 package com.google.adk.a2a.converters;
 
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -39,6 +40,7 @@ import io.a2a.spec.FileWithBytes;
 import io.a2a.spec.FileWithUri;
 import io.a2a.spec.Message;
 import io.a2a.spec.TextPart;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -66,6 +68,9 @@ public final class PartConverter {
   public static final String PARTIAL_ARGS_KEY = "partialArgs";
   public static final String SCHEDULING_KEY = "scheduling";
   public static final String PARTS_KEY = "parts";
+  public static final String A2A_DATA_PART_START_TAG = "<a2a_datapart_json>";
+  public static final String A2A_DATA_PART_END_TAG = "</a2a_datapart_json>";
+  public static final String A2A_DATA_PART_TEXT_MIME_TYPE = "text/plain";
 
   public static Optional<TextPart> toTextPart(io.a2a.spec.Part<?> part) {
     if (part instanceof TextPart textPart) {
@@ -76,9 +81,7 @@ public final class PartConverter {
 
   /** Convert an A2A JSON part into a Google GenAI part representation. */
   public static com.google.genai.types.Part toGenaiPart(io.a2a.spec.Part<?> a2aPart) {
-    if (a2aPart == null) {
-      throw new IllegalArgumentException("A2A part cannot be null");
-    }
+    checkNotNull(a2aPart, "A2A part cannot be null");
 
     if (a2aPart instanceof TextPart textPart) {
       com.google.genai.types.Part.Builder partBuilder =
@@ -220,9 +223,13 @@ public final class PartConverter {
     }
 
     try {
-      String json = objectMapper.writeValueAsString(data);
+      String json = objectMapper.writeValueAsString(dataPart);
+      String wrappedJson = A2A_DATA_PART_START_TAG + json + A2A_DATA_PART_END_TAG;
+      byte[] bytes = wrappedJson.getBytes(StandardCharsets.UTF_8);
       com.google.genai.types.Part.Builder builder =
-          com.google.genai.types.Part.builder().text(json);
+          com.google.genai.types.Part.builder()
+              .inlineData(
+                  Blob.builder().data(bytes).mimeType(A2A_DATA_PART_TEXT_MIME_TYPE).build());
       if (!metadata.isEmpty()) {
         builder.partMetadata(metadata);
       }
@@ -334,6 +341,53 @@ public final class PartConverter {
     return new DataPart(data.buildOrThrow(), metadata.buildOrThrow());
   }
 
+  /**
+   * {@return true if the given Blob contains inlineData that represents a serialized A2A DataPart,
+   * false otherwise}
+   *
+   * <p>A DataPart in inlineData is expected to have a "text/plain" MIME type and the content
+   * wrapped in {@link #A2A_DATA_PART_START_TAG} and {@link #A2A_DATA_PART_END_TAG}.
+   *
+   * @param blob The Blob to check.
+   */
+  private static boolean isDataPartInlineData(Blob blob) {
+    String mimeType = blob.mimeType().orElse("");
+    if (!mimeType.equals(A2A_DATA_PART_TEXT_MIME_TYPE)) {
+      return false;
+    }
+    byte[] data = blob.data().orElse(null);
+    if (data == null) {
+      return false;
+    }
+    String str = new String(data, StandardCharsets.UTF_8);
+    return str.startsWith(A2A_DATA_PART_START_TAG) && str.endsWith(A2A_DATA_PART_END_TAG);
+  }
+
+  private static DataPart inlineDataToA2ADataPart(
+      Blob blob, ImmutableMap<String, Object> metadata) {
+    byte[] data = blob.data().orElse(null);
+    if (data == null) {
+      throw new IllegalArgumentException("Blob data cannot be null");
+    }
+    String str = new String(data, StandardCharsets.UTF_8);
+    String jsonContent =
+        str.substring(
+            A2A_DATA_PART_START_TAG.length(), str.length() - A2A_DATA_PART_END_TAG.length());
+    try {
+      DataPart deserialized = objectMapper.readValue(jsonContent, DataPart.class);
+
+      ImmutableMap.Builder<String, Object> mergedMetadata = ImmutableMap.builder();
+      if (deserialized.getMetadata() != null) {
+        mergedMetadata.putAll(deserialized.getMetadata());
+      }
+      mergedMetadata.putAll(metadata);
+
+      return new DataPart(deserialized.getData(), mergedMetadata.buildKeepingLast());
+    } catch (Exception e) {
+      throw new IllegalArgumentException("Failed to parse DataPart payload from inlineData", e);
+    }
+  }
+
   private PartConverter() {}
 
   /** Convert a GenAI part into the A2A JSON representation. */
@@ -350,6 +404,10 @@ public final class PartConverter {
     if (part.text().isPresent()) {
       addValueIfPresent(metadata, "thought", part.thought());
       return new TextPart(part.text().get(), metadata.buildKeepingLast());
+    }
+
+    if (part.inlineData().isPresent() && isDataPartInlineData(part.inlineData().get())) {
+      return inlineDataToA2ADataPart(part.inlineData().get(), metadata.buildOrThrow());
     }
 
     if (part.fileData().isPresent() || part.inlineData().isPresent()) {

@@ -16,7 +16,7 @@
 
 package com.google.adk.runner;
 
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.BaseAgent;
@@ -25,11 +25,14 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
+import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.flows.llmflows.PersistBarrier;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.Model;
@@ -48,8 +51,6 @@ import com.google.adk.tools.FunctionTool;
 import com.google.adk.utils.CollectionUtils;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.MapMaker;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
@@ -69,13 +70,13 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
 
 /** The main class for the GenAI Agents runner. */
+@SuppressWarnings("deprecation") // Plumbs the deprecated ResumabilityConfig.
 public class Runner {
   private final BaseAgent agent;
   private final String appName;
@@ -85,6 +86,7 @@ public class Runner {
   private final PluginManager pluginManager;
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
+  private final @Nullable ResumabilityConfig resumabilityConfig;
   private final ConcurrentMap<String, Completable> activeSessionCompletables =
       new MapMaker().weakValues().makeMap();
 
@@ -157,6 +159,7 @@ public class Runner {
       List<? extends Plugin> buildPlugins;
       EventsCompactionConfig buildEventsCompactionConfig;
       ContextCacheConfig buildContextCacheConfig;
+      ResumabilityConfig buildResumabilityConfig;
 
       if (this.app != null) {
         if (this.agent != null) {
@@ -170,12 +173,14 @@ public class Runner {
         buildAppName = this.appName == null ? this.app.name() : this.appName;
         buildEventsCompactionConfig = this.app.eventsCompactionConfig();
         buildContextCacheConfig = this.app.contextCacheConfig();
+        buildResumabilityConfig = this.app.resumabilityConfig();
       } else {
         buildAgent = this.agent;
         buildAppName = this.appName;
         buildPlugins = this.plugins;
         buildEventsCompactionConfig = null;
         buildContextCacheConfig = null;
+        buildResumabilityConfig = null;
       }
 
       if (buildAgent == null) {
@@ -198,7 +203,8 @@ public class Runner {
           memoryService,
           buildPlugins,
           buildEventsCompactionConfig,
-          buildContextCacheConfig);
+          buildContextCacheConfig,
+          buildResumabilityConfig);
     }
   }
 
@@ -252,6 +258,34 @@ public class Runner {
       List<? extends Plugin> plugins,
       @Nullable EventsCompactionConfig eventsCompactionConfig,
       @Nullable ContextCacheConfig contextCacheConfig) {
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        plugins,
+        eventsCompactionConfig,
+        contextCacheConfig,
+        /* resumabilityConfig= */ null);
+  }
+
+  /**
+   * Creates a new {@code Runner} with a resumability config.
+   *
+   * @deprecated Use {@link Runner.Builder} instead.
+   */
+  @Deprecated
+  protected Runner(
+      BaseAgent agent,
+      String appName,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService,
+      @Nullable BaseMemoryService memoryService,
+      List<? extends Plugin> plugins,
+      @Nullable EventsCompactionConfig eventsCompactionConfig,
+      @Nullable ContextCacheConfig contextCacheConfig,
+      @Nullable ResumabilityConfig resumabilityConfig) {
     this.agent = agent;
     this.appName = appName;
     this.artifactService = artifactService;
@@ -260,6 +294,7 @@ public class Runner {
     this.pluginManager = new PluginManager(plugins);
     this.eventsCompactionConfig = createEventsCompactionConfig(agent, eventsCompactionConfig);
     this.contextCacheConfig = contextCacheConfig;
+    this.resumabilityConfig = resumabilityConfig;
   }
 
   /**
@@ -320,9 +355,7 @@ public class Runner {
       InvocationContext invocationContext,
       boolean saveInputBlobsAsArtifacts,
       @Nullable Map<String, Object> stateDelta) {
-    if (newMessage.parts().isEmpty()) {
-      throw new IllegalArgumentException("No parts in the new_message.");
-    }
+    checkArgument(newMessage.parts().isPresent(), "No parts in the new_message.");
 
     Completable saveArtifactsFlow = Completable.complete();
     if (this.artifactService != null && saveInputBlobsAsArtifacts) {
@@ -485,9 +518,9 @@ public class Runner {
     Preconditions.checkNotNull(session, "session cannot be null");
     Preconditions.checkNotNull(newMessage, "newMessage cannot be null");
     Preconditions.checkNotNull(runConfig, "runConfig cannot be null");
-    Context capturedContext = Context.current();
     return Flowable.defer(
             () -> {
+              Context capturedContext = Context.current();
               BaseAgent rootAgent = this.agent;
               String invocationId = InvocationContext.newInvocationContextId();
 
@@ -576,29 +609,37 @@ public class Runner {
             .agent()
             .runAsync(contextWithUpdatedSession)
             .concatMap(
-                agentEvent ->
-                    this.sessionService
-                        .appendEvent(updatedSession, agentEvent)
-                        // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
-                        // sole appendEvent caller (see PersistBarrier).
-                        .doOnSuccess(
-                            unusedEvent ->
-                                PersistBarrier.markPersisted(
-                                    contextWithUpdatedSession, agentEvent.id()))
-                        .doOnError(
-                            error ->
-                                PersistBarrier.markFailed(
-                                    contextWithUpdatedSession, agentEvent.id(), error))
-                        .flatMap(
-                            registeredEvent -> {
-                              // TODO: remove this hack after deprecating runAsync with Session.
-                              copySessionStates(updatedSession, initialContext.session());
-                              return contextWithUpdatedSession
-                                  .pluginManager()
-                                  .onEventCallback(contextWithUpdatedSession, registeredEvent)
-                                  .defaultIfEmpty(registeredEvent);
-                            })
-                        .toFlowable());
+                agentEvent -> {
+                  // Mirror ADK Python (runners.py): partial events are streamed to the caller but
+                  // never persisted, so managed session services (e.g. VertexAiSessionService) do
+                  // not store a duplicate of the function call/text that the final aggregated event
+                  // already carries. Nothing to persist, so resolve the barrier immediately.
+                  Single<Event> persistStep =
+                      agentEvent.partial().orElse(false)
+                          ? Single.just(agentEvent)
+                          : this.sessionService.appendEvent(updatedSession, agentEvent);
+                  return persistStep
+                      // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
+                      // sole appendEvent caller (see PersistBarrier).
+                      .doOnSuccess(
+                          unusedEvent ->
+                              PersistBarrier.markPersisted(
+                                  contextWithUpdatedSession, agentEvent.id()))
+                      .doOnError(
+                          error ->
+                              PersistBarrier.markFailed(
+                                  contextWithUpdatedSession, agentEvent.id(), error))
+                      .flatMap(
+                          registeredEvent -> {
+                            // TODO: remove this hack after deprecating runAsync with Session.
+                            copySessionStates(updatedSession, initialContext.session());
+                            return contextWithUpdatedSession
+                                .pluginManager()
+                                .onEventCallback(contextWithUpdatedSession, registeredEvent)
+                                .defaultIfEmpty(registeredEvent);
+                          })
+                      .toFlowable();
+                });
 
     // If beforeRunCallback returns content, emit it and skip agent
     Context capturedContext = Context.current();
@@ -669,6 +710,7 @@ public class Runner {
         .session(session)
         .eventsCompactionConfig(this.eventsCompactionConfig)
         .contextCacheConfig(this.contextCacheConfig)
+        .resumabilityConfig(this.resumabilityConfig)
         .agent(this.findAgentToRun(session, rootAgent));
   }
 
@@ -782,13 +824,24 @@ public class Runner {
     return true;
   }
 
+  /** Returns whether resumability is enabled for this runner's app. */
+  private boolean isResumable() {
+    return resumabilityConfig != null && resumabilityConfig.isResumable();
+  }
+
   /** Returns the agent that should handle the next request based on session history. */
   private BaseAgent findAgentToRun(Session session, BaseAgent rootAgent) {
-    // Route function responses back to the originating function-call author so HITL tool
-    // confirmations resume the sub-agent even through non-LlmAgent ancestors.
-    Optional<BaseAgent> functionCallAuthor = findFunctionCallAuthor(session, rootAgent);
+    // Route a function response to its call's author; when resumable, re-enter via the author's
+    // top-most SequentialAgent ancestor so the sequence can advance past it (else route straight to
+    // it, matching Python ADK v1 with resumability off). Temporary, event-based.
+    Optional<BaseAgent> functionCallAuthor =
+        Functions.findMatchingFunctionCallEvent(session.events())
+            .filter(event -> event.author() != null)
+            .flatMap(event -> rootAgent.findAgent(event.author()));
     if (functionCallAuthor.isPresent()) {
-      return functionCallAuthor.get();
+      return isResumable()
+          ? topmostSequentialAncestor(functionCallAuthor.get())
+          : functionCallAuthor.get();
     }
 
     List<Event> events = new ArrayList<>(session.events());
@@ -822,36 +875,19 @@ public class Runner {
   }
 
   /**
-   * If the last event is a function response, returns the agent that emitted the matching function
-   * call (by id), or empty if no match is found in the agent tree.
+   * Returns the top-most ancestor reachable from {@code agent} through {@link SequentialAgent}
+   * parents, or {@code agent} itself otherwise. Only SequentialAgent is resume-aware; other
+   * workflow agents are left to resume their paused sub-agent directly (via the function-call
+   * author).
    */
-  private static Optional<BaseAgent> findFunctionCallAuthor(Session session, BaseAgent rootAgent) {
-    List<Event> events = session.events();
-    if (events.isEmpty()) {
-      return Optional.empty();
+  private static BaseAgent topmostSequentialAncestor(BaseAgent agent) {
+    BaseAgent result = agent;
+    BaseAgent parent = agent.parentAgent();
+    while (parent instanceof SequentialAgent) {
+      result = parent;
+      parent = parent.parentAgent();
     }
-    ImmutableSet<String> functionResponseIds =
-        Iterables.getLast(events).functionResponses().stream()
-            .map(fr -> fr.id().orElse(null))
-            .filter(Objects::nonNull)
-            .collect(toImmutableSet());
-
-    // Iterate in reverse to prefer the most recent matching call, mirroring Python ADK's
-    // find_event_by_function_call_id. Function call IDs are unique in normal flows, so this
-    // is defense-in-depth and not covered by mutation testing.
-    List<Event> precedingEvents = new ArrayList<>(events.subList(0, events.size() - 1));
-    Collections.reverse(precedingEvents);
-    for (Event event : precedingEvents) {
-      boolean matches =
-          event.functionCalls().stream()
-              .map(fc -> fc.id().orElse(null))
-              .filter(Objects::nonNull)
-              .anyMatch(functionResponseIds::contains);
-      if (matches && event.author() != null) {
-        return rootAgent.findAgent(event.author());
-      }
-    }
-    return Optional.empty();
+    return result;
   }
 
   private void addActiveStreamingTools(InvocationContext invocationContext, List<BaseTool> tools) {

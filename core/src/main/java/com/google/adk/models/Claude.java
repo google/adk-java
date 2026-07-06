@@ -39,11 +39,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.genai.types.Content;
-import com.google.genai.types.FunctionCall;
-import com.google.genai.types.FunctionDeclaration;
-import com.google.genai.types.GenerateContentConfig;
-import com.google.genai.types.Part;
+import com.google.genai.types.*;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -389,6 +385,15 @@ public class Claude extends BaseLlm {
       }
       responseBuilder.content(
           Content.builder().role("model").parts(ImmutableList.copyOf(parts)).build());
+    }
+    if (message.usage() != null) {
+      responseBuilder.usageMetadata(
+          GenerateContentResponseUsageMetadata.builder()
+              .promptTokenCount((int) message.usage().inputTokens())
+              .candidatesTokenCount((int) message.usage().outputTokens())
+              .totalTokenCount(
+                  (int) (message.usage().inputTokens() + message.usage().outputTokens()))
+              .build());
     }
     return responseBuilder.build();
   }

@@ -62,6 +62,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -216,6 +217,70 @@ public class ContextPropagationTest {
   }
 
   @Test
+  public void testTraceTransformerStartsSpanBeforeSubscribingToDeferredUpstream()
+      throws InterruptedException {
+    Span parentSpan = tracer.spanBuilder("parent").startSpan();
+    AtomicReference<String> flowableSpanId = new AtomicReference<>();
+    AtomicReference<String> singleSpanId = new AtomicReference<>();
+    AtomicReference<String> maybeSpanId = new AtomicReference<>();
+    AtomicReference<String> completableSpanId = new AtomicReference<>();
+
+    try (Scope s = parentSpan.makeCurrent()) {
+      Flowable.defer(
+              () -> {
+                flowableSpanId.set(Span.current().getSpanContext().getSpanId());
+                return Flowable.just(1);
+              })
+          .compose(Tracing.trace("flowable-transformer"))
+          .test()
+          .await()
+          .assertComplete();
+
+      Single.defer(
+              () -> {
+                singleSpanId.set(Span.current().getSpanContext().getSpanId());
+                return Single.just(1);
+              })
+          .compose(Tracing.trace("single-transformer"))
+          .test()
+          .await()
+          .assertComplete();
+
+      Maybe.defer(
+              () -> {
+                maybeSpanId.set(Span.current().getSpanContext().getSpanId());
+                return Maybe.just(1);
+              })
+          .compose(Tracing.trace("maybe-transformer"))
+          .test()
+          .await()
+          .assertComplete();
+
+      Completable.defer(
+              () -> {
+                completableSpanId.set(Span.current().getSpanContext().getSpanId());
+                return Completable.complete();
+              })
+          .compose(Tracing.trace("completable-transformer"))
+          .test()
+          .await()
+          .assertComplete();
+    } finally {
+      parentSpan.end();
+    }
+
+    SpanData parentSpanData = findSpanByName("parent");
+    assertDeferredUpstreamSawTransformerSpan(
+        parentSpanData, findSpanByName("flowable-transformer"), flowableSpanId);
+    assertDeferredUpstreamSawTransformerSpan(
+        parentSpanData, findSpanByName("single-transformer"), singleSpanId);
+    assertDeferredUpstreamSawTransformerSpan(
+        parentSpanData, findSpanByName("maybe-transformer"), maybeSpanId);
+    assertDeferredUpstreamSawTransformerSpan(
+        parentSpanData, findSpanByName("completable-transformer"), completableSpanId);
+  }
+
+  @Test
   public void testTraceAgentInvocation() {
     Span span = tracer.spanBuilder("test").startSpan();
     try (Scope scope = span.makeCurrent()) {
@@ -359,6 +424,46 @@ public class ContextPropagationTest {
   }
 
   @Test
+  public void testTraceCallLlm_withReasoningAndCacheTokens() {
+    Span span = tracer.spanBuilder("test-reasoning").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      LlmRequest llmRequest =
+          LlmRequest.builder()
+              .model("gemini-pro")
+              .contents(ImmutableList.of(Content.fromParts(Part.fromText("hello"))))
+              .config(GenerateContentConfig.builder().topP(0.9f).maxOutputTokens(100).build())
+              .build();
+      LlmResponse llmResponse =
+          LlmResponse.builder()
+              .content(Content.builder().parts(Part.fromText("world")).build())
+              .finishReason(new FinishReason(FinishReason.Known.STOP))
+              .usageMetadata(
+                  GenerateContentResponseUsageMetadata.builder()
+                      .promptTokenCount(10)
+                      .cachedContentTokenCount(5)
+                      .candidatesTokenCount(20)
+                      .thoughtsTokenCount(15)
+                      .totalTokenCount(50)
+                      .build())
+              .build();
+      Tracing.traceCallLlm(
+          span, buildInvocationContext(), "event-1", llmRequest, llmResponse, null);
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    SpanData spanData = spans.get(0);
+    Attributes attrs = spanData.getAttributes();
+    assertEquals(10L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.input_tokens")));
+    assertEquals(35L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.output_tokens")));
+    assertEquals(
+        5L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.cache_read.input_tokens")));
+    assertEquals(
+        15L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.reasoning.output_tokens")));
+  }
+
+  @Test
   public void testTraceSendData() {
     Span span = tracer.spanBuilder("test").startSpan();
     try (Scope scope = span.makeCurrent()) {
@@ -462,6 +567,38 @@ public class ContextPropagationTest {
     SpanData agentSpan = findSpanByName("invoke_agent test-agent");
     assertParent(parent, invocation);
     assertParent(invocation, agentSpan);
+  }
+
+  @Test
+  public void testModelCallbacksObserveCallLlmSpan() throws InterruptedException {
+    TestLlm testLlm =
+        TestUtils.createTestLlm(
+            TestUtils.createLlmResponse(Content.fromParts(Part.fromText("response"))));
+    AtomicReference<String> beforeModelSpanId = new AtomicReference<>();
+    AtomicReference<String> afterModelSpanId = new AtomicReference<>();
+
+    LlmAgent agentWithCallbacks =
+        LlmAgent.builder()
+            .name("test_agent")
+            .description("description")
+            .model(testLlm)
+            .beforeModelCallback(
+                (callbackContext, llmRequest) -> {
+                  beforeModelSpanId.set(Span.current().getSpanContext().getSpanId());
+                  return Maybe.empty();
+                })
+            .afterModelCallback(
+                (callbackContext, llmResponse) -> {
+                  afterModelSpanId.set(Span.current().getSpanContext().getSpanId());
+                  return Maybe.empty();
+                })
+            .build();
+
+    runAgent(agentWithCallbacks);
+
+    SpanData callLlm = findSpanByName("call_llm");
+    assertEquals(callLlm.getSpanContext().getSpanId(), beforeModelSpanId.get());
+    assertEquals(callLlm.getSpanContext().getSpanId(), afterModelSpanId.get());
   }
 
   @Test
@@ -594,9 +731,9 @@ public class ContextPropagationTest {
     assertParent(agentASpan, agentACallLlm1);
     //         ├── execute_tool transfer_to_agent
     assertParent(agentACallLlm1, executeTool);
-    //         └── invoke_agent AgentB
-    assertParent(agentACallLlm1, agentBSpan);
-    //             └── call_llm 2
+    //     └── invoke_agent AgentB
+    assertParent(agentASpan, agentBSpan);
+    //         └── call_llm 2
     assertParent(agentBSpan, agentBCallLlm);
   }
 
@@ -643,6 +780,13 @@ public class ContextPropagationTest {
    */
   private void assertParent(SpanData parent, SpanData child) {
     assertEquals(parent.getSpanContext().getSpanId(), child.getParentSpanContext().getSpanId());
+  }
+
+  private void assertDeferredUpstreamSawTransformerSpan(
+      SpanData parent, SpanData transformer, AtomicReference<String> observedSpanId) {
+    assertParent(parent, transformer);
+    assertTrue(transformer.hasEnded());
+    assertEquals(transformer.getSpanContext().getSpanId(), observedSpanId.get());
   }
 
   /**

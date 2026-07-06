@@ -33,6 +33,8 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -235,6 +237,76 @@ class MessageConverterTest {
     assertThat(functionCallPart.functionCall().get().name()).contains("get_weather");
     // Verify ID is preserved
     assertThat(functionCallPart.functionCall().get().id()).contains("call_123");
+  }
+
+  @Test
+  void testUsageMetadataShouldBeEmptyWhenSpringAiMetadataIsNull() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("intermediate chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), null);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, true);
+
+    assertThat(llmResponse.usageMetadata().isEmpty());
+  }
+
+  @Test
+  void testUsageMetadataShouldBeEmptyWhenSpringAiUsageIsNull() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("intermediate chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    ChatResponseMetadata metadata = ChatResponseMetadata.builder().id("resp-no-usage").build();
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), metadata);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, true);
+
+    assertThat(llmResponse.usageMetadata().isEmpty());
+  }
+
+  @Test
+  void testUsageMetadataShouldDefaultToZeroWhenSpringAiTokensAreNull() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("final chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    // Anonymous implementation to simulate incomplete provider data where some token counts are
+    // null
+    DefaultUsage incompleteUsage = new DefaultUsage(null, null, 42);
+    ChatResponseMetadata metadata =
+        ChatResponseMetadata.builder().id("resp-partial-tokens").usage(incompleteUsage).build();
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), metadata);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, false);
+
+    assertThat(llmResponse.usageMetadata().isPresent());
+    assertThat(llmResponse.usageMetadata().get().promptTokenCount().orElse(-1)).isEqualTo(0);
+    assertThat(llmResponse.usageMetadata().get().candidatesTokenCount().orElse(-1)).isEqualTo(0);
+    assertThat(llmResponse.usageMetadata().get().totalTokenCount().orElse(-1)).isEqualTo(42);
+  }
+
+  @Test
+  void testUsageMetadataShouldMapCorrectlyWhenAllFieldsArePresent() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("final chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    DefaultUsage completeUsage = new DefaultUsage(15, 25, 40);
+    ChatResponseMetadata metadata =
+        ChatResponseMetadata.builder().id("resp-happy-path").usage(completeUsage).build();
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), metadata);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, false);
+
+    assertThat(llmResponse.usageMetadata().isPresent());
+    assertThat(llmResponse.usageMetadata().get().promptTokenCount().orElse(-1)).isEqualTo(15);
+    assertThat(llmResponse.usageMetadata().get().candidatesTokenCount().orElse(-1)).isEqualTo(25);
+    assertThat(llmResponse.usageMetadata().get().totalTokenCount().orElse(-1)).isEqualTo(40);
   }
 
   @Test

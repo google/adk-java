@@ -34,6 +34,7 @@ import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
+import com.google.genai.types.Schema;
 import com.google.genai.types.Tool;
 import com.google.genai.types.ToolConfig;
 import java.util.AbstractMap;
@@ -568,6 +569,84 @@ public final class ChatCompletionsRequestTest {
   }
 
   @Test
+  public void testFromLlmRequest_withAbsentFunctionArguments() throws Exception {
+    FunctionCall functionCall = FunctionCall.builder().id("call_123").name("get_time").build();
+    Part part = Part.builder().functionCall(functionCall).build();
+    Content content = Content.builder().role("model").parts(ImmutableList.of(part)).build();
+
+    LlmRequest llmRequest =
+        LlmRequest.builder().model("gemini-1.5-pro").contents(ImmutableList.of(content)).build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.messages).hasSize(1);
+    ChatCompletionsRequest.Message msg = request.messages.get(0);
+    assertThat(msg.role).isEqualTo("assistant");
+    assertThat(msg.toolCalls).hasSize(1);
+    assertThat(msg.toolCalls.get(0).function.name).isEqualTo("get_time");
+    assertThat(msg.toolCalls.get(0).function.arguments).isEqualTo("{}");
+  }
+
+  @Test
+  public void testFromLlmRequest_withAbsentParameters() throws Exception {
+    FunctionDeclaration function =
+        FunctionDeclaration.builder().name("test_func").description("A test function").build();
+
+    Tool tool = Tool.builder().functionDeclarations(ImmutableList.of(function)).build();
+    GenerateContentConfig config =
+        GenerateContentConfig.builder().tools(ImmutableList.of(tool)).build();
+
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .config(config)
+            .contents(ImmutableList.of())
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.tools).hasSize(1);
+    Map<String, Object> params = (Map<String, Object>) request.tools.get(0).function.parameters;
+    assertThat(params.get("type")).isEqualTo("object");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> props = (Map<String, Object>) params.get("properties");
+    assertThat(props).isEmpty();
+  }
+
+  @Test
+  public void testFromLlmRequest_normalizesSchemaTypeToLowerCase() throws Exception {
+    Schema param1Schema = Schema.builder().type("STRING").build();
+
+    Schema functionSchema =
+        Schema.builder().type("OBJECT").properties(ImmutableMap.of("param1", param1Schema)).build();
+
+    FunctionDeclaration function =
+        FunctionDeclaration.builder().name("test_func").parameters(functionSchema).build();
+
+    Tool tool = Tool.builder().functionDeclarations(ImmutableList.of(function)).build();
+    GenerateContentConfig config =
+        GenerateContentConfig.builder().tools(ImmutableList.of(tool)).build();
+
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("gemini-1.5-pro")
+            .config(config)
+            .contents(ImmutableList.of())
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.tools).hasSize(1);
+    Map<String, Object> params = (Map<String, Object>) request.tools.get(0).function.parameters;
+    assertThat(params.get("type")).isEqualTo("object");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> props = (Map<String, Object>) params.get("properties");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> param1 = (Map<String, Object>) props.get("param1");
+    assertThat(param1.get("type")).isEqualTo("string");
+  }
+
+  @Test
   public void testFromLlmRequest_withStreamOptions() throws Exception {
     LlmRequest llmRequest =
         LlmRequest.builder().model("gemini-1.5-pro").contents(ImmutableList.of()).build();
@@ -628,11 +707,11 @@ public final class ChatCompletionsRequestTest {
 
     assertThat(request.messages.get(1).role).isEqualTo("tool");
     assertThat(request.messages.get(1).toolCallId).isEmpty();
-    assertThat(request.messages.get(1).content).isNull();
+    assertThat(request.messages.get(1).content.getValue()).isEqualTo("{}");
 
     assertThat(request.messages.get(2).role).isEqualTo("tool");
     assertThat(request.messages.get(2).toolCallId).isEqualTo("call_faulty");
-    assertThat(request.messages.get(2).content).isNull();
+    assertThat(request.messages.get(2).content.getValue()).isEqualTo("{}");
   }
 
   @Test
@@ -710,10 +789,8 @@ public final class ChatCompletionsRequestTest {
     assertThat(extraContent).containsKey("google");
     @SuppressWarnings("unchecked") // This code won't run in production and it is a JSON object.
     Map<String, Object> google = (Map<String, Object>) extraContent.get("google");
-    assertThat(google).containsKey("thought_signature");
-    Object sigObj = google.get("thought_signature");
-    assertThat(sigObj).isInstanceOf(String.class);
-    assertThat(Base64.getDecoder().decode((String) sigObj)).isEqualTo(expected);
+    String expectedB64 = Base64.getEncoder().encodeToString(expected);
+    assertThat(google).containsEntry("thought_signature", expectedB64);
   }
 
   @Test

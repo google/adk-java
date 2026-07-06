@@ -21,8 +21,12 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonValue;
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.models.LlmRequest;
 import com.google.common.collect.ImmutableList;
@@ -32,6 +36,8 @@ import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
+import com.google.genai.types.Type;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -270,7 +276,28 @@ public final class ChatCompletionsRequest {
   public Map<String, Object> extraBody;
 
   private static final Logger logger = LoggerFactory.getLogger(ChatCompletionsRequest.class);
-  private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
+
+  /**
+   * Registers a custom serializer to force JSON Schema types to lowercase (e.g., "STRING" ->
+   * "string"). The genai SDK uses uppercase Enums for schema types, which strict OpenAI-compatible
+   * endpoints reject with HTTP 400.
+   */
+  private static SimpleModule schemaNormalizerModule() {
+    SimpleModule module = new SimpleModule();
+    module.addSerializer(
+        Type.class,
+        new JsonSerializer<Type>() {
+          @Override
+          public void serialize(Type value, JsonGenerator gen, SerializerProvider serializers)
+              throws IOException {
+            gen.writeString(value.toString().toLowerCase());
+          }
+        });
+    return module;
+  }
+
+  private static final ObjectMapper objectMapper =
+      JsonBaseModel.getMapper().copy().registerModule(schemaNormalizerModule());
 
   /**
    * Converts a standard {@link LlmRequest} into a {@link ChatCompletionsRequest} for
@@ -476,7 +503,10 @@ public final class ChatCompletionsRequest {
         function.arguments = objectMapper.writeValueAsString(fc.args().get());
       } catch (Exception e) {
         logger.warn("Failed to serialize function arguments", e);
+        function.arguments = ChatCompletionsCommon.EMPTY_JSON_OBJECT;
       }
+    } else {
+      function.arguments = ChatCompletionsCommon.EMPTY_JSON_OBJECT;
     }
     toolCall.function = function;
     part.thoughtSignature()
@@ -505,7 +535,10 @@ public final class ChatCompletionsRequest {
         toolResp.content = new MessageContent(objectMapper.writeValueAsString(fr.response().get()));
       } catch (Exception e) {
         logger.warn("Failed to serialize tool response", e);
+        toolResp.content = new MessageContent(ChatCompletionsCommon.EMPTY_JSON_OBJECT);
       }
+    } else {
+      toolResp.content = new MessageContent(ChatCompletionsCommon.EMPTY_JSON_OBJECT);
     }
     return toolResp;
   }
@@ -570,12 +603,15 @@ public final class ChatCompletionsRequest {
             FunctionDefinition def = new FunctionDefinition();
             def.name = fd.name().orElse("");
             def.description = fd.description().orElse("");
-            fd.parameters()
-                .ifPresent(
-                    params ->
-                        def.parameters =
-                            objectMapper.convertValue(
-                                params, new TypeReference<Map<String, Object>>() {}));
+            if (fd.parameters().isPresent()) {
+              def.parameters =
+                  objectMapper.convertValue(
+                      fd.parameters().get(), new TypeReference<Map<String, Object>>() {});
+            } else {
+              // OpenAI-compatible APIs (like Groq) strictly require the parameters object
+              // to exist, even for zero-argument functions.
+              def.parameters = ChatCompletionsCommon.EMPTY_PARAMETERS_SCHEMA;
+            }
             tool.function = def;
             tools.add(tool);
           }

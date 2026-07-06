@@ -1,0 +1,85 @@
+# Audits stale adk-java issues with the ADK Stale Issue Auditor sample under
+# contrib/samples/github/adkstale.
+#
+# Required repository secrets:
+#   - GOOGLE_API_KEY    : Gemini API key (or wire up Vertex AI credentials and
+#                         set GOOGLE_GENAI_USE_VERTEXAI=TRUE).
+# Commenting/labelling/closing uses the built-in GITHUB_TOKEN (no secret to
+# manage); the `permissions:` block below grants it the `issues: write` scope it
+# needs. Swap in a PAT only if you specifically want stale actions attributed to
+# a distinct bot identity.
+#
+# Prerequisite: the `stale` label (and, if used, `request clarification`) must
+# exist in the repository; GitHub will not auto-create labels when the agent
+# applies them.
+name: ADK Stale Issue Auditor
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: preview only. Set to false to actually create the issue and PRs.'
+        required: false
+        default: true
+        type: boolean
+
+# Serialize runs so an in-flight daily sweep can't overlap a manual dispatch and
+# act on the same issues twice.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  agent-audit-stale-issues:
+    runs-on: ubuntu-latest
+    # Only run on the upstream repo, on the daily schedule or a manual dispatch.
+    if: >-
+      github.repository == 'google/adk-java' && (
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch'
+      )
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run Stale Issue Auditor
+        env:
+          # Built-in token scoped by the `permissions:` block above. Replace with a
+          # PAT (e.g. ${{ secrets.ADK_STALE_AGENT }}) only if you need a distinct
+          # bot identity for the comment/label/close actions.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: '0'
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          INTERACTIVE: '0'
+          # Defaults to a dry run (logs intended comments/labels/closures without
+          # writing). Flip to false via manual dispatch to actually mark as stale.
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+          EVENT_NAME: ${{ github.event_name }}
+          # Max number of stale-candidate issues to audit per run.
+          ISSUE_COUNT_TO_PROCESS: '20'
+          # Optional: comma-separated GitHub handles to treat as maintainers when
+          # the token cannot list push-access collaborators. Stored as a repo
+          # variable rather than committed to source.
+          MAINTAINERS: ${{ vars.ADK_MAINTAINERS }}
+        run: |
+          # Install the ADK libs + this sample, then run exec:java scoped to this
+          # module (exec:java with -am would also run on the parent/core modules,
+          # which have no mainClass).
+          ./mvnw -B -q -pl contrib/samples/github/adkstale -am install -DskipTests
+          ./mvnw -B -q -pl contrib/samples/github/adkstale exec:java

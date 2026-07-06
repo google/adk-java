@@ -17,7 +17,7 @@
 
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk-parent</artifactId>
-  <version>1.4.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+  <version>1.5.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   <packaging>pom</packaging>
 
   <name>Google Agent Development Kit Maven Parent POM</name>
@@ -61,7 +61,6 @@
     <okhttp.version>5.3.2</okhttp.version>
     <docker-java.version>3.7.0</docker-java.version>
     <graphviz.version>0.18.1</graphviz.version>
-    <ecj.version>3.41.0</ecj.version>
     <maven.version>3.9.0</maven.version>
     <langchain4j.version>1.12.2</langchain4j.version>
     <slf4j.version>2.0.17</slf4j.version>
@@ -265,11 +264,6 @@
         <version>${graphviz.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.eclipse.jdt</groupId>
-        <artifactId>ecj</artifactId>
-        <version>${ecj.version}</version>
-      </dependency>
-      <dependency>
         <groupId>org.apache.maven</groupId>
         <artifactId>maven-plugin-api</artifactId>
         <version>${maven.version}</version>
@@ -328,6 +322,14 @@
             <target>${java.version}</target>
             <release>${maven.compiler.release}</release>
             <parameters>true</parameters>
+            <!-- Required for AutoValue. With incremental compilation enabled, the compiler
+                 plugin can split the source set and run the AutoValue annotation processor over
+                 only a subset of sources, so some generated AutoValue_* types are never produced.
+                 That surfaces non-deterministically as "cannot be resolved to a type" at compile
+                 time or TypeNotPresentException at runtime (notably on JDK 25). Forcing a single
+                 javac pass over all sources makes annotation processing see every @AutoValue type
+                 and become deterministic, independent of the build JDK. -->
+            <useIncrementalCompilation>false</useIncrementalCompilation>
             <annotationProcessorPaths>
               <path>
                 <groupId>com.google.auto.value</groupId>
@@ -423,7 +425,7 @@
         <plugin>
           <groupId>org.sonatype.central</groupId>
           <artifactId>central-publishing-maven-plugin</artifactId>
-          <version>0.8.0</version>
+          <version>0.9.0</version>
           <extensions>true</extensions>
           <configuration>
             <publishingServerId>central</publishingServerId>
@@ -530,7 +532,7 @@
           <plugin>
             <groupId>org.sonatype.central</groupId>
             <artifactId>central-publishing-maven-plugin</artifactId>
-            <version>0.8.0</version>
+            <version>0.9.0</version>
             <extensions>true</extensions>
             <configuration>
               <publishingServerId>central</publishingServerId>

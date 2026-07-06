@@ -34,6 +34,7 @@ import org.jspecify.annotations.Nullable;
  * and communication across all agents in the hierarchy. The {@code plugins} are application-wide
  * components that provide shared capabilities and services to the entire system.
  */
+@SuppressWarnings("deprecation") // Plumbs the deprecated ResumabilityConfig.
 public class App {
   private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
 
@@ -42,18 +43,21 @@ public class App {
   private final ImmutableList<? extends Plugin> plugins;
   private final @Nullable EventsCompactionConfig eventsCompactionConfig;
   private final @Nullable ContextCacheConfig contextCacheConfig;
+  private final @Nullable ResumabilityConfig resumabilityConfig;
 
   private App(
       String name,
       BaseAgent rootAgent,
       List<? extends Plugin> plugins,
       @Nullable EventsCompactionConfig eventsCompactionConfig,
-      @Nullable ContextCacheConfig contextCacheConfig) {
+      @Nullable ContextCacheConfig contextCacheConfig,
+      @Nullable ResumabilityConfig resumabilityConfig) {
     this.name = name;
     this.rootAgent = rootAgent;
     this.plugins = ImmutableList.copyOf(plugins);
     this.eventsCompactionConfig = eventsCompactionConfig;
     this.contextCacheConfig = contextCacheConfig;
+    this.resumabilityConfig = resumabilityConfig;
   }
 
   public String name() {
@@ -78,6 +82,10 @@ public class App {
     return contextCacheConfig;
   }
 
+  public @Nullable ResumabilityConfig resumabilityConfig() {
+    return resumabilityConfig;
+  }
+
   /** Builder for {@link App}. */
   public static class Builder {
     private String name;
@@ -85,6 +93,7 @@ public class App {
     private List<? extends Plugin> plugins = ImmutableList.of();
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
     @Nullable private ContextCacheConfig contextCacheConfig;
+    private @Nullable ResumabilityConfig resumabilityConfig;
 
     @CanIgnoreReturnValue
     public Builder name(String name) {
@@ -122,6 +131,19 @@ public class App {
       return this;
     }
 
+    /**
+     * Sets the app resumability config.
+     *
+     * @deprecated See {@link ResumabilityConfig}: partial feature, full resumability not yet
+     *     available.
+     */
+    @CanIgnoreReturnValue
+    @Deprecated
+    public Builder resumabilityConfig(ResumabilityConfig resumabilityConfig) {
+      this.resumabilityConfig = resumabilityConfig;
+      return this;
+    }
+
     public App build() {
       if (name == null) {
         throw new IllegalStateException("App name must be provided.");
@@ -130,7 +152,8 @@ public class App {
         throw new IllegalStateException("Root agent must be provided.");
       }
       validateAppName(name);
-      return new App(name, rootAgent, plugins, eventsCompactionConfig, contextCacheConfig);
+      return new App(
+          name, rootAgent, plugins, eventsCompactionConfig, contextCacheConfig, resumabilityConfig);
     }
   }
 

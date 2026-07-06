@@ -16,6 +16,7 @@
 
 package com.google.adk.web.websocket;
 
+import com.google.adk.web.config.AdkWebCorsProperties;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
@@ -28,14 +29,19 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 public class WebSocketConfig implements WebSocketConfigurer {
 
   private final LiveWebSocketHandler liveWebSocketHandler;
+  private final AdkWebCorsProperties corsProperties;
 
   @Autowired
-  public WebSocketConfig(LiveWebSocketHandler liveWebSocketHandler) {
+  public WebSocketConfig(
+      LiveWebSocketHandler liveWebSocketHandler, AdkWebCorsProperties corsProperties) {
     this.liveWebSocketHandler = liveWebSocketHandler;
+    this.corsProperties = corsProperties;
   }
 
   @Override
   public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-    registry.addHandler(liveWebSocketHandler, "/run_live").setAllowedOrigins("*");
+    registry
+        .addHandler(liveWebSocketHandler, "/run_live")
+        .setAllowedOrigins(corsProperties.origins().toArray(new String[0]));
   }
 }

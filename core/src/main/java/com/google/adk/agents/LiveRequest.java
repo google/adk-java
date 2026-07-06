@@ -74,6 +74,12 @@ public abstract class LiveRequest extends JsonBaseModel {
   @AutoValue.Builder
   @JsonPOJOBuilder(buildMethodName = "build", withPrefix = "")
   public abstract static class Builder {
+
+    @JsonCreator
+    static LiveRequest.Builder jacksonBuilder() {
+      return LiveRequest.builder();
+    }
+
     @JsonProperty("content")
     public abstract Builder content(@Nullable Content content);
 
@@ -105,10 +111,5 @@ public abstract class LiveRequest extends JsonBaseModel {
   /** Deserializes a Json string to a {@link LiveRequest} object. */
   public static LiveRequest fromJsonString(String json) {
     return JsonBaseModel.fromJsonString(json, LiveRequest.class);
-  }
-
-  @JsonCreator
-  static LiveRequest.Builder jacksonBuilder() {
-    return LiveRequest.builder();
   }
 }

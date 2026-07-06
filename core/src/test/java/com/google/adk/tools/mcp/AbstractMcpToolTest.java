@@ -17,9 +17,13 @@
 package com.google.adk.tools.mcp;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.mock;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
+import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import java.util.List;
@@ -55,5 +59,17 @@ public final class AbstractMcpToolTest {
 
     Map<?, ?> contentItem = (Map<?, ?>) content.get(0);
     assertThat(contentItem).containsEntry("text", "success");
+  }
+
+  @Test
+  public void instantiateWithToolBuilder_nullDescription_succeeds() {
+    McpSyncClient sessionMock = mock(McpSyncClient.class);
+    McpSessionManager managerMock = mock(McpSessionManager.class);
+    McpSchema.Tool schemaTool = McpSchema.Tool.builder().name("realTool").build();
+
+    McpTool tool = new McpTool(schemaTool, sessionMock, managerMock, objectMapper);
+
+    assertEquals("", tool.description());
+    assertEquals("realTool", tool.name());
   }
 }

@@ -18,6 +18,9 @@ package com.google.adk.models;
 
 import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.anthropic.client.AnthropicClient;
@@ -32,12 +35,16 @@ import com.anthropic.models.messages.RawMessageStreamEvent;
 import com.anthropic.models.messages.ToolResultBlockParam;
 import com.anthropic.models.messages.ToolUseBlock;
 import com.anthropic.services.blocking.MessageService;
+import com.anthropic.models.messages.Message;
+import com.anthropic.models.messages.ToolResultBlockParam;
+import com.anthropic.models.messages.Usage;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Collections;
 import java.util.Map;
 import java.util.stream.Stream;
 import org.junit.Before;
@@ -411,5 +418,25 @@ public final class ClaudeTest {
     StreamResponse<RawMessageStreamEvent> mock = Mockito.mock(StreamResponse.class);
     when(mock.stream()).thenReturn(events);
     return mock;
+  @Test
+  public void testClaudeUsageMapping_ShouldFailWhenMappingIsMissing() throws Exception {
+    long inputTokens = 10L;
+    long outputTokens = 20L;
+    Usage mockUsage = mock(Usage.class);
+    when(mockUsage.inputTokens()).thenReturn(inputTokens);
+    when(mockUsage.outputTokens()).thenReturn(outputTokens);
+
+    Message mockMessage = mock(Message.class);
+    when(mockMessage.usage()).thenReturn(mockUsage);
+    when(mockMessage.content()).thenReturn(Collections.emptyList());
+
+    Method convertMethod =
+        Claude.class.getDeclaredMethod("convertAnthropicResponseToLlmResponse", Message.class);
+    convertMethod.setAccessible(true);
+    LlmResponse result = (LlmResponse) convertMethod.invoke(claude, mockMessage);
+    assertTrue(result.usageMetadata().isPresent());
+    assertEquals(inputTokens, (long) result.usageMetadata().get().promptTokenCount().orElse(0));
+    assertEquals(
+        outputTokens, (long) result.usageMetadata().get().candidatesTokenCount().orElse(0));
   }
 }

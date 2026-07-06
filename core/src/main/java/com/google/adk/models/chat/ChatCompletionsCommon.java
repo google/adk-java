@@ -19,8 +19,12 @@ package com.google.adk.models.chat;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Part;
 import java.util.Base64;
@@ -36,6 +40,10 @@ final class ChatCompletionsCommon {
   private ChatCompletionsCommon() {}
 
   private static final ObjectMapper objectMapper = new ObjectMapper();
+
+  static final String EMPTY_JSON_OBJECT = "{}";
+  static final ImmutableMap<String, Object> EMPTY_PARAMETERS_SCHEMA =
+      ImmutableMap.of("type", "object", "properties", ImmutableMap.of());
 
   public static final String ROLE_ASSISTANT = "assistant";
   public static final String ROLE_MODEL = "model";
@@ -157,6 +165,21 @@ final class ChatCompletionsCommon {
     }
   }
 
+  static ImmutableMap<String, Object> parseToolCallArguments(String arguments, ObjectMapper mapper)
+      throws JsonProcessingException {
+    if (arguments == null || arguments.trim().isEmpty()) {
+      return ImmutableMap.of();
+    }
+    Map<String, Object> result =
+        mapper.readValue(arguments, new TypeReference<Map<String, Object>>() {});
+    if (result == null) {
+      throw JsonMappingException.from(
+          (JsonParser) null,
+          "JSON literal 'null' is not a valid JSON object for tool call arguments");
+    }
+    return ImmutableMap.copyOf(result);
+  }
+
   /**
    * See
    * https://developers.openai.com/api/reference/resources/chat#(resource)%20chat.completions%20%3E%20(model)%20chat_completion_message_function_tool_call%20%3E%20(schema)
@@ -181,20 +204,20 @@ final class ChatCompletionsCommon {
       if (name != null) {
         fcBuilder.name(name);
       }
-      if (arguments != null && !arguments.isEmpty()) {
-        try {
-          Map<String, Object> args =
-              objectMapper.readValue(arguments, new TypeReference<Map<String, Object>>() {});
-          fcBuilder.args(args);
-        } catch (Exception e) {
-          throw new IllegalArgumentException(
-              "Failed to parse function arguments JSON: " + arguments, e);
-        }
-      }
+      fcBuilder.args(parseArguments(arguments));
       if (toolCallId != null) {
         fcBuilder.id(toolCallId);
       }
       return fcBuilder.build();
+    }
+
+    private ImmutableMap<String, Object> parseArguments(String arguments) {
+      try {
+        return parseToolCallArguments(arguments, objectMapper);
+      } catch (Exception e) {
+        throw new IllegalArgumentException(
+            "Failed to parse function arguments JSON: " + arguments, e);
+      }
     }
   }
 

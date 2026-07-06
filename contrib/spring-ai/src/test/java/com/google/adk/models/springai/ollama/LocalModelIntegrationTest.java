@@ -51,7 +51,7 @@ class LocalModelIntegrationTest {
         OllamaChatOptions.builder().model(ollamaContainer.getModelName()).build();
 
     OllamaChatModel chatModel =
-        OllamaChatModel.builder().ollamaApi(ollamaApi).defaultOptions(options).build();
+        OllamaChatModel.builder().ollamaApi(ollamaApi).options(options).build();
     springAI = new SpringAI(chatModel, ollamaContainer.getModelName());
   }
 

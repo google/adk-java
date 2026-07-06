@@ -323,11 +323,12 @@ public abstract class BaseAgent {
   private Flowable<Event> run(
       InvocationContext parentContext,
       Function<InvocationContext, Flowable<Event>> runImplementation) {
-    Context otelContext = Context.current();
     return Flowable.using(
-        () ->
-            Instrumentation.recordAgentInvocation(
-                createInvocationContext(parentContext), this, otelContext),
+        () -> {
+          Context otelContext = Context.current();
+          return Instrumentation.recordAgentInvocation(
+              createInvocationContext(parentContext), this, otelContext);
+        },
         agentInvocation -> {
           InvocationContext invocationContext = agentInvocation.getCtx();
           Flowable<Event> mainAndAfterEvents =
