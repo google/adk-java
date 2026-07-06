@@ -374,4 +374,93 @@ public final class LocalSkillSourceTest {
         .hasMessageThat()
         .contains("Skill file must start with ---");
   }
+
+  @Test
+  public void testLoadResource_pathTraversalRejected() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+    // A secret file outside the skills base directory.
+    Files.writeString(tempFolder.getRoot().toPath().resolve("secret.txt"), "top-secret");
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+
+    // A skill name that escapes the skills base via "..".
+    var single = source.loadResource("..", "secret.txt");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    assertThat(exception).hasCauseThat().hasMessageThat().contains("Path traversal detected");
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.SKILL_NOT_FOUND);
+  }
+
+  @Test
+  public void testListResources_pathTraversalRejected() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+
+    var single = source.listResources("../../etc", "");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    assertThat(exception).hasCauseThat().hasMessageThat().contains("Path traversal detected");
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.SKILL_NOT_FOUND);
+  }
+
+  @Test
+  public void testLoadFrontmatter_pathTraversalRejected() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+
+    // loadFrontmatter routes through findSkillMdPath, which must reject a traversing skill name.
+    var single = source.loadFrontmatter("../..");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    assertThat(exception).hasCauseThat().hasMessageThat().contains("Path traversal detected");
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.SKILL_NOT_FOUND);
+  }
+
+  @Test
+  public void testLoadResource_resourcePathTraversalRejected() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+    Files.createDirectory(skillsBase.resolve("skill-1"));
+    // A secret file outside the individual skill directory (but under the skills base).
+    Files.writeString(tempFolder.getRoot().toPath().resolve("secret.txt"), "top-secret");
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+
+    // Valid skill name, but a resource path that escapes the skill directory via "..".
+    var single = source.loadResource("skill-1", "../../secret.txt");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    assertThat(exception).hasCauseThat().hasMessageThat().contains("Path traversal detected");
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.RESOURCE_NOT_FOUND);
+  }
+
+  @Test
+  public void testLoadResource_absolutePathRejected() throws IOException {
+    Path skillsBase = tempFolder.getRoot().toPath().resolve("skills");
+    Files.createDirectory(skillsBase);
+    Path secret = tempFolder.getRoot().toPath().resolve("secret.txt");
+    Files.writeString(secret, "top-secret");
+
+    SkillSource source = new LocalSkillSource(skillsBase);
+
+    // An absolute skill name must be rejected outright.
+    var single = source.loadResource(secret.toAbsolutePath().toString(), "");
+    RuntimeException exception = assertThrows(RuntimeException.class, single::blockingGet);
+    assertThat(exception).hasCauseThat().isInstanceOf(SkillSourceException.class);
+    assertThat(exception)
+        .hasCauseThat()
+        .hasMessageThat()
+        .contains("Absolute paths are not allowed");
+    SkillSourceException cause = (SkillSourceException) exception.getCause();
+    assertThat(cause.getErrorCode()).isEqualTo(SkillSourceException.SKILL_NOT_FOUND);
+  }
 }
