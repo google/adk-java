@@ -50,6 +50,7 @@ public final class Contents implements RequestProcessor {
   public Contents() {}
 
   @Override
+  @SuppressWarnings("deprecation") // Framework reads the opt-in workaround flag.
   public Single<RequestProcessor.RequestProcessingResult> processRequest(
       InvocationContext context, LlmRequest request) {
     if (!(context.agent() instanceof LlmAgent)) {
@@ -57,6 +58,7 @@ public final class Contents implements RequestProcessor {
           RequestProcessor.RequestProcessingResult.create(request, context.session().events()));
     }
     LlmAgent llmAgent = (LlmAgent) context.agent();
+    boolean groupFunctionResponses = context.runConfig().groupFunctionResponsesInHistory();
 
     ImmutableList<Event> sessionEvents;
     synchronized (context.session().events()) {
@@ -69,13 +71,20 @@ public final class Contents implements RequestProcessor {
               request.toBuilder()
                   .contents(
                       getCurrentTurnContents(
-                          context.branch().orElse(null), sessionEvents, context.agent().name()))
+                          context.branch().orElse(null),
+                          sessionEvents,
+                          context.agent().name(),
+                          groupFunctionResponses))
                   .build(),
               ImmutableList.of()));
     }
 
     ImmutableList<Content> contents =
-        getContents(context.branch().orElse(null), sessionEvents, context.agent().name());
+        getContents(
+            context.branch().orElse(null),
+            sessionEvents,
+            context.agent().name(),
+            groupFunctionResponses);
 
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(
@@ -84,19 +93,26 @@ public final class Contents implements RequestProcessor {
 
   /** Gets contents for the current turn only (no conversation history). */
   private ImmutableList<Content> getCurrentTurnContents(
-      @Nullable String currentBranch, List<Event> events, String agentName) {
+      @Nullable String currentBranch,
+      List<Event> events,
+      String agentName,
+      boolean groupFunctionResponses) {
     // Find the latest event that starts the current turn and process from there.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
       if (event.author().equals("user") || isOtherAgentReply(agentName, event)) {
-        return getContents(currentBranch, events.subList(i, events.size()), agentName);
+        return getContents(
+            currentBranch, events.subList(i, events.size()), agentName, groupFunctionResponses);
       }
     }
     return ImmutableList.of();
   }
 
   private ImmutableList<Content> getContents(
-      @Nullable String currentBranch, List<Event> events, String agentName) {
+      @Nullable String currentBranch,
+      List<Event> events,
+      String agentName,
+      boolean groupFunctionResponses) {
     List<Event> filteredEvents = new ArrayList<>();
     boolean hasCompactEvent = false;
 
@@ -138,7 +154,8 @@ public final class Contents implements RequestProcessor {
     }
 
     List<Event> resultEvents = rearrangeEventsForLatestFunctionResponse(filteredEvents);
-    resultEvents = rearrangeEventsForAsyncFunctionResponsesInHistory(resultEvents);
+    resultEvents =
+        rearrangeEventsForAsyncFunctionResponsesInHistory(resultEvents, groupFunctionResponses);
 
     return resultEvents.stream()
         .map(Event::content)
@@ -554,7 +571,8 @@ public final class Contents implements RequestProcessor {
     return resultEvents;
   }
 
-  private static List<Event> rearrangeEventsForAsyncFunctionResponsesInHistory(List<Event> events) {
+  private static List<Event> rearrangeEventsForAsyncFunctionResponsesInHistory(
+      List<Event> events, boolean groupFunctionResponses) {
     Map<String, Integer> functionCallIdToResponseEventIndex = new HashMap<>();
     for (int i = 0; i < events.size(); i++) {
       final int index = i;
@@ -581,6 +599,13 @@ public final class Contents implements RequestProcessor {
     List<Event> resultEvents = new ArrayList<>();
     // Keep track of response events already added to avoid duplicates when merging
     Set<Integer> processedResponseIndices = new HashSet<>();
+    // Buffers function responses so they can be emitted after their function calls (see below).
+    List<Event> responseEventsBuffer = new ArrayList<>();
+
+    // When opted in (RunConfig.groupFunctionResponsesInHistory), all function calls are grouped
+    // first and only then all function responses (FC1, FC2, FR1, FR2); otherwise responses stay
+    // paired with their call (FC1, FR1, FC2, FR2). Some model checkpoints require the grouped form.
+    boolean shouldBufferResponseEvents = groupFunctionResponses;
 
     for (int i = 0; i < events.size(); i++) {
       Event event = events.get(i);
@@ -625,22 +650,55 @@ public final class Contents implements RequestProcessor {
 
           for (int index : sortedIndices) {
             if (processedResponseIndices.add(index)) { // Add index and check if it was newly added
+              responseEventsBuffer.add(events.get(index));
               responseEventsToAdd.add(events.get(index));
             }
           }
 
-          if (responseEventsToAdd.size() == 1) {
-            resultEvents.add(responseEventsToAdd.get(0));
-          } else if (responseEventsToAdd.size() > 1) {
-            resultEvents.add(mergeFunctionResponseEvents(responseEventsToAdd));
+          // When grouping is enabled the responses stay buffered and are flushed together after the
+          // run of function calls; otherwise they are emitted immediately, paired with their call.
+          if (!shouldBufferResponseEvents) {
+            if (responseEventsToAdd.size() == 1) {
+              resultEvents.add(responseEventsToAdd.get(0));
+            } else if (responseEventsToAdd.size() > 1) {
+              resultEvents.add(mergeFunctionResponseEvents(responseEventsToAdd));
+            }
           }
         }
       } else {
+        // Flush buffered function responses before the next non-function-call event so that the
+        // grouped calls are immediately followed by their grouped responses.
+        if (shouldBufferResponseEvents) {
+          flushResponseEventsBuffer(responseEventsBuffer, resultEvents);
+        }
         resultEvents.add(event);
       }
     }
 
+    // Flush any function responses buffered after the last function call.
+    if (shouldBufferResponseEvents) {
+      flushResponseEventsBuffer(responseEventsBuffer, resultEvents);
+    }
+
     return resultEvents;
+  }
+
+  /**
+   * Flushes buffered function response events into {@code resultEvents}, merging them into a single
+   * event when there is more than one. Used to group function responses after their function calls
+   * for models that require it (Gemini 3).
+   */
+  private static void flushResponseEventsBuffer(
+      List<Event> responseEventsBuffer, List<Event> resultEvents) {
+    if (responseEventsBuffer.isEmpty()) {
+      return;
+    }
+    if (responseEventsBuffer.size() == 1) {
+      resultEvents.add(responseEventsBuffer.get(0));
+    } else {
+      resultEvents.add(mergeFunctionResponseEvents(responseEventsBuffer));
+    }
+    responseEventsBuffer.clear();
   }
 
   /**

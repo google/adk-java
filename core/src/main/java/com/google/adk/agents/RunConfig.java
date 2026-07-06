@@ -84,8 +84,19 @@ public abstract class RunConfig {
 
   public abstract boolean autoCreateSession();
 
+  /**
+   * Whether to group all function calls before all function responses in the request history (FC1,
+   * FC2, FR1, FR2) instead of pairing each response with its call (FC1, FR1, FC2, FR2). Opt-in and
+   * off by default.
+   *
+   * @deprecated Expected only for specific model endpoints.
+   */
+  @Deprecated
+  public abstract boolean groupFunctionResponsesInHistory();
+
   public abstract Builder toBuilder();
 
+  @SuppressWarnings("deprecation") // Sets the workaround flag's default.
   public static Builder builder() {
     return new AutoValue_RunConfig.Builder()
         .saveInputBlobsAsArtifacts(false)
@@ -93,9 +104,11 @@ public abstract class RunConfig {
         .streamingMode(StreamingMode.NONE)
         .toolExecutionMode(ToolExecutionMode.NONE)
         .maxLlmCalls(500)
-        .autoCreateSession(false);
+        .autoCreateSession(false)
+        .groupFunctionResponsesInHistory(false);
   }
 
+  @SuppressWarnings("deprecation") // Propagates the workaround flag.
   public static Builder builder(RunConfig runConfig) {
     return new AutoValue_RunConfig.Builder()
         .saveInputBlobsAsArtifacts(runConfig.saveInputBlobsAsArtifacts())
@@ -107,7 +120,8 @@ public abstract class RunConfig {
         .avatarConfig(runConfig.avatarConfig())
         .outputAudioTranscription(runConfig.outputAudioTranscription())
         .inputAudioTranscription(runConfig.inputAudioTranscription())
-        .autoCreateSession(runConfig.autoCreateSession());
+        .autoCreateSession(runConfig.autoCreateSession())
+        .groupFunctionResponsesInHistory(runConfig.groupFunctionResponsesInHistory());
   }
 
   /** Builder for {@link RunConfig}. */
@@ -201,6 +215,14 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder autoCreateSession(boolean autoCreateSession);
+
+    /**
+     * @deprecated Expected only for specific model endpoints.
+     */
+    @Deprecated
+    @CanIgnoreReturnValue
+    public abstract Builder groupFunctionResponsesInHistory(
+        boolean groupFunctionResponsesInHistory);
 
     abstract RunConfig autoBuild();
 
