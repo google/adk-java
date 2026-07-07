@@ -19,12 +19,14 @@ package com.google.adk.models;
 import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 
 import com.google.adk.Version;
+import com.google.adk.internal.http.HttpClientFactory;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.Client;
 import com.google.genai.ResponseStream;
 import com.google.genai.types.Candidate;
+import com.google.genai.types.ClientOptions;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
@@ -35,6 +37,7 @@ import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import io.reactivex.rxjava3.core.Flowable;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,6 +45,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import okhttp3.OkHttpClient;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,6 +60,15 @@ public class Gemini extends BaseLlm {
 
   private static final Logger logger = LoggerFactory.getLogger(Gemini.class);
   private static final ImmutableMap<String, String> TRACKING_HEADERS;
+
+  private static OkHttpClient getSharedHttpClient() {
+    return HttpClientFactory.createSharedHttpClient("GeminiApiClient")
+        .newBuilder()
+        .connectTimeout(Duration.ZERO)
+        .readTimeout(Duration.ZERO)
+        .writeTimeout(Duration.ZERO)
+        .build();
+  }
 
   static {
     String frameworkLabel = "google-adk/" + Version.JAVA_ADK_VERSION;
@@ -94,6 +107,7 @@ public class Gemini extends BaseLlm {
         Client.builder()
             .apiKey(apiKey)
             .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
+            .clientOptions(ClientOptions.builder().customHttpClient(getSharedHttpClient()).build())
             .build();
   }
 
@@ -107,7 +121,9 @@ public class Gemini extends BaseLlm {
     super(modelName);
     Objects.requireNonNull(vertexCredentials, "vertexCredentials cannot be null");
     Client.Builder apiClientBuilder =
-        Client.builder().httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build());
+        Client.builder()
+            .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
+            .clientOptions(ClientOptions.builder().customHttpClient(getSharedHttpClient()).build());
     vertexCredentials.project().ifPresent(apiClientBuilder::project);
     vertexCredentials.location().ifPresent(apiClientBuilder::location);
     vertexCredentials.credentials().ifPresent(apiClientBuilder::credentials);
@@ -206,6 +222,8 @@ public class Gemini extends BaseLlm {
             modelName,
             Client.builder()
                 .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
+                .clientOptions(
+                    ClientOptions.builder().customHttpClient(getSharedHttpClient()).build())
                 .build());
       }
     }

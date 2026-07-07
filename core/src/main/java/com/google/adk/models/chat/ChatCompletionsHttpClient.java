@@ -19,6 +19,7 @@ package com.google.adk.models.chat;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.internal.http.HttpClientFactory;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.common.annotations.VisibleForTesting;
@@ -72,7 +73,9 @@ public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
    * {@link ChatCompletionsHttpClient} instances. Each instance forks this client via {@link
    * OkHttpClient#newBuilder()} to apply per-instance timeouts without leaking pools.
    */
-  private static final OkHttpClient SHARED_POOL_CLIENT = new OkHttpClient();
+  private static OkHttpClient getSharedPoolClient() {
+    return HttpClientFactory.createSharedHttpClient("ChatCompletionsHttpClient");
+  }
 
   private final OkHttpClient client;
   private final HttpUrl completionsUrl;
@@ -153,12 +156,12 @@ public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
   }
 
   /**
-   * Builds the production OkHttpClient by forking {@link #SHARED_POOL_CLIENT} so the connection
+   * Builds the production OkHttpClient by forking {@link #getSharedPoolClient()} so the connection
    * pool and dispatcher are reused across instances while applying per-instance timeouts.
    */
   private static OkHttpClient buildClient(HttpOptions httpOptions) {
     Objects.requireNonNull(httpOptions, "httpOptions cannot be null");
-    OkHttpClient.Builder builder = SHARED_POOL_CLIENT.newBuilder();
+    OkHttpClient.Builder builder = getSharedPoolClient().newBuilder();
     builder.connectTimeout(Duration.ZERO);
     builder.readTimeout(Duration.ZERO);
     builder.writeTimeout(Duration.ZERO);
