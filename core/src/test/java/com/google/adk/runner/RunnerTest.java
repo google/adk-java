@@ -1621,6 +1621,44 @@ public final class RunnerTest {
   }
 
   @Test
+  public void runLive_asyncSessionService_persistsEvents() throws Exception {
+    BaseSessionService asyncSessionService =
+        new AppendDelayingSessionService(new InMemorySessionService(), 10);
+    Runner runnerWithAsyncSession =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .sessionService(asyncSessionService)
+            .build();
+    Session asyncSession =
+        runnerWithAsyncSession.sessionService().createSession("test", "user").blockingGet();
+
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runnerWithAsyncSession
+            .runLive(asyncSession, liveRequestQueue, RunConfig.builder().build())
+            .test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+
+    // Verify that the events are successfully persisted to session history.
+    ImmutableList<Event> history =
+        runnerWithAsyncSession
+            .sessionService()
+            .listEvents("test", "user", asyncSession.id())
+            .blockingGet()
+            .events();
+    // The history should contain only the agent response event (user messages in liveQueue are not
+    // persisted).
+    assertThat(history).hasSize(1);
+    assertThat(history.get(0).author()).isEqualTo("test agent");
+  }
+
+  @Test
   public void runLive_withSessionKey_success() throws Exception {
     LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
     TestSubscriber<Event> testSubscriber =

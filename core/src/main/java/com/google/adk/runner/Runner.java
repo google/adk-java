@@ -791,7 +791,8 @@ public class Runner {
                       updatedInvocationContext
                           .agent()
                           .runLive(updatedInvocationContext)
-                          .doOnNext(event -> this.sessionService.appendEvent(session, event)))
+                          .concatMapSingle(
+                              event -> this.sessionService.appendEvent(session, event)))
               .doOnError(
                   throwable -> {
                     Span span = Span.current();
