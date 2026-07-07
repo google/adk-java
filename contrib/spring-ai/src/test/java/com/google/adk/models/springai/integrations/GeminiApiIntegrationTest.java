@@ -48,7 +48,7 @@ import org.springframework.ai.google.genai.GoogleGenAiChatOptions;
 @EnabledIfEnvironmentVariable(named = "GOOGLE_API_KEY", matches = "\\S+")
 class GeminiApiIntegrationTest {
 
-  private static final String GEMINI_MODEL = "gemini-2.0-flash";
+  private static final String GEMINI_MODEL = "gemini-flash-latest";
 
   @Test
   void testSimpleAgentWithRealGeminiApi() throws InterruptedException {
