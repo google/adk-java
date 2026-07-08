@@ -191,6 +191,22 @@ public final class GeminiLlmConnectionTest {
   }
 
   @Test
+  public void convertToServerResponse_withSessionResumptionUpdate_returnsEmpty() {
+    LiveServerMessage message =
+        LiveServerMessage.builder()
+            .sessionResumptionUpdate(
+                com.google.genai.types.LiveServerSessionResumptionUpdate.builder()
+                    .newHandle("handle-123")
+                    .resumable(true)
+                    .build())
+            .build();
+
+    Optional<LlmResponse> result = GeminiLlmConnection.convertToServerResponse(message);
+
+    assertThat(result.isPresent()).isFalse();
+  }
+
+  @Test
   public void convertToServerResponse_withUnknownMessage_returnsErrorResponse() {
     LiveServerMessage message = LiveServerMessage.builder().build();
 

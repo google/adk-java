@@ -164,6 +164,21 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     } else if (message.setupComplete().isPresent()) {
       logger.debug("Received setup complete.");
       return Optional.empty();
+    } else if (message.sessionResumptionUpdate().isPresent()) {
+      logger.debug(
+          "Received session resumption update: {}", message.sessionResumptionUpdate().get());
+      return Optional.empty();
+    } else if (message.goAway().isPresent()) {
+      logger.debug("Received go away: {}", message.goAway().get());
+      return Optional.empty();
+    } else if (message.voiceActivityDetectionSignal().isPresent()) {
+      logger.debug(
+          "Received voice activity detection signal: {}",
+          message.voiceActivityDetectionSignal().get());
+      return Optional.empty();
+    } else if (message.voiceActivity().isPresent()) {
+      logger.debug("Received voice activity: {}", message.voiceActivity().get());
+      return Optional.empty();
     } else if (message.usageMetadata().isEmpty()) {
       logger.warn("Received unknown or empty server message: {}", message.toJson());
       builder
