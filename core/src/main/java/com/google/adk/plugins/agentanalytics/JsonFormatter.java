@@ -24,7 +24,9 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.auto.value.AutoValue;
 import com.google.common.base.Utf8;
+import com.google.common.collect.ImmutableSet;
 import java.util.IdentityHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Logger;
@@ -36,6 +38,23 @@ final class JsonFormatter {
   static final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
   static final String TRUNCATION_SUFFIX = "...[truncated]";
   static final String CYCLE_DETECTED_MESSAGE = "[cycle detected]";
+  static final String MAX_DEPTH_MESSAGE = "[max depth exceeded]";
+  static final String REDACTED_MESSAGE = "[REDACTED]";
+  // Guard against unbounded recursion on deeply nested (non-cyclic) payloads.
+  static final int MAX_TRUNCATE_DEPTH = 200;
+
+  // Keys whose values are redacted before logging. Mirrors the Python BQAA plugin's
+  // _SENSITIVE_KEYS (OAuth tokens / secrets); matching is case-insensitive, plus any
+  // key prefixed with "temp:" (ADK temporary session state).
+  private static final ImmutableSet<String> SENSITIVE_KEYS =
+      ImmutableSet.of(
+          "client_secret", "access_token", "refresh_token", "id_token", "api_key", "password");
+  private static final String TEMP_KEY_PREFIX = "temp:";
+
+  private static boolean isSensitiveKey(String key) {
+    String lower = key.toLowerCase(Locale.ROOT);
+    return SENSITIVE_KEYS.contains(lower) || lower.startsWith(TEMP_KEY_PREFIX);
+  }
 
   @AutoValue
   abstract static class TruncationResult {
@@ -55,12 +74,14 @@ final class JsonFormatter {
     }
     try {
       if (obj instanceof JsonNode jsonNode) {
-        return recursiveSmartTruncate(jsonNode, maxLength, newSetFromMap(new IdentityHashMap<>()));
+        return recursiveSmartTruncate(
+            jsonNode, maxLength, newSetFromMap(new IdentityHashMap<>()), 0);
       }
       return recursiveSmartTruncate(
-          mapper.valueToTree(obj), maxLength, newSetFromMap(new IdentityHashMap<>()));
+          mapper.valueToTree(obj), maxLength, newSetFromMap(new IdentityHashMap<>()), 0);
     } catch (IllegalArgumentException e) {
-      // Fallback for types that mapper can't handle directly as a tree
+      // Fallback for types that mapper can't handle directly as a tree.
+      logger.fine("smartTruncate falling back to string conversion: " + e.getMessage());
       return truncateWithStatus(safeToString(obj), maxLength);
     }
   }
@@ -87,7 +108,10 @@ final class JsonFormatter {
   }
 
   private static TruncationResult recursiveSmartTruncate(
-      JsonNode node, int maxLength, Set<JsonNode> visited) {
+      JsonNode node, int maxLength, Set<JsonNode> visited, int depth) {
+    if (depth > MAX_TRUNCATE_DEPTH) {
+      return TruncationResult.create(mapper.valueToTree(MAX_DEPTH_MESSAGE), true);
+    }
     if (node.isContainerNode()) {
       if (visited.contains(node)) {
         return TruncationResult.create(mapper.valueToTree(CYCLE_DETECTED_MESSAGE), true);
@@ -106,7 +130,14 @@ final class JsonFormatter {
         ObjectNode newNode = mapper.createObjectNode();
         Set<Map.Entry<String, JsonNode>> properties = node.properties();
         for (Map.Entry<String, JsonNode> entry : properties) {
-          TruncationResult res = recursiveSmartTruncate(entry.getValue(), maxLength, visited);
+          // Redact sensitive values without descending into them. Per parity with the
+          // Python plugin, redaction does not set the is_truncated flag.
+          if (isSensitiveKey(entry.getKey())) {
+            newNode.set(entry.getKey(), mapper.valueToTree(REDACTED_MESSAGE));
+            continue;
+          }
+          TruncationResult res =
+              recursiveSmartTruncate(entry.getValue(), maxLength, visited, depth + 1);
           newNode.set(entry.getKey(), res.node());
           isTruncated = isTruncated || res.isTruncated();
         }
@@ -114,7 +145,7 @@ final class JsonFormatter {
       } else if (node.isArray()) {
         ArrayNode newNode = mapper.createArrayNode();
         for (JsonNode element : node) {
-          TruncationResult res = recursiveSmartTruncate(element, maxLength, visited);
+          TruncationResult res = recursiveSmartTruncate(element, maxLength, visited, depth + 1);
           newNode.add(res.node());
           isTruncated = isTruncated || res.isTruncated();
         }

@@ -27,8 +27,11 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -51,6 +54,7 @@ import com.google.api.core.ApiFutures;
 import com.google.auth.Credentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.Field.Mode;
 import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.StandardSQLTypeName;
@@ -390,6 +394,51 @@ public class BigQueryAgentAnalyticsPluginTest {
   }
 
   @Test
+  public void ensureTableExists_retriesAfterFailure() throws Exception {
+    when(mockBigQuery.getTable(any(TableId.class)))
+        .thenThrow(new RuntimeException("Table check failed"));
+    Content content = Content.builder().build();
+
+    plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+    plugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
+
+    // A failed bootstrap must leave the table un-ensured so it is retried on the next event, rather
+    // than being masked as ready. With retry, getTable is invoked once per event.
+    verify(mockBigQuery, times(2)).getTable(any(TableId.class));
+  }
+
+  @Test
+  public void afterAgentCallback_stampsInternalExecutionTreeSpanIds() throws Exception {
+    CallbackContext callbackContext = mock(CallbackContext.class);
+    when(callbackContext.invocationContext()).thenReturn(mockInvocationContext);
+
+    // Establish the invocation-level span, then push a child agent span.
+    plugin
+        .onUserMessageCallback(mockInvocationContext, Content.builder().build())
+        .blockingSubscribe();
+    plugin.beforeAgentCallback(fakeAgent, callbackContext).blockingSubscribe();
+
+    TraceManager.SpanIds current = state.getTraceManager("invocation_id").getCurrentSpanAndParent();
+    String agentSpanId = current.spanId().orElseThrow();
+    String invocationSpanId = current.parentSpanId().orElseThrow();
+
+    // Completing the agent pops the agent span and must stamp the row from the internal execution
+    // tree: span_id = the popped agent span, parent_span_id = the enclosing invocation span.
+    plugin.afterAgentCallback(fakeAgent, callbackContext).blockingSubscribe();
+
+    Map<String, Object> completedRow = null;
+    Map<String, Object> row;
+    while ((row = state.getBatchProcessor("invocation_id").queue.poll()) != null) {
+      if (Objects.equals(row.get("event_type"), "AGENT_COMPLETED")) {
+        completedRow = row;
+      }
+    }
+    assertNotNull("AGENT_COMPLETED row not found", completedRow);
+    assertEquals(agentSpanId, completedRow.get("span_id"));
+    assertEquals(invocationSpanId, completedRow.get("parent_span_id"));
+  }
+
+  @Test
   public void arrowSchema_handlesNestedFields() {
     Schema schema = BigQuerySchema.getArrowSchema();
     Field contentPartsField = schema.findField("content_parts");
@@ -545,6 +594,7 @@ public class BigQueryAgentAnalyticsPluginTest {
     Event event =
         Event.builder()
             .author("agent_author")
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("key", "new_value")).build())
             .content(Content.fromParts(Part.fromText("event content")))
             .build();
 
@@ -556,8 +606,92 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertEquals("agent_name", row.get("agent"));
     ObjectNode attributes = (ObjectNode) row.get("attributes");
     assertEquals("agent_author", attributes.get("author").asText());
+    assertEquals("new_value", attributes.get("state_delta").get("key").asText());
     assertTrue(row.get("content").toString().contains("event content"));
     assertEquals(false, row.get("is_truncated"));
+  }
+
+  @Test
+  public void onEventCallback_noCurrentAgent_fallsBackToEventAuthor() throws Exception {
+    // Workflow-driven callbacks may have no current agent; the "agent" column must fall back to the
+    // event author rather than the "unknown" sentinel.
+    when(mockInvocationContext.agent()).thenReturn(null);
+    Event event =
+        Event.builder()
+            .author("agent_author")
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("key", "new_value")).build())
+            .content(Content.fromParts(Part.fromText("event content")))
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("Row not found in queue", row);
+    assertEquals("STATE_DELTA", row.get("event_type"));
+    assertEquals("agent_author", row.get("agent"));
+  }
+
+  @Test
+  public void onEventCallback_emptyAuthorNoCurrentAgent_fallsBackToUnknownSentinel()
+      throws Exception {
+    // An empty author is not a usable fallback: withFallbackAgent guards on
+    // `author != null && !author.isEmpty()`, so fallbackAgentName stays unset and resolveAgentName
+    // yields the "unknown" sentinel rather than an empty agent name. Pins the `&&` against a
+    // `||`-mutation (go/mutation-testing), which would stamp "" as the agent for empty-author
+    // events.
+    when(mockInvocationContext.agent()).thenReturn(null);
+    Event event =
+        Event.builder()
+            .author("")
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("key", "new_value")).build())
+            .content(Content.fromParts(Part.fromText("event content")))
+            .build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("Row not found in queue", row);
+    assertEquals("STATE_DELTA", row.get("event_type"));
+    assertEquals("unknown", row.get("agent"));
+  }
+
+  @Test
+  public void onEventCallback_nullAuthorNoCurrentAgent_fallsBackToUnknownSentinelWithoutNpe()
+      throws Exception {
+    // A null author must be short-circuited by the `author != null` half of withFallbackAgent's
+    // guard so `author.isEmpty()` is never dereferenced. Exercised via the AGENT_RESPONSE path
+    // (whose extraAttributes tolerate a null author, unlike the STATE_DELTA map). Pins the `&&`
+    // against a `||`-mutation (go/mutation-testing), which would NPE on null authors.
+    when(mockInvocationContext.agent()).thenReturn(null);
+    Event event =
+        Event.builder()
+            .id("evt-id")
+            .content(Content.fromParts(Part.fromText("agent final answer")))
+            .build();
+    assertNull("Precondition: author must be null for this test", event.author());
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("AGENT_RESPONSE row not found in queue", row);
+    assertEquals("AGENT_RESPONSE", row.get("event_type"));
+    assertEquals("unknown", row.get("agent"));
+  }
+
+  @Test
+  public void onEventCallback_emptyStateDelta_doesNotEmitStateDelta() throws Exception {
+    Event event = Event.builder().author("agent_author").build();
+
+    plugin.onEventCallback(mockInvocationContext, event).blockingSubscribe();
+
+    assertNull(
+        "No STATE_DELTA row should be emitted for an empty state delta",
+        state.getBatchProcessor("invocation_id").queue.poll());
   }
 
   @Test
@@ -580,10 +714,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .getPendingTasksForInvocation("invocation_id")
                 .toArray(new CompletableFuture<?>[0]))
         .join();
-
-    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
-    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
 
     Map<String, Object> a2aRow = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull("A2A_INTERACTION row not found in queue", a2aRow);
@@ -623,10 +753,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .getPendingTasksForInvocation("invocation_id")
                 .toArray(new CompletableFuture<?>[0]))
         .join();
-
-    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
-    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
 
     Map<String, Object> agentResponseRow = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull("AGENT_RESPONSE row not found in queue", agentResponseRow);
@@ -670,10 +796,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .toArray(new CompletableFuture<?>[0]))
         .join();
 
-    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
-    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
-
     Map<String, Object> nextRow = state.getBatchProcessor("invocation_id").queue.poll();
     assertNull("No AGENT_RESPONSE row should be emitted", nextRow);
   }
@@ -698,10 +820,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .toArray(new CompletableFuture<?>[0]))
         .join();
 
-    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
-    assertEquals("STATE_DELTA", stateDeltaRow.get("event_type"));
-
     Map<String, Object> nextRow = state.getBatchProcessor("invocation_id").queue.poll();
     assertNull("No AGENT_RESPONSE row should be emitted", nextRow);
   }
@@ -724,9 +842,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .getPendingTasksForInvocation("invocation_id")
                 .toArray(new CompletableFuture<?>[0]))
         .join();
-
-    Map<String, Object> stateDeltaRow = state.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
 
     Map<String, Object> a2aRow = state.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull("A2A_INTERACTION row not found in queue", a2aRow);
@@ -781,10 +896,6 @@ public class BigQueryAgentAnalyticsPluginTest {
                 .toArray(new CompletableFuture<?>[0]))
         .join();
 
-    // Consume STATE_DELTA
-    Map<String, Object> stateDeltaRow = customState.getBatchProcessor("invocation_id").queue.poll();
-    assertNotNull(stateDeltaRow);
-
     // Get AGENT_RESPONSE
     Map<String, Object> agentResponseRow =
         customState.getBatchProcessor("invocation_id").queue.poll();
@@ -826,6 +937,25 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertFalse(
         "Row should not contain is_truncated when content is null",
         row.containsKey("is_truncated"));
+  }
+
+  @Test
+  public void onModelErrorCallback_stampsPoppedSpanId() throws Exception {
+    CallbackContext mockCallbackContext = mock(CallbackContext.class);
+    when(mockCallbackContext.invocationContext()).thenReturn(mockInvocationContext);
+    LlmRequest.Builder mockLlmRequestBuilder = mock(LlmRequest.Builder.class);
+
+    String llmSpanId = state.getTraceManager("invocation_id").pushSpan("llm_request");
+    plugin
+        .onModelErrorCallback(
+            mockCallbackContext, mockLlmRequestBuilder, new RuntimeException("boom"))
+        .blockingSubscribe();
+
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("Row not found in queue", row);
+    assertEquals("LLM_ERROR", row.get("event_type"));
+    // The error row's span_id must come from the popped internal span, not the post-pop stack.
+    assertEquals(llmSpanId, row.get("span_id"));
   }
 
   @Test
@@ -938,6 +1068,47 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertNotNull(row);
     ObjectNode contentMap = (ObjectNode) row.get("content");
     assertEquals("A2A", contentMap.get("tool_origin").asText());
+  }
+
+  @Test
+  public void afterToolCallback_stampsPoppedToolSpanId() throws Exception {
+    ToolContext mockToolContext = mock(ToolContext.class);
+    when(mockToolContext.invocationContext()).thenReturn(mockInvocationContext);
+    BaseTool mockTool = mock(BaseTool.class);
+    when(mockTool.name()).thenReturn("test_tool");
+
+    // Establish the invocation span first (so afterTool's ensureInvocationSpan keeps the stack),
+    // then push the tool span that afterTool must pop and stamp onto the row.
+    plugin
+        .onUserMessageCallback(mockInvocationContext, Content.builder().build())
+        .blockingSubscribe();
+    String toolSpanId = state.getTraceManager("invocation_id").pushSpan("tool");
+    // After the tool span is pushed, the enclosing span is the invocation span; afterTool must
+    // stamp
+    // it as the row's parent_span_id once the tool span is popped.
+    String invocationSpanId =
+        state
+            .getTraceManager("invocation_id")
+            .getCurrentSpanAndParent()
+            .parentSpanId()
+            .orElseThrow();
+
+    plugin
+        .afterToolCallback(mockTool, ImmutableMap.of(), mockToolContext, ImmutableMap.of("r", "v"))
+        .blockingSubscribe();
+
+    Map<String, Object> completedRow = null;
+    Map<String, Object> row;
+    while ((row = state.getBatchProcessor("invocation_id").queue.poll()) != null) {
+      if (Objects.equals(row.get("event_type"), "TOOL_COMPLETED")) {
+        completedRow = row;
+      }
+    }
+    assertNotNull("TOOL_COMPLETED row not found", completedRow);
+    // span_id must be the popped tool span, not the enclosing invocation span left on the stack.
+    assertEquals(toolSpanId, completedRow.get("span_id"));
+    // parent_span_id must reference the enclosing invocation span from the post-pop stack top.
+    assertEquals(invocationSpanId, completedRow.get("parent_span_id"));
   }
 
   @Test
@@ -1109,8 +1280,10 @@ public class BigQueryAgentAnalyticsPluginTest {
     when(mockTableBuilder.setLabels(anyMap())).thenReturn(mockTableBuilder);
     when(mockTableBuilder.build()).thenReturn(mockTable);
 
-    BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
+    boolean upgraded = BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
 
+    // A successful upgrade must report the table as ready.
+    assertTrue(upgraded);
     ArgumentCaptor<StandardTableDefinition> definitionCaptor =
         ArgumentCaptor.forClass(StandardTableDefinition.class);
     verify(mockTableBuilder).setDefinition(definitionCaptor.capture());
@@ -1161,7 +1334,7 @@ public class BigQueryAgentAnalyticsPluginTest {
     when(mockTableBuilder.setLabels(anyMap())).thenReturn(mockTableBuilder);
     when(mockTableBuilder.build()).thenReturn(mockTable);
 
-    BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
+    var unused = BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
 
     ArgumentCaptor<StandardTableDefinition> definitionCaptor =
         ArgumentCaptor.forClass(StandardTableDefinition.class);
@@ -1171,6 +1344,191 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertNotNull(contentParts.getSubFields().get("storage_mode"));
 
     verify(mockBigQuery).update(any(Table.class));
+  }
+
+  @Test
+  public void maybeUpgradeSchema_warnsOnStructModeDrift() throws Exception {
+    Table mockTable = mock(Table.class);
+    when(mockTable.getTableId()).thenReturn(TableId.of("project", "dataset", "table"));
+    when(mockTable.getLabels()).thenReturn(ImmutableMap.of());
+
+    // Existing table has 'content_parts' as a NULLABLE STRUCT instead of the expected REPEATED
+    ImmutableList<com.google.cloud.bigquery.Field> initialFields =
+        BigQuerySchema.getEventsSchema().getFields().stream()
+            .map(
+                f ->
+                    f.getName().equals("content_parts")
+                        ? f.toBuilder().setMode(Mode.NULLABLE).build()
+                        : f)
+            .collect(toImmutableList());
+
+    StandardTableDefinition tableDefinition =
+        StandardTableDefinition.newBuilder()
+            .setSchema(com.google.cloud.bigquery.Schema.of(initialFields))
+            .build();
+    when(mockTable.getDefinition()).thenReturn(tableDefinition);
+
+    Logger logger = Logger.getLogger(BigQueryUtils.class.getName());
+    Handler mockLogHandler = mock(Handler.class);
+    logger.addHandler(mockLogHandler);
+    try {
+      var unused = BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
+    } finally {
+      logger.removeHandler(mockLogHandler);
+    }
+
+    ArgumentCaptor<LogRecord> captor = ArgumentCaptor.forClass(LogRecord.class);
+    verify(mockLogHandler, atLeastOnce()).publish(captor.capture());
+    assertTrue(
+        "Should have warned about STRUCT mode drift on content_parts",
+        captor.getAllValues().stream()
+            .anyMatch(
+                record ->
+                    Objects.equals(record.getLevel(), Level.WARNING)
+                        && record
+                            .getMessage()
+                            .contains("Incompatible schema drift on column 'content_parts'")));
+
+    // Mode drift alone is not auto-upgradeable, so no table update should be attempted.
+    verify(mockBigQuery, never()).update(any(Table.class));
+  }
+
+  @Test
+  public void maybeUpgradeSchema_noChanges_returnsTrueWithoutUpdateOrDriftWarning()
+      throws Exception {
+    Table mockTable = mock(Table.class);
+    when(mockTable.getTableId()).thenReturn(TableId.of("project", "dataset", "table"));
+    StandardTableDefinition tableDefinition =
+        StandardTableDefinition.newBuilder().setSchema(BigQuerySchema.getEventsSchema()).build();
+    when(mockTable.getDefinition()).thenReturn(tableDefinition);
+
+    Logger logger = Logger.getLogger(BigQueryUtils.class.getName());
+    Handler mockLogHandler = mock(Handler.class);
+    logger.addHandler(mockLogHandler);
+    boolean upgraded;
+    try {
+      upgraded = BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
+    } finally {
+      logger.removeHandler(mockLogHandler);
+    }
+
+    // When the existing schema already matches, the table is ready and no update is attempted.
+    assertTrue(upgraded);
+    verify(mockBigQuery, never()).update(any(Table.class));
+
+    // Every matching field has equal modes, so no incompatible-drift warning must be emitted.
+    ArgumentCaptor<LogRecord> captor = ArgumentCaptor.forClass(LogRecord.class);
+    verify(mockLogHandler, atLeast(0)).publish(captor.capture());
+    assertFalse(
+        "No drift warning should be logged when the schema already matches",
+        captor.getAllValues().stream()
+            .anyMatch(record -> record.getMessage().contains("Incompatible schema drift")));
+  }
+
+  @Test
+  public void maybeUpgradeSchema_treatsNullModeAsNullable_noDriftWarning() throws Exception {
+    Table mockTable = mock(Table.class);
+    when(mockTable.getTableId()).thenReturn(TableId.of("project", "dataset", "table"));
+    when(mockTable.getLabels()).thenReturn(ImmutableMap.of());
+
+    // BigQuery reports getMode() == null for NULLABLE columns. Represent the NULLABLE 'event_type'
+    // column with an unset (null) mode so its comparison against the NULLABLE desired field
+    // exercises normalizeMode's null -> NULLABLE path. Build the field WITHOUT setMode: the OSS
+    // BigQuery client stores toBuilder().setMode(null) as an empty mode string and throws on
+    // getMode(), whereas an unset mode is genuinely null. Every other field matches exactly.
+    com.google.cloud.bigquery.Field nullModeEventType =
+        com.google.cloud.bigquery.Field.newBuilder("event_type", StandardSQLTypeName.STRING)
+            .build();
+    ImmutableList<com.google.cloud.bigquery.Field> initialFields =
+        BigQuerySchema.getEventsSchema().getFields().stream()
+            .map(f -> f.getName().equals("event_type") ? nullModeEventType : f)
+            .collect(toImmutableList());
+    StandardTableDefinition tableDefinition =
+        StandardTableDefinition.newBuilder()
+            .setSchema(com.google.cloud.bigquery.Schema.of(initialFields))
+            .build();
+    when(mockTable.getDefinition()).thenReturn(tableDefinition);
+
+    Logger logger = Logger.getLogger(BigQueryUtils.class.getName());
+    Handler mockLogHandler = mock(Handler.class);
+    logger.addHandler(mockLogHandler);
+    boolean upgraded;
+    try {
+      upgraded = BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
+    } finally {
+      logger.removeHandler(mockLogHandler);
+    }
+
+    // A null (unset) mode is semantically NULLABLE, so the column already matches: the table is
+    // ready, no update is attempted, and no incompatible-drift warning must be emitted for it.
+    assertTrue(upgraded);
+    verify(mockBigQuery, never()).update(any(Table.class));
+
+    ArgumentCaptor<LogRecord> captor = ArgumentCaptor.forClass(LogRecord.class);
+    verify(mockLogHandler, atLeast(0)).publish(captor.capture());
+    assertFalse(
+        "A null mode must be normalized to NULLABLE, so no drift warning should be logged for"
+            + " 'event_type'",
+        captor.getAllValues().stream()
+            .anyMatch(
+                record ->
+                    record
+                        .getMessage()
+                        .contains("Incompatible schema drift on column 'event_type'")));
+  }
+
+  @Test
+  public void maybeUpgradeSchema_warnsOnTypeDrift() throws Exception {
+    Table mockTable = mock(Table.class);
+    when(mockTable.getTableId()).thenReturn(TableId.of("project", "dataset", "table"));
+    when(mockTable.getLabels()).thenReturn(ImmutableMap.of());
+
+    // Existing 'timestamp' column has type STRING instead of the expected TIMESTAMP (same mode), so
+    // only the type-drift branch should fire.
+    ImmutableList<com.google.cloud.bigquery.Field> initialFields =
+        BigQuerySchema.getEventsSchema().getFields().stream()
+            .map(
+                f ->
+                    f.getName().equals("timestamp")
+                        ? f.toBuilder().setType(StandardSQLTypeName.STRING).build()
+                        : f)
+            .collect(toImmutableList());
+    StandardTableDefinition tableDefinition =
+        StandardTableDefinition.newBuilder()
+            .setSchema(com.google.cloud.bigquery.Schema.of(initialFields))
+            .build();
+    when(mockTable.getDefinition()).thenReturn(tableDefinition);
+
+    Logger logger = Logger.getLogger(BigQueryUtils.class.getName());
+    Handler mockLogHandler = mock(Handler.class);
+    logger.addHandler(mockLogHandler);
+    try {
+      var unused = BigQueryUtils.maybeUpgradeSchema(mockBigQuery, mockTable);
+    } finally {
+      logger.removeHandler(mockLogHandler);
+    }
+
+    ArgumentCaptor<LogRecord> captor = ArgumentCaptor.forClass(LogRecord.class);
+    verify(mockLogHandler, atLeastOnce()).publish(captor.capture());
+    assertTrue(
+        "Should have warned about type drift on the timestamp column",
+        captor.getAllValues().stream()
+            .anyMatch(
+                record ->
+                    Objects.equals(record.getLevel(), Level.WARNING)
+                        && record
+                            .getMessage()
+                            .contains("Incompatible schema drift on column 'timestamp'")));
+  }
+
+  @Test
+  public void isSafeIdentifier_nullIsRejectedWithoutThrowing() throws Exception {
+    // A null identifier must be rejected by the explicit guard. Without it, Pattern.matcher(null)
+    // would throw an NPE instead of returning false, so the DDL-safety check must short-circuit.
+    assertFalse(BigQueryUtils.isSafeIdentifier(null));
+    // Sanity: well-formed identifiers pass and unsafe characters are rejected.
+    assertTrue(BigQueryUtils.isSafeIdentifier("project_123-abc"));
+    assertFalse(BigQueryUtils.isSafeIdentifier("bad;drop table"));
   }
 
   @Test

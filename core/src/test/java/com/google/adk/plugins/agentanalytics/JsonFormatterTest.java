@@ -39,8 +39,11 @@ import com.google.genai.types.FileData;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -271,5 +274,144 @@ public class JsonFormatterTest {
 
     assertTrue(result.isTruncated());
     assertEquals("[cycle detected]", result.node().get("child").asText());
+  }
+
+  @Test
+  public void smartTruncate_redactsSensitiveTopLevelKeys() {
+    ImmutableMap<String, Object> map =
+        ImmutableMap.of("api_key", "sk-secret", "password", "hunter2", "keep", "value");
+    JsonFormatter.TruncationResult result = JsonFormatter.smartTruncate(map, 5000);
+
+    JsonNode node = result.node();
+    assertEquals("[REDACTED]", node.get("api_key").asText());
+    assertEquals("[REDACTED]", node.get("password").asText());
+    assertEquals("value", node.get("keep").asText());
+    // Redaction must not flip the truncation flag.
+    assertFalse(result.isTruncated());
+  }
+
+  @Test
+  public void smartTruncate_redactsCaseInsensitiveAndTempPrefixKeys() {
+    ImmutableMap<String, Object> map =
+        ImmutableMap.of("Access_Token", "abc", "temp:scratch", "xyz", "keep", "ok");
+    JsonNode node = JsonFormatter.smartTruncate(map, 5000).node();
+
+    assertEquals("[REDACTED]", node.get("Access_Token").asText());
+    assertEquals("[REDACTED]", node.get("temp:scratch").asText());
+    assertEquals("ok", node.get("keep").asText());
+  }
+
+  @Test
+  public void smartTruncate_redactsNestedSensitiveKeys() {
+    ImmutableMap<String, Object> map =
+        ImmutableMap.of("outer", ImmutableMap.of("client_secret", "s", "ok", "v"));
+    JsonNode node = JsonFormatter.smartTruncate(map, 5000).node();
+
+    assertEquals("[REDACTED]", node.get("outer").get("client_secret").asText());
+    assertEquals("v", node.get("outer").get("ok").asText());
+  }
+
+  @Test
+  public void smartTruncate_depthGuard_replacesDeepSubtreeWithSentinel() {
+    Map<String, Object> root = new HashMap<>();
+    Map<String, Object> cur = root;
+    for (int i = 0; i < 300; i++) {
+      Map<String, Object> next = new HashMap<>();
+      cur.put("child", next);
+      cur = next;
+    }
+
+    JsonFormatter.TruncationResult result = JsonFormatter.smartTruncate(root, 5000);
+    assertTrue(result.isTruncated());
+
+    JsonNode node = result.node();
+    boolean foundSentinel = false;
+    for (int i = 0; i < 400; i++) {
+      JsonNode child = node.get("child");
+      if (child == null) {
+        break;
+      }
+      if (child.isTextual() && child.asText().equals(JsonFormatter.MAX_DEPTH_MESSAGE)) {
+        foundSentinel = true;
+        break;
+      }
+      node = child;
+    }
+    assertTrue("Expected the max-depth sentinel in the deep chain", foundSentinel);
+  }
+
+  @Test
+  public void smartTruncate_depthGuard_appliesToNestedArrays() {
+    // Deeply nested arrays must hit the same depth guard as objects; the array recursion must pass
+    // an increasing depth (not a reset/negated one) for the guard to ever fire.
+    List<Object> root = new ArrayList<>();
+    List<Object> cur = root;
+    for (int i = 0; i < 300; i++) {
+      List<Object> next = new ArrayList<>();
+      cur.add(next);
+      cur = next;
+    }
+
+    JsonFormatter.TruncationResult result = JsonFormatter.smartTruncate(root, 5000);
+
+    assertTrue("Deeply nested arrays should be truncated by the depth guard", result.isTruncated());
+  }
+
+  @Test
+  public void smartTruncate_atDepthBoundary_mapNotTruncated() {
+    // Exactly MAX_TRUNCATE_DEPTH levels must NOT be truncated. This pins the initial recursion
+    // depth
+    // to 0 (a seed of 1 would truncate at this boundary).
+    Map<String, Object> root = new HashMap<>();
+    Map<String, Object> cur = root;
+    for (int i = 0; i < JsonFormatter.MAX_TRUNCATE_DEPTH; i++) {
+      Map<String, Object> next = new HashMap<>();
+      cur.put("child", next);
+      cur = next;
+    }
+
+    JsonFormatter.TruncationResult result = JsonFormatter.smartTruncate(root, 5000);
+
+    assertFalse(
+        "A structure exactly at the depth boundary must not be truncated", result.isTruncated());
+  }
+
+  @Test
+  public void smartTruncate_atDepthBoundary_jsonNodeNotTruncated() {
+    // Same boundary check for the JsonNode input path (separate seed site in smartTruncate).
+    ObjectMapper mapper = new ObjectMapper();
+    ObjectNode root = mapper.createObjectNode();
+    ObjectNode cur = root;
+    for (int i = 0; i < JsonFormatter.MAX_TRUNCATE_DEPTH; i++) {
+      ObjectNode next = mapper.createObjectNode();
+      cur.set("child", next);
+      cur = next;
+    }
+
+    JsonFormatter.TruncationResult result = JsonFormatter.smartTruncate(root, 5000);
+
+    assertFalse(
+        "A JsonNode structure exactly at the depth boundary must not be truncated",
+        result.isTruncated());
+  }
+
+  @Test
+  public void smartTruncate_atDepthBoundary_arrayNotTruncated() {
+    // Array analog of the map boundary check: exactly MAX_TRUNCATE_DEPTH levels of nested arrays
+    // must NOT be truncated. This pins the array-branch recursion to a +1 depth step; a +2 step
+    // would push the innermost element past the guard and truncate at this boundary.
+    List<Object> root = new ArrayList<>();
+    List<Object> cur = root;
+    for (int i = 0; i < JsonFormatter.MAX_TRUNCATE_DEPTH; i++) {
+      List<Object> next = new ArrayList<>();
+      cur.add(next);
+      cur = next;
+    }
+
+    JsonFormatter.TruncationResult result = JsonFormatter.smartTruncate(root, 5000);
+
+    assertFalse(
+        "A nested-array structure exactly at the depth boundary must not be truncated",
+        result.isTruncated());
   }
 }
