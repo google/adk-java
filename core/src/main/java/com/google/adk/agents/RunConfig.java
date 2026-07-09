@@ -18,11 +18,13 @@ package com.google.adk.agents;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
 import com.google.genai.types.AvatarConfig;
 import com.google.genai.types.Modality;
 import com.google.genai.types.SpeechConfig;
+import java.util.Map;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,6 +96,8 @@ public abstract class RunConfig {
   @Deprecated
   public abstract boolean groupFunctionResponsesInHistory();
 
+  public abstract ImmutableMap<String, Object> customMetadata();
+
   public abstract Builder toBuilder();
 
   @SuppressWarnings("deprecation") // Sets the workaround flag's default.
@@ -105,7 +109,8 @@ public abstract class RunConfig {
         .toolExecutionMode(ToolExecutionMode.NONE)
         .maxLlmCalls(500)
         .autoCreateSession(false)
-        .groupFunctionResponsesInHistory(false);
+        .groupFunctionResponsesInHistory(false)
+        .customMetadata(ImmutableMap.of());
   }
 
   @SuppressWarnings("deprecation") // Propagates the workaround flag.
@@ -121,7 +126,8 @@ public abstract class RunConfig {
         .outputAudioTranscription(runConfig.outputAudioTranscription())
         .inputAudioTranscription(runConfig.inputAudioTranscription())
         .autoCreateSession(runConfig.autoCreateSession())
-        .groupFunctionResponsesInHistory(runConfig.groupFunctionResponsesInHistory());
+        .groupFunctionResponsesInHistory(runConfig.groupFunctionResponsesInHistory())
+        .customMetadata(runConfig.customMetadata());
   }
 
   /** Builder for {@link RunConfig}. */
@@ -215,6 +221,9 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder autoCreateSession(boolean autoCreateSession);
+
+    @CanIgnoreReturnValue
+    public abstract Builder customMetadata(Map<String, Object> customMetadata);
 
     /**
      * @deprecated Expected only for specific model endpoints.
