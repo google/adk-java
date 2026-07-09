@@ -83,6 +83,26 @@ public class MessageConverter {
    * @return A Spring AI Prompt
    */
   public Prompt toLlmPrompt(LlmRequest llmRequest) {
+    return toLlmPrompt(llmRequest, null);
+  }
+
+  /**
+   * Converts an ADK LlmRequest to a Spring AI Prompt, using the target model's own default options
+   * as the base for the prompt options.
+   *
+   * <p>Provider-specific chat models (for example Spring AI OpenAI {@code 2.0.0}) cast {@code
+   * Prompt.getOptions()} directly to their own options type (e.g. {@code OpenAiChatOptions}) in
+   * {@code createRequest(...)}. Passing provider-neutral options such as {@code
+   * DefaultToolCallingChatOptions} therefore triggers a {@link ClassCastException}. To stay
+   * compatible with any provider, the prompt options are built on top of the model's own default
+   * options (obtained via {@code ChatModel.getOptions()}) so the resulting options keep the
+   * concrete type the provider expects, while overlaying the ADK tools and generation config.
+   *
+   * @param llmRequest The ADK request to convert
+   * @param modelDefaultOptions The target model's default options, or {@code null} if unavailable
+   * @return A Spring AI Prompt
+   */
+  public Prompt toLlmPrompt(LlmRequest llmRequest, ChatOptions modelDefaultOptions) {
     List<Message> messages = new ArrayList<>();
     List<String> allSystemMessages = new ArrayList<>();
 
@@ -119,56 +139,90 @@ public class MessageConverter {
     // Add all non-system messages
     messages.addAll(nonSystemMessages);
 
-    // Convert config to ChatOptions
-    ChatOptions chatOptions = configMapper.toSpringAiChatOptions(llmRequest.config());
+    return new Prompt(messages, buildChatOptions(llmRequest, modelDefaultOptions));
+  }
 
-    // Convert ADK tools to Spring AI ToolCallback and add to ChatOptions
+  /**
+   * Builds the Spring AI {@link ChatOptions} for a request by overlaying the ADK generation config
+   * and tools on top of the model's own default options.
+   *
+   * @param llmRequest The ADK request being converted
+   * @param modelDefaultOptions The target model's default options, or {@code null} if unavailable
+   * @return The chat options to attach to the prompt, or {@code null} when there is nothing
+   *     ADK-specific to configure (letting the model apply its own defaults)
+   */
+  private ChatOptions buildChatOptions(LlmRequest llmRequest, ChatOptions modelDefaultOptions) {
+    // ADK generation config (temperature, max tokens, ...) as provider-neutral options.
+    ChatOptions adkChatOptions = configMapper.toSpringAiChatOptions(llmRequest.config());
+
+    // ADK tools converted to Spring AI tool callbacks.
+    List<ToolCallback> toolCallbacks = List.of();
     if (llmRequest.tools() != null && !llmRequest.tools().isEmpty()) {
-      List<ToolCallback> toolCallbacks = toolConverter.convertToSpringAiTools(llmRequest.tools());
-      if (!toolCallbacks.isEmpty()) {
-        // Create new ChatOptions with tools included
-        ToolCallingChatOptions.Builder optionsBuilder = ToolCallingChatOptions.builder();
-
-        // Always set tool callbacks
-        optionsBuilder.toolCallbacks(toolCallbacks);
-
-        // Copy existing chat options properties if present
-        if (chatOptions != null) {
-          // Copy all relevant properties from existing ChatOptions
-          if (chatOptions.getTemperature() != null) {
-            optionsBuilder.temperature(chatOptions.getTemperature());
-          }
-          if (chatOptions.getMaxTokens() != null) {
-            optionsBuilder.maxTokens(chatOptions.getMaxTokens());
-          }
-          if (chatOptions.getTopP() != null) {
-            optionsBuilder.topP(chatOptions.getTopP());
-          }
-          if (chatOptions.getTopK() != null) {
-            optionsBuilder.topK(chatOptions.getTopK());
-          }
-          if (chatOptions.getStopSequences() != null) {
-            optionsBuilder.stopSequences(chatOptions.getStopSequences());
-          }
-          // Copy model name if present
-          if (chatOptions.getModel() != null) {
-            optionsBuilder.model(chatOptions.getModel());
-          }
-          // Copy frequency penalty if present
-          if (chatOptions.getFrequencyPenalty() != null) {
-            optionsBuilder.frequencyPenalty(chatOptions.getFrequencyPenalty());
-          }
-          // Copy presence penalty if present
-          if (chatOptions.getPresencePenalty() != null) {
-            optionsBuilder.presencePenalty(chatOptions.getPresencePenalty());
-          }
-        }
-
-        chatOptions = optionsBuilder.build();
-      }
+      toolCallbacks = toolConverter.convertToSpringAiTools(llmRequest.tools());
     }
 
-    return new Prompt(messages, chatOptions);
+    boolean hasTools = !toolCallbacks.isEmpty();
+    boolean hasAdkConfig = adkChatOptions != null;
+
+    // Nothing ADK-specific to add: let the provider fall back to its own default options.
+    if (!hasTools && !hasAdkConfig) {
+      return null;
+    }
+
+    // Preferred path: start from the model's own options so the resulting options keep the concrete
+    // provider type (e.g. OpenAiChatOptions) and preserve provider-specific settings such as the
+    // API key, base URL and model name. This avoids the ClassCastException thrown by providers
+    // (like Spring AI OpenAI 2.0.0) that cast Prompt.getOptions() to their own options type.
+    if (modelDefaultOptions instanceof ToolCallingChatOptions) {
+      ToolCallingChatOptions.Builder<?> optionsBuilder =
+          ((ToolCallingChatOptions) modelDefaultOptions).mutate();
+      if (hasTools) {
+        optionsBuilder.toolCallbacks(toolCallbacks);
+      }
+      applyGenerationConfig(optionsBuilder, adkChatOptions);
+      return optionsBuilder.build();
+    }
+
+    // Fallback: the model's default options are unavailable or not tool-calling capable. Preserve
+    // the provider-neutral behavior, which works for providers that normalize generic options.
+    if (hasTools) {
+      ToolCallingChatOptions.Builder<?> optionsBuilder = ToolCallingChatOptions.builder();
+      optionsBuilder.toolCallbacks(toolCallbacks);
+      applyGenerationConfig(optionsBuilder, adkChatOptions);
+      return optionsBuilder.build();
+    }
+    return adkChatOptions;
+  }
+
+  /** Copies the non-null generation parameters from {@code source} onto {@code builder}. */
+  private void applyGenerationConfig(ChatOptions.Builder<?> builder, ChatOptions source) {
+    if (source == null) {
+      return;
+    }
+    if (source.getTemperature() != null) {
+      builder.temperature(source.getTemperature());
+    }
+    if (source.getMaxTokens() != null) {
+      builder.maxTokens(source.getMaxTokens());
+    }
+    if (source.getTopP() != null) {
+      builder.topP(source.getTopP());
+    }
+    if (source.getTopK() != null) {
+      builder.topK(source.getTopK());
+    }
+    if (source.getStopSequences() != null) {
+      builder.stopSequences(source.getStopSequences());
+    }
+    if (source.getModel() != null) {
+      builder.model(source.getModel());
+    }
+    if (source.getFrequencyPenalty() != null) {
+      builder.frequencyPenalty(source.getFrequencyPenalty());
+    }
+    if (source.getPresencePenalty() != null) {
+      builder.presencePenalty(source.getPresencePenalty());
+    }
   }
 
   /**
