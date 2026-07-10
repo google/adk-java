@@ -25,6 +25,7 @@ import com.google.genai.types.AvatarConfig;
 import com.google.genai.types.Modality;
 import com.google.genai.types.SpeechConfig;
 import java.util.Map;
+import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,21 +88,39 @@ public abstract class RunConfig {
   public abstract boolean autoCreateSession();
 
   /**
-   * Whether to group all function calls before all function responses in the request history (FC1,
-   * FC2, FR1, FR2) instead of pairing each response with its call (FC1, FR1, FC2, FR2). Opt-in and
-   * off by default.
+   * Three-state override for grouping function calls before function responses in history (FC1,
+   * FC2, FR1, FR2) instead of pairing each response with its call (FC1, FR1, FC2, FR2).
+   *
+   * <p>Empty (default) groups only for models that require it (Gemini 3); when present the value
+   * applies to all models.
+   *
+   * <p>Not needed for the core ADK Gemini implementation, which already groups automatically for
+   * Gemini 3. Kept for backwards compatibility with other model implementations that route to
+   * endpoints requiring the grouped form.
    *
    * @deprecated Expected only for specific model endpoints.
    */
   @Deprecated
-  public abstract boolean groupFunctionResponsesInHistory();
+  public abstract Optional<Boolean> groupFunctionResponsesInHistoryOverride();
+
+  /**
+   * Whether grouping is explicitly enabled; equivalent to {@code
+   * groupFunctionResponsesInHistoryOverride().orElse(false)}. Retained for backwards compatibility.
+   *
+   * @deprecated Expected only for specific model endpoints.
+   */
+  @Deprecated
+  @SuppressWarnings("deprecation") // Delegates to the deprecated override accessor.
+  public final boolean groupFunctionResponsesInHistory() {
+    return groupFunctionResponsesInHistoryOverride().orElse(false);
+  }
 
   public abstract ImmutableMap<String, Object> customMetadata();
 
   public abstract Builder toBuilder();
 
-  @SuppressWarnings("deprecation") // Sets the workaround flag's default.
   public static Builder builder() {
+    // Leave grouping override unset so it defaults on only for models that require it (Gemini 3).
     return new AutoValue_RunConfig.Builder()
         .saveInputBlobsAsArtifacts(false)
         .responseModalities(ImmutableList.of())
@@ -109,7 +128,6 @@ public abstract class RunConfig {
         .toolExecutionMode(ToolExecutionMode.NONE)
         .maxLlmCalls(500)
         .autoCreateSession(false)
-        .groupFunctionResponsesInHistory(false)
         .customMetadata(ImmutableMap.of());
   }
 
@@ -126,7 +144,8 @@ public abstract class RunConfig {
         .outputAudioTranscription(runConfig.outputAudioTranscription())
         .inputAudioTranscription(runConfig.inputAudioTranscription())
         .autoCreateSession(runConfig.autoCreateSession())
-        .groupFunctionResponsesInHistory(runConfig.groupFunctionResponsesInHistory())
+        .groupFunctionResponsesInHistoryOverride(
+            runConfig.groupFunctionResponsesInHistoryOverride())
         .customMetadata(runConfig.customMetadata());
   }
 
@@ -226,12 +245,38 @@ public abstract class RunConfig {
     public abstract Builder customMetadata(Map<String, Object> customMetadata);
 
     /**
+     * Sets the three-state grouping override.
+     *
      * @deprecated Expected only for specific model endpoints.
      */
     @Deprecated
     @CanIgnoreReturnValue
-    public abstract Builder groupFunctionResponsesInHistory(
-        boolean groupFunctionResponsesInHistory);
+    public abstract Builder groupFunctionResponsesInHistoryOverride(
+        Optional<Boolean> groupFunctionResponsesInHistoryOverride);
+
+    /**
+     * @deprecated Expected only for specific model endpoints.
+     */
+    @Deprecated
+    @SuppressWarnings("deprecation") // Delegates to the deprecated override setter.
+    @CanIgnoreReturnValue
+    public final Builder groupFunctionResponsesInHistoryOverride(
+        boolean groupFunctionResponsesInHistoryOverride) {
+      return groupFunctionResponsesInHistoryOverride(
+          Optional.of(groupFunctionResponsesInHistoryOverride));
+    }
+
+    /**
+     * Backwards-compatible alias for {@link #groupFunctionResponsesInHistoryOverride(boolean)}.
+     *
+     * @deprecated Expected only for specific model endpoints.
+     */
+    @Deprecated
+    @SuppressWarnings("deprecation") // Delegates to the deprecated override setter.
+    @CanIgnoreReturnValue
+    public final Builder groupFunctionResponsesInHistory(boolean groupFunctionResponsesInHistory) {
+      return groupFunctionResponsesInHistoryOverride(groupFunctionResponsesInHistory);
+    }
 
     abstract RunConfig autoBuild();
 

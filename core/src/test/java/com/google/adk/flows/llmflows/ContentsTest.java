@@ -28,6 +28,7 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.models.Model;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
@@ -48,6 +49,7 @@ import java.util.stream.Stream;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import org.mockito.Mockito;
 
 /** Unit tests for {@link Contents}. */
 @RunWith(JUnit4.class)
@@ -589,6 +591,88 @@ public final class ContentsTest {
     List<Content> result = runContentsProcessorGrouped(inputEvents);
 
     assertThat(result).isEqualTo(eventsToContents(inputEvents));
+  }
+
+  @Test
+  public void rearrangeHistory_gemini3_overrideUnset_groupsByDefault() {
+    Event u1 = createUserEvent("u1", "Query");
+    Event fc1 = createFunctionCallEvent("fc1", "tool1", "call1");
+    Event fr1 = createFunctionResponseEvent("fr1", "tool1", "call1");
+    Event fc2 = createFunctionCallEvent("fc2", "tool2", "call2");
+    Event fr2 = createFunctionResponseEvent("fr2", "tool2", "call2");
+    ImmutableList<Event> inputEvents = ImmutableList.of(u1, fc1, fr1, fc2, fr2);
+
+    List<Content> result =
+        runContentsProcessorWithModel(
+            inputEvents, "gemini-3-flash-exp", RunConfig.builder().build());
+
+    // With no explicit override, Gemini 3 groups all calls first, then all responses.
+    assertThat(result).hasSize(4);
+    assertThat(result.get(0)).isEqualTo(u1.content().get());
+    assertThat(result.get(1)).isEqualTo(fc1.content().get());
+    assertThat(result.get(2)).isEqualTo(fc2.content().get());
+    Content mergedContent = result.get(3);
+    assertThat(mergedContent.parts().get()).hasSize(2);
+    assertThat(mergedContent.parts().get().get(0).functionResponse().get().name())
+        .hasValue("tool1");
+    assertThat(mergedContent.parts().get().get(1).functionResponse().get().name())
+        .hasValue("tool2");
+  }
+
+  @Test
+  public void rearrangeHistory_gemini3_overrideDisabled_preservesInterleavedOrder() {
+    Event u1 = createUserEvent("u1", "Query");
+    Event fc1 = createFunctionCallEvent("fc1", "tool1", "call1");
+    Event fr1 = createFunctionResponseEvent("fr1", "tool1", "call1");
+    Event fc2 = createFunctionCallEvent("fc2", "tool2", "call2");
+    Event fr2 = createFunctionResponseEvent("fr2", "tool2", "call2");
+    ImmutableList<Event> inputEvents = ImmutableList.of(u1, fc1, fr1, fc2, fr2);
+
+    // An explicit false disables grouping even for Gemini 3.
+    List<Content> result =
+        runContentsProcessorWithModel(
+            inputEvents,
+            "gemini-3-flash-exp",
+            RunConfig.builder().groupFunctionResponsesInHistory(false).build());
+
+    assertThat(result).isEqualTo(eventsToContents(inputEvents));
+  }
+
+  @Test
+  public void rearrangeHistory_nonGemini3_overrideUnset_preservesInterleavedOrder() {
+    Event u1 = createUserEvent("u1", "Query");
+    Event fc1 = createFunctionCallEvent("fc1", "tool1", "call1");
+    Event fr1 = createFunctionResponseEvent("fr1", "tool1", "call1");
+    Event fc2 = createFunctionCallEvent("fc2", "tool2", "call2");
+    Event fr2 = createFunctionResponseEvent("fr2", "tool2", "call2");
+    ImmutableList<Event> inputEvents = ImmutableList.of(u1, fc1, fr1, fc2, fr2);
+
+    List<Content> result =
+        runContentsProcessorWithModel(inputEvents, "gemini-2.5-pro", RunConfig.builder().build());
+
+    assertThat(result).isEqualTo(eventsToContents(inputEvents));
+  }
+
+  @Test
+  public void rearrangeHistory_nonGemini3_overrideEnabled_groupsForAllModels() {
+    Event u1 = createUserEvent("u1", "Query");
+    Event fc1 = createFunctionCallEvent("fc1", "tool1", "call1");
+    Event fr1 = createFunctionResponseEvent("fr1", "tool1", "call1");
+    Event fc2 = createFunctionCallEvent("fc2", "tool2", "call2");
+    Event fr2 = createFunctionResponseEvent("fr2", "tool2", "call2");
+    ImmutableList<Event> inputEvents = ImmutableList.of(u1, fc1, fr1, fc2, fr2);
+
+    // An explicit true enables grouping for a non-Gemini-3 model.
+    List<Content> result =
+        runContentsProcessorWithModel(
+            inputEvents,
+            "gemini-2.5-pro",
+            RunConfig.builder().groupFunctionResponsesInHistory(true).build());
+
+    assertThat(result).hasSize(4);
+    assertThat(result.get(1)).isEqualTo(fc1.content().get());
+    assertThat(result.get(2)).isEqualTo(fc2.content().get());
+    assertThat(result.get(3).parts().get()).hasSize(2);
   }
 
   @Test
@@ -1134,6 +1218,33 @@ public final class ContentsTest {
             .session(session)
             .sessionService(sessionService)
             .runConfig(RunConfig.builder().groupFunctionResponsesInHistory(true).build())
+            .build();
+
+    LlmRequest initialRequest = LlmRequest.builder().build();
+    RequestProcessor.RequestProcessingResult result =
+        contentsProcessor.processRequest(context, initialRequest).blockingGet();
+    return result.updatedRequest().contents();
+  }
+
+  private List<Content> runContentsProcessorWithModel(
+      List<Event> events, String modelName, RunConfig runConfig) {
+    LlmAgent agent =
+        Mockito.spy(
+            LlmAgent.builder()
+                .name(AGENT)
+                .includeContents(LlmAgent.IncludeContents.DEFAULT)
+                .build());
+    Mockito.doReturn(Model.builder().modelName(modelName).build()).when(agent).resolvedModel();
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    session.events().addAll(events);
+    InvocationContext context =
+        InvocationContext.builder()
+            .invocationId("test-invocation")
+            .agent(agent)
+            .session(session)
+            .sessionService(sessionService)
+            .runConfig(runConfig)
             .build();
 
     LlmRequest initialRequest = LlmRequest.builder().build();

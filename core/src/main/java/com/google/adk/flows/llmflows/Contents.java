@@ -58,7 +58,19 @@ public final class Contents implements RequestProcessor {
           RequestProcessor.RequestProcessingResult.create(request, context.session().events()));
     }
     LlmAgent llmAgent = (LlmAgent) context.agent();
-    boolean groupFunctionResponses = context.runConfig().groupFunctionResponsesInHistory();
+
+    String modelName;
+    try {
+      modelName = llmAgent.resolvedModel().modelName().orElse("");
+    } catch (IllegalStateException e) {
+      modelName = "";
+    }
+    // Explicit override applies to all models; when unset, group by default for Gemini 3.
+    boolean groupFunctionResponses =
+        context
+            .runConfig()
+            .groupFunctionResponsesInHistoryOverride()
+            .orElse(modelName.contains("gemini-3"));
 
     ImmutableList<Event> sessionEvents;
     synchronized (context.session().events()) {
