@@ -180,10 +180,7 @@ public class OllamaBaseLM extends BaseLlm {
 
               // Skip this tool if there is no function declaration
               if (!declarationOptional.isPresent()) {
-                // Log a warning or handle appropriately
-                System.err.println(
-                    "Skipping tool '" + baseTool.name() + "' with missing declaration.");
-                // continue; // If inside a loop
+                logger.warn("Skipping tool '{}' with missing declaration.", baseTool.name());
                 return; // If processing a single tool outside a loop
               }
 
@@ -388,8 +385,7 @@ public class OllamaBaseLM extends BaseLlm {
               BaseTool baseTool = tooldetail.getValue();
               Optional<FunctionDeclaration> declarationOptional = baseTool.declaration();
               if (!declarationOptional.isPresent()) {
-                System.err.println(
-                    "Skipping tool '" + baseTool.name() + "' with missing declaration.");
+                logger.warn("Skipping tool '{}' with missing declaration.", baseTool.name());
                 return;
               }
               FunctionDeclaration functionDeclaration = declarationOptional.get();
@@ -697,7 +693,7 @@ public class OllamaBaseLM extends BaseLlm {
       }
 
       int responseCode = connection.getResponseCode();
-      System.out.println("Response Code from Ollama for model " + model + ": " + responseCode);
+      logger.debug("Response Code from Ollama for model {}: {}", model, responseCode);
 
       if (responseCode >= 200 && responseCode < 300) {
         return new BufferedReader(new InputStreamReader(connection.getInputStream(), "UTF-8"));
@@ -710,7 +706,7 @@ public class OllamaBaseLM extends BaseLlm {
           while ((errorLine = errorReader.readLine()) != null) {
             errorResponse.append(errorLine);
           }
-          System.err.println("Error Response Body: " + errorResponse.toString());
+          logger.error("Error Response Body: {}", errorResponse.toString());
         } catch (IOException errorEx) {
           logger.error("Error reading error stream", errorEx);
         }
@@ -890,7 +886,7 @@ public class OllamaBaseLM extends BaseLlm {
 
       // Read response
       int responseCode = connection.getResponseCode();
-      System.out.println("Response Code: " + responseCode);
+      logger.debug("Response Code: {}", responseCode);
 
       // Read response body using UTF-8
       try (InputStream inputStream = connection.getInputStream();
@@ -901,7 +897,7 @@ public class OllamaBaseLM extends BaseLlm {
         while ((line = reader.readLine()) != null) {
           response.append(line);
         }
-        System.out.println("Response Body: " + response.toString());
+        logger.debug("Response Body: {}", response.toString());
 
         responseJ = new JSONObject(response.toString());
 
@@ -917,7 +913,7 @@ public class OllamaBaseLM extends BaseLlm {
             while ((errorLine = errorReader.readLine()) != null) {
               errorResponse.append(errorLine);
             }
-            System.err.println("Error Response Body: " + errorResponse.toString());
+            logger.error("Error Response Body: {}", errorResponse.toString());
             // You might want to parse the errorResponse as a JSON object too if the API returns
             // JSON errors
           } catch (IOException errorEx) {
@@ -988,7 +984,7 @@ public class OllamaBaseLM extends BaseLlm {
 
       // Open connection
       HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-      System.out.print("HTTP Connection to Ollama API: " + apiUrl.toString());
+      logger.debug("HTTP Connection to Ollama API: {}", apiUrl);
       // Set request method
       connection.setRequestMethod("POST");
 
@@ -1007,7 +1003,7 @@ public class OllamaBaseLM extends BaseLlm {
 
       // Read response
       int responseCode = connection.getResponseCode();
-      System.out.println("Response Code: " + responseCode);
+      logger.debug("Response Code: {}", responseCode);
 
       // Read response body
       try (BufferedReader reader =
@@ -1032,10 +1028,7 @@ public class OllamaBaseLM extends BaseLlm {
             streamOutput.append(responseText);
 
             // Display the parsed data
-            System.out.println("Model: " + model);
-            System.out.println("Response Text: " + responseText);
-            System.out.println("Done: " + done);
-            System.out.println("----------");
+            logger.debug("Model: {}, Response Text: {}, Done: {}", model, responseText, done);
 
             // Break if response is marked as done
             if (done) {
@@ -1056,7 +1049,7 @@ public class OllamaBaseLM extends BaseLlm {
             response.append(line);
           }
           String responseBody = response.toString();
-          System.out.println("Response Body: " + responseBody);
+          logger.debug("Response Body: {}", responseBody);
 
           responseJ = new JSONObject(responseBody);
         }
