@@ -969,6 +969,55 @@ public final class RunnerTest {
     assertThat(eventIds).containsNoDuplicates();
   }
 
+  /**
+   * findAgentToRun walks session history backward to find who should handle the next turn. This
+   * pins that it resumes the sub-agent from the *most recent* turn (the tail of the event list),
+   * not the root agent whose events sit earlier in the list.
+   */
+  @Test
+  public void runAsync_secondTurn_resumesMostRecentlyTransferredSubAgent() throws Exception {
+    LlmAgent subAgent =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub response")))
+            .name("sub-agent")
+            .build();
+
+    AfterModelCallback transferCallback =
+        (ctx, response) -> {
+          ctx.eventActions().setTransferToAgent(subAgent.name());
+          return Maybe.empty();
+        };
+
+    LlmAgent rootAgent =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("initial")))
+            .name("root-agent")
+            .subAgents(subAgent)
+            .afterModelCallback(ImmutableList.of(transferCallback))
+            .build();
+
+    Runner transferRunner =
+        Runner.builder().app(App.builder().name("test").rootAgent(rootAgent).build()).build();
+    Session transferSession =
+        transferRunner.sessionService().createSession("test", "user").blockingGet();
+
+    // Turn 1: root transfers to sub-agent, which responds.
+    var unused =
+        transferRunner
+            .runAsync("user", transferSession.id(), createContent("start"))
+            .toList()
+            .blockingGet();
+
+    // Turn 2: no transfer callback fires this time, so whoever runs answers with its own
+    // configured response. If findAgentToRun incorrectly picked the root agent (e.g. by scanning
+    // history from the front instead of the back), this turn would answer "initial" instead.
+    List<Event> secondTurnEvents =
+        transferRunner
+            .runAsync("user", transferSession.id(), createContent("continue"))
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(secondTurnEvents)).containsExactly("sub-agent: sub response");
+  }
+
   /** {@link BaseSessionService} that delays {@link #appendEvent} to surface ordering bugs. */
   private static final class AppendDelayingSessionService implements BaseSessionService {
     private final BaseSessionService delegate;
