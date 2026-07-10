@@ -255,6 +255,18 @@ public final class ConfigAgentUtils {
       subAgentConfigPath = configDir.resolve(configPath);
     }
 
+    // Warn when the resolved config path escapes the agent's base directory. For backward
+    // compatibility this is still allowed, but the behavior is deprecated and will be disallowed
+    // in a future release.
+    Path resolvedConfigPath = subAgentConfigPath.normalize().toAbsolutePath();
+    Path baseDir = configDir.normalize().toAbsolutePath();
+    if (!resolvedConfigPath.startsWith(baseDir)) {
+      logger.warn(
+          "AgentTool config_path '{}' accesses a path outside the agent base directory; this"
+              + " behavior is deprecated and will be disallowed in a future release.",
+          configPath);
+    }
+
     if (!Files.exists(subAgentConfigPath)) {
       throw new ConfigurationException("Subagent config file not found: " + subAgentConfigPath);
     }
