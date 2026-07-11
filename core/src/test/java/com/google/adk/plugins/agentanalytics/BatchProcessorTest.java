@@ -19,13 +19,16 @@ package com.google.adk.plugins.agentanalytics;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.google.api.core.ApiFutures;
+import com.google.api.core.SettableApiFuture;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.RowError;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
@@ -36,8 +39,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -73,10 +79,33 @@ public class BatchProcessorTest {
   private Schema schema;
   private Handler mockHandler;
 
+  private ExecutorService closePool;
+  private java.util.function.Consumer<StreamWriter> writerCloser;
+
   @Before
   public void setUp() {
     executor = Executors.newScheduledThreadPool(1);
-    batchProcessor = new BatchProcessor(mockWriter, 10, Duration.ofMinutes(1), 100, executor);
+    closePool = Executors.newCachedThreadPool();
+    // Mirror production: the plugin-owned closer detaches writer closes off the caller thread.
+    writerCloser =
+        w ->
+            closePool.execute(
+                () -> {
+                  try {
+                    w.close();
+                  } catch (RuntimeException ignored) {
+                    // Best-effort close in tests.
+                  }
+                });
+    batchProcessor =
+        new BatchProcessor(
+            mockWriter,
+            10,
+            Duration.ofMinutes(1),
+            100,
+            executor,
+            Duration.ofSeconds(10),
+            writerCloser);
     schema = BigQuerySchema.getArrowSchema();
 
     when(mockWriter.append(any(ArrowRecordBatch.class)))
@@ -286,7 +315,15 @@ public class BatchProcessorTest {
   @Test
   public void append_triggersFlushWhenBatchSizeReached() {
     ScheduledExecutorService mockExecutor = mock(ScheduledExecutorService.class);
-    BatchProcessor bp = new BatchProcessor(mockWriter, 2, Duration.ofMinutes(1), 10, mockExecutor);
+    BatchProcessor bp =
+        new BatchProcessor(
+            mockWriter,
+            2,
+            Duration.ofMinutes(1),
+            10,
+            mockExecutor,
+            Duration.ofSeconds(10),
+            writerCloser);
 
     Map<String, Object> row = new HashMap<>();
     bp.append(row);
@@ -359,13 +396,244 @@ public class BatchProcessorTest {
   @Test
   public void close_flushesAndClosesResources() throws Exception {
     try (BatchProcessor bp =
-        new BatchProcessor(mockWriter, 10, Duration.ofMinutes(1), 100, executor)) {
+        new BatchProcessor(
+            mockWriter,
+            10,
+            Duration.ofMinutes(1),
+            100,
+            executor,
+            Duration.ofSeconds(10),
+            writerCloser)) {
       Map<String, Object> row = new HashMap<>();
       row.put("event_type", "CLOSE_EVENT");
       bp.append(row);
     }
 
     verify(mockWriter).append(any(ArrowRecordBatch.class));
-    verify(mockWriter).close();
+    verify(mockWriter, org.mockito.Mockito.timeout(2000)).close();
+  }
+
+  @Test
+  public void close_cancelsPeriodicFlushTask() {
+    ScheduledExecutorService mockExecutor = mock(ScheduledExecutorService.class);
+    ScheduledFuture<?> mockFuture = mock(ScheduledFuture.class);
+    doReturn(mockFuture)
+        .when(mockExecutor)
+        .scheduleWithFixedDelay(any(Runnable.class), anyLong(), anyLong(), any(TimeUnit.class));
+    BatchProcessor bp =
+        new BatchProcessor(
+            mockWriter,
+            10,
+            Duration.ofMinutes(1),
+            10,
+            mockExecutor,
+            Duration.ofSeconds(1),
+            writerCloser);
+    bp.start();
+
+    bp.close();
+
+    // A completed invocation must not leave its periodic flush task scheduled (retaining the
+    // closed processor and writer) until plugin-wide shutdown.
+    verify(mockFuture).cancel(false);
+  }
+
+  @Test
+  public void close_isIdempotent() {
+    BatchProcessor bp =
+        new BatchProcessor(
+            mockWriter,
+            10,
+            Duration.ofMinutes(1),
+            10,
+            executor,
+            Duration.ofSeconds(1),
+            writerCloser);
+
+    bp.close();
+    bp.close();
+
+    verify(mockWriter, org.mockito.Mockito.timeout(2000).times(1)).close();
+  }
+
+  @Test
+  public void append_afterClose_dropsWithAccounting() {
+    BatchProcessor bp =
+        new BatchProcessor(
+            mockWriter,
+            10,
+            Duration.ofMinutes(1),
+            10,
+            executor,
+            Duration.ofSeconds(1),
+            writerCloser);
+    bp.close();
+
+    Map<String, Object> row = new HashMap<>();
+    row.put("event_type", "LATE_EVENT");
+    bp.append(row);
+
+    assertEquals(1L, (long) bp.getDropStats().get("after_close"));
+    assertEquals(0, bp.queue.size());
+  }
+
+  @Test
+  public void flush_neverCompletingAppend_isBoundedByShutdownTimeout() {
+    when(mockWriter.append(any(ArrowRecordBatch.class))).thenReturn(SettableApiFuture.create());
+    BatchProcessor bp =
+        new BatchProcessor(
+            mockWriter,
+            1,
+            Duration.ofMinutes(1),
+            10,
+            executor,
+            Duration.ofMillis(200),
+            writerCloser);
+    Map<String, Object> row = new HashMap<>();
+    row.put("event_type", "STUCK_EVENT");
+    bp.queue.offer(row);
+
+    long start = System.nanoTime();
+    bp.flush();
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+    assertTrue(
+        "flush must be bounded by the append deadline, took " + elapsedMs + "ms",
+        elapsedMs < 5_000);
+    assertEquals(1L, (long) bp.getDropStats().get("append_error"));
+  }
+
+  @Test
+  public void close_waitsForInFlightFlushBeforeTeardown() throws Exception {
+    // A REAL blocked append: the writer call itself parks for 300ms, so the flush thread holds
+    // the flush mutex while blocked in Storage Write, with the queue already drained.
+    java.util.concurrent.CountDownLatch appendStarted = new java.util.concurrent.CountDownLatch(1);
+    org.mockito.Mockito.doAnswer(
+            invocation -> {
+              appendStarted.countDown();
+              Thread.sleep(300);
+              return ApiFutures.immediateFuture(AppendRowsResponse.getDefaultInstance());
+            })
+        .when(mockWriter)
+        .append(any(ArrowRecordBatch.class));
+    BatchProcessor bp =
+        new BatchProcessor(
+            mockWriter,
+            1,
+            Duration.ofMinutes(1),
+            10,
+            executor,
+            Duration.ofSeconds(5),
+            writerCloser);
+
+    Map<String, Object> row = new HashMap<>();
+    row.put("event_type", "IN_FLIGHT_EVENT");
+    bp.queue.offer(row);
+    Thread inFlight = new Thread(bp::flush);
+    inFlight.start();
+    assertTrue(appendStarted.await(2, java.util.concurrent.TimeUnit.SECONDS));
+
+    long start = System.nanoTime();
+    bp.close();
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+    inFlight.join(2000);
+
+    // close() must wait for the in-flight flush to release the mutex before tearing down the
+    // writer and Arrow resources underneath it, and still complete within its bound.
+    assertTrue(
+        "close should have waited for the in-flight flush, took " + elapsedMs + "ms",
+        elapsedMs >= 100);
+    assertTrue("close should be bounded, took " + elapsedMs + "ms", elapsedMs < 5_000);
+    verify(mockWriter, org.mockito.Mockito.timeout(2000)).close();
+  }
+
+  @Test
+  public void close_deadlineExpired_defersTeardownAndStatsToInFlightFlush() throws Exception {
+    // The writer call blocks for LONGER than the close deadline, forcing the deferred-ownership
+    // path: close() returns at its bound without tearing down, and the in-flight flush performs
+    // the teardown and delivers the final stats (including its own append failure) afterward.
+    java.util.concurrent.CountDownLatch appendStarted = new java.util.concurrent.CountDownLatch(1);
+    org.mockito.Mockito.doAnswer(
+            invocation -> {
+              appendStarted.countDown();
+              Thread.sleep(1200);
+              throw new RuntimeException("append failed after close deadline");
+            })
+        .when(mockWriter)
+        .append(any(ArrowRecordBatch.class));
+    BatchProcessor bp =
+        new BatchProcessor(
+            mockWriter,
+            1,
+            Duration.ofMinutes(1),
+            10,
+            executor,
+            Duration.ofMillis(300),
+            writerCloser);
+
+    Map<String, Object> row = new HashMap<>();
+    row.put("event_type", "STUCK_EVENT");
+    bp.queue.offer(row);
+    Thread inFlight = new Thread(bp::flush);
+    inFlight.start();
+    assertTrue(appendStarted.await(2, java.util.concurrent.TimeUnit.SECONDS));
+
+    java.util.concurrent.CountDownLatch statsDelivered = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.atomic.AtomicReference<
+            com.google.common.collect.ImmutableMap<String, Long>>
+        finalStats = new java.util.concurrent.atomic.AtomicReference<>();
+    long start = System.nanoTime();
+    bp.closeAndFold(
+        stats -> {
+          finalStats.set(stats);
+          statsDelivered.countDown();
+        });
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+    // close() is bounded by its deadline even though the flush is still blocked.
+    assertTrue("close should be bounded, took " + elapsedMs + "ms", elapsedMs < 3_000);
+    // Ownership transferred: the in-flight flush finishes, tears down, and delivers the final
+    // snapshot INCLUDING the append failure it recorded after close() had already returned.
+    assertTrue(
+        "final stats should be delivered by the deferred flush",
+        statsDelivered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+    inFlight.join(2000);
+    assertEquals(1L, (long) finalStats.get().get("append_error"));
+    verify(mockWriter, org.mockito.Mockito.timeout(2000)).close();
+  }
+
+  @Test
+  public void close_blockingWriterClose_doesNotBlockTeardown() throws Exception {
+    // The real StreamWriter.close() can block for minutes (thread join + client/pool waits); the
+    // public close() must not inherit that, while the writer still gets closed eventually.
+    java.util.concurrent.CountDownLatch writerClosed = new java.util.concurrent.CountDownLatch(1);
+    org.mockito.Mockito.doAnswer(
+            invocation -> {
+              Thread.sleep(1500);
+              writerClosed.countDown();
+              return null;
+            })
+        .when(mockWriter)
+        .close();
+    BatchProcessor bp =
+        new BatchProcessor(
+            mockWriter,
+            10,
+            Duration.ofMinutes(1),
+            10,
+            executor,
+            Duration.ofMillis(300),
+            writerCloser);
+
+    long start = System.nanoTime();
+    bp.close();
+    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+    assertTrue(
+        "close() must not block on StreamWriter.close(), took " + elapsedMs + "ms",
+        elapsedMs < 1_000);
+    assertTrue(
+        "the writer must still be closed eventually",
+        writerClosed.await(5, java.util.concurrent.TimeUnit.SECONDS));
   }
 }

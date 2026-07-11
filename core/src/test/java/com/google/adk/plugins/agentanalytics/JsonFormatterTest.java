@@ -414,4 +414,56 @@ public class JsonFormatterTest {
         "A nested-array structure exactly at the depth boundary must not be truncated",
         result.isTruncated());
   }
+
+  @Test
+  public void redactTree_unserializableValue_failsClosedPerLeaf() {
+    // An unserializable object anywhere in the attributes tree must not route the WHOLE map
+    // through a textual fallback (which would expose sibling secrets as plain text).
+    java.util.Map<String, Object> attributes = new java.util.HashMap<>();
+    attributes.put("api_key", "secret-key");
+    attributes.put("bad", new Object()); // Jackson cannot serialize a plain Object.
+    attributes.put("ok", "visible");
+
+    com.fasterxml.jackson.databind.JsonNode node = JsonFormatter.redactTree(attributes);
+
+    assertTrue(node.isObject());
+    assertEquals(JsonFormatter.REDACTED_MESSAGE, node.get("api_key").asText());
+    assertEquals(JsonFormatter.UNSERIALIZABLE_MESSAGE, node.get("bad").asText());
+    assertEquals("visible", node.get("ok").asText());
+  }
+
+  @Test
+  public void redactTree_redactsNestedContainersAndLists() {
+    java.util.Map<String, Object> attributes =
+        java.util.Map.of(
+            "custom_tags",
+            java.util.Map.of("password", "hunter2", "team", "analytics"),
+            "entries",
+            java.util.List.of(java.util.Map.of("refresh_token", "tok", "name", "a")));
+
+    com.fasterxml.jackson.databind.JsonNode node = JsonFormatter.redactTree(attributes);
+
+    assertEquals(JsonFormatter.REDACTED_MESSAGE, node.get("custom_tags").get("password").asText());
+    assertEquals("analytics", node.get("custom_tags").get("team").asText());
+    assertEquals(
+        JsonFormatter.REDACTED_MESSAGE, node.get("entries").get(0).get("refresh_token").asText());
+    assertEquals("a", node.get("entries").get(0).get("name").asText());
+  }
+
+  @Test
+  public void redactTree_redactsInsideConvertedPojoLeaves() {
+    // A leaf that Jackson converts into an object (e.g. a POJO) still gets key redaction.
+    java.util.Map<String, Object> attributes =
+        java.util.Map.of(
+            "node",
+            JsonFormatter.mapper
+                .createObjectNode()
+                .put("client_secret", "s3cret")
+                .put("plain", "ok"));
+
+    com.fasterxml.jackson.databind.JsonNode node = JsonFormatter.redactTree(attributes);
+
+    assertEquals(JsonFormatter.REDACTED_MESSAGE, node.get("node").get("client_secret").asText());
+    assertEquals("ok", node.get("node").get("plain").asText());
+  }
 }

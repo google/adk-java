@@ -113,7 +113,18 @@ final class BigQueryUtils {
                   "JSON_VALUE(content, '$.tool') AS tool_name",
                   "JSON_QUERY(content, '$.result') AS tool_result",
                   "JSON_VALUE(content, '$.tool_origin') AS tool_origin",
+                  // Pause pair keys: present on resumed long-running tool completions so
+                  // consumers can do the TOOL_PAUSED <-> TOOL_COMPLETED join end-to-end.
+                  "JSON_VALUE(attributes, '$.pause_kind') AS pause_kind",
+                  "JSON_VALUE(attributes, '$.function_call_id') AS function_call_id",
                   "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms"))
+          .put(
+              "TOOL_PAUSED",
+              ImmutableList.of(
+                  "JSON_VALUE(content, '$.tool') AS tool_name",
+                  "JSON_QUERY(content, '$.args') AS tool_args",
+                  "JSON_VALUE(attributes, '$.pause_kind') AS pause_kind",
+                  "JSON_VALUE(attributes, '$.function_call_id') AS function_call_id"))
           .put(
               "TOOL_ERROR",
               ImmutableList.of(

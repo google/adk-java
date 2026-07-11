@@ -40,6 +40,7 @@ final class JsonFormatter {
   static final String CYCLE_DETECTED_MESSAGE = "[cycle detected]";
   static final String MAX_DEPTH_MESSAGE = "[max depth exceeded]";
   static final String REDACTED_MESSAGE = "[REDACTED]";
+  static final String UNSERIALIZABLE_MESSAGE = "[UNSERIALIZABLE]";
   // Guard against unbounded recursion on deeply nested (non-cyclic) payloads.
   static final int MAX_TRUNCATE_DEPTH = 200;
 
@@ -83,6 +84,83 @@ final class JsonFormatter {
       // Fallback for types that mapper can't handle directly as a tree.
       logger.fine("smartTruncate falling back to string conversion: " + e.getMessage());
       return truncateWithStatus(safeToString(obj), maxLength);
+    }
+  }
+
+  /**
+   * Redacts sensitive keys across an attributes tree, failing closed on unserializable values.
+   *
+   * <p>Unlike {@link #smartTruncate}, which converts the whole object to JSON first (so one
+   * unsupported value routes the ENTIRE tree through the textual {@code safeToString} fallback,
+   * exposing sibling secrets as plain text), this walks raw Java containers natively: keys are
+   * redacted before any Jackson conversion, and only leaf values are converted individually. A leaf
+   * that cannot be converted becomes {@value #UNSERIALIZABLE_MESSAGE} without affecting its
+   * siblings. No length truncation is applied.
+   */
+  static JsonNode redactTree(Object obj) {
+    return redactTreeInternal(obj, newSetFromMap(new IdentityHashMap<>()), 0);
+  }
+
+  private static JsonNode redactTreeInternal(Object obj, Set<Object> visited, int depth) {
+    if (obj == null) {
+      return mapper.nullNode();
+    }
+    if (depth > MAX_TRUNCATE_DEPTH) {
+      return mapper.valueToTree(MAX_DEPTH_MESSAGE);
+    }
+    // JsonNode must be handled before the Iterable branch: ObjectNode implements
+    // Iterable<JsonNode> over its VALUES, so the generic Iterable walk would flatten a JSON
+    // object into an array and lose its keys.
+    if (obj instanceof JsonNode jsonNode) {
+      return recursiveSmartTruncate(
+              jsonNode, Integer.MAX_VALUE, newSetFromMap(new IdentityHashMap<>()), depth)
+          .node();
+    }
+    if (obj instanceof Map<?, ?> map) {
+      if (!visited.add(obj)) {
+        return mapper.valueToTree(CYCLE_DETECTED_MESSAGE);
+      }
+      try {
+        ObjectNode node = mapper.createObjectNode();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+          String key = String.valueOf(entry.getKey());
+          if (isSensitiveKey(key)) {
+            node.set(key, mapper.valueToTree(REDACTED_MESSAGE));
+            continue;
+          }
+          node.set(key, redactTreeInternal(entry.getValue(), visited, depth + 1));
+        }
+        return node;
+      } finally {
+        visited.remove(obj);
+      }
+    }
+    if (obj instanceof Iterable<?> iterable) {
+      if (!visited.add(obj)) {
+        return mapper.valueToTree(CYCLE_DETECTED_MESSAGE);
+      }
+      try {
+        ArrayNode node = mapper.createArrayNode();
+        for (Object element : iterable) {
+          node.add(redactTreeInternal(element, visited, depth + 1));
+        }
+        return node;
+      } finally {
+        visited.remove(obj);
+      }
+    }
+    try {
+      // A converted leaf may itself be a container (e.g. a POJO serialized to an object): run the
+      // JSON-level redacting walk over it with truncation disabled.
+      return recursiveSmartTruncate(
+              mapper.valueToTree(obj),
+              Integer.MAX_VALUE,
+              newSetFromMap(new IdentityHashMap<>()),
+              depth)
+          .node();
+    } catch (IllegalArgumentException e) {
+      logger.fine("redactTree replacing unserializable value: " + e.getMessage());
+      return mapper.valueToTree(UNSERIALIZABLE_MESSAGE);
     }
   }
 
