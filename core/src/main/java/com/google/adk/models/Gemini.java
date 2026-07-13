@@ -416,19 +416,27 @@ public class Gemini extends BaseLlm {
      */
     private void processFunctionCallPart(Part part) {
       FunctionCall fc = part.functionCall().get();
-      boolean streaming =
+      boolean hasName = fc.name().filter(name -> !name.isEmpty()).isPresent();
+      // A streamed call: it has partialArgs or willContinue, or is the nameless terminal
+      // marker of an in-progress call. Gemini may end a call with a separate empty
+      // willContinue=false part, so that marker completes it.
+      boolean streamedPart =
           fc.partialArgs().map(args -> !args.isEmpty()).orElse(false)
-              || fc.willContinue().orElse(false);
-      if (streaming) {
+              || fc.willContinue().orElse(false)
+              || (currentFcName != null && !hasName);
+      if (streamedPart) {
         // Capture the thought signature from the first chunk that carries one.
         if (part.thoughtSignature().isPresent() && currentThoughtSignature == null) {
           currentThoughtSignature = part.thoughtSignature().get();
         }
         processStreamingFunctionCall(fc);
-      } else if (fc.name().filter(name -> !name.isEmpty()).isPresent()) {
-        // Complete function call. Skip empty calls, which are only streaming end markers. The part
-        // already has an ID assigned by ensureFunctionCallIds.
+      } else if (hasName) {
+        // Complete (non-streamed) call. Safety guard: the model should terminate a streamed call
+        // with willContinue=false before starting a new one; flush any still-in-progress call so it
+        // is neither dropped nor merged. The part already has an ID assigned by
+        // ensureFunctionCallIds.
         flushTextBufferToSequence();
+        flushFunctionCallToSequence();
         accumulatedSequence.add(part);
       }
     }

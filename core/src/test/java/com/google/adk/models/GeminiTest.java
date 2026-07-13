@@ -371,6 +371,201 @@ public final class GeminiTest {
     assertThat(second.args().get()).containsExactly("b", "2");
   }
 
+  // The last partialArgs chunk keeps willContinue=true; completion arrives on a separate empty
+  // willContinue=false marker, then trailing text follows. The marker must flush the call so it
+  // precedes the text. Without handling the marker, close() flushes the call after the text,
+  // reversing their order (a single call alone would be masked by that end-of-stream flush).
+  @Test
+  public void processRawResponses_streamedCallEndedByEmptyMarker_flushesCallBeforeTrailingText() {
+    GenerateContentResponse name =
+        toResponse(
+            functionCallPart(FunctionCall.builder().name("bookFlight").willContinue(true).build()));
+    GenerateContentResponse origin1 =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(
+                        PartialArg.builder().jsonPath("$.origin").stringValue("Krak").build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse origin2 =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(
+                        PartialArg.builder().jsonPath("$.origin").stringValue("ow").build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse destination =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(
+                        PartialArg.builder()
+                            .jsonPath("$.destination")
+                            .stringValue("Warsaw")
+                            .build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse endMarker =
+        toResponse(functionCallPart(FunctionCall.builder().willContinue(false).build()));
+    GenerateContentResponse trailingText = toResponseWithText("Booked.", FinishReason.Known.STOP);
+
+    ImmutableList<LlmResponse> responses =
+        ImmutableList.copyOf(
+            Gemini.processRawResponses(
+                    Flowable.just(name, origin1, origin2, destination, endMarker, trailingText))
+                .blockingIterable());
+
+    LlmResponse finalResponse = Iterables.getLast(responses);
+    assertThat(finalResponse.content().get().parts().get()).hasSize(2);
+    FunctionCall finalCall =
+        finalResponse.content().get().parts().get().get(0).functionCall().get();
+    assertThat(finalCall.name()).hasValue("bookFlight");
+    assertThat(finalCall.args().get()).containsExactly("origin", "Krakow", "destination", "Warsaw");
+    assertThat(finalResponse.content().get().parts().get().get(1).text()).hasValue("Booked.");
+  }
+
+  // Two multi-arg streamed calls each ended by an empty willContinue=false marker must not drop the
+  // first call nor bleed its args into the second.
+  @Test
+  public void processRawResponses_twoStreamedCallsEndedByEmptyMarkers_keepArgsSeparate() {
+    GenerateContentResponse call1Name =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder().name("getTemperature").willContinue(true).build()));
+    GenerateContentResponse call1City =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(
+                        PartialArg.builder().jsonPath("$.city").stringValue("Krakow").build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse call1Unit =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.unit").stringValue("C").build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse marker1 =
+        toResponse(functionCallPart(FunctionCall.builder().willContinue(false).build()));
+    GenerateContentResponse call2Name =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder().name("getCondition").willContinue(true).build()));
+    GenerateContentResponse call2City =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(
+                        PartialArg.builder().jsonPath("$.city").stringValue("Warsaw").build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse call2Unit =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.unit").stringValue("F").build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse marker2 =
+        toResponse(
+            Candidate.builder()
+                .content(
+                    Content.builder()
+                        .parts(functionCallPart(FunctionCall.builder().willContinue(false).build()))
+                        .build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+
+    ImmutableList<LlmResponse> responses =
+        ImmutableList.copyOf(
+            Gemini.processRawResponses(
+                    Flowable.just(
+                        call1Name, call1City, call1Unit, marker1, call2Name, call2City, call2Unit,
+                        marker2))
+                .blockingIterable());
+
+    LlmResponse finalResponse = Iterables.getLast(responses);
+    assertThat(finalResponse.content().get().parts().get()).hasSize(2);
+    FunctionCall first = finalResponse.content().get().parts().get().get(0).functionCall().get();
+    FunctionCall second = finalResponse.content().get().parts().get().get(1).functionCall().get();
+    assertThat(first.name()).hasValue("getTemperature");
+    assertThat(first.args().get()).containsExactly("city", "Krakow", "unit", "C");
+    assertThat(second.name()).hasValue("getCondition");
+    assertThat(second.args().get()).containsExactly("city", "Warsaw", "unit", "F");
+  }
+
+  // Safety guard for non-conforming output: a streamed call still in progress (the model should
+  // have terminated it with willContinue=false) is followed by a complete non-streaming call. The
+  // in-progress call is flushed before appending, so neither is dropped nor merged.
+  @Test
+  public void processRawResponses_streamedCallFollowedByCompleteCall_flushesInProgressFirst() {
+    GenerateContentResponse streamedName =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder().name("stream_call").willContinue(true).build()));
+    GenerateContentResponse streamedArg =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.a").stringValue("1").build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse completeCall =
+        toResponse(
+            Candidate.builder()
+                .content(
+                    Content.builder()
+                        .parts(
+                            functionCallPart(
+                                FunctionCall.builder()
+                                    .name("plain_call")
+                                    .args(ImmutableMap.of("b", "2"))
+                                    .build()))
+                        .build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+
+    ImmutableList<LlmResponse> responses =
+        ImmutableList.copyOf(
+            Gemini.processRawResponses(Flowable.just(streamedName, streamedArg, completeCall))
+                .blockingIterable());
+
+    LlmResponse finalResponse = Iterables.getLast(responses);
+    assertThat(finalResponse.content().get().parts().get()).hasSize(2);
+    FunctionCall first = finalResponse.content().get().parts().get().get(0).functionCall().get();
+    FunctionCall second = finalResponse.content().get().parts().get().get(1).functionCall().get();
+    assertThat(first.name()).hasValue("stream_call");
+    assertThat(first.args().get()).containsExactly("a", "1");
+    assertThat(second.name()).hasValue("plain_call");
+    assertThat(second.args().get()).containsExactly("b", "2");
+  }
+
+  // A stray nameless willContinue=false marker with no call in progress must be a safe no-op (the
+  // currentFcName != null half of the guard): it must not add a function call nor split the
+  // surrounding text. Without that half it would be treated as a streamed part and prematurely
+  // flush the text buffer, splitting "Hello world" into two parts.
+  @Test
+  public void processRawResponses_strayNamelessMarker_isNoOpAndDoesNotSplitText() {
+    GenerateContentResponse hello = toResponseWithText("Hello ");
+    GenerateContentResponse strayMarker =
+        toResponse(functionCallPart(FunctionCall.builder().willContinue(false).build()));
+    GenerateContentResponse world = toResponseWithText("world", FinishReason.Known.STOP);
+
+    ImmutableList<LlmResponse> responses =
+        ImmutableList.copyOf(
+            Gemini.processRawResponses(Flowable.just(hello, strayMarker, world))
+                .blockingIterable());
+
+    LlmResponse finalResponse = Iterables.getLast(responses);
+    assertThat(finalResponse.content().get().parts().get()).hasSize(1);
+    assertThat(finalResponse.content().get().parts().get().get(0).text()).hasValue("Hello world");
+    assertThat(finalResponse.content().get().parts().get().get(0).functionCall()).isEmpty();
+  }
+
   @Test
   public void processRawResponses_imageOnlyWithStop_emitsFinalImagePart() {
     Part imagePart = Part.fromBytes(new byte[] {1, 2, 3}, "image/png");

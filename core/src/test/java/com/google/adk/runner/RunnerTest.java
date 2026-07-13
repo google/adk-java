@@ -79,6 +79,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import com.google.genai.types.PartialArg;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
@@ -1376,6 +1377,103 @@ public final class RunnerTest {
         runner.runAsync(session.sessionKey(), createContent("from user")).toList().blockingGet();
 
     assertThat(simplifyEvents(events)).containsExactly("test agent: from llm");
+  }
+
+  // Runner-level regression for streamed function-call arguments: a multi-arg call whose args
+  // arrive
+  // across partial events (nameless continuation chunks, with one value split across chunks) must
+  // not crash and must execute the tool exactly once with the reassembled args.
+  @Test
+  public void runAsync_streamedFunctionCallArgs_reassembledAndToolExecuted() {
+    // Turn 1: SSE stream mimicking the post-aggregator shape - a named chunk with willContinue,
+    // then
+    // nameless continuation chunks carrying partialArgs (origin split across two), then the
+    // aggregated complete call.
+    LlmResponse namedChunk =
+        partialFcResponse(
+            FunctionCall.builder().id("fc-1").name(echoTool.name()).willContinue(true).build());
+    LlmResponse originChunk1 =
+        partialFcResponse(
+            FunctionCall.builder()
+                .partialArgs(PartialArg.builder().jsonPath("$.origin").stringValue("Krak").build())
+                .willContinue(true)
+                .build());
+    LlmResponse originChunk2 =
+        partialFcResponse(
+            FunctionCall.builder()
+                .partialArgs(PartialArg.builder().jsonPath("$.origin").stringValue("ow").build())
+                .willContinue(true)
+                .build());
+    LlmResponse destinationChunk =
+        partialFcResponse(
+            FunctionCall.builder()
+                .partialArgs(
+                    PartialArg.builder().jsonPath("$.destination").stringValue("Warsaw").build())
+                .willContinue(true)
+                .build());
+    LlmResponse aggregatedCall =
+        createFunctionCallLlmResponse(
+            "fc-1", echoTool.name(), ImmutableMap.of("origin", "Krakow", "destination", "Warsaw"));
+
+    TestLlm streamingLlm =
+        createTestLlm(
+            Flowable.just(namedChunk, originChunk1, originChunk2, destinationChunk, aggregatedCall),
+            Flowable.just(createTextLlmResponse("done")));
+    LlmAgent streamingAgent =
+        createTestAgentBuilder(streamingLlm).tools(ImmutableList.of(new EchoTool())).build();
+    Runner streamingRunner =
+        Runner.builder().app(App.builder().name("test").rootAgent(streamingAgent).build()).build();
+    Session streamingSession =
+        streamingRunner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        streamingRunner
+            .runAsync(
+                "user",
+                streamingSession.id(),
+                createContent("book a flight"),
+                RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.SSE).build())
+            .toList()
+            .blockingGet();
+
+    int toolResponses = 0;
+    boolean sawPartialFcChunk = false;
+    boolean sawFinalText = false;
+    Map<String, Object> executedArgs = null;
+    for (Event e : events) {
+      toolResponses += e.functionResponses().size();
+      if (e.partial().orElse(false) && !e.functionCalls().isEmpty()) {
+        sawPartialFcChunk = true;
+      }
+      if (!e.partial().orElse(false) && !e.functionCalls().isEmpty()) {
+        executedArgs = e.functionCalls().get(0).args().orElse(ImmutableMap.of());
+      }
+      boolean hasDone =
+          e.content()
+              .flatMap(Content::parts)
+              .map(
+                  parts ->
+                      parts.stream()
+                          .anyMatch(p -> p.text().map(t -> t.contains("done")).orElse(false)))
+              .orElse(false);
+      sawFinalText |= hasDone;
+    }
+
+    // The streamed (incl. nameless) chunks flowed through the runner without crashing; the tool ran
+    // exactly once (only the aggregated non-partial call triggers execution) with both reassembled
+    // args; and the final text was produced.
+    assertThat(sawPartialFcChunk).isTrue();
+    assertThat(toolResponses).isEqualTo(1);
+    assertThat(executedArgs).containsExactly("origin", "Krakow", "destination", "Warsaw");
+    assertThat(sawFinalText).isTrue();
+  }
+
+  private static LlmResponse partialFcResponse(FunctionCall fc) {
+    return LlmResponse.builder()
+        .content(
+            Content.builder().role("model").parts(Part.builder().functionCall(fc).build()).build())
+        .partial(true)
+        .build();
   }
 
   @Test

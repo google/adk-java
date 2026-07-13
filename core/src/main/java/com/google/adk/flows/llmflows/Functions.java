@@ -415,10 +415,12 @@ public final class Functions {
       List<FunctionCall> functionCalls, Map<String, BaseTool> tools) {
     Set<String> longRunningFunctionCalls = new HashSet<>();
     for (FunctionCall functionCall : functionCalls) {
-      if (!tools.containsKey(functionCall.name().get())) {
+      // Streamed function-call chunks may carry no name; skip them.
+      String name = functionCall.name().orElse(null);
+      if (name == null || !tools.containsKey(name)) {
         continue;
       }
-      BaseTool tool = tools.get(functionCall.name().get());
+      BaseTool tool = tools.get(name);
       if (tool != null && tool.longRunning()) {
         longRunningFunctionCalls.add(functionCall.id().orElse(""));
       }
