@@ -68,12 +68,15 @@ import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.testing.TestUtils.FailingEchoTool;
+import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
+import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Tracer;
@@ -92,6 +95,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -570,6 +574,136 @@ public final class RunnerTest {
             "test agent: FunctionResponse(name=echo_tool, response={result=from plugin})",
             "test agent: done");
     verify(plugin).onToolErrorCallback(any(), any(), any(), any());
+  }
+
+  /**
+   * Reproduces the real Vertex streaming (SSE) behavior for parallel function calls: the model
+   * emits one partial event per tool as each call streams in, then a single final aggregated event
+   * that carries all of the calls (reusing the same function-call IDs). Each tool must execute
+   * exactly once -- the partial events are surfaced to consumers but skipped for execution (see the
+   * {@code partial()} guard in {@code BaseLlmFlow}).
+   */
+  @Test
+  public void runAsync_streamingPartialParallelFunctionCalls_executesEachToolExactlyOnce() {
+    Part temperaturePart =
+        Part.builder()
+            .functionCall(
+                FunctionCall.builder()
+                    .id("adk-temperature-id")
+                    .name("getTemperature")
+                    .args(ImmutableMap.of("city", "London"))
+                    .build())
+            .build();
+    Part conditionPart =
+        Part.builder()
+            .functionCall(
+                FunctionCall.builder()
+                    .id("adk-condition-id")
+                    .name("getCondition")
+                    .args(ImmutableMap.of("city", "London"))
+                    .build())
+            .build();
+
+    // Turn 1 mirrors the real Vertex stream: a partial event for getTemperature, a partial event
+    // for getCondition, then one aggregated (non-partial) event carrying both calls. Turn 2 is the
+    // final text produced after both tools run.
+    LlmResponse partialTemperature =
+        LlmResponse.builder()
+            .content(Content.builder().role("model").parts(temperaturePart).build())
+            .partial(true)
+            .build();
+    LlmResponse partialCondition =
+        LlmResponse.builder()
+            .content(Content.builder().role("model").parts(conditionPart).build())
+            .partial(true)
+            .build();
+    LlmResponse aggregated =
+        LlmResponse.builder()
+            .content(Content.builder().role("model").parts(temperaturePart, conditionPart).build())
+            .partial(false)
+            .build();
+    TestLlm streamingTestLlm =
+        createTestLlm(
+            Flowable.just(partialTemperature, partialCondition, aggregated),
+            Flowable.just(createTextLlmResponse("done")));
+
+    CountingTool temperatureTool = new CountingTool("getTemperature");
+    CountingTool conditionTool = new CountingTool("getCondition");
+    LlmAgent agent =
+        createTestAgentBuilder(streamingTestLlm)
+            .tools(ImmutableList.of(temperatureTool, conditionTool))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(agent).build()).build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                createContent("weather in London?"),
+                RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.SSE).build())
+            .toList()
+            .blockingGet();
+
+    long partialFunctionCallEvents =
+        events.stream()
+            .filter(e -> !e.functionCalls().isEmpty() && e.partial().orElse(false))
+            .count();
+    long partialFunctionCalls =
+        events.stream()
+            .filter(e -> e.partial().orElse(false))
+            .mapToLong(e -> e.functionCalls().size())
+            .sum();
+    long aggregatedFunctionCallEvents =
+        events.stream()
+            .filter(e -> !e.functionCalls().isEmpty() && !e.partial().orElse(false))
+            .count();
+    Event aggregatedEvent =
+        events.stream()
+            .filter(e -> !e.functionCalls().isEmpty() && !e.partial().orElse(false))
+            .findFirst()
+            .orElseThrow();
+    List<String> aggregatedCallIds = new ArrayList<>();
+    for (FunctionCall fc : aggregatedEvent.functionCalls()) {
+      aggregatedCallIds.add(fc.id().orElseThrow());
+    }
+    long functionResponses = events.stream().mapToLong(e -> e.functionResponses().size()).sum();
+
+    // Two partial function-call events (one per tool) are surfaced to consumers ...
+    assertThat(partialFunctionCallEvents).isEqualTo(2);
+    assertThat(partialFunctionCalls).isEqualTo(2);
+    // ... followed by exactly one final aggregated event that carries BOTH calls ...
+    assertThat(aggregatedFunctionCallEvents).isEqualTo(1);
+    assertThat(aggregatedEvent.functionCalls()).hasSize(2);
+    // ... whose function-call IDs match the ones streamed in the partial events ...
+    assertThat(aggregatedCallIds).containsExactly("adk-temperature-id", "adk-condition-id");
+    // ... but each tool is executed exactly once (partial events are skipped) ...
+    assertThat(temperatureTool.callCount.get()).isEqualTo(1);
+    assertThat(conditionTool.callCount.get()).isEqualTo(1);
+    // ... producing exactly two function responses (one per call).
+    assertThat(functionResponses).isEqualTo(2);
+  }
+
+  /** A tool that records how many times it is actually executed. */
+  private static final class CountingTool extends BaseTool {
+    final AtomicInteger callCount = new AtomicInteger(0);
+
+    CountingTool(String name) {
+      super(name, "counts invocations");
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(FunctionDeclaration.builder().name(name()).build());
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+      callCount.incrementAndGet();
+      return Single.just(ImmutableMap.of("forecast", "sunny"));
+    }
   }
 
   @Test
