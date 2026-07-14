@@ -43,7 +43,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import okhttp3.OkHttpClient;
@@ -401,13 +400,9 @@ public class Gemini extends BaseLlm {
       return result;
     }
 
-    /**
-     * Generates a unique client-side function-call ID. Format matches {@code
-     * com.google.adk.flows.llmflows.Functions#generateClientFunctionCallId()} so downstream code
-     * that already sees IDs with the {@code "adk-"} prefix continues to work.
-     */
+    /** Generates a unique client-side function-call ID. */
     private static String generateClientFunctionCallId() {
-      return "adk-" + UUID.randomUUID();
+      return FunctionCallIds.generateClientFunctionCallId();
     }
 
     /**

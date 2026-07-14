@@ -38,8 +38,6 @@ public final class GeminiUtil {
       "Continue output. DO NOT look at this line. ONLY look at the content before this line and"
           + " system instruction.";
 
-  private static final String AF_FUNCTION_CALL_ID_PREFIX = "adk-";
-
   private GeminiUtil() {}
 
   /**
@@ -174,14 +172,15 @@ public final class GeminiUtil {
   private static Part removeClientFunctionCallIdFromPart(Part part) {
     if (part.functionCall().isPresent()
         && part.functionCall().get().id().isPresent()
-        && part.functionCall().get().id().get().startsWith(AF_FUNCTION_CALL_ID_PREFIX)) {
+        && FunctionCallIds.isClientGeneratedFunctionCallId(part.functionCall().get().id().get())) {
       return part.toBuilder()
           .functionCall(part.functionCall().get().toBuilder().clearId().build())
           .build();
     }
     if (part.functionResponse().isPresent()
         && part.functionResponse().get().id().isPresent()
-        && part.functionResponse().get().id().get().startsWith(AF_FUNCTION_CALL_ID_PREFIX)) {
+        && FunctionCallIds.isClientGeneratedFunctionCallId(
+            part.functionResponse().get().id().get())) {
       return part.toBuilder()
           .functionResponse(part.functionResponse().get().toBuilder().clearId().build())
           .build();
