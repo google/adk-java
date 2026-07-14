@@ -48,6 +48,7 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.GroundingMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.Transcription;
 import io.opentelemetry.context.Context;
@@ -1001,5 +1002,41 @@ public final class BaseLlmFlowTest {
     assertThat(thrown)
         .hasMessageThat()
         .contains("Object in tools list is not of a supported type: java.lang.String");
+  }
+
+  @Test
+  public void postprocess_onlyGroundingMetadata_returnsEvent() {
+    GroundingMetadata groundingMetadata =
+        GroundingMetadata.builder()
+            .webSearchQueries(ImmutableList.of("What is the capital of France?"))
+            .build();
+
+    LlmResponse llmResponse = LlmResponse.builder().groundingMetadata(groundingMetadata).build();
+
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(createTestLlm(llmResponse)));
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    Event baseEvent =
+        Event.builder()
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .build();
+
+    // 2. Act: Run the post-processor
+    List<Event> events =
+        baseLlmFlow
+            .postprocess(
+                invocationContext,
+                baseEvent,
+                LlmRequest.builder().build(),
+                llmResponse,
+                Context.current())
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(1);
+    Event event = getOnlyElement(events);
+    assertThat(event.content()).isEmpty();
+    assertThat(event.groundingMetadata()).hasValue(groundingMetadata);
   }
 }
