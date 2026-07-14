@@ -18,6 +18,7 @@ package com.google.adk.sessions;
 
 import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 
+import com.google.adk.internal.http.HttpClientFactory;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Ascii;
 import com.google.common.base.Strings;
@@ -102,8 +103,12 @@ abstract class ApiClient {
     this.httpClient = createHttpClient(httpOptions.timeout().orElse(null));
   }
 
+  private static OkHttpClient getSharedPoolClient() {
+    return HttpClientFactory.getOrCreateSharedHttpClient("ApiClient");
+  }
+
   private OkHttpClient createHttpClient(@Nullable Integer timeout) {
-    OkHttpClient.Builder builder = new OkHttpClient().newBuilder();
+    OkHttpClient.Builder builder = getSharedPoolClient().newBuilder();
     if (timeout != null) {
       builder.connectTimeout(Duration.ofMillis(timeout));
     }

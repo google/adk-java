@@ -19,12 +19,14 @@ package com.google.adk.models;
 import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 
 import com.google.adk.Version;
+import com.google.adk.internal.http.HttpClientFactory;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.Client;
 import com.google.genai.ResponseStream;
 import com.google.genai.types.Candidate;
+import com.google.genai.types.ClientOptions;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
@@ -35,13 +37,15 @@ import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import io.reactivex.rxjava3.core.Flowable;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import okhttp3.OkHttpClient;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,6 +60,52 @@ public class Gemini extends BaseLlm {
 
   private static final Logger logger = LoggerFactory.getLogger(Gemini.class);
   private static final ImmutableMap<String, String> TRACKING_HEADERS;
+
+  private static OkHttpClient prepareHttpClient(@Nullable ExecutorService executorService) {
+    OkHttpClient client =
+        executorService == null
+            ? HttpClientFactory.getOrCreateSharedHttpClient("GeminiApiClient")
+            : HttpClientFactory.createHttpClient(executorService);
+    return client
+        .newBuilder()
+        .connectTimeout(Duration.ZERO)
+        .readTimeout(Duration.ZERO)
+        .writeTimeout(Duration.ZERO)
+        .build();
+  }
+
+  private static Client buildApiKeyClient(
+      String apiKey, @Nullable ExecutorService executorService) {
+    return Client.builder()
+        .apiKey(apiKey)
+        .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
+        .clientOptions(
+            ClientOptions.builder().customHttpClient(prepareHttpClient(executorService)).build())
+        .build();
+  }
+
+  private static Client buildVertexClient(
+      VertexCredentials vertexCredentials, @Nullable ExecutorService executorService) {
+    Client.Builder apiClientBuilder =
+        Client.builder()
+            .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
+            .clientOptions(
+                ClientOptions.builder()
+                    .customHttpClient(prepareHttpClient(executorService))
+                    .build());
+    vertexCredentials.project().ifPresent(apiClientBuilder::project);
+    vertexCredentials.location().ifPresent(apiClientBuilder::location);
+    vertexCredentials.credentials().ifPresent(apiClientBuilder::credentials);
+    return apiClientBuilder.build();
+  }
+
+  private static Client buildDefaultClient(@Nullable ExecutorService executorService) {
+    return Client.builder()
+        .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
+        .clientOptions(
+            ClientOptions.builder().customHttpClient(prepareHttpClient(executorService)).build())
+        .build();
+  }
 
   static {
     String frameworkLabel = "google-adk/" + Version.JAVA_ADK_VERSION;
@@ -90,11 +140,7 @@ public class Gemini extends BaseLlm {
   public Gemini(String modelName, String apiKey) {
     super(modelName);
     Objects.requireNonNull(apiKey, "apiKey cannot be null");
-    this.apiClient =
-        Client.builder()
-            .apiKey(apiKey)
-            .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
-            .build();
+    this.apiClient = buildApiKeyClient(apiKey, null);
   }
 
   /**
@@ -106,12 +152,7 @@ public class Gemini extends BaseLlm {
   public Gemini(String modelName, VertexCredentials vertexCredentials) {
     super(modelName);
     Objects.requireNonNull(vertexCredentials, "vertexCredentials cannot be null");
-    Client.Builder apiClientBuilder =
-        Client.builder().httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build());
-    vertexCredentials.project().ifPresent(apiClientBuilder::project);
-    vertexCredentials.location().ifPresent(apiClientBuilder::location);
-    vertexCredentials.credentials().ifPresent(apiClientBuilder::credentials);
-    this.apiClient = apiClientBuilder.build();
+    this.apiClient = buildVertexClient(vertexCredentials, null);
   }
 
   /**
@@ -131,6 +172,7 @@ public class Gemini extends BaseLlm {
     private Client apiClient;
     private String apiKey;
     private VertexCredentials vertexCredentials;
+    private ExecutorService httpExecutorService;
 
     private Builder() {}
 
@@ -187,6 +229,22 @@ public class Gemini extends BaseLlm {
     }
 
     /**
+     * Sets the executor for the shared HTTP client's dispatcher. Pass {@link
+     * HttpClientFactory#daemonExecutor} so a standalone or CLI JVM can exit once work is done, or a
+     * container-managed executor in a managed environment. Applies only when the client is built
+     * from an API key, Vertex credentials, or the default; it is ignored when an explicit {@link
+     * #apiClient} is supplied.
+     *
+     * @param httpExecutorService The executor for HTTP dispatcher threads.
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder httpExecutorService(ExecutorService httpExecutorService) {
+      this.httpExecutorService = httpExecutorService;
+      return this;
+    }
+
+    /**
      * Builds the {@link Gemini} instance.
      *
      * @return A new {@link Gemini} instance.
@@ -198,15 +256,11 @@ public class Gemini extends BaseLlm {
       if (apiClient != null) {
         return new Gemini(modelName, apiClient);
       } else if (apiKey != null) {
-        return new Gemini(modelName, apiKey);
+        return new Gemini(modelName, buildApiKeyClient(apiKey, httpExecutorService));
       } else if (vertexCredentials != null) {
-        return new Gemini(modelName, vertexCredentials);
+        return new Gemini(modelName, buildVertexClient(vertexCredentials, httpExecutorService));
       } else {
-        return new Gemini(
-            modelName,
-            Client.builder()
-                .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
-                .build());
+        return new Gemini(modelName, buildDefaultClient(httpExecutorService));
       }
     }
   }
@@ -346,13 +400,9 @@ public class Gemini extends BaseLlm {
       return result;
     }
 
-    /**
-     * Generates a unique client-side function-call ID. Format matches {@code
-     * com.google.adk.flows.llmflows.Functions#generateClientFunctionCallId()} so downstream code
-     * that already sees IDs with the {@code "adk-"} prefix continues to work.
-     */
+    /** Generates a unique client-side function-call ID. */
     private static String generateClientFunctionCallId() {
-      return "adk-" + UUID.randomUUID();
+      return FunctionCallIds.generateClientFunctionCallId();
     }
 
     /**

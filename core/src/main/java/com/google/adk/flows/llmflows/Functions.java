@@ -29,6 +29,7 @@ import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
+import com.google.adk.models.FunctionCallIds;
 import com.google.adk.telemetry.Instrumentation;
 import com.google.adk.telemetry.Instrumentation.ToolExecution;
 import com.google.adk.telemetry.Tracing;
@@ -60,7 +61,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,12 +72,11 @@ public final class Functions {
   /** Session state key for storing the security policy outcomes for tool calls. */
   public static final String TOOL_CALL_SECURITY_STATES = "adk_tool_call_security_states";
 
-  private static final String AF_FUNCTION_CALL_ID_PREFIX = "adk-";
   private static final Logger logger = LoggerFactory.getLogger(Functions.class);
 
   /** Generates a unique ID for a function call. */
   public static String generateClientFunctionCallId() {
-    return AF_FUNCTION_CALL_ID_PREFIX + UUID.randomUUID();
+    return FunctionCallIds.generateClientFunctionCallId();
   }
 
   /**

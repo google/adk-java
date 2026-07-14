@@ -460,7 +460,7 @@ public final class GeminiUtilTest {
             .functionCall(
                 FunctionCall.builder()
                     .name("foo")
-                    .id("id1")
+                    .id("adk-id1")
                     .args(ImmutableMap.of("key", "value"))
                     .build())
             .build();
@@ -469,7 +469,7 @@ public final class GeminiUtilTest {
             .functionResponse(
                 FunctionResponse.builder()
                     .name("bar")
-                    .id("id2")
+                    .id("adk-id2")
                     .response(ImmutableMap.of("key", "value"))
                     .build())
             .build();
@@ -487,6 +487,43 @@ public final class GeminiUtilTest {
     Part resultPart2 = result.contents().get(0).parts().get().get(1);
     assertThat(resultPart2.functionResponse()).isPresent();
     assertThat(resultPart2.functionResponse().get().id()).isEmpty();
+    assertThat(resultPart2.functionResponse().get().name()).hasValue("bar");
+  }
+
+  @Test
+  public void removeClientFunctionCallId_preservesNonClientIds() {
+    Part partWithFunctionCall =
+        Part.builder()
+            .functionCall(
+                FunctionCall.builder()
+                    .name("foo")
+                    .id("call_123")
+                    .args(ImmutableMap.of("key", "value"))
+                    .build())
+            .build();
+    Part partWithFunctionResponse =
+        Part.builder()
+            .functionResponse(
+                FunctionResponse.builder()
+                    .name("bar")
+                    .id("call_456")
+                    .response(ImmutableMap.of("key", "value"))
+                    .build())
+            .build();
+    LlmRequest request = toRequest(partWithFunctionCall, partWithFunctionResponse);
+
+    LlmRequest result = GeminiUtil.removeClientFunctionCallId(request);
+
+    assertThat(result.contents()).hasSize(1);
+    assertThat(result.contents().get(0).parts()).isPresent();
+    assertThat(result.contents().get(0).parts().get()).hasSize(2);
+    Part resultPart1 = result.contents().get(0).parts().get().get(0);
+    assertThat(resultPart1.functionCall()).isPresent();
+    assertThat(resultPart1.functionCall().get().id()).hasValue("call_123");
+    assertThat(resultPart1.functionCall().get().name()).hasValue("foo");
+    Part resultPart2 = result.contents().get(0).parts().get().get(1);
+    assertThat(resultPart2.functionResponse()).isPresent();
+    assertThat(resultPart2.functionResponse().get().id()).hasValue("call_456");
     assertThat(resultPart2.functionResponse().get().name()).hasValue("bar");
   }
 
