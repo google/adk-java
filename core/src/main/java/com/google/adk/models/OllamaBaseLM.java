@@ -65,6 +65,9 @@ public class OllamaBaseLM extends BaseLlm {
   public static String OLLAMA_EP = "OLLAMA_API_BASE";
   public String D_URL = null;
 
+  private int numCtx = 32768;
+  private boolean think = false;
+
   // Corrected the logger name to use OllamaBaseLM.class
   private static final Logger logger = LoggerFactory.getLogger(OllamaBaseLM.class);
 
@@ -81,6 +84,22 @@ public class OllamaBaseLM extends BaseLlm {
 
     super(model);
     this.D_URL = OLLAMA_EP;
+  }
+
+  public int getNumCtx() {
+    return numCtx;
+  }
+
+  public void setNumCtx(int numCtx) {
+    this.numCtx = numCtx;
+  }
+
+  public boolean isThink() {
+    return think;
+  }
+
+  public void setThink(boolean think) {
+    this.think = think;
   }
 
   @Override
@@ -750,10 +769,10 @@ public class OllamaBaseLM extends BaseLlm {
       JSONObject payload = new JSONObject();
       payload.put("model", model);
       payload.put("stream", true);
-      payload.put("think", false);
+      payload.put("think", this.think);
 
       JSONObject options = new JSONObject();
-      options.put("num_ctx", 4096);
+      options.put("num_ctx", this.numCtx);
       payload.put("options", options);
 
       payload.put("messages", messages);
@@ -920,10 +939,10 @@ public class OllamaBaseLM extends BaseLlm {
       payload.put("model", model);
       payload.put(
           "stream", false); // Assuming non-streaming as per current generateContent implementation
-      payload.put("think", false);
+      payload.put("think", this.think);
 
       JSONObject options = new JSONObject();
-      options.put("num_ctx", 4096);
+      options.put("num_ctx", this.numCtx);
       payload.put("options", options);
       payload.put("temperature", temperature);
 
