@@ -113,6 +113,29 @@ public final class PersistBarrierTest {
   }
 
   @Test
+  public void largeStep_awaitsAllWithoutStackOverflow() {
+    // A single step's event list can be large (e.g. an agent transfer folds the sub-agent's events
+    // into the parent step). Awaiting them must not build a deeply nested chain that overflows the
+    // stack when the returned Completable is subscribed or completed.
+    PersistBarrier.enable(context);
+    int eventCount = 50_000;
+    List<Event> events = new ArrayList<>(eventCount);
+    for (int i = 0; i < eventCount; i++) {
+      events.add(event("e" + i));
+    }
+
+    TestObserver<Void> observer = PersistBarrier.awaitPersisted(context, events).test();
+    observer.assertNotComplete();
+
+    for (Event event : events) {
+      PersistBarrier.markPersisted(context, event.id());
+    }
+
+    observer.assertComplete();
+    assertThat(PersistBarrier.pendingCount(context)).isEqualTo(0);
+  }
+
+  @Test
   public void markFailedBeforeAwait_awaitFails() {
     PersistBarrier.enable(context);
     RuntimeException error = new RuntimeException("append failed");

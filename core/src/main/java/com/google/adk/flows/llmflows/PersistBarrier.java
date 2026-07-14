@@ -21,6 +21,7 @@ import com.google.adk.events.Event;
 import com.google.common.annotations.VisibleForTesting;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -72,14 +73,21 @@ public final class PersistBarrier {
     if (enabled == null || !enabled) {
       return Completable.complete();
     }
-    Completable result = Completable.complete();
+    // Await the per-event barriers via Completable.concat instead of folding them into a
+    // left-nested chain of Completable.andThen(...). A single step's event list can be large (an
+    // agent transfer folds the sub-agent's events into the parent step), and a nested andThen chain
+    // recurses once per element on both subscription and completion, overflowing the stack for
+    // long sessions. Completable.concat drains its sources iteratively, so it stays stack-safe
+    // while keeping the same await semantics (order is irrelevant, as each subject retains its
+    // terminal state).
+    List<Completable> barriers = new ArrayList<>(events.size());
     for (Event event : events) {
       String eventId = event.id();
       if (eventId != null) {
-        result = result.andThen(barrier(context, eventId));
+        barriers.add(barrier(context, eventId));
       }
     }
-    return result;
+    return Completable.concat(barriers);
   }
 
   /** Signals that the {@code Runner} persisted the event with the given id. */
