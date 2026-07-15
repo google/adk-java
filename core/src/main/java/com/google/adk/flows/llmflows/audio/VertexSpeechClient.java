@@ -36,6 +36,13 @@ public class VertexSpeechClient implements SpeechClientInterface {
     this.speechClient = SpeechClient.create();
   }
 
+  /**
+   * Performs synchronous speech recognition on the given audio input.
+   *
+   * @param config Recognition configuration (e.g., language, encoding).
+   * @param audio Audio data to recognize.
+   * @return The recognition result.
+   */
   @Override
   public RecognizeResponse recognize(RecognitionConfig config, RecognitionAudio audio) {
     // The original SpeechClient.recognize doesn't declare checked exceptions other than what might

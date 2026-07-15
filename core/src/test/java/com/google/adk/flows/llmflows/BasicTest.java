@@ -33,6 +33,8 @@ import com.google.adk.models.LlmResponse;
 import com.google.adk.testing.TestLlm;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.AudioTranscriptionConfig;
+import com.google.genai.types.AvatarConfig;
+import com.google.genai.types.CustomizedAvatar;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Modality;
 import com.google.genai.types.Schema;
@@ -60,6 +62,15 @@ public final class BasicTest {
           .build();
   private static final AudioTranscriptionConfig TEST_AUDIO_TRANSCRIPTION_CONFIG =
       AudioTranscriptionConfig.builder().build();
+  private static final AvatarConfig TEST_AVATAR_CONFIG =
+      AvatarConfig.builder()
+          .avatarName("test-avatar")
+          .customizedAvatar(
+              CustomizedAvatar.builder()
+                  .imageMimeType("image/jpeg")
+                  .imageData(new byte[] {1, 2, 3})
+                  .build())
+          .build();
 
   private Basic basicProcessor;
   private TestLlm testLlm;
@@ -202,6 +213,22 @@ public final class BasicTest {
   }
 
   @Test
+  public void processRequest_buildsLiveConnectConfigFromRunConfig_avatarConfig() {
+    RunConfig runConfig = RunConfig.builder().avatarConfig(TEST_AVATAR_CONFIG).build();
+    LlmAgent agentWithConfig = LlmAgent.builder().name("agentWithConfig").model(testLlm).build();
+    InvocationContext contextWithRunConfig = createInvocationContext(agentWithConfig, runConfig);
+
+    RequestProcessingResult result =
+        basicProcessor.processRequest(contextWithRunConfig, initialRequest).blockingGet();
+
+    LlmRequest updatedRequest = result.updatedRequest();
+    assertThat(updatedRequest.liveConnectConfig()).isNotNull();
+    assertThat(updatedRequest.liveConnectConfig().responseModalities().get()).isEmpty();
+    assertThat(updatedRequest.liveConnectConfig().avatarConfig()).hasValue(TEST_AVATAR_CONFIG);
+    assertThat(result.events()).isEmpty();
+  }
+
+  @Test
   public void processRequest_buildsLiveConnectConfigFromRunConfig_outputAudioTranscription() {
     RunConfig runConfig =
         RunConfig.builder().setOutputAudioTranscription(TEST_AUDIO_TRANSCRIPTION_CONFIG).build();
@@ -221,12 +248,33 @@ public final class BasicTest {
   }
 
   @Test
+  public void processRequest_buildsLiveConnectConfigFromRunConfig_inputAudioTranscription() {
+    RunConfig runConfig =
+        RunConfig.builder().setInputAudioTranscription(TEST_AUDIO_TRANSCRIPTION_CONFIG).build();
+    LlmAgent agentWithConfig = LlmAgent.builder().name("agentWithConfig").model(testLlm).build();
+    InvocationContext contextWithRunConfig = createInvocationContext(agentWithConfig, runConfig);
+
+    RequestProcessingResult result =
+        basicProcessor.processRequest(contextWithRunConfig, initialRequest).blockingGet();
+
+    LlmRequest updatedRequest = result.updatedRequest();
+    assertThat(updatedRequest.liveConnectConfig()).isNotNull();
+    assertThat(updatedRequest.liveConnectConfig().responseModalities().get()).isEmpty();
+    assertThat(updatedRequest.liveConnectConfig().speechConfig()).isEmpty();
+    assertThat(updatedRequest.liveConnectConfig().inputAudioTranscription())
+        .hasValue(TEST_AUDIO_TRANSCRIPTION_CONFIG);
+    assertThat(result.events()).isEmpty();
+  }
+
+  @Test
   public void processRequest_buildsLiveConnectConfigFromRunConfig_allFields() {
     RunConfig runConfig =
         RunConfig.builder()
             .setResponseModalities(ImmutableList.of(new Modality(Modality.Known.AUDIO)))
             .setSpeechConfig(TEST_SPEECH_CONFIG)
+            .avatarConfig(TEST_AVATAR_CONFIG)
             .setOutputAudioTranscription(TEST_AUDIO_TRANSCRIPTION_CONFIG)
+            .setInputAudioTranscription(TEST_AUDIO_TRANSCRIPTION_CONFIG)
             .build();
     LlmAgent agentWithConfig = LlmAgent.builder().name("agentWithConfig").model(testLlm).build();
     InvocationContext contextWithRunConfig = createInvocationContext(agentWithConfig, runConfig);
@@ -239,7 +287,10 @@ public final class BasicTest {
     assertThat(updatedRequest.liveConnectConfig().responseModalities().get())
         .containsExactly(new Modality(Modality.Known.AUDIO));
     assertThat(updatedRequest.liveConnectConfig().speechConfig()).hasValue(TEST_SPEECH_CONFIG);
+    assertThat(updatedRequest.liveConnectConfig().avatarConfig()).hasValue(TEST_AVATAR_CONFIG);
     assertThat(updatedRequest.liveConnectConfig().outputAudioTranscription())
+        .hasValue(TEST_AUDIO_TRANSCRIPTION_CONFIG);
+    assertThat(updatedRequest.liveConnectConfig().inputAudioTranscription())
         .hasValue(TEST_AUDIO_TRANSCRIPTION_CONFIG);
     assertThat(result.events()).isEmpty();
   }

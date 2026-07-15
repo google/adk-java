@@ -16,45 +16,67 @@
 
 package com.google.adk.flows.llmflows;
 
-import com.google.adk.Telemetry;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+
+import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.Callbacks.AfterToolCallback;
 import com.google.adk.agents.Callbacks.BeforeToolCallback;
+import com.google.adk.agents.Callbacks.OnToolErrorCallback;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
+import com.google.adk.models.FunctionCallIds;
+import com.google.adk.telemetry.Instrumentation;
+import com.google.adk.telemetry.Instrumentation.ToolExecution;
+import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
-import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.Tracer;
-import io.opentelemetry.context.Scope;
+import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.functions.Function;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
-import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Utility class for handling function calls. */
 public final class Functions {
+  /** The function call name for the request confirmation function. */
+  public static final String REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = "adk_request_confirmation";
 
-  private static final String AF_FUNCTION_CALL_ID_PREFIX = "adk-";
+  /** Session state key for storing the security policy outcomes for tool calls. */
+  public static final String TOOL_CALL_SECURITY_STATES = "adk_tool_call_security_states";
+
+  private static final Logger logger = LoggerFactory.getLogger(Functions.class);
 
   /** Generates a unique ID for a function call. */
   public static String generateClientFunctionCallId() {
-    return AF_FUNCTION_CALL_ID_PREFIX + UUID.randomUUID();
+    return FunctionCallIds.generateClientFunctionCallId();
   }
 
   /**
@@ -84,7 +106,7 @@ public final class Functions {
         if (functionCall.id().isEmpty() || functionCall.id().get().isEmpty()) {
           FunctionCall updatedFunctionCall =
               functionCall.toBuilder().id(generateClientFunctionCallId()).build();
-          newParts.add(Part.builder().functionCall(updatedFunctionCall).build());
+          newParts.add(part.toBuilder().functionCall(updatedFunctionCall).build());
           modified = true;
         } else {
           newParts.add(part); // Keep original part if ID exists
@@ -103,117 +125,447 @@ public final class Functions {
                       new IllegalStateException(
                           "Content role is missing in event: " + modelResponseEvent.id()));
       Content newContent = Content.builder().role(role).parts(newParts).build();
-      modelResponseEvent.setContent(Optional.of(newContent));
+      modelResponseEvent.setContent(newContent);
     }
   }
 
   // TODO - b/413761119 add the remaining methods for function call id.
 
+  /** Handles standard, non-streaming function calls. */
   public static Maybe<Event> handleFunctionCalls(
       InvocationContext invocationContext, Event functionCallEvent, Map<String, BaseTool> tools) {
+    return handleFunctionCalls(invocationContext, functionCallEvent, tools, ImmutableMap.of());
+  }
+
+  /** Handles standard, non-streaming function calls with tool confirmations. */
+  public static Maybe<Event> handleFunctionCalls(
+      InvocationContext invocationContext,
+      Event functionCallEvent,
+      Map<String, BaseTool> tools,
+      Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
 
-    List<Maybe<Event>> functionResponseEvents = new ArrayList<>();
-
+    List<FunctionCall> validFunctionCalls = new ArrayList<>();
     for (FunctionCall functionCall : functionCalls) {
       if (!tools.containsKey(functionCall.name().get())) {
-        throw new VerifyException("Tool not found: " + functionCall.name().get());
+        logger.warn("Tool not found: {}", functionCall.name().get());
+      } else {
+        validFunctionCalls.add(functionCall);
       }
-      BaseTool tool = tools.get(functionCall.name().get());
-      ToolContext toolContext =
-          ToolContext.builder(invocationContext)
-              .functionCallId(functionCall.id().orElse(""))
-              .build();
-
-      Map<String, Object> functionArgs = functionCall.args().orElse(new HashMap<>());
-
-      Maybe<Map<String, Object>> maybeFunctionResult =
-          maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
-              .switchIfEmpty(Maybe.defer(() -> callTool(tool, functionArgs, toolContext)));
-
-      Maybe<Event> maybeFunctionResponseEvent =
-          maybeFunctionResult
-              .map(Optional::of)
-              .defaultIfEmpty(Optional.empty())
-              .flatMapMaybe(
-                  optionalInitialResult -> {
-                    Map<String, Object> initialFunctionResult = optionalInitialResult.orElse(null);
-
-                    Maybe<Map<String, Object>> afterToolResultMaybe =
-                        maybeInvokeAfterToolCall(
-                            invocationContext,
-                            tool,
-                            functionArgs,
-                            toolContext,
-                            initialFunctionResult);
-
-                    return afterToolResultMaybe
-                        .map(Optional::of)
-                        .defaultIfEmpty(Optional.ofNullable(initialFunctionResult))
-                        .flatMapMaybe(
-                            finalOptionalResult -> {
-                              Map<String, Object> finalFunctionResult =
-                                  finalOptionalResult.orElse(null);
-                              if (tool.longRunning() && finalFunctionResult == null) {
-                                return Maybe.empty();
-                              }
-                              Event functionResponseEvent =
-                                  buildResponseEvent(
-                                      tool, finalFunctionResult, toolContext, invocationContext);
-                              return Maybe.just(functionResponseEvent);
-                            });
-                  });
-
-      functionResponseEvents.add(maybeFunctionResponseEvent);
     }
 
-    return Maybe.merge(functionResponseEvents)
+    Context parentContext = Context.current();
+    Function<FunctionCall, Maybe<Event>> functionCallMapper =
+        getFunctionCallMapper(invocationContext, tools, toolConfirmations, false, parentContext);
+
+    Observable<Event> functionResponseEventsObservable =
+        buildToolExecutionObservable(invocationContext, validFunctionCalls, functionCallMapper);
+    return functionResponseEventsObservable
         .toList()
-        .flatMapMaybe(
+        .toMaybe()
+        .compose(Tracing.withContext(parentContext))
+        .flatMap(
             events -> {
               if (events.isEmpty()) {
                 return Maybe.empty();
               }
-              Event mergedEvent = Functions.mergeParallelFunctionResponseEvents(events);
-              if (mergedEvent == null) {
+              Optional<Event> maybeMergedEvent =
+                  Functions.mergeParallelFunctionResponseEvents(events);
+              if (maybeMergedEvent.isEmpty()) {
                 return Maybe.empty();
               }
+              var mergedEvent = maybeMergedEvent.get();
 
               if (events.size() > 1) {
-                Tracer tracer = Telemetry.getTracer();
-                Span mergedSpan = tracer.spanBuilder("tool_response").startSpan();
-                try (Scope scope = mergedSpan.makeCurrent()) {
-                  Telemetry.traceToolResponse(invocationContext, mergedEvent.id(), mergedEvent);
-                } finally {
-                  mergedSpan.end();
-                }
+                return Maybe.just(mergedEvent)
+                    .compose(
+                        Tracing.<Event>trace("execute_tool (merged)")
+                            .setParent(parentContext)
+                            .onSuccess(
+                                (span, event) ->
+                                    Tracing.traceMergedToolCalls(span, event.id(), event)));
               }
               return Maybe.just(mergedEvent);
             });
+  }
+
+  /**
+   * Handles function calls in a live/streaming context, supporting background execution and stream
+   * termination.
+   */
+  public static Maybe<Event> handleFunctionCallsLive(
+      InvocationContext invocationContext, Event functionCallEvent, Map<String, BaseTool> tools) {
+    return handleFunctionCallsLive(invocationContext, functionCallEvent, tools, ImmutableMap.of());
+  }
+
+  /**
+   * Handles function calls in a live/streaming context with tool confirmations, supporting
+   * background execution and stream termination.
+   */
+  public static Maybe<Event> handleFunctionCallsLive(
+      InvocationContext invocationContext,
+      Event functionCallEvent,
+      Map<String, BaseTool> tools,
+      Map<String, ToolConfirmation> toolConfirmations) {
+    ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
+
+    List<FunctionCall> validFunctionCalls = new ArrayList<>();
+    for (FunctionCall functionCall : functionCalls) {
+      if (!tools.containsKey(functionCall.name().get())) {
+        logger.warn("Tool not found: {}", functionCall.name().get());
+      } else {
+        validFunctionCalls.add(functionCall);
+      }
+    }
+
+    Context parentContext = Context.current();
+    Function<FunctionCall, Maybe<Event>> functionCallMapper =
+        getFunctionCallMapper(invocationContext, tools, toolConfirmations, true, parentContext);
+
+    Observable<Event> responseEventsObservable =
+        buildToolExecutionObservable(invocationContext, validFunctionCalls, functionCallMapper);
+
+    return responseEventsObservable
+        .toList()
+        .toMaybe()
+        .compose(Tracing.withContext(parentContext))
+        .flatMap(
+            events -> {
+              if (events.isEmpty()) {
+                return Maybe.empty();
+              }
+              return Maybe.fromOptional(Functions.mergeParallelFunctionResponseEvents(events));
+            });
+  }
+
+  /**
+   * Builds the tool-execution {@link Observable} for the configured {@link ToolExecutionMode}.
+   *
+   * <ul>
+   *   <li>{@link ToolExecutionMode#SEQUENTIAL} (or a single call, where parallelism is moot) uses
+   *       {@code concatMapMaybe}: each tool is subscribed only after the previous one completes.
+   *   <li>{@link ToolExecutionMode#PARALLEL} (the default) uses {@code concatMapEager}: all tools
+   *       are subscribed eagerly on the caller thread. Async tools therefore run concurrently, but
+   *       tools that block the subscribing thread still execute sequentially. This matches the
+   *       historical behavior of the default mode.
+   *   <li>{@link ToolExecutionMode#PARALLEL_SUBSCRIBE} uses {@code concatMapEager} and additionally
+   *       subscribes each tool on a worker scheduler, so blocking tools also run concurrently.
+   *       {@code concatMapEager} preserves input order required by {@link
+   *       #mergeParallelFunctionResponseEvents}.
+   * </ul>
+   */
+  private static Observable<Event> buildToolExecutionObservable(
+      InvocationContext invocationContext,
+      List<FunctionCall> validFunctionCalls,
+      Function<FunctionCall, Maybe<Event>> functionCallMapper) {
+    ToolExecutionMode mode = invocationContext.runConfig().toolExecutionMode();
+    boolean sequential = mode == ToolExecutionMode.SEQUENTIAL || validFunctionCalls.size() <= 1;
+    if (sequential) {
+      return Observable.fromIterable(validFunctionCalls).concatMapMaybe(functionCallMapper);
+    }
+    if (mode == ToolExecutionMode.PARALLEL_SUBSCRIBE) {
+      Scheduler scheduler = resolveToolExecutionScheduler(invocationContext);
+      return Observable.fromIterable(validFunctionCalls)
+          .concatMapEager(
+              call -> functionCallMapper.apply(call).toObservable().subscribeOn(scheduler));
+    }
+    // PARALLEL (and NONE, which defaults to PARALLEL): eager subscribe on the caller thread,
+    // without offloading to a worker. Async tools run concurrently; blocking tools still block.
+    return Observable.fromIterable(validFunctionCalls)
+        .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
+  }
+
+  /** Agent executor if set, otherwise the IO scheduler. */
+  private static Scheduler resolveToolExecutionScheduler(InvocationContext invocationContext) {
+    if (invocationContext.agent() instanceof LlmAgent llmAgent) {
+      return llmAgent.executor().map(Schedulers::from).orElse(Schedulers.io());
+    }
+    return Schedulers.io();
+  }
+
+  private static Function<FunctionCall, Maybe<Event>> getFunctionCallMapper(
+      InvocationContext invocationContext,
+      Map<String, BaseTool> tools,
+      Map<String, ToolConfirmation> toolConfirmations,
+      boolean isLive,
+      Context parentContext) {
+    return functionCall ->
+        Maybe.defer(
+                () -> {
+                  BaseTool tool = tools.get(functionCall.name().get());
+                  ToolContext toolContext =
+                      ToolContext.builder(invocationContext)
+                          .functionCallId(functionCall.id().orElse(""))
+                          .toolConfirmation(
+                              functionCall.id().map(toolConfirmations::get).orElse(null))
+                          .build();
+
+                  Map<String, Object> functionArgs =
+                      functionCall.args().map(HashMap::new).orElse(new HashMap<>());
+
+                  Maybe<Map<String, Object>> maybeFunctionResult =
+                      maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext)
+                          .switchIfEmpty(
+                              Maybe.defer(
+                                      () ->
+                                          isLive
+                                              ? processFunctionLive(
+                                                  invocationContext,
+                                                  tool,
+                                                  toolContext,
+                                                  functionCall,
+                                                  functionArgs)
+                                              : callTool(tool, functionArgs, toolContext))
+                                  .compose(Tracing.withContext(parentContext)));
+
+                  return postProcessFunctionResult(
+                      maybeFunctionResult,
+                      invocationContext,
+                      tool,
+                      functionArgs,
+                      toolContext,
+                      isLive,
+                      parentContext);
+                })
+            .compose(Tracing.withContext(parentContext));
+  }
+
+  /**
+   * Processes a single function call in a live context. Manages starting, stopping, and running
+   * tools.
+   */
+  private static Maybe<Map<String, Object>> processFunctionLive(
+      InvocationContext invocationContext,
+      BaseTool tool,
+      ToolContext toolContext,
+      FunctionCall functionCall,
+      Map<String, Object> args) {
+    // Case 1: Handle a call to stopStreaming
+    if (functionCall.name().get().equals("stopStreaming") && args.containsKey("functionName")) {
+      String functionNameToStop = (String) args.get("functionName");
+      ActiveStreamingTool activeTool =
+          invocationContext.activeStreamingTools().get(functionNameToStop);
+      if (activeTool != null) {
+        // Dispose the running task if it exists and is not disposed
+        if (activeTool.task() != null && !activeTool.task().isDisposed()) {
+          activeTool.task().dispose();
+        }
+        // Close the associated output stream if it exists
+        if (activeTool.stream() != null) {
+          activeTool.stream().close();
+        }
+        invocationContext.activeStreamingTools().remove(functionNameToStop);
+        logger.info("Successfully stopped streaming function {}", functionNameToStop);
+        return Maybe.just(
+            ImmutableMap.of(
+                "status", "Successfully stopped streaming function " + functionNameToStop));
+      } else {
+        logger.warn("No active streaming function named {} found to stop", functionNameToStop);
+        return Maybe.just(
+            ImmutableMap.of("status", "No active streaming function named " + functionNameToStop));
+      }
+    }
+
+    // Case 2: Handle a streaming-capable tool (FunctionTool with Flowable return type)
+    if (tool instanceof FunctionTool functionTool) {
+      if (functionTool.isStreaming()) {
+        try {
+          Flowable<Map<String, Object>> toolOutputStream =
+              functionTool.callLive(args, toolContext, invocationContext);
+
+          // Subscribe to the tool's output to process results in the background.
+          Disposable subscription =
+              toolOutputStream.subscribe(
+                  result -> {
+                    String resultText = "Function " + tool.name() + " returned: " + result;
+                    Content updateContent =
+                        Content.builder().role("user").parts(Part.fromText(resultText)).build();
+                    invocationContext.liveRequestQueue().get().content(updateContent);
+                  },
+                  error -> logger.error("Error in streaming tool " + tool.name(), error.getCause()),
+                  () -> {
+                    logger.info("Streaming tool {} completed.", tool.name());
+                    invocationContext.activeStreamingTools().remove(tool.name());
+                  });
+
+          ActiveStreamingTool activeTool =
+              invocationContext
+                  .activeStreamingTools()
+                  .computeIfAbsent(tool.name(), unused -> new ActiveStreamingTool(subscription));
+          activeTool.task(subscription);
+          invocationContext.activeStreamingTools().put(tool.name(), activeTool);
+
+          return Maybe.just(
+              ImmutableMap.of(
+                  "status", "The function is running asynchronously and the results are pending."));
+
+        } catch (Exception e) {
+          logger.error("Failed to start streaming tool: " + tool.name(), e);
+          return Maybe.error(e);
+        }
+      }
+    }
+
+    // Case 3: Fallback for regular, non-streaming tools
+    return callTool(tool, args, toolContext);
   }
 
   public static Set<String> getLongRunningFunctionCalls(
       List<FunctionCall> functionCalls, Map<String, BaseTool> tools) {
     Set<String> longRunningFunctionCalls = new HashSet<>();
     for (FunctionCall functionCall : functionCalls) {
-      if (!tools.containsKey(functionCall.name().get())) {
+      // Streamed function-call chunks may carry no name; skip them.
+      String name = functionCall.name().orElse(null);
+      if (name == null || !tools.containsKey(name)) {
         continue;
       }
-      BaseTool tool = tools.get(functionCall.name().get());
-      if (tool.longRunning()) {
+      BaseTool tool = tools.get(name);
+      if (tool != null && tool.longRunning()) {
         longRunningFunctionCalls.add(functionCall.id().orElse(""));
       }
     }
     return longRunningFunctionCalls;
   }
 
-  private static @Nullable Event mergeParallelFunctionResponseEvents(
+  /**
+   * Returns the most recent function-call event whose call id matches a function response in the
+   * last event, or empty. Mirrors Python ADK's {@code find_matching_function_call}.
+   */
+  public static Optional<Event> findMatchingFunctionCallEvent(List<Event> events) {
+    if (events.isEmpty()) {
+      return Optional.empty();
+    }
+    Set<String> responseIds = new HashSet<>();
+    for (FunctionResponse functionResponse : Iterables.getLast(events).functionResponses()) {
+      functionResponse.id().ifPresent(responseIds::add);
+    }
+    if (responseIds.isEmpty()) {
+      return Optional.empty();
+    }
+    for (int i = events.size() - 2; i >= 0; i--) {
+      Event event = events.get(i);
+      for (FunctionCall functionCall : event.functionCalls()) {
+        if (functionCall.id().isPresent() && responseIds.contains(functionCall.id().get())) {
+          return Optional.of(event);
+        }
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Returns whether the event emits a long-running function call still awaiting a response (e.g. a
+   * HITL request). Mirrors Python ADK v1's {@code should_pause_invocation}.
+   */
+  public static boolean hasPendingLongRunningCall(Event event) {
+    Set<String> longRunningToolIds = event.longRunningToolIds().orElse(ImmutableSet.of());
+    if (longRunningToolIds.isEmpty()) {
+      return false;
+    }
+    for (FunctionCall functionCall : event.functionCalls()) {
+      if (functionCall.id().isPresent() && longRunningToolIds.contains(functionCall.id().get())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns whether the last one or two events hold a pending long-running call, meaning a
+   * resumable flow should pause instead of calling the model again. Mirrors Python ADK v1's
+   * flow-level pause check on {@code events[-1]} and {@code events[-2]}.
+   */
+  static boolean hasPendingLongRunningCall(List<Event> events) {
+    int from = Math.max(0, events.size() - 2);
+    for (int i = events.size() - 1; i >= from; i--) {
+      if (hasPendingLongRunningCall(events.get(i))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static Maybe<Event> postProcessFunctionResult(
+      Maybe<Map<String, Object>> maybeFunctionResult,
+      InvocationContext invocationContext,
+      BaseTool tool,
+      Map<String, Object> functionArgs,
+      ToolContext toolContext,
+      boolean isLive,
+      Context parentContext) {
+    return Maybe.using(
+        () ->
+            Instrumentation.recordToolExecution(
+                tool, invocationContext.agent(), functionArgs, parentContext),
+        toolExecution ->
+            processFunctionResult(
+                    maybeFunctionResult, invocationContext, tool, functionArgs, toolContext, isLive)
+                .doOnSuccess(event -> toolExecution.context().setFunctionResponseEvent(event))
+                .doOnError(toolExecution::setError),
+        ToolExecution::close);
+  }
+
+  private static Maybe<Event> processFunctionResult(
+      Maybe<Map<String, Object>> maybeFunctionResult,
+      InvocationContext invocationContext,
+      BaseTool tool,
+      Map<String, Object> functionArgs,
+      ToolContext toolContext,
+      boolean isLive) {
+    return maybeFunctionResult
+        .map(Optional::of)
+        .defaultIfEmpty(Optional.empty())
+        .onErrorResumeNext(
+            t -> {
+              Maybe<Map<String, Object>> errorCallbackResult =
+                  handleOnToolErrorCallback(invocationContext, tool, functionArgs, toolContext, t);
+              Maybe<Optional<Map<String, Object>>> mappedResult;
+              if (isLive) {
+                // In live mode, handle null results from the error callback gracefully.
+                mappedResult = errorCallbackResult.map(Optional::ofNullable);
+              } else {
+                // In non-live mode, a null result from the error callback will cause an NPE
+                // when wrapped with Optional.of(), potentially matching prior behavior.
+                mappedResult = errorCallbackResult.map(Optional::of);
+              }
+              return mappedResult.switchIfEmpty(Single.error(t));
+            })
+        .flatMapMaybe(
+            optionalInitialResult -> {
+              Map<String, Object> initialFunctionResult = optionalInitialResult.orElse(null);
+
+              return maybeInvokeAfterToolCall(
+                      invocationContext, tool, functionArgs, toolContext, initialFunctionResult)
+                  .map(Optional::of)
+                  .defaultIfEmpty(Optional.ofNullable(initialFunctionResult))
+                  .flatMapMaybe(
+                      finalOptionalResult -> {
+                        Map<String, Object> finalFunctionResult = finalOptionalResult.orElse(null);
+                        boolean hasNoResult =
+                            finalFunctionResult == null || finalFunctionResult.isEmpty();
+                        if (tool.longRunning() && hasNoResult) {
+                          // A long-running tool with no result yet defers its response, so skip the
+                          // function-response event to avoid re-invoking the model with a
+                          // placeholder. The empty-map case is included because FunctionTool
+                          // coerces
+                          // an absent return into an empty map.
+                          return Maybe.empty();
+                        }
+                        Event event =
+                            buildResponseEvent(
+                                tool, finalFunctionResult, toolContext, invocationContext);
+                        return Maybe.just(event);
+                      });
+            });
+  }
+
+  private static Optional<Event> mergeParallelFunctionResponseEvents(
       List<Event> functionResponseEvents) {
     if (functionResponseEvents.isEmpty()) {
-      return null;
+      return Optional.empty();
     }
     if (functionResponseEvents.size() == 1) {
-      return functionResponseEvents.get(0);
+      return Optional.of(functionResponseEvents.get(0));
     }
     // Use the first event as the base for common attributes
     Event baseEvent = functionResponseEvents.get(0);
@@ -230,15 +582,16 @@ public final class Functions {
       mergedActionsBuilder.merge(event.actions());
     }
 
-    return Event.builder()
-        .id(Event.generateEventId())
-        .invocationId(baseEvent.invocationId())
-        .author(baseEvent.author())
-        .branch(baseEvent.branch())
-        .content(Optional.of(Content.builder().role("user").parts(mergedParts).build()))
-        .actions(mergedActionsBuilder.build())
-        .timestamp(baseEvent.timestamp())
-        .build();
+    return Optional.of(
+        Event.builder()
+            .id(Event.generateEventId())
+            .invocationId(baseEvent.invocationId())
+            .author(baseEvent.author())
+            .branch(baseEvent.branch().orElse(null))
+            .content(Content.builder().role("user").parts(mergedParts).build())
+            .actions(mergedActionsBuilder.build())
+            .timestamp(baseEvent.timestamp())
+            .build());
   }
 
   private static Maybe<Map<String, Object>> maybeInvokeBeforeToolCall(
@@ -249,18 +602,67 @@ public final class Functions {
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
 
-      Optional<List<BeforeToolCallback>> callbacksOpt = agent.beforeToolCallback();
-      if (callbacksOpt.isEmpty() || callbacksOpt.get().isEmpty()) {
-        return Maybe.empty();
-      }
-      List<BeforeToolCallback> callbacks = callbacksOpt.get();
+      Maybe<Map<String, Object>> pluginResult =
+          invocationContext.pluginManager().beforeToolCallback(tool, functionArgs, toolContext);
 
-      return Flowable.fromIterable(callbacks)
-          .concatMapMaybe(
-              callback -> callback.call(invocationContext, tool, functionArgs, toolContext))
-          .firstElement();
+      List<? extends BeforeToolCallback> callbacks = agent.canonicalBeforeToolCallbacks();
+      if (callbacks.isEmpty()) {
+        return pluginResult;
+      }
+
+      Maybe<Map<String, Object>> callbackResult =
+          Maybe.defer(
+              () ->
+                  Flowable.fromIterable(callbacks)
+                      .concatMapMaybe(
+                          callback ->
+                              callback.call(invocationContext, tool, functionArgs, toolContext))
+                      .firstElement());
+
+      return pluginResult.switchIfEmpty(callbackResult);
     }
     return Maybe.empty();
+  }
+
+  /**
+   * Invokes {@link OnToolErrorCallback}s when a tool call fails. If any returns a response, it's
+   * used instead of the error.
+   *
+   * @return A {@link Maybe} with the override result.
+   */
+  private static Maybe<Map<String, Object>> handleOnToolErrorCallback(
+      InvocationContext invocationContext,
+      BaseTool tool,
+      Map<String, Object> functionArgs,
+      ToolContext toolContext,
+      Throwable throwable) {
+    Exception ex = throwable instanceof Exception exception ? exception : new Exception(throwable);
+
+    Maybe<Map<String, Object>> pluginResult =
+        invocationContext
+            .pluginManager()
+            .onToolErrorCallback(tool, functionArgs, toolContext, throwable);
+
+    if (invocationContext.agent() instanceof LlmAgent) {
+      LlmAgent agent = (LlmAgent) invocationContext.agent();
+
+      List<? extends OnToolErrorCallback> callbacks = agent.canonicalOnToolErrorCallbacks();
+      if (callbacks.isEmpty()) {
+        return pluginResult;
+      }
+
+      Maybe<Map<String, Object>> callbackResult =
+          Maybe.defer(
+              () ->
+                  Flowable.fromIterable(callbacks)
+                      .concatMapMaybe(
+                          callback ->
+                              callback.call(invocationContext, tool, functionArgs, toolContext, ex))
+                      .firstElement());
+
+      return pluginResult.switchIfEmpty(callbackResult);
+    }
+    return pluginResult;
   }
 
   private static Maybe<Map<String, Object>> maybeInvokeAfterToolCall(
@@ -271,39 +673,47 @@ public final class Functions {
       Map<String, Object> functionResult) {
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
-      Optional<List<AfterToolCallback>> callbacksOpt = agent.afterToolCallback();
-      if (callbacksOpt.isEmpty() || callbacksOpt.get().isEmpty()) {
-        return Maybe.empty();
-      }
-      List<AfterToolCallback> callbacks = callbacksOpt.get();
 
-      return Flowable.fromIterable(callbacks)
-          .concatMapMaybe(
-              callback ->
-                  callback.call(invocationContext, tool, functionArgs, toolContext, functionResult))
-          .firstElement();
+      Maybe<Map<String, Object>> pluginResult =
+          invocationContext
+              .pluginManager()
+              .afterToolCallback(tool, functionArgs, toolContext, functionResult);
+
+      List<? extends AfterToolCallback> callbacks = agent.canonicalAfterToolCallbacks();
+      if (callbacks.isEmpty()) {
+        return pluginResult;
+      }
+
+      Maybe<Map<String, Object>> callbackResult =
+          Maybe.defer(
+              () ->
+                  Flowable.fromIterable(callbacks)
+                      .concatMapMaybe(
+                          callback ->
+                              callback.call(
+                                  invocationContext,
+                                  tool,
+                                  functionArgs,
+                                  toolContext,
+                                  functionResult))
+                      .firstElement());
+
+      return pluginResult.switchIfEmpty(callbackResult);
     }
     return Maybe.empty();
   }
 
   private static Maybe<Map<String, Object>> callTool(
       BaseTool tool, Map<String, Object> args, ToolContext toolContext) {
-    Tracer tracer = Telemetry.getTracer();
-    return Maybe.defer(
-        () -> {
-          Span span = tracer.spanBuilder("tool_call [" + tool.name() + "]").startSpan();
-          try (Scope scope = span.makeCurrent()) {
-            Telemetry.traceToolCall(args);
-            return tool.runAsync(args, toolContext)
-                .toMaybe()
-                .doOnError(span::recordException)
-                .doFinally(span::end);
-          } catch (RuntimeException e) {
-            span.recordException(e);
-            span.end();
-            return Maybe.error(new RuntimeException("Failed to call tool: " + tool.name(), e));
-          }
-        });
+    return tool.runAsync(args, toolContext)
+        .toMaybe()
+        .doOnError(t -> Span.current().recordException(t))
+        .onErrorResumeNext(
+            e ->
+                Maybe.error(
+                    e instanceof RuntimeException runtimeException
+                        ? runtimeException
+                        : new RuntimeException("Failed to call tool: " + tool.name(), e)));
   }
 
   private static Event buildResponseEvent(
@@ -311,43 +721,107 @@ public final class Functions {
       Map<String, Object> response,
       ToolContext toolContext,
       InvocationContext invocationContext) {
-    Tracer tracer = Telemetry.getTracer();
-    Span span = tracer.spanBuilder("tool_response [" + tool.name() + "]").startSpan();
-    try (Scope scope = span.makeCurrent()) {
-      // use a empty placeholder response if tool response is null.
-      if (response == null) {
-        response = new HashMap<>();
-      }
+    // use an empty placeholder response if tool response is null.
+    Map<String, Object> finalResponse = response != null ? response : new HashMap<>();
 
-      Part partFunctionResponse =
-          Part.builder()
-              .functionResponse(
-                  FunctionResponse.builder()
-                      .id(toolContext.functionCallId().orElse(""))
-                      .name(tool.name())
-                      .response(response)
-                      .build())
-              .build();
+    Part partFunctionResponse =
+        Part.builder()
+            .functionResponse(
+                FunctionResponse.builder()
+                    .id(toolContext.functionCallId().orElse(""))
+                    .name(tool.name())
+                    .response(finalResponse)
+                    .build())
+            .build();
 
-      Event event =
-          Event.builder()
-              .id(Event.generateEventId())
-              .invocationId(invocationContext.invocationId())
-              .author(invocationContext.agent().name())
-              .branch(invocationContext.branch())
-              .content(
-                  Optional.of(
-                      Content.builder()
-                          .role("user")
-                          .parts(Collections.singletonList(partFunctionResponse))
-                          .build()))
-              .actions(toolContext.eventActions())
-              .build();
-      Telemetry.traceToolResponse(invocationContext, event.id(), event);
-      return event;
-    } finally {
-      span.end();
+    return Event.builder()
+        .id(Event.generateEventId())
+        .invocationId(invocationContext.invocationId())
+        .author(invocationContext.agent().name())
+        .branch(invocationContext.branch().orElse(null))
+        .content(Content.builder().role("user").parts(partFunctionResponse).build())
+        .actions(toolContext.eventActions())
+        .build();
+  }
+
+  /**
+   * Generates a request confirmation event from a function response event.
+   *
+   * @param invocationContext The invocation context.
+   * @param functionCallEvent The event containing the original function call.
+   * @param functionResponseEvent The event containing the function response.
+   * @return An optional event containing the request confirmation function call.
+   */
+  public static Optional<Event> generateRequestConfirmationEvent(
+      InvocationContext invocationContext, Event functionCallEvent, Event functionResponseEvent) {
+    if (functionResponseEvent.actions().requestedToolConfirmations().isEmpty()) {
+      return Optional.empty();
     }
+
+    List<Part> parts = new ArrayList<>();
+    Set<String> longRunningToolIds = new HashSet<>();
+    ImmutableMap<String, FunctionCall> functionCallsById =
+        functionCallEvent.functionCalls().stream()
+            .filter(fc -> fc.id().isPresent())
+            .collect(toImmutableMap(fc -> fc.id().get(), fc -> fc));
+
+    for (Map.Entry<String, ToolConfirmation> entry :
+        functionResponseEvent.actions().requestedToolConfirmations().entrySet().stream()
+            .filter(fc -> functionCallsById.containsKey(fc.getKey()))
+            .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue))
+            .entrySet()) {
+
+      FunctionCall requestConfirmationFunctionCall =
+          FunctionCall.builder()
+              .name(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+              .args(
+                  ImmutableMap.of(
+                      "originalFunctionCall",
+                      functionCallsById.get(entry.getKey()),
+                      "toolConfirmation",
+                      entry.getValue()))
+              .id(generateClientFunctionCallId())
+              .build();
+
+      longRunningToolIds.add(requestConfirmationFunctionCall.id().get());
+      parts.add(Part.builder().functionCall(requestConfirmationFunctionCall).build());
+    }
+
+    if (parts.isEmpty()) {
+      return Optional.empty();
+    }
+
+    var contentBuilder = Content.builder().parts(parts);
+    functionResponseEvent.content().flatMap(Content::role).ifPresent(contentBuilder::role);
+
+    return Optional.of(
+        Event.builder()
+            .invocationId(invocationContext.invocationId())
+            .author(invocationContext.agent().name())
+            .branch(invocationContext.branch().orElse(null))
+            .content(contentBuilder.build())
+            .longRunningToolIds(longRunningToolIds)
+            .build());
+  }
+
+  /**
+   * Gets the ask user confirmation function calls from the event.
+   *
+   * @param event The event to extract function calls from.
+   * @return A list of function calls for asking user confirmation.
+   */
+  public static ImmutableList<FunctionCall> getAskUserConfirmationFunctionCalls(Event event) {
+    return event.content().flatMap(Content::parts).orElse(ImmutableList.of()).stream()
+        .flatMap(part -> part.functionCall().stream())
+        .filter(Functions::isRequestConfirmationFunctionCall)
+        .collect(toImmutableList());
+  }
+
+  private static boolean isRequestConfirmationFunctionCall(FunctionCall functionCall) {
+    return functionCall
+        .name()
+        .map(name -> name.equals(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME))
+        .orElse(false);
   }
 
   private Functions() {}

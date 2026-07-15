@@ -16,14 +16,14 @@
 
 package com.google.adk.models;
 
-import com.google.genai.Client;
+import com.google.common.annotations.VisibleForTesting;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Registry for LLM models. */
+/** Central registry for managing Large Language Model (LLM) instances. */
 public final class LlmRegistry {
 
-  // A thread-safe cache mapping model names to LLM instances.
+  /** A thread-safe cache mapping model names to LLM instances. */
   private static final Map<String, BaseLlm> instances = new ConcurrentHashMap<>();
 
   /** The factory interface for creating LLM instances. */
@@ -32,30 +32,56 @@ public final class LlmRegistry {
     BaseLlm create(String modelName);
   }
 
-  // API clients
-  private static final Client geminiApiClient = Client.builder().build();
-
-  // Map of model name patterns regex to factories
+  /** Map of model name patterns regex to factories. */
   private static final Map<String, LlmFactory> llmFactories = new ConcurrentHashMap<>();
 
-  private static Client getGeminiApiClient() {
-    return geminiApiClient;
-  }
-
+  /** Registers default LLM factories, e.g. for Gemini models. */
   static {
-    registerLlm(
-        "gemini-.*",
-        modelName -> Gemini.builder().modelName(modelName).apiClient(getGeminiApiClient()).build());
+    registerLlm("gemini-.*", modelName -> Gemini.builder().modelName(modelName).build());
+    registerLlm("apigee/.*", modelName -> ApigeeLlm.builder().modelName(modelName).build());
+    registerLlm("gemma-.*", modelName -> Gemini.builder().modelName(modelName).build());
   }
 
+  /**
+   * Registers a factory for model names matching the given regex pattern.
+   *
+   * @param modelNamePattern Regex pattern for matching model names.
+   * @param factory Factory to create LLM instances.
+   */
   public static void registerLlm(String modelNamePattern, LlmFactory factory) {
     llmFactories.put(modelNamePattern, factory);
   }
 
+  /**
+   * Checks if the given model name matches any of the registered LLM factory patterns.
+   *
+   * @param modelName The model name to check.
+   * @return {@code true} if the model name matches at least one pattern, {@code false} otherwise.
+   */
+  @VisibleForTesting
+  static boolean matchesAnyPattern(String modelName) {
+    return llmFactories.keySet().stream().anyMatch(modelName::matches);
+  }
+
+  /**
+   * Returns an LLM instance for the given model name, using a cached or new factory-created
+   * instance.
+   *
+   * @param modelName Model name to look up.
+   * @return Matching {@link BaseLlm} instance.
+   * @throws IllegalArgumentException If no factory matches the model name.
+   */
   public static BaseLlm getLlm(String modelName) {
     return instances.computeIfAbsent(modelName, LlmRegistry::createLlm);
   }
 
+  /**
+   * Creates a {@link BaseLlm} by matching the model name against registered factories.
+   *
+   * @param modelName Model name to match.
+   * @return A new {@link BaseLlm} instance.
+   * @throws IllegalArgumentException If no factory matches the model name.
+   */
   private static BaseLlm createLlm(String modelName) {
     for (Map.Entry<String, LlmFactory> entry : llmFactories.entrySet()) {
       if (modelName.matches(entry.getKey())) {
@@ -65,7 +91,13 @@ public final class LlmRegistry {
     throw new IllegalArgumentException("Unsupported model: " + modelName);
   }
 
-  // This is for testing only.
+  /**
+   * Registers an LLM factory for testing purposes. Clears cached instances matching the given
+   * pattern to ensure test isolation.
+   *
+   * @param modelNamePattern Regex pattern for matching model names.
+   * @param factory The {@link LlmFactory} to register.
+   */
   static void registerTestLlm(String modelNamePattern, LlmFactory factory) {
     llmFactories.put(modelNamePattern, factory);
     // Clear any cached instances that match this pattern to ensure test isolation.

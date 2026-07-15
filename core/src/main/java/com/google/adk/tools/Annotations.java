@@ -33,6 +33,8 @@ public final class Annotations {
     String name() default "";
 
     String description() default "";
+
+    boolean optional() default false;
   }
 
   private Annotations() {}

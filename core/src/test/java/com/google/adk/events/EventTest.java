@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.adk.events;
 
 import static com.google.common.truth.Truth.assertThat;
@@ -8,7 +24,9 @@ import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import com.google.genai.types.Transcription;
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Test;
@@ -28,9 +46,7 @@ public final class EventTest {
       EventActions.builder()
           .skipSummarization(true)
           .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("key", "value")))
-          .artifactDelta(
-              new ConcurrentHashMap<>(
-                  ImmutableMap.of("artifact_key", Part.builder().text("artifact_value").build())))
+          .artifactDelta(new ConcurrentHashMap<>(ImmutableMap.of("artifact_key", 1)))
           .transferToAgent("agent_id")
           .escalate(true)
           .requestedAuthConfigs(
@@ -51,8 +67,17 @@ public final class EventTest {
           .turnComplete(true)
           .errorCode(new FinishReason("error_code"))
           .errorMessage("error_message")
+          .finishReason(new FinishReason("finish_reason"))
+          .usageMetadata(
+              GenerateContentResponseUsageMetadata.builder()
+                  .promptTokenCount(10)
+                  .candidatesTokenCount(20)
+                  .totalTokenCount(30)
+                  .build())
+          .avgLogprobs(0.5)
           .interrupted(true)
           .timestamp(123456789L)
+          .modelVersion("model_version")
           .build();
 
   @Test
@@ -64,9 +89,19 @@ public final class EventTest {
     assertThat(EVENT.turnComplete().get()).isTrue();
     assertThat(EVENT.errorCode()).hasValue(new FinishReason("error_code"));
     assertThat(EVENT.errorMessage()).hasValue("error_message");
+    assertThat(EVENT.finishReason()).hasValue(new FinishReason("finish_reason"));
+    assertThat(EVENT.usageMetadata())
+        .hasValue(
+            GenerateContentResponseUsageMetadata.builder()
+                .promptTokenCount(10)
+                .candidatesTokenCount(20)
+                .totalTokenCount(30)
+                .build());
+    assertThat(EVENT.avgLogprobs()).hasValue(0.5);
     assertThat(EVENT.interrupted()).hasValue(true);
     assertThat(EVENT.timestamp()).isEqualTo(123456789L);
     assertThat(EVENT.actions()).isEqualTo(EVENT_ACTIONS);
+    assertThat(EVENT.modelVersion()).hasValue("model_version");
   }
 
   @Test
@@ -156,5 +191,143 @@ public final class EventTest {
     String json = EVENT.toJson();
     Event deserializedEvent = Event.fromJson(json);
     assertThat(deserializedEvent).isEqualTo(EVENT);
+  }
+
+  @Test
+  public void event_builder_with_transcriptions_works() {
+    Transcription inputTranscription =
+        Transcription.builder().text("user said hello").finished(true).build();
+    Transcription outputTranscription =
+        Transcription.builder().text("model said hi").finished(false).build();
+    Event event =
+        Event.builder()
+            .id("event_id")
+            .invocationId("invocation_id")
+            .author("agent")
+            .timestamp(123456789L)
+            .inputTranscription(inputTranscription)
+            .outputTranscription(outputTranscription)
+            .build();
+
+    assertThat(event.inputTranscription()).hasValue(inputTranscription);
+    assertThat(event.outputTranscription()).hasValue(outputTranscription);
+  }
+
+  @Test
+  public void event_transcriptions_empty_by_default() {
+    Event event =
+        Event.builder().id("event_id").invocationId("invocation_id").author("agent").build();
+
+    assertThat(event.inputTranscription()).isEmpty();
+    assertThat(event.outputTranscription()).isEmpty();
+  }
+
+  @Test
+  public void event_equals_differentiates_transcriptions() {
+    Transcription transcription = Transcription.builder().text("hello").finished(true).build();
+    Event eventWithTranscription =
+        Event.builder()
+            .id("event_id")
+            .invocationId("invocation_id")
+            .author("agent")
+            .timestamp(123456789L)
+            .inputTranscription(transcription)
+            .build();
+    Event eventWithoutTranscription =
+        Event.builder()
+            .id("event_id")
+            .invocationId("invocation_id")
+            .author("agent")
+            .timestamp(123456789L)
+            .build();
+
+    assertThat(eventWithTranscription).isNotEqualTo(eventWithoutTranscription);
+  }
+
+  @Test
+  public void event_json_serialization_with_transcriptions_works() throws Exception {
+    Transcription inputTranscription =
+        Transcription.builder().text("user said hello").finished(true).build();
+    Transcription outputTranscription =
+        Transcription.builder().text("model said hi").finished(false).build();
+    Event event =
+        Event.builder()
+            .id("event_id")
+            .invocationId("invocation_id")
+            .author("agent")
+            .timestamp(123456789L)
+            .inputTranscription(inputTranscription)
+            .outputTranscription(outputTranscription)
+            .build();
+
+    String json = event.toJson();
+    Event deserialized = Event.fromJson(json);
+
+    assertThat(deserialized).isEqualTo(event);
+    assertThat(deserialized.inputTranscription()).hasValue(inputTranscription);
+    assertThat(deserialized.outputTranscription()).hasValue(outputTranscription);
+  }
+
+  @Test
+  public void finalResponse_returnsTrueIfNoToolCalls() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromText("hello")))
+            .build();
+    assertThat(event.finalResponse()).isTrue();
+  }
+
+  @Test
+  public void finalResponse_returnsFalseIfToolCalls() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromFunctionCall("tool", ImmutableMap.of("k", "v"))))
+            .build();
+    assertThat(event.finalResponse()).isFalse();
+  }
+
+  @Test
+  public void finalResponse_isTrueForEventWithTextContent() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromText("hello")))
+            .build();
+    assertThat(event.finalResponse()).isTrue();
+  }
+
+  @Test
+  public void finalResponse_isTrueForEventWithToolCallAndLongRunningToolId() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromFunctionCall("tool", ImmutableMap.of("k", "v"))))
+            .longRunningToolIds(ImmutableSet.of("tool1"))
+            .build();
+    // A pending long-running tool call ends the invocation, so the event is a final response.
+    assertThat(event.finalResponse()).isTrue();
+  }
+
+  @Test
+  public void finalResponse_returnsTrueIfSkipSummarization() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromFunctionCall("tool", ImmutableMap.of("k", "v"))))
+            .actions(EventActions.builder().skipSummarization(true).build())
+            .build();
+    assertThat(event.finalResponse()).isTrue();
   }
 }

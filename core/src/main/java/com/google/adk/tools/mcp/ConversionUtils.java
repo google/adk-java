@@ -19,19 +19,26 @@ package com.google.adk.tools.mcp;
 import com.google.adk.tools.BaseTool;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
+import io.modelcontextprotocol.json.McpJsonDefaults;
+import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.Optional;
 
 /** Utility class for converting between different representations of MCP tools. */
 public final class ConversionUtils {
 
-  public McpSchema.Tool adkToMcpToolType(BaseTool tool) {
-    Optional<FunctionDeclaration> toolDeclaration = tool.declaration();
-    if (toolDeclaration.isEmpty()) {
-      return new McpSchema.Tool(tool.name(), tool.description(), "");
+  private static final McpJsonMapper jsonMapper = McpJsonDefaults.getMapper();
+
+  public static McpSchema.Tool adkToMcpToolType(BaseTool tool) {
+    Optional<Schema> parameters = tool.declaration().flatMap(FunctionDeclaration::parameters);
+    if (parameters.isEmpty()) {
+      return McpSchema.Tool.builder().name(tool.name()).description(tool.description()).build();
     }
-    Schema geminiSchema = toolDeclaration.get().parameters().get();
-    return new McpSchema.Tool(tool.name(), tool.description(), geminiSchema.toJson());
+    return McpSchema.Tool.builder()
+        .name(tool.name())
+        .description(tool.description())
+        .inputSchema(jsonMapper, parameters.get().toJson())
+        .build();
   }
 
   private ConversionUtils() {}

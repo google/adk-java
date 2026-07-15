@@ -20,23 +20,33 @@ import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.function.Supplier;
 
+/**
+ * Iterable stream of {@link Event} objects.
+ *
+ * <p>NOTE: This class is not thread-safe. Concurrent iteration from multiple threads should be
+ * avoided or externally synchronized.
+ */
 public class EventStream implements Iterable<Event> {
 
   private final Supplier<Event> eventSupplier;
 
+  /** Constructs a new event stream. */
   public EventStream(Supplier<Event> eventSupplier) {
     this.eventSupplier = eventSupplier;
   }
 
+  /** Returns an iterator that fetches events lazily. */
   @Override
   public Iterator<Event> iterator() {
     return new EventIterator();
   }
 
+  /** Iterator that returns events from the supplier until it returns {@code null}. */
   private class EventIterator implements Iterator<Event> {
     private Event nextEvent = null;
     private boolean finished = false;
 
+    /** Returns {@code true} if another event is available. */
     @Override
     public boolean hasNext() {
       if (finished) {
@@ -49,6 +59,11 @@ public class EventStream implements Iterable<Event> {
       return !finished;
     }
 
+    /**
+     * Returns the next event.
+     *
+     * @throws NoSuchElementException if no more events are available.
+     */
     @Override
     public Event next() {
       if (!hasNext()) {

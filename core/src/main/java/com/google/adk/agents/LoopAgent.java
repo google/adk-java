@@ -16,22 +16,51 @@
 
 package com.google.adk.agents;
 
+import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
-import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
-import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * An agent that runs its sub-agents sequentially in a loop.
  *
  * <p>The loop continues until a sub-agent escalates, or until the maximum number of iterations is
  * reached (if specified).
+ *
+ * <p><b>Composition with {@link LlmAgent}s:</b> a {@code LoopAgent} does not transfer control back
+ * to a parent {@link LlmAgent}. To react to loop results, place the {@code LoopAgent} and the
+ * follow-up {@link LlmAgent} as siblings inside a {@link SequentialAgent}. Loop sub-agents publish
+ * via {@code outputKey} and the follow-up reads via {@code {key}} placeholders in its instruction:
+ *
+ * <pre>{@code
+ * var refiner =
+ *     LlmAgent.builder()
+ *         .name("refiner")
+ *         .model("gemini-flash-latest")
+ *         .instruction("Refine: {draft?}")
+ *         .outputKey("draft")
+ *         .build();
+ * var publisher =
+ *     LlmAgent.builder()
+ *         .name("publisher")
+ *         .model("gemini-flash-latest")
+ *         .instruction("Publish: {draft}")
+ *         .build();
+ * var loop =
+ *     LoopAgent.builder().name("loop").subAgents(refiner).maxIterations(3).build();
+ * var root = SequentialAgent.builder().name("root").subAgents(loop, publisher).build();
+ * }</pre>
  */
 public class LoopAgent extends BaseAgent {
+  private static final Logger logger = LoggerFactory.getLogger(LoopAgent.class);
 
-  private final Optional<Integer> maxIterations;
+  private final @Nullable Integer maxIterations;
 
   /**
    * Constructor for LoopAgent.
@@ -47,7 +76,7 @@ public class LoopAgent extends BaseAgent {
       String name,
       String description,
       List<? extends BaseAgent> subAgents,
-      Optional<Integer> maxIterations,
+      @Nullable Integer maxIterations,
       List<Callbacks.BeforeAgentCallback> beforeAgentCallback,
       List<Callbacks.AfterAgentCallback> afterAgentCallback) {
 
@@ -56,75 +85,16 @@ public class LoopAgent extends BaseAgent {
   }
 
   /** Builder for {@link LoopAgent}. */
-  public static class Builder {
-    private String name;
-    private String description;
-    private List<? extends BaseAgent> subAgents;
-    private Optional<Integer> maxIterations = Optional.empty();
-    private ImmutableList<Callbacks.BeforeAgentCallback> beforeAgentCallback;
-    private ImmutableList<Callbacks.AfterAgentCallback> afterAgentCallback;
+  public static class Builder extends BaseAgent.Builder<Builder> {
+    private @Nullable Integer maxIterations;
 
     @CanIgnoreReturnValue
-    public Builder name(String name) {
-      this.name = name;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder description(String description) {
-      this.description = description;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder subAgents(List<? extends BaseAgent> subAgents) {
-      this.subAgents = subAgents;
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder subAgents(BaseAgent... subAgents) {
-      this.subAgents = ImmutableList.copyOf(subAgents);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder maxIterations(int maxIterations) {
-      this.maxIterations = Optional.of(maxIterations);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder maxIterations(Optional<Integer> maxIterations) {
+    public Builder maxIterations(@Nullable Integer maxIterations) {
       this.maxIterations = maxIterations;
       return this;
     }
 
-    @CanIgnoreReturnValue
-    public Builder beforeAgentCallback(Callbacks.BeforeAgentCallback beforeAgentCallback) {
-      this.beforeAgentCallback = ImmutableList.of(beforeAgentCallback);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder beforeAgentCallback(
-        List<Callbacks.BeforeAgentCallbackBase> beforeAgentCallback) {
-      this.beforeAgentCallback = CallbackUtil.getBeforeAgentCallbacks(beforeAgentCallback);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder afterAgentCallback(Callbacks.AfterAgentCallback afterAgentCallback) {
-      this.afterAgentCallback = ImmutableList.of(afterAgentCallback);
-      return this;
-    }
-
-    @CanIgnoreReturnValue
-    public Builder afterAgentCallback(List<Callbacks.AfterAgentCallbackBase> afterAgentCallback) {
-      this.afterAgentCallback = CallbackUtil.getAfterAgentCallbacks(afterAgentCallback);
-      return this;
-    }
-
+    @Override
     public LoopAgent build() {
       // TODO(b/410859954): Add validation for required fields like name.
       return new LoopAgent(
@@ -136,6 +106,35 @@ public class LoopAgent extends BaseAgent {
     return new Builder();
   }
 
+  /**
+   * Creates a LoopAgent from configuration.
+   *
+   * @param config The agent configuration.
+   * @param configAbsPath The absolute path to the agent config file.
+   * @return the configured LoopAgent
+   * @throws ConfigurationException if the configuration is invalid
+   */
+  public static LoopAgent fromConfig(LoopAgentConfig config, String configAbsPath)
+      throws ConfigurationException {
+    logger.debug("Creating LoopAgent from config: {}", config.name());
+
+    Builder builder = builder();
+    ConfigAgentUtils.resolveAndSetCommonAgentFields(builder, config, configAbsPath);
+
+    if (config.maxIterations() != null) {
+      builder.maxIterations(config.maxIterations());
+    }
+
+    // Build and return the agent
+    LoopAgent agent = builder.build();
+    logger.info(
+        "Successfully created LoopAgent: {} with {} subagents",
+        agent.name(),
+        agent.subAgents() != null ? agent.subAgents().size() : 0);
+
+    return agent;
+  }
+
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
     List<? extends BaseAgent> subAgents = subAgents();
@@ -143,9 +142,35 @@ public class LoopAgent extends BaseAgent {
       return Flowable.empty();
     }
 
+    if (!invocationContext.isResumable()) {
+      return Flowable.fromIterable(subAgents)
+          .concatMap(subAgent -> subAgent.runAsync(invocationContext))
+          .repeat(maxIterations != null ? maxIterations : Integer.MAX_VALUE)
+          .takeUntil(LoopAgent::hasEscalateAction);
+    }
+
+    // Resumable: stop looping once a sub-agent emits a pending long-running call (e.g. HITL),
+    // matching Python ADK v1 and avoiding a runaway loop. The current sub-agent still finishes;
+    // resuming into the paused iteration needs persisted state (future work).
+    AtomicBoolean paused = new AtomicBoolean(false);
+    AtomicInteger timesLooped = new AtomicInteger(0);
     return Flowable.fromIterable(subAgents)
-        .concatMap(subAgent -> subAgent.runAsync(invocationContext))
-        .repeat(maxIterations.orElse(Integer.MAX_VALUE))
+        .concatMap(
+            subAgent ->
+                paused.get()
+                    ? Flowable.empty()
+                    : subAgent
+                        .runAsync(invocationContext)
+                        .doOnNext(
+                            event -> {
+                              if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
+                                paused.set(true);
+                              }
+                            }))
+        .repeatUntil(
+            () ->
+                paused.get()
+                    || (maxIterations != null && timesLooped.incrementAndGet() >= maxIterations))
         .takeUntil(LoopAgent::hasEscalateAction);
   }
 
@@ -157,5 +182,9 @@ public class LoopAgent extends BaseAgent {
 
   private static boolean hasEscalateAction(Event event) {
     return event.actions().escalate().orElse(false);
+  }
+
+  public @Nullable Integer maxIterations() {
+    return maxIterations;
   }
 }

@@ -16,33 +16,13 @@
 
 package com.google.adk;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.Properties;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+/**
+ * Tracks the current ADK version. Useful for tracking headers. Kept as a string literal to avoid
+ * coupling with the build system.
+ */
 public final class Version {
-  private static final Logger logger = LoggerFactory.getLogger(Version.class);
-
-  public static final String JAVA_ADK_VERSION;
-
-  static {
-    String version = "unknown";
-    try (InputStream input =
-        Version.class.getClassLoader().getResourceAsStream("version.properties")) {
-      if (input != null) {
-        Properties properties = new Properties();
-        properties.load(input);
-        version = properties.getProperty("version", "unknown");
-      } else {
-        logger.warn("version.properties file not found in classpath");
-      }
-    } catch (IOException e) {
-      logger.warn("Failed to load version from properties file", e);
-    }
-    JAVA_ADK_VERSION = version;
-  }
+  // Don't touch this, release-please should keep it up to date.
+  public static final String JAVA_ADK_VERSION = "1.6.0"; // x-release-please-released-version
 
   private Version() {}
 }

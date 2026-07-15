@@ -18,23 +18,28 @@ package com.google.adk.tools;
 
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
-import com.google.adk.artifacts.ListArtifactsResponse;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
+import com.google.adk.memory.SearchMemoryResponse;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Single;
-import java.util.List;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /** ToolContext object provides a structured context for executing tools or functions. */
 public class ToolContext extends CallbackContext {
   private Optional<String> functionCallId = Optional.empty();
+  private Optional<ToolConfirmation> toolConfirmation = Optional.empty();
 
   private ToolContext(
       InvocationContext invocationContext,
       EventActions eventActions,
-      Optional<String> functionCallId) {
-    super(invocationContext, eventActions);
+      Optional<String> functionCallId,
+      Optional<ToolConfirmation> toolConfirmation,
+      @Nullable String eventId) {
+    super(invocationContext, eventActions, eventId);
     this.functionCallId = functionCallId;
+    this.toolConfirmation = toolConfirmation;
   }
 
   public EventActions actions() {
@@ -53,6 +58,14 @@ public class ToolContext extends CallbackContext {
     this.functionCallId = Optional.ofNullable(functionCallId);
   }
 
+  public Optional<ToolConfirmation> toolConfirmation() {
+    return toolConfirmation;
+  }
+
+  public void toolConfirmation(ToolConfirmation toolConfirmation) {
+    this.toolConfirmation = Optional.ofNullable(toolConfirmation);
+  }
+
   @SuppressWarnings("unused")
   private void requestCredential() {
     // TODO: b/414678311 - Implement credential request logic. Make this public.
@@ -65,24 +78,44 @@ public class ToolContext extends CallbackContext {
     throw new UnsupportedOperationException("Auth response retrieval not implemented yet.");
   }
 
-  @SuppressWarnings("unused")
-  private void searchMemory() {
-    // TODO: b/414680316 - Implement search memory logic. Make this public.
-    throw new UnsupportedOperationException("Search memory not implemented yet.");
+  /**
+   * Requests confirmation for the given function call.
+   *
+   * @param hint A hint to the user on how to confirm the tool call.
+   * @param payload The payload used to confirm the tool call.
+   */
+  public void requestConfirmation(@Nullable String hint, @Nullable Object payload) {
+    if (functionCallId.isEmpty()) {
+      throw new IllegalStateException("function_call_id is not set.");
+    }
+    this.eventActions
+        .requestedToolConfirmations()
+        .put(functionCallId.get(), ToolConfirmation.builder().hint(hint).payload(payload).build());
   }
 
-  /** Lists the filenames of the artifacts attached to the current session. */
-  public Single<List<String>> listArtifacts() {
-    if (invocationContext.artifactService() == null) {
-      throw new IllegalStateException("Artifact service is not initialized.");
+  /**
+   * Requests confirmation for the given function call.
+   *
+   * @param hint A hint to the user on how to confirm the tool call.
+   */
+  public void requestConfirmation(@Nullable String hint) {
+    requestConfirmation(hint, null);
+  }
+
+  /** Requests confirmation for the given function call. */
+  public void requestConfirmation() {
+    requestConfirmation(null, null);
+  }
+
+  /** Searches the memory of the current user. */
+  public Single<SearchMemoryResponse> searchMemory(String query) {
+    if (invocationContext.memoryService() == null) {
+      throw new IllegalStateException("Memory service is not initialized.");
     }
     return invocationContext
-        .artifactService()
-        .listArtifactKeys(
-            invocationContext.session().appName(),
-            invocationContext.session().userId(),
-            invocationContext.session().id())
-        .map(ListArtifactsResponse::filenames);
+        .memoryService()
+        .searchMemory(
+            invocationContext.session().appName(), invocationContext.session().userId(), query);
   }
 
   public static Builder builder(InvocationContext invocationContext) {
@@ -92,7 +125,23 @@ public class ToolContext extends CallbackContext {
   public Builder toBuilder() {
     return new Builder(invocationContext)
         .actions(eventActions)
-        .functionCallId(functionCallId.orElse(null));
+        .functionCallId(functionCallId.orElse(null))
+        .toolConfirmation(toolConfirmation.orElse(null))
+        .eventId(eventId());
+  }
+
+  @Override
+  public String toString() {
+    return "ToolContext{"
+        + "invocationContext="
+        + invocationContext
+        + ", eventActions="
+        + eventActions
+        + ", functionCallId="
+        + functionCallId
+        + ", toolConfirmation="
+        + toolConfirmation
+        + '}';
   }
 
   /** Builder for {@link ToolContext}. */
@@ -100,6 +149,8 @@ public class ToolContext extends CallbackContext {
     private final InvocationContext invocationContext;
     private EventActions eventActions = EventActions.builder().build(); // Default empty actions
     private Optional<String> functionCallId = Optional.empty();
+    private Optional<ToolConfirmation> toolConfirmation = Optional.empty();
+    private String eventId;
 
     private Builder(InvocationContext invocationContext) {
       this.invocationContext = invocationContext;
@@ -117,8 +168,21 @@ public class ToolContext extends CallbackContext {
       return this;
     }
 
+    @CanIgnoreReturnValue
+    public Builder toolConfirmation(ToolConfirmation toolConfirmation) {
+      this.toolConfirmation = Optional.ofNullable(toolConfirmation);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder eventId(String eventId) {
+      this.eventId = eventId;
+      return this;
+    }
+
     public ToolContext build() {
-      return new ToolContext(invocationContext, eventActions, functionCallId);
+      return new ToolContext(
+          invocationContext, eventActions, functionCallId, toolConfirmation, eventId);
     }
   }
 }

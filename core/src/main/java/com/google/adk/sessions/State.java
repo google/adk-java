@@ -16,13 +16,16 @@
 
 package com.google.adk.sessions;
 
+import com.fasterxml.jackson.annotation.JsonValue;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import org.jspecify.annotations.Nullable;
 
 /** A {@link State} object that also keeps track of the changes to the state. */
 @SuppressWarnings("ShouldNotSubclass")
@@ -32,16 +35,36 @@ public final class State implements ConcurrentMap<String, Object> {
   public static final String USER_PREFIX = "user:";
   public static final String TEMP_PREFIX = "temp:";
 
+  /** Sentinel object to mark removed entries in the delta map. */
+  public static final Object REMOVED = RemovedSentinel.INSTANCE;
+
   private final ConcurrentMap<String, Object> state;
   private final ConcurrentMap<String, Object> delta;
 
-  public State(ConcurrentMap<String, Object> state) {
-    this(state, new ConcurrentHashMap<>());
+  public State(Map<String, Object> state) {
+    this(state, null);
   }
 
-  public State(ConcurrentMap<String, Object> state, ConcurrentMap<String, Object> delta) {
-    this.state = Objects.requireNonNull(state);
-    this.delta = delta;
+  public State(Map<String, Object> state, @Nullable Map<String, Object> delta) {
+    Objects.requireNonNull(state, "state is null");
+    this.state = toConcurrentMap(state);
+    this.delta = delta == null ? new ConcurrentHashMap<>() : toConcurrentMap(delta);
+  }
+
+  /**
+   * Converts a map to a concurrent map. Null values are converted to {@link #REMOVED} to avoid
+   * NPEs.
+   *
+   * <p>If the map is already a concurrent map, it is returned as is. Otherwise, a new concurrent
+   * map is created and returned.
+   */
+  private static ConcurrentMap<String, Object> toConcurrentMap(Map<String, Object> map) {
+    if (map instanceof ConcurrentMap) {
+      return (ConcurrentMap<String, Object>) map;
+    }
+    ConcurrentMap<String, Object> concurrentMap = new ConcurrentHashMap<>();
+    map.forEach((key, value) -> concurrentMap.put(key, Optional.ofNullable(value).orElse(REMOVED)));
+    return concurrentMap;
   }
 
   @Override
@@ -119,12 +142,19 @@ public final class State implements ConcurrentMap<String, Object> {
 
   @Override
   public Object remove(Object key) {
+    if (state.containsKey(key)) {
+      delta.put((String) key, REMOVED);
+    }
     return state.remove(key);
   }
 
   @Override
   public boolean remove(Object key, Object value) {
-    return state.remove(key, value);
+    boolean removed = state.remove(key, value);
+    if (removed) {
+      delta.put((String) key, REMOVED);
+    }
+    return removed;
   }
 
   @Override
@@ -157,5 +187,18 @@ public final class State implements ConcurrentMap<String, Object> {
 
   public boolean hasDelta() {
     return !delta.isEmpty();
+  }
+
+  private static final class RemovedSentinel {
+    public static final RemovedSentinel INSTANCE = new RemovedSentinel();
+
+    private RemovedSentinel() {
+      // Enforce singleton.
+    }
+
+    @JsonValue
+    public String toJson() {
+      return "__ADK_SENTINEL_REMOVED__";
+    }
   }
 }

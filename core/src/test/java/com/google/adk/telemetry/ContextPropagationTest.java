@@ -1,0 +1,827 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.google.adk.telemetry;
+
+import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LiveRequestQueue;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
+import com.google.adk.events.Event;
+import com.google.adk.models.LlmRequest;
+import com.google.adk.models.LlmResponse;
+import com.google.adk.runner.Runner;
+import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.Session;
+import com.google.adk.testing.TestLlm;
+import com.google.adk.testing.TestUtils;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
+import com.google.genai.types.FunctionDeclaration;
+import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.Part;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
+
+/**
+ * Tests for OpenTelemetry context propagation in ADK.
+ *
+ * <p>Verifies that spans created by ADK properly link to parent contexts when available, enabling
+ * proper distributed tracing across async boundaries.
+ */
+@RunWith(JUnit4.class)
+public class ContextPropagationTest {
+  @Rule public final OpenTelemetryRule openTelemetryRule = OpenTelemetryRule.create();
+
+  private Tracer tracer;
+  private Tracer originalTracer;
+  private LlmAgent agent;
+  private InMemorySessionService sessionService;
+
+  @Before
+  public void setup() {
+    this.originalTracer = Tracing.getTracer();
+    Tracing.setTracerForTesting(
+        openTelemetryRule.getOpenTelemetry().getTracer("ContextPropagationTest"));
+    tracer = openTelemetryRule.getOpenTelemetry().getTracer("test");
+    agent = LlmAgent.builder().name("test_agent").description("test-description").build();
+    sessionService = new InMemorySessionService();
+  }
+
+  @After
+  public void tearDown() {
+    Tracing.setTracerForTesting(originalTracer);
+  }
+
+  @Test
+  public void testTraceFlowable() throws InterruptedException {
+    Span parentSpan = tracer.spanBuilder("parent").startSpan();
+    try (Scope s = parentSpan.makeCurrent()) {
+      Span flowableSpan = tracer.spanBuilder("flowable").setParent(Context.current()).startSpan();
+      Flowable<Integer> flowable =
+          Tracing.traceFlowable(
+              Context.current().with(flowableSpan),
+              flowableSpan,
+              () ->
+                  Flowable.just(1, 2, 3)
+                      .map(
+                          i -> {
+                            assertEquals(
+                                flowableSpan.getSpanContext().getSpanId(),
+                                Span.current().getSpanContext().getSpanId());
+                            return i * 2;
+                          }));
+      flowable.test().await().assertComplete();
+    } finally {
+      parentSpan.end();
+    }
+
+    SpanData parentSpanData = findSpanByName("parent");
+    SpanData flowableSpanData = findSpanByName("flowable");
+    assertParent(parentSpanData, flowableSpanData);
+    assertTrue(flowableSpanData.hasEnded());
+  }
+
+  @Test
+  public void testWithContextFlowable() throws InterruptedException {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.root().with(testKey, "test-value");
+
+    Flowable<Integer> flowable =
+        Flowable.just(1, 2, 3)
+            .compose(Tracing.withContext(testContext))
+            .subscribeOn(Schedulers.computation())
+            .doOnNext(
+                i -> {
+                  assertEquals("test-value", Context.current().get(testKey));
+                });
+    flowable.test().await().assertComplete();
+  }
+
+  @Test
+  public void testWithContextSingle() throws InterruptedException {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.root().with(testKey, "test-value");
+
+    Single<Integer> single =
+        Single.just(1)
+            .compose(Tracing.withContext(testContext))
+            .subscribeOn(Schedulers.computation())
+            .doOnSuccess(
+                i -> {
+                  assertEquals("test-value", Context.current().get(testKey));
+                });
+    single.test().await().assertComplete();
+  }
+
+  @Test
+  public void testWithContextMaybe() throws InterruptedException {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.root().with(testKey, "test-value");
+
+    Maybe<Integer> maybe =
+        Maybe.just(1)
+            .compose(Tracing.withContext(testContext))
+            .subscribeOn(Schedulers.computation())
+            .doOnSuccess(
+                i -> {
+                  assertEquals("test-value", Context.current().get(testKey));
+                });
+    maybe.test().await().assertComplete();
+  }
+
+  @Test
+  public void testWithContextCompletable() throws InterruptedException {
+    ContextKey<String> testKey = ContextKey.named("test-key");
+    Context testContext = Context.root().with(testKey, "test-value");
+
+    Completable completable =
+        Completable.complete()
+            .compose(Tracing.withContext(testContext))
+            .subscribeOn(Schedulers.computation())
+            .doOnComplete(
+                () -> {
+                  assertEquals("test-value", Context.current().get(testKey));
+                });
+    completable.test().await().assertComplete();
+  }
+
+  @Test
+  public void testTraceTransformer() throws InterruptedException {
+    Span parentSpan = tracer.spanBuilder("parent").startSpan();
+    try (Scope s = parentSpan.makeCurrent()) {
+      Flowable<Integer> flowable =
+          Flowable.just(1, 2, 3)
+              .map(
+                  i -> {
+                    assertTrue(Span.current().getSpanContext().isValid());
+                    return i * 2;
+                  })
+              .compose(Tracing.trace("transformer"));
+      flowable.test().await().assertComplete();
+    } finally {
+      parentSpan.end();
+    }
+
+    SpanData parentSpanData = findSpanByName("parent");
+    SpanData transformerSpanData = findSpanByName("transformer");
+    assertParent(parentSpanData, transformerSpanData);
+    assertTrue(transformerSpanData.hasEnded());
+  }
+
+  @Test
+  public void testTraceTransformerStartsSpanBeforeSubscribingToDeferredUpstream()
+      throws InterruptedException {
+    Span parentSpan = tracer.spanBuilder("parent").startSpan();
+    AtomicReference<String> flowableSpanId = new AtomicReference<>();
+    AtomicReference<String> singleSpanId = new AtomicReference<>();
+    AtomicReference<String> maybeSpanId = new AtomicReference<>();
+    AtomicReference<String> completableSpanId = new AtomicReference<>();
+
+    try (Scope s = parentSpan.makeCurrent()) {
+      Flowable.defer(
+              () -> {
+                flowableSpanId.set(Span.current().getSpanContext().getSpanId());
+                return Flowable.just(1);
+              })
+          .compose(Tracing.trace("flowable-transformer"))
+          .test()
+          .await()
+          .assertComplete();
+
+      Single.defer(
+              () -> {
+                singleSpanId.set(Span.current().getSpanContext().getSpanId());
+                return Single.just(1);
+              })
+          .compose(Tracing.trace("single-transformer"))
+          .test()
+          .await()
+          .assertComplete();
+
+      Maybe.defer(
+              () -> {
+                maybeSpanId.set(Span.current().getSpanContext().getSpanId());
+                return Maybe.just(1);
+              })
+          .compose(Tracing.trace("maybe-transformer"))
+          .test()
+          .await()
+          .assertComplete();
+
+      Completable.defer(
+              () -> {
+                completableSpanId.set(Span.current().getSpanContext().getSpanId());
+                return Completable.complete();
+              })
+          .compose(Tracing.trace("completable-transformer"))
+          .test()
+          .await()
+          .assertComplete();
+    } finally {
+      parentSpan.end();
+    }
+
+    SpanData parentSpanData = findSpanByName("parent");
+    assertDeferredUpstreamSawTransformerSpan(
+        parentSpanData, findSpanByName("flowable-transformer"), flowableSpanId);
+    assertDeferredUpstreamSawTransformerSpan(
+        parentSpanData, findSpanByName("single-transformer"), singleSpanId);
+    assertDeferredUpstreamSawTransformerSpan(
+        parentSpanData, findSpanByName("maybe-transformer"), maybeSpanId);
+    assertDeferredUpstreamSawTransformerSpan(
+        parentSpanData, findSpanByName("completable-transformer"), completableSpanId);
+  }
+
+  @Test
+  public void testTraceAgentInvocation() {
+    Span span = tracer.spanBuilder("test").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      Tracing.traceAgentInvocation(
+          span, "test-agent", "test-description", buildInvocationContext());
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    SpanData spanData = spans.get(0);
+    Attributes attrs = spanData.getAttributes();
+    assertEquals("invoke_agent", attrs.get(AttributeKey.stringKey("gen_ai.operation.name")));
+    assertEquals("test-agent", attrs.get(AttributeKey.stringKey("gen_ai.agent.name")));
+    assertEquals("test-description", attrs.get(AttributeKey.stringKey("gen_ai.agent.description")));
+    assertEquals("test-session", attrs.get(AttributeKey.stringKey("gen_ai.conversation.id")));
+  }
+
+  @Test
+  public void testTraceToolCall() {
+    Span span = tracer.spanBuilder("test").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      Tracing.traceToolExecution(
+          span,
+          "tool-name",
+          "tool-description",
+          "tool-type",
+          ImmutableMap.of("arg1", "value1"),
+          null,
+          null);
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    SpanData spanData = spans.get(0);
+    Attributes attrs = spanData.getAttributes();
+    assertEquals("execute_tool", attrs.get(AttributeKey.stringKey("gen_ai.operation.name")));
+    assertEquals("tool-name", attrs.get(AttributeKey.stringKey("gen_ai.tool.name")));
+    assertEquals("tool-description", attrs.get(AttributeKey.stringKey("gen_ai.tool.description")));
+    assertEquals("tool-type", attrs.get(AttributeKey.stringKey("gen_ai.tool.type")));
+    assertEquals(
+        "{\"arg1\":\"value1\"}",
+        attrs.get(AttributeKey.stringKey("gcp.vertex.agent.tool_call_args")));
+    assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.llm_request")));
+    assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.llm_response")));
+  }
+
+  @Test
+  public void testTraceToolResponse() {
+    Span span = tracer.spanBuilder("test").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      Event functionResponseEvent =
+          Event.builder()
+              .id("event-1")
+              .content(
+                  Content.fromParts(
+                      Part.builder()
+                          .functionResponse(
+                              FunctionResponse.builder()
+                                  .name("tool-name")
+                                  .id("tool-call-id")
+                                  .response(ImmutableMap.of("result", "tool-result"))
+                                  .build())
+                          .build()))
+              .build();
+      Tracing.traceToolExecution(
+          span,
+          "tool-name",
+          "tool-description",
+          "tool-type",
+          ImmutableMap.of(),
+          functionResponseEvent,
+          null);
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    SpanData spanData = spans.get(0);
+    Attributes attrs = spanData.getAttributes();
+    assertEquals("execute_tool", attrs.get(AttributeKey.stringKey("gen_ai.operation.name")));
+    assertEquals("event-1", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.event_id")));
+    assertEquals("tool-call-id", attrs.get(AttributeKey.stringKey("gen_ai.tool_call.id")));
+    assertEquals("tool-name", attrs.get(AttributeKey.stringKey("gen_ai.tool.name")));
+    assertEquals("tool-description", attrs.get(AttributeKey.stringKey("gen_ai.tool.description")));
+    assertEquals("tool-type", attrs.get(AttributeKey.stringKey("gen_ai.tool.type")));
+    assertEquals("{}", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.tool_call_args")));
+    assertEquals(
+        "{\"result\":\"tool-result\"}",
+        attrs.get(AttributeKey.stringKey("gcp.vertex.agent.tool_response")));
+  }
+
+  @Test
+  public void testTraceCallLlm() {
+    Span span = tracer.spanBuilder("test").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      LlmRequest llmRequest =
+          LlmRequest.builder()
+              .model("gemini-pro")
+              .contents(ImmutableList.of(Content.fromParts(Part.fromText("hello"))))
+              .config(GenerateContentConfig.builder().topP(0.9f).maxOutputTokens(100).build())
+              .build();
+      LlmResponse llmResponse =
+          LlmResponse.builder()
+              .content(Content.builder().parts(Part.fromText("world")).build())
+              .finishReason(new FinishReason(FinishReason.Known.STOP))
+              .usageMetadata(
+                  GenerateContentResponseUsageMetadata.builder()
+                      .promptTokenCount(10)
+                      .candidatesTokenCount(20)
+                      .totalTokenCount(30)
+                      .build())
+              .build();
+      Tracing.traceCallLlm(
+          span, buildInvocationContext(), "event-1", llmRequest, llmResponse, null);
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    SpanData spanData = spans.get(0);
+    Attributes attrs = spanData.getAttributes();
+    assertEquals("gcp.vertex.agent", attrs.get(AttributeKey.stringKey("gen_ai.system")));
+    assertEquals("call_llm", attrs.get(AttributeKey.stringKey("gen_ai.operation.name")));
+    assertEquals("gemini-pro", attrs.get(AttributeKey.stringKey("gen_ai.request.model")));
+    assertEquals(
+        "test-invocation-id", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.invocation_id")));
+    assertEquals("event-1", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.event_id")));
+    assertEquals("test-session", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.session_id")));
+    assertEquals(0.9d, attrs.get(AttributeKey.doubleKey("gen_ai.request.top_p")), 0.01);
+    assertEquals(100L, (long) attrs.get(AttributeKey.longKey("gen_ai.request.max_tokens")));
+    assertEquals(10L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.input_tokens")));
+    assertEquals(20L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.output_tokens")));
+    assertEquals(
+        ImmutableList.of("stop"),
+        attrs.get(AttributeKey.stringArrayKey("gen_ai.response.finish_reasons")));
+    assertTrue(
+        attrs.get(AttributeKey.stringKey("gcp.vertex.agent.llm_request")).contains("gemini-pro"));
+    assertTrue(attrs.get(AttributeKey.stringKey("gcp.vertex.agent.llm_response")).contains("STOP"));
+  }
+
+  @Test
+  public void testTraceCallLlm_withReasoningAndCacheTokens() {
+    Span span = tracer.spanBuilder("test-reasoning").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      LlmRequest llmRequest =
+          LlmRequest.builder()
+              .model("gemini-pro")
+              .contents(ImmutableList.of(Content.fromParts(Part.fromText("hello"))))
+              .config(GenerateContentConfig.builder().topP(0.9f).maxOutputTokens(100).build())
+              .build();
+      LlmResponse llmResponse =
+          LlmResponse.builder()
+              .content(Content.builder().parts(Part.fromText("world")).build())
+              .finishReason(new FinishReason(FinishReason.Known.STOP))
+              .usageMetadata(
+                  GenerateContentResponseUsageMetadata.builder()
+                      .promptTokenCount(10)
+                      .cachedContentTokenCount(5)
+                      .candidatesTokenCount(20)
+                      .thoughtsTokenCount(15)
+                      .totalTokenCount(50)
+                      .build())
+              .build();
+      Tracing.traceCallLlm(
+          span, buildInvocationContext(), "event-1", llmRequest, llmResponse, null);
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    SpanData spanData = spans.get(0);
+    Attributes attrs = spanData.getAttributes();
+    assertEquals(10L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.input_tokens")));
+    assertEquals(35L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.output_tokens")));
+    assertEquals(
+        5L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.cache_read.input_tokens")));
+    assertEquals(
+        15L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.reasoning.output_tokens")));
+  }
+
+  @Test
+  public void testTraceSendData() {
+    Span span = tracer.spanBuilder("test").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      Tracing.traceSendData(
+          span,
+          buildInvocationContext(),
+          "event-1",
+          ImmutableList.of(Content.fromParts(Part.fromText("hello"))));
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    SpanData spanData = spans.get(0);
+    Attributes attrs = spanData.getAttributes();
+    assertEquals("send_data", attrs.get(AttributeKey.stringKey("gen_ai.operation.name")));
+    assertEquals(
+        "test-invocation-id", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.invocation_id")));
+    assertEquals("event-1", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.event_id")));
+    assertEquals("test-session", attrs.get(AttributeKey.stringKey("gcp.vertex.agent.session_id")));
+    assertTrue(attrs.get(AttributeKey.stringKey("gcp.vertex.agent.data")).contains("hello"));
+  }
+
+  // Agent that emits one event on a computation thread.
+  private static class TestAgent extends BaseAgent {
+    TestAgent() {
+      super("test-agent", "test-description", null, null, null);
+    }
+
+    @Override
+    protected Flowable<Event> runAsyncImpl(InvocationContext context) {
+      return Flowable.just(
+              Event.builder().content(Content.fromParts(Part.fromText("test"))).build())
+          .subscribeOn(Schedulers.computation());
+    }
+
+    @Override
+    protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
+      return Flowable.just(
+              Event.builder().content(Content.fromParts(Part.fromText("test"))).build())
+          .subscribeOn(Schedulers.computation());
+    }
+  }
+
+  @Test
+  public void baseAgentRunAsync_propagatesContext() throws InterruptedException {
+    BaseAgent agent = new TestAgent();
+    Span parentSpan = tracer.spanBuilder("parent").startSpan();
+    try (Scope s = parentSpan.makeCurrent()) {
+      agent.runAsync(buildInvocationContext()).test().await().assertComplete();
+    } finally {
+      parentSpan.end();
+    }
+    SpanData parent = findSpanByName("parent");
+    SpanData agentSpan = findSpanByName("invoke_agent test-agent");
+    assertParent(parent, agentSpan);
+  }
+
+  @Test
+  public void runnerRunAsync_propagatesContext() throws InterruptedException {
+    BaseAgent agent = new TestAgent();
+    Span parentSpan = tracer.spanBuilder("parent").startSpan();
+    try (Scope s = parentSpan.makeCurrent()) {
+      runAgent(agent);
+    } finally {
+      parentSpan.end();
+    }
+    SpanData parent = findSpanByName("parent");
+    SpanData invocation = findSpanByName("invocation");
+    SpanData agentSpan = findSpanByName("invoke_agent test-agent");
+    assertParent(parent, invocation);
+    assertParent(invocation, agentSpan);
+  }
+
+  @Test
+  public void runnerRunLive_propagatesContext() throws InterruptedException {
+    BaseAgent agent = new TestAgent();
+    Runner runner =
+        Runner.builder().agent(agent).appName("test_app").sessionService(sessionService).build();
+    Span parentSpan = tracer.spanBuilder("parent").startSpan();
+    try (Scope s = parentSpan.makeCurrent()) {
+      Session session =
+          sessionService
+              .createSession("test_app", "test-user", (Map<String, Object>) null, "test-session")
+              .blockingGet();
+      Content newMessage = Content.fromParts(Part.fromText("hi"));
+      RunConfig runConfig = RunConfig.builder().build();
+      LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+      liveRequestQueue.content(newMessage);
+      liveRequestQueue.close();
+      runner
+          .runLive(session.userId(), session.id(), liveRequestQueue, runConfig)
+          .test()
+          .await()
+          .assertComplete();
+    } finally {
+      parentSpan.end();
+    }
+    SpanData parent = findSpanByName("parent");
+    SpanData invocation = findSpanByName("invocation");
+    SpanData agentSpan = findSpanByName("invoke_agent test-agent");
+    assertParent(parent, invocation);
+    assertParent(invocation, agentSpan);
+  }
+
+  @Test
+  public void testModelCallbacksObserveCallLlmSpan() throws InterruptedException {
+    TestLlm testLlm =
+        TestUtils.createTestLlm(
+            TestUtils.createLlmResponse(Content.fromParts(Part.fromText("response"))));
+    AtomicReference<String> beforeModelSpanId = new AtomicReference<>();
+    AtomicReference<String> afterModelSpanId = new AtomicReference<>();
+
+    LlmAgent agentWithCallbacks =
+        LlmAgent.builder()
+            .name("test_agent")
+            .description("description")
+            .model(testLlm)
+            .beforeModelCallback(
+                (callbackContext, llmRequest) -> {
+                  beforeModelSpanId.set(Span.current().getSpanContext().getSpanId());
+                  return Maybe.empty();
+                })
+            .afterModelCallback(
+                (callbackContext, llmResponse) -> {
+                  afterModelSpanId.set(Span.current().getSpanContext().getSpanId());
+                  return Maybe.empty();
+                })
+            .build();
+
+    runAgent(agentWithCallbacks);
+
+    SpanData callLlm = findSpanByName("call_llm");
+    assertEquals(callLlm.getSpanContext().getSpanId(), beforeModelSpanId.get());
+    assertEquals(callLlm.getSpanContext().getSpanId(), afterModelSpanId.get());
+  }
+
+  @Test
+  public void testAgentWithToolCallTraceHierarchy() throws InterruptedException {
+    // This test verifies the trace hierarchy created when an agent calls an LLM,
+    // which then invokes a tool. The expected hierarchy is:
+    // invocation
+    // └── invoke_agent test_agent
+    //     ├── call_llm
+    //     │   └── execute_tool search_flights
+    //     └── call_llm
+
+    SearchFlightsTool searchFlightsTool = new SearchFlightsTool();
+
+    TestLlm testLlm =
+        TestUtils.createTestLlm(
+            TestUtils.createLlmResponse(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.fromFunctionCall(
+                            searchFlightsTool.name(), ImmutableMap.of("destination", "SFO")))
+                    .build()),
+            TestUtils.createLlmResponse(Content.fromParts(Part.fromText("done"))));
+
+    LlmAgent agentWithTool =
+        LlmAgent.builder()
+            .name("test_agent")
+            .description("description")
+            .model(testLlm)
+            .tools(ImmutableList.of(searchFlightsTool))
+            .build();
+
+    runAgent(agentWithTool);
+
+    SpanData invocation = findSpanByName("invocation");
+    SpanData invokeAgent = findSpanByName("invoke_agent test_agent");
+    SpanData toolResponse = findSpanByName("execute_tool search_flights");
+    List<SpanData> callLlmSpans =
+        openTelemetryRule.getSpans().stream()
+            .filter(s -> s.getName().equals("call_llm"))
+            .sorted(Comparator.comparing(SpanData::getStartEpochNanos))
+            .toList();
+    assertThat(callLlmSpans).hasSize(2);
+    SpanData callLlm1 = callLlmSpans.get(0);
+    SpanData callLlm2 = callLlmSpans.get(1);
+
+    // Assert hierarchy:
+    // invocation
+    // └── invoke_agent test_agent
+    assertParent(invocation, invokeAgent);
+    //     ├── call_llm 1
+    assertParent(invokeAgent, callLlm1);
+    //     │   └── execute_tool search_flights
+    assertParent(callLlm1, toolResponse);
+    //     └── call_llm 2
+    assertParent(invokeAgent, callLlm2);
+
+    // Assert attributes
+    assertEquals(
+        "invoke_agent",
+        invokeAgent.getAttributes().get(AttributeKey.stringKey("gen_ai.operation.name")));
+    assertEquals(
+        "call_llm", callLlm1.getAttributes().get(AttributeKey.stringKey("gen_ai.operation.name")));
+    assertEquals(
+        "execute_tool",
+        toolResponse.getAttributes().get(AttributeKey.stringKey("gen_ai.operation.name")));
+    assertEquals(
+        "search_flights",
+        toolResponse.getAttributes().get(AttributeKey.stringKey("gen_ai.tool.name")));
+    assertEquals(
+        "execute_tool",
+        toolResponse.getAttributes().get(AttributeKey.stringKey("gen_ai.operation.name")));
+    assertEquals(
+        "call_llm", callLlm2.getAttributes().get(AttributeKey.stringKey("gen_ai.operation.name")));
+  }
+
+  @Test
+  public void testNestedAgentTraceHierarchy() throws InterruptedException {
+    // This test verifies the trace hierarchy created when AgentA transfers to AgentB.
+    // The expected hierarchy is:
+    // invocation
+    // └── invoke_agent AgentA
+    //     ├── call_llm
+    //     │   └── execute_tool transfer_to_agent
+    //     └── invoke_agent AgentB
+    //         └── call_llm
+    TestLlm llm =
+        TestUtils.createTestLlm(
+            TestUtils.createLlmResponse(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.fromFunctionCall(
+                            "transfer_to_agent", ImmutableMap.of("agent_name", "AgentB")))
+                    .build()),
+            TestUtils.createLlmResponse(Content.fromParts(Part.fromText("agent b response"))));
+    LlmAgent agentB = LlmAgent.builder().name("AgentB").description("Agent B").model(llm).build();
+
+    LlmAgent agentA =
+        LlmAgent.builder()
+            .name("AgentA")
+            .description("Agent A")
+            .model(llm)
+            .subAgents(ImmutableList.of(agentB))
+            .build();
+
+    runAgent(agentA);
+
+    SpanData invocation = findSpanByName("invocation");
+    SpanData agentASpan = findSpanByName("invoke_agent AgentA");
+    SpanData executeTool = findSpanByName("execute_tool transfer_to_agent");
+    SpanData agentBSpan = findSpanByName("invoke_agent AgentB");
+
+    List<SpanData> callLlmSpans =
+        openTelemetryRule.getSpans().stream()
+            .filter(s -> s.getName().equals("call_llm"))
+            .sorted(Comparator.comparing(SpanData::getStartEpochNanos))
+            .toList();
+    assertThat(callLlmSpans).hasSize(2);
+
+    SpanData agentACallLlm1 = callLlmSpans.get(0);
+    SpanData agentBCallLlm = callLlmSpans.get(1);
+
+    // Assert hierarchy:
+    // invocation
+    // └── invoke_agent AgentA
+    assertParent(invocation, agentASpan);
+    //     └── call_llm 1
+    assertParent(agentASpan, agentACallLlm1);
+    //         ├── execute_tool transfer_to_agent
+    assertParent(agentACallLlm1, executeTool);
+    //     └── invoke_agent AgentB
+    assertParent(agentASpan, agentBSpan);
+    //         └── call_llm 2
+    assertParent(agentBSpan, agentBCallLlm);
+  }
+
+  private void runAgent(BaseAgent agent) throws InterruptedException {
+    Runner runner =
+        Runner.builder().agent(agent).appName("test_app").sessionService(sessionService).build();
+    Session session =
+        sessionService.createSession("test_app", "test-user", null, "test-session").blockingGet();
+    Content newMessage = Content.fromParts(Part.fromText("hi"));
+    RunConfig runConfig = RunConfig.builder().build();
+    runner
+        .runAsync(session.sessionKey(), newMessage, runConfig, null)
+        .test()
+        .await()
+        .assertComplete();
+  }
+
+  /** Tool for testing. */
+  public static class SearchFlightsTool extends BaseTool {
+    public SearchFlightsTool() {
+      super("search_flights", "Search for flights tool");
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext context) {
+      return Single.just(ImmutableMap.of("result", args));
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(
+          FunctionDeclaration.builder()
+              .name("search_flights")
+              .description("Search for flights tool")
+              .build());
+    }
+  }
+
+  /**
+   * Asserts that the parent span is the parent of the child span.
+   *
+   * @param parent The parent span.
+   * @param child The child span.
+   */
+  private void assertParent(SpanData parent, SpanData child) {
+    assertEquals(parent.getSpanContext().getSpanId(), child.getParentSpanContext().getSpanId());
+  }
+
+  private void assertDeferredUpstreamSawTransformerSpan(
+      SpanData parent, SpanData transformer, AtomicReference<String> observedSpanId) {
+    assertParent(parent, transformer);
+    assertTrue(transformer.hasEnded());
+    assertEquals(transformer.getSpanContext().getSpanId(), observedSpanId.get());
+  }
+
+  /**
+   * Finds a span by name, polling multiple times.
+   *
+   * <p>This is necessary because spans might be created in separate threads, and we cannot always
+   * rely on `.await()` to ensure all spans are available immediately.
+   */
+  private SpanData findSpanByName(String name) {
+    for (int i = 0; i < 15; i++) {
+      Optional<SpanData> span =
+          openTelemetryRule.getSpans().stream().filter(s -> s.getName().equals(name)).findFirst();
+      if (span.isPresent()) {
+        return span.get();
+      }
+      try {
+        Thread.sleep(10 * i);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new RuntimeException(e);
+      }
+    }
+    throw new AssertionError("Span not found after polling: " + name);
+  }
+
+  private InvocationContext buildInvocationContext() {
+    Session session =
+        sessionService
+            .createSession("test_app", "test-user", (Map<String, Object>) null, "test-session")
+            .blockingGet();
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .session(session)
+        .agent(agent)
+        .invocationId("test-invocation-id")
+        .build();
+  }
+}

@@ -18,16 +18,17 @@ package com.google.adk.sessions;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Ascii;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.errors.GenAiIOException;
 import com.google.genai.types.HttpOptions;
 import java.io.IOException;
 import java.util.Map;
-import java.util.Optional;
 import okhttp3.MediaType;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import org.jspecify.annotations.Nullable;
 
 /** Base client for the HTTP APIs. */
 public class HttpApiClient extends ApiClient {
@@ -35,16 +36,16 @@ public class HttpApiClient extends ApiClient {
       MediaType.parse("application/json; charset=utf-8");
 
   /** Constructs an ApiClient for Google AI APIs. */
-  HttpApiClient(Optional<String> apiKey, Optional<HttpOptions> httpOptions) {
+  HttpApiClient(@Nullable String apiKey, @Nullable HttpOptions httpOptions) {
     super(apiKey, httpOptions);
   }
 
   /** Constructs an ApiClient for Vertex AI APIs. */
   HttpApiClient(
-      Optional<String> project,
-      Optional<String> location,
-      Optional<GoogleCredentials> credentials,
-      Optional<HttpOptions> httpOptions) {
+      @Nullable String project,
+      @Nullable String location,
+      @Nullable GoogleCredentials credentials,
+      @Nullable HttpOptions httpOptions) {
     super(project, location, credentials, httpOptions);
   }
 
@@ -54,9 +55,7 @@ public class HttpApiClient extends ApiClient {
     boolean queryBaseModel =
         Ascii.equalsIgnoreCase(httpMethod, "GET") && path.startsWith("publishers/google/models/");
     if (this.vertexAI() && !path.startsWith("projects/") && !queryBaseModel) {
-      path =
-          String.format("projects/%s/locations/%s/", this.project.get(), this.location.get())
-              + path;
+      path = String.format("projects/%s/locations/%s/", this.project, this.location) + path;
     }
     String requestUrl =
         String.format(
@@ -85,11 +84,11 @@ public class HttpApiClient extends ApiClient {
       requestBuilder.header(header.getKey(), header.getValue());
     }
 
-    if (apiKey.isPresent()) {
-      requestBuilder.header("x-goog-api-key", apiKey.get());
+    if (apiKey != null) {
+      requestBuilder.header("x-goog-api-key", apiKey);
     } else {
-      GoogleCredentials cred =
-          credentials.orElseThrow(() -> new IllegalStateException("credentials is required"));
+      Preconditions.checkState(credentials != null, "credentials is required");
+      GoogleCredentials cred = credentials;
       try {
         cred.refreshIfExpired();
       } catch (IOException e) {

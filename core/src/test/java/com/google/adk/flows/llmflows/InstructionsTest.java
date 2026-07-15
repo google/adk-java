@@ -25,7 +25,6 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Instruction;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.sessions.InMemorySessionService;
@@ -33,7 +32,6 @@ import com.google.adk.sessions.Session;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Before;
 import org.junit.Rule;
@@ -62,14 +60,13 @@ public final class InstructionsTest {
   }
 
   private InvocationContext createContext(BaseAgent agent, Session session) {
-    return InvocationContext.create(
-        sessionService,
-        mockArtifactService,
-        "test-invocation-id",
-        agent,
-        session,
-        null,
-        RunConfig.builder().build());
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .artifactService(mockArtifactService)
+        .invocationId("test-invocation-id")
+        .agent(agent)
+        .session(session)
+        .build();
   }
 
   private Session createSession() {
@@ -124,11 +121,7 @@ public final class InstructionsTest {
     Session session = createSession();
     Part artifactPart = Part.fromText("Artifact content");
     when(mockArtifactService.loadArtifact(
-            eq(session.appName()),
-            eq(session.userId()),
-            eq(session.id()),
-            eq("file.txt"),
-            eq(Optional.empty())))
+            eq(session.appName()), eq(session.userId()), eq(session.id()), eq("file.txt")))
         .thenReturn(Maybe.just(artifactPart));
     LlmAgent agent =
         LlmAgent.builder().name("agent").instruction("File content: {artifact.file.txt}").build();
@@ -169,6 +162,24 @@ public final class InstructionsTest {
   @Test
   public void processRequest_agentInstructionProvider_appendsInstruction() {
     String instructionFromProvider = "Instruction from provider.";
+    Instruction provider = new Instruction.Provider(ctx -> Single.just(instructionFromProvider));
+
+    LlmAgent agent = LlmAgent.builder().name("agent").instruction(provider).build();
+    InvocationContext context = createContext(agent, createSession());
+
+    RequestProcessor.RequestProcessingResult result =
+        instructionsProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().getSystemInstructions())
+        .containsExactly(instructionFromProvider);
+  }
+
+  @Test
+  public void processRequest_agentInstructionProvider_bypassesStateInjection() {
+    Session session = createSession();
+    session.state().put("name", "TestBot");
+    // This would throw an error if state injection was attempted.
+    String instructionFromProvider = "My name is {name}. But my friend is {friend_name}.";
     Instruction provider = new Instruction.Provider(ctx -> Single.just(instructionFromProvider));
 
     LlmAgent agent = LlmAgent.builder().name("agent").instruction(provider).build();
@@ -239,7 +250,6 @@ public final class InstructionsTest {
         instructionsProcessor.processRequest(context, initialRequest).blockingGet();
 
     assertThat(result.updatedRequest().getSystemInstructions())
-        .containsExactly("Global instruction.", "Agent instruction.")
-        .inOrder();
+        .containsExactly("Global instruction.\n\nAgent instruction.");
   }
 }

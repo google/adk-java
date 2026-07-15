@@ -26,7 +26,7 @@ import com.google.common.base.Preconditions;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Represents a request to be sent to a live connection to the LLM model. */
 @AutoValue
@@ -74,20 +74,20 @@ public abstract class LiveRequest extends JsonBaseModel {
   @AutoValue.Builder
   @JsonPOJOBuilder(buildMethodName = "build", withPrefix = "")
   public abstract static class Builder {
+
+    @JsonCreator
+    static LiveRequest.Builder jacksonBuilder() {
+      return LiveRequest.builder();
+    }
+
     @JsonProperty("content")
     public abstract Builder content(@Nullable Content content);
-
-    public abstract Builder content(Optional<Content> content);
 
     @JsonProperty("blob")
     public abstract Builder blob(@Nullable Blob blob);
 
-    public abstract Builder blob(Optional<Blob> blob);
-
     @JsonProperty("close")
     public abstract Builder close(@Nullable Boolean close);
-
-    public abstract Builder close(Optional<Boolean> close);
 
     abstract LiveRequest autoBuild();
 
@@ -111,10 +111,5 @@ public abstract class LiveRequest extends JsonBaseModel {
   /** Deserializes a Json string to a {@link LiveRequest} object. */
   public static LiveRequest fromJsonString(String json) {
     return JsonBaseModel.fromJsonString(json, LiveRequest.class);
-  }
-
-  @JsonCreator
-  static LiveRequest.Builder jacksonBuilder() {
-    return LiveRequest.builder();
   }
 }

@@ -26,8 +26,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
-import java.util.Optional;
+import com.google.genai.types.Transcription;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -61,14 +62,21 @@ public final class LlmResponseTest {
   public void testSerializationAndDeserialization_allFieldsPresent()
       throws JsonProcessingException {
     Content sampleContent = createSampleContent("Hello, world!");
+    GenerateContentResponseUsageMetadata usageMetadata =
+        GenerateContentResponseUsageMetadata.builder()
+            .promptTokenCount(10)
+            .candidatesTokenCount(20)
+            .totalTokenCount(30)
+            .build();
     LlmResponse originalResponse =
         LlmResponse.builder()
             .content(sampleContent)
             .partial(true)
             .turnComplete(false)
             .errorCode(new FinishReason("ERR_123"))
-            .errorMessage(Optional.of("An error occurred."))
-            .interrupted(Optional.of(true))
+            .errorMessage("An error occurred.")
+            .interrupted(true)
+            .usageMetadata(usageMetadata)
             .build();
 
     String json = originalResponse.toJson();
@@ -83,6 +91,10 @@ public final class LlmResponseTest {
     assertThat(jsonNode.get("errorCode").asText()).isEqualTo("ERR_123");
     assertThat(jsonNode.get("errorMessage").asText()).isEqualTo("An error occurred.");
     assertThat(jsonNode.get("interrupted").asBoolean()).isTrue();
+    assertThat(jsonNode.has("usageMetadata")).isTrue();
+    assertThat(jsonNode.get("usageMetadata").get("promptTokenCount").asInt()).isEqualTo(10);
+    assertThat(jsonNode.get("usageMetadata").get("candidatesTokenCount").asInt()).isEqualTo(20);
+    assertThat(jsonNode.get("usageMetadata").get("totalTokenCount").asInt()).isEqualTo(30);
 
     LlmResponse deserializedResponse = LlmResponse.fromJsonString(json, LlmResponse.class);
 
@@ -93,6 +105,7 @@ public final class LlmResponseTest {
     assertThat(deserializedResponse.errorCode()).hasValue(new FinishReason("ERR_123"));
     assertThat(deserializedResponse.errorMessage()).hasValue("An error occurred.");
     assertThat(deserializedResponse.interrupted()).hasValue(true);
+    assertThat(deserializedResponse.usageMetadata()).hasValue(usageMetadata);
   }
 
   @Test
@@ -100,15 +113,7 @@ public final class LlmResponseTest {
       throws JsonProcessingException {
     Content sampleContent = createSampleFunctionCallContent("tool_abc");
     LlmResponse originalResponse =
-        LlmResponse.builder()
-            .content(sampleContent)
-            .groundingMetadata(Optional.empty())
-            .partial(Optional.empty())
-            .turnComplete(false)
-            .errorCode(Optional.empty())
-            .errorMessage(Optional.empty())
-            .interrupted(Optional.empty())
-            .build();
+        LlmResponse.builder().content(sampleContent).turnComplete(false).build();
 
     String json = originalResponse.toJson();
     assertThat(json).isNotNull();
@@ -122,6 +127,7 @@ public final class LlmResponseTest {
     assertThat(jsonNode.has("errorCode")).isFalse();
     assertThat(jsonNode.has("errorMessage")).isFalse();
     assertThat(jsonNode.has("interrupted")).isFalse();
+    assertThat(jsonNode.has("usageMetadata")).isFalse();
 
     LlmResponse deserializedResponse = LlmResponse.fromJsonString(json, LlmResponse.class);
 
@@ -133,6 +139,48 @@ public final class LlmResponseTest {
     assertThat(deserializedResponse.errorCode()).isEmpty();
     assertThat(deserializedResponse.errorMessage()).isEmpty();
     assertThat(deserializedResponse.interrupted()).isEmpty();
+    assertThat(deserializedResponse.usageMetadata()).isEmpty();
+  }
+
+  @Test
+  public void testSerializationAndDeserialization_withTranscriptions()
+      throws JsonProcessingException {
+    Transcription inputTranscription =
+        Transcription.builder().text("user said hello").finished(true).build();
+    Transcription outputTranscription =
+        Transcription.builder().text("model replied hi").finished(false).build();
+    LlmResponse originalResponse =
+        LlmResponse.builder()
+            .content(createSampleContent("hello"))
+            .inputTranscription(inputTranscription)
+            .outputTranscription(outputTranscription)
+            .build();
+
+    String json = originalResponse.toJson();
+    JsonNode jsonNode = objectMapper.readTree(json);
+
+    assertThat(jsonNode.has("inputTranscription")).isTrue();
+    assertThat(jsonNode.get("inputTranscription").get("text").asText())
+        .isEqualTo("user said hello");
+    assertThat(jsonNode.get("inputTranscription").get("finished").asBoolean()).isTrue();
+    assertThat(jsonNode.has("outputTranscription")).isTrue();
+    assertThat(jsonNode.get("outputTranscription").get("text").asText())
+        .isEqualTo("model replied hi");
+    assertThat(jsonNode.get("outputTranscription").get("finished").asBoolean()).isFalse();
+
+    LlmResponse deserializedResponse = LlmResponse.fromJsonString(json, LlmResponse.class);
+
+    assertThat(deserializedResponse).isEqualTo(originalResponse);
+    assertThat(deserializedResponse.inputTranscription()).hasValue(inputTranscription);
+    assertThat(deserializedResponse.outputTranscription()).hasValue(outputTranscription);
+  }
+
+  @Test
+  public void testTranscriptions_emptyByDefault() {
+    LlmResponse response = LlmResponse.builder().content(createSampleContent("hello")).build();
+
+    assertThat(response.inputTranscription()).isEmpty();
+    assertThat(response.outputTranscription()).isEmpty();
   }
 
   @Test
@@ -146,7 +194,8 @@ public final class LlmResponseTest {
             + "\"turnComplete\": true,"
             + "\"errorCode\": null,"
             + "\"errorMessage\": null,"
-            + "\"interrupted\": null"
+            + "\"interrupted\": null,"
+            + "\"usageMetadata\": null"
             + "}";
 
     LlmResponse deserializedResponse = LlmResponse.fromJsonString(jsonWithNulls, LlmResponse.class);
@@ -160,6 +209,7 @@ public final class LlmResponseTest {
     assertThat(deserializedResponse.errorCode()).isEmpty();
     assertThat(deserializedResponse.errorMessage()).isEmpty();
     assertThat(deserializedResponse.interrupted()).isEmpty();
+    assertThat(deserializedResponse.usageMetadata()).isEmpty();
   }
 
   @Test
@@ -185,6 +235,7 @@ public final class LlmResponseTest {
     assertThat(jsonNode.get("errorCode").asText()).isEqualTo("FATAL_ERROR");
     assertThat(jsonNode.has("errorMessage")).isFalse();
     assertThat(jsonNode.has("interrupted")).isFalse();
+    assertThat(jsonNode.has("usageMetadata")).isFalse();
 
     LlmResponse deserializedResponse = LlmResponse.fromJsonString(json, LlmResponse.class);
     assertThat(deserializedResponse).isEqualTo(originalResponse);
@@ -197,5 +248,6 @@ public final class LlmResponseTest {
     assertThat(deserializedResponse.errorCode()).hasValue(new FinishReason("FATAL_ERROR"));
     assertThat(deserializedResponse.errorMessage()).isEmpty();
     assertThat(deserializedResponse.interrupted()).isEmpty();
+    assertThat(deserializedResponse.usageMetadata()).isEmpty();
   }
 }

@@ -12,14 +12,12 @@
  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  See the License for the specific language governing permissions and
  limitations under the License. -->
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk-parent</artifactId>
-  <version>0.2.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+  <version>1.6.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   <packaging>pom</packaging>
 
   <name>Google Agent Development Kit Maven Parent POM</name>
@@ -29,25 +27,77 @@
   <modules>
     <module>core</module>
     <module>dev</module>
+    <module>maven_plugin</module>
     <module>contrib/langchain4j</module>
+    <module>contrib/spring-ai</module>
+    <module>contrib/samples</module>
+    <module>contrib/planners</module>
+    <module>contrib/firestore-session-service</module>
+    <module>tutorials/city-time-weather</module>
+    <module>tutorials/live-audio-single-agent</module>
+    <module>a2a</module>
   </modules>
 
   <properties>
     <java.version>17</java.version>
     <maven.compiler.release>${java.version}</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.checkstyle.plugin.version>3.6.0</maven.checkstyle.plugin.version>
 
-    <auto-value.version>1.11.0</auto-value.version>
-    <spring-boot.version>3.4.1</spring-boot.version>
-    <otel.version>1.49.0</otel.version>
+    <auto-value.version>1.11.1</auto-value.version>
+    <spring-boot.version>4.0.2</spring-boot.version>
+    <!-- otel.version capped at 1.51.0 to avoid conflicts with google
+         cloud libraries. Once they update their otel dependencies we
+         can consider updating ours here as well -->
+    <otel.version>1.51.0</otel.version>
+    <mcp.version>1.1.2</mcp.version>
+    <errorprone.version>2.47.0</errorprone.version>
+    <google.genai.version>1.58.0</google.genai.version>
+    <protobuf.version>4.33.5</protobuf.version>
+    <junit.version>5.11.4</junit.version>
+    <mockito.version>5.23.0</mockito.version>
+    <java-websocket.version>1.6.0</java-websocket.version>
+    <jackson.version>2.20.2</jackson.version>
+    <okhttp.version>5.3.2</okhttp.version>
+    <docker-java.version>3.7.0</docker-java.version>
+    <graphviz.version>0.18.1</graphviz.version>
+    <maven.version>3.9.0</maven.version>
+    <langchain4j.version>1.12.2</langchain4j.version>
+    <slf4j.version>2.0.17</slf4j.version>
+    <truth.version>1.4.5</truth.version>
+    <jspecify.version>1.0.0</jspecify.version>
+    <rxjava.version>3.1.12</rxjava.version>
+    <reactor-core.version>3.7.0</reactor-core.version>
+    <wiremock.version>2.35.1</wiremock.version>
+    <assertj.version>3.27.7</assertj.version>
+    <anthropic.version>2.15.0</anthropic.version>
+    <maven-plugin-tools.version>3.9.0</maven-plugin-tools.version>
+    <httpclient5.version>5.6.1</httpclient5.version>
+    <netty.version>4.1.118.Final</netty.version>
+    <surefire.argLine>@{jacoco.agent.argLine} --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED -Dio.netty.tryReflectionSetAccessible=true</surefire.argLine>
   </properties>
 
   <dependencyManagement>
     <dependencies>
+      <!-- BOMs for dependency management -->
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-bom</artifactId>
+        <version>${netty.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
       <dependency>
         <groupId>com.google.cloud</groupId>
         <artifactId>libraries-bom</artifactId>
-        <version>26.53.0</version>
+        <version>26.76.0</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -58,6 +108,186 @@
         <type>pom</type>
         <scope>import</scope>
       </dependency>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-bom</artifactId>
+        <version>${langchain4j.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.squareup.okhttp3</groupId>
+        <artifactId>okhttp-bom</artifactId>
+        <version>${okhttp.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <!-- Direct dependencies -->
+      <dependency>
+        <groupId>com.anthropic</groupId>
+        <artifactId>anthropic-java</artifactId>
+        <version>${anthropic.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.anthropic</groupId>
+        <artifactId>anthropic-java-vertex</artifactId>
+        <version>${anthropic.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.github.docker-java</groupId>
+        <artifactId>docker-java</artifactId>
+        <version>${docker-java.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.github.docker-java</groupId>
+        <artifactId>docker-java-transport-httpclient5</artifactId>
+        <version>${docker-java.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.modelcontextprotocol.sdk</groupId>
+        <artifactId>mcp</artifactId>
+        <version>${mcp.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.genai</groupId>
+        <artifactId>google-genai</artifactId>
+        <version>${google.genai.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.auto.value</groupId>
+        <artifactId>auto-value-annotations</artifactId>
+        <version>${auto-value.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.errorprone</groupId>
+        <artifactId>error_prone_annotations</artifactId>
+        <version>${errorprone.version}</version>
+      </dependency>
+<!--      <dependency>-->
+<!--        <groupId>com.fasterxml.jackson.core</groupId>-->
+<!--        <artifactId>jackson-core</artifactId>-->
+<!--        <version>${jackson.version}</version>-->
+<!--      </dependency>-->
+<!--      <dependency>-->
+<!--        <groupId>com.fasterxml.jackson.core</groupId>-->
+<!--        <artifactId>jackson-annotations</artifactId>-->
+<!--        <version>${jackson.version}</version>-->
+<!--      </dependency>-->
+<!--      <dependency>-->
+<!--        <groupId>com.fasterxml.jackson.core</groupId>-->
+<!--        <artifactId>jackson-databind</artifactId>-->
+<!--        <version>${jackson.version}</version>-->
+<!--      </dependency>-->
+<!--      <dependency>-->
+<!--        <groupId>com.fasterxml.jackson.datatype</groupId>-->
+<!--        <artifactId>jackson-datatype-jdk8</artifactId>-->
+<!--        <version>${jackson.version}</version>-->
+<!--      </dependency>-->
+<!--      <dependency>-->
+<!--        <groupId>com.fasterxml.jackson.datatype</groupId>-->
+<!--        <artifactId>jackson-datatype-jsr310</artifactId>-->
+<!--        <version>${jackson.version}</version>-->
+<!--      </dependency>-->
+<!--      <dependency>-->
+<!--        <groupId>com.fasterxml.jackson.dataformat</groupId>-->
+<!--        <artifactId>jackson-dataformat-yaml</artifactId>-->
+<!--        <version>${jackson.version}</version>-->
+<!--      </dependency>-->
+      <dependency>
+        <groupId>com.google.protobuf</groupId>
+        <artifactId>protobuf-java</artifactId>
+        <version>${protobuf.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.java-websocket</groupId>
+        <artifactId>Java-WebSocket</artifactId>
+        <version>${java-websocket.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-simple</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.truth</groupId>
+        <artifactId>truth</artifactId>
+        <version>${truth.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-core</artifactId>
+        <version>${mockito.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>net.bytebuddy</groupId>
+        <artifactId>byte-buddy</artifactId>
+        <version>1.18.2</version>
+      </dependency>
+      <dependency>
+        <groupId>org.jspecify</groupId>
+        <artifactId>jspecify</artifactId>
+        <version>${jspecify.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.reactivex.rxjava3</groupId>
+        <artifactId>rxjava</artifactId>
+        <version>${rxjava.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.projectreactor</groupId>
+        <artifactId>reactor-core</artifactId>
+        <version>${reactor-core.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.github.tomakehurst</groupId>
+        <artifactId>wiremock-jre8</artifactId>
+        <version>${wiremock.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>guru.nidi</groupId>
+        <artifactId>graphviz-java</artifactId>
+        <version>${graphviz.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.maven</groupId>
+        <artifactId>maven-plugin-api</artifactId>
+        <version>${maven.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.maven</groupId>
+        <artifactId>maven-core</artifactId>
+        <version>${maven.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.maven.plugin-tools</groupId>
+        <artifactId>maven-plugin-annotations</artifactId>
+        <version>${maven-plugin-tools.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.httpcomponents.client5</groupId>
+        <artifactId>httpclient5</artifactId>
+        <version>${httpclient5.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.assertj</groupId>
+        <artifactId>assertj-core</artifactId>
+        <version>${assertj.version}</version>
+      </dependency>
     </dependencies>
   </dependencyManagement>
 
@@ -66,11 +296,16 @@
       <extension>
         <groupId>com.google.cloud.artifactregistry</groupId>
         <artifactId>artifactregistry-maven-wagon</artifactId>
-        <version>2.2.0</version>
+        <version>2.2.4</version>
       </extension>
     </extensions>
     <pluginManagement>
       <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-checkstyle-plugin</artifactId>
+          <version>${maven.checkstyle.plugin.version}</version>
+        </plugin>
         <plugin>
           <artifactId>maven-clean-plugin</artifactId>
           <version>3.1.0</version>
@@ -87,6 +322,14 @@
             <target>${java.version}</target>
             <release>${maven.compiler.release}</release>
             <parameters>true</parameters>
+            <!-- Required for AutoValue. With incremental compilation enabled, the compiler
+                 plugin can split the source set and run the AutoValue annotation processor over
+                 only a subset of sources, so some generated AutoValue_* types are never produced.
+                 That surfaces non-deterministically as "cannot be resolved to a type" at compile
+                 time or TypeNotPresentException at runtime (notably on JDK 25). Forcing a single
+                 javac pass over all sources makes annotation processing see every @AutoValue type
+                 and become deterministic, independent of the build JDK. -->
+            <useIncrementalCompilation>false</useIncrementalCompilation>
             <annotationProcessorPaths>
               <path>
                 <groupId>com.google.auto.value</groupId>
@@ -107,9 +350,10 @@
             </dependency>
           </dependencies>
           <configuration>
+            <!-- The add-opens are required for classes using Netty, often brought in by gRPC or Apache Arrow. -->
+            <argLine>${surefire.argLine}</argLine>
             <reportFormat>plain</reportFormat>
-            <statelessTestsetInfoReporter
-              implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter" />
+            <statelessTestsetInfoReporter implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter"/>
             <includes>
               <include>**/*Test.java</include>
             </includes>
@@ -179,30 +423,49 @@
           </executions>
         </plugin>
         <plugin>
-          <groupId>org.sonatype.plugins</groupId>
-          <artifactId>nexus-staging-maven-plugin</artifactId>
-          <version>1.7.0</version>
+          <groupId>org.sonatype.central</groupId>
+          <artifactId>central-publishing-maven-plugin</artifactId>
+          <version>0.9.0</version>
           <extensions>true</extensions>
           <configuration>
-            <serverId>ossrh</serverId>
-            <nexusUrl>https://google.oss.sonatype.org/</nexusUrl>
-            <autoReleaseAfterClose>false</autoReleaseAfterClose>
+            <publishingServerId>central</publishingServerId>
           </configuration>
         </plugin>
       </plugins>
     </pluginManagement>
     <plugins>
       <plugin>
+        <groupId>com.spotify.fmt</groupId>
+        <artifactId>fmt-maven-plugin</artifactId>
+        <version>2.27</version>
+        <dependencies>
+          <dependency>
+            <groupId>com.google.googlejavaformat</groupId>
+            <artifactId>google-java-format</artifactId>
+            <version>1.27.0</version>
+          </dependency>
+        </dependencies>
+        <executions>
+          <execution>
+            <goals>
+              <goal>format</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
-        <version>0.8.12</version>
+        <version>0.8.14</version>
         <executions>
           <execution>
             <goals>
               <goal>prepare-agent</goal>
             </goals>
             <configuration>
+              <propertyName>jacoco.agent.argLine</propertyName>
               <excludes>
+                <exclude>java/net/http/**</exclude>
                 <exclude>*MockitoMock*</exclude>
                 <exclude>*$$EnhancerByMockitoWithCGLIB$$*</exclude>
                 <exclude>*$$FastClassByMockitoWithCGLIB$$*</exclude>
@@ -229,9 +492,88 @@
   </build>
   <profiles>
     <profile>
+      <id>illegal-optional-check</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-checkstyle-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>illegal-optional-check</id>
+                <goals>
+                  <goal>check</goal>
+                </goals>
+                <phase>compile</phase>
+                <configuration>
+                  <checkstyleRules>
+                    <module name="Checker">
+                      <module name="TreeWalker">
+                        <module name="SuppressWarningsHolder"/>
+                        <module name="IllegalType">
+                          <property name="illegalClassNames" value="java.util.Optional"/>
+                          <property name="tokens" value="PARAMETER_DEF"/>
+                        </module>
+                      </module>
+                      <module name="SuppressWarningsFilter"/>
+                    </module>
+                  </checkstyleRules>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>release-sonatype</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.9.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+      <distributionManagement>
+        <repository>
+          <id>central</id>
+          <name>Maven Central Repository</name>
+          <url>https://central.sonatype.com/api/v1/publisher</url>
+        </repository>
+        <snapshotRepository>
+          <id>central</id>
+          <name>Maven Central Repository Snapshots</name>
+          <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+        </snapshotRepository>
+      </distributionManagement>
+    </profile>
+    <profile>
       <id>release</id>
       <build>
         <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.7</version>
+            <configuration>
+              <signer>bc</signer>
+            </configuration>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-source-plugin</artifactId>
@@ -275,19 +617,7 @@
   <developers>
     <developer>
       <organization>Google Inc.</organization>
-      <organizationUrl>http://www.google.com</organizationUrl>
+      <organizationUrl>https://www.google.com</organizationUrl>
     </developer>
   </developers>
-  <distributionManagement>
-    <repository>
-      <id>ossrh</id>
-      <name>Central Repository OSSRH</name>
-      <url>https://google.oss.sonatype.org/service/local/staging/deploy/maven2/</url>
-    </repository>
-    <snapshotRepository>
-      <id>ossrh</id>
-      <name>Central Repository OSSRH for snapshots</name>
-      <url>https://google.oss.sonatype.org/content/repositories/snapshots</url>
-    </snapshotRepository>
-  </distributionManagement>
 </project>

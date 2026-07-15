@@ -1,7 +1,9 @@
 # Agent Development Kit (ADK) for Java
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Maven Central](https://img.shields.io/maven-central/v/com.google.adk/google-adk)](https://search.maven.org/artifact/com.google.adk/google-adk)
 [![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/google/adk-java)
 
 <html>
     <h2 align="center">
@@ -42,17 +44,23 @@ debugging, versioning, and deployment anywhere – from your laptop to the cloud
 
 If you're using Maven, add the following to your dependencies:
 
-<!-- {x-version-start:google-adk:released} -->
+<!-- x-release-please-released-start-version -->
 
 ```xml
 <dependency>
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk</artifactId>
-  <version>0.1.0</version>
+  <version>1.6.0</version>
+</dependency>
+<!-- Dev UI -->
+<dependency>
+    <groupId>com.google.adk</groupId>
+    <artifactId>google-adk-dev</artifactId>
+    <version>1.6.0</version>
 </dependency>
 ```
 
-<!-- {x-version-end} -->
+<!-- x-release-please-released-end -->
 
 To instead use an unreleased version, you could use <https://jitpack.io/#google/adk-java/>;
 see <https://github.com/enola-dev/LearningADK#jitpack> for an example illustrating this.
@@ -96,7 +104,7 @@ Coming soon...
 
 For remote agent-to-agent communication, ADK integrates with the
 [A2A protocol](https://github.com/google/A2A/).
-Examples coming soon...
+See `a2a/README.md` for end-to-end setup instructions and sample commands.
 
 ## 🤝 Contributing
 

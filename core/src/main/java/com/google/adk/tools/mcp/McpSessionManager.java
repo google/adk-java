@@ -16,58 +16,116 @@
 
 package com.google.adk.tools.mcp;
 
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
-import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
-import io.modelcontextprotocol.client.transport.ServerParameters; // Server Parameters for stdio.
-import io.modelcontextprotocol.client.transport.StdioClientTransport;
 import io.modelcontextprotocol.spec.McpClientTransport;
+import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.ClientCapabilities;
 import io.modelcontextprotocol.spec.McpSchema.InitializeResult;
 import java.time.Duration;
+import java.util.Optional;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.publisher.Mono;
 
 /**
  * Manages MCP client sessions.
  *
  * <p>This class provides methods for creating and initializing MCP client sessions, handling
- * different connection parameters (Stdio and SSE).
+ * different connection parameters and transport builders.
  */
 // TODO(b/413489523): Implement this class.
 public class McpSessionManager {
 
   private final Object connectionParams; // ServerParameters or SseServerParameters
+  private final McpTransportBuilder transportBuilder;
   private static final Logger logger = LoggerFactory.getLogger(McpSessionManager.class);
 
   public McpSessionManager(Object connectionParams) {
+    this(connectionParams, new DefaultMcpTransportBuilder());
+  }
+
+  public McpSessionManager(Object connectionParams, McpTransportBuilder transportBuilder) {
     this.connectionParams = connectionParams;
+    this.transportBuilder = transportBuilder;
   }
 
   public McpSyncClient createSession() {
-    return initializeSession(this.connectionParams);
+    return initializeSession(this.connectionParams, this.transportBuilder);
   }
 
   public static McpSyncClient initializeSession(Object connectionParams) {
-    McpClientTransport transport;
-    if (connectionParams instanceof ServerParameters serverParameters) {
-      transport = new StdioClientTransport(serverParameters);
+    return initializeSession(connectionParams, new DefaultMcpTransportBuilder());
+  }
+
+  public static McpSyncClient initializeSession(
+      Object connectionParams, McpTransportBuilder transportBuilder) {
+    Duration initializationTimeout = null;
+    Duration requestTimeout = null;
+    Object transportBuilderParams = connectionParams;
+    if (connectionParams instanceof StdioConnectionParameters stdioConnectionParameters) {
+      transportBuilderParams = stdioConnectionParameters.serverParams().toServerParameters();
+      requestTimeout = stdioConnectionParameters.timeoutDuration();
     } else if (connectionParams instanceof SseServerParameters sseServerParams) {
-      transport =
-          HttpClientSseClientTransport.builder(sseServerParams.url()).sseEndpoint("sse").build();
-    } else {
-      throw new IllegalArgumentException(
-          "Connection parameters must be either ServerParameters or SseServerParameters, but got "
-              + connectionParams.getClass().getName());
+      initializationTimeout = sseServerParams.timeout();
+      requestTimeout = sseServerParams.sseReadTimeout();
+    } else if (connectionParams instanceof StreamableHttpServerParameters streamableParams) {
+      initializationTimeout = streamableParams.timeout();
+      requestTimeout = streamableParams.readTimeout();
     }
+    McpClientTransport transport = transportBuilder.build(transportBuilderParams);
+
     McpSyncClient client =
         McpClient.sync(transport)
-            .requestTimeout(Duration.ofSeconds(10))
+            .initializationTimeout(
+                Optional.ofNullable(initializationTimeout).orElseGet(() -> Duration.ofMinutes(5)))
+            .requestTimeout(
+                Optional.ofNullable(requestTimeout).orElseGet(() -> Duration.ofMinutes(5)))
+            .loggingConsumer(new McpServerLogConsumer())
             .capabilities(ClientCapabilities.builder().build())
             .build();
     InitializeResult initResult = client.initialize();
     logger.debug("Initialize Client Result: {}", initResult);
-
     return client;
+  }
+
+  public McpAsyncClient createAsyncSession() {
+    return initializeAsyncSession(this.connectionParams);
+  }
+
+  public static McpAsyncClient initializeAsyncSession(Object connectionParams) {
+    return initializeAsyncSession(connectionParams, new DefaultMcpTransportBuilder());
+  }
+
+  public static McpAsyncClient initializeAsyncSession(
+      Object connectionParams, McpTransportBuilder transportBuilder) {
+    Duration initializationTimeout = null;
+    Duration requestTimeout = null;
+    McpClientTransport transport = transportBuilder.build(connectionParams);
+    if (connectionParams instanceof SseServerParameters sseServerParams) {
+      initializationTimeout = sseServerParams.timeout();
+      requestTimeout = sseServerParams.sseReadTimeout();
+    } else if (connectionParams instanceof StreamableHttpServerParameters streamableParams) {
+      initializationTimeout = streamableParams.timeout();
+      requestTimeout = streamableParams.readTimeout();
+    }
+    return McpClient.async(transport)
+        .initializationTimeout(
+            initializationTimeout == null ? Duration.ofMinutes(5) : initializationTimeout)
+        .requestTimeout(requestTimeout == null ? Duration.ofMinutes(5) : requestTimeout)
+        .capabilities(ClientCapabilities.builder().build())
+        .loggingConsumer(asyncMcpServerLogConsumer())
+        .build();
+  }
+
+  private static Function<McpSchema.LoggingMessageNotification, Mono<Void>>
+      asyncMcpServerLogConsumer() {
+    var syncConsumer = new McpServerLogConsumer();
+    return message -> {
+      syncConsumer.accept(message);
+      return Mono.empty();
+    };
   }
 }

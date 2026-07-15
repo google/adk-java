@@ -24,6 +24,8 @@ import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LiveRequest;
+import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.RunConfig;
@@ -43,6 +45,7 @@ import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -53,11 +56,11 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public final class AgentTransferTest {
   public static Part createTransferCallPart(String agentName) {
-    return Part.fromFunctionCall("transferToAgent", ImmutableMap.of("agentName", agentName));
+    return Part.fromFunctionCall("transfer_to_agent", ImmutableMap.of("agent_name", agentName));
   }
 
   public static Part createTransferResponsePart() {
-    return Part.fromFunctionResponse("transferToAgent", ImmutableMap.<String, Object>of());
+    return Part.fromFunctionResponse("transfer_to_agent", ImmutableMap.<String, Object>of());
   }
 
   // Helper tool for testing LoopAgent
@@ -97,6 +100,50 @@ public final class AgentTransferTest {
   }
 
   @Test
+  public void runLive_transferToAgent_closesConnection() throws Exception {
+    // Arrange
+    Content transferCallContent = Content.fromParts(createTransferCallPart("sub_agent_1"));
+    Content response1 = Content.fromParts(Part.fromText("response1"));
+
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(createLlmResponse(transferCallContent)),
+            Flowable.just(createLlmResponse(response1)));
+
+    LlmAgent subAgent1 = createTestAgentBuilder(testLlm).name("sub_agent_1").build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    InvocationContext invocationContext = createInvocationContext(rootAgent);
+
+    Runner runner = getRunnerAndCreateSession(rootAgent, invocationContext.session());
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    // Act
+    TestSubscriber<Event> testSubscriber =
+        runner
+            .runLive(invocationContext.session(), liveRequestQueue, RunConfig.builder().build())
+            .test();
+    liveRequestQueue.content(Content.fromParts(Part.fromText("hi")));
+    testSubscriber.await();
+
+    // Assert
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values()))
+        .containsExactly(
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
+            "sub_agent_1: response1")
+        .inOrder();
+
+    long closedConnectionsCount =
+        testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose).count();
+    assertThat(closedConnectionsCount).isEqualTo(1);
+  }
+
+  @Test
   public void testAutoToAuto() {
     Content transferCallContent = Content.fromParts(createTransferCallPart("sub_agent_1"));
     Content response1 = Content.fromParts(Part.fromText("response1"));
@@ -121,8 +168,8 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1: response1")
         .inOrder();
 
@@ -161,8 +208,8 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1: response1")
         .inOrder();
 
@@ -208,10 +255,10 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
-            "sub_agent_1: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1_1})",
-            "sub_agent_1: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
+            "sub_agent_1: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1_1})",
+            "sub_agent_1: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1_1: response1")
         .inOrder();
 
@@ -265,8 +312,8 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1_1: response1",
             "sub_agent_1_2: response2")
         .inOrder();
@@ -330,11 +377,12 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1_1: response1",
-            "sub_agent_1_2: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1_2_1})",
-            "sub_agent_1_2: FunctionResponse(name=transferToAgent, response={})",
+            "sub_agent_1_2: FunctionCall(name=transfer_to_agent,"
+                + " args={agent_name=sub_agent_1_2_1})",
+            "sub_agent_1_2: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1_2_1: response2",
             "sub_agent_1_3: response3")
         .inOrder();
@@ -396,8 +444,8 @@ public final class AgentTransferTest {
 
     assertThat(simplifyEvents(actualEvents))
         .containsExactly(
-            "root_agent: FunctionCall(name=transferToAgent, args={agentName=sub_agent_1})",
-            "root_agent: FunctionResponse(name=transferToAgent, response={})",
+            "root_agent: FunctionCall(name=transfer_to_agent, args={agent_name=sub_agent_1})",
+            "root_agent: FunctionResponse(name=transfer_to_agent, response={})",
             "sub_agent_1_1: response1",
             "sub_agent_1_2: response2",
             "sub_agent_1_1: response3",

@@ -16,27 +16,37 @@
 
 package com.google.adk.tools.mcp;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableMap;
 import java.time.Duration;
 import java.util.Map;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Parameters for establishing a MCP Server-Sent Events (SSE) connection. */
 @AutoValue
+@JsonDeserialize(builder = SseServerParameters.Builder.class)
 public abstract class SseServerParameters {
 
   /** The URL of the SSE server. */
   public abstract String url();
+
+  /** The endpoint to connect to on the SSE server. */
+  @Nullable
+  public abstract String sseEndpoint();
 
   /** Optional headers to include in the SSE connection request. */
   @Nullable
   public abstract ImmutableMap<String, Object> headers();
 
   /** The timeout for the initial connection attempt. */
+  @Nullable
   public abstract Duration timeout();
 
   /** The timeout for reading data from the SSE stream. */
+  @Nullable
   public abstract Duration sseReadTimeout();
 
   /** Creates a new builder for {@link SseServerParameters}. */
@@ -48,18 +58,28 @@ public abstract class SseServerParameters {
 
   /** Builder for {@link SseServerParameters}. */
   @AutoValue.Builder
+  @JsonPOJOBuilder(buildMethodName = "build", withPrefix = "")
   public abstract static class Builder {
+
+    @JsonCreator
+    static SseServerParameters.Builder jacksonBuilder() {
+      return SseServerParameters.builder();
+    }
+
     /** Sets the URL of the SSE server. */
     public abstract Builder url(String url);
+
+    /** Sets the endpoint to connect to on the SSE server. */
+    public abstract Builder sseEndpoint(String sseEndpoint);
 
     /** Sets the headers for the SSE connection request. */
     public abstract Builder headers(@Nullable Map<String, Object> headers);
 
     /** Sets the timeout for the initial connection attempt. */
-    public abstract Builder timeout(Duration timeout);
+    public abstract Builder timeout(@Nullable Duration timeout);
 
     /** Sets the timeout for reading data from the SSE stream. */
-    public abstract Builder sseReadTimeout(Duration sseReadTimeout);
+    public abstract Builder sseReadTimeout(@Nullable Duration sseReadTimeout);
 
     /** Builds a new {@link SseServerParameters} instance. */
     public abstract SseServerParameters build();

@@ -16,27 +16,40 @@
 
 package com.google.adk.agents;
 
+import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.lang.String.format;
 
-import com.google.adk.Telemetry;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.events.Event;
+import com.google.adk.plugins.Plugin;
+import com.google.adk.telemetry.Instrumentation;
+import com.google.adk.telemetry.Instrumentation.AgentInvocation;
+import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.errorprone.annotations.DoNotCall;
 import com.google.genai.types.Content;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.Tracer;
-import io.opentelemetry.context.Scope;
+import io.opentelemetry.context.Context;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
-import io.reactivex.rxjava3.core.Single;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 
 /** Base class for all agents. */
 public abstract class BaseAgent {
+
+  // Pattern for valid agent names.
+  private static final String IDENTIFIER_REGEX = "^_?[a-zA-Z0-9]*([. _-][a-zA-Z0-9]+)*$";
+  private static final Pattern IDENTIFIER_PATTERN = Pattern.compile(IDENTIFIER_REGEX);
 
   /** The agent's name. Must be a unique identifier within the agent tree. */
   private final String name;
@@ -53,27 +66,108 @@ public abstract class BaseAgent {
    */
   private BaseAgent parentAgent;
 
-  private final List<? extends BaseAgent> subAgents;
+  private final ImmutableList<? extends BaseAgent> subAgents;
 
-  private final Optional<List<BeforeAgentCallback>> beforeAgentCallback;
-  private final Optional<List<AfterAgentCallback>> afterAgentCallback;
+  private final ImmutableList<? extends BeforeAgentCallback> beforeAgentCallback;
+  private final ImmutableList<? extends AfterAgentCallback> afterAgentCallback;
 
+  /**
+   * Creates a new BaseAgent.
+   *
+   * @param name Unique agent name. Cannot be "user" (reserved).
+   * @param description Agent purpose.
+   * @param subAgents Agents managed by this agent.
+   * @param beforeAgentCallback Callbacks before agent execution. Invoked in order until one doesn't
+   *     return null.
+   * @param afterAgentCallback Callbacks after agent execution. Invoked in order until one doesn't
+   *     return null.
+   */
   public BaseAgent(
       String name,
       String description,
-      List<? extends BaseAgent> subAgents,
-      List<BeforeAgentCallback> beforeAgentCallback,
-      List<AfterAgentCallback> afterAgentCallback) {
+      @Nullable List<? extends BaseAgent> subAgents,
+      @Nullable List<? extends BeforeAgentCallback> beforeAgentCallback,
+      @Nullable List<? extends AfterAgentCallback> afterAgentCallback) {
+    validateAgentName(name);
     this.name = name;
     this.description = description;
     this.parentAgent = null;
-    this.subAgents = subAgents != null ? subAgents : ImmutableList.of();
-    this.beforeAgentCallback = Optional.ofNullable(beforeAgentCallback);
-    this.afterAgentCallback = Optional.ofNullable(afterAgentCallback);
+    this.subAgents = (subAgents != null) ? ImmutableList.copyOf(subAgents) : ImmutableList.of();
+    validateSubAgents(this.name, this.subAgents);
+    this.beforeAgentCallback =
+        (beforeAgentCallback != null)
+            ? ImmutableList.copyOf(beforeAgentCallback)
+            : ImmutableList.of();
+    this.afterAgentCallback =
+        (afterAgentCallback != null)
+            ? ImmutableList.copyOf(afterAgentCallback)
+            : ImmutableList.of();
 
     // Establish parent relationships for all sub-agents if needed.
     for (BaseAgent subAgent : this.subAgents) {
       subAgent.parentAgent(this);
+    }
+  }
+
+  /**
+   * Closes all sub-agents.
+   *
+   * @return a {@link Completable} that completes when all sub-agents are closed.
+   */
+  public Completable close() {
+    List<Completable> completables = new ArrayList<>();
+    this.subAgents.forEach(subAgent -> completables.add(subAgent.close()));
+    return Completable.mergeDelayError(completables);
+  }
+
+  /**
+   * Validates the agent name.
+   *
+   * @param name The agent name to validate.
+   * @throws IllegalArgumentException if the agent name is null, empty, or does not match the
+   *     identifier pattern.
+   */
+  private static void validateAgentName(String name) {
+    if (isNullOrEmpty(name)) {
+      throw new IllegalArgumentException("Agent name cannot be null or empty.");
+    }
+    if (!IDENTIFIER_PATTERN.matcher(name).matches()) {
+      throw new IllegalArgumentException(
+          format("Agent name '%s' does not match regex '%s'.", name, IDENTIFIER_REGEX));
+    }
+    if (name.equals("user")) {
+      throw new IllegalArgumentException(
+          "Agent name cannot be 'user'; reserved for end-user input.");
+    }
+  }
+
+  /**
+   * Validates the sub-agents.
+   *
+   * @param name The name of the parent agent.
+   * @param subAgents The list of sub-agents to validate.
+   * @throws IllegalArgumentException if the sub-agents have duplicate names.
+   */
+  private static void validateSubAgents(
+      String name, @Nullable List<? extends BaseAgent> subAgents) {
+    if (subAgents == null) {
+      return;
+    }
+    HashSet<String> subAgentNames = new HashSet<>();
+    HashSet<String> duplicateSubAgentNames = new HashSet<>();
+    for (BaseAgent subAgent : subAgents) {
+      String subAgentName = subAgent.name();
+      // NOTE: Mocked agents have null names because BaseAgent.name() is a final method that
+      // cannot be mocked.
+      if (subAgentName != null && !subAgentNames.add(subAgentName)) {
+        duplicateSubAgentNames.add(subAgentName);
+      }
+    }
+    if (!duplicateSubAgentNames.isEmpty()) {
+      throw new IllegalArgumentException(
+          format(
+              "Agent named '%s' has sub-agents with duplicate names: %s. Sub-agents: %s",
+              name, duplicateSubAgentNames, subAgents));
     }
   }
 
@@ -129,112 +223,187 @@ public abstract class BaseAgent {
   /**
    * Finds an agent (this or descendant) by name.
    *
-   * @return the agent or descendant with the given name, or {@code null} if not found.
+   * @return an {@link Optional} containing the agent or descendant with the given name, or {@link
+   *     Optional#empty()} if not found.
    */
-  public BaseAgent findAgent(String name) {
+  public Optional<BaseAgent> findAgent(String name) {
     if (this.name().equals(name)) {
-      return this;
+      return Optional.of(this);
     }
     return findSubAgent(name);
   }
 
-  /** Recursively search sub agent by name. */
-  public @Nullable BaseAgent findSubAgent(String name) {
-    for (BaseAgent subAgent : subAgents) {
-      if (subAgent.name().equals(name)) {
-        return subAgent;
-      }
-      BaseAgent result = subAgent.findSubAgent(name);
-      if (result != null) {
-        return result;
-      }
-    }
-    return null;
+  /**
+   * Recursively search sub agent by name.
+   *
+   * @return an {@link Optional} containing the sub agent with the given name, or {@link
+   *     Optional#empty()} if not found.
+   */
+  public Optional<BaseAgent> findSubAgent(String name) {
+    return subAgents.stream()
+        .map(subAgent -> subAgent.findAgent(name))
+        .flatMap(Optional::stream)
+        .findFirst();
   }
 
   public List<? extends BaseAgent> subAgents() {
     return subAgents;
   }
 
-  public Optional<List<BeforeAgentCallback>> beforeAgentCallback() {
+  public ImmutableList<? extends BeforeAgentCallback> beforeAgentCallback() {
     return beforeAgentCallback;
   }
 
-  public Optional<List<AfterAgentCallback>> afterAgentCallback() {
+  public ImmutableList<? extends AfterAgentCallback> afterAgentCallback() {
     return afterAgentCallback;
   }
 
+  /**
+   * Returns the origin of the tool when this agent is used as a tool.
+   *
+   * @return the tool origin, defaults to "BASE_AGENT".
+   */
+  public AgentOrigin toolOrigin() {
+    return AgentOrigin.BASE_AGENT;
+  }
+
+  /**
+   * The resolved beforeAgentCallback field as a list.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  public ImmutableList<? extends BeforeAgentCallback> canonicalBeforeAgentCallbacks() {
+    return beforeAgentCallback;
+  }
+
+  /**
+   * The resolved afterAgentCallback field as a list.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  public ImmutableList<? extends AfterAgentCallback> canonicalAfterAgentCallbacks() {
+    return afterAgentCallback;
+  }
+
+  /**
+   * Creates a shallow copy of the parent context with the agent properly being set to this
+   * instance.
+   *
+   * @param parentContext Parent context to copy.
+   * @return new context with updated branch name.
+   */
   private InvocationContext createInvocationContext(InvocationContext parentContext) {
-    InvocationContext invocationContext = InvocationContext.copyOf(parentContext);
-    invocationContext.agent(this);
+    InvocationContext.Builder builder = parentContext.toBuilder();
+    builder.agent(this);
     // Check for branch to be truthy (not None, not empty string),
-    if (parentContext.branch().filter(s -> !s.isEmpty()).isPresent()) {
-      invocationContext.branch(parentContext.branch().get() + "." + name());
-    }
-    return invocationContext;
+    parentContext
+        .branch()
+        .filter(s -> !s.isEmpty())
+        .ifPresent(branch -> builder.branch(branch + "." + name()));
+    return builder.build();
   }
 
+  /**
+   * Runs the agent asynchronously.
+   *
+   * @param parentContext Parent context to inherit.
+   * @return stream of agent-generated events.
+   */
   public Flowable<Event> runAsync(InvocationContext parentContext) {
-    Tracer tracer = Telemetry.getTracer();
-    return Flowable.defer(
+    return run(parentContext, this::runAsyncImpl);
+  }
+
+  /**
+   * Runs the agent with the given implementation.
+   *
+   * @param parentContext Parent context to inherit.
+   * @param runImplementation The agent-specific logic to run.
+   * @return stream of agent-generated events.
+   */
+  private Flowable<Event> run(
+      InvocationContext parentContext,
+      Function<InvocationContext, Flowable<Event>> runImplementation) {
+    return Flowable.using(
         () -> {
-          Span span = tracer.spanBuilder("agent_run [" + name() + "]").startSpan();
-          try (Scope scope = span.makeCurrent()) {
-            InvocationContext invocationContext = createInvocationContext(parentContext);
+          Context otelContext = Context.current();
+          return Instrumentation.recordAgentInvocation(
+              createInvocationContext(parentContext), this, otelContext);
+        },
+        agentInvocation -> {
+          InvocationContext invocationContext = agentInvocation.getCtx();
+          Flowable<Event> mainAndAfterEvents =
+              Flowable.defer(() -> runImplementation.apply(invocationContext))
+                  .concatWith(
+                      Flowable.defer(
+                          () ->
+                              callCallback(
+                                      afterCallbacksToFunctions(
+                                          invocationContext.pluginManager(), afterAgentCallback),
+                                      invocationContext)
+                                  .toFlowable()));
 
-            Flowable<Event> executionFlowable =
-                beforeAgentCallback
-                    .map(
-                        callback ->
-                            callCallback(beforeCallbacksToFunctions(callback), invocationContext))
-                    .orElse(Single.just(Optional.empty()))
-                    .flatMapPublisher(
-                        beforeEventOpt -> {
-                          if (invocationContext.endInvocation()) {
-                            return Flowable.fromOptional(beforeEventOpt);
-                          }
-
-                          Flowable<Event> beforeEvents = Flowable.fromOptional(beforeEventOpt);
-                          Flowable<Event> mainEvents =
-                              Flowable.defer(() -> runAsyncImpl(invocationContext));
-                          Flowable<Event> afterEvents =
-                              afterAgentCallback
-                                  .map(
-                                      callback ->
-                                          Flowable.defer(
-                                              () ->
-                                                  callCallback(
-                                                          afterCallbacksToFunctions(callback),
-                                                          invocationContext)
-                                                      .flatMapPublisher(Flowable::fromOptional)))
-                                  .orElse(Flowable.empty());
-
-                          return Flowable.concat(beforeEvents, mainEvents, afterEvents);
-                        });
-            return executionFlowable.doFinally(span::end);
-          }
-        });
+          return callCallback(
+                  beforeCallbacksToFunctions(
+                      invocationContext.pluginManager(), beforeAgentCallback),
+                  invocationContext)
+              .flatMapPublisher(
+                  beforeEvent -> {
+                    if (invocationContext.endInvocation()) {
+                      return Flowable.just(beforeEvent);
+                    }
+                    return Flowable.just(beforeEvent).concatWith(mainAndAfterEvents);
+                  })
+              .switchIfEmpty(mainAndAfterEvents)
+              .doOnNext(agentInvocation::addEvent)
+              .doOnError(agentInvocation::setError);
+        },
+        AgentInvocation::close);
   }
 
+  /**
+   * Converts before-agent callbacks to functions.
+   *
+   * @param callbacks Before-agent callbacks.
+   * @return callback functions.
+   */
   private ImmutableList<Function<CallbackContext, Maybe<Content>>> beforeCallbacksToFunctions(
-      List<BeforeAgentCallback> callbacks) {
-    return callbacks.stream()
-        .map(callback -> (Function<CallbackContext, Maybe<Content>>) callback::call)
-        .collect(toImmutableList());
+      Plugin pluginManager, List<? extends BeforeAgentCallback> callbacks) {
+    return callbacksToFunctions(
+        ctx -> pluginManager.beforeAgentCallback(this, ctx), callbacks, c -> c::call);
   }
 
+  /**
+   * Converts after-agent callbacks to functions.
+   *
+   * @param callbacks After-agent callbacks.
+   * @return callback functions.
+   */
   private ImmutableList<Function<CallbackContext, Maybe<Content>>> afterCallbacksToFunctions(
-      List<AfterAgentCallback> callbacks) {
-    return callbacks.stream()
-        .map(callback -> (Function<CallbackContext, Maybe<Content>>) callback::call)
+      Plugin pluginManager, List<? extends AfterAgentCallback> callbacks) {
+    return callbacksToFunctions(
+        ctx -> pluginManager.afterAgentCallback(this, ctx), callbacks, c -> c::call);
+  }
+
+  private <T> ImmutableList<Function<CallbackContext, Maybe<Content>>> callbacksToFunctions(
+      Function<CallbackContext, Maybe<Content>> pluginCallback,
+      List<T> callbacks,
+      Function<T, Function<CallbackContext, Maybe<Content>>> mapper) {
+    return Stream.concat(Stream.of(pluginCallback), callbacks.stream().map(mapper))
         .collect(toImmutableList());
   }
 
-  private Single<Optional<Event>> callCallback(
+  /**
+   * Calls agent callbacks and returns the first produced event, if any.
+   *
+   * @param agentCallbacks Callback functions.
+   * @param invocationContext Current invocation context.
+   * @return maybe emitting first event, or empty if none.
+   */
+  private Maybe<Event> callCallback(
       List<Function<CallbackContext, Maybe<Content>>> agentCallbacks,
       InvocationContext invocationContext) {
-    if (agentCallbacks == null || agentCallbacks.isEmpty()) {
-      return Single.just(Optional.empty());
+    if (agentCallbacks.isEmpty()) {
+      return Maybe.empty();
     }
 
     CallbackContext callbackContext =
@@ -248,23 +417,21 @@ public abstract class BaseAgent {
               return maybeContent
                   .map(
                       content -> {
-                        Event.Builder eventBuilder =
-                            Event.builder()
-                                .id(Event.generateEventId())
-                                .invocationId(invocationContext.invocationId())
-                                .author(name())
-                                .branch(invocationContext.branch())
-                                .actions(callbackContext.eventActions());
-
-                        eventBuilder.content(Optional.of(content));
                         invocationContext.setEndInvocation(true);
-                        return Optional.of(eventBuilder.build());
+                        return Event.builder()
+                            .id(Event.generateEventId())
+                            .invocationId(invocationContext.invocationId())
+                            .author(name())
+                            .branch(invocationContext.branch().orElse(null))
+                            .actions(callbackContext.eventActions())
+                            .content(content)
+                            .build();
                       })
                   .toFlowable();
             })
         .firstElement()
         .switchIfEmpty(
-            Single.defer(
+            Maybe.defer(
                 () -> {
                   if (callbackContext.state().hasDelta()) {
                     Event.Builder eventBuilder =
@@ -272,30 +439,124 @@ public abstract class BaseAgent {
                             .id(Event.generateEventId())
                             .invocationId(invocationContext.invocationId())
                             .author(name())
-                            .branch(invocationContext.branch())
+                            .branch(invocationContext.branch().orElse(null))
                             .actions(callbackContext.eventActions());
 
-                    return Single.just(Optional.of(eventBuilder.build()));
+                    return Maybe.just(eventBuilder.build());
                   } else {
-                    return Single.just(Optional.empty());
+                    return Maybe.empty();
                   }
                 }));
   }
 
+  /**
+   * Runs the agent synchronously.
+   *
+   * @param parentContext Parent context to inherit.
+   * @return stream of agent-generated events.
+   */
   public Flowable<Event> runLive(InvocationContext parentContext) {
-    Tracer tracer = Telemetry.getTracer();
-    return Flowable.defer(
-        () -> {
-          Span span = tracer.spanBuilder("agent_run [" + name() + "]").startSpan();
-          try (Scope scope = span.makeCurrent()) {
-            InvocationContext invocationContext = createInvocationContext(parentContext);
-            Flowable<Event> executionFlowable = runLiveImpl(invocationContext);
-            return executionFlowable.doFinally(span::end);
-          }
-        });
+    return run(parentContext, this::runLiveImpl);
   }
 
+  /**
+   * Agent-specific asynchronous logic.
+   *
+   * @param invocationContext Current invocation context.
+   * @return stream of agent-generated events.
+   */
   protected abstract Flowable<Event> runAsyncImpl(InvocationContext invocationContext);
 
+  /**
+   * Agent-specific synchronous logic.
+   *
+   * @param invocationContext Current invocation context.
+   * @return stream of agent-generated events.
+   */
   protected abstract Flowable<Event> runLiveImpl(InvocationContext invocationContext);
+
+  /**
+   * Creates a new agent instance from a configuration object.
+   *
+   * @param config Agent configuration.
+   * @param configAbsPath Absolute path to the configuration file.
+   * @return new agent instance.
+   */
+  // TODO: Makes `BaseAgent.fromConfig` a final method and let sub-class to optionally override
+  // `_parse_config` to update kwargs if needed.
+  @DoNotCall("Always throws java.lang.UnsupportedOperationException")
+  public static BaseAgent fromConfig(BaseAgentConfig config, String configAbsPath) {
+    throw new UnsupportedOperationException(
+        "BaseAgent is abstract. Override fromConfig in concrete subclasses.");
+  }
+
+  /**
+   * Base Builder for all agents.
+   *
+   * @param <B> The concrete builder type.
+   */
+  public abstract static class Builder<B extends Builder<B>> {
+    protected String name;
+    protected String description;
+    protected ImmutableList<BaseAgent> subAgents;
+    protected ImmutableList<BeforeAgentCallback> beforeAgentCallback;
+    protected ImmutableList<AfterAgentCallback> afterAgentCallback;
+
+    /** This is a safe cast to the concrete builder type. */
+    @SuppressWarnings("unchecked")
+    protected B self() {
+      return (B) this;
+    }
+
+    @CanIgnoreReturnValue
+    public B name(String name) {
+      this.name = name;
+      return self();
+    }
+
+    @CanIgnoreReturnValue
+    public B description(String description) {
+      this.description = description;
+      return self();
+    }
+
+    @CanIgnoreReturnValue
+    public B subAgents(List<? extends BaseAgent> subAgents) {
+      this.subAgents = ImmutableList.copyOf(subAgents);
+      return self();
+    }
+
+    @CanIgnoreReturnValue
+    public B subAgents(BaseAgent... subAgents) {
+      return subAgents(ImmutableList.copyOf(subAgents));
+    }
+
+    @CanIgnoreReturnValue
+    public B beforeAgentCallback(BeforeAgentCallback beforeAgentCallback) {
+      this.beforeAgentCallback = ImmutableList.of(beforeAgentCallback);
+      return self();
+    }
+
+    @CanIgnoreReturnValue
+    public B beforeAgentCallback(List<Callbacks.BeforeAgentCallbackBase> beforeAgentCallback) {
+      this.beforeAgentCallback =
+          ImmutableList.copyOf(CallbackUtil.getBeforeAgentCallbacks(beforeAgentCallback));
+      return self();
+    }
+
+    @CanIgnoreReturnValue
+    public B afterAgentCallback(AfterAgentCallback afterAgentCallback) {
+      this.afterAgentCallback = ImmutableList.of(afterAgentCallback);
+      return self();
+    }
+
+    @CanIgnoreReturnValue
+    public B afterAgentCallback(List<Callbacks.AfterAgentCallbackBase> afterAgentCallback) {
+      this.afterAgentCallback =
+          ImmutableList.copyOf(CallbackUtil.getAfterAgentCallbacks(afterAgentCallback));
+      return self();
+    }
+
+    public abstract BaseAgent build();
+  }
 }

@@ -27,6 +27,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -35,8 +36,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * An in-memory implementation of {@link BaseSessionService} assuming {@link Session} objects are
@@ -50,9 +49,6 @@ import org.slf4j.LoggerFactory;
  * during retrieval operations ({@code getSession}, {@code createSession}).
  */
 public final class InMemorySessionService implements BaseSessionService {
-
-  private static final Logger logger = LoggerFactory.getLogger(InMemorySessionService.class);
-
   // Structure: appName -> userId -> sessionId -> Session
   private final ConcurrentMap<String, ConcurrentMap<String, ConcurrentMap<String, Session>>>
       sessions;
@@ -75,6 +71,15 @@ public final class InMemorySessionService implements BaseSessionService {
       String userId,
       @Nullable ConcurrentMap<String, Object> state,
       @Nullable String sessionId) {
+    return createSession(appName, userId, (Map<String, Object>) state, sessionId);
+  }
+
+  @Override
+  public Single<Session> createSession(
+      String appName,
+      String userId,
+      @Nullable Map<String, Object> state,
+      @Nullable String sessionId) {
     Objects.requireNonNull(appName, "appName cannot be null");
     Objects.requireNonNull(userId, "userId cannot be null");
 
@@ -87,7 +92,6 @@ public final class InMemorySessionService implements BaseSessionService {
     // Ensure state map and events list are mutable for the new session
     ConcurrentMap<String, Object> initialState =
         (state == null) ? new ConcurrentHashMap<>() : new ConcurrentHashMap<>(state);
-    List<Event> initialEvents = new ArrayList<>();
 
     // Assuming Session constructor or setters allow setting these mutable collections
     Session newSession =
@@ -95,13 +99,12 @@ public final class InMemorySessionService implements BaseSessionService {
             .appName(appName)
             .userId(userId)
             .state(initialState)
-            .events(initialEvents)
             .lastUpdateTime(Instant.now())
             .build();
 
     sessions
-        .computeIfAbsent(appName, k -> new ConcurrentHashMap<>())
-        .computeIfAbsent(userId, k -> new ConcurrentHashMap<>())
+        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
         .put(resolvedSessionId, newSession);
 
     // Create a mutable copy for the return value
@@ -120,8 +123,8 @@ public final class InMemorySessionService implements BaseSessionService {
 
     Session storedSession =
         sessions
-            .getOrDefault(appName, new ConcurrentHashMap<>())
-            .getOrDefault(userId, new ConcurrentHashMap<>())
+            .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+            .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
             .get(sessionId);
 
     if (storedSession == null) {
@@ -131,7 +134,7 @@ public final class InMemorySessionService implements BaseSessionService {
     Session sessionCopy = copySession(storedSession);
 
     // Apply filtering based on config directly to the mutable list in the copy
-    GetSessionConfig config = configOpt.orElse(GetSessionConfig.builder().build());
+    GetSessionConfig config = configOpt.orElseGet(() -> GetSessionConfig.builder().build());
     List<Event> eventsInCopy = sessionCopy.events();
 
     config
@@ -151,17 +154,11 @@ public final class InMemorySessionService implements BaseSessionService {
     if (config.numRecentEvents().isEmpty() && config.afterTimestamp().isPresent()) {
       Instant threshold = config.afterTimestamp().get();
 
-      eventsInCopy.removeIf(
-          event -> getEventTimestampEpochSeconds(event) < threshold.getEpochSecond());
+      eventsInCopy.removeIf(event -> getInstantFromEvent(event).isBefore(threshold));
     }
 
     // Merge state into the potentially filtered copy and return
     return Maybe.just(mergeWithGlobalState(appName, userId, sessionCopy));
-  }
-
-  // Helper to get event timestamp as epoch seconds (adapt based on Event.timestamp() actual type)
-  private long getEventTimestampEpochSeconds(Event event) {
-    return event.timestamp();
   }
 
   @Override
@@ -170,7 +167,7 @@ public final class InMemorySessionService implements BaseSessionService {
     Objects.requireNonNull(userId, "userId cannot be null");
 
     Map<String, Session> userSessionsMap =
-        sessions.getOrDefault(appName, new ConcurrentHashMap<>()).get(userId);
+        sessions.computeIfAbsent(appName, unused -> new ConcurrentHashMap<>()).get(userId);
 
     if (userSessionsMap == null || userSessionsMap.isEmpty()) {
       return Single.just(ListSessionsResponse.builder().build());
@@ -178,9 +175,7 @@ public final class InMemorySessionService implements BaseSessionService {
 
     // Create copies with empty events and state for the response
     List<Session> sessionCopies =
-        userSessionsMap.values().stream()
-            .map(this::copySessionMetadata)
-            .collect(toCollection(ArrayList::new));
+        prepareSessionsForListResponse(appName, userId, userSessionsMap.values());
 
     return Single.just(ListSessionsResponse.builder().sessions(sessionCopies).build());
   }
@@ -191,12 +186,20 @@ public final class InMemorySessionService implements BaseSessionService {
     Objects.requireNonNull(userId, "userId cannot be null");
     Objects.requireNonNull(sessionId, "sessionId cannot be null");
 
-    ConcurrentMap<String, Session> userSessionsMap =
-        sessions.getOrDefault(appName, new ConcurrentHashMap<>()).get(userId);
-
-    if (userSessionsMap != null) {
-      userSessionsMap.remove(sessionId);
-    }
+    sessions.computeIfPresent(
+        appName,
+        (app, appSessionsMap) -> {
+          appSessionsMap.computeIfPresent(
+              userId,
+              (user, userSessionsMap) -> {
+                userSessionsMap.remove(sessionId);
+                // If userSessionsMap is now empty, return null to automatically remove the userId
+                // key
+                return userSessionsMap.isEmpty() ? null : userSessionsMap;
+              });
+          // If appSessionsMap is now empty, return null to automatically remove the appName key
+          return appSessionsMap.isEmpty() ? null : appSessionsMap;
+        });
     return Completable.complete();
   }
 
@@ -208,8 +211,8 @@ public final class InMemorySessionService implements BaseSessionService {
 
     Session storedSession =
         sessions
-            .getOrDefault(appName, new ConcurrentHashMap<>())
-            .getOrDefault(userId, new ConcurrentHashMap<>())
+            .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+            .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
             .get(sessionId);
 
     if (storedSession == null) {
@@ -242,15 +245,34 @@ public final class InMemorySessionService implements BaseSessionService {
             (key, value) -> {
               if (key.startsWith(State.APP_PREFIX)) {
                 String appStateKey = key.substring(State.APP_PREFIX.length());
-                appState
-                    .computeIfAbsent(appName, k -> new ConcurrentHashMap<>())
-                    .put(appStateKey, value);
+                if (value == State.REMOVED) {
+                  appState
+                      .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+                      .remove(appStateKey);
+                } else {
+                  appState
+                      .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+                      .put(appStateKey, value);
+                }
               } else if (key.startsWith(State.USER_PREFIX)) {
                 String userStateKey = key.substring(State.USER_PREFIX.length());
-                userState
-                    .computeIfAbsent(appName, k -> new ConcurrentHashMap<>())
-                    .computeIfAbsent(userId, k -> new ConcurrentHashMap<>())
-                    .put(userStateKey, value);
+                if (value == State.REMOVED) {
+                  userState
+                      .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+                      .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
+                      .remove(userStateKey);
+                } else {
+                  userState
+                      .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+                      .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
+                      .put(userStateKey, value);
+                }
+              } else {
+                if (value == State.REMOVED) {
+                  session.state().remove(key);
+                } else {
+                  session.state().put(key, value);
+                }
               }
             });
       }
@@ -261,9 +283,11 @@ public final class InMemorySessionService implements BaseSessionService {
 
     // --- Update the session stored in this service ---
     sessions
-        .getOrDefault(appName, new ConcurrentHashMap<>())
-        .getOrDefault(userId, new ConcurrentHashMap<>())
+        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
         .put(sessionId, session);
+
+    mergeWithGlobalState(appName, userId, session);
 
     return Single.just(event);
   }
@@ -271,10 +295,7 @@ public final class InMemorySessionService implements BaseSessionService {
   /** Converts an event's timestamp to an Instant. Adapt based on actual Event structure. */
   // TODO: have Event.timestamp() return Instant directly
   private Instant getInstantFromEvent(Event event) {
-    double epochSeconds = getEventTimestampEpochSeconds(event);
-    long seconds = (long) epochSeconds;
-    long nanos = (long) ((epochSeconds % 1.0) * 1_000_000_000L);
-    return Instant.ofEpochSecond(seconds, nanos);
+    return Instant.ofEpochMilli(event.timestamp());
   }
 
   /**
@@ -295,21 +316,6 @@ public final class InMemorySessionService implements BaseSessionService {
   }
 
   /**
-   * Creates a copy of the session containing only metadata fields (ID, appName, userId, timestamp).
-   * State and Events are explicitly *not* copied.
-   *
-   * @param original The session whose metadata to copy.
-   * @return A new Session instance with only metadata fields populated.
-   */
-  private Session copySessionMetadata(Session original) {
-    return Session.builder(original.id())
-        .appName(original.appName())
-        .userId(original.userId())
-        .lastUpdateTime(original.lastUpdateTime())
-        .build();
-  }
-
-  /**
    * Merges the app-specific and user-specific state into the provided *mutable* session's state
    * map.
    *
@@ -324,14 +330,34 @@ public final class InMemorySessionService implements BaseSessionService {
 
     // Merge App State directly into the session's state map
     appState
-        .getOrDefault(appName, new ConcurrentHashMap<String, Object>())
+        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
         .forEach((key, value) -> sessionState.put(State.APP_PREFIX + key, value));
 
     userState
-        .getOrDefault(appName, new ConcurrentHashMap<>())
-        .getOrDefault(userId, new ConcurrentHashMap<>())
+        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
         .forEach((key, value) -> sessionState.put(State.USER_PREFIX + key, value));
 
     return session;
+  }
+
+  /**
+   * Prepares copies of sessions for use in a {@code listSessions} response.
+   *
+   * <p>For each session provided, this method creates a deep copy, clears the copy's event list,
+   * and merges app-level and user-level state into the copy's state map.
+   *
+   * @param appName The application name.
+   * @param userId The user ID.
+   * @param sessions The collection of sessions to process.
+   * @return A list of processed {@link Session} copies.
+   */
+  private List<Session> prepareSessionsForListResponse(
+      String appName, String userId, Collection<Session> sessions) {
+    return sessions.stream()
+        .map(this::copySession)
+        .peek(s -> s.events().clear())
+        .map(s -> mergeWithGlobalState(appName, userId, s))
+        .collect(toCollection(ArrayList::new));
   }
 }

@@ -34,6 +34,35 @@ information on using pull requests.
 
 ## PR policy
 
+### Format
+
+Code must be formatted according to the
+[Google Java Style Guide](https://google.github.io/styleguide/javaguide.html).
+
+The Maven build will automagically run
+[`google-java-format`](https://github.com/google/google-java-format) when you
+locally build this project.
+
+Pull requests will fail to build if you forget to commit reformatted code, and
+cannot be merged until you fix this.
+
+### Single Commit
+
+Pull Requests must contain only a **single commit.**
+
+This is due to how Google replicates this Git repository both into and from its
+internal _monorepo_ (see [Wikipedia](https://en.wikipedia.org/wiki/Monorepo) and
+[Paper](https://research.google/pubs/why-google-stores-billions-of-lines-of-code-in-a-single-repository/))
+with [🦛 Copybara](https://github.com/google/copybara).
+
+When adjusting a PR to code review feedback, please use `git commit --amend`.
+
+You can use `git rebase -i main` to _meld/squash_ existing commits into one.
+
+Then use `git push --force-with-lease` to update the branch of your PR.
+
+We cannot merge your PR until you fix this.
+
 ### AI Generated code
 
 It's ok to generate the first draft using AI but we would like code which has

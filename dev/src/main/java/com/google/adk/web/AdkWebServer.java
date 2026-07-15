@@ -29,6 +29,8 @@ import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.artifacts.ListArtifactsResponse;
 import com.google.adk.events.Event;
+import com.google.adk.memory.BaseMemoryService;
+import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
@@ -82,14 +84,20 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.context.ApplicationContextInitializer;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.stereotype.Component;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -118,6 +126,7 @@ import org.springframework.web.util.UriComponentsBuilder;
  * configuration, DTOs, and controller logic.
  */
 @SpringBootApplication
+@ConfigurationPropertiesScan
 @ComponentScan(basePackages = {"com.google.adk.web", "com.google.adk.web.config"})
 public class AdkWebServer implements WebMvcConfigurer {
 
@@ -157,6 +166,18 @@ public class AdkWebServer implements WebMvcConfigurer {
         return new InMemoryArtifactService();
     }
 
+    /**
+     * Provides the singleton instance of the MemoryService (InMemory). Will be
+     * made configurable once we have the Vertex MemoryService.
+     *
+     * @return An instance of BaseMemoryService (currently InMemoryMemoryService).
+     */
+    @Bean
+    public BaseMemoryService memoryService() {
+        log.info("Using InMemoryMemoryService");
+        return new InMemoryMemoryService();
+    }
+
     @Bean("loadedAgentRegistry")
     public Map<String, BaseAgent> loadedAgentRegistry(
             AgentCompilerLoader loader, AgentLoadingProperties props) {
@@ -175,8 +196,24 @@ public class AdkWebServer implements WebMvcConfigurer {
     }
 
     @Bean
+    @Primary
     public ObjectMapper objectMapper() {
         return JsonBaseModel.getMapper();
+    }
+
+    /**
+     * Configures the message converter to use the custom ADK ObjectMapper. This
+     * ensures that Spring Web uses the correct JSON serialization settings (like
+     * omitting absent optional fields) and prevents double-serialization issues,
+     * particularly for Server-Sent Events (SSE).
+     *
+     * @param objectMapper The primary ObjectMapper configured for the ADK.
+     * @return A configured MappingJackson2HttpMessageConverter.
+     */
+    @Bean
+    public MappingJackson2HttpMessageConverter mappingJackson2HttpMessageConverter(
+            ObjectMapper objectMapper) {
+        return new MappingJackson2HttpMessageConverter(objectMapper);
     }
 
     /**
@@ -1879,9 +1916,34 @@ public class AdkWebServer implements WebMvcConfigurer {
      * @param args Command line arguments.
      */
     public static void main(String[] args) {
+        // Increase the default websocket buffer size to 10MB to accommodate live API messages.
         System.setProperty(
                 "org.apache.tomcat.websocket.DEFAULT_BUFFER_SIZE", String.valueOf(10 * 1024 * 1024));
         SpringApplication.run(AdkWebServer.class, args);
         log.info("AdkWebServer application started successfully.");
+    }
+
+    // TODO(vorburger): #later return Closeable, which can stop the server (and resets static)
+    public static void start(BaseAgent... agents) {
+        // Disable CompiledAgentLoader by setting property to prevent its creation
+        System.setProperty("adk.agents.loader", "static");
+        // Increase the default websocket buffer size to 10MB to accommodate live API messages.
+        System.setProperty(
+                "org.apache.tomcat.websocket.DEFAULT_BUFFER_SIZE", String.valueOf(10 * 1024 * 1024));
+
+        // Create Spring Application with custom initializer
+        SpringApplication app = new SpringApplication(AdkWebServer.class);
+        app.addInitializers(
+                new ApplicationContextInitializer<ConfigurableApplicationContext>() {
+                    @Override
+                    public void initialize(ConfigurableApplicationContext context) {
+                        // Register the AgentStaticLoader bean before context refresh
+                        DefaultListableBeanFactory beanFactory
+                                = (DefaultListableBeanFactory) context.getBeanFactory();
+                        beanFactory.registerSingleton("agentLoader", new AgentStaticLoader(agents));
+                    }
+                });
+
+        app.run(new String[0]);
     }
 }

@@ -70,9 +70,11 @@ public final class InMemoryMemoryService implements BaseMemoryService {
               session.events().stream()
                   .filter(
                       event ->
-                          event.content().isPresent()
-                              && event.content().get().parts().isPresent()
-                              && !event.content().get().parts().get().isEmpty())
+                          event
+                              .content()
+                              .flatMap(c -> c.parts())
+                              .filter(parts -> !parts.isEmpty())
+                              .isPresent())
                   .collect(toImmutableList());
           userSessions.put(session.id(), nonEmptyEvents);
         });
@@ -118,9 +120,9 @@ public final class InMemoryMemoryService implements BaseMemoryService {
               if (!Collections.disjoint(wordsInQuery, wordsInEvent)) {
                 MemoryEntry memory =
                     MemoryEntry.builder()
-                        .setContent(event.content().get())
-                        .setAuthor(event.author())
-                        .setTimestamp(formatTimestamp(event.timestamp()))
+                        .content(event.content().get())
+                        .author(event.author())
+                        .timestamp(formatTimestamp(event.timestamp()))
                         .build();
                 matchingMemories.add(memory);
               }
@@ -128,7 +130,7 @@ public final class InMemoryMemoryService implements BaseMemoryService {
           }
 
           return SearchMemoryResponse.builder()
-              .setMemories(ImmutableList.copyOf(matchingMemories))
+              .memories(ImmutableList.copyOf(matchingMemories))
               .build();
         });
   }

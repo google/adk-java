@@ -19,18 +19,27 @@ package com.google.adk.tools;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.NullNode;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.events.ToolConfirmation;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
+import com.google.protobuf.Timestamp;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -38,6 +47,32 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link FunctionTool}. */
 @RunWith(JUnit4.class)
 public final class FunctionToolTest {
+  private LlmAgent agent;
+  private InMemorySessionService sessionService;
+  private ToolContext toolContext;
+
+  @Before
+  public void setUp() {
+    agent = LlmAgent.builder().name("test-agent").build();
+    sessionService = new InMemorySessionService();
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    InvocationContext invocationContext =
+        InvocationContext.builder()
+            .agent(agent)
+            .session(session)
+            .sessionService(sessionService)
+            .invocationId("invocation-id")
+            .build();
+    toolContext = ToolContext.builder(invocationContext).functionCallId("functionCallId").build();
+  }
+
+  @Test
+  public void create_withNonSerializableParameter_raisesIllegalArgumentException() {
+    assertThrows(
+        IllegalArgumentException.class, () -> FunctionTool.create(Functions.class, "doThing"));
+  }
+
   @Test
   public void create_withStaticMethod_success() throws NoSuchMethodException {
     Method method = Functions.class.getMethod("voidReturnWithoutSchema");
@@ -57,6 +92,7 @@ public final class FunctionToolTest {
                         .properties(ImmutableMap.of())
                         .required(ImmutableList.of())
                         .build())
+                .response(Schema.builder().type("NULL").build())
                 .build());
   }
 
@@ -89,6 +125,7 @@ public final class FunctionToolTest {
                                     .build()))
                         .required(ImmutableList.of("first_param", "second_param"))
                         .build())
+                .response(Schema.builder().type("NULL").build())
                 .build());
   }
 
@@ -126,6 +163,7 @@ public final class FunctionToolTest {
                         .properties(ImmutableMap.of())
                         .required(ImmutableList.of())
                         .build())
+                .response(Schema.builder().type("NULL").build())
                 .build());
   }
 
@@ -196,14 +234,30 @@ public final class FunctionToolTest {
   }
 
   @Test
+  public void create_withParameterizedList() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "returnsParameterizedList");
+
+    assertThat(tool).isNotNull();
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.<String, Schema>builder()
+                        .put(
+                            "listParam",
+                            Schema.builder()
+                                .type("ARRAY")
+                                .items(Schema.builder().type("OBJECT").build())
+                                .build())
+                        .buildOrThrow())
+                .required(ImmutableList.of("listParam"))
+                .build());
+  }
+
+  @Test
   public void call_withAllSupportedParameterTypes() throws Exception {
     FunctionTool tool = FunctionTool.create(Functions.class, "returnAllSupportedParametersAsMap");
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.create(
-                    null, null, null, Session.builder("123").build(), null, null))
-            .functionCallId("functionCallId")
-            .build();
 
     Map<String, Object> result =
         tool.runAsync(
@@ -243,6 +297,31 @@ public final class FunctionToolTest {
                 .put("mapParam", ImmutableMap.of("key1", "value1"))
                 .put("toolContext", toolContext.toString())
                 .buildOrThrow());
+  }
+
+  @Test
+  public void call_withPrimitiveLongParam_whenModelProvidesInteger_succeeds() throws Exception {
+    // When the model returns a small integer (e.g. 42), Jackson deserializes it as Integer.
+    // Primitive long was never broken — Java reflection auto-widens int to long.
+    FunctionTool tool = FunctionTool.create(Functions.class, "echoPrimitiveLong");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("value", Integer.valueOf(42)), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("value", 42L);
+  }
+
+  @Test
+  public void call_withBoxedLongParam_whenModelProvidesInteger_succeeds() throws Exception {
+    // When the model returns a small integer (e.g. 42), Jackson deserializes it as Integer.
+    // Boxed Long was broken before the fix — castValue() returned the raw Integer, causing
+    // reflection to throw IllegalArgumentException (Integer is not assignable to Long).
+    FunctionTool tool = FunctionTool.create(Functions.class, "echoBoxedLong");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("value", Integer.valueOf(42)), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("value", 42L);
   }
 
   @Test
@@ -283,6 +362,292 @@ public final class FunctionToolTest {
   }
 
   @Test
+  public void call_withPojoParamWithOptionalFields_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "pojoParamWithOptionalFields");
+    PojoWithFields nestedPojo = new PojoWithFields();
+    nestedPojo.field1 = "abc";
+    nestedPojo.field2 = 123;
+    Map<String, Object> pojoMap = new HashMap<>();
+    pojoMap.put("optionalField", "hello");
+    pojoMap.put("optionalPojo", nestedPojo);
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("pojo", pojoMap), null).blockingGet();
+
+    assertThat(result)
+        .containsExactly(
+            "optionalFieldPresent",
+            true,
+            "optionalFieldValue",
+            "hello",
+            "optionalPojoPresent",
+            true,
+            "optionalPojoValueField1",
+            "abc",
+            "optionalPojoValueField2",
+            123);
+  }
+
+  @Test
+  public void call_withPojoParamWithOptionalFields_missing() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "pojoParamWithOptionalFields");
+    Map<String, Object> pojoMap = new HashMap<>();
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("pojo", pojoMap), null).blockingGet();
+
+    assertThat(result).containsExactly("optionalFieldPresent", false, "optionalPojoPresent", false);
+  }
+
+  @Test
+  public void call_withOptionalReturn_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", true), null).blockingGet();
+
+    assertThat(result).containsExactly("result", "hello");
+  }
+
+  @Test
+  public void call_withOptionalReturn_empty() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", false), null).blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void call_withOptionalPojoReturn_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalPojoReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", true), null).blockingGet();
+
+    assertThat(result).containsExactly("field1", "abc", "field2", 123);
+  }
+
+  @Test
+  public void call_withOptionalPojoReturn_empty() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalPojoReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", false), null).blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void call_withPojoOptionalFields_bothPresent() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithPojoOptionalFields");
+
+    Map<String, Object> result =
+        tool.runAsync(
+                ImmutableMap.of("includeOptionalField", true, "includeOptionalPojo", true), null)
+            .blockingGet();
+
+    assertThat(result)
+        .containsExactly(
+            "optionalField",
+            "hello",
+            "optionalPojo",
+            ImmutableMap.of("field1", "abc", "field2", 999));
+  }
+
+  @Test
+  public void call_withPojoOptionalFields_bothEmpty() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithPojoOptionalFields");
+
+    Map<String, Object> result =
+        tool.runAsync(
+                ImmutableMap.of("includeOptionalField", false, "includeOptionalPojo", false), null)
+            .blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void call_withMaybeOptionalReturn_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithMaybeOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", true), null).blockingGet();
+
+    assertThat(result).containsExactly("result", "hello");
+  }
+
+  @Test
+  public void call_withMaybeOptionalReturn_empty() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithMaybeOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", false), null).blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void call_withSingleOptionalReturn_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithSingleOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", true), null).blockingGet();
+
+    assertThat(result).containsExactly("result", "hello");
+  }
+
+  @Test
+  public void call_withSingleOptionalReturn_empty() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithSingleOptionalReturn");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("returnPresent", false), null).blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void create_withPojoParamWithOptionalFields() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "pojoParamWithOptionalFields");
+
+    assertThat(tool).isNotNull();
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.of(
+                        "pojo",
+                        Schema.builder()
+                            .type("OBJECT")
+                            .properties(
+                                ImmutableMap.of(
+                                    "optionalField",
+                                    Schema.builder().type("STRING").nullable(true).build(),
+                                    "optionalPojo",
+                                    Schema.builder()
+                                        .type("OBJECT")
+                                        .nullable(true)
+                                        .properties(
+                                            ImmutableMap.of(
+                                                "field1",
+                                                Schema.builder().type("STRING").build(),
+                                                "field2",
+                                                Schema.builder().type("INTEGER").build()))
+                                        .build()))
+                            .build()))
+                .required(ImmutableList.of("pojo"))
+                .build());
+  }
+
+  @Test
+  public void create_withOptionalTypeParameter() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalTypeParameter");
+
+    assertThat(tool).isNotNull();
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.of(
+                        "optionalParam",
+                        Schema.builder()
+                            .type("STRING")
+                            .nullable(true)
+                            .description("An Optional type parameter")
+                            .build()))
+                .required(ImmutableList.of())
+                .build());
+  }
+
+  @Test
+  public void call_withOptionalTypeParameter_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalTypeParameter");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("optionalParam", "hello"), null).blockingGet();
+
+    assertThat(result).containsExactly("present", true, "value", "hello");
+  }
+
+  @Test
+  public void call_withOptionalTypeParameter_missing() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalTypeParameter");
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), null).blockingGet();
+
+    assertThat(result).containsExactly("present", false);
+  }
+
+  @Test
+  public void call_withListPojoParam() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "listPojoParam");
+    List<Map<String, Object>> listArg =
+        ImmutableList.of(
+            ImmutableMap.of("field1", "v1", "field2", 1),
+            ImmutableMap.of("field1", "v2", "field2", 2));
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("list", listArg), null).blockingGet();
+
+    assertThat(result).containsExactly("firstField1", "v1", "count", 2);
+  }
+
+  @Test
+  public void create_withRawOptionalParameter() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithRawOptional");
+    assertThat(tool).isNotNull();
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.of(
+                        "rawOpt", Schema.builder().type("OBJECT").nullable(true).build()))
+                .required(ImmutableList.of())
+                .build());
+  }
+
+  @Test
+  public void call_withRawOptionalParameter_present() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithRawOptional");
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of("rawOpt", "x"), null).blockingGet();
+    assertThat(result).containsExactly("present", true);
+  }
+
+  @Test
+  public void call_withOptionalTypeParameter_null() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalTypeParameter");
+
+    Map<String, Object> args = new HashMap<>();
+    args.put("optionalParam", null);
+    Map<String, Object> result = tool.runAsync(args, null).blockingGet();
+
+    assertThat(result).containsExactly("present", false);
+  }
+
+  @Test
+  public void call_withNullNodeReturnValue_returnsEmptyMap() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionThatReturnsNullNode");
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), null).blockingGet();
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void call_withBooleanReturnValue_returnsMapWithResult() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "returnsBoolean");
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), null).blockingGet();
+
+    assertThat(result).containsExactly("result", true);
+  }
+
+  @Test
   public void call_withPojoParamWithGettersAndSetters() throws Exception {
     FunctionTool tool = FunctionTool.create(Functions.class, "pojoParamWithGettersAndSetters");
     PojoWithGettersAndSetters pojo = new PojoWithGettersAndSetters();
@@ -292,6 +657,28 @@ public final class FunctionToolTest {
     Map<String, Object> result = tool.runAsync(ImmutableMap.of("pojo", pojo), null).blockingGet();
 
     assertThat(result).containsExactly("field1", "abc", "field2", 123);
+  }
+
+  @Test
+  public void call_withParameterizedListParam() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "returnsParameterizedList");
+    ArrayList<Map<String, String>> listParam = new ArrayList<>();
+    listParam.add(ImmutableMap.of("key1", "value1"));
+    listParam.add(ImmutableMap.of("key2", "value2"));
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("listParam", listParam), null).blockingGet();
+
+    assertThat(result).containsExactly("listParam", listParam);
+  }
+
+  @Test
+  public void call_throwsException_returnsInternalError() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "throwException");
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), null).blockingGet();
+
+    assertThat(result).containsExactly("status", "error", "message", "An internal error occurred.");
   }
 
   @Test
@@ -320,6 +707,138 @@ public final class FunctionToolTest {
   }
 
   @Test
+  public void create_withDiamondDependency_buildsCorrectSchema() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "processDiamond");
+
+    // This is the expected schema for the object at the bottom of the diamond.
+    Schema bottomSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("name", Schema.builder().type("STRING").build()))
+            .build();
+
+    // The full schema should correctly represent the structure, with the full
+    // `bottomSchema` appearing in both the 'left' and 'right' branches. If the
+    Schema expectedParams =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "top",
+                    Schema.builder()
+                        .type("OBJECT")
+                        .properties(
+                            ImmutableMap.of(
+                                "left",
+                                Schema.builder()
+                                    .type("OBJECT")
+                                    .properties(ImmutableMap.of("bottom", bottomSchema))
+                                    .build(),
+                                "right",
+                                Schema.builder()
+                                    .type("OBJECT")
+                                    .properties(ImmutableMap.of("bottom", bottomSchema))
+                                    .build()))
+                        .build()))
+            .required(ImmutableList.of("top"))
+            .build();
+
+    assertThat(tool.declaration().get().parameters()).hasValue(expectedParams);
+  }
+
+  @Test
+  public void create_withCustomGenericType_buildsCorrectSchema() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "staticCustomGenericParam");
+
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.of(
+                        "customType",
+                        Schema.builder()
+                            .type("OBJECT")
+                            .properties(
+                                ImmutableMap.of("value", Schema.builder().type("STRING").build()))
+                            .build()))
+                .required(ImmutableList.of("customType"))
+                .build());
+  }
+
+  @Test
+  public void create_withRecursiveParam_avoidsInfiniteRecursion() {
+    Schema nodeSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "value",
+                    Schema.builder().type("STRING").build(),
+                    "next", // The recursive field
+                    Schema.builder()
+                        .type("OBJECT")
+                        .description(
+                            "Recursive reference to com.google.adk.tools.FunctionToolTest$Node"
+                                + " omitted.")
+                        .build()))
+            .build();
+    Schema expectedParameters =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("param", nodeSchema))
+            .required(ImmutableList.of("param"))
+            .build();
+
+    FunctionTool tool = FunctionTool.create(Functions.class, "recursiveParam");
+    assertThat(tool.declaration().get().parameters()).hasValue(expectedParameters);
+  }
+
+  @Test
+  public void create_withOptionalParameter_excludesFromRequired() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalParam");
+
+    assertThat(tool).isNotNull();
+    assertThat(tool.declaration().get().parameters())
+        .hasValue(
+            Schema.builder()
+                .type("OBJECT")
+                .properties(
+                    ImmutableMap.of(
+                        "requiredParam",
+                        Schema.builder().type("STRING").description("A required parameter").build(),
+                        "optionalParam",
+                        Schema.builder()
+                            .type("INTEGER")
+                            .description("An optional parameter")
+                            .build()))
+                .required(ImmutableList.of("requiredParam"))
+                .build());
+  }
+
+  @Test
+  public void call_withOptionalParameter_missingValue() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalParam");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("requiredParam", "test"), null).blockingGet();
+
+    assertThat(result)
+        .containsExactly(
+            "requiredParam", "test", "optionalParam", "null_value", "wasOptionalProvided", false);
+  }
+
+  @Test
+  public void call_withOptionalParameter_missingRequired_returnsError() {
+    FunctionTool tool = FunctionTool.create(Functions.class, "functionWithOptionalParam");
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("optionalParam", "test"), null).blockingGet();
+
+    assertThat(result).containsExactly("status", "error", "message", "An internal error occurred.");
+  }
+
+  @Test
   public void create_withMaybeMapReturnType() {
     FunctionTool tool = FunctionTool.create(Functions.class, "returnsMaybeMap");
 
@@ -335,13 +854,6 @@ public final class FunctionToolTest {
     Map<String, Object> result = tool.runAsync(new HashMap<>(), null).blockingGet();
 
     assertThat(result).containsExactly("key", "value");
-  }
-
-  @Test
-  public void create_withMaybeStringReturnType() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> FunctionTool.create(Functions.class, "returnsMaybeString"));
   }
 
   @Test
@@ -363,16 +875,32 @@ public final class FunctionToolTest {
   }
 
   @Test
+  public void call_withPojoReturnType() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "returnsPojo");
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), null).blockingGet();
+    assertThat(result).containsExactly("field1", "abc", "field2", 123);
+  }
+
+  @Test
+  public void call_withSinglePojoReturnType() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "returnsSinglePojo");
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), null).blockingGet();
+    assertThat(result).containsExactly("field1", "abc", "field2", 123);
+  }
+
+  @Test
+  public void call_withMaybePojoReturnType() throws Exception {
+    FunctionTool tool = FunctionTool.create(Functions.class, "returnsMaybePojo");
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), null).blockingGet();
+    assertThat(result).containsExactly("field1", "abc", "field2", 123);
+  }
+
+  @Test
+  @SuppressWarnings("BooleanLiteral")
   public void call_nonStaticWithAllSupportedParameterTypes() throws Exception {
     Functions functions = new Functions();
     FunctionTool tool =
         FunctionTool.create(functions, "nonStaticReturnAllSupportedParametersAsMap");
-    ToolContext toolContext =
-        ToolContext.builder(
-                InvocationContext.create(
-                    null, null, null, Session.builder("123").build(), null, null))
-            .functionCallId("functionCallId")
-            .build();
 
     Map<String, Object> result =
         tool.runAsync(
@@ -414,13 +942,109 @@ public final class FunctionToolTest {
                 .buildOrThrow());
   }
 
+  @Test
+  public void runAsync_withRequireConfirmation() throws Exception {
+    Method method = Functions.class.getMethod("returnsMap");
+    FunctionTool tool =
+        new FunctionTool(null, method, /* isLongRunning= */ false, /* requireConfirmation= */ true);
+
+    // First call, should request confirmation
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+    assertThat(result)
+        .containsExactly(
+            "error", "This tool call requires confirmation, please approve or reject.");
+    assertThat(toolContext.actions().requestedToolConfirmations()).containsKey("functionCallId");
+    assertThat(toolContext.actions().requestedToolConfirmations().get("functionCallId").hint())
+        .isEqualTo(
+            "Please approve or reject the tool call returnsMap() by responding with a"
+                + " FunctionResponse with an expected ToolConfirmation payload.");
+
+    // Second call, user rejects
+    toolContext.toolConfirmation(ToolConfirmation.builder().confirmed(false).build());
+    result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+    assertThat(result).containsExactly("error", "This tool call is rejected.");
+
+    // Third call, user approves
+    toolContext.toolConfirmation(ToolConfirmation.builder().confirmed(true).build());
+    result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+    assertThat(result).containsExactly("key", "value");
+  }
+
+  @Test
+  public void create_instanceMethodWithConfirmation_requestsConfirmation() throws Exception {
+    Functions functions = new Functions();
+    Method method = Functions.class.getMethod("nonStaticVoidReturnWithoutSchema");
+    FunctionTool tool = FunctionTool.create(functions, method, /* requireConfirmation= */ true);
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+    assertThat(result)
+        .containsExactly(
+            "error", "This tool call requires confirmation, please approve or reject.");
+    assertThat(toolContext.actions().requestedToolConfirmations()).containsKey("functionCallId");
+  }
+
+  @Test
+  public void create_staticMethodWithConfirmation_requestsConfirmation() throws Exception {
+    Method method = Functions.class.getMethod("voidReturnWithoutSchema");
+    FunctionTool tool = FunctionTool.create(method, /* requireConfirmation= */ true);
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+    assertThat(result)
+        .containsExactly(
+            "error", "This tool call requires confirmation, please approve or reject.");
+    assertThat(toolContext.actions().requestedToolConfirmations()).containsKey("functionCallId");
+  }
+
+  @Test
+  public void create_classMethodNameWithConfirmation_requestsConfirmation() throws Exception {
+    FunctionTool tool =
+        FunctionTool.create(
+            Functions.class, "voidReturnWithoutSchema", /* requireConfirmation= */ true);
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+    assertThat(result)
+        .containsExactly(
+            "error", "This tool call requires confirmation, please approve or reject.");
+    assertThat(toolContext.actions().requestedToolConfirmations()).containsKey("functionCallId");
+  }
+
+  @Test
+  public void create_instanceMethodNameWithConfirmation_requestsConfirmation() throws Exception {
+    Functions functions = new Functions();
+    FunctionTool tool =
+        FunctionTool.create(
+            functions, "nonStaticVoidReturnWithoutSchema", /* requireConfirmation= */ true);
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+    assertThat(result)
+        .containsExactly(
+            "error", "This tool call requires confirmation, please approve or reject.");
+    assertThat(toolContext.actions().requestedToolConfirmations()).containsKey("functionCallId");
+  }
+
   static class Functions {
+
+    @Annotations.Schema(
+        name = "doThing",
+        description = "This function fetches stats that the agent needs.")
+    public static Maybe<Map<String, Object>> doThing(
+        @Annotations.Schema(
+                name = "recursiveParam",
+                description = "Protobuf fields have a recursive property in them.")
+            Timestamp recursiveParam) {
+      return Maybe.just(ImmutableMap.of("key", "value"));
+    }
+
     @Annotations.Schema(name = "my_function", description = "A test function")
     public static void voidReturnWithSchemaAndToolContext(
         @Annotations.Schema(name = "first_param", description = "An integer parameter") int param1,
         @Annotations.Schema(name = "second_param", description = "A string parameter")
             String param2,
         ToolContext toolContext) {}
+
+    public static void throwException() {
+      throw new RuntimeException("test exception");
+    }
 
     public static void voidReturnWithoutSchema() {}
 
@@ -465,6 +1089,19 @@ public final class FunctionToolTest {
           .buildOrThrow();
     }
 
+    public static ImmutableMap<String, Object> echoPrimitiveLong(long value) {
+      return ImmutableMap.of("value", value);
+    }
+
+    public static ImmutableMap<String, Object> echoBoxedLong(Long value) {
+      return ImmutableMap.of("value", value);
+    }
+
+    public static ImmutableMap<String, Object> returnsParameterizedList(
+        List<Map<String, String>> listParam, ToolContext toolContext) {
+      return ImmutableMap.<String, Object>builder().put("listParam", listParam).buildOrThrow();
+    }
+
     public static ImmutableMap<String, Object> pojoParamWithFields(PojoWithFields pojo) {
       return ImmutableMap.of("field1", pojo.field1, "field2", pojo.field2);
     }
@@ -473,6 +1110,41 @@ public final class FunctionToolTest {
         PojoWithGettersAndSetters pojo) {
       return ImmutableMap.of("field1", pojo.getField1(), "field2", pojo.getField2());
     }
+
+    public static ImmutableMap<String, Object> pojoParamWithOptionalFields(
+        PojoWithOptionalFields pojo) {
+      ImmutableMap.Builder<String, Object> builder = ImmutableMap.builder();
+      builder.put("optionalFieldPresent", pojo.optionalField.isPresent());
+      if (pojo.optionalField.isPresent()) {
+        builder.put("optionalFieldValue", pojo.optionalField.get());
+      }
+      builder.put("optionalPojoPresent", pojo.optionalPojo.isPresent());
+      if (pojo.optionalPojo.isPresent()) {
+        builder
+            .put("optionalPojoValueField1", pojo.optionalPojo.get().field1)
+            .put("optionalPojoValueField2", pojo.optionalPojo.get().field2);
+      }
+      return builder.buildOrThrow();
+    }
+
+    public static ImmutableMap<String, Object> functionWithOptionalTypeParameter(
+        @Annotations.Schema(
+                name = "optionalParam",
+                description = "An Optional type parameter",
+                optional = true)
+            Optional<String> optionalParam) {
+      ImmutableMap.Builder<String, Object> builder = ImmutableMap.builder();
+      if (optionalParam != null) {
+        if (optionalParam.isPresent()) {
+          builder.put("present", true).put("value", optionalParam.get());
+        } else {
+          builder.put("present", false);
+        }
+      }
+      return builder.buildOrThrow();
+    }
+
+    public static void processDiamond(DiamondTop top) {}
 
     public static Maybe<Map<String, Object>> returnsMaybeMap() {
       return Maybe.just(ImmutableMap.of("key", "value"));
@@ -486,7 +1158,60 @@ public final class FunctionToolTest {
       return Single.just(ImmutableMap.of("key", "value"));
     }
 
+    public static Boolean returnsBoolean() {
+      return true;
+    }
+
+    public static PojoWithGettersAndSetters returnsPojo() {
+      PojoWithGettersAndSetters pojo = new PojoWithGettersAndSetters();
+      pojo.setField1("abc");
+      pojo.setField2(123);
+      return pojo;
+    }
+
+    public static Single<PojoWithGettersAndSetters> returnsSinglePojo() {
+      PojoWithGettersAndSetters pojo = new PojoWithGettersAndSetters();
+      pojo.setField1("abc");
+      pojo.setField2(123);
+      return Single.just(pojo);
+    }
+
+    public static Maybe<PojoWithGettersAndSetters> returnsMaybePojo() {
+      PojoWithGettersAndSetters pojo = new PojoWithGettersAndSetters();
+      pojo.setField1("abc");
+      pojo.setField2(123);
+      return Maybe.just(pojo);
+    }
+
     public void nonStaticVoidReturnWithoutSchema() {}
+
+    public static ImmutableMap<String, Object> staticCustomGenericParam(
+        ParametrizedCustomType<String> customType) {
+      return ImmutableMap.of("customType", customType);
+    }
+
+    public static ImmutableMap<String, Object> recursiveParam(Node param) {
+      return ImmutableMap.of("param", param);
+    }
+
+    public static ImmutableMap<String, Object> functionWithOptionalParam(
+        @Annotations.Schema(name = "requiredParam", description = "A required parameter")
+            String requiredParam,
+        @Annotations.Schema(
+                name = "optionalParam",
+                description = "An optional parameter",
+                optional = true)
+            Integer optionalParam) {
+      ImmutableMap.Builder<String, Object> builder = ImmutableMap.builder();
+      builder.put("requiredParam", requiredParam);
+      if (optionalParam != null) {
+        builder.put("optionalParam", optionalParam);
+      } else {
+        builder.put("optionalParam", "null_value");
+      }
+      builder.put("wasOptionalProvided", optionalParam != null);
+      return builder.buildOrThrow();
+    }
 
     public ImmutableMap<String, Object> nonStaticReturnAllSupportedParametersAsMap(
         String stringParam,
@@ -520,14 +1245,74 @@ public final class FunctionToolTest {
           .put("toolContext", toolContext.toString())
           .buildOrThrow();
     }
+
+    public static Optional<String> functionWithOptionalReturn(boolean returnPresent) {
+      return returnPresent ? Optional.of("hello") : Optional.empty();
+    }
+
+    public static Optional<PojoWithFields> functionWithOptionalPojoReturn(boolean returnPresent) {
+      if (returnPresent) {
+        PojoWithFields pojo = new PojoWithFields();
+        pojo.field1 = "abc";
+        pojo.field2 = 123;
+        return Optional.of(pojo);
+      } else {
+        return Optional.empty();
+      }
+    }
+
+    public static PojoWithOptionalFields functionWithPojoOptionalFields(
+        boolean includeOptionalField, boolean includeOptionalPojo) {
+      PojoWithOptionalFields pojo = new PojoWithOptionalFields();
+      if (includeOptionalField) {
+        pojo.optionalField = Optional.of("hello");
+      }
+      if (includeOptionalPojo) {
+        PojoWithFields inner = new PojoWithFields();
+        inner.field1 = "abc";
+        inner.field2 = 999;
+        pojo.optionalPojo = Optional.of(inner);
+      }
+      return pojo;
+    }
+
+    public static Maybe<Optional<String>> functionWithMaybeOptionalReturn(boolean returnPresent) {
+      return Maybe.just(returnPresent ? Optional.of("hello") : Optional.empty());
+    }
+
+    public static Single<Optional<String>> functionWithSingleOptionalReturn(boolean returnPresent) {
+      return Single.just(returnPresent ? Optional.of("hello") : Optional.empty());
+    }
+
+    public static ImmutableMap<String, Object> listPojoParam(List<PojoWithFields> list) {
+      if (list == null || list.isEmpty()) {
+        return ImmutableMap.of("count", 0);
+      }
+      return ImmutableMap.of("firstField1", list.get(0).field1, "count", list.size());
+    }
+
+    @SuppressWarnings("rawtypes")
+    public static ImmutableMap<String, Object> functionWithRawOptional(
+        @Annotations.Schema(name = "rawOpt", optional = true) Optional rawOpt) {
+      return ImmutableMap.of("present", rawOpt != null && rawOpt.isPresent());
+    }
+
+    public static JsonNode functionThatReturnsNullNode() {
+      return NullNode.getInstance();
+    }
   }
 
-  private static class PojoWithFields {
+  public static class PojoWithFields {
     public String field1;
     public int field2;
   }
 
-  private static class PojoWithGettersAndSetters {
+  public static class PojoWithOptionalFields {
+    public Optional<String> optionalField = Optional.empty();
+    public Optional<PojoWithFields> optionalPojo = Optional.empty();
+  }
+
+  public static class PojoWithGettersAndSetters {
     private String privateField1;
     private int privateField2;
 
@@ -547,4 +1332,16 @@ public final class FunctionToolTest {
       privateField2 = value;
     }
   }
+
+  private record DiamondBottom(String name) {}
+
+  private record DiamondLeft(DiamondBottom bottom) {}
+
+  private record DiamondRight(DiamondBottom bottom) {}
+
+  private record DiamondTop(DiamondLeft left, DiamondRight right) {}
+
+  private record ParametrizedCustomType<T>(T value) {}
+
+  private record Node(String value, Node next) {}
 }

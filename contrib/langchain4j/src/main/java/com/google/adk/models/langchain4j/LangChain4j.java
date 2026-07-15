@@ -18,10 +18,12 @@ package com.google.adk.models.langchain4j;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.JsonBaseModel;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.BaseLlmConnection;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.auto.value.AutoValue;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
@@ -29,11 +31,11 @@ import com.google.genai.types.FunctionCallingConfigMode;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.ToolConfig;
 import com.google.genai.types.Type;
-import dev.langchain4j.Experimental;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.audio.Audio;
@@ -51,6 +53,7 @@ import dev.langchain4j.data.message.VideoContent;
 import dev.langchain4j.data.pdf.PdfFile;
 import dev.langchain4j.data.video.Video;
 import dev.langchain4j.exception.UnsupportedFeatureException;
+import dev.langchain4j.model.TokenCountEstimator;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
@@ -64,73 +67,113 @@ import dev.langchain4j.model.chat.request.json.JsonSchemaElement;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.output.TokenUsage;
 import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Flowable;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-@Experimental
-public class LangChain4j extends BaseLlm {
+@AutoValue
+public abstract class LangChain4j extends BaseLlm {
 
+  private static final Logger logger = LoggerFactory.getLogger(LangChain4j.class);
   private static final TypeReference<Map<String, Object>> MAP_TYPE_REFERENCE =
       new TypeReference<>() {};
 
-  private final ChatModel chatModel;
-  private final StreamingChatModel streamingChatModel;
-  private final ObjectMapper objectMapper;
+  LangChain4j() {
+    super("");
+  }
+
+  @Nullable
+  public abstract ChatModel chatModel();
+
+  @Nullable
+  public abstract StreamingChatModel streamingChatModel();
+
+  public abstract ObjectMapper objectMapper();
+
+  public abstract String modelName();
+
+  @Nullable
+  public abstract TokenCountEstimator tokenCountEstimator();
+
+  @Override
+  public String model() {
+    return modelName();
+  }
+
+  public static Builder builder() {
+    return new AutoValue_LangChain4j.Builder().objectMapper(new ObjectMapper());
+  }
+
+  @AutoValue.Builder
+  public abstract static class Builder {
+    public abstract Builder chatModel(ChatModel chatModel);
+
+    public abstract Builder streamingChatModel(StreamingChatModel streamingChatModel);
+
+    public abstract Builder tokenCountEstimator(TokenCountEstimator tokenCountEstimator);
+
+    public abstract Builder objectMapper(ObjectMapper objectMapper);
+
+    public abstract Builder modelName(String modelName);
+
+    public abstract LangChain4j build();
+  }
 
   public LangChain4j(ChatModel chatModel) {
-    super(
-        Objects.requireNonNull(
-            chatModel.defaultRequestParameters().modelName(), "chat model name cannot be null"));
-    this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
-    this.streamingChatModel = null;
-    this.objectMapper = new ObjectMapper();
+    this(chatModel, null, null, chatModel.defaultRequestParameters().modelName(), null);
   }
 
   public LangChain4j(ChatModel chatModel, String modelName) {
-    super(Objects.requireNonNull(modelName, "chat model name cannot be null"));
-    this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
-    this.streamingChatModel = null;
-    this.objectMapper = new ObjectMapper();
+    this(chatModel, null, null, modelName, null);
   }
 
   public LangChain4j(StreamingChatModel streamingChatModel) {
-    super(
-        Objects.requireNonNull(
-            streamingChatModel.defaultRequestParameters().modelName(),
-            "streaming chat model name cannot be null"));
-    this.chatModel = null;
-    this.streamingChatModel =
-        Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
-    this.objectMapper = new ObjectMapper();
+    this(
+        null,
+        streamingChatModel,
+        null,
+        streamingChatModel.defaultRequestParameters().modelName(),
+        null);
   }
 
   public LangChain4j(StreamingChatModel streamingChatModel, String modelName) {
-    super(Objects.requireNonNull(modelName, "streaming chat model name cannot be null"));
-    this.chatModel = null;
-    this.streamingChatModel =
-        Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
-    this.objectMapper = new ObjectMapper();
+    this(null, streamingChatModel, null, modelName, null);
   }
 
   public LangChain4j(ChatModel chatModel, StreamingChatModel streamingChatModel, String modelName) {
-    super(Objects.requireNonNull(modelName, "model name cannot be null"));
-    this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
-    this.streamingChatModel =
-        Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
-    this.objectMapper = new ObjectMapper();
+    this(chatModel, streamingChatModel, null, modelName, null);
+  }
+
+  private LangChain4j(
+      ChatModel chatModel,
+      StreamingChatModel streamingChatModel,
+      ObjectMapper objectMapper,
+      String modelName,
+      TokenCountEstimator tokenCountEstimator) {
+    this();
+    LangChain4j.builder()
+        .chatModel(chatModel)
+        .streamingChatModel(streamingChatModel)
+        .objectMapper(objectMapper)
+        .modelName(modelName)
+        .tokenCountEstimator(tokenCountEstimator)
+        .build();
   }
 
   @Override
   public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
     if (stream) {
-      if (this.streamingChatModel == null) {
+      if (this.streamingChatModel() == null) {
         return Flowable.error(new IllegalStateException("StreamingChatModel is not configured"));
       }
 
@@ -138,54 +181,57 @@ public class LangChain4j extends BaseLlm {
 
       return Flowable.create(
           emitter -> {
-            streamingChatModel.chat(
-                chatRequest,
-                new StreamingChatResponseHandler() {
-                  @Override
-                  public void onPartialResponse(String s) {
-                    emitter.onNext(
-                        LlmResponse.builder().content(Content.fromParts(Part.fromText(s))).build());
-                  }
+            streamingChatModel()
+                .chat(
+                    chatRequest,
+                    new StreamingChatResponseHandler() {
+                      @Override
+                      public void onPartialResponse(String s) {
+                        emitter.onNext(
+                            LlmResponse.builder()
+                                .content(Content.fromParts(Part.fromText(s)))
+                                .build());
+                      }
 
-                  @Override
-                  public void onCompleteResponse(ChatResponse chatResponse) {
-                    if (chatResponse.aiMessage().hasToolExecutionRequests()) {
-                      AiMessage aiMessage = chatResponse.aiMessage();
-                      toParts(aiMessage).stream()
-                          .map(Part::functionCall)
-                          .forEach(
-                              functionCall -> {
-                                functionCall.ifPresent(
-                                    function -> {
-                                      emitter.onNext(
-                                          LlmResponse.builder()
-                                              .content(
-                                                  Content.fromParts(
-                                                      Part.fromFunctionCall(
-                                                          function.name().orElse(""),
-                                                          function.args().orElse(Map.of()))))
-                                              .build());
-                                    });
-                              });
-                    }
-                    emitter.onComplete();
-                  }
+                      @Override
+                      public void onCompleteResponse(ChatResponse chatResponse) {
+                        if (chatResponse.aiMessage().hasToolExecutionRequests()) {
+                          AiMessage aiMessage = chatResponse.aiMessage();
+                          toParts(aiMessage).stream()
+                              .map(Part::functionCall)
+                              .forEach(
+                                  functionCall -> {
+                                    functionCall.ifPresent(
+                                        function -> {
+                                          emitter.onNext(
+                                              LlmResponse.builder()
+                                                  .content(
+                                                      Content.fromParts(
+                                                          Part.fromFunctionCall(
+                                                              function.name().orElse(""),
+                                                              function.args().orElse(Map.of()))))
+                                                  .build());
+                                        });
+                                  });
+                        }
+                        emitter.onComplete();
+                      }
 
-                  @Override
-                  public void onError(Throwable throwable) {
-                    emitter.onError(throwable);
-                  }
-                });
+                      @Override
+                      public void onError(Throwable throwable) {
+                        emitter.onError(throwable);
+                      }
+                    });
           },
           BackpressureStrategy.BUFFER);
     } else {
-      if (this.chatModel == null) {
+      if (this.chatModel() == null) {
         return Flowable.error(new IllegalStateException("ChatModel is not configured"));
       }
 
       ChatRequest chatRequest = toChatRequest(llmRequest);
-      ChatResponse chatResponse = chatModel.chat(chatRequest);
-      LlmResponse llmResponse = toLlmResponse(chatResponse);
+      ChatResponse chatResponse = chatModel().chat(chatRequest);
+      LlmResponse llmResponse = toLlmResponse(chatResponse, chatRequest);
 
       return Flowable.just(llmResponse);
     }
@@ -224,13 +270,11 @@ public class LangChain4j extends BaseLlm {
                       .mode()
                       .ifPresent(
                           functionMode -> {
-                            if (functionMode
-                                .knownEnum()
-                                .equals(FunctionCallingConfigMode.Known.AUTO)) {
+                            if (FunctionCallingConfigMode.Known.AUTO.equals(
+                                functionMode.knownEnum())) {
                               requestBuilder.toolChoice(ToolChoice.AUTO);
-                            } else if (functionMode
-                                .knownEnum()
-                                .equals(FunctionCallingConfigMode.Known.ANY)) {
+                            } else if (FunctionCallingConfigMode.Known.ANY.equals(
+                                functionMode.knownEnum())) {
                               // TODO check if it's the correct
                               // mapping
                               requestBuilder.toolChoice(ToolChoice.REQUIRED);
@@ -246,9 +290,8 @@ public class LangChain4j extends BaseLlm {
                                                             toolSpecification.name()))
                                                 .toList());
                                       });
-                            } else if (functionMode
-                                .knownEnum()
-                                .equals(FunctionCallingConfigMode.Known.NONE)) {
+                            } else if (FunctionCallingConfigMode.Known.NONE.equals(
+                                functionMode.knownEnum())) {
                               requestBuilder.toolSpecifications(List.of());
                             }
                           });
@@ -266,24 +309,25 @@ public class LangChain4j extends BaseLlm {
   }
 
   private List<ChatMessage> toMessages(LlmRequest llmRequest) {
-    List<ChatMessage> messages = new ArrayList<>();
-    messages.addAll(llmRequest.getSystemInstructions().stream().map(SystemMessage::from).toList());
-    messages.addAll(llmRequest.contents().stream().map(this::toChatMessage).toList());
+    List<ChatMessage> messages =
+        new ArrayList<>(
+            llmRequest.getSystemInstructions().stream().map(SystemMessage::from).toList());
+    llmRequest.contents().forEach(content -> messages.addAll(toChatMessage(content)));
     return messages;
   }
 
-  private ChatMessage toChatMessage(Content content) {
+  private List<ChatMessage> toChatMessage(Content content) {
     String role = content.role().orElseThrow().toLowerCase();
     return switch (role) {
       case "user" -> toUserOrToolResultMessage(content);
-      case "model", "assistant" -> toAiMessage(content);
+      case "model", "assistant" -> List.of(toAiMessage(content));
       default -> throw new IllegalStateException("Unexpected role: " + role);
     };
   }
 
-  private ChatMessage toUserOrToolResultMessage(Content content) {
-    ToolExecutionResultMessage toolExecutionResultMessage = null;
-    ToolExecutionRequest toolExecutionRequest = null;
+  private List<ChatMessage> toUserOrToolResultMessage(Content content) {
+    List<ToolExecutionResultMessage> toolExecutionResultMessages = new ArrayList<>();
+    List<ToolExecutionRequest> toolExecutionRequests = new ArrayList<>();
 
     List<dev.langchain4j.data.message.Content> lc4jContents = new ArrayList<>();
 
@@ -292,19 +336,19 @@ public class LangChain4j extends BaseLlm {
         lc4jContents.add(TextContent.from(part.text().get()));
       } else if (part.functionResponse().isPresent()) {
         FunctionResponse functionResponse = part.functionResponse().get();
-        toolExecutionResultMessage =
+        toolExecutionResultMessages.add(
             ToolExecutionResultMessage.from(
                 functionResponse.id().orElseThrow(),
                 functionResponse.name().orElseThrow(),
-                toJson(functionResponse.response().orElseThrow()));
+                toJson(functionResponse.response().orElseThrow())));
       } else if (part.functionCall().isPresent()) {
         FunctionCall functionCall = part.functionCall().get();
-        toolExecutionRequest =
+        toolExecutionRequests.add(
             ToolExecutionRequest.builder()
                 .id(functionCall.id().orElseThrow())
                 .name(functionCall.name().orElseThrow())
                 .arguments(toJson(functionCall.args().orElse(Map.of())))
-                .build();
+                .build());
       } else if (part.inlineData().isPresent()) {
         Blob blob = part.inlineData().get();
 
@@ -348,13 +392,12 @@ public class LangChain4j extends BaseLlm {
                       .mimeType(mimeType)
                       .build());
         } else if (mimeType.startsWith("text/")
-            || mimeType.equals("application/json")
-            || mimeType.endsWith("+json")
-            || mimeType.endsWith("+xml")) {
+            || mimeType.startsWith("application/json")
+            || mimeType.contains("+json")
+            || mimeType.contains("+xml")) {
           // TODO are there missing text based mime types?
           // TODO should we assume UTF_8?
-          lc4jContents.add(
-              TextContent.from(new String(bytes, java.nio.charset.StandardCharsets.UTF_8)));
+          lc4jContent = TextContent.from(new String(bytes, extractCharset(mimeType)));
         }
 
         if (lc4jContent != null) {
@@ -368,12 +411,31 @@ public class LangChain4j extends BaseLlm {
       }
     }
 
-    if (toolExecutionResultMessage != null) {
-      return toolExecutionResultMessage;
-    } else if (toolExecutionRequest != null) {
-      return AiMessage.aiMessage(toolExecutionRequest);
+    if (!toolExecutionResultMessages.isEmpty()) {
+      return new ArrayList<ChatMessage>(toolExecutionResultMessages);
+    } else if (!toolExecutionRequests.isEmpty()) {
+      return toolExecutionRequests.stream()
+          .map(AiMessage::aiMessage)
+          .map(msg -> (ChatMessage) msg)
+          .toList();
     } else {
-      return UserMessage.from(lc4jContents);
+      return List.of(UserMessage.from(lc4jContents));
+    }
+  }
+
+  private Charset extractCharset(String mimeType) {
+    String charSetString = "charset=";
+    if (mimeType == null || !mimeType.toLowerCase().contains(charSetString)) {
+      return java.nio.charset.StandardCharsets.UTF_8;
+    }
+    try {
+      String[] parts = mimeType.toLowerCase().split(charSetString);
+      String charsetName = parts[1].split(";")[0].trim().replace("\"", "").replace("'", "");
+      return java.nio.charset.Charset.forName(charsetName);
+    } catch (IllegalArgumentException e) {
+      logger.warn(
+          "Invalid charset extracted from mimeType: '{}'. Falling back to UTF-8.", mimeType);
+      return java.nio.charset.StandardCharsets.UTF_8;
     }
   }
 
@@ -411,7 +473,7 @@ public class LangChain4j extends BaseLlm {
 
   private String toJson(Object object) {
     try {
-      return objectMapper.writeValueAsString(object);
+      return objectMapper().writeValueAsString(object);
     } catch (JsonProcessingException e) {
       throw new RuntimeException(e);
     }
@@ -427,8 +489,24 @@ public class LangChain4j extends BaseLlm {
             baseTool -> {
               if (baseTool.declaration().isPresent()) {
                 FunctionDeclaration functionDeclaration = baseTool.declaration().get();
-                if (functionDeclaration.parameters().isPresent()) {
-                  Schema schema = functionDeclaration.parameters().get();
+                Schema schema = null;
+                if (functionDeclaration.parametersJsonSchema().isPresent()) {
+                  Object jsonSchemaObj = functionDeclaration.parametersJsonSchema().get();
+                  try {
+                    if (jsonSchemaObj instanceof Schema) {
+                      schema = (Schema) jsonSchemaObj;
+                    } else {
+                      schema = JsonBaseModel.getMapper().convertValue(jsonSchemaObj, Schema.class);
+                    }
+                  } catch (Exception e) {
+                    throw new IllegalStateException(
+                        "Failed to convert parametersJsonSchema to Schema: " + e.getMessage(), e);
+                  }
+                } else if (functionDeclaration.parameters().isPresent()) {
+                  schema = functionDeclaration.parameters().get();
+                }
+
+                if (schema != null) {
                   ToolSpecification toolSpecification =
                       ToolSpecification.builder()
                           .name(baseTool.name())
@@ -437,11 +515,9 @@ public class LangChain4j extends BaseLlm {
                           .build();
                   toolSpecifications.add(toolSpecification);
                 } else {
-                  // TODO exception or something else?
                   throw new IllegalStateException("Tool lacking parameters: " + baseTool);
                 }
               } else {
-                // TODO exception or something else?
                 throw new IllegalStateException("Tool lacking declaration: " + baseTool);
               }
             });
@@ -450,7 +526,7 @@ public class LangChain4j extends BaseLlm {
   }
 
   private JsonObjectSchema toParameters(Schema schema) {
-    if (schema.type().isPresent() && schema.type().get().knownEnum().equals(Type.Known.OBJECT)) {
+    if (schema.type().isPresent() && Type.Known.OBJECT.equals(schema.type().get().knownEnum())) {
       return JsonObjectSchema.builder()
           .addProperties(toProperties(schema))
           .required(schema.required().orElse(List.of()))
@@ -486,7 +562,7 @@ public class LangChain4j extends BaseLlm {
                 .items(toJsonSchemaElement(schema.items().orElseThrow()))
                 .build();
         case OBJECT -> toParameters(schema);
-        case TYPE_UNSPECIFIED ->
+        default ->
             throw new UnsupportedFeatureException(
                 "LangChain4jLlm does not support schema of type: " + type);
       };
@@ -495,11 +571,38 @@ public class LangChain4j extends BaseLlm {
     }
   }
 
-  private LlmResponse toLlmResponse(ChatResponse chatResponse) {
+  private LlmResponse toLlmResponse(ChatResponse chatResponse, ChatRequest chatRequest) {
     Content content =
         Content.builder().role("model").parts(toParts(chatResponse.aiMessage())).build();
 
-    return LlmResponse.builder().content(content).build();
+    LlmResponse.Builder builder = LlmResponse.builder().content(content);
+    TokenUsage tokenUsage = chatResponse.tokenUsage();
+    if (tokenCountEstimator() != null) {
+      try {
+        int estimatedInput =
+            tokenCountEstimator().estimateTokenCountInMessages(chatRequest.messages());
+        int estimatedOutput =
+            tokenCountEstimator().estimateTokenCountInText(chatResponse.aiMessage().text());
+        int estimatedTotal = estimatedInput + estimatedOutput;
+        builder.usageMetadata(
+            GenerateContentResponseUsageMetadata.builder()
+                .promptTokenCount(estimatedInput)
+                .candidatesTokenCount(estimatedOutput)
+                .totalTokenCount(estimatedTotal)
+                .build());
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    } else if (tokenUsage != null) {
+      builder.usageMetadata(
+          GenerateContentResponseUsageMetadata.builder()
+              .promptTokenCount(tokenUsage.inputTokenCount())
+              .candidatesTokenCount(tokenUsage.outputTokenCount())
+              .totalTokenCount(tokenUsage.totalTokenCount())
+              .build());
+    }
+
+    return builder.build();
   }
 
   private List<Part> toParts(AiMessage aiMessage) {
@@ -523,14 +626,17 @@ public class LangChain4j extends BaseLlm {
               });
       return parts;
     } else {
-      Part part = Part.builder().text(aiMessage.text()).build();
-      return List.of(part);
+      String text = aiMessage.text();
+      if (text == null) {
+        return List.of();
+      }
+      return List.of(Part.builder().text(text).build());
     }
   }
 
   private Map<String, Object> toArgs(ToolExecutionRequest toolExecutionRequest) {
     try {
-      return objectMapper.readValue(toolExecutionRequest.arguments(), MAP_TYPE_REFERENCE);
+      return objectMapper().readValue(toolExecutionRequest.arguments(), MAP_TYPE_REFERENCE);
     } catch (JsonProcessingException e) {
       throw new RuntimeException(e);
     }

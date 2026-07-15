@@ -25,13 +25,16 @@ import com.google.auto.value.AutoValue;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponsePromptFeedback;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
+import com.google.genai.types.Transcription;
 import java.util.List;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Represents a response received from the LLM. */
 @AutoValue
@@ -59,6 +62,14 @@ public abstract class LlmResponse extends JsonBaseModel {
   public abstract Optional<GroundingMetadata> groundingMetadata();
 
   /**
+   * Returns the custom metadata of the response, if available.
+   *
+   * @return An {@link Optional} containing a list of {@link CustomMetadata} or empty.
+   */
+  @JsonProperty("customMetadata")
+  public abstract Optional<List<CustomMetadata>> customMetadata();
+
+  /**
    * Indicates whether the text content is part of a unfinished text stream.
    *
    * <p>Only used for streaming mode and when the content is plain text.
@@ -78,6 +89,14 @@ public abstract class LlmResponse extends JsonBaseModel {
   @JsonProperty("errorCode")
   public abstract Optional<FinishReason> errorCode();
 
+  /** Error code if the response is an error. Code varies by model. */
+  @JsonProperty("finishReason")
+  public abstract Optional<FinishReason> finishReason();
+
+  /** Error code if the response is an error. Code varies by model. */
+  @JsonProperty("avgLogprobs")
+  public abstract Optional<Double> avgLogprobs();
+
   /** Error message if the response is an error. */
   @JsonProperty("errorMessage")
   public abstract Optional<String> errorMessage();
@@ -88,6 +107,28 @@ public abstract class LlmResponse extends JsonBaseModel {
    */
   @JsonProperty("interrupted")
   public abstract Optional<Boolean> interrupted();
+
+  /** Usage metadata about the response(s). */
+  @JsonProperty("usageMetadata")
+  public abstract Optional<GenerateContentResponseUsageMetadata> usageMetadata();
+
+  /** The model version used to generate the response. */
+  @JsonProperty("modelVersion")
+  public abstract Optional<String> modelVersion();
+
+  /**
+   * Input transcription. The transcription is independent to the model turn which means it doesn't
+   * imply any ordering between transcription and model turn.
+   */
+  @JsonProperty("inputTranscription")
+  public abstract Optional<Transcription> inputTranscription();
+
+  /**
+   * Output transcription. The transcription is independent to the model turn which means it doesn't
+   * imply any ordering between transcription and model turn.
+   */
+  @JsonProperty("outputTranscription")
+  public abstract Optional<Transcription> outputTranscription();
 
   public abstract Builder toBuilder();
 
@@ -102,46 +143,57 @@ public abstract class LlmResponse extends JsonBaseModel {
     }
 
     @JsonProperty("content")
-    public abstract Builder content(Content content);
+    public abstract Builder content(@Nullable Content content);
 
     @JsonProperty("interrupted")
     public abstract Builder interrupted(@Nullable Boolean interrupted);
 
-    public abstract Builder interrupted(Optional<Boolean> interrupted);
-
     @JsonProperty("groundingMetadata")
     public abstract Builder groundingMetadata(@Nullable GroundingMetadata groundingMetadata);
 
-    public abstract Builder groundingMetadata(Optional<GroundingMetadata> groundingMetadata);
+    @JsonProperty("customMetadata")
+    public abstract Builder customMetadata(@Nullable List<CustomMetadata> customMetadata);
 
     @JsonProperty("partial")
     public abstract Builder partial(@Nullable Boolean partial);
 
-    public abstract Builder partial(Optional<Boolean> partial);
-
     @JsonProperty("turnComplete")
     public abstract Builder turnComplete(@Nullable Boolean turnComplete);
-
-    public abstract Builder turnComplete(Optional<Boolean> turnComplete);
 
     @JsonProperty("errorCode")
     public abstract Builder errorCode(@Nullable FinishReason errorCode);
 
-    public abstract Builder errorCode(Optional<FinishReason> errorCode);
+    @JsonProperty("finishReason")
+    public abstract Builder finishReason(@Nullable FinishReason finishReason);
+
+    @JsonProperty("avgLogprobs")
+    public abstract Builder avgLogprobs(@Nullable Double avgLogprobs);
 
     @JsonProperty("errorMessage")
     public abstract Builder errorMessage(@Nullable String errorMessage);
 
-    public abstract Builder errorMessage(Optional<String> errorMessage);
+    @JsonProperty("usageMetadata")
+    public abstract Builder usageMetadata(
+        @Nullable GenerateContentResponseUsageMetadata usageMetadata);
+
+    @JsonProperty("modelVersion")
+    public abstract Builder modelVersion(@Nullable String modelVersion);
+
+    @JsonProperty("inputTranscription")
+    public abstract Builder inputTranscription(@Nullable Transcription inputTranscription);
+
+    @JsonProperty("outputTranscription")
+    public abstract Builder outputTranscription(@Nullable Transcription outputTranscription);
 
     @CanIgnoreReturnValue
     public final Builder response(GenerateContentResponse response) {
       Optional<List<Candidate>> candidatesOpt = response.candidates();
       if (candidatesOpt.isPresent() && !candidatesOpt.get().isEmpty()) {
         Candidate candidate = candidatesOpt.get().get(0);
+        this.finishReason(candidate.finishReason().orElse(null));
         if (candidate.content().isPresent()) {
           this.content(candidate.content().get());
-          this.groundingMetadata(candidate.groundingMetadata());
+          this.groundingMetadata(candidate.groundingMetadata().orElse(null));
         } else {
           candidate.finishReason().ifPresent(this::errorCode);
           candidate.finishMessage().ifPresent(this::errorMessage);
@@ -160,6 +212,8 @@ public abstract class LlmResponse extends JsonBaseModel {
           this.errorMessage("Unknown error.");
         }
       }
+      this.usageMetadata(response.usageMetadata().orElse(null));
+      this.modelVersion(response.modelVersion().orElse(null));
       return this;
     }
 

@@ -17,6 +17,7 @@
 package com.google.adk.testing;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.truth.Truth.assertThat;
 import static java.util.stream.Collectors.joining;
 
 import com.google.adk.agents.BaseAgent;
@@ -26,9 +27,12 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.EventCompaction;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.Session;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
@@ -37,6 +41,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
@@ -51,18 +56,32 @@ public final class TestUtils {
 
   public static InvocationContext createInvocationContext(BaseAgent agent, RunConfig runConfig) {
     InMemorySessionService sessionService = new InMemorySessionService();
-    return InvocationContext.create(
-        sessionService,
-        new InMemoryArtifactService(),
-        "invocationId",
-        agent,
-        sessionService.createSession("test-app", "test-user").blockingGet(),
-        Content.fromParts(Part.fromText("user content")),
-        runConfig);
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .artifactService(new InMemoryArtifactService())
+        .invocationId("invocationId")
+        .agent(agent)
+        .session(sessionService.createSession("test_app", "test-user").blockingGet())
+        .userContent(Content.fromParts(Part.fromText("user content")))
+        .runConfig(runConfig)
+        .build();
   }
 
   public static InvocationContext createInvocationContext(BaseAgent agent) {
     return createInvocationContext(agent, RunConfig.builder().build());
+  }
+
+  public static InvocationContext createInvocationContext(
+      BaseAgent agent, BaseSessionService sessionService, Session session) {
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .artifactService(new InMemoryArtifactService())
+        .invocationId("invocationId")
+        .agent(agent)
+        .session(session)
+        .userContent(Content.fromParts(Part.fromText("user content")))
+        .runConfig(RunConfig.builder().build())
+        .build();
   }
 
   public static Event createEvent(String id) {
@@ -80,66 +99,89 @@ public final class TestUtils {
         .build();
   }
 
-  public static ImmutableList<Object> simplifyEvents(List<Event> events) {
+  public static ImmutableList<String> simplifyEvents(List<Event> events) {
     return events.stream()
-        .map(
-            event -> {
-              if (event.content().isPresent() && event.content().get().parts().isPresent()) {
-                List<Part> parts = event.content().get().parts().get();
-                if (parts.size() == 1) {
-                  Part part = parts.get(0);
-                  if (part.text().isPresent()) {
-                    return event.author() + ": " + part.text().get();
-                  } else if (part.functionCall().isPresent()) {
-                    // Custom formatting for FunctionCall
-                    FunctionCall fc = part.functionCall().get();
-                    String argsString =
-                        fc.args().map(Object::toString).orElse("{}"); // Handle optional args
-                    return String.format(
-                        "%s: FunctionCall(name=%s, args=%s)",
-                        event.author(), fc.name().orElse(""), argsString);
-                  } else if (part.functionResponse().isPresent()) {
-                    // Custom formatting for FunctionResponse
-                    FunctionResponse fr = part.functionResponse().get();
-                    String responseString =
-                        fr.response()
-                            .map(Object::toString)
-                            .orElse("{}"); // Handle optional response
-                    return String.format(
-                        "%s: FunctionResponse(name=%s, response=%s)",
-                        event.author(), fr.name().orElse(""), responseString);
-                  }
-                } else { // Multiple parts, return the list of parts for simplicity
-                  // Apply custom formatting to parts within the list if needed
-                  String partsString =
-                      parts.stream()
-                          .map(
-                              part -> {
-                                if (part.text().isPresent()) {
-                                  return part.text().get();
-                                } else if (part.functionCall().isPresent()) {
-                                  FunctionCall fc = part.functionCall().get();
-                                  String argsString = fc.args().map(Object::toString).orElse("{}");
-                                  return String.format(
-                                      "FunctionCall(name=%s, args=%s)",
-                                      fc.name().orElse(""), argsString);
-                                } else if (part.functionResponse().isPresent()) {
-                                  FunctionResponse fr = part.functionResponse().get();
-                                  String responseString =
-                                      fr.response().map(Object::toString).orElse("{}");
-                                  return String.format(
-                                      "FunctionResponse(name=%s, response=%s)",
-                                      fr.name().orElse(""), responseString);
-                                }
-                                return part.toString(); // Fallback
-                              })
-                          .collect(joining(", "));
-                  return event.author() + ": [" + partsString + "]";
-                }
-              }
-              return event.author() + ": [NO_CONTENT]"; // Fallback if no content/parts
-            })
+        .map(event -> event.author() + ": " + formatEventContent(event))
         .collect(toImmutableList());
+  }
+
+  private static String formatEventContent(Event event) {
+    return formatContent(
+        event
+            .content()
+            .or(() -> event.actions().compaction().map(EventCompaction::compactedContent))
+            .orElse(Content.builder().build()));
+  }
+
+  public static String formatContent(Content content) {
+    return content
+        .parts()
+        .map(
+            parts -> {
+              if (parts.size() == 1) {
+                return formatPart(parts.get(0));
+              } else {
+                String contentString =
+                    parts.stream().map(TestUtils::formatPart).collect(joining(", "));
+                return "[" + contentString + "]";
+              }
+            })
+        .orElse("[NO_CONTENT]");
+  }
+
+  private static String formatPart(Part part) {
+    if (part.text().isPresent()) {
+      return part.text().get();
+    }
+    if (part.functionCall().isPresent()) {
+      FunctionCall fc = part.functionCall().get();
+      String argsString = fc.args().map(Object::toString).orElse("{}");
+      return String.format("FunctionCall(name=%s, args=%s)", fc.name().orElse(""), argsString);
+    }
+    if (part.functionResponse().isPresent()) {
+      FunctionResponse fr = part.functionResponse().get();
+      String responseString = fr.response().map(Object::toString).orElse("{}");
+      return String.format(
+          "FunctionResponse(name=%s, response=%s)", fr.name().orElse(""), responseString);
+    }
+    return part.toString(); // Fallback
+  }
+
+  public static void assertEqualIgnoringFunctionIds(
+      Content actualContent, Content expectedContent) {
+    assertThat(overwriteFunctionIdsInContent(actualContent))
+        .isEqualTo(overwriteFunctionIdsInContent(expectedContent));
+  }
+
+  private static Content overwriteFunctionIdsInContent(Content content) {
+    if (content.parts().isEmpty()) {
+      return content;
+    }
+    return content.toBuilder()
+        .parts(
+            content.parts().get().stream()
+                .map(TestUtils::overwriteFunctionIdsInPart)
+                .collect(toImmutableList()))
+        .build();
+  }
+
+  private static Part overwriteFunctionIdsInPart(Part part) {
+    if (part.functionCall().isPresent()) {
+      return part.toBuilder()
+          .functionCall(
+              part.functionCall().get().toBuilder().id("<overwritten by TestUtils>").build())
+          .build();
+    }
+    if (part.functionResponse().isPresent()) {
+      FunctionResponse functionResponse = part.functionResponse().get();
+      FunctionResponse.Builder functionResponseBuilder =
+          functionResponse.toBuilder().id("<overwritten by TestUtils>");
+      if (!functionResponse.parts().isPresent()) {
+        functionResponseBuilder.parts(ImmutableList.of());
+      }
+      return part.toBuilder().functionResponse(functionResponseBuilder.build()).build();
+    }
+    return part;
   }
 
   public static TestBaseAgent createRootAgent(BaseAgent... subAgents) {
@@ -194,6 +236,29 @@ public final class TestUtils {
 
   public static LlmResponse createLlmResponse(Content content) {
     return LlmResponse.builder().content(content).build();
+  }
+
+  public static LlmResponse createTextLlmResponse(String text) {
+    return createLlmResponse(Content.builder().role("model").parts(Part.fromText(text)).build());
+  }
+
+  public static LlmResponse createFunctionCallLlmResponse(
+      String id, String functionName, Map<String, Object> args) {
+    Content content =
+        Content.builder()
+            .parts(
+                Part.builder()
+                    .functionCall(FunctionCall.builder().id(id).name(functionName).args(args)))
+            .role("model")
+            .build();
+    return createLlmResponse(content);
+  }
+
+  public static GenerateContentResponseUsageMetadata.Builder
+      createGenerateContentResponseUsageMetadata() {
+    return GenerateContentResponseUsageMetadata.builder()
+        .promptTokenCount(10)
+        .candidatesTokenCount(20);
   }
 
   public static class EchoTool extends BaseTool {

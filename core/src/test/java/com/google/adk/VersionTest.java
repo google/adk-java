@@ -18,12 +18,18 @@ package com.google.adk;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import java.util.regex.Pattern;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public class VersionTest {
+
+  // from semver.org
+  private static final Pattern SEM_VER =
+      Pattern.compile(
+          "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$");
 
   @Test
   public void versionShouldMatchProjectVersion() {
@@ -32,6 +38,11 @@ public class VersionTest {
     assertThat(Version.JAVA_ADK_VERSION).isNotEqualTo("unknown");
     assertThat(Version.JAVA_ADK_VERSION).isNotEqualTo("${project.version}");
 
-    assertThat(Version.JAVA_ADK_VERSION).matches("\\d+\\.\\d+\\.\\d+(-SNAPSHOT)?");
+    assertThat(Version.JAVA_ADK_VERSION).matches("\\d+\\.\\d+\\.\\d+(-SNAPSHOT|-rc\\.\\d+)?");
+  }
+
+  @Test
+  public void versionShouldFollowSemanticVersioning() {
+    assertThat(Version.JAVA_ADK_VERSION).matches(SEM_VER);
   }
 }

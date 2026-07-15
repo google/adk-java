@@ -20,6 +20,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.adk.models.LlmRequest;
 import com.google.adk.tools.ToolContext;
+import com.google.adk.utils.ModelNameUtils;
 import com.google.cloud.aiplatform.v1.RagContexts;
 import com.google.cloud.aiplatform.v1.RagQuery;
 import com.google.cloud.aiplatform.v1.RetrieveContextsRequest;
@@ -38,8 +39,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,10 +59,10 @@ public class VertexAiRagRetrieval extends BaseRetrievalTool {
   private final RetrieveContextsRequest.VertexRagStore apiVertexRagStore;
 
   public VertexAiRagRetrieval(
-      @Nonnull String name,
-      @Nonnull String description,
-      @Nonnull VertexRagServiceClient vertexRagServiceClient,
-      @Nonnull String parent,
+      String name,
+      String description,
+      VertexRagServiceClient vertexRagServiceClient,
+      String parent,
       @Nullable List<RagResource> ragResources,
       @Nullable Double vectorDistanceThreshold) {
     super(name, description);
@@ -105,12 +105,11 @@ public class VertexAiRagRetrieval extends BaseRetrievalTool {
   public Completable processLlmRequest(
       LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
     LlmRequest llmRequest = llmRequestBuilder.build();
-    // Use Gemini built-in Vertex AI RAG tool for Gemini 2 models or when using Vertex AI API Model
+    // Use Gemini built-in Vertex AI RAG tool for Gemini models when using Vertex AI API Model
     boolean useVertexAi = Boolean.parseBoolean(System.getenv("GOOGLE_GENAI_USE_VERTEXAI"));
-    if (useVertexAi
-        && (llmRequest.model().isPresent() && llmRequest.model().get().startsWith("gemini-2"))) {
+    if (useVertexAi && llmRequest.model().filter(ModelNameUtils::isGeminiModel).isPresent()) {
       GenerateContentConfig config =
-          llmRequest.config().orElse(GenerateContentConfig.builder().build());
+          llmRequest.config().orElseGet(() -> GenerateContentConfig.builder().build());
       ImmutableList.Builder<Tool> toolsBuilder = ImmutableList.builder();
       if (config.tools().isPresent()) {
         toolsBuilder.addAll(config.tools().get());

@@ -16,12 +16,13 @@
 
 package com.google.adk.artifacts;
 
+import com.google.adk.sessions.SessionKey;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
-import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /** Base interface for artifact services. */
 public interface BaseArtifactService {
@@ -39,18 +40,62 @@ public interface BaseArtifactService {
   Single<Integer> saveArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact);
 
+  /** Saves an artifact. */
+  default Single<Integer> saveArtifact(SessionKey sessionKey, String filename, Part artifact) {
+    return saveArtifact(
+        sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, artifact);
+  }
+
   /**
-   * Gets an artifact.
+   * Saves an artifact and returns it with fileData if available.
+   *
+   * <p>Implementations should override this default method for efficiency, as the default performs
+   * two I/O operations (save then load).
    *
    * @param appName the app name
    * @param userId the user ID
    * @param sessionId the session ID
    * @param filename the filename
-   * @param version Optional version number. If null, loads the latest version.
-   * @return the artifact or empty if not found
+   * @param artifact the artifact to save
+   * @return the saved artifact with fileData if available.
    */
+  default Single<Part> saveAndReloadArtifact(
+      String appName, String userId, String sessionId, String filename, Part artifact) {
+    return saveArtifact(appName, userId, sessionId, filename, artifact)
+        .flatMap(version -> loadArtifact(appName, userId, sessionId, filename, version).toSingle());
+  }
+
+  /** Saves an artifact and returns it with fileData if available. */
+  default Single<Part> saveAndReloadArtifact(
+      SessionKey sessionKey, String filename, Part artifact) {
+    return saveAndReloadArtifact(
+        sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, artifact);
+  }
+
+  /** Loads the latest version of an artifact from the service. */
+  default Maybe<Part> loadArtifact(
+      String appName, String userId, String sessionId, String filename) {
+    return loadArtifact(appName, userId, sessionId, filename, /* version= */ (Integer) null);
+  }
+
+  /** Loads the latest version of an artifact from the service. */
+  default Maybe<Part> loadArtifact(SessionKey sessionKey, String filename) {
+    return loadArtifact(sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename);
+  }
+
+  /** Loads a specific version of an artifact from the service. */
+  default Maybe<Part> loadArtifact(
+      String appName, String userId, String sessionId, String filename, int version) {
+    return loadArtifact(appName, userId, sessionId, filename, Integer.valueOf(version));
+  }
+
+  default Maybe<Part> loadArtifact(SessionKey sessionKey, String filename, int version) {
+    return loadArtifact(
+        sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, version);
+  }
+
   Maybe<Part> loadArtifact(
-      String appName, String userId, String sessionId, String filename, Optional<Integer> version);
+      String appName, String userId, String sessionId, String filename, @Nullable Integer version);
 
   /**
    * Lists all the artifact filenames within a session.
@@ -62,6 +107,10 @@ public interface BaseArtifactService {
    */
   Single<ListArtifactsResponse> listArtifactKeys(String appName, String userId, String sessionId);
 
+  default Single<ListArtifactsResponse> listArtifactKeys(SessionKey sessionKey) {
+    return listArtifactKeys(sessionKey.appName(), sessionKey.userId(), sessionKey.id());
+  }
+
   /**
    * Deletes an artifact.
    *
@@ -71,6 +120,10 @@ public interface BaseArtifactService {
    * @param filename the filename
    */
   Completable deleteArtifact(String appName, String userId, String sessionId, String filename);
+
+  default Completable deleteArtifact(SessionKey sessionKey, String filename) {
+    return deleteArtifact(sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename);
+  }
 
   /**
    * Lists all the versions (as revision IDs) of an artifact.
@@ -83,4 +136,8 @@ public interface BaseArtifactService {
    */
   Single<ImmutableList<Integer>> listVersions(
       String appName, String userId, String sessionId, String filename);
+
+  default Single<ImmutableList<Integer>> listVersions(SessionKey sessionKey, String filename) {
+    return listVersions(sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename);
+  }
 }

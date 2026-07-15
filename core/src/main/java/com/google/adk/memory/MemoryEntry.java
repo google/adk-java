@@ -16,20 +16,26 @@
 
 package com.google.adk.memory;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.auto.value.AutoValue;
 import com.google.genai.types.Content;
 import java.time.Instant;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Represents one memory entry. */
 @AutoValue
+@JsonDeserialize(builder = MemoryEntry.Builder.class)
 public abstract class MemoryEntry {
 
   /** Returns the main content of the memory. */
+  @JsonProperty("content")
   public abstract Content content();
 
   /** Returns the author of the memory, or null if not set. */
   @Nullable
+  @JsonProperty("author")
   public abstract String author();
 
   /**
@@ -56,18 +62,26 @@ public abstract class MemoryEntry {
   @AutoValue.Builder
   public abstract static class Builder {
 
+    @JsonCreator
+    static Builder create() {
+      return new AutoValue_MemoryEntry.Builder();
+    }
+
     /**
      * Sets the main content of the memory.
      *
      * <p>This is a required field.
      */
-    public abstract Builder setContent(Content content);
+    @JsonProperty("content")
+    public abstract Builder content(Content content);
 
     /** Sets the author of the memory. */
-    public abstract Builder setAuthor(@Nullable String author);
+    @JsonProperty("author")
+    public abstract Builder author(@Nullable String author);
 
     /** Sets the timestamp when the original content of this memory happened. */
-    public abstract Builder setTimestamp(@Nullable String timestamp);
+    @JsonProperty("timestamp")
+    public abstract Builder timestamp(@Nullable String timestamp);
 
     /**
      * A convenience method to set the timestamp from an {@link Instant} object, formatted as an ISO
@@ -75,8 +89,8 @@ public abstract class MemoryEntry {
      *
      * @param instant The timestamp as an Instant object.
      */
-    public Builder setTimestamp(Instant instant) {
-      return setTimestamp(instant.toString());
+    public Builder timestamp(Instant instant) {
+      return timestamp(instant.toString());
     }
 
     /** Builds the immutable {@link MemoryEntry} object. */

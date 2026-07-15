@@ -1,17 +1,28 @@
 package com.google.adk.tools;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.*;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.models.Gemini;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.GoogleMaps;
 import com.google.genai.types.GoogleSearch;
-import com.google.genai.types.GoogleSearchRetrieval;
 import com.google.genai.types.Tool;
 import com.google.genai.types.ToolCodeExecution;
+import com.google.genai.types.UrlContext;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.observers.TestObserver;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.Test;
@@ -21,6 +32,20 @@ import org.junit.runners.JUnit4;
 // TODO(b/410859954): Cover more of the behavior of the default processLlmRequest
 @RunWith(JUnit4.class)
 public final class BaseToolTest {
+
+  private final BaseTool doublingBaseTool =
+      new BaseTool("doubling-test-tool", "returns doubled args") {
+        @Override
+        public Single<Map<String, Object>> runAsync(
+            Map<String, Object> args, ToolContext toolContext) {
+          String sArg = (String) args.get("s");
+          Integer iArg = (Integer) args.get("i");
+          return Single.just(
+              ImmutableMap.<String, Object>of(
+                  "s", sArg + sArg,
+                  "i", iArg + iArg));
+        }
+      };
 
   @Test
   public void processLlmRequestNoDeclarationReturnsSameRequest() {
@@ -142,31 +167,82 @@ public final class BaseToolTest {
   }
 
   @Test
-  public void processLlmRequestWithGoogleSearchRetrievalToolAddsToolToConfig() {
-    GoogleSearchTool googleSearchTool = new GoogleSearchTool();
+  public void processLlmRequestWithLatestAliasAddsToolToConfig() {
+    final GoogleSearchTool googleSearchTool = new GoogleSearchTool();
+    LlmRequest.Builder builder =
+        LlmRequest.builder().model("gemini-flash-latest").build().toBuilder();
+    Completable result = googleSearchTool.processLlmRequest(builder, null);
+    result.test().assertComplete();
+    assertThat(builder.build().config().get().tools().get())
+        .contains(Tool.builder().googleSearch(GoogleSearch.builder().build()).build());
+  }
+
+  @Test
+  public void processLlmRequestWithUnsupportedModelReturnsError() {
+    final GoogleSearchTool googleSearchTool = new GoogleSearchTool();
+    LlmRequest.Builder builder = LlmRequest.builder().model("text-bison-001").build().toBuilder();
+    Completable result = googleSearchTool.processLlmRequest(builder, null);
+    result.test().assertError(IllegalArgumentException.class);
+  }
+
+  @Test
+  public void processLlmRequest_WithNullModel_ReturnsError() {
+    final GoogleSearchTool googleSearchTool = new GoogleSearchTool();
+    LlmRequest.Builder builder = LlmRequest.builder().build().toBuilder();
+    Completable result = googleSearchTool.processLlmRequest(builder, null);
+    result.test().assertError(IllegalArgumentException.class);
+  }
+
+  @Test
+  public void processLlmRequestWithUrlContextToolAddsToolToConfig() {
+    FunctionDeclaration functionDeclaration =
+        FunctionDeclaration.builder().name("test_function").build();
+    UrlContextTool urlContextTool = new UrlContextTool();
     LlmRequest llmRequest =
         LlmRequest.builder()
-            .config(GenerateContentConfig.builder().build())
-            .model("gemini-1")
+            .config(
+                GenerateContentConfig.builder()
+                    .tools(
+                        ImmutableList.of(
+                            Tool.builder()
+                                .functionDeclarations(ImmutableList.of(functionDeclaration))
+                                .build()))
+                    .build())
+            .model("gemini-2")
             .build();
     LlmRequest.Builder llmRequestBuilder = llmRequest.toBuilder();
     Completable unused =
-        googleSearchTool.processLlmRequest(llmRequestBuilder, /* toolContext= */ null);
+        urlContextTool.processLlmRequest(llmRequestBuilder, /* toolContext= */ null);
     LlmRequest updatedLlmRequest = llmRequestBuilder.build();
     assertThat(updatedLlmRequest.config()).isPresent();
     assertThat(updatedLlmRequest.config().get().tools()).isPresent();
     assertThat(updatedLlmRequest.config().get().tools().get())
         .containsExactly(
-            Tool.builder().googleSearchRetrieval(GoogleSearchRetrieval.builder().build()).build());
+            Tool.builder().functionDeclarations(ImmutableList.of(functionDeclaration)).build(),
+            Tool.builder().urlContext(UrlContext.builder().build()).build());
+  }
+
+  private static InvocationContext.Builder testInvocationContext() {
+    InvocationContext.Builder builder = InvocationContext.builder();
+    builder.agent(testAgent().build());
+    InMemorySessionService inMemorySessionService = new InMemorySessionService();
+    builder.sessionService(inMemorySessionService);
+    builder.session(inMemorySessionService.createSession("test-app", "test-user-id").blockingGet());
+    return builder;
+  }
+
+  private static LlmAgent.Builder testAgent() {
+    return LlmAgent.builder().name("test-agent");
   }
 
   @Test
-  public void processLlmRequestWithBuiltInCodeExecutionToolAddsToolToConfig() {
+  public void
+      processLlmRequestWithBuiltInCodeExecutionToolAndNonGeminiModelAndNullContextAddsToolToConfig() {
     BuiltInCodeExecutionTool builtInCodeExecutionTool = new BuiltInCodeExecutionTool();
     LlmRequest llmRequest =
         LlmRequest.builder()
             .config(GenerateContentConfig.builder().build())
-            .model("gemini-2")
+            .model("text-bison")
             .build();
     LlmRequest.Builder llmRequestBuilder = llmRequest.toBuilder();
     Completable unused =
@@ -176,5 +252,188 @@ public final class BaseToolTest {
     assertThat(updatedLlmRequest.config().get().tools()).isPresent();
     assertThat(updatedLlmRequest.config().get().tools().get())
         .containsExactly(Tool.builder().codeExecution(ToolCodeExecution.builder().build()).build());
+  }
+
+  @Test
+  public void processLlmRequestWithBuiltInCodeExecutionToolAndGemini2ModelAddsToolToConfig() {
+    BuiltInCodeExecutionTool builtInCodeExecutionTool = new BuiltInCodeExecutionTool();
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .config(GenerateContentConfig.builder().build())
+            .model("gemini-2")
+            .build();
+    LlmRequest.Builder llmRequestBuilder = llmRequest.toBuilder();
+    ToolContext toolContext =
+        ToolContext.builder(
+                testInvocationContext()
+                    .agent(testAgent().model(new Gemini("gemini-2", "")).build())
+                    .build())
+            .build();
+    Completable unused = builtInCodeExecutionTool.processLlmRequest(llmRequestBuilder, toolContext);
+    LlmRequest updatedLlmRequest = llmRequestBuilder.build();
+    assertThat(updatedLlmRequest.config()).isPresent();
+    assertThat(updatedLlmRequest.config().get().tools()).isPresent();
+    assertThat(updatedLlmRequest.config().get().tools().get())
+        .containsExactly(Tool.builder().codeExecution(ToolCodeExecution.builder().build()).build());
+  }
+
+  @Test
+  public void processLlmRequestWithGoogleMapsToolAddsToolToConfig() {
+    GoogleMapsTool googleMapsTool = new GoogleMapsTool();
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .config(GenerateContentConfig.builder().build())
+            .model("gemini-2")
+            .build();
+    LlmRequest.Builder llmRequestBuilder = llmRequest.toBuilder();
+    Completable unused =
+        googleMapsTool.processLlmRequest(llmRequestBuilder, /* toolContext= */ null);
+    LlmRequest updatedLlmRequest = llmRequestBuilder.build();
+    assertThat(updatedLlmRequest.config()).isPresent();
+    assertThat(updatedLlmRequest.config().get().tools()).isPresent();
+    assertThat(updatedLlmRequest.config().get().tools().get())
+        .containsExactly(Tool.builder().googleMaps(GoogleMaps.builder().build()).build());
+  }
+
+  @Test
+  public void runAsync_withTypeReference_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(42, "foo");
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(
+            testToolArgs, /* toolContext= */ null, new TypeReference<TestToolArgs>() {});
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = new TestToolArgs(84, "foofoo");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withClass_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(21, "bar");
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(testToolArgs, /* toolContext= */ null, TestToolArgs.class);
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = new TestToolArgs(42, "barbar");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withObjectOnly_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(11, "baz");
+
+    Single<Map<String, Object>> out =
+        doublingBaseTool.runAsync(testToolArgs, /* toolContext= */ null);
+    TestObserver<Map<String, Object>> testObserver = out.test();
+
+    testObserver.assertComplete();
+    ImmutableMap<String, Object> expected = ImmutableMap.of("i", 22, "s", "bazbaz");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withObjectMapperAndObjectOnly_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(11, "baz");
+    ObjectMapper objectMapper = new ObjectMapper();
+
+    Single<Map<String, Object>> out =
+        doublingBaseTool.runAsync(testToolArgs, /* toolContext= */ null, objectMapper);
+    TestObserver<Map<String, Object>> testObserver = out.test();
+
+    testObserver.assertComplete();
+    ImmutableMap<String, Object> expected = ImmutableMap.of("i", 22, "s", "bazbaz");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withTypeReferenceAndObjectMapper_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(42, "foo");
+    ObjectMapper objectMapper = new ObjectMapper();
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(
+            testToolArgs,
+            /* toolContext= */ null,
+            objectMapper,
+            new TypeReference<TestToolArgs>() {});
+
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = new TestToolArgs(84, "foofoo");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void runAsync_withClassAndObjectMapper_convertsArguments() throws Exception {
+    TestToolArgs testToolArgs = new TestToolArgs(21, "bar");
+    ObjectMapper objectMapper = new ObjectMapper();
+
+    Single<TestToolArgs> out =
+        doublingBaseTool.runAsync(
+            testToolArgs, /* toolContext= */ null, objectMapper, TestToolArgs.class);
+    TestObserver<TestToolArgs> testObserver = out.test();
+
+    testObserver.assertComplete();
+    TestToolArgs expected = new TestToolArgs(42, "barbar");
+    testObserver.assertValue(expected);
+  }
+
+  @Test
+  public void testProcessLlmRequest_WithNoModel_DoesNotThrowsException() {
+    GoogleSearchTool tool = GoogleSearchTool.INSTANCE;
+    LlmRequest.Builder requestBuilder = LlmRequest.builder();
+
+    tool.processLlmRequest(requestBuilder, null);
+
+    assertNotNull(requestBuilder);
+  }
+
+  public record TestToolArgs(int i, String s) {}
+
+  @Test
+  public void testToolConfigJsonSerialization() {
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.put("arg1", "value1");
+    args.put("arg2", 2);
+
+    BaseTool.ToolConfig config = new BaseTool.ToolConfig("testTool", args);
+
+    String json = config.toJson();
+    assertNotNull(json);
+    assertFalse(json.isEmpty());
+
+    assertTrue(json.contains("\"name\":\"testTool\""));
+    assertTrue(json.contains("\"arg1\":\"value1\""));
+    assertTrue(json.contains("\"arg2\":2"));
+  }
+
+  @Test
+  public void testToolConfigJsonDeserialization() throws Exception {
+    String jsonInput =
+        """
+        {
+          "name": "deserializing",
+          "args": {
+            "timeoutMs": 5000,
+            "retryCount": 3
+          }
+        }
+        """;
+
+    BaseTool.ToolConfig config =
+        JsonBaseModel.getMapper().readValue(jsonInput, BaseTool.ToolConfig.class);
+
+    assertNotNull(config);
+    assertEquals("deserializing", config.name());
+
+    assertNotNull(config.args());
+    assertEquals(2, config.args().size());
+    assertEquals(5000, config.args().getAdditionalProperties().get("timeoutMs"));
+    assertEquals(3, config.args().getAdditionalProperties().get("retryCount"));
   }
 }

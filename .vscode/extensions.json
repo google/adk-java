@@ -1,0 +1,7 @@
+{
+  "recommendations": [
+    "redhat.java",
+    "vscjava.vscode-java-pack",
+    "josevseb.google-java-format-for-vs-code"
+  ]
+}
