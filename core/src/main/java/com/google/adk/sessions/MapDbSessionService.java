@@ -5,13 +5,10 @@
 package com.google.adk.sessions;
 
 /**
- *
  * @author manoj.kumar
  */
-
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.common.collect.ImmutableList;
@@ -40,13 +37,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * A MapDB implementation of {@link BaseSessionService} for persistent storage.
- * Stores sessions, user state, and app state in a MapDB file.
+ * A MapDB implementation of {@link BaseSessionService} for persistent storage. Stores sessions,
+ * user state, and app state in a MapDB file.
  *
- * <p>Note: Requires Session, Event, and all objects stored in state maps to be
- * serializable by MapDB's Serializer.java.
- * State merging (app/user state prefixed with {@code _app_} / {@code _user_}) occurs
- * during retrieval operations ({@code getSession}, {@code createSession}).
+ * <p>Note: Requires Session, Event, and all objects stored in state maps to be serializable by
+ * MapDB's Serializer.java. State merging (app/user state prefixed with {@code _app_} / {@code
+ * _user_}) occurs during retrieval operations ({@code getSession}, {@code createSession}).
  */
 public final class MapDbSessionService implements BaseSessionService, AutoCloseable {
 
@@ -73,19 +69,20 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
     Objects.requireNonNull(filePath, "filePath cannot be null");
 
     // Configure MapDB - use a file, enable transactions, enable MVStore for concurrency/durability
-    this.db = DBMaker.fileDB(new File(filePath))
-        .transactionEnable() // Use transactions for ACID properties
-        .executorEnable() // Optional: use separate thread pool for background tasks
-        .closeOnJvmShutdown() // Ensure database is closed on JVM shutdown
-        .make();
+    this.db =
+        DBMaker.fileDB(new File(filePath))
+            .transactionEnable() // Use transactions for ACID properties
+            .executorEnable() // Optional: use separate thread pool for background tasks
+            .closeOnJvmShutdown() // Ensure database is closed on JVM shutdown
+            .make();
 
     // Get or create maps using Serializer.java (requires Serializable objects)
-    this.sessionsMap = db.hashMap(SESSIONS_MAP_NAME, Serializer.STRING, Serializer.JAVA)
-        .createOrOpen();
-    this.userStateMap = db.hashMap(USER_STATE_MAP_NAME, Serializer.STRING, Serializer.JAVA)
-        .createOrOpen();
-    this.appStateMap = db.hashMap(APP_STATE_MAP_NAME, Serializer.STRING, Serializer.JAVA)
-        .createOrOpen();
+    this.sessionsMap =
+        db.hashMap(SESSIONS_MAP_NAME, Serializer.STRING, Serializer.JAVA).createOrOpen();
+    this.userStateMap =
+        db.hashMap(USER_STATE_MAP_NAME, Serializer.STRING, Serializer.JAVA).createOrOpen();
+    this.appStateMap =
+        db.hashMap(APP_STATE_MAP_NAME, Serializer.STRING, Serializer.JAVA).createOrOpen();
 
     logger.info("MapDbSessionService initialized with file: {}", filePath);
   }
@@ -111,12 +108,18 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
     List<Event> initialEvents = new ArrayList<>();
 
     // Build the Session object (assumes Session.builder creates a mutable state/events)
-    Session newSession = Session.builder(resolvedSessionId) .appName(appName) .userId(userId) .state(initialState) // Store initial state in session
-            .events(initialEvents) .lastUpdateTime(Instant.now()) .build();
+    Session newSession =
+        Session.builder(resolvedSessionId)
+            .appName(appName)
+            .userId(userId)
+            .state(initialState) // Store initial state in session
+            .events(initialEvents)
+            .lastUpdateTime(Instant.now())
+            .build();
 
-    logger.info( newSession.toJson());
+    logger.info(newSession.toJson());
     // Store the new session
-    sessionsMap.put(resolvedSessionId, newSession.toJson() );
+    sessionsMap.put(resolvedSessionId, newSession.toJson());
     db.commit(); // Commit the change
 
     // Create a mutable copy for the return value and merge global state
@@ -124,7 +127,7 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
     // Merge global state into the copy before returning
     return Single.just(mergeWithGlobalState(appName, userId, returnCopy));
   }
- 
+
   @Override
   public Maybe<Session> getSession(
       String appName, String userId, String sessionId, Optional<GetSessionConfig> configOpt) {
@@ -133,18 +136,26 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
     Objects.requireNonNull(sessionId, "sessionId cannot be null");
     Objects.requireNonNull(configOpt, "configOpt cannot be null");
 
-     ObjectMapper objectMapper = new ObjectMapper();
-     
+    ObjectMapper objectMapper = new ObjectMapper();
+
     // Retrieve the session by ID
+    String sessionJson = sessionsMap.get(sessionId);
+    if (sessionJson == null) {
+      return Maybe.empty();
+    }
+
     Session storedSession = null;
-      try {
-          storedSession = objectMapper.readValue( sessionsMap.get(sessionId), Session.class);
-      } catch (JsonProcessingException ex) {
-          java.util.logging.Logger.getLogger(MapDbSessionService.class.getName()).log(Level.SEVERE, null, ex);
-      }
+    try {
+      storedSession = objectMapper.readValue(sessionJson, Session.class);
+    } catch (JsonProcessingException ex) {
+      java.util.logging.Logger.getLogger(MapDbSessionService.class.getName())
+          .log(Level.SEVERE, null, ex);
+    }
 
     // Also check appName and userId match, although sessionId is the primary key
-    if (storedSession == null || !appName.equals(storedSession.appName()) || !userId.equals(storedSession.userId())) {
+    if (storedSession == null
+        || !appName.equals(storedSession.appName())
+        || !userId.equals(storedSession.userId())) {
       return Maybe.empty();
     }
 
@@ -184,34 +195,42 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
   private long getEventTimestampEpochSeconds(Event event) {
     // Assuming Event.timestamp() returns a value compatible with epoch seconds
     // If it returns Instant, use event.timestamp().getEpochSecond()
-     return event.timestamp();
+    return event.timestamp();
   }
 
   @Override
   public Single<ListSessionsResponse> listSessions(String appName, String userId) {
     Objects.requireNonNull(appName, "appName cannot be null");
     Objects.requireNonNull(userId, "userId cannot be null");
-    
+
     // Assume sessionsMap, appName, and userId are already defined
-  // Assume sessionsMap is available here (Map<String, Session>)
+    // Assume sessionsMap is available here (Map<String, Session>)
     System.out.println("Printing details for all sessions:");
-    sessionsMap.forEach((sessionId, sessiont) -> {
-         ObjectMapper objectMapper = new ObjectMapper();
+    sessionsMap.forEach(
+        (sessionId, sessiont) -> {
+          ObjectMapper objectMapper = new ObjectMapper();
           Session session = null;
-        try {
+          try {
             session = objectMapper.readValue(sessiont, Session.class);
-        } catch (JsonProcessingException ex) {
-            java.util.logging.Logger.getLogger(MapDbSessionService.class.getName()).log(Level.SEVERE, null, ex);
-        }
-        System.out.println("Session ID: " + sessionId +
-                           ", App Name: " + session.appName() +
-                           ", User ID: " + session.userId());
-    });
+          } catch (JsonProcessingException ex) {
+            java.util.logging.Logger.getLogger(MapDbSessionService.class.getName())
+                .log(Level.SEVERE, null, ex);
+          }
+          System.out.println(
+              "Session ID: "
+                  + sessionId
+                  + ", App Name: "
+                  + session.appName()
+                  + ", User ID: "
+                  + session.userId());
+        });
     // Iterate through all sessions and filter by appName and userId
-    List<Session> sessionCopies = sessionsMap.values().stream()
-       // .filter(session -> appName.equals(session.appName()) && userId.equals(session.userId()))
-        .map(this::copySessionMetadata) // Create metadata copies
-        .collect(Collectors.toCollection(ArrayList::new));
+    List<Session> sessionCopies =
+        sessionsMap.values().stream()
+            // .filter(session -> appName.equals(session.appName()) &&
+            // userId.equals(session.userId()))
+            .map(this::copySessionMetadata) // Create metadata copies
+            .collect(Collectors.toCollection(ArrayList::new));
 
     return Single.just(ListSessionsResponse.builder().sessions(sessionCopies).build());
   }
@@ -225,20 +244,27 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
     // Check if the session exists and belongs to the correct app/user before deleting
     ObjectMapper objectMapper = new ObjectMapper();
     Session storedSession = null;
-      try {
-          storedSession = objectMapper.readValue( sessionsMap.get(sessionId), Session.class);
-      } catch (JsonProcessingException ex) {
-          java.util.logging.Logger.getLogger(MapDbSessionService.class.getName()).log(Level.SEVERE, null, ex);
-      }
-;
-     if (storedSession != null && appName.equals(storedSession.appName()) && userId.equals(storedSession.userId())) {
-       sessionsMap.remove(sessionId);
-       // Note: This implementation, like the InMemory one, does NOT delete
-       // associated user/app state when a session is deleted.
-       db.commit(); // Commit the change
-     } else {
-        logger.warn("Attempted to delete session {} for user {} in app {}, but it was not found or did not match criteria.", sessionId, userId, appName);
-     }
+    try {
+      storedSession = objectMapper.readValue(sessionsMap.get(sessionId), Session.class);
+    } catch (JsonProcessingException ex) {
+      java.util.logging.Logger.getLogger(MapDbSessionService.class.getName())
+          .log(Level.SEVERE, null, ex);
+    }
+    ;
+    if (storedSession != null
+        && appName.equals(storedSession.appName())
+        && userId.equals(storedSession.userId())) {
+      sessionsMap.remove(sessionId);
+      // Note: This implementation, like the InMemory one, does NOT delete
+      // associated user/app state when a session is deleted.
+      db.commit(); // Commit the change
+    } else {
+      logger.warn(
+          "Attempted to delete session {} for user {} in app {}, but it was not found or did not match criteria.",
+          sessionId,
+          userId,
+          appName);
+    }
     return Completable.complete(); // Operation completes even if session wasn't found
   }
 
@@ -249,22 +275,26 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
     Objects.requireNonNull(sessionId, "sessionId cannot be null");
 
     // Retrieve the session by ID
-       ObjectMapper objectMapper = new ObjectMapper();
+    ObjectMapper objectMapper = new ObjectMapper();
     Session storedSession = null;
-      try {
-          storedSession = objectMapper.readValue(sessionsMap.get(sessionId), Session.class);
-      } catch (JsonProcessingException ex) {
-          java.util.logging.Logger.getLogger(MapDbSessionService.class.getName()).log(Level.SEVERE, null, ex);
-      }
-;
+    try {
+      storedSession = objectMapper.readValue(sessionsMap.get(sessionId), Session.class);
+    } catch (JsonProcessingException ex) {
+      java.util.logging.Logger.getLogger(MapDbSessionService.class.getName())
+          .log(Level.SEVERE, null, ex);
+    }
+    ;
 
     // Also check appName and userId match
-    if (storedSession == null || !appName.equals(storedSession.appName()) || !userId.equals(storedSession.userId())) {
+    if (storedSession == null
+        || !appName.equals(storedSession.appName())
+        || !userId.equals(storedSession.userId())) {
       return Single.just(ListEventsResponse.builder().build());
     }
 
     // Return a copy of the events list (ImmutableList is safe)
-    ImmutableList<Event> eventsCopy = ImmutableList.copyOf(storedSession.events()); // Assumes events() returns a List
+    ImmutableList<Event> eventsCopy =
+        ImmutableList.copyOf(storedSession.events()); // Assumes events() returns a List
     return Single.just(ListEventsResponse.builder().events(eventsCopy).build());
   }
 
@@ -283,23 +313,24 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
 
     // Retrieve the *actual* stored session from MapDB
     // We need to modify the stored session's event list and possibly state
-     ObjectMapper objectMapper = new ObjectMapper();
+    ObjectMapper objectMapper = new ObjectMapper();
     Session storedSession = null;
-      try {
-          storedSession = objectMapper.readValue(sessionsMap.get(sessionId), Session.class);
-      } catch (JsonProcessingException ex) {
-          java.util.logging.Logger.getLogger(MapDbSessionService.class.getName()).log(Level.SEVERE, null, ex);
-      }
-;
+    try {
+      storedSession = objectMapper.readValue(sessionsMap.get(sessionId), Session.class);
+    } catch (JsonProcessingException ex) {
+      java.util.logging.Logger.getLogger(MapDbSessionService.class.getName())
+          .log(Level.SEVERE, null, ex);
+    }
+    ;
 
     if (storedSession == null) {
-         logger.warn(
+      logger.warn(
           String.format(
               "appendEvent called for session %s which is not found in MapDbSessionService",
               sessionId));
-         // Should we create it? The InMemory implementation just logs and does nothing.
-         // Let's follow that behavior for now.
-         return Single.error(new IllegalArgumentException("Session not found: " + sessionId));
+      // Should we create it? The InMemory implementation just logs and does nothing.
+      // Let's follow that behavior for now.
+      return Single.error(new IllegalArgumentException("Session not found: " + sessionId));
     }
 
     // --- Update User/App State ---
@@ -312,20 +343,23 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
               if (key.startsWith(State.APP_PREFIX)) {
                 String appStateKey = key.substring(State.APP_PREFIX.length());
                 // Get, modify, and re-put the app state map
-                Map<String, Object> currentAppState = appStateMap.computeIfAbsent(appName, k -> new ConcurrentHashMap<>());
+                Map<String, Object> currentAppState =
+                    appStateMap.computeIfAbsent(appName, k -> new ConcurrentHashMap<>());
                 currentAppState.put(appStateKey, value);
                 appStateMap.put(appName, currentAppState); // Re-put to ensure persistence
               } else if (key.startsWith(State.USER_PREFIX)) {
                 String userStateKey = key.substring(State.USER_PREFIX.length());
-                 // Get, modify, and re-put the user state map
-                Map<String, Object> currentUserState = userStateMap.computeIfAbsent(
-                    appName + ":" + userId, k -> new ConcurrentHashMap<>());
+                // Get, modify, and re-put the user state map
+                Map<String, Object> currentUserState =
+                    userStateMap.computeIfAbsent(
+                        appName + ":" + userId, k -> new ConcurrentHashMap<>());
                 currentUserState.put(userStateKey, value);
-                userStateMap.put(appName + ":" + userId, currentUserState); // Re-put to ensure persistence
+                userStateMap.put(
+                    appName + ":" + userId, currentUserState); // Re-put to ensure persistence
               }
             });
-         // Commit state changes
-         db.commit();
+        // Commit state changes
+        db.commit();
       }
     }
 
@@ -333,26 +367,27 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
     // Get the mutable events list from the stored session
     List<Event> storedEvents = storedSession.events(); // Assumes events() returns mutable list
     if (storedEvents != null) {
-        storedEvents.add(event); // Append the event
+      storedEvents.add(event); // Append the event
 
-        // Update the last update time
-        storedSession.lastUpdateTime(getInstantFromEvent(event));
+      // Update the last update time
+      storedSession.lastUpdateTime(getInstantFromEvent(event));
 
-        // Put the modified session back into the map
-        sessionsMap.put(sessionId, storedSession.toJson());
+      // Put the modified session back into the map
+      sessionsMap.put(sessionId, storedSession.toJson());
 
-        // Commit the session changes
-        db.commit();
+      // Commit the session changes
+      db.commit();
 
-        // The event should also be added to the *passed-in* session object, as per BaseSessionService contract
-        // (though the stored session is the persistent one)
-        BaseSessionService.super.appendEvent(session, event);
+      // The event should also be added to the *passed-in* session object, as per BaseSessionService
+      // contract
+      // (though the stored session is the persistent one)
+      BaseSessionService.super.appendEvent(session, event);
 
-        return Single.just(event);
+      return Single.just(event);
     } else {
-         // This case should ideally not happen if Session is constructed correctly
-         logger.error("Stored session {} events list is null!", sessionId);
-         return Single.error(new IllegalStateException("Stored session events list is null"));
+      // This case should ideally not happen if Session is constructed correctly
+      logger.error("Stored session {} events list is null!", sessionId);
+      return Single.error(new IllegalStateException("Stored session events list is null"));
     }
   }
 
@@ -375,9 +410,9 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
    * @return A new Session instance with copied data, including mutable collections.
    */
   private Session copySession(Session original) {
-     // Assumes original.state() and original.events() return collections that
-     // can be copied into new mutable ones (ConcurrentHashMap, ArrayList).
-     // Assumes Session.builder can accept these mutable copies.
+    // Assumes original.state() and original.events() return collections that
+    // can be copied into new mutable ones (ConcurrentHashMap, ArrayList).
+    // Assumes Session.builder can accept these mutable copies.
     return Session.builder(original.id())
         .appName(original.appName())
         .userId(original.userId())
@@ -405,16 +440,17 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
         .events(new ArrayList<>()) // Or ImmutableList.of() or null if builder handles null
         .build();
   }
-  
+
   private Session copySessionMetadata(String Session_original) {
-      ObjectMapper objectMapper = new ObjectMapper();
-       Session original = null;
-      try {
-          original = objectMapper.readValue(Session_original, Session.class);
-      } catch (JsonProcessingException ex) {
-          java.util.logging.Logger.getLogger(MapDbSessionService.class.getName()).log(Level.SEVERE, null, ex);
-      }
-       
+    ObjectMapper objectMapper = new ObjectMapper();
+    Session original = null;
+    try {
+      original = objectMapper.readValue(Session_original, Session.class);
+    } catch (JsonProcessingException ex) {
+      java.util.logging.Logger.getLogger(MapDbSessionService.class.getName())
+          .log(Level.SEVERE, null, ex);
+    }
+
     return Session.builder(original.id())
         .appName(original.appName())
         .userId(original.userId())
@@ -426,8 +462,8 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
   }
 
   /**
-   * Merges the app-specific and user-specific state (stored separately) into the provided
-   * *mutable* session's state map.
+   * Merges the app-specific and user-specific state (stored separately) into the provided *mutable*
+   * session's state map.
    *
    * @param appName The application name.
    * @param userId The user ID.
@@ -436,19 +472,19 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
    */
   @CanIgnoreReturnValue
   private Session mergeWithGlobalState(String appName, String userId, Session session) {
-    Map<String, Object> sessionState = session.state(); // Assumes session.state() returns a mutable map
+    Map<String, Object> sessionState =
+        session.state(); // Assumes session.state() returns a mutable map
 
     // Merge App State
     Map<String, Object> currentAppState = appStateMap.get(appName);
     if (currentAppState != null) {
-        currentAppState.forEach((key, value) -> sessionState.put(State.APP_PREFIX + key, value));
+      currentAppState.forEach((key, value) -> sessionState.put(State.APP_PREFIX + key, value));
     }
-
 
     // Merge User State
     Map<String, Object> currentUserState = userStateMap.get(appName + ":" + userId);
     if (currentUserState != null) {
-        currentUserState.forEach((key, value) -> sessionState.put(State.USER_PREFIX + key, value));
+      currentUserState.forEach((key, value) -> sessionState.put(State.USER_PREFIX + key, value));
     }
 
     return session;
@@ -457,19 +493,20 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
   /** Closes the MapDB database connection. Should be called on application shutdown. */
   @Override
   public void close() throws IOException {
-      if (db != null && !db.isClosed()) {
-          logger.info("Closing MapDbSessionService database.");
-          db.close();
-      }
+    if (db != null && !db.isClosed()) {
+      logger.info("Closing MapDbSessionService database.");
+      db.close();
+    }
   }
 
-  // Add a finalize method as a safety net, though try-with-resources and shutdown hook are preferred
+  // Add a finalize method as a safety net, though try-with-resources and shutdown hook are
+  // preferred
   @Override
   protected void finalize() throws Throwable {
-      try {
-          close();
-      } finally {
-          super.finalize();
-      }
+    try {
+      close();
+    } finally {
+      super.finalize();
+    }
   }
 }
