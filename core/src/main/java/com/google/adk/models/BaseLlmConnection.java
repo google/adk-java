@@ -49,6 +49,15 @@ public interface BaseLlmConnection {
    */
   Completable sendRealtime(Blob blob);
 
+  /**
+   * Clears the realtime input audio buffer on connections that use the Realtime protocol (e.g.
+   * Azure OpenAI {@code input_audio_buffer}). Default is a no-op for connections that do not expose
+   * such a buffer.
+   */
+  default Completable clearRealtimeAudioBuffer() {
+    return Completable.complete();
+  }
+
   /** Receives the model responses. */
   Flowable<LlmResponse> receive();
 

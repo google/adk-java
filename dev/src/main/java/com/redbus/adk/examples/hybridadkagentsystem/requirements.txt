@@ -1,0 +1,6 @@
+fastapi==0.111.0
+uvicorn==0.30.1
+google-generative-ai==0.8.0
+adk-llm-agents==0.0.1.dev10
+pydantic==2.7.4
+clickhouse-connect==0.7.3

@@ -16,7 +16,6 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
-import java.io.File;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -31,7 +30,6 @@ import java.util.logging.Level;
 import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.mapdb.DB;
-import org.mapdb.DBMaker;
 import org.mapdb.Serializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,12 +67,7 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
     Objects.requireNonNull(filePath, "filePath cannot be null");
 
     // Configure MapDB - use a file, enable transactions, enable MVStore for concurrency/durability
-    this.db =
-        DBMaker.fileDB(new File(filePath))
-            .transactionEnable() // Use transactions for ACID properties
-            .executorEnable() // Optional: use separate thread pool for background tasks
-            .closeOnJvmShutdown() // Ensure database is closed on JVM shutdown
-            .make();
+    this.db = MapDbManager.getDbInstance(filePath);
 
     // Get or create maps using Serializer.java (requires Serializable objects)
     this.sessionsMap =
@@ -490,13 +483,57 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
     return session;
   }
 
+  /**
+   * Exports all session and state data managed by this service.
+   *
+   * @return A map containing all exported data (sessions, userState, appState).
+   */
+  public Map<String, Object> exportData() {
+    Map<String, Object> export = new java.util.HashMap<>();
+    ObjectMapper objectMapper = new ObjectMapper();
+    List<Session> sessions = new java.util.ArrayList<>();
+
+    for (String sessionJson : sessionsMap.values()) {
+      try {
+        sessions.add(objectMapper.readValue(sessionJson, Session.class));
+      } catch (JsonProcessingException e) {
+        logger.error("Failed to deserialize session during export", e);
+      }
+    }
+
+    export.put("sessions", sessions);
+    export.put("userState", new java.util.HashMap<>(userStateMap));
+    export.put("appState", new java.util.HashMap<>(appStateMap));
+    return export;
+  }
+
+  /**
+   * Returns a map containing all session and state data managed by this service.
+   *
+   * @return A map of all data.
+   */
+  public Map<String, Object> getAllData() {
+    Map<String, Object> export = new java.util.HashMap<>();
+    ObjectMapper objectMapper = new ObjectMapper();
+    List<Session> sessions = new java.util.ArrayList<>();
+    for (String sessionJson : sessionsMap.values()) {
+      try {
+        sessions.add(objectMapper.readValue(sessionJson, Session.class));
+      } catch (JsonProcessingException e) {
+        logger.error("Failed to deserialize session during export", e);
+      }
+    }
+    export.put("sessions", sessions);
+    export.put("userState", new java.util.HashMap<>(userStateMap));
+    export.put("appState", new java.util.HashMap<>(appStateMap));
+    return export;
+  }
+
   /** Closes the MapDB database connection. Should be called on application shutdown. */
   @Override
   public void close() throws IOException {
-    if (db != null && !db.isClosed()) {
-      logger.info("Closing MapDbSessionService database.");
-      db.close();
-    }
+    logger.info("Closing MapDbSessionService database.");
+    MapDbManager.closeDb();
   }
 
   // Add a finalize method as a safety net, though try-with-resources and shutdown hook are

@@ -19,7 +19,8 @@ import reactor.core.publisher.Mono;
 /**
  * The default builder for creating MCP client transports. Supports StdioClientTransport based on
  * {@link ServerParameters}, HttpClientSseClientTransport based on {@link SseServerParameters}, and
- * HttpClientStreamableHttpTransport based on {@link StreamableHttpServerParameters}.
+ * (temporarily) maps {@link StreamableHttpServerParameters} to HttpClientSseClientTransport until a
+ * dedicated streamable HTTP transport becomes available in the MCP SDK version in use.
  */
 public class DefaultMcpTransportBuilder implements McpTransportBuilder {
 

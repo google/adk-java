@@ -78,7 +78,7 @@ public class ModelNameUtilsTest {
 
   @Test
   public void isGemini2OrAbove_withGemini2Model_returnsTrue() {
-    assertThat(ModelNameUtils.isGemini2OrAbove("gemini-2.0-pro")).isTrue();
+    assertThat(ModelNameUtils.isGemini2OrAbove("gemini-2.5-pro")).isTrue();
   }
 
   @Test

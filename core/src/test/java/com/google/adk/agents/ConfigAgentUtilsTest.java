@@ -797,7 +797,7 @@ public final class ConfigAgentUtilsTest {
         """
         agent_class: LlmAgent
         name: InitialWriterAgent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         description: Writes the initial document draft based on the topic
         instruction: |
           You are a Creative Writing Assistant tasked with starting a story.
@@ -844,7 +844,7 @@ public final class ConfigAgentUtilsTest {
         """
         agent_class: LlmAgent
         name: CompleteAgentWithOutputKey
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         description: Agent with output key and other configurations
         instruction: Process and store output
         output_key: result_data
@@ -935,7 +935,7 @@ public final class ConfigAgentUtilsTest {
         description: Agent with examples configured via tool
         instruction: You are a test agent
         agent_class: LlmAgent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         tools:
           - name: multi_agent_llm_config.example_tool
         """);
@@ -952,7 +952,7 @@ public final class ConfigAgentUtilsTest {
     LlmAgent llmAgent = (LlmAgent) agent;
 
     // Process tools to verify ExampleTool appends the examples to the request
-    LlmRequest.Builder requestBuilder = LlmRequest.builder().model("gemini-2.0-flash");
+    LlmRequest.Builder requestBuilder = LlmRequest.builder().model("gemini-2.5-flash");
     InvocationContext context = TestUtils.createInvocationContext(agent);
     llmAgent
         .canonicalTools(new ReadonlyContext(context))
@@ -1020,7 +1020,7 @@ public final class ConfigAgentUtilsTest {
         mainAgentFile.toPath(),
         """
         name: root_agent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         description: Root agent
         instruction: |
           If the user query is about life, you should route it to the life sub-agent.

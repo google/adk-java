@@ -29,7 +29,7 @@ public class HelloWorldAgent {
       LlmAgent.builder()
           .name("data_processing_agent")
           .description("hello world agent that can roll a dice and check prime numbers.")
-          .model("gemini-2.0-flash")
+          .model("gemini-2.5-flash")
           .instruction(
               """
               You roll dice and answer questions about the outcome of the dice rolls.

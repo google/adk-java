@@ -60,7 +60,7 @@ public class YamlPreprocessorTest {
     String input =
         """
         name: test_agent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         disallow_transfer_to_parent: false
         disallow_transfer_to_peers: true
         generate_content_config:
@@ -346,7 +346,7 @@ public class YamlPreprocessorTest {
     String input =
         """
         name: search_agent
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash
         disallow_transfer_to_parent: false
         disallow_transfer_to_peers: true
         system_prompt: You are a helpful assistant
@@ -378,7 +378,7 @@ public class YamlPreprocessorTest {
         YAML_MAPPER.readValue(result, new TypeReference<Map<String, Object>>() {});
 
     assertEquals("search_agent", parsed.get("name"));
-    assertEquals("gemini-2.0-flash", parsed.get("model"));
+    assertEquals("gemini-2.5-flash", parsed.get("model"));
     assertTrue(parsed.containsKey("disallowTransferToParent"));
     assertTrue(parsed.containsKey("disallowTransferToPeers"));
     assertTrue(parsed.containsKey("systemPrompt"));

@@ -34,7 +34,7 @@ public final class A2AAgent {
   public static final LlmAgent ROLL_AGENT =
       LlmAgent.builder()
           .name("roll_agent")
-          .model("gemini-2.0-flash")
+          .model("gemini-2.5-flash")
           .description("Handles rolling dice of different sizes.")
           .instruction(
               """
@@ -48,7 +48,7 @@ public final class A2AAgent {
     BaseAgent primeAgent = createRemoteAgent(primeAgentBaseUrl);
     return LlmAgent.builder()
         .name("root_agent")
-        .model("gemini-2.0-flash")
+        .model("gemini-2.5-flash")
         .instruction(
             """
               You can roll dice locally and delegate prime-checking to the remote prime_agent.

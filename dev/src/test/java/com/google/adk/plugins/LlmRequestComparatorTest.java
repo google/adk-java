@@ -35,7 +35,7 @@ class LlmRequestComparatorTest {
   // Standard base request used by all tests
   private static final LlmRequest BASE_REQUEST =
       LlmRequest.builder()
-          .model("gemini-2.0-flash")
+          .model("gemini-2.5-flash")
           .contents(ImmutableList.of(userContent("Hello")))
           .config(GenerateContentConfig.builder().temperature(0.5f).build())
           .build();

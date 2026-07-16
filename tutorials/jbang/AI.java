@@ -9,5 +9,5 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.web.AdkWebServer;
 
 void main() {
-    AdkWebServer.start(LlmAgent.builder().name("AI").model("gemini-2.0-flash").instruction("Be very grumpy!").build());
+    AdkWebServer.start(LlmAgent.builder().name("AI").model("gemini-2.5-flash").instruction("Be very grumpy!").build());
 }

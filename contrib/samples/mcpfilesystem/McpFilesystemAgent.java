@@ -25,7 +25,7 @@ public final class McpFilesystemAgent {
       LlmAgent.builder()
           .name("filesystem_agent")
           .description("Assistant that performs file operations through the MCP filesystem server.")
-          .model("gemini-2.0-flash")
+          .model("gemini-2.5-flash")
           .instruction(
               """
               You are a file system assistant. Use the provided tools to read, write, search, and manage

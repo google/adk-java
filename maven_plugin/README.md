@@ -66,7 +66,7 @@ public class MyAgentLoader implements AgentLoader {
         return LlmAgent.builder()
             .name("chat_bot")
             .description("A helpful chat bot")
-            .model("gemini-2.0-flash")
+            .model("gemini-2.5-flash")
             .instruction("You are a helpful assistant.")
             .build();
     }
@@ -75,7 +75,7 @@ public class MyAgentLoader implements AgentLoader {
         return LlmAgent.builder()
             .name("code_assistant")
             .description("A code assistance agent")
-            .model("gemini-2.0-flash")
+            .model("gemini-2.5-flash")
             .instruction("You are a coding assistant. Help users with programming questions.")
             .build();
     }
@@ -130,7 +130,7 @@ public class SimpleAgentLoader implements AgentLoader {
         return LlmAgent.builder()
             .name("simple_agent")
             .description("A simple agent")
-            .model("gemini-2.0-flash")
+            .model("gemini-2.5-flash")
             .instruction("You are a helpful assistant.")
             .build();
     }
@@ -177,7 +177,7 @@ public class MultipleLoaders implements AgentLoader {
         return LlmAgent.builder()
             .name("basic_agent")
             .description("A basic agent")
-            .model("gemini-2.0-flash")
+            .model("gemini-2.5-flash")
             .instruction("You are a basic helpful assistant.")
             .build();
     }
@@ -186,7 +186,7 @@ public class MultipleLoaders implements AgentLoader {
         return LlmAgent.builder()
             .name("advanced_agent")
             .description("An advanced agent with more capabilities")
-            .model("gemini-2.0-flash")
+            .model("gemini-2.5-flash")
             .instruction("You are an advanced assistant with enhanced capabilities.")
             .build();
     }
@@ -245,7 +245,7 @@ mvn google-adk:web -Dagents=my-agents -DhotReloading=false
 ```yaml
 name: "chat_assistant"
 description: "A friendly chat assistant"
-model: "gemini-2.0-flash"
+model: "gemini-2.5-flash"
 instruction: |
   You are a helpful and friendly assistant.
   Answer questions clearly and concisely.

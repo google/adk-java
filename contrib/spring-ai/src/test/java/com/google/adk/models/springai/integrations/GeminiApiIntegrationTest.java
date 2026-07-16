@@ -31,6 +31,8 @@ import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.ai.google.genai.GoogleGenAiChatModel;
@@ -48,10 +50,30 @@ import org.springframework.ai.google.genai.GoogleGenAiChatOptions;
 @EnabledIfEnvironmentVariable(named = "GOOGLE_API_KEY", matches = "\\S+")
 class GeminiApiIntegrationTest {
 
-  private static final String GEMINI_MODEL = "gemini-flash-latest";
+  private static final String GEMINI_MODEL = "gemini-2.5-flash";
+
+  private void handlePotentialRateLimit(Throwable t) throws Throwable {
+    Throwable current = t;
+    while (current != null) {
+      if (current.getMessage() != null
+          && (current.getMessage().contains("429")
+              || current.getMessage().contains("Resource exhausted")
+              || current.getMessage().contains("Quota"))) {
+        Assumptions.assumeTrue(false, "Rate limit exceeded, skipping test");
+      }
+      current = current.getCause();
+    }
+    throw t;
+  }
+
+  @BeforeEach
+  void setUp() throws InterruptedException {
+    // Add delay before each test to avoid rate limiting (429 Resource Exhausted)
+    Thread.sleep(10000);
+  }
 
   @Test
-  void testSimpleAgentWithRealGeminiApi() throws InterruptedException {
+  void testSimpleAgentWithRealGeminiApi() throws Throwable {
     // Add delay to avoid rapid requests
     Thread.sleep(2000);
 
@@ -77,7 +99,13 @@ class GeminiApiIntegrationTest {
             .build();
 
     // Test the agent
-    List<Event> events = TestUtils.askAgent(agent, false, "What is a photon?");
+    List<Event> events;
+    try {
+      events = TestUtils.askAgent(agent, false, "What is a photon?");
+    } catch (Exception e) {
+      handlePotentialRateLimit(e);
+      return;
+    }
 
     // Verify response
     assertThat(events).hasSize(1);
@@ -94,7 +122,7 @@ class GeminiApiIntegrationTest {
   }
 
   @Test
-  void testStreamingWithRealGeminiApi() throws InterruptedException {
+  void testStreamingWithRealGeminiApi() throws Throwable {
     // Add delay to avoid rapid requests
     Thread.sleep(2000);
 
@@ -121,8 +149,13 @@ class GeminiApiIntegrationTest {
 
     // Wait for completion
     testSubscriber.awaitDone(30, TimeUnit.SECONDS);
-    testSubscriber.assertComplete();
-    testSubscriber.assertNoErrors();
+    try {
+      testSubscriber.assertComplete();
+      testSubscriber.assertNoErrors();
+    } catch (AssertionError e) {
+      handlePotentialRateLimit(e);
+      throw e;
+    }
 
     // Verify streaming responses
     List<LlmResponse> responses = testSubscriber.values();
@@ -142,7 +175,7 @@ class GeminiApiIntegrationTest {
   }
 
   @Test
-  void testAgentWithToolsAndRealApi() {
+  void testAgentWithToolsAndRealApi() throws Throwable {
     Client genAiClient =
         Client.builder().apiKey(System.getenv("GOOGLE_API_KEY")).vertexAI(false).build();
 
@@ -163,8 +196,13 @@ class GeminiApiIntegrationTest {
             .tools(FunctionTool.create(WeatherTools.class, "getWeatherInfo"))
             .build();
 
-    List<Event> events =
-        TestUtils.askAgent(agent, false, "What's the weather like in San Francisco?");
+    List<Event> events;
+    try {
+      events = TestUtils.askAgent(agent, false, "What's the weather like in San Francisco?");
+    } catch (Exception e) {
+      handlePotentialRateLimit(e);
+      return;
+    }
 
     // Should have multiple events: function call, function response, final answer
     assertThat(events).hasSizeGreaterThanOrEqualTo(1);
@@ -185,7 +223,7 @@ class GeminiApiIntegrationTest {
   }
 
   @Test
-  void testDirectComparisonNonStreamingVsStreaming() throws InterruptedException {
+  void testDirectComparisonNonStreamingVsStreaming() throws Throwable {
     // Test both non-streaming and streaming with the same model to compare behavior
     Client genAiClient =
         Client.builder().apiKey(System.getenv("GOOGLE_API_KEY")).vertexAI(false).build();
@@ -209,8 +247,13 @@ class GeminiApiIntegrationTest {
     TestSubscriber<LlmResponse> nonStreamingSubscriber =
         springAI.generateContent(request, false).test();
     nonStreamingSubscriber.awaitDone(30, TimeUnit.SECONDS);
-    nonStreamingSubscriber.assertComplete();
-    nonStreamingSubscriber.assertNoErrors();
+    try {
+      nonStreamingSubscriber.assertComplete();
+      nonStreamingSubscriber.assertNoErrors();
+    } catch (AssertionError e) {
+      handlePotentialRateLimit(e);
+      throw e;
+    }
 
     // Add assertions for non-streaming response
     List<LlmResponse> nonStreamingResponses = nonStreamingSubscriber.values();
@@ -240,8 +283,13 @@ class GeminiApiIntegrationTest {
     TestSubscriber<LlmResponse> streamingSubscriber =
         springAI.generateContent(request, true).test();
     streamingSubscriber.awaitDone(30, TimeUnit.SECONDS);
-    streamingSubscriber.assertComplete();
-    streamingSubscriber.assertNoErrors();
+    try {
+      streamingSubscriber.assertComplete();
+      streamingSubscriber.assertNoErrors();
+    } catch (AssertionError e) {
+      handlePotentialRateLimit(e);
+      throw e;
+    }
 
     // Add assertions for streaming responses
     List<LlmResponse> streamingResponses = streamingSubscriber.values();
@@ -284,7 +332,7 @@ class GeminiApiIntegrationTest {
   }
 
   @Test
-  void testConfigurationOptions() {
+  void testConfigurationOptions() throws Throwable {
     // Test with custom configuration
     GoogleGenAiChatOptions options =
         GoogleGenAiChatOptions.builder()
@@ -314,8 +362,13 @@ class GeminiApiIntegrationTest {
 
     TestSubscriber<LlmResponse> testSubscriber = springAI.generateContent(request, false).test();
     testSubscriber.awaitDone(15, TimeUnit.SECONDS);
-    testSubscriber.assertComplete();
-    testSubscriber.assertNoErrors();
+    try {
+      testSubscriber.assertComplete();
+      testSubscriber.assertNoErrors();
+    } catch (AssertionError e) {
+      handlePotentialRateLimit(e);
+      throw e;
+    }
 
     List<LlmResponse> responses = testSubscriber.values();
     assertThat(responses).hasSize(1);

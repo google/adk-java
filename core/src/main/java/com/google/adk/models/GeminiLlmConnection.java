@@ -34,11 +34,8 @@ import com.google.genai.types.LiveServerContent;
 import com.google.genai.types.LiveServerMessage;
 import com.google.genai.types.LiveServerToolCall;
 import com.google.genai.types.Part;
-import com.google.genai.types.UsageMetadata;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
-import io.reactivex.rxjava3.core.Observable;
-import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.processors.PublishProcessor;
 import java.net.SocketException;
 import java.util.List;
@@ -68,7 +65,6 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
   private final CompletableFuture<AsyncSession> sessionFuture;
   private final PublishProcessor<LlmResponse> responseProcessor = PublishProcessor.create();
   private final Flowable<LlmResponse> responseFlowable = responseProcessor.serialize();
-  private final CompositeDisposable disposables = new CompositeDisposable();
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
   /**
@@ -124,106 +120,88 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
 
     logger.debug("Received server message: {}", message.toJson());
 
-    Observable<LlmResponse> llmResponse = convertToServerResponse(message);
-    if (!disposables.add(
-        llmResponse.subscribe(responseProcessor::onNext, responseProcessor::onError))) {
-      logger.warn(
-          "disposables container already disposed, the subscription will be disposed immediately");
-    }
+    Optional<LlmResponse> llmResponse = convertToServerResponse(message);
+    llmResponse.ifPresent(responseProcessor::onNext);
   }
 
   /** Converts a server message into the standardized LlmResponse format. */
-  static Observable<LlmResponse> convertToServerResponse(LiveServerMessage message) {
-    return Observable.create(
-        emitter -> {
-          // AtomicBoolean is used to modify state from within lambdas, which
-          // require captured variables to be effectively final.
-          final AtomicBoolean handled = new AtomicBoolean(false);
-          message
-              .serverContent()
-              .ifPresent(
-                  serverContent -> {
-                    emitter.onNext(createServerContentResponse(serverContent));
-                    handled.set(true);
-                  });
-          message
-              .toolCall()
-              .ifPresent(
-                  toolCall -> {
-                    emitter.onNext(createToolCallResponse(toolCall));
-                    handled.set(true);
-                  });
-          message
-              .usageMetadata()
-              .ifPresent(
-                  usageMetadata -> {
-                    logger.debug("Received usage metadata: {}", usageMetadata);
-                    emitter.onNext(createUsageMetadataResponse(usageMetadata));
-                    handled.set(true);
-                  });
-          message
-              .toolCallCancellation()
-              .ifPresent(
-                  toolCallCancellation -> {
-                    logger.debug("Received tool call cancellation: {}", toolCallCancellation);
-                    // TODO: implement proper CFC and thus tool call cancellation handling.
-                    handled.set(true);
-                  });
-          message
-              .setupComplete()
-              .ifPresent(
-                  setupComplete -> {
-                    logger.debug("Received setup complete.");
-                    handled.set(true);
-                  });
-
-          if (!handled.get()) {
-            logger.warn("Received unknown or empty server message: {}", message.toJson());
-            emitter.onNext(createUnknownMessageResponse());
-          }
-          emitter.onComplete();
-        });
-  }
-
-  private static LlmResponse createServerContentResponse(LiveServerContent serverContent) {
+  static Optional<LlmResponse> convertToServerResponse(LiveServerMessage message) {
     LlmResponse.Builder builder = LlmResponse.builder();
-    serverContent.modelTurn().ifPresent(builder::content);
-    return builder
-        .partial(serverContent.turnComplete().map(completed -> !completed).orElse(false))
-        .turnComplete(serverContent.turnComplete().orElse(false))
-        .interrupted(serverContent.interrupted().orElse(null))
-        .inputTranscription(serverContent.inputTranscription().orElse(null))
-        .outputTranscription(serverContent.outputTranscription().orElse(null))
-        .build();
-  }
+    boolean hasRelevantData = false;
 
-  private static LlmResponse createToolCallResponse(LiveServerToolCall toolCall) {
-    LlmResponse.Builder builder = LlmResponse.builder();
-    toolCall
-        .functionCalls()
-        .ifPresent(
-            calls -> {
-              for (FunctionCall call : calls) {
-                builder.content(
-                    Content.builder()
-                        .parts(ImmutableList.of(Part.builder().functionCall(call).build()))
-                        .build());
-              }
-            });
-    return builder.partial(false).turnComplete(false).build();
-  }
+    if (message.serverContent().isPresent()) {
+      LiveServerContent serverContent = message.serverContent().get();
+      serverContent.modelTurn().ifPresent(builder::content);
+      builder
+          .partial(serverContent.turnComplete().map(completed -> !completed).orElse(false))
+          .turnComplete(serverContent.turnComplete().orElse(false))
+          .interrupted(serverContent.interrupted().orElse(null));
+      // Gemini can send audio + transcription in the SAME server event.
+      // Transcriptions travel in dedicated LlmResponse fields so they never
+      // overwrite the audio modelTurn content.
+      serverContent.outputTranscription().ifPresent(builder::outputTranscription);
+      serverContent.inputTranscription().ifPresent(builder::inputTranscription);
+      hasRelevantData = true;
+    } else if (message.toolCall().isPresent()) {
+      LiveServerToolCall toolCall = message.toolCall().get();
+      toolCall
+          .functionCalls()
+          .ifPresent(
+              calls -> {
+                for (FunctionCall call : calls) {
+                  builder.content(
+                      Content.builder()
+                          .parts(ImmutableList.of(Part.builder().functionCall(call).build()))
+                          .build());
+                }
+              });
+      builder.partial(false).turnComplete(false);
+      hasRelevantData = true;
+    } else if (message.toolCallCancellation().isPresent()) {
+      logger.debug("Received tool call cancellation: {}", message.toolCallCancellation().get());
+      builder.interrupted(true).turnComplete(true);
+      hasRelevantData = true;
+    } else if (message.setupComplete().isPresent()) {
+      logger.debug("Received setup complete.");
+      return Optional.empty();
+    } else if (message.sessionResumptionUpdate().isPresent()) {
+      logger.debug(
+          "Received session resumption update: {}", message.sessionResumptionUpdate().get());
+      return Optional.empty();
+    } else if (message.goAway().isPresent()) {
+      logger.debug("Received go away: {}", message.goAway().get());
+      return Optional.empty();
+    } else if (message.voiceActivityDetectionSignal().isPresent()) {
+      logger.debug(
+          "Received voice activity detection signal: {}",
+          message.voiceActivityDetectionSignal().get());
+      return Optional.empty();
+    } else if (message.voiceActivity().isPresent()) {
+      logger.debug("Received voice activity: {}", message.voiceActivity().get());
+      return Optional.empty();
+    } else if (message.usageMetadata().isEmpty()) {
+      logger.warn("Received unknown or empty server message: {}", message.toJson());
+      builder
+          .errorCode(new FinishReason("Unknown server message."))
+          .errorMessage("Received unknown server message.");
+      hasRelevantData = true;
+    }
 
-  private static LlmResponse createUsageMetadataResponse(UsageMetadata usageMetadata) {
-    return LlmResponse.builder()
-        .usageMetadata(GeminiUtil.toGenerateContentResponseUsageMetadata(usageMetadata))
-        .build();
-  }
+    if (message.usageMetadata().isPresent()) {
+      logger.debug("Received usage metadata: {}", message.usageMetadata().get());
+      builder.usageMetadata(
+          GeminiUtil.toGenerateContentResponseUsageMetadata(message.usageMetadata().get()));
+      if (!hasRelevantData) {
+        builder.partial(false).turnComplete(false);
+      }
+      hasRelevantData = true;
+    }
 
-  private static LlmResponse createUnknownMessageResponse() {
-    return LlmResponse.builder()
-        .errorCode(new FinishReason("Unknown server message."))
-        .errorMessage("Received unknown server message.")
-        .build();
+    if (hasRelevantData) {
+      return Optional.of(builder.build());
+    }
+
+    return Optional.empty();
   }
 
   /** Handles errors that occur *during* the initial connection attempt. */
@@ -287,9 +265,17 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
   public Completable sendRealtime(Blob blob) {
     return Completable.fromFuture(
         sessionFuture.thenCompose(
-            session ->
-                session.sendRealtimeInput(
-                    LiveSendRealtimeInputParameters.builder().media(blob).build())));
+            session -> {
+              LiveSendRealtimeInputParameters.Builder builder =
+                  LiveSendRealtimeInputParameters.builder();
+              String mimeType = blob.mimeType().orElse("").toLowerCase();
+              if (mimeType.startsWith("video/") || mimeType.startsWith("image/")) {
+                builder.video(blob);
+              } else {
+                builder.audio(blob);
+              }
+              return session.sendRealtimeInput(builder.build());
+            }));
   }
 
   /** Helper to send client content parameters. */
@@ -338,8 +324,6 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
       } else {
         sessionFuture.cancel(false);
       }
-
-      disposables.dispose();
     }
   }
 

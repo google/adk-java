@@ -45,7 +45,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 class LangChain4jIntegrationTest {
 
   public static final String CLAUDE_4_6_SONNET = "claude-sonnet-4-6";
-  public static final String GEMINI_2_0_FLASH = "gemini-2.0-flash";
+  public static final String GEMINI_2_0_FLASH = "gemini-2.5-flash";
   public static final String GPT_4_O_MINI = "gpt-4o-mini";
 
   @Test
@@ -404,7 +404,7 @@ class LangChain4jIntegrationTest {
     //        GoogleAiGeminiStreamingChatModel streamingModel =
     // GoogleAiGeminiStreamingChatModel.builder()
     //            .apiKey(System.getenv("GOOGLE_API_KEY"))
-    //            .modelName("gemini-2.0-flash")
+    //            .modelName("gemini-2.5-flash")
     //            .build();
 
     LlmAgent agent =

@@ -33,3 +33,10 @@ Thumbs.db
 # Local documentation and plans
 docs/
 plans/
+
+contrib/samples/a2a_basic/bin/
+# Sample build artifacts / local scratch
+contrib/samples/**/bin/
+mkpro_logs.db
+
+

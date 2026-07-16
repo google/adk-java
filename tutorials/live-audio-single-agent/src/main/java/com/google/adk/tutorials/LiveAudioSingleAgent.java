@@ -27,7 +27,7 @@ public class LiveAudioSingleAgent {
   public static final BaseAgent WEATHER_AGENT =
       LlmAgent.builder()
           .name("weather_agent")
-          .model("gemini-2.0-flash-live-001")
+          .model("gemini-2.5-flash-live-001")
           .description("A helpful weather assistant that provides weather information.")
           .instruction(
               "You are a friendly weather assistant. When users ask about weather, you MUST call"

@@ -14,7 +14,7 @@ public class AgentStaticLoaderTest {
     BaseAgent testAgent =
         LlmAgent.builder()
             .name("test_agent")
-            .model("gemini-2.0-flash-lite")
+            .model("gemini-2.5-flash-lite")
             .description("Test agent for demonstrating AgentStaticLoader")
             .instruction("You are a test agent.")
             .build();

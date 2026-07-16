@@ -19,7 +19,6 @@ package com.google.adk.web;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -47,8 +46,12 @@ public class AdkWebServerTest {
   @Autowired private MockMvc mockMvc;
 
   @Test
-  public void listApps_shouldReturnOkAndEmptyList() throws Exception {
-    mockMvc.perform(get("/list-apps")).andExpect(status().isOk()).andExpect(content().json("[]"));
+  public void listApps_shouldReturnOkAndNonEmptyList() throws Exception {
+    mockMvc
+        .perform(get("/list-apps"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$").isArray())
+        .andExpect(jsonPath("$").isNotEmpty());
   }
 
   @Test
