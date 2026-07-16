@@ -26,6 +26,11 @@ public class AgentLoadingProperties {
   private String sourceDir = ".";
   private String[] buildOutputDirs = {"target/classes", "build/classes/java/main", "build/classes"};
 
+  // When true, compiled agents are only loaded from within sourceDir, so a build-output dir or
+  // symlink cannot escape it. Off by default to preserve existing behavior (a warning is logged
+  // while disabled); a no-op for normal layouts, which already live under sourceDir.
+  private boolean confineToSourceDir = false;
+
   public String getSourceDir() {
     return sourceDir;
   }
@@ -40,5 +45,13 @@ public class AgentLoadingProperties {
 
   public void setBuildOutputDirs(String[] buildOutputDirs) {
     this.buildOutputDirs = buildOutputDirs;
+  }
+
+  public boolean isConfineToSourceDir() {
+    return confineToSourceDir;
+  }
+
+  public void setConfineToSourceDir(boolean confineToSourceDir) {
+    this.confineToSourceDir = confineToSourceDir;
   }
 }

@@ -273,6 +273,7 @@ final class ToolResolver {
       // Try reflection to get class
       try {
         Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
+        // Confine to BaseToolset: a non-intended type is never constructed (not a sandbox).
         if (BaseToolset.class.isAssignableFrom(clazz)) {
           toolsetClass = clazz.asSubclass(BaseToolset.class);
           // Optimization: register for reuse
@@ -349,6 +350,11 @@ final class ToolResolver {
 
     try {
       Field field = clazz.getField(fieldName);
+      // Confine to BaseToolset before field.get() runs its static initializer (not a sandbox).
+      if (!BaseToolset.class.isAssignableFrom(field.getType())) {
+        logger.debug("Field {} in class {} is not a BaseToolset field", fieldName, className);
+        return null;
+      }
       if (!Modifier.isStatic(field.getModifiers())) {
         logger.debug("Field {} in class {} is not static", fieldName, className);
         return null;
@@ -398,6 +404,7 @@ final class ToolResolver {
       // Try reflection to get class
       try {
         Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
+        // Confine to BaseTool: a non-intended type is never constructed (not a sandbox).
         if (BaseTool.class.isAssignableFrom(clazz)) {
           toolClass = clazz.asSubclass(BaseTool.class);
           // Optimization: register for reuse
@@ -495,6 +502,11 @@ final class ToolResolver {
 
     try {
       Field field = clazz.getField(fieldName);
+      // Confine to BaseTool before field.get() runs its static initializer (not a sandbox).
+      if (!BaseTool.class.isAssignableFrom(field.getType())) {
+        logger.debug("Field {} in class {} is not a BaseTool field", fieldName, className);
+        return null;
+      }
       if (!Modifier.isStatic(field.getModifiers())) {
         logger.debug("Field {} in class {} is not static", fieldName, className);
         return null;

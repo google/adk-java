@@ -135,6 +135,12 @@ public final class ExampleTool extends BaseTool {
     try {
       Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
       Field field = clazz.getField(fieldName);
+      // Confine to BaseExampleProvider before field.get() runs its static initializer (not a
+      // sandbox).
+      if (!BaseExampleProvider.class.isAssignableFrom(field.getType())) {
+        throw new ConfigurationException(
+            "Field '" + fieldName + "' in class '" + className + "' is not a BaseExampleProvider");
+      }
       if (!Modifier.isStatic(field.getModifiers())) {
         throw new ConfigurationException(
             "Field '" + fieldName + "' in class '" + className + "' is not static");

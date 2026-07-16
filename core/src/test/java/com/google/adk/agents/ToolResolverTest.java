@@ -29,6 +29,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.genai.types.FunctionDeclaration;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -207,6 +208,67 @@ public final class ToolResolverTest {
     BaseTool resolved = ToolResolver.resolveToolInstance(toolName);
 
     assertThat(resolved).isNull();
+  }
+
+  @Test
+  public void resolveInstanceViaReflection_nonIntendedType_isRejectedWithoutInitializing()
+      throws Exception {
+    // A non-intended type (not a BaseTool) is rejected before the field is read, so its static
+    // initializer never runs.
+    String toolName = NonToolWithStaticInit.class.getName() + ".NOT_A_TOOL";
+
+    BaseTool resolved = ToolResolver.resolveInstanceViaReflection(toolName);
+
+    assertThat(resolved).isNull();
+    assertThat(nonToolInitFired.get()).isFalse();
+  }
+
+  @Test
+  public void resolveToolInstance_nonIntendedType_isRejectedWithoutInitializing() {
+    // Same guarantee through the public resolveToolInstance entry point.
+    String toolName = NonToolWithStaticInit.class.getName() + ".NOT_A_TOOL";
+
+    BaseTool resolved = ToolResolver.resolveToolInstance(toolName);
+
+    assertThat(resolved).isNull();
+    assertThat(nonToolInitFired.get()).isFalse();
+  }
+
+  @Test
+  public void resolveToolsetInstanceViaReflection_nonIntendedType_isRejectedWithoutInitializing()
+      throws Exception {
+    String toolsetName = NonToolsetWithStaticInit.class.getName() + ".NOT_A_TOOLSET";
+
+    BaseToolset resolved = ToolResolver.resolveToolsetInstanceViaReflection(toolsetName);
+
+    assertThat(resolved).isNull();
+    assertThat(nonToolsetInitFired.get()).isFalse();
+  }
+
+  @Test
+  public void resolveInstanceViaReflection_properToolType_stillLoadsEvenWithSideEffects()
+      throws Exception {
+    // This guard is type-confinement, not a sandbox: a proper BaseTool type is still loaded and its
+    // static initializer still runs. Only non-intended types are rejected.
+    String toolName = SideEffectingProperTool.class.getName() + ".INSTANCE";
+
+    BaseTool resolved = ToolResolver.resolveInstanceViaReflection(toolName);
+
+    assertThat(resolved).isNotNull();
+    assertThat(properToolInitFired.get()).isTrue();
+  }
+
+  @Test
+  public void resolveInstanceViaReflection_holderClassWithToolField_stillResolves()
+      throws Exception {
+    // A non-tool holder class exposing a BaseTool-typed static field is still supported (mirrors
+    // module-level instance references), since the field type is confined to BaseTool.
+    String toolName = ToolHolder.class.getName() + ".HELD_TOOL";
+
+    BaseTool resolved = ToolResolver.resolveInstanceViaReflection(toolName);
+
+    assertThat(resolved).isNotNull();
+    assertThat(resolved).isSameInstanceAs(ToolHolder.HELD_TOOL);
   }
 
   @Test
@@ -449,6 +511,62 @@ public final class ToolResolverTest {
     public static final String NOT_A_TOOL = "This is not a BaseTool";
 
     private TestClassWithNonToolField() {}
+  }
+
+  // Side-effect channels flipped by the helper classes' static initializers. They live on the test
+  // class so assertions can observe them without touching (and thereby initializing) those classes.
+  private static final AtomicBoolean nonToolInitFired = new AtomicBoolean(false);
+  private static final AtomicBoolean nonToolsetInitFired = new AtomicBoolean(false);
+  private static final AtomicBoolean properToolInitFired = new AtomicBoolean(false);
+
+  /** Non-intended type (not a BaseTool) with a side-effecting static initializer. */
+  public static final class NonToolWithStaticInit {
+    public static final String NOT_A_TOOL = "not a tool";
+
+    static {
+      nonToolInitFired.set(true);
+    }
+
+    private NonToolWithStaticInit() {}
+  }
+
+  /** Non-intended type (not a BaseToolset) with a side-effecting static initializer. */
+  public static final class NonToolsetWithStaticInit {
+    public static final String NOT_A_TOOLSET = "not a toolset";
+
+    static {
+      nonToolsetInitFired.set(true);
+    }
+
+    private NonToolsetWithStaticInit() {}
+  }
+
+  /**
+   * A proper BaseTool type with a side-effecting static initializer. Documents that the guard is
+   * type-confinement, not a sandbox: a class of the intended type is still loaded and initialized.
+   */
+  public static final class SideEffectingProperTool extends BaseTool {
+    public static final SideEffectingProperTool INSTANCE = new SideEffectingProperTool();
+
+    static {
+      properToolInitFired.set(true);
+    }
+
+    private SideEffectingProperTool() {
+      super("side_effecting_tool", "Proper tool with a side-effecting static initializer");
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.empty();
+    }
+  }
+
+  /** Non-tool holder exposing a BaseTool-typed static field (module-style reference). */
+  public static final class ToolHolder {
+    public static final BaseTool HELD_TOOL = new TestToolWithDefaultConstructor();
+
+    private ToolHolder() {}
   }
 
   private BaseTool.ToolConfig createToolConfig(String name, BaseTool.ToolArgsConfig args) {

@@ -376,6 +376,16 @@ public class WebMojo extends AbstractMojo {
       Class<?> clazz = projectClassLoader.loadClass(className);
       Field field = clazz.getField(fieldName);
 
+      // Confine to expectedType before field.get() runs its static initializer (not a sandbox).
+      if (!expectedType.isAssignableFrom(field.getType())) {
+        throw new MojoExecutionException(
+            "Field "
+                + fieldName
+                + " in class "
+                + className
+                + " is not an instance of "
+                + expectedType.getSimpleName());
+      }
       Object instance = field.get(null);
       if (!expectedType.isInstance(instance)) {
         throw new MojoExecutionException(
@@ -410,12 +420,13 @@ public class WebMojo extends AbstractMojo {
       throws MojoExecutionException {
     try {
       Class<?> clazz = projectClassLoader.loadClass(className);
-      Object instance = clazz.getDeclaredConstructor().newInstance();
-      if (!expectedType.isInstance(instance)) {
+      // Confine to expectedType before constructing it (not a sandbox).
+      if (!expectedType.isAssignableFrom(clazz)) {
         throw new MojoExecutionException(
             "Class " + className + " does not implement/extend " + expectedType.getSimpleName());
       }
-      return expectedType.cast(instance);
+      // The isAssignableFrom check above guarantees the constructed instance is an expectedType.
+      return expectedType.cast(clazz.getDeclaredConstructor().newInstance());
 
     } catch (ClassNotFoundException e) {
       throw new MojoExecutionException(

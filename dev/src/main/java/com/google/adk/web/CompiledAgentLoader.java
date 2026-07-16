@@ -18,6 +18,7 @@ package com.google.adk.web;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.web.config.AgentLoadingProperties;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -74,6 +75,9 @@ import org.springframework.stereotype.Service;
  * <ul>
  *   <li>To enable this loader: {@code adk.agents.loader=compiled}
  *   <li>To specify agent source directory: {@code adk.agents.source-dir=/path/to/agents}
+ *   <li>Directory confinement (recommended, off by default): {@code
+ *       adk.agents.confine-to-source-dir=true} restricts compiled classes to {@code source-dir}. A
+ *       warning is logged while it is disabled.
  * </ul>
  */
 @Service("agentLoader")
@@ -94,6 +98,13 @@ public class CompiledAgentLoader implements AgentLoader {
 
     // Load path-based agents
     if (properties.getSourceDir() != null && !properties.getSourceDir().isEmpty()) {
+      if (!properties.isConfineToSourceDir()) {
+        logger.warn(
+            "Directory confinement is disabled (adk.agents.confine-to-source-dir=false); compiled"
+                + " agents may be loaded from outside the configured source-dir via symlinks or"
+                + " build-output dirs. Set adk.agents.confine-to-source-dir=true to restrict"
+                + " loading to the source tree.");
+      }
       loadPathBasedAgents(allAgents);
     } else {
       logger.warn(
@@ -220,6 +231,10 @@ public class CompiledAgentLoader implements AgentLoader {
               ? directory
               : findBuildOutputDir(directory);
 
+      if (!isDirWithinSourceRoot(classesDir)) {
+        return;
+      }
+
       try (URLClassLoader classLoader =
               new URLClassLoader(
                   new URL[] {classesDir.toUri().toURL()},
@@ -248,6 +263,34 @@ public class CompiledAgentLoader implements AgentLoader {
       logger.error("Security error accessing directory: {}", directory, e);
     } catch (Exception e) {
       logger.error("Unexpected error loading agents from directory: {}", directory, e);
+    }
+  }
+
+  /**
+   * When confinement is enabled ({@code adk.agents.confine-to-source-dir=true}), returns true only
+   * if {@code classesDir}'s real path is inside {@code source-dir}, blocking a build-output dir or
+   * symlink from escaping the source tree. Off by default, so it is a no-op otherwise.
+   */
+  @VisibleForTesting
+  boolean isDirWithinSourceRoot(Path classesDir) {
+    if (!properties.isConfineToSourceDir()) {
+      return true;
+    }
+    try {
+      Path root = Paths.get(properties.getSourceDir()).toRealPath();
+      Path real = classesDir.toRealPath();
+      if (real.startsWith(root)) {
+        return true;
+      }
+      logger.warn(
+          "Skipping directory outside the configured source-dir"
+              + " (adk.agents.confine-to-source-dir=true): {} is not within {}",
+          real,
+          root);
+      return false;
+    } catch (IOException e) {
+      logger.warn("Could not verify that {} is within the source-dir; skipping it", classesDir, e);
+      return false;
     }
   }
 

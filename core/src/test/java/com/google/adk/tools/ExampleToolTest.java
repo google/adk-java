@@ -33,6 +33,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -304,6 +305,33 @@ public final class ExampleToolTest {
     public static final String NOT_A_PROVIDER = "This is not a provider";
 
     private WrongTypeProviderHolder() {}
+  }
+
+  // Side-effect channel flipped by the helper class's static initializer. It lives on the test
+  // class so the assertion can observe it without initializing that class.
+  private static final AtomicBoolean nonProviderInitFired = new AtomicBoolean(false);
+
+  /** Non-intended type (not a BaseExampleProvider) with a side-effecting static initializer. */
+  static final class NonProviderWithStaticInit {
+    public static final String NOT_A_PROVIDER = "not a provider";
+
+    static {
+      nonProviderInitFired.set(true);
+    }
+
+    private NonProviderWithStaticInit() {}
+  }
+
+  @Test
+  public void fromConfig_withNonIntendedType_isRejectedWithoutInitializing() {
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.setAdditionalProperty(
+        "examples", ExampleToolTest.NonProviderWithStaticInit.class.getName() + ".NOT_A_PROVIDER");
+
+    // A non-intended type is rejected before the field is read, so its static initializer never
+    // runs. A proper BaseExampleProvider would still load, even if it were modified.
+    assertThrows(ConfigurationException.class, () -> ExampleTool.fromConfig(args));
+    assertThat(nonProviderInitFired.get()).isFalse();
   }
 
   @Test
