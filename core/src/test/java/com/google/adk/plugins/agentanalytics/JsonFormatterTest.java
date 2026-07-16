@@ -414,4 +414,156 @@ public class JsonFormatterTest {
         "A nested-array structure exactly at the depth boundary must not be truncated",
         result.isTruncated());
   }
+
+  @Test
+  public void redactTree_unserializableValue_failsClosedPerLeaf() {
+    // An unserializable object anywhere in the attributes tree must not route the WHOLE map
+    // through a textual fallback (which would expose sibling secrets as plain text).
+    Map<String, Object> attributes = new HashMap<>();
+    attributes.put("api_key", "secret-key");
+    attributes.put("bad", new Object()); // Jackson cannot serialize a plain Object.
+    attributes.put("ok", "visible");
+
+    JsonNode node = JsonFormatter.redactTree(attributes);
+
+    assertTrue(node.isObject());
+    assertEquals(JsonFormatter.REDACTED_MESSAGE, node.get("api_key").asText());
+    assertEquals(JsonFormatter.UNSERIALIZABLE_MESSAGE, node.get("bad").asText());
+    assertEquals("visible", node.get("ok").asText());
+  }
+
+  @Test
+  public void redactTree_redactsNestedContainersAndLists() {
+    ImmutableMap<String, Object> attributes =
+        ImmutableMap.of(
+            "custom_tags",
+            ImmutableMap.of("password", "hunter2", "team", "analytics"),
+            "entries",
+            ImmutableList.of(ImmutableMap.of("refresh_token", "tok", "name", "a")));
+
+    JsonNode node = JsonFormatter.redactTree(attributes);
+
+    assertEquals(JsonFormatter.REDACTED_MESSAGE, node.get("custom_tags").get("password").asText());
+    assertEquals("analytics", node.get("custom_tags").get("team").asText());
+    assertEquals(
+        JsonFormatter.REDACTED_MESSAGE, node.get("entries").get(0).get("refresh_token").asText());
+    assertEquals("a", node.get("entries").get(0).get("name").asText());
+  }
+
+  @Test
+  public void redactTree_redactsInsideConvertedPojoLeaves() {
+    // A leaf that Jackson converts into an object (e.g. a POJO) still gets key redaction.
+    ImmutableMap<String, Object> attributes =
+        ImmutableMap.of(
+            "node",
+            JsonFormatter.mapper
+                .createObjectNode()
+                .put("client_secret", "s3cret")
+                .put("plain", "ok"));
+
+    JsonNode node = JsonFormatter.redactTree(attributes);
+
+    assertEquals(JsonFormatter.REDACTED_MESSAGE, node.get("node").get("client_secret").asText());
+    assertEquals("ok", node.get("node").get("plain").asText());
+  }
+
+  @Test
+  public void redactTree_cyclicMap_detectsCycle() {
+    // The native Map walk must guard against self-referential maps rather than recursing forever.
+    Map<String, Object> cyclic = new HashMap<>();
+    cyclic.put("self", cyclic);
+
+    JsonNode node = JsonFormatter.redactTree(cyclic);
+
+    assertEquals(JsonFormatter.CYCLE_DETECTED_MESSAGE, node.get("self").asText());
+  }
+
+  @Test
+  public void redactTree_cyclicList_detectsCycle() {
+    // The native Iterable walk has its own cycle guard, separate from the Map walk's.
+    List<Object> cyclic = new ArrayList<>();
+    cyclic.add(cyclic);
+    Map<String, Object> attributes = new HashMap<>();
+    attributes.put("loop", cyclic);
+
+    JsonNode node = JsonFormatter.redactTree(attributes);
+
+    assertTrue(node.get("loop").isArray());
+    assertEquals(JsonFormatter.CYCLE_DETECTED_MESSAGE, node.get("loop").get(0).asText());
+  }
+
+  @Test
+  public void redactTree_listWithUnserializableElement_isolatesPerElement() {
+    // The Iterable branch must convert list elements INDIVIDUALLY: one unserializable element
+    // becomes UNSERIALIZABLE without collapsing (or textualizing) its serializable siblings.
+    // Without
+    // the dedicated branch, the whole list routes through a single valueToTree that fails closed
+    // for
+    // every element at once.
+    List<Object> items = new ArrayList<>();
+    items.add("visible");
+    items.add(new Object()); // Jackson cannot serialize a bare Object.
+    Map<String, Object> attributes = new HashMap<>();
+    attributes.put("items", items);
+
+    JsonNode node = JsonFormatter.redactTree(attributes);
+
+    assertTrue(
+        "the list must remain an array, not collapse to a single value",
+        node.get("items").isArray());
+    assertEquals("visible", node.get("items").get(0).asText());
+    assertEquals(JsonFormatter.UNSERIALIZABLE_MESSAGE, node.get("items").get(1).asText());
+  }
+
+  @Test
+  public void redactTree_deeplyNested_replacesWithMaxDepthSentinel() {
+    // The depth guard must fire on deep (non-cyclic) maps so redaction cannot recurse unbounded.
+    Map<String, Object> root = new HashMap<>();
+    Map<String, Object> cur = root;
+    for (int i = 0; i < 300; i++) {
+      Map<String, Object> next = new HashMap<>();
+      cur.put("child", next);
+      cur = next;
+    }
+
+    JsonNode node = JsonFormatter.redactTree(root);
+
+    boolean foundSentinel = false;
+    for (int i = 0; i < 400; i++) {
+      JsonNode child = node.get("child");
+      if (child == null) {
+        break;
+      }
+      if (child.isTextual() && child.asText().equals(JsonFormatter.MAX_DEPTH_MESSAGE)) {
+        foundSentinel = true;
+        break;
+      }
+      node = child;
+    }
+    assertTrue("Expected the max-depth sentinel in the deep chain", foundSentinel);
+  }
+
+  @Test
+  public void redactTree_atDepthBoundary_redactsSensitiveLeaf() {
+    // redactTree must seed the recursion depth at 0 (not 1): a sensitive key exactly at the depth
+    // boundary is still redacted and no max-depth sentinel appears. A seed of 1 would push the leaf
+    // one level past the guard, replacing it with the sentinel and skipping redaction.
+    Map<String, Object> root = new HashMap<>();
+    Map<String, Object> cur = root;
+    for (int i = 0; i < JsonFormatter.MAX_TRUNCATE_DEPTH; i++) {
+      Map<String, Object> next = new HashMap<>();
+      cur.put("child", next);
+      cur = next;
+    }
+    cur.put("password", "secret");
+
+    String json = JsonFormatter.redactTree(root).toString();
+
+    assertTrue(
+        "sensitive leaf exactly at the depth boundary must be redacted",
+        json.contains(JsonFormatter.REDACTED_MESSAGE));
+    assertFalse(
+        "no max-depth sentinel must appear at the boundary",
+        json.contains(JsonFormatter.MAX_DEPTH_MESSAGE));
+  }
 }
