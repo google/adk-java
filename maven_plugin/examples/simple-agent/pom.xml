@@ -4,7 +4,7 @@
 
     <groupId>com.example</groupId>
     <artifactId>simple-adk-agent</artifactId>
-    <version>1.5.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <version>1.6.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
     <packaging>jar</packaging>
 
     <name>Simple ADK Agent Example</name>

@@ -29,6 +29,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.reactivex.rxjava3.core.Flowable;
@@ -172,10 +173,10 @@ public class TraceManagerTest {
 
   @Test
   public void getTraceId_returnsInvocationId_whenRecordsIsEmpty() {
-    String traceId = traceManager.getTraceId(mockContext);
-    if (traceManager.hasAmbientSpan()) {
-      assertTrue(traceId.matches("[0-9a-f]{32}"));
-    } else {
+    // Pin to the root context so an ambient span leaked by another test sharing this JVM cannot
+    // make Span.current() valid and divert getTraceId away from the invocation-id fallback.
+    try (Scope ignored = Context.root().makeCurrent()) {
+      String traceId = traceManager.getTraceId(mockContext);
       assertEquals("test-invocation-id", traceId);
     }
   }
@@ -205,13 +206,13 @@ public class TraceManagerTest {
 
   @Test
   public void getTraceId_fallsBackToInvocationId_whenRecordSpanIsInvalid() {
-    // attachCurrentSpan when no ambient context exists creates an invalid span record
-    traceManager.attachCurrentSpan();
+    // Pin to the root context so a span leaked by another test sharing this JVM does not make the
+    // attached record (or the ambient fallback) valid; attachCurrentSpan with no ambient context
+    // then creates an invalid span record, exercising the invocation-id fallback.
+    try (Scope ignored = Context.root().makeCurrent()) {
+      traceManager.attachCurrentSpan();
 
-    String traceId = traceManager.getTraceId(mockContext);
-    if (traceManager.hasAmbientSpan()) {
-      assertTrue(traceId.matches("[0-9a-f]{32}"));
-    } else {
+      String traceId = traceManager.getTraceId(mockContext);
       assertEquals("test-invocation-id", traceId);
     }
   }
@@ -226,5 +227,36 @@ public class TraceManagerTest {
   public void clearStack_doesNothing_whenRecordsIsEmpty() {
     traceManager.clearStack();
     assertTrue(traceManager.getCurrentSpanAndParent().spanId().isEmpty());
+  }
+
+  @Test
+  public void initTraceIfNeeded_setsRootAgentNameFromContext() {
+    assertEquals(TraceManager.DEFAULT_ROOT_AGENT_NAME, traceManager.getRootAgentName());
+    traceManager.initTraceIfNeeded(mockContext);
+    assertEquals("test-agent", traceManager.getRootAgentName());
+  }
+
+  @Test
+  public void initTraceIfNeeded_nullAgent_keepsSentinel() {
+    InvocationContext ctx = mock(InvocationContext.class);
+    when(ctx.agent()).thenReturn(null);
+    traceManager.initTraceIfNeeded(ctx);
+    assertEquals(TraceManager.DEFAULT_ROOT_AGENT_NAME, traceManager.getRootAgentName());
+  }
+
+  @Test
+  public void initTrace_nullRootAgent_keepsSentinelWithoutThrowing() {
+    // rootAgent() may be null (e.g. workflow-driven callbacks with no resolved root); initTrace
+    // must
+    // guard on it directly rather than NPE. Called directly (not via initTraceIfNeeded, whose
+    // try/catch would otherwise mask a missing rootAgent null-check).
+    BaseAgent agentWithNullRoot = mock(BaseAgent.class);
+    when(agentWithNullRoot.rootAgent()).thenReturn(null);
+    InvocationContext ctx = mock(InvocationContext.class);
+    when(ctx.agent()).thenReturn(agentWithNullRoot);
+
+    traceManager.initTrace(ctx);
+
+    assertEquals(TraceManager.DEFAULT_ROOT_AGENT_NAME, traceManager.getRootAgentName());
   }
 }

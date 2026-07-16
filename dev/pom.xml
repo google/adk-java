@@ -18,7 +18,7 @@
   <parent>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-parent</artifactId>
-    <version>1.5.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <version>1.6.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   </parent>
 
   <artifactId>google-adk-dev</artifactId>
@@ -80,10 +80,6 @@
     <dependency>
       <groupId>guru.nidi</groupId>
       <artifactId>graphviz-java</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jdt</groupId>
-      <artifactId>ecj</artifactId>
     </dependency>
     <dependency>
       <groupId>io.opentelemetry</groupId>
@@ -150,6 +146,7 @@
               </goals>
               <configuration>
                 <classifier>exec</classifier>
+                <mainClass>com.google.adk.web.AdkWebServer</mainClass>
               </configuration>
             </execution>
           </executions>

@@ -263,6 +263,8 @@ public class BatchProcessorTest {
     batchProcessor.flush();
 
     verify(mockWriter).append(any(ArrowRecordBatch.class));
+    // A BigQuery error response must count the batch as dropped under "append_error".
+    assertEquals(1L, (long) batchProcessor.getDropStats().get("append_error"));
   }
 
   @Test
@@ -277,6 +279,8 @@ public class BatchProcessorTest {
     batchProcessor.flush();
 
     verify(mockWriter).append(any(ArrowRecordBatch.class));
+    // A generic append exception must count the batch as dropped under "append_error".
+    assertEquals(1L, (long) batchProcessor.getDropStats().get("append_error"));
   }
 
   @Test

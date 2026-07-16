@@ -170,12 +170,17 @@ public final class GeminiUtil {
   }
 
   private static Part removeClientFunctionCallIdFromPart(Part part) {
-    if (part.functionCall().isPresent() && part.functionCall().get().id().isPresent()) {
+    if (part.functionCall().isPresent()
+        && part.functionCall().get().id().isPresent()
+        && FunctionCallIds.isClientGeneratedFunctionCallId(part.functionCall().get().id().get())) {
       return part.toBuilder()
           .functionCall(part.functionCall().get().toBuilder().clearId().build())
           .build();
     }
-    if (part.functionResponse().isPresent() && part.functionResponse().get().id().isPresent()) {
+    if (part.functionResponse().isPresent()
+        && part.functionResponse().get().id().isPresent()
+        && FunctionCallIds.isClientGeneratedFunctionCallId(
+            part.functionResponse().get().id().get())) {
       return part.toBuilder()
           .functionResponse(part.functionResponse().get().toBuilder().clearId().build())
           .build();

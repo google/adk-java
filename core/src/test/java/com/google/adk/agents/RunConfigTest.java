@@ -25,11 +25,13 @@ import com.google.genai.types.AvatarConfig;
 import com.google.genai.types.CustomizedAvatar;
 import com.google.genai.types.Modality;
 import com.google.genai.types.SpeechConfig;
+import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
+@SuppressWarnings("deprecation") // Exercises the deprecated groupFunctionResponsesInHistory flag.
 public final class RunConfigTest {
 
   @Test
@@ -69,6 +71,38 @@ public final class RunConfigTest {
     assertThat(runConfig.outputAudioTranscription()).isNull();
     assertThat(runConfig.inputAudioTranscription()).isNull();
     assertThat(runConfig.maxLlmCalls()).isEqualTo(500);
+    assertThat(runConfig.autoCreateSession()).isFalse();
+    assertThat(runConfig.groupFunctionResponsesInHistoryOverride()).isEmpty();
+    assertThat(runConfig.groupFunctionResponsesInHistory()).isFalse();
+  }
+
+  @Test
+  public void groupFunctionResponsesInHistory_booleanSetter_setsOverrideAndBackwardCompatGetter() {
+    RunConfig enabled = RunConfig.builder().groupFunctionResponsesInHistory(true).build();
+    assertThat(enabled.groupFunctionResponsesInHistoryOverride()).hasValue(true);
+    assertThat(enabled.groupFunctionResponsesInHistory()).isTrue();
+
+    RunConfig disabled = RunConfig.builder().groupFunctionResponsesInHistory(false).build();
+    assertThat(disabled.groupFunctionResponsesInHistoryOverride()).hasValue(false);
+    assertThat(disabled.groupFunctionResponsesInHistory()).isFalse();
+  }
+
+  @Test
+  public void groupFunctionResponsesInHistoryOverride_emptyByDefaultAndPropagatedByCopy() {
+    RunConfig source = RunConfig.builder().groupFunctionResponsesInHistoryOverride(true).build();
+    assertThat(source.groupFunctionResponsesInHistoryOverride()).hasValue(true);
+
+    // Copying preserves an unset override rather than collapsing it to false.
+    RunConfig copiedUnset = RunConfig.builder(RunConfig.builder().build()).build();
+    assertThat(copiedUnset.groupFunctionResponsesInHistoryOverride()).isEmpty();
+
+    RunConfig copiedSet = RunConfig.builder(source).build();
+    assertThat(copiedSet.groupFunctionResponsesInHistoryOverride()).hasValue(true);
+
+    // An explicit Optional.empty() clears the override back to the default.
+    RunConfig cleared =
+        RunConfig.builder(source).groupFunctionResponsesInHistoryOverride(Optional.empty()).build();
+    assertThat(cleared.groupFunctionResponsesInHistoryOverride()).isEmpty();
   }
 
   @Test

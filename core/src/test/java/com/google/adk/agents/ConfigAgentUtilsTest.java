@@ -1382,6 +1382,157 @@ public final class ConfigAgentUtilsTest {
   }
 
   @Test
+  public void resolveSubAgents_withAbsoluteConfigPath_resolvesSuccessfully()
+      throws IOException, ConfigurationException {
+    // For backward compatibility an absolute config_path is still honored (it now logs a
+    // deprecation warning rather than being rejected).
+    File subAgentFile = tempFolder.newFile("absolute_sub_agent.yaml");
+    Files.writeString(
+        subAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: absolute_sub_agent
+        description: A subagent referenced by an absolute path
+        instruction: You are a helpful subagent
+        """);
+    String absoluteConfigPath = subAgentFile.getAbsolutePath();
+
+    File mainAgentFile = tempFolder.newFile("main_agent_absolute.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        String.format(
+            """
+            agent_class: LlmAgent
+            name: main_agent
+            description: Main agent referencing an absolute config_path
+            instruction: You are a main agent
+            sub_agents:
+              - name: absolute_sub_agent
+                config_path: %s
+            """,
+            absoluteConfigPath));
+
+    BaseAgent mainAgent = ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath());
+
+    assertThat(mainAgent.name()).isEqualTo("main_agent");
+    assertThat(mainAgent.subAgents()).hasSize(1);
+    assertThat(mainAgent.subAgents().get(0).name()).isEqualTo("absolute_sub_agent");
+  }
+
+  @Test
+  public void resolveSubAgents_withTraversalConfigPath_resolvesSuccessfully()
+      throws IOException, ConfigurationException {
+    // For backward compatibility a config_path that escapes the agent directory via "../../" is
+    // still honored (it now logs a deprecation warning rather than being rejected). The agent
+    // config lives in a nested subdirectory so that "../../" escapes the agent directory.
+    File subAgentFile = tempFolder.newFile("outside_sub_agent.yaml");
+    Files.writeString(
+        subAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: outside_sub_agent
+        description: A subagent outside the agent directory
+        instruction: You are a helpful subagent
+        """);
+
+    File agentDir = tempFolder.newFolder("nested", "agents");
+    File mainAgentFile = new File(agentDir, "main_agent_traversal.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: main_agent
+        description: Main agent referencing a traversal config_path
+        instruction: You are a main agent
+        sub_agents:
+          - name: outside_sub_agent
+            config_path: ../../outside_sub_agent.yaml
+        """);
+
+    BaseAgent mainAgent = ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath());
+
+    assertThat(mainAgent.name()).isEqualTo("main_agent");
+    assertThat(mainAgent.subAgents()).hasSize(1);
+    assertThat(mainAgent.subAgents().get(0).name()).isEqualTo("outside_sub_agent");
+  }
+
+  @Test
+  public void resolveSubAgents_withRelativeConfigPathWithinAgentDir_resolvesSuccessfully()
+      throws IOException, ConfigurationException {
+    // A normal relative config_path that stays within the agent directory must still work.
+    File subAgentFile = tempFolder.newFile("normal_sub_agent.yaml");
+    Files.writeString(
+        subAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: normal_sub_agent
+        description: A normal subagent
+        instruction: You are a helpful subagent
+        """);
+
+    File mainAgentFile = tempFolder.newFile("main_agent_relative.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: main_agent
+        description: Main agent with a normal relative config_path
+        instruction: You are a main agent
+        sub_agents:
+          - name: normal_sub_agent
+            config_path: normal_sub_agent.yaml
+        """);
+
+    BaseAgent mainAgent = ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath());
+
+    assertThat(mainAgent.name()).isEqualTo("main_agent");
+    assertThat(mainAgent.subAgents()).hasSize(1);
+    BaseAgent subAgent = mainAgent.subAgents().get(0);
+    assertThat(subAgent.name()).isEqualTo("normal_sub_agent");
+    assertThat(subAgent).isInstanceOf(LlmAgent.class);
+  }
+
+  @Test
+  public void resolveSubAgents_withTraversalThatStaysWithinAgentDir_resolvesSuccessfully()
+      throws IOException, ConfigurationException {
+    // A config_path containing ".." that still normalizes to a location inside the agent
+    // directory must be accepted (the containment check is on the normalized path, not a naive
+    // ".." substring match).
+    File childDir = tempFolder.newFolder("child");
+    File subAgentFile = new File(childDir, "nested_sub_agent.yaml");
+    Files.writeString(
+        subAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: nested_sub_agent
+        description: A nested subagent reached via an in-bounds relative path
+        instruction: You are a helpful subagent
+        """);
+
+    File mainAgentFile = tempFolder.newFile("main_agent_inbounds_traversal.yaml");
+    // child/../child/nested_sub_agent.yaml normalizes back into the agent directory.
+    Files.writeString(
+        mainAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: main_agent
+        description: Main agent with an in-bounds traversal config_path
+        instruction: You are a main agent
+        sub_agents:
+          - name: nested_sub_agent
+            config_path: child/../child/nested_sub_agent.yaml
+        """);
+
+    BaseAgent mainAgent = ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath());
+
+    assertThat(mainAgent.name()).isEqualTo("main_agent");
+    assertThat(mainAgent.subAgents()).hasSize(1);
+    BaseAgent subAgent = mainAgent.subAgents().get(0);
+    assertThat(subAgent.name()).isEqualTo("nested_sub_agent");
+    assertThat(subAgent).isInstanceOf(LlmAgent.class);
+  }
+
+  @Test
   public void fromConfig_validYamlLoopAgent_createsLoopAgent()
       throws IOException, ConfigurationException {
     File subAgentFile = tempFolder.newFile("sub_agent.yaml");

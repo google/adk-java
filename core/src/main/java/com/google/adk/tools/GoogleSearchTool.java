@@ -61,8 +61,8 @@ public final class GoogleSearchTool extends BaseTool {
     ImmutableList.Builder<Tool> updatedToolsBuilder = ImmutableList.builder();
     updatedToolsBuilder.addAll(existingTools);
 
-    String model = llmRequestBuilder.build().model().get();
-    if (model != null && (model.startsWith("gemini-2") || model.startsWith("gemini-3"))) {
+    String model = llmRequestBuilder.build().model().orElse(null);
+    if (isSupportedModel(model)) {
 
       updatedToolsBuilder.add(Tool.builder().googleSearch(GoogleSearch.builder().build()).build());
       configBuilder.tools(updatedToolsBuilder.build());
@@ -73,5 +73,14 @@ public final class GoogleSearchTool extends BaseTool {
 
     llmRequestBuilder.config(configBuilder.build());
     return Completable.complete();
+  }
+
+  private boolean isSupportedModel(String model) {
+    if (model == null || !model.startsWith("gemini-")) {
+      return false;
+    }
+    return model.startsWith("gemini-2")
+        || model.startsWith("gemini-3")
+        || model.endsWith("-latest");
   }
 }

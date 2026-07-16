@@ -51,9 +51,11 @@ import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
+import com.google.cloud.bigquery.TimePartitioning;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.Part;
@@ -65,10 +67,12 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.jspecify.annotations.Nullable;
@@ -97,6 +101,10 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   private final Object tableEnsuredLock = new Object();
   private final PluginState state;
   private volatile boolean tableEnsured = false;
+  // Set only on the public construction paths (see registerShutdownHook); null for the
+  // package-private test constructor. Deregistered in close() so an explicit close does not leave
+  // the hook pinning this plugin for the JVM's lifetime.
+  private @Nullable Thread shutdownHook;
 
   public BigQueryAgentAnalyticsPlugin(BigQueryLoggerConfig config) throws IOException {
     this(config, createBigQuery(config));
@@ -105,6 +113,9 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   public BigQueryAgentAnalyticsPlugin(BigQueryLoggerConfig config, BigQuery bigQuery)
       throws IOException {
     this(config, bigQuery, new PluginState(config));
+    // Register on the public construction paths only (not the package-private test constructor),
+    // so a host that never calls close() still gets a best-effort drain at JVM exit.
+    registerShutdownHook();
   }
 
   BigQueryAgentAnalyticsPlugin(BigQueryLoggerConfig config, BigQuery bigQuery, PluginState state) {
@@ -112,6 +123,43 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     this.config = config;
     this.bigQuery = bigQuery;
     this.state = state;
+  }
+
+  private void registerShutdownHook() {
+    shutdownHook =
+        new Thread(
+            () -> {
+              try {
+                boolean unused =
+                    state
+                        .close()
+                        .blockingAwait(config.shutdownTimeout().toMillis(), TimeUnit.MILLISECONDS);
+              } catch (RuntimeException e) {
+                logger.log(Level.WARNING, "Error draining BQAA analytics on JVM shutdown", e);
+              }
+            },
+            "bq-analytics-shutdown");
+    Runtime.getRuntime().addShutdownHook(shutdownHook);
+  }
+
+  private void removeShutdownHook() {
+    if (shutdownHook == null) {
+      return;
+    }
+    try {
+      Runtime.getRuntime().removeShutdownHook(shutdownHook);
+    } catch (IllegalStateException e) {
+      // The JVM is already shutting down; the hook is running (or has run) and cannot be removed.
+    }
+  }
+
+  /**
+   * Returns aggregated dropped-row counters keyed by reason ({@code queue_full}, {@code
+   * append_error}, {@code serialization_error}). Non-zero values indicate analytics rows that never
+   * reached BigQuery.
+   */
+  public ImmutableMap<String, Long> getDropStats() {
+    return state.getDropStats();
   }
 
   private static BigQuery createBigQuery(BigQueryLoggerConfig config) throws IOException {
@@ -133,24 +181,36 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     if (!tableEnsured) {
       synchronized (tableEnsuredLock) {
         if (!tableEnsured) {
-          // Table creation is expensive, so we only do it once per plugin instance.
-          tableEnsured = true;
-          ensureTableExists(bigQuery, config);
+          // Only mark the table as ensured after a successful setup, so a transient first-run
+          // failure (auth blip, missing dataset, quota) is retried on subsequent events instead
+          // of permanently disabling table creation/upgrade for this plugin instance.
+          if (ensureTableExists(bigQuery, config)) {
+            tableEnsured = true;
+          }
         }
       }
     }
   }
 
-  private void ensureTableExists(BigQuery bigQuery, BigQueryLoggerConfig config) {
+  /** Returns true if the events table is present (created or already existed) and ready. */
+  private boolean ensureTableExists(BigQuery bigQuery, BigQueryLoggerConfig config) {
     TableId tableId = TableId.of(config.projectId(), config.datasetId(), config.tableName());
     Schema schema = BigQuerySchema.getEventsSchema();
+    boolean tableReady = false;
     try {
       Table table = bigQuery.getTable(tableId);
-      logger.info("BigQuery table: " + tableId);
+      logger.fine("BigQuery table: " + tableId);
       if (table == null) {
         logger.info("Creating BigQuery table: " + tableId);
         StandardTableDefinition.Builder tableDefinitionBuilder =
-            StandardTableDefinition.newBuilder().setSchema(schema);
+            StandardTableDefinition.newBuilder()
+                .setSchema(schema)
+                // Day-partition on the event timestamp for cost/pruning parity with the Python
+                // plugin. Time-filtered analytics queries prune partitions instead of full scans.
+                .setTimePartitioning(
+                    TimePartitioning.newBuilder(TimePartitioning.Type.DAY)
+                        .setField("timestamp")
+                        .build());
         if (!config.clusteringFields().isEmpty()) {
           tableDefinitionBuilder.setClustering(
               Clustering.newBuilder().setFields(config.clusteringFields()).build());
@@ -161,9 +221,24 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
                     ImmutableMap.of(
                         BigQuerySchema.SCHEMA_VERSION_LABEL_KEY, BigQuerySchema.SCHEMA_VERSION))
                 .build();
-        bigQuery.create(tableInfo);
+        try {
+          bigQuery.create(tableInfo);
+        } catch (BigQueryException e) {
+          // Another writer may have created the table concurrently; treat that as success.
+          String msg = e.getMessage();
+          if (msg != null && msg.toLowerCase(Locale.ROOT).contains("already exists")) {
+            logger.info("BigQuery table already exists (concurrent create): " + tableId);
+          } else {
+            throw e;
+          }
+        }
+        tableReady = true;
       } else if (config.autoSchemaUpgrade()) {
-        maybeUpgradeSchema(bigQuery, table);
+        // Only treat the table as ready if the schema upgrade actually succeeded, so a failed
+        // upgrade is retried on a later event instead of being masked by tableEnsured=true.
+        tableReady = maybeUpgradeSchema(bigQuery, table);
+      } else {
+        tableReady = true;
       }
     } catch (BigQueryException e) {
       processBigQueryException(e, "Failed to check or create/upgrade BigQuery table: " + tableId);
@@ -178,6 +253,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     } catch (RuntimeException e) {
       logger.log(Level.WARNING, "Failed to create/update BigQuery views for table: " + tableId, e);
     }
+    return tableReady;
   }
 
   private void processBigQueryException(BigQueryException e, String logMessage) {
@@ -234,7 +310,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     Map<String, Object> row = new HashMap<>();
     row.put("timestamp", Instant.now());
     row.put("event_type", eventType);
-    row.put("agent", invocationContext.agent().name());
+    row.put("agent", resolveAgentName(invocationContext, eventData));
     row.put("session_id", invocationContext.session().id());
     row.put("invocation_id", invocationContext.invocationId());
     row.put("user_id", invocationContext.userId());
@@ -295,6 +371,36 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     return Completable.complete();
   }
 
+  /**
+   * Resolves the agent name defensively. Workflow-driven callbacks may have no current agent; fall
+   * back to the event author (via {@code EventData.fallbackAgentName}, mirroring the Python plugin)
+   * and finally to a sentinel, rather than letting an NPE drop the row.
+   */
+  private static String resolveAgentName(
+      InvocationContext invocationContext, Optional<EventData> eventData) {
+    BaseAgent agent = null;
+    try {
+      // Only the agent() lookup can throw; keep the guarded region narrow so a genuinely present
+      // agent still yields its (validated, non-null) name rather than being swallowed.
+      agent = invocationContext.agent();
+    } catch (RuntimeException e) {
+      // Fall through to the author/sentinel fallback below.
+    }
+    if (agent != null) {
+      return agent.name();
+    }
+    return eventData.flatMap(EventData::fallbackAgentName).orElse("unknown");
+  }
+
+  @CanIgnoreReturnValue
+  private static EventData.Builder withFallbackAgent(
+      EventData.Builder builder, @Nullable String author) {
+    if (author != null && !author.isEmpty()) {
+      builder.setFallbackAgentName(author);
+    }
+    return builder;
+  }
+
   private ResolvedTraceIds getResolvedTraceIds(
       InvocationContext invocationContext, Optional<EventData> eventData) {
     TraceManager traceManager = state.getTraceManager(invocationContext.invocationId());
@@ -302,8 +408,11 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
         eventData
             .flatMap(EventData::traceIdOverride)
             .orElseGet(() -> traceManager.getTraceId(invocationContext));
-    Optional<SpanIds> ambientSpanIds = traceManager.getAmbientSpanAndParent();
-    SpanIds spanIds = ambientSpanIds.orElse(traceManager.getCurrentSpanAndParent());
+    // span_id / parent_span_id must reference the BQAA internal execution tree (spans that are
+    // written as rows), not an ambient OpenTelemetry framework span that is never logged as a row.
+    // Otherwise parent_span_id would dangle. Ambient OTel still governs trace_id (via getTraceId)
+    // for cross-system correlation.
+    SpanIds spanIds = traceManager.getCurrentSpanAndParent();
 
     return new ResolvedTraceIds(
         traceId,
@@ -329,6 +438,9 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       EventData eventData, InvocationContext invocationContext) {
     Map<String, Object> attributes = new HashMap<>(eventData.extraAttributes());
     TraceManager traceManager = state.getTraceManager(invocationContext.invocationId());
+    // Populate the root agent name from the invocation context if it has not been set yet, so
+    // attributes.root_agent_name is a real name rather than the sentinel default.
+    traceManager.initTraceIfNeeded(invocationContext);
     attributes.put("root_agent_name", traceManager.getRootAgentName());
     eventData.model().ifPresent(m -> attributes.put("model", m));
     eventData.modelVersion().ifPresent(mv -> attributes.put("model_version", mv));
@@ -370,7 +482,9 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
 
   @Override
   public Completable close() {
-    return state.close();
+    // Deregister the JVM shutdown hook first: an explicit close() supersedes the best-effort drain
+    // at exit, and leaving the hook registered would pin this plugin for the JVM's lifetime.
+    return Completable.fromRunnable(this::removeShutdownHook).andThen(state.close());
   }
 
   @VisibleForTesting
@@ -393,16 +507,13 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     EventData.Builder eventDataBuilder = EventData.builder();
     eventDataBuilder.setTraceIdOverride(traceId);
     eventDataBuilder.setLatency(popped.get().duration());
-    // Only override span IDs when no ambient OTel span exists.
-    // Keep STARTING/COMPLETED pairs consistent.
-    if (!traceManager.hasAmbientSpan()) {
-      if (parentSpanId.isPresent()) {
-        eventDataBuilder.setParentSpanIdOverride(parentSpanId.get());
-      }
-      if (popped.get().spanId() != null) {
-        eventDataBuilder.setSpanIdOverride(popped.get().spanId());
-      }
+    // Always record the internal execution-tree span so the STARTING/COMPLETED pair stays
+    // internally joinable and parent_span_id references a logged row, regardless of ambient OTel.
+    if (parentSpanId.isPresent()) {
+      eventDataBuilder.setParentSpanIdOverride(parentSpanId.get());
     }
+    // RecordData.spanId() is always populated by the trace manager, so record it unconditionally.
+    eventDataBuilder.setSpanIdOverride(popped.get().spanId());
     return Optional.of(eventDataBuilder.build());
   }
 
@@ -446,19 +557,26 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     if (state.isProcessed(invocationContext.invocationId())) {
       return Maybe.empty();
     }
-    EventData.Builder eventDataBuilder =
-        EventData.builder()
-            .setExtraAttributes(
-                ImmutableMap.<String, Object>builder()
-                    .put("state_delta", event.actions().stateDelta())
-                    .put("author", event.author())
-                    .buildOrThrow());
-    Completable logCompletable =
-        logEvent(
-            "STATE_DELTA",
-            invocationContext,
-            event.content().orElse(null),
-            Optional.of(eventDataBuilder.build()));
+    // Only emit STATE_DELTA when there is an actual state change, matching the Python plugin
+    // (which does not write a STATE_DELTA row for events with an empty state delta).
+    Completable logCompletable = Completable.complete();
+    if (!event.actions().stateDelta().isEmpty()) {
+      EventData.Builder eventDataBuilder =
+          withFallbackAgent(
+              EventData.builder()
+                  .setExtraAttributes(
+                      ImmutableMap.<String, Object>builder()
+                          .put("state_delta", event.actions().stateDelta())
+                          .put("author", event.author())
+                          .buildOrThrow()),
+              event.author());
+      logCompletable =
+          logEvent(
+              "STATE_DELTA",
+              invocationContext,
+              event.content().orElse(null),
+              Optional.of(eventDataBuilder.build()));
+    }
 
     if (event.content().isPresent() && event.content().get().parts().isPresent()) {
       for (Part part : event.content().get().parts().get()) {
@@ -539,7 +657,11 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
                     invocationContext,
                     contentObject,
                     a2aTruncated.isTruncated() || contentTruncated,
-                    Optional.of(EventData.builder().setExtraAttributes(extraAttributes).build())));
+                    Optional.of(
+                        withFallbackAgent(
+                                EventData.builder().setExtraAttributes(extraAttributes),
+                                event.author())
+                            .build())));
       }
     }
 
@@ -574,7 +696,11 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
                     invocationContext,
                     visibleContent,
                     false,
-                    Optional.of(EventData.builder().setExtraAttributes(extraAttributes).build())));
+                    Optional.of(
+                        withFallbackAgent(
+                                EventData.builder().setExtraAttributes(extraAttributes),
+                                event.author())
+                            .build())));
       }
     }
 
@@ -757,8 +883,9 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       }
     }
 
-    boolean hasAmbient = traceManager.hasAmbientSpan();
-    boolean useOverride = isPopped && !hasAmbient;
+    // Always record the internal execution-tree span for the final response so parent_span_id
+    // references a logged row, regardless of any ambient OpenTelemetry span.
+    boolean useOverride = isPopped;
 
     EventData.Builder eventDataBuilder = EventData.builder();
     if (!duration.isZero()) {
@@ -806,19 +933,17 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     SpanIds spanIds = traceManager.getCurrentSpanAndParent();
     String parentSpanId = spanIds.spanId().orElse(null);
 
-    boolean hasAmbient = traceManager.hasAmbientSpan();
     EventData.Builder eventDataBuilder =
         EventData.builder().setStatus("ERROR").setErrorMessage(error.getMessage());
     if (popped.isPresent()) {
       eventDataBuilder.setLatency(popped.get().duration());
     }
-    if (!hasAmbient) {
-      if (spanId != null) {
-        eventDataBuilder.setSpanIdOverride(spanId);
-      }
-      if (parentSpanId != null) {
-        eventDataBuilder.setParentSpanIdOverride(parentSpanId);
-      }
+    // Always record the internal execution-tree span so parent_span_id references a logged row.
+    if (spanId != null) {
+      eventDataBuilder.setSpanIdOverride(spanId);
+    }
+    if (parentSpanId != null) {
+      eventDataBuilder.setParentSpanIdOverride(parentSpanId);
     }
     return logEvent("LLM_ERROR", invocationContext, null, Optional.of(eventDataBuilder.build()))
         .andThen(Maybe.empty());
@@ -863,16 +988,14 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
             getToolOrigin(tool));
 
     SpanIds spanIds = traceManager.getCurrentSpanAndParent();
-    boolean hasAmbient = traceManager.hasAmbientSpan();
 
     EventData.Builder eventDataBuilder = EventData.builder();
     if (popped.isPresent()) {
       eventDataBuilder.setLatency(popped.get().duration());
     }
-    if (!hasAmbient) {
-      popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
-      spanIds.spanId().ifPresent(eventDataBuilder::setParentSpanIdOverride);
-    }
+    // Always record the internal execution-tree span so parent_span_id references a logged row.
+    popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
+    spanIds.spanId().ifPresent(eventDataBuilder::setParentSpanIdOverride);
 
     return logEvent(
             "TOOL_COMPLETED",
@@ -905,17 +1028,15 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
             .buildOrThrow();
 
     SpanIds spanIds = traceManager.getCurrentSpanAndParent();
-    boolean hasAmbient = traceManager.hasAmbientSpan();
 
     EventData.Builder eventDataBuilder =
         EventData.builder().setStatus("ERROR").setErrorMessage(error.getMessage());
     if (popped.isPresent()) {
       eventDataBuilder.setLatency(popped.get().duration());
     }
-    if (!hasAmbient) {
-      popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
-      spanIds.spanId().ifPresent(eventDataBuilder::setParentSpanIdOverride);
-    }
+    // Always record the internal execution-tree span so parent_span_id references a logged row.
+    popped.ifPresent(p -> eventDataBuilder.setSpanIdOverride(p.spanId()));
+    spanIds.spanId().ifPresent(eventDataBuilder::setParentSpanIdOverride);
 
     return logEvent(
             "TOOL_ERROR",

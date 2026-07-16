@@ -1,3 +1,19 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.google.adk.plugins.agentanalytics;
 
 import static com.google.adk.plugins.agentanalytics.BigQueryUtils.getVersionHeaderValue;
@@ -64,6 +80,11 @@ class PluginState {
   private final Parser parser;
   private final ConcurrentHashMap<String, Set<CompletableFuture<Void>>> pendingTasks =
       new ConcurrentHashMap<>();
+  // Drop counters accumulated from BatchProcessors that have already been closed/removed, so the
+  // aggregate survives per-invocation processor churn.
+  private final AtomicLong droppedQueueFull = new AtomicLong();
+  private final AtomicLong droppedAppendError = new AtomicLong();
+  private final AtomicLong droppedSerializationError = new AtomicLong();
 
   PluginState(BigQueryLoggerConfig config) throws IOException {
     this.config = config;
@@ -106,7 +127,7 @@ class PluginState {
   boolean isProcessed(String invocationId) {
     boolean isProcessed = processedInvocations.getIfPresent(invocationId) != null;
     if (isProcessed) {
-      logger.info("Invocation ID: " + invocationId + "  already processed");
+      logger.fine("Invocation ID: " + invocationId + "  already processed");
     }
     return isProcessed;
   }
@@ -142,6 +163,9 @@ class PluginState {
           .setTraceId(BigQueryUtils.getVersionHeaderValue() + ":" + UUID.randomUUID())
           .setRetrySettings(retrySettings)
           .setWriterSchema(BigQuerySchema.getArrowSchema())
+          // Route Storage Write append RPCs to the dataset's region. Without this, appends to any
+          // location other than the US multi-region can fail with stream-not-found errors.
+          .setLocation(config.location())
           .build();
     } catch (Exception e) {
       throw new VerifyException("Failed to create StreamWriter for " + streamName, e);
@@ -222,6 +246,11 @@ class PluginState {
     return pendingTasks.computeIfAbsent(invocationId, k -> ConcurrentHashMap.newKeySet());
   }
 
+  // Relies on reference (identity) equality of CompletableFuture: the exact same future instance is
+  // added here and removed on completion, which is well-defined under the default Object.equals /
+  // hashCode. The set must remain concurrent (ConcurrentHashMap.newKeySet), so a JDK
+  // IdentityHashMap-based set is not an option.
+  @SuppressWarnings("CollectionUndefinedEquality")
   void addPendingTask(String invocationId, CompletableFuture<Void> task) {
     Set<CompletableFuture<Void>> tasks = getPendingTasksForInvocation(invocationId);
     tasks.add(task);
@@ -236,7 +265,7 @@ class PluginState {
           Completable.fromCompletionStage(
               CompletableFuture.allOf(tasks.toArray(new CompletableFuture<?>[0])));
     }
-    logger.info("Waiting for pending tasks to complete for invocation ID: " + invocationId);
+    logger.fine("Waiting for pending tasks to complete for invocation ID: " + invocationId);
     return tasksState
         .timeout(config.shutdownTimeout().toMillis(), MILLISECONDS)
         .doOnError(
@@ -258,14 +287,43 @@ class PluginState {
               if (processor != null) {
                 processor.flush();
                 processor.close();
+                // Fold after close() so rows dropped during the final drain are also counted.
+                foldDropStats(processor);
               }
               TraceManager traceManager = removeTraceManager(invocationId);
               if (traceManager != null) {
                 traceManager.clearStack();
               }
-              logger.info("Removing pending tasks for invocation ID: " + invocationId);
+              logger.fine("Removing pending tasks for invocation ID: " + invocationId);
               pendingTasks.remove(invocationId);
             });
+  }
+
+  private void foldDropStats(BatchProcessor processor) {
+    ImmutableMap<String, Long> stats = processor.getDropStats();
+    droppedQueueFull.addAndGet(stats.getOrDefault("queue_full", 0L));
+    droppedAppendError.addAndGet(stats.getOrDefault("append_error", 0L));
+    droppedSerializationError.addAndGet(stats.getOrDefault("serialization_error", 0L));
+  }
+
+  /**
+   * Aggregated dropped-row counters across closed and still-live BatchProcessors. Non-zero values
+   * indicate analytics rows that never reached BigQuery.
+   */
+  ImmutableMap<String, Long> getDropStats() {
+    long queueFull = droppedQueueFull.get();
+    long appendError = droppedAppendError.get();
+    long serializationError = droppedSerializationError.get();
+    for (BatchProcessor processor : getBatchProcessors()) {
+      ImmutableMap<String, Long> stats = processor.getDropStats();
+      queueFull += stats.getOrDefault("queue_full", 0L);
+      appendError += stats.getOrDefault("append_error", 0L);
+      serializationError += stats.getOrDefault("serialization_error", 0L);
+    }
+    return ImmutableMap.of(
+        "queue_full", queueFull,
+        "append_error", appendError,
+        "serialization_error", serializationError);
   }
 
   Completable close() {
@@ -291,6 +349,8 @@ class PluginState {
             () -> {
               for (BatchProcessor processor : getBatchProcessors()) {
                 processor.close();
+                // Fold after close() so rows dropped during the final drain are also counted.
+                foldDropStats(processor);
               }
               for (TraceManager traceManager : getTraceManagers()) {
                 traceManager.clearStack();

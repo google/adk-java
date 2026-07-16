@@ -84,7 +84,7 @@ class GeminiApiIntegrationTest {
     GoogleGenAiChatOptions options = GoogleGenAiChatOptions.builder().model(GEMINI_MODEL).build();
 
     GoogleGenAiChatModel geminiModel =
-        GoogleGenAiChatModel.builder().genAiClient(genAiClient).defaultOptions(options).build();
+        GoogleGenAiChatModel.builder().genAiClient(genAiClient).options(options).build();
 
     // Wrap with SpringAI
     SpringAI springAI = new SpringAI(geminiModel, GEMINI_MODEL);
@@ -132,7 +132,7 @@ class GeminiApiIntegrationTest {
     GoogleGenAiChatOptions options = GoogleGenAiChatOptions.builder().model(GEMINI_MODEL).build();
 
     GoogleGenAiChatModel geminiModel =
-        GoogleGenAiChatModel.builder().genAiClient(genAiClient).defaultOptions(options).build();
+        GoogleGenAiChatModel.builder().genAiClient(genAiClient).options(options).build();
 
     SpringAI springAI = new SpringAI(geminiModel, GEMINI_MODEL);
 
@@ -182,7 +182,7 @@ class GeminiApiIntegrationTest {
     GoogleGenAiChatOptions options = GoogleGenAiChatOptions.builder().model(GEMINI_MODEL).build();
 
     GoogleGenAiChatModel geminiModel =
-        GoogleGenAiChatModel.builder().genAiClient(genAiClient).defaultOptions(options).build();
+        GoogleGenAiChatModel.builder().genAiClient(genAiClient).options(options).build();
 
     LlmAgent agent =
         LlmAgent.builder()
@@ -231,7 +231,7 @@ class GeminiApiIntegrationTest {
     GoogleGenAiChatOptions options = GoogleGenAiChatOptions.builder().model(GEMINI_MODEL).build();
 
     GoogleGenAiChatModel geminiModel =
-        GoogleGenAiChatModel.builder().genAiClient(genAiClient).defaultOptions(options).build();
+        GoogleGenAiChatModel.builder().genAiClient(genAiClient).options(options).build();
 
     SpringAI springAI = new SpringAI(geminiModel, GEMINI_MODEL);
 
@@ -346,7 +346,7 @@ class GeminiApiIntegrationTest {
         Client.builder().apiKey(System.getenv("GOOGLE_API_KEY")).vertexAI(false).build();
 
     GoogleGenAiChatModel geminiModel =
-        GoogleGenAiChatModel.builder().genAiClient(genAiClient).defaultOptions(options).build();
+        GoogleGenAiChatModel.builder().genAiClient(genAiClient).options(options).build();
 
     SpringAI springAI = new SpringAI(geminiModel, GEMINI_MODEL);
 

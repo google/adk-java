@@ -21,6 +21,8 @@ import com.google.adk.events.Event;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -140,9 +142,35 @@ public class LoopAgent extends BaseAgent {
       return Flowable.empty();
     }
 
+    if (!invocationContext.isResumable()) {
+      return Flowable.fromIterable(subAgents)
+          .concatMap(subAgent -> subAgent.runAsync(invocationContext))
+          .repeat(maxIterations != null ? maxIterations : Integer.MAX_VALUE)
+          .takeUntil(LoopAgent::hasEscalateAction);
+    }
+
+    // Resumable: stop looping once a sub-agent emits a pending long-running call (e.g. HITL),
+    // matching Python ADK v1 and avoiding a runaway loop. The current sub-agent still finishes;
+    // resuming into the paused iteration needs persisted state (future work).
+    AtomicBoolean paused = new AtomicBoolean(false);
+    AtomicInteger timesLooped = new AtomicInteger(0);
     return Flowable.fromIterable(subAgents)
-        .concatMap(subAgent -> subAgent.runAsync(invocationContext))
-        .repeat(maxIterations != null ? maxIterations : Integer.MAX_VALUE)
+        .concatMap(
+            subAgent ->
+                paused.get()
+                    ? Flowable.empty()
+                    : subAgent
+                        .runAsync(invocationContext)
+                        .doOnNext(
+                            event -> {
+                              if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
+                                paused.set(true);
+                              }
+                            }))
+        .repeatUntil(
+            () ->
+                paused.get()
+                    || (maxIterations != null && timesLooped.incrementAndGet() >= maxIterations))
         .takeUntil(LoopAgent::hasEscalateAction);
   }
 

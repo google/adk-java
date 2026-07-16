@@ -29,6 +29,11 @@ on:
         description: 'The pull request number to triage'
         required: true
         type: 'string'
+      dry_run:
+        description: 'Dry run: preview only. Set to false to actually create the issue and PRs.'
+        required: false
+        default: true
+        type: boolean
 
 # Serialize runs that touch the same PR so a re-trigger (e.g. an "edited" event)
 # can't race an in-flight run on the same PR (which, with label appends, could
@@ -78,7 +83,7 @@ jobs:
           INTERACTIVE: '0'
           # Defaults to a dry run (logs intended labels/comments without writing).
           # Verify the pipeline, then set DRY_RUN to '0' to go live.
-          DRY_RUN: '1'
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
           EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
         run: |

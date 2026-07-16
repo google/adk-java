@@ -19,6 +19,7 @@ import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -89,13 +90,40 @@ public class SequentialAgent extends BaseAgent {
   /**
    * Runs sub-agents sequentially.
    *
+   * <p>When resumability is enabled, on resume execution fast-forwards to the sub-agent being
+   * resumed (completed ones are not re-run) and pauses on a pending long-running call; when
+   * disabled, sub-agents simply run in order (matches Python ADK v1 with resumability off).
+   * Temporary, event-based.
+   *
    * @param invocationContext Invocation context.
    * @return Flowable emitting events from sub-agents.
    */
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    return Flowable.fromIterable(subAgents())
-        .concatMap(subAgent -> subAgent.runAsync(invocationContext));
+    List<? extends BaseAgent> subAgents = subAgents();
+    if (subAgents.isEmpty()) {
+      return Flowable.empty();
+    }
+    if (!invocationContext.isResumable()) {
+      return Flowable.fromIterable(subAgents)
+          .concatMap(subAgent -> subAgent.runAsync(invocationContext));
+    }
+    int startIndex =
+        WorkflowAgentResumption.resumeSubAgentIndex(invocationContext, subAgents).orElse(0);
+    AtomicBoolean paused = new AtomicBoolean(false);
+    return Flowable.fromIterable(subAgents.subList(startIndex, subAgents.size()))
+        .concatMap(
+            subAgent ->
+                paused.get()
+                    ? Flowable.<Event>empty()
+                    : subAgent
+                        .runAsync(invocationContext)
+                        .doOnNext(
+                            event -> {
+                              if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
+                                paused.set(true);
+                              }
+                            }));
   }
 
   /**

@@ -132,9 +132,14 @@ public final class MapDbSessionService implements BaseSessionService, AutoClosea
     ObjectMapper objectMapper = new ObjectMapper();
 
     // Retrieve the session by ID
+    String sessionJson = sessionsMap.get(sessionId);
+    if (sessionJson == null) {
+      return Maybe.empty();
+    }
+
     Session storedSession = null;
     try {
-      storedSession = objectMapper.readValue(sessionsMap.get(sessionId), Session.class);
+      storedSession = objectMapper.readValue(sessionJson, Session.class);
     } catch (JsonProcessingException ex) {
       java.util.logging.Logger.getLogger(MapDbSessionService.class.getName())
           .log(Level.SEVERE, null, ex);

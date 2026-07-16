@@ -20,7 +20,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmResponse;
 import com.google.common.collect.ImmutableList;
@@ -855,8 +854,7 @@ public final class ChatCompletionsResponse {
           if (argsSb != null && argsSb.length() > 0) {
             try {
               Map<String, Object> args =
-                  objectMapper.readValue(
-                      argsSb.toString(), new TypeReference<Map<String, Object>>() {});
+                  ChatCompletionsCommon.parseToolCallArguments(argsSb.toString(), objectMapper);
               fc = fc.toBuilder().args(args).build();
               part = part.toBuilder().functionCall(fc).build();
             } catch (JsonProcessingException e) {

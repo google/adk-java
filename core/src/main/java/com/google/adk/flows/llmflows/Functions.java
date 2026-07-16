@@ -29,6 +29,7 @@ import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
+import com.google.adk.models.FunctionCallIds;
 import com.google.adk.telemetry.Instrumentation;
 import com.google.adk.telemetry.Instrumentation.ToolExecution;
 import com.google.adk.telemetry.Tracing;
@@ -37,6 +38,8 @@ import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -58,7 +61,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,12 +72,11 @@ public final class Functions {
   /** Session state key for storing the security policy outcomes for tool calls. */
   public static final String TOOL_CALL_SECURITY_STATES = "adk_tool_call_security_states";
 
-  private static final String AF_FUNCTION_CALL_ID_PREFIX = "adk-";
   private static final Logger logger = LoggerFactory.getLogger(Functions.class);
 
   /** Generates a unique ID for a function call. */
   public static String generateClientFunctionCallId() {
-    return AF_FUNCTION_CALL_ID_PREFIX + UUID.randomUUID();
+    return FunctionCallIds.generateClientFunctionCallId();
   }
 
   /**
@@ -413,15 +414,75 @@ public final class Functions {
       List<FunctionCall> functionCalls, Map<String, BaseTool> tools) {
     Set<String> longRunningFunctionCalls = new HashSet<>();
     for (FunctionCall functionCall : functionCalls) {
-      if (!tools.containsKey(functionCall.name().get())) {
+      // Streamed function-call chunks may carry no name; skip them.
+      String name = functionCall.name().orElse(null);
+      if (name == null || !tools.containsKey(name)) {
         continue;
       }
-      BaseTool tool = tools.get(functionCall.name().get());
+      BaseTool tool = tools.get(name);
       if (tool != null && tool.longRunning()) {
         longRunningFunctionCalls.add(functionCall.id().orElse(""));
       }
     }
     return longRunningFunctionCalls;
+  }
+
+  /**
+   * Returns the most recent function-call event whose call id matches a function response in the
+   * last event, or empty. Mirrors Python ADK's {@code find_matching_function_call}.
+   */
+  public static Optional<Event> findMatchingFunctionCallEvent(List<Event> events) {
+    if (events.isEmpty()) {
+      return Optional.empty();
+    }
+    Set<String> responseIds = new HashSet<>();
+    for (FunctionResponse functionResponse : Iterables.getLast(events).functionResponses()) {
+      functionResponse.id().ifPresent(responseIds::add);
+    }
+    if (responseIds.isEmpty()) {
+      return Optional.empty();
+    }
+    for (int i = events.size() - 2; i >= 0; i--) {
+      Event event = events.get(i);
+      for (FunctionCall functionCall : event.functionCalls()) {
+        if (functionCall.id().isPresent() && responseIds.contains(functionCall.id().get())) {
+          return Optional.of(event);
+        }
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Returns whether the event emits a long-running function call still awaiting a response (e.g. a
+   * HITL request). Mirrors Python ADK v1's {@code should_pause_invocation}.
+   */
+  public static boolean hasPendingLongRunningCall(Event event) {
+    Set<String> longRunningToolIds = event.longRunningToolIds().orElse(ImmutableSet.of());
+    if (longRunningToolIds.isEmpty()) {
+      return false;
+    }
+    for (FunctionCall functionCall : event.functionCalls()) {
+      if (functionCall.id().isPresent() && longRunningToolIds.contains(functionCall.id().get())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns whether the last one or two events hold a pending long-running call, meaning a
+   * resumable flow should pause instead of calling the model again. Mirrors Python ADK v1's
+   * flow-level pause check on {@code events[-1]} and {@code events[-2]}.
+   */
+  static boolean hasPendingLongRunningCall(List<Event> events) {
+    int from = Math.max(0, events.size() - 2);
+    for (int i = events.size() - 1; i >= from; i--) {
+      if (hasPendingLongRunningCall(events.get(i))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static Maybe<Event> postProcessFunctionResult(
@@ -480,7 +541,14 @@ public final class Functions {
                   .flatMapMaybe(
                       finalOptionalResult -> {
                         Map<String, Object> finalFunctionResult = finalOptionalResult.orElse(null);
-                        if (tool.longRunning() && finalFunctionResult == null) {
+                        boolean hasNoResult =
+                            finalFunctionResult == null || finalFunctionResult.isEmpty();
+                        if (tool.longRunning() && hasNoResult) {
+                          // A long-running tool with no result yet defers its response, so skip the
+                          // function-response event to avoid re-invoking the model with a
+                          // placeholder. The empty-map case is included because FunctionTool
+                          // coerces
+                          // an absent return into an empty map.
                           return Maybe.empty();
                         }
                         Event event =

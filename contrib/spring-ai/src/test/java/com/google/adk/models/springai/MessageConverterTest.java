@@ -21,21 +21,31 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.tools.BaseTool;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
+import com.google.genai.types.Schema;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.openai.OpenAiChatOptions;
 
 class MessageConverterTest {
 
@@ -235,6 +245,76 @@ class MessageConverterTest {
     assertThat(functionCallPart.functionCall().get().name()).contains("get_weather");
     // Verify ID is preserved
     assertThat(functionCallPart.functionCall().get().id()).contains("call_123");
+  }
+
+  @Test
+  void testUsageMetadataShouldBeEmptyWhenSpringAiMetadataIsNull() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("intermediate chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), null);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, true);
+
+    assertThat(llmResponse.usageMetadata().isEmpty());
+  }
+
+  @Test
+  void testUsageMetadataShouldBeEmptyWhenSpringAiUsageIsNull() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("intermediate chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    ChatResponseMetadata metadata = ChatResponseMetadata.builder().id("resp-no-usage").build();
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), metadata);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, true);
+
+    assertThat(llmResponse.usageMetadata().isEmpty());
+  }
+
+  @Test
+  void testUsageMetadataShouldDefaultToZeroWhenSpringAiTokensAreNull() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("final chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    // Anonymous implementation to simulate incomplete provider data where some token counts are
+    // null
+    DefaultUsage incompleteUsage = new DefaultUsage(null, null, 42);
+    ChatResponseMetadata metadata =
+        ChatResponseMetadata.builder().id("resp-partial-tokens").usage(incompleteUsage).build();
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), metadata);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, false);
+
+    assertThat(llmResponse.usageMetadata().isPresent());
+    assertThat(llmResponse.usageMetadata().get().promptTokenCount().orElse(-1)).isEqualTo(0);
+    assertThat(llmResponse.usageMetadata().get().candidatesTokenCount().orElse(-1)).isEqualTo(0);
+    assertThat(llmResponse.usageMetadata().get().totalTokenCount().orElse(-1)).isEqualTo(42);
+  }
+
+  @Test
+  void testUsageMetadataShouldMapCorrectlyWhenAllFieldsArePresent() {
+    MessageConverter converter = new MessageConverter(new ObjectMapper());
+    AssistantMessage assistantMessage = new AssistantMessage("final chunk");
+    Generation generation = new Generation(assistantMessage);
+
+    DefaultUsage completeUsage = new DefaultUsage(15, 25, 40);
+    ChatResponseMetadata metadata =
+        ChatResponseMetadata.builder().id("resp-happy-path").usage(completeUsage).build();
+
+    ChatResponse chatResponse = new ChatResponse(List.of(generation), metadata);
+
+    LlmResponse llmResponse = converter.toLlmResponse(chatResponse, false);
+
+    assertThat(llmResponse.usageMetadata().isPresent());
+    assertThat(llmResponse.usageMetadata().get().promptTokenCount().orElse(-1)).isEqualTo(15);
+    assertThat(llmResponse.usageMetadata().get().candidatesTokenCount().orElse(-1)).isEqualTo(25);
+    assertThat(llmResponse.usageMetadata().get().totalTokenCount().orElse(-1)).isEqualTo(40);
   }
 
   @Test
@@ -593,6 +673,104 @@ class MessageConverterTest {
     assertThat(userMessage.getText()).isEqualTo("What's in this image?");
     // Media part is skipped due to invalid MIME type
     assertThat(userMessage.getMedia()).isEmpty();
+  }
+
+  private static BaseTool testTool() {
+    FunctionDeclaration function =
+        FunctionDeclaration.builder()
+            .name("get_weather")
+            .description("Get the current weather for a location")
+            .parameters(
+                Schema.builder()
+                    .type("OBJECT")
+                    .properties(Map.of("location", Schema.builder().type("STRING").build()))
+                    .required(List.of("location"))
+                    .build())
+            .build();
+    return new BaseTool("get_weather", "Get the current weather for a location") {
+      @Override
+      public Optional<FunctionDeclaration> declaration() {
+        return Optional.of(function);
+      }
+    };
+  }
+
+  @Test
+  void testToolOptionsPreserveProviderSpecificTypeToAvoidClassCastException() {
+    // Regression test for b/527041291 (GitHub adk-java #1295): Spring AI OpenAI 2.0.0 casts
+    // Prompt.getOptions() directly to OpenAiChatOptions in createRequest(). When ADK passed a
+    // provider-neutral DefaultToolCallingChatOptions, that cast threw a ClassCastException. Basing
+    // the prompt options on the model's own options must keep the concrete provider type.
+    OpenAiChatOptions modelDefaultOptions =
+        OpenAiChatOptions.builder().model("gpt-4o").apiKey("dummy-key").build();
+
+    LlmRequest request =
+        LlmRequest.builder()
+            .contents(
+                List.of(
+                    Content.builder()
+                        .role("user")
+                        .parts(List.of(Part.fromText("What's the weather in Paris?")))
+                        .build()))
+            .tools(Map.of("get_weather", testTool()))
+            .build();
+
+    Prompt prompt = messageConverter.toLlmPrompt(request, modelDefaultOptions);
+
+    ChatOptions options = prompt.getOptions();
+    // The exact cast performed by OpenAiChatModel.createRequest(...); must not throw.
+    assertThat(options).isInstanceOf(OpenAiChatOptions.class);
+    OpenAiChatOptions openAiOptions = (OpenAiChatOptions) options;
+
+    // Tools are attached and provider-specific settings are preserved from the model defaults.
+    assertThat(openAiOptions.getToolCallbacks()).hasSize(1);
+    assertThat(openAiOptions.getModel()).isEqualTo("gpt-4o");
+    assertThat(openAiOptions.getApiKey()).isEqualTo("dummy-key");
+  }
+
+  @Test
+  void testProviderOptionsPreservedWithConfigOnlyAndNoTools() {
+    // Even without tools, provider-neutral options previously reached the provider cast. Ensure the
+    // provider-specific type is preserved and the ADK generation config is overlaid.
+    OpenAiChatOptions modelDefaultOptions =
+        OpenAiChatOptions.builder().model("gpt-4o").apiKey("dummy-key").build();
+
+    LlmRequest request =
+        LlmRequest.builder()
+            .contents(
+                List.of(
+                    Content.builder().role("user").parts(List.of(Part.fromText("Hello"))).build()))
+            .config(GenerateContentConfig.builder().temperature(0.25f).build())
+            .build();
+
+    Prompt prompt = messageConverter.toLlmPrompt(request, modelDefaultOptions);
+
+    ChatOptions options = prompt.getOptions();
+    assertThat(options).isInstanceOf(OpenAiChatOptions.class);
+    assertThat(options.getModel()).isEqualTo("gpt-4o");
+    assertThat(options.getTemperature()).isEqualTo(0.25);
+  }
+
+  @Test
+  void testToolOptionsFallBackToGenericWhenNoProviderDefaults() {
+    // When the model's default options are unavailable, keep the provider-neutral behavior so
+    // providers that normalize generic options continue to work.
+    LlmRequest request =
+        LlmRequest.builder()
+            .contents(
+                List.of(
+                    Content.builder()
+                        .role("user")
+                        .parts(List.of(Part.fromText("What's the weather in Paris?")))
+                        .build()))
+            .tools(Map.of("get_weather", testTool()))
+            .build();
+
+    Prompt prompt = messageConverter.toLlmPrompt(request);
+
+    ChatOptions options = prompt.getOptions();
+    assertThat(options).isInstanceOf(ToolCallingChatOptions.class);
+    assertThat(((ToolCallingChatOptions) options).getToolCallbacks()).hasSize(1);
   }
 
   @Test

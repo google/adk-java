@@ -34,15 +34,12 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.genai.types.Content;
-import com.google.genai.types.FunctionCall;
-import com.google.genai.types.FunctionDeclaration;
-import com.google.genai.types.GenerateContentConfig;
-import com.google.genai.types.Part;
+import com.google.genai.types.*;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -59,6 +56,28 @@ import org.slf4j.LoggerFactory;
 public class Claude extends BaseLlm {
 
   private static final Logger logger = LoggerFactory.getLogger(Claude.class);
+
+  // JSON Schema keywords traversed by updateTypeString, grouped by the shape of their value.
+  // Keywords whose value is a map of named sub-schemas (e.g. "properties": {"a": {...}}).
+  private static final ImmutableList<String> NESTED_SCHEMA_MAP_KEYWORDS =
+      ImmutableList.of("$defs", "defs", "dependentSchemas", "patternProperties", "properties");
+  // Keywords whose value is a single sub-schema (e.g. "items": {...}).
+  private static final ImmutableList<String> NESTED_SCHEMA_KEYWORDS =
+      ImmutableList.of(
+          "additionalProperties",
+          "additional_properties",
+          "contains",
+          "else",
+          "if",
+          "items",
+          "not",
+          "propertyNames",
+          "then",
+          "unevaluatedProperties");
+  // Keywords whose value is a list of sub-schemas (e.g. "anyOf": [{...}, {...}]).
+  private static final ImmutableList<String> NESTED_SCHEMA_LIST_KEYWORDS =
+      ImmutableList.of("allOf", "all_of", "anyOf", "any_of", "oneOf", "one_of", "prefixItems");
+
   private int maxTokens = 8192;
   private final AnthropicClient anthropicClient;
 
@@ -199,59 +218,131 @@ public class Claude extends BaseLlm {
     }
   }
 
-  private void updateTypeString(Map<String, Object> valueDict) {
-    if (valueDict == null) {
+  /**
+   * Recursively lowercases JSON Schema {@code type} keywords for Anthropic compatibility.
+   *
+   * <p>{@code type} is only lowercased when it is a plain string. JSON Schema also permits a union
+   * type array (e.g. {@code ["string", "null"]}), which MCP tools can emit; those are traversed
+   * rather than cast to {@code String}. All nested sub-schemas (properties, {@code $defs}, {@code
+   * anyOf}, {@code items}, ...) are visited so deeply-nested types are normalized too.
+   */
+  @SuppressWarnings("unchecked")
+  private void updateTypeString(Object value) {
+    if (value instanceof List) {
+      for (Object item : (List<Object>) value) {
+        updateTypeString(item);
+      }
       return;
     }
-    if (valueDict.containsKey("type")) {
-      valueDict.put("type", ((String) valueDict.get("type")).toLowerCase());
+    if (!(value instanceof Map)) {
+      return;
+    }
+    Map<String, Object> valueDict = (Map<String, Object>) value;
+
+    Object schemaType = valueDict.get("type");
+    if (schemaType instanceof String) {
+      valueDict.put("type", ((String) schemaType).toLowerCase(Locale.ROOT));
     }
 
-    if (valueDict.containsKey("items")) {
-      updateTypeString((Map<String, Object>) valueDict.get("items"));
-
-      if (valueDict.get("items") instanceof Map
-          && ((Map) valueDict.get("items")).containsKey("properties")) {
-        Map<String, Object> properties =
-            (Map<String, Object>) ((Map) valueDict.get("items")).get("properties");
-        if (properties != null) {
-          for (Object value : properties.values()) {
-            if (value instanceof Map) {
-              updateTypeString((Map<String, Object>) value);
-            }
-          }
+    for (String dictKey : NESTED_SCHEMA_MAP_KEYWORDS) {
+      Object child = valueDict.get(dictKey);
+      if (child instanceof Map) {
+        for (Object childValue : ((Map<String, Object>) child).values()) {
+          updateTypeString(childValue);
         }
       }
+    }
+
+    for (String singleKey : NESTED_SCHEMA_KEYWORDS) {
+      updateTypeString(valueDict.get(singleKey));
+    }
+
+    for (String listKey : NESTED_SCHEMA_LIST_KEYWORDS) {
+      updateTypeString(valueDict.get(listKey));
     }
   }
 
   private Tool functionDeclarationToAnthropicTool(FunctionDeclaration functionDeclaration) {
-    Map<String, Map<String, Object>> properties = new HashMap<>();
-    if (functionDeclaration.parameters().isPresent()
-        && functionDeclaration.parameters().get().properties().isPresent()) {
-      functionDeclaration
-          .parameters()
-          .get()
-          .properties()
-          .get()
-          .forEach(
-              (key, schema) -> {
-                Map<String, Object> schemaMap =
-                    JsonBaseModel.getMapper()
-                        .convertValue(schema, new TypeReference<Map<String, Object>>() {});
-                updateTypeString(schemaMap);
-                properties.put(key, schemaMap);
-              });
+    Map<String, Object> inputSchema;
+    if (functionDeclaration.parametersJsonSchema().isPresent()) {
+      // MCP tools populate parametersJsonSchema (a raw JSON Schema object) instead of the
+      // structured parameters() field. Pass the whole schema through -- as a mutable copy -- so
+      // keys such as $ref/$defs/additionalProperties are preserved rather than dropped, then
+      // lowercase any type strings for Anthropic compatibility.
+      inputSchema =
+          JsonBaseModel.getMapper()
+              .convertValue(
+                  functionDeclaration.parametersJsonSchema().get(),
+                  new TypeReference<Map<String, Object>>() {});
+    } else {
+      Map<String, Object> properties = new HashMap<>();
+      List<String> required = new ArrayList<>();
+      if (functionDeclaration.parameters().isPresent()
+          && functionDeclaration.parameters().get().properties().isPresent()) {
+        functionDeclaration
+            .parameters()
+            .get()
+            .properties()
+            .get()
+            .forEach(
+                (key, schema) ->
+                    properties.put(
+                        key,
+                        JsonBaseModel.getMapper()
+                            .convertValue(schema, new TypeReference<Map<String, Object>>() {})));
+        functionDeclaration.parameters().get().required().ifPresent(required::addAll);
+      }
+      inputSchema = new HashMap<>();
+      inputSchema.put("type", "object");
+      inputSchema.put("properties", properties);
+      if (!required.isEmpty()) {
+        inputSchema.put("required", required);
+      }
     }
+    updateTypeString(inputSchema);
 
     return Tool.builder()
         .name(functionDeclaration.name().orElseThrow())
         .description(functionDeclaration.description().orElse(""))
-        .inputSchema(
-            Tool.InputSchema.builder()
-                .properties(com.anthropic.core.JsonValue.from(properties))
-                .build())
+        .inputSchema(toAnthropicInputSchema(inputSchema))
         .build();
+  }
+
+  /**
+   * Builds an Anthropic {@link Tool.InputSchema} from a JSON Schema map, preserving every top-level
+   * keyword (e.g. {@code $defs}, {@code additionalProperties}) as an additional property so schemas
+   * that rely on {@code $ref}/{@code $defs} are not sent to Claude with dangling references.
+   */
+  private Tool.InputSchema toAnthropicInputSchema(Map<String, Object> schema) {
+    Tool.InputSchema.Builder builder = Tool.InputSchema.builder();
+    schema.forEach(
+        (key, value) -> {
+          switch (key) {
+            case "type":
+              // The Anthropic input schema type is always "object"; skip to avoid a duplicate key.
+              break;
+            case "properties":
+              builder.properties(
+                  com.anthropic.core.JsonValue.from(value == null ? new HashMap<>() : value));
+              break;
+            case "required":
+              if (value instanceof List) {
+                List<String> required = new ArrayList<>();
+                for (Object item : (List<?>) value) {
+                  if (item != null) {
+                    required.add(item.toString());
+                  }
+                }
+                builder.required(required);
+              } else {
+                builder.putAdditionalProperty(key, com.anthropic.core.JsonValue.from(value));
+              }
+              break;
+            default:
+              builder.putAdditionalProperty(key, com.anthropic.core.JsonValue.from(value));
+          }
+        });
+    return builder.build();
   }
 
   private LlmResponse convertAnthropicResponseToLlmResponse(Message message) {
@@ -267,6 +358,15 @@ public class Claude extends BaseLlm {
       }
       responseBuilder.content(
           Content.builder().role("model").parts(ImmutableList.copyOf(parts)).build());
+    }
+    if (message.usage() != null) {
+      responseBuilder.usageMetadata(
+          GenerateContentResponseUsageMetadata.builder()
+              .promptTokenCount((int) message.usage().inputTokens())
+              .candidatesTokenCount((int) message.usage().outputTokens())
+              .totalTokenCount(
+                  (int) (message.usage().inputTokens() + message.usage().outputTokens()))
+              .build());
     }
     return responseBuilder.build();
   }

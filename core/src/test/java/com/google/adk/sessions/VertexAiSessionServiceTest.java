@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 import java.time.Instant;
 import java.util.Arrays;
@@ -324,7 +325,8 @@ public class VertexAiSessionServiceTest {
 
   @Test
   public void listSessions_missingSessionsField_returnsEmpty() {
-    when(mockApiClient.request("GET", "reasoningEngines/123/sessions?filter=user_id=userX", ""))
+    when(mockApiClient.request(
+            "GET", "reasoningEngines/123/sessions?filter=user_id%3D%22userX%22", ""))
         .thenAnswer(new MockApiAnswer("{}"));
 
     assertThat(vertexAiSessionService.listSessions("123", "userX").blockingGet().sessions())
@@ -333,11 +335,88 @@ public class VertexAiSessionServiceTest {
 
   @Test
   public void listSessions_nullSessionsField_returnsEmpty() {
-    when(mockApiClient.request("GET", "reasoningEngines/123/sessions?filter=user_id=userY", ""))
+    when(mockApiClient.request(
+            "GET", "reasoningEngines/123/sessions?filter=user_id%3D%22userY%22", ""))
         .thenAnswer(new MockApiAnswer("{\"sessions\": null}"));
 
     assertThat(vertexAiSessionService.listSessions("123", "userY").blockingGet().sessions())
         .isEmpty();
+  }
+
+  @Test
+  public void listSessions_maliciousUserId_isNeutralized() {
+    // AIP-160 filter-injection payload.
+    String payload = "\" OR user_id=~\"user";
+
+    ListSessionsResponse response =
+        vertexAiSessionService.listSessions("123", payload).blockingGet();
+
+    // Treated as a single literal user id that matches nobody: no other user's
+    // sessions leak.
+    assertThat(response.sessions()).isEmpty();
+
+    ArgumentCaptor<String> pathCaptor = ArgumentCaptor.forClass(String.class);
+    verify(mockApiClient, atLeastOnce()).request(eq("GET"), pathCaptor.capture(), eq(""));
+    String listPath =
+        pathCaptor.getAllValues().stream()
+            .filter(p -> p.contains("/sessions?filter="))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("No list-sessions request was made"));
+    // The value is sent as a quoted, URL-escaped literal (= -> %3D, " -> %22);
+    // no raw quotes reach the query string.
+    assertThat(listPath).contains("filter=user_id%3D%22");
+    assertThat(listPath).doesNotContain("\"");
+  }
+
+  @Test
+  public void getSession_wrongUser_returnsEmpty() {
+    // Session "1" belongs to "user"; a different user must not be able to read it.
+    assertThat(
+            vertexAiSessionService
+                .getSession("123", "attacker", "1", Optional.empty())
+                .blockingGet())
+        .isNull();
+  }
+
+  @Test
+  public void deleteSession_wrongUser_deniedAndSessionKept() {
+    // The ownership error surfaces on subscription, so hoist the Completable out.
+    Completable deletion = vertexAiSessionService.deleteSession("123", "attacker", "1");
+    assertThrows(SecurityException.class, deletion::blockingAwait);
+    // The session is still readable by its real owner, i.e. it was not deleted.
+    assertThat(
+            vertexAiSessionService.getSession("123", "user", "1", Optional.empty()).blockingGet())
+        .isNotNull();
+  }
+
+  // Session id validation is synchronous, so each call below throws before returning a stream.
+  @Test
+  public void getSession_invalidSessionId_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> vertexAiSessionService.getSession("123", "user", "1/../2", Optional.empty()));
+  }
+
+  @Test
+  public void deleteSession_invalidSessionId_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> vertexAiSessionService.deleteSession("123", "user", "1\" OR 1"));
+  }
+
+  @Test
+  public void listEvents_invalidSessionId_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> vertexAiSessionService.listEvents("123", "user", "a?b"));
+  }
+
+  @Test
+  public void appendEvent_invalidSessionId_throws() {
+    Session session = Session.builder("bad/id").appName("123").userId("user").build();
+    Event event = Event.builder().author("user").build();
+    assertThrows(
+        IllegalArgumentException.class, () -> vertexAiSessionService.appendEvent(session, event));
   }
 
   @Test
@@ -348,9 +427,11 @@ public class VertexAiSessionServiceTest {
 
   @Test
   public void listEmptySession_success() {
+    // Session "3" belongs to "user2"; request as the owner so the events list is
+    // exercised (a non-owner is now denied).
     assertThat(
             vertexAiSessionService
-                .getSession("789", "user1", "3", Optional.empty())
+                .getSession("789", "user2", "3", Optional.empty())
                 .blockingGet()
                 .events())
         .isEmpty();

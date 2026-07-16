@@ -21,6 +21,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.mcp.McpToolException.McpToolDeclarationException;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
@@ -52,7 +53,7 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
       Tool mcpTool, T mcpSession, McpSessionManager mcpSessionManager, ObjectMapper objectMapper) {
     super(
         mcpTool == null ? "" : mcpTool.name(),
-        mcpTool == null ? "" : (mcpTool.description().isEmpty() ? "" : mcpTool.description()));
+        mcpTool == null ? "" : (Strings.nullToEmpty(mcpTool.description())));
 
     if (mcpTool == null) {
       throw new IllegalArgumentException("mcpTool cannot be null");

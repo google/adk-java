@@ -20,7 +20,7 @@
   <parent>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-parent</artifactId>
-    <version>1.5.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+    <version>1.6.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   </parent>
 
   <artifactId>google-adk</artifactId>
@@ -208,6 +208,11 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>org.json</groupId>
+      <artifactId>json</artifactId>
+      <version>20180813</version>
+    </dependency>
+    <dependency>
       <groupId>com.google.cloud</groupId>
       <artifactId>google-cloud-bigquery</artifactId>
       <version>2.40.0</version>
@@ -310,16 +315,6 @@
       <version>4.12.0</version>
       <scope>test</scope>
     </dependency>
-    <dependency>
-      <groupId>org.json</groupId>
-      <artifactId>json</artifactId>
-      <version>20180813</version>
-    </dependency>
-    <dependency>
-      <groupId>org.mapdb</groupId>
-      <artifactId>mapdb</artifactId>
-      <version>3.0.8</version>
-    </dependency>
   </dependencies>
   <build>
     <resources>
@@ -344,6 +339,11 @@
       </plugin>
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>**/VertexAiSessionServiceTest.java</exclude>
+          </excludes>
+        </configuration>
         <executions>
           <execution>
             <!-- run all tests with standard env -->

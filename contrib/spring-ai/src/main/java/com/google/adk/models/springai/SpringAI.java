@@ -29,6 +29,7 @@ import java.util.Objects;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.StreamingChatModel;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
 
@@ -170,7 +171,7 @@ public class SpringAI extends BaseLlm {
         observabilityHandler.startRequest(model(), "chat");
 
     try {
-      Prompt prompt = messageConverter.toLlmPrompt(llmRequest);
+      Prompt prompt = messageConverter.toLlmPrompt(llmRequest, resolveDefaultOptions());
       observabilityHandler.logRequest(prompt.toString(), model());
 
       ChatResponse chatResponse = chatModel.call(prompt);
@@ -200,7 +201,7 @@ public class SpringAI extends BaseLlm {
     return Flowable.create(
         emitter -> {
           try {
-            Prompt prompt = messageConverter.toLlmPrompt(llmRequest);
+            Prompt prompt = messageConverter.toLlmPrompt(llmRequest, resolveDefaultOptions());
             observabilityHandler.logRequest(prompt.toString(), model());
 
             Flux<ChatResponse> responseFlux = streamingChatModel.stream(prompt);
@@ -254,6 +255,25 @@ public class SpringAI extends BaseLlm {
   public BaseLlmConnection connect(LlmRequest llmRequest) {
     throw new UnsupportedOperationException(
         "Live connection is not supported for Spring AI models.");
+  }
+
+  /**
+   * Returns the underlying model's own default {@link ChatOptions}, or {@code null} if they cannot
+   * be determined.
+   *
+   * <p>These are used as the base for the prompt options so provider-specific models (e.g. Spring
+   * AI OpenAI) receive options of the concrete type they expect, avoiding a {@link
+   * ClassCastException} when they cast {@code Prompt.getOptions()} to their provider-specific
+   * options type.
+   */
+  private ChatOptions resolveDefaultOptions() {
+    if (chatModel != null) {
+      return chatModel.getOptions();
+    }
+    if (streamingChatModel instanceof ChatModel) {
+      return ((ChatModel) streamingChatModel).getOptions();
+    }
+    return null;
   }
 
   private static String extractModelName(Object model) {

@@ -30,6 +30,7 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
@@ -530,6 +531,63 @@ public final class FunctionsTest {
                         .response(ImmutableMap.of("tool", "slow_tool_1"))
                         .build())
                 .build());
+  }
+
+  @Test
+  public void hasPendingLongRunningCall_eventWithLongRunningCall_returnsTrue() {
+    assertThat(Functions.hasPendingLongRunningCall(longRunningCallEvent("call1"))).isTrue();
+  }
+
+  @Test
+  public void hasPendingLongRunningCall_eventWithoutLongRunningIds_returnsFalse() {
+    assertThat(Functions.hasPendingLongRunningCall(functionCallEvent("call1", null))).isFalse();
+  }
+
+  @Test
+  public void hasPendingLongRunningCall_callIdNotMarkedLongRunning_returnsFalse() {
+    assertThat(Functions.hasPendingLongRunningCall(functionCallEvent("call1", "other_id")))
+        .isFalse();
+  }
+
+  @Test
+  public void hasPendingLongRunningCall_list_callInSecondToLastEvent_returnsTrue() {
+    ImmutableList<Event> events =
+        ImmutableList.of(createEvent("first"), longRunningCallEvent("call1"), createEvent("last"));
+    assertThat(Functions.hasPendingLongRunningCall(events)).isTrue();
+  }
+
+  @Test
+  public void hasPendingLongRunningCall_list_callOlderThanLastTwoEvents_returnsFalse() {
+    ImmutableList<Event> events =
+        ImmutableList.of(longRunningCallEvent("call1"), createEvent("middle"), createEvent("last"));
+    assertThat(Functions.hasPendingLongRunningCall(events)).isFalse();
+  }
+
+  @Test
+  public void hasPendingLongRunningCall_emptyList_returnsFalse() {
+    assertThat(Functions.hasPendingLongRunningCall(ImmutableList.<Event>of())).isFalse();
+  }
+
+  private static Event longRunningCallEvent(String callId) {
+    return functionCallEvent(callId, callId);
+  }
+
+  // Event with a function call; longRunningId, when non-null, is marked long-running.
+  private static Event functionCallEvent(String callId, String longRunningId) {
+    Event.Builder builder =
+        Event.builder()
+            .id("event_" + callId)
+            .invocationId("invocation1")
+            .author("agent")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(FunctionCall.builder().id(callId).name("tool").build())
+                        .build()));
+    if (longRunningId != null) {
+      builder.longRunningToolIds(ImmutableSet.of(longRunningId));
+    }
+    return builder.build();
   }
 
   /**

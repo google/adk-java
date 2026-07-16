@@ -33,6 +33,7 @@ import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.sdk.metrics.data.HistogramPointData;
 import io.opentelemetry.sdk.metrics.data.MetricData;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
@@ -117,7 +118,7 @@ public final class InstrumentationTest {
   @Test
   public void recordAgentInvocation_success() {
     try (Instrumentation.AgentInvocation invocation =
-        Instrumentation.recordAgentInvocation(invocationContext, testAgent)) {
+        Instrumentation.recordAgentInvocation(invocationContext, testAgent, Context.current())) {
       assertThat(invocation.context()).isNotNull();
       assertThat(invocation.context().otelContext()).isNotNull();
     }
@@ -144,7 +145,7 @@ public final class InstrumentationTest {
   public void recordAgentInvocation_withError() {
     RuntimeException testException = new RuntimeException("test error");
     try (Instrumentation.AgentInvocation invocation =
-        Instrumentation.recordAgentInvocation(invocationContext, testAgent)) {
+        Instrumentation.recordAgentInvocation(invocationContext, testAgent, Context.current())) {
       invocation.setError(testException);
     }
 
@@ -165,7 +166,7 @@ public final class InstrumentationTest {
 
     try (Instrumentation.ToolExecution execution =
         Instrumentation.recordToolExecution(
-            testTool, testAgent, ImmutableMap.of("arg1", "value1"))) {
+            testTool, testAgent, ImmutableMap.of("arg1", "value1"), Context.current())) {
       assertThat(execution.context()).isNotNull();
     }
 

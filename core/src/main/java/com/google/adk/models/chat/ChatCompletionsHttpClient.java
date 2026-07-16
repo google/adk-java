@@ -19,6 +19,7 @@ package com.google.adk.models.chat;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.internal.http.HttpClientFactory;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.common.annotations.VisibleForTesting;
@@ -32,6 +33,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ExecutorService;
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.HttpUrl;
@@ -42,18 +44,17 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 import okio.BufferedSource;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * An HTTP client for interacting with OpenAI-compatible chat completions endpoints.
- *
- * <p>Supports both non-streaming responses (single {@link LlmResponse} emission) and streaming
- * Server-Sent Events (SSE) responses (multiple incremental {@link LlmResponse} emissions). See the
- * <a href="https://developers.openai.com/api/reference/resources/chat">OpenAI Chat Completions API
- * reference</a> for the wire protocol.
+ * An OkHttp-based implementation of {@link ChatCompletionsClient} that targets OpenAI-compatible
+ * chat completions endpoints. Both non-streaming responses (single {@link LlmResponse} emission)
+ * and streaming Server-Sent Events (SSE) responses (multiple incremental {@link LlmResponse}
+ * emissions) are supported.
  */
-public final class ChatCompletionsHttpClient {
+public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
   private static final Logger logger = LoggerFactory.getLogger(ChatCompletionsHttpClient.class);
   private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
 
@@ -70,11 +71,16 @@ public final class ChatCompletionsHttpClient {
   private static final Duration DEFAULT_CALL_TIMEOUT = Duration.ofMinutes(5);
 
   /**
-   * Shared OkHttpClient instance whose connection pool and thread dispatcher are reused across all
-   * {@link ChatCompletionsHttpClient} instances. Each instance forks this client via {@link
+   * Returns the OkHttpClient whose connection pool and thread dispatcher back {@link
+   * ChatCompletionsHttpClient} instances. Without an executor this is the shared client cached by
+   * name; with one it is a fresh client the caller owns. Each instance forks it via {@link
    * OkHttpClient#newBuilder()} to apply per-instance timeouts without leaking pools.
    */
-  private static final OkHttpClient SHARED_POOL_CLIENT = new OkHttpClient();
+  private static OkHttpClient prepareHttpClient(@Nullable ExecutorService executorService) {
+    return executorService == null
+        ? HttpClientFactory.getOrCreateSharedHttpClient("ChatCompletionsHttpClient")
+        : HttpClientFactory.createHttpClient(executorService);
+  }
 
   private final OkHttpClient client;
   private final HttpUrl completionsUrl;
@@ -118,7 +124,19 @@ public final class ChatCompletionsHttpClient {
    *     HTTP(S) URL.
    */
   public ChatCompletionsHttpClient(HttpOptions httpOptions) {
-    this(httpOptions, buildClient(httpOptions));
+    this(httpOptions, buildClient(httpOptions, null));
+  }
+
+  /**
+   * Constructs a {@link ChatCompletionsHttpClient} whose HTTP dispatcher runs on {@code
+   * httpExecutorService}. Pass {@link HttpClientFactory#daemonExecutor} so a standalone or CLI JVM
+   * can exit once work is done, or a container-managed executor in a managed environment.
+   *
+   * @param httpOptions HTTP configuration; see {@link #ChatCompletionsHttpClient(HttpOptions)}.
+   * @param httpExecutorService executor for the HTTP dispatcher threads.
+   */
+  public ChatCompletionsHttpClient(HttpOptions httpOptions, ExecutorService httpExecutorService) {
+    this(httpOptions, buildClient(httpOptions, httpExecutorService));
   }
 
   private ChatCompletionsHttpClient(HttpOptions httpOptions, OkHttpClient client) {
@@ -155,12 +173,13 @@ public final class ChatCompletionsHttpClient {
   }
 
   /**
-   * Builds the production OkHttpClient by forking {@link #SHARED_POOL_CLIENT} so the connection
-   * pool and dispatcher are reused across instances while applying per-instance timeouts.
+   * Builds the production OkHttpClient by forking the shared pool client so the connection pool and
+   * dispatcher are reused across instances while applying per-instance timeouts.
    */
-  private static OkHttpClient buildClient(HttpOptions httpOptions) {
+  private static OkHttpClient buildClient(
+      HttpOptions httpOptions, @Nullable ExecutorService executorService) {
     Objects.requireNonNull(httpOptions, "httpOptions cannot be null");
-    OkHttpClient.Builder builder = SHARED_POOL_CLIENT.newBuilder();
+    OkHttpClient.Builder builder = prepareHttpClient(executorService).newBuilder();
     builder.connectTimeout(Duration.ZERO);
     builder.readTimeout(Duration.ZERO);
     builder.writeTimeout(Duration.ZERO);
@@ -178,15 +197,7 @@ public final class ChatCompletionsHttpClient {
     return timeoutMs == 0L ? Duration.ZERO : Duration.ofMillis(timeoutMs);
   }
 
-  /**
-   * Generates a conversational response from the chat completions endpoint based on the provided
-   * messages. This encapsulates building the HTTP payload, sending the request to the completions
-   * endpoint, and initiating the handling of complete calls.
-   *
-   * @param llmRequest The request containing the model, configuration, and sequence of messages.
-   * @param stream Whether to request a streaming response.
-   * @return A {@link Flowable} emitting the discrete (or combined) {@link LlmResponse} objects.
-   */
+  @Override
   public Flowable<LlmResponse> complete(LlmRequest llmRequest, boolean stream) {
     return Flowable.defer(
         () -> {

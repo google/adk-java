@@ -17,7 +17,8 @@ The agent (`AdkDocsReleaseAnalyzerAgent`) is equipped with function tools
 hand-rolled REST code, no local cloning):
 
 1.  `list_releases` — find the two most recent release tags to compare.
-2.  `find_doc_issues` — list open `docs updates` issues to avoid duplicates.
+2.  `find_doc_issues` — list open `docs updates` issues for this code repo (one
+    language) to avoid duplicates.
 3.  `find_pull_requests_for_issue` — check whether an issue already has PRs.
 4.  `get_changed_files` — list files changed between the two tags (compare API).
 5.  `get_file_diff` — fetch the patch for an individual file.
@@ -83,6 +84,7 @@ Variable                  | Required | Default               | Description
 `CODE_OWNER`              | no       | `google`              | Owner of the code repository.
 `DOC_REPO`                | no       | `adk-docs`            | Docs repository name.
 `CODE_REPO`               | no       | `adk-java`            | Code repository name.
+`CODE_LANGUAGE`           | no       | `Java`                | Implementation language documented (docs stay single-language).
 `CODE_SOURCE_PATH_FILTER` | no       | `core/src/main/java/` | Only analyze changes under this path.
 `MODEL`                   | no       | `gemini-pro-latest`   | Model to use (a Pro model helps with deeper code understanding).
 

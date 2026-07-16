@@ -17,6 +17,7 @@
 package com.google.adk.plugins.agentanalytics;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -29,6 +30,7 @@ import com.google.api.core.ApiFutures;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Uninterruptibles;
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -118,6 +120,32 @@ public final class PluginStateTest {
     pluginState.ensureInvocationCompleted(invocationId).blockingAwait();
 
     // No specific log to check now, but we verify it completes without error.
+  }
+
+  @Test
+  public void ensureInvocationCompleted_foldsClosedProcessorDropStats() throws IOException {
+    String invocationId = "inv-fold";
+    BatchProcessor closedProcessor = mock(BatchProcessor.class);
+    when(closedProcessor.getDropStats())
+        .thenReturn(
+            ImmutableMap.of("queue_full", 5L, "append_error", 3L, "serialization_error", 2L));
+
+    // Completing an invocation removes and closes its processor; each drop counter must be folded
+    // into the plugin-level totals so it survives after the per-invocation processor is gone.
+    TestPluginState stateWithClosedProcessor =
+        new TestPluginState(config) {
+          @Override
+          protected BatchProcessor removeProcessor(String id) {
+            return id.equals(invocationId) ? closedProcessor : super.removeProcessor(id);
+          }
+        };
+
+    stateWithClosedProcessor.ensureInvocationCompleted(invocationId).blockingAwait();
+
+    ImmutableMap<String, Long> stats = stateWithClosedProcessor.getDropStats();
+    assertEquals(5L, (long) stats.get("queue_full"));
+    assertEquals(3L, (long) stats.get("append_error"));
+    assertEquals(2L, (long) stats.get("serialization_error"));
   }
 
   @Test

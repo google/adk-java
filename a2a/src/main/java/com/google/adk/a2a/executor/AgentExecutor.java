@@ -20,6 +20,7 @@ import static java.util.Objects.requireNonNull;
 import com.google.adk.a2a.converters.EventConverter;
 import com.google.adk.a2a.converters.PartConverter;
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
@@ -38,6 +39,7 @@ import io.a2a.server.tasks.TaskUpdater;
 import io.a2a.spec.Artifact;
 import io.a2a.spec.InvalidAgentResponseError;
 import io.a2a.spec.Message;
+import io.a2a.spec.MessageSendParams;
 import io.a2a.spec.Part;
 import io.a2a.spec.TaskArtifactUpdateEvent;
 import io.a2a.spec.TaskState;
@@ -63,6 +65,7 @@ import org.slf4j.LoggerFactory;
 public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor {
   private static final Logger logger = LoggerFactory.getLogger(AgentExecutor.class);
   private static final String USER_ID_PREFIX = "A2A_USER_";
+  private static final String A2A_METADATA_KEY = "a2a_metadata";
   private final Map<String, Disposable> activeTasks = new ConcurrentHashMap<>();
   private final Runner.Builder runnerBuilder;
   private final AgentExecutorConfig agentExecutorConfig;
@@ -217,7 +220,7 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
                                 getUserId(ctx),
                                 session.id(),
                                 content,
-                                agentExecutorConfig.runConfig());
+                                runConfigWithA2aMetadata(ctx));
                           });
                 })
             .concatMap(
@@ -271,6 +274,23 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
 
   private String getUserId(RequestContext ctx) {
     return USER_ID_PREFIX + ctx.getContextId();
+  }
+
+  /**
+   * Returns the configured run config enriched with the caller's incoming A2A request metadata
+   * under the {@code a2a_metadata} key, so downstream processing can read it via {@link
+   * RunConfig#customMetadata()}.
+   */
+  private RunConfig runConfigWithA2aMetadata(RequestContext ctx) {
+    RunConfig runConfig = agentExecutorConfig.runConfig();
+    MessageSendParams params = ctx.getParams();
+    Map<String, Object> requestMetadata = params == null ? null : params.metadata();
+    if (requestMetadata == null || requestMetadata.isEmpty()) {
+      return runConfig;
+    }
+    Map<String, Object> customMetadata = new HashMap<>(runConfig.customMetadata());
+    customMetadata.put(A2A_METADATA_KEY, requestMetadata);
+    return runConfig.toBuilder().customMetadata(customMetadata).build();
   }
 
   private Maybe<Session> prepareSession(
