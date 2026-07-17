@@ -336,9 +336,13 @@ public class Tracing {
         .usageMetadata()
         .ifPresent(
             usage -> {
-              usage
-                  .promptTokenCount()
-                  .ifPresent(tokens -> span.setAttribute(GEN_AI_USAGE_INPUT_TOKENS, (long) tokens));
+              if (usage.promptTokenCount().isPresent()
+                  || usage.toolUsePromptTokenCount().isPresent()) {
+                span.setAttribute(
+                    GEN_AI_USAGE_INPUT_TOKENS,
+                    (long) usage.promptTokenCount().orElse(0)
+                        + usage.toolUsePromptTokenCount().orElse(0));
+              }
               // According to OpenTelemetry Semantic Conventions:
               // https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/docs/registry/attributes/gen-ai.md
               // gen_ai.usage.reasoning.output_tokens (thoughts_token_count) SHOULD be included in

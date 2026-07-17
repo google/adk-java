@@ -464,6 +464,75 @@ public class ContextPropagationTest {
   }
 
   @Test
+  public void testTraceCallLlm_withToolUsePromptTokens() {
+    Span span = tracer.spanBuilder("test-tool-use-prompt").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      LlmRequest llmRequest =
+          LlmRequest.builder()
+              .model("gemini-pro")
+              .contents(ImmutableList.of(Content.fromParts(Part.fromText("hello"))))
+              .config(GenerateContentConfig.builder().topP(0.9f).maxOutputTokens(100).build())
+              .build();
+      LlmResponse llmResponse =
+          LlmResponse.builder()
+              .content(Content.builder().parts(Part.fromText("world")).build())
+              .finishReason(new FinishReason(FinishReason.Known.STOP))
+              .usageMetadata(
+                  GenerateContentResponseUsageMetadata.builder()
+                      .promptTokenCount(10)
+                      .toolUsePromptTokenCount(8)
+                      .candidatesTokenCount(20)
+                      .totalTokenCount(38)
+                      .build())
+              .build();
+      Tracing.traceCallLlm(
+          span, buildInvocationContext(), "event-1", llmRequest, llmResponse, null);
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    SpanData spanData = spans.get(0);
+    Attributes attrs = spanData.getAttributes();
+    assertEquals(18L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.input_tokens")));
+    assertEquals(20L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.output_tokens")));
+  }
+
+  @Test
+  public void testTraceCallLlm_withOnlyToolUsePromptTokens() {
+    Span span = tracer.spanBuilder("test-only-tool-use-prompt").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      LlmRequest llmRequest =
+          LlmRequest.builder()
+              .model("gemini-pro")
+              .contents(ImmutableList.of(Content.fromParts(Part.fromText("hello"))))
+              .config(GenerateContentConfig.builder().topP(0.9f).maxOutputTokens(100).build())
+              .build();
+      LlmResponse llmResponse =
+          LlmResponse.builder()
+              .content(Content.builder().parts(Part.fromText("world")).build())
+              .finishReason(new FinishReason(FinishReason.Known.STOP))
+              .usageMetadata(
+                  GenerateContentResponseUsageMetadata.builder()
+                      .toolUsePromptTokenCount(8)
+                      .candidatesTokenCount(20)
+                      .totalTokenCount(28)
+                      .build())
+              .build();
+      Tracing.traceCallLlm(
+          span, buildInvocationContext(), "event-1", llmRequest, llmResponse, null);
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    SpanData spanData = spans.get(0);
+    Attributes attrs = spanData.getAttributes();
+    assertEquals(8L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.input_tokens")));
+    assertEquals(20L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.output_tokens")));
+  }
+
+  @Test
   public void testTraceSendData() {
     Span span = tracer.spanBuilder("test").startSpan();
     try (Scope scope = span.makeCurrent()) {
