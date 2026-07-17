@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.7.0](https://github.com/google/adk-java/compare/v1.6.0...v1.7.0) (2026-07-17)
+
+
+### Features
+
+* BQAA Java preview-readiness fixes (redaction, table bootstrap, drop stats) ([c685ece](https://github.com/google/adk-java/commit/c685ece46bffd44adbf228e86a946e3a73d2a624))
+* **flows:** enable forced FC reordering based on gemini-3 model name ([fc95ce7](https://github.com/google/adk-java/commit/fc95ce77507fb83ecb02be17d4692d6305722f28))
+* Propagate A2A metadata to RunConfig for request-scoped access ([285547b](https://github.com/google/adk-java/commit/285547bc91c5f92975eb4ffe7e610a9ff4b4fd07))
+* share a single OkHttpClient with injectable daemon threads across the ADK ([2394a95](https://github.com/google/adk-java/commit/2394a9501a15470eba5a164dadf76fa28aeb649b))
+* Update 'gen_ai.usage.input_tokens' to include tool used tokens to match python ADK ([ba23601](https://github.com/google/adk-java/commit/ba23601c09927c4827f3a62d5df8e637e2df33d6))
+
+
+### Bug Fixes
+
+* **agents:** warn when AgentTool config_path escapes agent base directory ([7a4113e](https://github.com/google/adk-java/commit/7a4113e02d04aa17d62aaf3785b00306bb9eb815))
+* Allow -latest model aliases in GoogleSearchTool ([9181ea6](https://github.com/google/adk-java/commit/9181ea6a5e04b195b69e8577c225f7d456cb4164))
+* avoid StackOverflowError in PersistBarrier.awaitPersisted for large steps ([a38b824](https://github.com/google/adk-java/commit/a38b824dba1800e9c58ec8ba74e2b65fb205faf1))
+* **bigquery:** BQAA Java P1 preview-readiness fixes (tracing, lifecycle, redaction, HITL) ([2027a4b](https://github.com/google/adk-java/commit/2027a4b53dba2c660ee20ff0bf87dc1a1e936e43))
+* confine config-driven dynamic class loading to intended types ([3967cfa](https://github.com/google/adk-java/commit/3967cfa6297530e8274fad4ab0ec833525c2db69))
+* correctly reassemble streamed function-call arguments in Gemini streaming ([6bae658](https://github.com/google/adk-java/commit/6bae658b0592aa936e1b48e96ff9f995593ba086))
+* fix Claude MCP tool `inputSchema` by falling back to `parametersJsonSchema` ([760c8da](https://github.com/google/adk-java/commit/760c8da2119103bcad57cbbebdff10619c976eb0))
+* **mcp:** guard empty tool parameters in `adkToMcpToolType` ([66fa921](https://github.com/google/adk-java/commit/66fa921e5af2054b9274100039f4a2cefef7964a))
+* preserve non-client function call IDs in GeminiUtil ([971abb4](https://github.com/google/adk-java/commit/971abb4d8f33df58ac42ac83b3d3f8fc8efba871))
+* preserve provider ChatOptions type to prevent ClassCastException ([5c3d328](https://github.com/google/adk-java/commit/5c3d328cb07eb371cbf809e3263e08fdc5c4c8e5))
+* prevent dropping grounding-only responses in BaseLlmFlow ([4de0d8c](https://github.com/google/adk-java/commit/4de0d8c590a96d218985c4b6bad806021390b4f2))
+* propagate A2A request metadata into the run config in `AgentExecutor` ([410ff81](https://github.com/google/adk-java/commit/410ff810a7126c4ba1abdb5435b1a0c4a9c2fd95))
+
 ## [1.6.0](https://github.com/google/adk-java/compare/v1.5.0...v1.6.0) (2026-07-06)
 
 
