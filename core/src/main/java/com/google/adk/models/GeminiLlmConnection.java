@@ -47,6 +47,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -201,16 +202,24 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     LlmResponse.Builder builder = LlmResponse.builder();
     toolCall
         .functionCalls()
-        .ifPresent(
-            calls -> {
-              for (FunctionCall call : calls) {
-                builder.content(
-                    Content.builder()
-                        .parts(ImmutableList.of(Part.builder().functionCall(call).build()))
-                        .build());
-              }
-            });
+        .filter(Predicate.not(List::isEmpty))
+        .map(GeminiLlmConnection::toModelContent)
+        .ifPresent(builder::content);
     return builder.partial(false).turnComplete(false).build();
+  }
+
+  /**
+   * Wraps all function calls from a single tool-call message into one {@code "model"} content.
+   *
+   * <p>Every call must be kept (a message may carry multiple parallel calls) and the role is
+   * required so the content is not later discarded as empty.
+   */
+  private static Content toModelContent(List<FunctionCall> functionCalls) {
+    ImmutableList<Part> parts =
+        functionCalls.stream()
+            .map(call -> Part.builder().functionCall(call).build())
+            .collect(toImmutableList());
+    return Content.builder().role("model").parts(parts).build();
   }
 
   private static LlmResponse createUsageMetadataResponse(UsageMetadata usageMetadata) {

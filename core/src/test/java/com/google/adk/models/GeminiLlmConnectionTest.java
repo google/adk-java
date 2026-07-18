@@ -19,6 +19,7 @@ package com.google.adk.models;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
@@ -167,8 +168,85 @@ public final class GeminiLlmConnectionTest {
     assertThat(response.content().get().parts()).isPresent();
     assertThat(response.content().get().parts().get()).hasSize(1);
     assertThat(response.content().get().parts().get().get(0).functionCall()).hasValue(functionCall);
+    assertThat(response.content().get().role()).hasValue("model");
     assertThat(response.partial()).hasValue(false);
     assertThat(response.turnComplete()).hasValue(false);
+  }
+
+  @Test
+  public void convertToServerResponse_withMultipleParallelToolCalls_keepsAllFunctionCalls() {
+    FunctionCall getWeather = FunctionCall.builder().name("getWeather").build();
+    FunctionCall getTime = FunctionCall.builder().name("getTime").build();
+    LiveServerToolCall toolCall =
+        LiveServerToolCall.builder().functionCalls(ImmutableList.of(getWeather, getTime)).build();
+
+    LiveServerMessage message = LiveServerMessage.builder().toolCall(toolCall).build();
+
+    TestObserver<LlmResponse> testObserver = new TestObserver<>();
+
+    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+
+    testObserver.assertValueCount(1);
+    testObserver.assertComplete();
+    LlmResponse response = testObserver.values().get(0);
+    assertThat(response.content()).isPresent();
+    // Regression for the parallel-call drop: both calls must survive, not just the last one.
+    assertThat(response.content().get().parts()).isPresent();
+    assertThat(response.content().get().parts().get()).hasSize(2);
+    assertThat(response.content().get().parts().get().get(0).functionCall()).hasValue(getWeather);
+    assertThat(response.content().get().parts().get().get(1).functionCall()).hasValue(getTime);
+    // Role must be set so the content is not later discarded as empty.
+    assertThat(response.content().get().role()).hasValue("model");
+    assertThat(response.partial()).hasValue(false);
+    assertThat(response.turnComplete()).hasValue(false);
+  }
+
+  @Test
+  public void convertToServerResponse_withParallelCallsToSameTool_keepsAllFunctionCalls() {
+    // A single toolCall message can carry several calls to the *same* tool (e.g. the same tool for
+    // two different arguments); all of them must survive, not just the last.
+    FunctionCall paris =
+        FunctionCall.builder()
+            .name("getWeather")
+            .args(ImmutableMap.<String, Object>of("city", "Paris"))
+            .build();
+    FunctionCall london =
+        FunctionCall.builder()
+            .name("getWeather")
+            .args(ImmutableMap.<String, Object>of("city", "London"))
+            .build();
+    LiveServerToolCall toolCall =
+        LiveServerToolCall.builder().functionCalls(ImmutableList.of(paris, london)).build();
+
+    LiveServerMessage message = LiveServerMessage.builder().toolCall(toolCall).build();
+
+    TestObserver<LlmResponse> testObserver = new TestObserver<>();
+
+    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+
+    testObserver.assertValueCount(1);
+    testObserver.assertComplete();
+    LlmResponse response = testObserver.values().get(0);
+    assertThat(response.content().get().parts().get()).hasSize(2);
+    assertThat(response.content().get().parts().get().get(0).functionCall()).hasValue(paris);
+    assertThat(response.content().get().parts().get().get(1).functionCall()).hasValue(london);
+    assertThat(response.content().get().role()).hasValue("model");
+  }
+
+  @Test
+  public void convertToServerResponse_withEmptyToolCall_emitsResponseWithoutContent() {
+    LiveServerToolCall toolCall =
+        LiveServerToolCall.builder().functionCalls(ImmutableList.of()).build();
+    LiveServerMessage message = LiveServerMessage.builder().toolCall(toolCall).build();
+
+    TestObserver<LlmResponse> testObserver = new TestObserver<>();
+
+    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+
+    testObserver.assertValueCount(1);
+    testObserver.assertComplete();
+    // No calls -> no content set (matches the original behaviour for an empty list).
+    assertThat(testObserver.values().get(0).content()).isEmpty();
   }
 
   @Test
