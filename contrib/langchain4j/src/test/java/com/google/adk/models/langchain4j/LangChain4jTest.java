@@ -31,6 +31,7 @@ import dev.langchain4j.model.TokenCountEstimator;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.request.ChatRequestParameters;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.model.chat.response.ChatResponse;
@@ -1144,5 +1145,53 @@ class LangChain4jTest {
         (dev.langchain4j.data.message.TextContent) userMessage.contents().get(0);
 
     assertThat(textContent.text()).isEqualTo(textPayload);
+  }
+
+  @Test
+  @DisplayName("Should auto-detect model name from ChatModel when not explicitly set")
+  void testBuilderAutoDetectsModelNameFromChatModel() {
+    // Given
+    final ChatRequestParameters params = mock(ChatRequestParameters.class);
+    when(params.modelName()).thenReturn("auto-detected-model");
+    when(chatModel.defaultRequestParameters()).thenReturn(params);
+
+    // When
+    final LangChain4j lc4j = LangChain4j.builder().chatModel(chatModel).build();
+
+    // Then
+    assertThat(lc4j.modelName()).isEqualTo("auto-detected-model");
+    assertThat(lc4j.model()).isEqualTo("auto-detected-model");
+  }
+
+  @Test
+  @DisplayName("Should auto-detect model name from StreamingChatModel when not explicitly set")
+  void testBuilderAutoDetectsModelNameFromStreamingChatModel() {
+    // Given
+    final ChatRequestParameters params = mock(ChatRequestParameters.class);
+    when(params.modelName()).thenReturn("auto-detected-streaming-model");
+    when(streamingChatModel.defaultRequestParameters()).thenReturn(params);
+
+    // When
+    final LangChain4j lc4j = LangChain4j.builder().streamingChatModel(streamingChatModel).build();
+
+    // Then
+    assertThat(lc4j.modelName()).isEqualTo("auto-detected-streaming-model");
+    assertThat(lc4j.model()).isEqualTo("auto-detected-streaming-model");
+  }
+
+  @Test
+  @DisplayName("Should prefer explicit model name over auto-detected one")
+  void testBuilderPrefersExplicitModelName() {
+    // Given
+    final ChatRequestParameters params = mock(ChatRequestParameters.class);
+    when(params.modelName()).thenReturn("auto-detected-model");
+    when(chatModel.defaultRequestParameters()).thenReturn(params);
+
+    // When
+    final LangChain4j lc4j =
+        LangChain4j.builder().chatModel(chatModel).modelName("explicit-model").build();
+
+    // Then
+    assertThat(lc4j.modelName()).isEqualTo("explicit-model");
   }
 }
