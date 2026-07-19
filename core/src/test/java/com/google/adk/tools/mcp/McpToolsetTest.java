@@ -31,6 +31,7 @@ import com.google.adk.tools.mcp.McpToolset.McpToolsetConfig;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -368,5 +369,46 @@ public class McpToolsetTest {
     assertThat(tools).isEmpty();
     verify(mockMcpSessionManager, times(3)).createSession();
     verify(mockMcpSyncClient, times(3)).listTools();
+  }
+
+  @Test
+  public void resolveConnectionParameters_stdioServerParams_convertsToSdkServerParameters() {
+    McpToolsetConfig config = new McpToolsetConfig();
+    config.setStdioServerParams(StdioServerParameters.builder().command("my-command").build());
+
+    Object resolved = McpToolset.resolveConnectionParameters(config);
+
+    // Regression, Finding 1: this branch used to resolve to null (stdioServerParams was never
+    // consulted), deferring the failure to an NPE in DefaultMcpTransportBuilder.build(null).
+    assertThat(resolved).isInstanceOf(ServerParameters.class);
+  }
+
+  @Test
+  public void resolveConnectionParameters_sseServerParams_passesThrough() {
+    McpToolsetConfig config = new McpToolsetConfig();
+    SseServerParameters sseParams =
+        SseServerParameters.builder().url("http://localhost:8080").build();
+    config.setSseServerParams(sseParams);
+
+    assertThat(McpToolset.resolveConnectionParameters(config)).isSameInstanceAs(sseParams);
+  }
+
+  @Test
+  public void resolveConnectionParameters_stdioConnectionParams_passesThrough() {
+    McpToolsetConfig config = new McpToolsetConfig();
+    StdioConnectionParameters connectionParams =
+        StdioConnectionParameters.builder()
+            .serverParams(StdioServerParameters.builder().command("my-command").build())
+            .build();
+    config.setStdioConnectionParams(connectionParams);
+
+    assertThat(McpToolset.resolveConnectionParameters(config)).isSameInstanceAs(connectionParams);
+  }
+
+  @Test
+  public void resolveConnectionParameters_nothingSet_throwsIllegalStateException() {
+    assertThrows(
+        IllegalStateException.class,
+        () -> McpToolset.resolveConnectionParameters(new McpToolsetConfig()));
   }
 }
