@@ -146,6 +146,7 @@
               </goals>
               <configuration>
                 <classifier>exec</classifier>
+                <mainClass>com.google.adk.web.AdkWebServer</mainClass>
               </configuration>
             </execution>
           </executions>

@@ -43,7 +43,7 @@ import reactor.core.publisher.Flux;
  */
 class SpringAIIntegrationTest {
 
-  public static final String GEMINI_2_5_FLASH = "gemini-2.0-flash";
+  public static final String GEMINI_2_5_FLASH = "gemini-2.5-flash";
 
   @Test
   void testSimpleAgentWithDummyChatModel() {

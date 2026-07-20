@@ -21,6 +21,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -38,25 +39,82 @@ import org.slf4j.LoggerFactory;
  *
  * <p>The watcher polls for changes at regular intervals rather than using native filesystem events
  * for better cross-platform compatibility.
+ *
+ * <p>This class is designed to be extensible. Subclasses can override protected methods to
+ * customize behavior such as:
+ *
+ * <ul>
+ *   <li>{@link #checkForChanges()} - Add cascading reload logic
+ *   <li>{@link #checkDirectoryForChanges(Path, ChangeCallback)} - Add validation before reload
+ *   <li>{@link #scanYamlFiles(Path)} - Customize file discovery
+ * </ul>
+ *
+ * <p>Inspired by Python ADK's agent_change_handler.py and AgentLoader patterns.
  */
 @ThreadSafe
-class ConfigAgentWatcher {
+public class ConfigAgentWatcher {
   private static final Logger logger = LoggerFactory.getLogger(ConfigAgentWatcher.class);
 
-  private final Map<Path, ChangeCallback> watchedFolders = new ConcurrentHashMap<>();
-  private final Map<Path, Map<Path, Long>> watchedYamlFiles = new ConcurrentHashMap<>();
-  private final ScheduledExecutorService fileWatcher = Executors.newSingleThreadScheduledExecutor();
-  private volatile boolean started = false;
+  /** Default polling interval in milliseconds. */
+  protected static final long DEFAULT_POLL_INTERVAL_MS = 2000;
 
-  /** Callback interface for handling file change events. */
+  /** Map of watched folder paths to their callbacks. */
+  protected final Map<Path, ChangeCallback> watchedFolders = new ConcurrentHashMap<>();
+
+  /** Map of folder paths to their tracked YAML files and last modified times. */
+  protected final Map<Path, Map<Path, Long>> watchedYamlFiles = new ConcurrentHashMap<>();
+
+  /** Executor service for polling file changes. */
+  protected final ScheduledExecutorService fileWatcher;
+
+  /** Polling interval in milliseconds. */
+  protected final long pollIntervalMs;
+
+  /** Whether the watcher is currently running. */
+  protected volatile boolean started = false;
+
+  /**
+   * Callback interface for handling file change events.
+   *
+   * <p>Implementations should be thread-safe as callbacks may be invoked from multiple threads.
+   */
   @FunctionalInterface
-  interface ChangeCallback {
+  public interface ChangeCallback {
     /**
      * Called when a watched YAML file changes, is created, or is deleted.
      *
      * @param agentDirPath The path to the agent configuration directory
      */
     void onConfigChanged(Path agentDirPath);
+  }
+
+  /** Creates a new ConfigAgentWatcher with default polling interval. */
+  public ConfigAgentWatcher() {
+    this(DEFAULT_POLL_INTERVAL_MS);
+  }
+
+  /**
+   * Creates a new ConfigAgentWatcher with custom polling interval.
+   *
+   * @param pollIntervalMs The polling interval in milliseconds
+   */
+  public ConfigAgentWatcher(long pollIntervalMs) {
+    this.pollIntervalMs = pollIntervalMs;
+    this.fileWatcher = createExecutorService();
+  }
+
+  /**
+   * Creates the executor service for polling. Subclasses can override to provide custom executor.
+   *
+   * @return The ScheduledExecutorService to use for polling
+   */
+  protected ScheduledExecutorService createExecutorService() {
+    return Executors.newSingleThreadScheduledExecutor(
+        r -> {
+          Thread t = new Thread(r, "ConfigAgentWatcher-Poll");
+          t.setDaemon(true);
+          return t;
+        });
   }
 
   /**
@@ -69,11 +127,12 @@ class ConfigAgentWatcher {
       throw new IllegalStateException("ConfigAgentWatcher is already started");
     }
 
-    logger.info("Starting ConfigAgentWatcher");
-    fileWatcher.scheduleAtFixedRate(this::checkForChanges, 2, 2, TimeUnit.SECONDS);
+    logger.info("Starting ConfigAgentWatcher with {}ms poll interval", pollIntervalMs);
+    fileWatcher.scheduleAtFixedRate(
+        this::checkForChanges, pollIntervalMs, pollIntervalMs, TimeUnit.MILLISECONDS);
     started = true;
 
-    Runtime.getRuntime().addShutdownHook(new Thread(this::stop));
+    Runtime.getRuntime().addShutdownHook(new Thread(this::stop, "ConfigAgentWatcher-Shutdown"));
     logger.info(
         "ConfigAgentWatcher started successfully. Watching {} folders.", watchedFolders.size());
   }
@@ -105,7 +164,7 @@ class ConfigAgentWatcher {
    * @param callback The callback to invoke when changes are detected
    * @throws IllegalArgumentException if the folder doesn't exist
    */
-  void watch(Path agentDirPath, ChangeCallback callback) {
+  public void watch(Path agentDirPath, ChangeCallback callback) {
     if (!Files.isDirectory(agentDirPath)) {
       throw new IllegalArgumentException("Config folder does not exist: " + agentDirPath);
     }
@@ -120,20 +179,48 @@ class ConfigAgentWatcher {
   }
 
   /**
+   * Removes a folder from being watched.
+   *
+   * <p>This is useful for cleanup when agents are removed or the loader is stopped. Inspired by
+   * Python ADK's remove_agent_from_cache pattern.
+   *
+   * @param agentDirPath The path to stop watching
+   * @return true if the folder was being watched, false otherwise
+   */
+  public boolean unwatch(Path agentDirPath) {
+    ChangeCallback removed = watchedFolders.remove(agentDirPath);
+    watchedYamlFiles.remove(agentDirPath);
+    if (removed != null) {
+      logger.debug("Stopped watching folder: {}", agentDirPath);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Gets all currently watched folder paths.
+   *
+   * @return An unmodifiable set of watched folder paths
+   */
+  public Set<Path> getWatchedFolders() {
+    return Set.copyOf(watchedFolders.keySet());
+  }
+
+  /**
    * Scans a directory recursively for all YAML files and returns their last modified times.
+   *
+   * <p>Subclasses can override this to customize file discovery (e.g., different extensions,
+   * filtering patterns, etc.).
    *
    * @param agentDirPath The directory to scan recursively
    * @return A map of YAML file paths to their last modified times
    */
-  private Map<Path, Long> scanYamlFiles(Path agentDirPath) {
+  protected Map<Path, Long> scanYamlFiles(Path agentDirPath) {
     Map<Path, Long> yamlFiles = new HashMap<>();
     try (Stream<Path> files = Files.walk(agentDirPath)) {
       files
           .filter(Files::isRegularFile)
-          .filter(
-              path ->
-                  path.toString().toLowerCase().endsWith(".yaml")
-                      || path.toString().toLowerCase().endsWith(".yml"))
+          .filter(this::isYamlFile)
           .forEach(
               yamlFile -> {
                 long lastModified = getLastModified(yamlFile);
@@ -147,6 +234,19 @@ class ConfigAgentWatcher {
   }
 
   /**
+   * Checks if a path is a YAML file.
+   *
+   * <p>Subclasses can override to customize file matching.
+   *
+   * @param path The path to check
+   * @return true if this is a YAML file
+   */
+  protected boolean isYamlFile(Path path) {
+    String fileName = path.toString().toLowerCase();
+    return fileName.endsWith(".yaml") || fileName.endsWith(".yml");
+  }
+
+  /**
    * Returns whether the watcher is currently running.
    *
    * @return true if the watcher is started, false otherwise
@@ -156,7 +256,7 @@ class ConfigAgentWatcher {
   }
 
   /** Checks all watched files for changes and triggers callbacks if needed. */
-  private void checkForChanges() {
+  protected void checkForChanges() {
     for (Map.Entry<Path, ChangeCallback> entry : new HashMap<>(watchedFolders).entrySet()) {
       Path agentDirPath = entry.getKey();
       ChangeCallback callback = entry.getValue();
@@ -175,7 +275,7 @@ class ConfigAgentWatcher {
    * @param agentDirPath The agent directory to check
    * @param callback The callback for this directory
    */
-  private void checkDirectoryForChanges(Path agentDirPath, ChangeCallback callback) {
+  protected void checkDirectoryForChanges(Path agentDirPath, ChangeCallback callback) {
     if (!Files.isDirectory(agentDirPath)) {
       // Directory was deleted
       handleDirectoryDeleted(agentDirPath);
@@ -219,16 +319,31 @@ class ConfigAgentWatcher {
     // Update tracked files and trigger callback if there were changes
     if (hasChanges) {
       watchedYamlFiles.put(agentDirPath, freshYamlFiles);
-      callback.onConfigChanged(agentDirPath);
+      onChangesDetected(agentDirPath, callback);
     }
+  }
+
+  /**
+   * Called when changes are detected in a directory.
+   *
+   * <p>Subclasses can override this to add pre/post processing around the callback, such as
+   * logging, metrics, or batching multiple callbacks.
+   *
+   * @param agentDirPath The directory where changes were detected
+   * @param callback The callback to invoke
+   */
+  protected void onChangesDetected(Path agentDirPath, ChangeCallback callback) {
+    callback.onConfigChanged(agentDirPath);
   }
 
   /**
    * Handles the deletion of a watched agent directory.
    *
+   * <p>Subclasses can override to customize cleanup behavior.
+   *
    * @param agentDirPath The path of the deleted agent directory
    */
-  private void handleDirectoryDeleted(Path agentDirPath) {
+  protected void handleDirectoryDeleted(Path agentDirPath) {
     logger.info("Agent directory deleted: {}", agentDirPath);
     ChangeCallback callback = watchedFolders.remove(agentDirPath);
     watchedYamlFiles.remove(agentDirPath);
@@ -244,7 +359,7 @@ class ConfigAgentWatcher {
    * @param path The file path
    * @return The last modified time in milliseconds, or 0 if there's an error
    */
-  private long getLastModified(Path path) {
+  protected long getLastModified(Path path) {
     try {
       return Files.getLastModifiedTime(path).toMillis();
     } catch (IOException e) {

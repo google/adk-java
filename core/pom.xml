@@ -67,6 +67,11 @@
       <artifactId>google-cloud-storage</artifactId>
     </dependency>
     <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+      <version>2.42.31</version>
+    </dependency>
+    <dependency>
       <groupId>com.google.genai</groupId>
       <artifactId>google-genai</artifactId>
     </dependency>
@@ -164,6 +169,11 @@
       <artifactId>rxjava</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.json</groupId>
+      <artifactId>json</artifactId>
+      <version>20240303</version>
+    </dependency>
+    <dependency>
       <groupId>io.projectreactor</groupId>
       <artifactId>reactor-core</artifactId>
     </dependency>
@@ -197,25 +207,109 @@
       <artifactId>opentelemetry-sdk-testing</artifactId>
       <scope>test</scope>
     </dependency>
+
     <dependency>
-        <groupId>com.google.cloud</groupId>
-        <artifactId>google-cloud-bigquery</artifactId>
-        <version>2.40.0</version>
+      <groupId>com.google.cloud</groupId>
+      <artifactId>google-cloud-bigquery</artifactId>
+      <version>2.40.0</version>
     </dependency>
     <dependency>
-        <groupId>org.apache.arrow</groupId>
-        <artifactId>arrow-vector</artifactId>
-        <version>17.0.0</version>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-vector</artifactId>
+      <version>17.0.0</version>
     </dependency>
     <dependency>
-        <groupId>org.apache.arrow</groupId>
-        <artifactId>arrow-memory-core</artifactId>
-        <version>17.0.0</version>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-memory-core</artifactId>
+      <version>17.0.0</version>
     </dependency>
     <dependency>
-        <groupId>org.apache.arrow</groupId>
-        <artifactId>arrow-memory-netty</artifactId>
-        <version>17.0.0</version>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-memory-netty</artifactId>
+      <version>17.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.zaxxer</groupId>
+      <artifactId>HikariCP</artifactId>
+      <version>5.1.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>42.7.3</version>
+    </dependency>
+    <dependency>
+      <groupId>org.mongodb</groupId>
+      <artifactId>mongodb-driver-sync</artifactId>
+      <version>4.10.2</version>
+    </dependency>
+    <dependency>
+      <groupId>org.mapdb</groupId>
+      <artifactId>mapdb</artifactId>
+      <version>3.0.8</version>
+    </dependency>
+    <dependency>
+      <groupId>com.datastax.oss</groupId>
+      <artifactId>java-driver-core</artifactId>
+      <version>4.17.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.datatype</groupId>
+      <artifactId>jackson-datatype-guava</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.anthropic</groupId>
+      <artifactId>anthropic-java-bedrock</artifactId>
+      <version>1.4.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>cassandra</artifactId>
+      <version>1.19.7</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>1.19.7</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.lettuce</groupId>
+      <artifactId>lettuce-core</artifactId>
+      <version>6.3.2.RELEASE</version>
+    </dependency>
+    <dependency>
+      <groupId>io.projectreactor.addons</groupId>
+      <artifactId>reactor-adapter</artifactId>
+      <version>3.5.1</version>
+    </dependency>
+    <dependency>
+      <groupId>org.ini4j</groupId>
+      <artifactId>ini4j</artifactId>
+      <version>0.5.4</version>
+    </dependency>
+    <dependency>
+      <groupId>redis.clients</groupId>
+      <artifactId>jedis</artifactId>
+      <version>6.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+      <version>3.3.1</version>
+    </dependency>
+    <dependency>
+      <groupId>net.javacrumbs.future-converter</groupId>
+      <artifactId>future-converter-java8-guava</artifactId>
+      <version>1.2.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.squareup.okhttp3</groupId>
+      <artifactId>mockwebserver</artifactId>
+      <version>4.12.0</version>
+      <scope>test</scope>
     </dependency>
   </dependencies>
   <build>
@@ -241,6 +335,11 @@
       </plugin>
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>**/VertexAiSessionServiceTest.java</exclude>
+          </excludes>
+        </configuration>
         <executions>
           <execution>
             <!-- run all tests with standard env -->

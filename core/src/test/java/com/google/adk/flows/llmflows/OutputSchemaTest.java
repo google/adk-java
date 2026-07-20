@@ -61,7 +61,7 @@ public final class OutputSchemaTest {
   public void setUp() {
     outputSchemaProcessor = new OutputSchema();
     testLlm = createTestLlm(LlmResponse.builder().build());
-    initialRequest = LlmRequest.builder().model("gemini-2.0-pro").build();
+    initialRequest = LlmRequest.builder().model("gemini-2.5-pro").build();
   }
 
   public static class TestTool extends BaseTool {

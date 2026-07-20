@@ -1,0 +1,17 @@
+{
+  "appName": "your-app-name",
+  "userId": "test-user",
+  "sessionId": "test-session-123",
+  "newMessage": {
+    "role": "user",
+    "parts": [
+      {
+        "text": "Hello, this is a test message for SSE endpoint"
+      }
+    ]
+  },
+  "streaming": true,
+  "stateDelta": {
+    "testKey": "testValue"
+  }
+}

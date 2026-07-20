@@ -110,7 +110,7 @@ public final class ModelNameUtils {
    * Extract the actual model name from either simple or path-based format.
    *
    * @param modelString Either a simple model name like "gemini-2.5-pro" or a path-based model name
-   *     like "projects/.../models/gemini-2.0-flash-001"
+   *     like "projects/.../models/gemini-2.5-flash-001"
    * @return The extracted model name (e.g., "gemini-2.5-pro")
    */
   private static String extractModelName(String modelString) {

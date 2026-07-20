@@ -558,7 +558,7 @@ The library works with any Spring AI provider:
 
 #### Gemini
 - **System Messages:** Only one system message allowed - library automatically combines multiple system messages
-- **Model Names:** Use `gemini-2.0-flash`, `gemini-1.5-pro`
+- **Model Names:** Use `gemini-2.5-flash`, `gemini-1.5-pro`
 - **API Key:** Requires `GOOGLE_API_KEY` environment variable
 
 #### Anthropic

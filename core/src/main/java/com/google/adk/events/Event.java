@@ -68,7 +68,6 @@ public class Event extends JsonBaseModel {
   private @Nullable String modelVersion;
   private @Nullable Transcription inputTranscription;
   private @Nullable Transcription outputTranscription;
-
   private long timestamp;
 
   private Event() {}
@@ -597,10 +596,10 @@ public class Event extends JsonBaseModel {
       event.setGroundingMetadata(groundingMetadata);
       event.setCustomMetadata(customMetadata);
       event.setModelVersion(modelVersion);
-      event.setActions(actions().orElseGet(() -> EventActions.builder().build()));
-      event.setTimestamp(timestamp().orElseGet(() -> Instant.now().toEpochMilli()));
       event.setInputTranscription(inputTranscription);
       event.setOutputTranscription(outputTranscription);
+      event.setActions(actions().orElseGet(() -> EventActions.builder().build()));
+      event.setTimestamp(timestamp().orElseGet(() -> Instant.now().toEpochMilli()));
       return event;
     }
   }

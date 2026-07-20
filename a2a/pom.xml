@@ -19,8 +19,11 @@
     <a2a.sdk.version>0.3.2.Final</a2a.sdk.version>
     <google.adk.version>${project.version}</google.adk.version>
     <guava.version>33.0.0-jre</guava.version>
+    <rxjava.version>3.1.5</rxjava.version>
     <jackson.version>2.19.0</jackson.version>
     <jspecify.version>1.0.0</jspecify.version>
+    <errorprone.version>2.38.0</errorprone.version>
+    <grpc.version>1.76.2</grpc.version>
     <slf4j.version>2.0.17</slf4j.version>
     <truth.version>1.4.4</truth.version>
     <junit4.version>4.13.2</junit4.version>
@@ -33,6 +36,27 @@
       <version>${google.adk.version}</version>
     </dependency>
     <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-netty-shaded</artifactId>
+      <version>${grpc.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-protobuf</artifactId>
+      <version>${grpc.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-stub</artifactId>
+      <version>${grpc.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.code.gson</groupId>
+      <artifactId>gson</artifactId>
+      <version>2.10.1</version>
+    </dependency>
+    <dependency>
       <groupId>com.google.guava</groupId>
       <artifactId>guava</artifactId>
       <version>${guava.version}</version>
@@ -40,6 +64,7 @@
     <dependency>
       <groupId>com.google.errorprone</groupId>
       <artifactId>error_prone_annotations</artifactId>
+      <version>${errorprone.version}</version>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
@@ -64,6 +89,7 @@
     <dependency>
       <groupId>io.reactivex.rxjava3</groupId>
       <artifactId>rxjava</artifactId>
+      <version>${rxjava.version}</version>
     </dependency>
     <dependency>
       <groupId>org.jspecify</groupId>
@@ -112,8 +138,30 @@
       <artifactId>mockito-core</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <build>
+    <extensions>
+      <extension>
+        <groupId>kr.motd.maven</groupId>
+        <artifactId>os-maven-plugin</artifactId>
+        <version>1.7.0</version>
+      </extension>
+    </extensions>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -122,6 +170,65 @@
         <configuration>
           <release>${java.version}</release>
         </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>3.2.5</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.xolstice.maven.plugins</groupId>
+        <artifactId>protobuf-maven-plugin</artifactId>
+        <version>0.6.1</version>
+        <configuration>
+          <protocArtifact>
+            com.google.protobuf:protoc:3.21.7:exe:${os.detected.classifier}
+          </protocArtifact>
+          <pluginId>grpc-java</pluginId>
+          <pluginArtifact>
+            io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}
+          </pluginArtifact>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>compile</goal>
+              <goal>compile-custom</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.2.0</version>
+        <executions>
+          <execution>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>add-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>target/generated-sources/protobuf/java</source>
+                <source>target/generated-sources/protobuf/grpc-java</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

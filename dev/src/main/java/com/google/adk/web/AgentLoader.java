@@ -52,6 +52,11 @@ import javax.annotation.concurrent.ThreadSafe;
  * <pre>{@code
  * mvn google-adk:web -Dagents=com.acme.MyAgentLoader
  * }</pre>
+ *
+ * <p>For config-based agents, see {@code ConfigAgentLoader} in the maven plugin which provides
+ * YAML-based agent loading with hot-reloading support.
+ *
+ * <p>Inspired by Python ADK's BaseAgentLoader abstract base class pattern.
  */
 @ThreadSafe
 public interface AgentLoader {
@@ -74,4 +79,41 @@ public interface AgentLoader {
    * @throws IllegalStateException if the agent exists but fails to load
    */
   BaseAgent loadAgent(String name);
+
+  /**
+   * Checks if an agent with the given name exists.
+   *
+   * <p>Default implementation checks if the name is in {@link #listAgents()}. Implementations may
+   * override for more efficient lookup.
+   *
+   * @param name the name of the agent to check
+   * @return true if the agent exists, false otherwise
+   */
+  default boolean hasAgent(String name) {
+    return listAgents().contains(name);
+  }
+
+  /**
+   * Removes an agent from the cache, forcing it to be reloaded on next access.
+   *
+   * <p>This is inspired by Python ADK's remove_agent_from_cache pattern. Default implementation
+   * does nothing as not all loaders support caching.
+   *
+   * @param name the name of the agent to remove from cache
+   * @return true if the agent was in cache and removed, false otherwise
+   */
+  default boolean removeAgentFromCache(String name) {
+    // Default implementation does nothing - override in caching implementations
+    return false;
+  }
+
+  /**
+   * Stops the agent loader and releases any resources.
+   *
+   * <p>Default implementation does nothing. Override in implementations that need cleanup (e.g.,
+   * stopping file watchers).
+   */
+  default void stop() {
+    // Default implementation does nothing
+  }
 }

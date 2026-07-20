@@ -64,6 +64,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -600,6 +601,87 @@ public class LlmAgent extends BaseAgent {
       validate();
       return new LlmAgent(this);
     }
+
+    /**
+     * Builds the agent and starts it as an A2A server on the default port (8080). This method
+     * blocks until the server is terminated.
+     *
+     * <p>This method requires the {@code google-adk-a2a} module to be on the classpath. If the A2A
+     * module is not available, this will throw a {@link NoClassDefFoundError}.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * LlmAgent.builder()
+     *     .name("MyAgent")
+     *     .model("gemini-2.5-flash-exp")
+     *     .instruction("You are helpful")
+     *     .toA2aServerAndStart();
+     * }</pre>
+     *
+     * @throws NoClassDefFoundError if the A2A module is not on the classpath
+     * @throws IOException if the server fails to start
+     * @throws InterruptedException if interrupted while starting
+     */
+    public void toA2aServerAndStart() throws IOException, InterruptedException {
+      toA2aServerAndStart(8080);
+    }
+
+    /**
+     * Builds the agent and starts it as an A2A server on the specified port. This method blocks
+     * until the server is terminated.
+     *
+     * <p>This method requires the {@code google-adk-a2a} module to be on the classpath. If the A2A
+     * module is not available, this will throw a {@link NoClassDefFoundError}.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * LlmAgent.builder()
+     *     .name("MyAgent")
+     *     .model("gemini-2.5-flash-exp")
+     *     .instruction("You are helpful")
+     *     .toA2aServerAndStart(5066);
+     * }</pre>
+     *
+     * @param port The port to start the server on
+     * @throws NoClassDefFoundError if the A2A module is not on the classpath
+     * @throws IOException if the server fails to start
+     * @throws InterruptedException if interrupted while starting
+     */
+    public void toA2aServerAndStart(int port) throws IOException, InterruptedException {
+      LlmAgent agent = build();
+      agent.toA2aServerAndStart(port);
+    }
+
+    /**
+     * Returns an A2aServerBuilder for advanced configuration. The returned object is an instance of
+     * {@code com.google.adk.a2a.grpc.A2aServerBuilder}.
+     *
+     * <p>This method requires the {@code google-adk-a2a} module to be on the classpath. If the A2A
+     * module is not available, this will throw a {@link NoClassDefFoundError}.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * LlmAgent.builder()
+     *     .name("MyAgent")
+     *     .model("gemini-2.5-flash-exp")
+     *     .instruction("You are helpful")
+     *     .toA2a()
+     *     .port(5066)
+     *     .withRegistry(registryUrl)
+     *     .build()
+     *     .start();
+     * }</pre>
+     *
+     * @return An A2aServerBuilder instance (cast to the concrete type if needed)
+     * @throws NoClassDefFoundError if the A2A module is not on the classpath
+     */
+    public Object toA2a() {
+      LlmAgent agent = build();
+      return agent.toA2a();
+    }
   }
 
   protected BaseLlmFlow determineLlmFlow() {
@@ -896,6 +978,78 @@ public class LlmAgent extends BaseAgent {
       }
     }
     return resolvedModel;
+  }
+
+  private static final String A2A_SERVER_BUILDER_CLASS = "com.google.adk.a2a.grpc.A2aServerBuilder";
+
+  /**
+   * Starts this agent as an A2A server on the default port (8080). This method blocks until the
+   * server is terminated.
+   *
+   * <p>This method requires the {@code google-adk-a2a} module to be on the classpath.
+   *
+   * @throws NoClassDefFoundError if the A2A module is not on the classpath
+   * @throws IOException if the server fails to start
+   * @throws InterruptedException if interrupted while starting
+   */
+  public void toA2aServerAndStart() throws IOException, InterruptedException {
+    toA2aServerAndStart(8080);
+  }
+
+  /**
+   * Starts this agent as an A2A server on the specified port. This method blocks until the server
+   * is terminated.
+   *
+   * <p>This method requires the {@code google-adk-a2a} module to be on the classpath.
+   *
+   * @param port The port to start the server on
+   * @throws NoClassDefFoundError if the A2A module is not on the classpath
+   * @throws IOException if the server fails to start
+   * @throws InterruptedException if interrupted while starting
+   */
+  public void toA2aServerAndStart(int port) throws IOException, InterruptedException {
+    try {
+      Class<?> builderClass = Class.forName(A2A_SERVER_BUILDER_CLASS);
+      Object builder = builderClass.getConstructor(LlmAgent.class).newInstance(this);
+      Object portedBuilder = builderClass.getMethod("port", int.class).invoke(builder, port);
+      Object server = portedBuilder.getClass().getMethod("build").invoke(portedBuilder);
+      server.getClass().getMethod("start").invoke(server);
+    } catch (ClassNotFoundException e) {
+      throw new NoClassDefFoundError(
+          "A2aServerBuilder not found. Add google-adk-a2a module to your classpath.");
+    } catch (java.lang.reflect.InvocationTargetException e) {
+      Throwable cause = e.getCause();
+      if (cause instanceof IOException) {
+        throw (IOException) cause;
+      }
+      if (cause instanceof InterruptedException) {
+        throw (InterruptedException) cause;
+      }
+      throw new RuntimeException(cause);
+    } catch (ReflectiveOperationException e) {
+      throw new RuntimeException("Failed to invoke A2A server builder", e);
+    }
+  }
+
+  /**
+   * Returns an A2aServerBuilder for advanced configuration of this agent. The returned object is an
+   * instance of {@code com.google.adk.a2a.grpc.A2aServerBuilder}.
+   *
+   * <p>This method requires the {@code google-adk-a2a} module to be on the classpath.
+   *
+   * @return An A2aServerBuilder instance (cast to the concrete type if needed)
+   * @throws NoClassDefFoundError if the A2A module is not on the classpath
+   */
+  public Object toA2a() {
+    try {
+      Class<?> builderClass = Class.forName(A2A_SERVER_BUILDER_CLASS);
+      return builderClass.getConstructor(LlmAgent.class).newInstance(this);
+    } catch (ClassNotFoundException e) {
+      throw new NoClassDefFoundError(
+          "A2aServerBuilder not found. Add google-adk-a2a module to your classpath.");
+    } catch (ReflectiveOperationException e) {
+      throw new RuntimeException("Failed to create A2aServerBuilder", e);
+    }
   }
 
   /**

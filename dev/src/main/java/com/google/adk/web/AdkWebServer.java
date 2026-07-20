@@ -1,3 +1,5 @@
+package com.google.adk.web;
+
 /*
  * Copyright 2025 Google LLC
  *
@@ -14,17 +16,20 @@
  * limitations under the License.
  */
 
-package com.google.adk.web;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.artifacts.InMemoryArtifactService;
+import com.google.adk.artifacts.MapDbArtifactService;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.memory.InMemoryMemoryService;
+import com.google.adk.memory.MapDBMemoryService;
+import com.google.adk.memory.MapDBVectorStore;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.MapDbSessionService;
+import java.io.IOException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -51,10 +56,25 @@ public class AdkWebServer implements WebMvcConfigurer {
   @Value("${adk.web.ui.dir:#{null}}")
   private String webUiDir;
 
+  @Value("${adk.mapdb.enabled:false}")
+  private boolean mapDbEnabled;
+
+  @Value("${adk.mapdb.base-path:adk_data}")
+  private String mapDbBasePath;
+
   @Bean
   public BaseSessionService sessionService() {
-    // TODO: Add logic to select service based on config (e.g., DB URL)
-    log.info("Using InMemorySessionService");
+    if (mapDbEnabled) {
+      try {
+        String file = mapDbBasePath + "/sessions.db";
+        log.info("Using MapDbSessionService at {} (adk.mapdb.enabled=true)", file);
+        return new MapDbSessionService(file);
+      } catch (IOException e) {
+        log.error(
+            "Failed to initialize MapDbSessionService, falling back to InMemorySessionService", e);
+      }
+    }
+    log.info("Using InMemorySessionService (MapDB disabled)");
     return new InMemorySessionService();
   }
 
@@ -66,7 +86,12 @@ public class AdkWebServer implements WebMvcConfigurer {
    */
   @Bean
   public BaseArtifactService artifactService() {
-    log.info("Using InMemoryArtifactService");
+    if (mapDbEnabled) {
+      String file = mapDbBasePath + "/artifacts.db";
+      log.info("Using MapDbArtifactService at {} (adk.mapdb.enabled=true)", file);
+      return new MapDbArtifactService(file);
+    }
+    log.info("Using InMemoryArtifactService (MapDB disabled)");
     return new InMemoryArtifactService();
   }
 
@@ -78,7 +103,14 @@ public class AdkWebServer implements WebMvcConfigurer {
    */
   @Bean
   public BaseMemoryService memoryService() {
-    log.info("Using InMemoryMemoryService");
+    if (mapDbEnabled) {
+      log.info("Using MapDBMemoryService (adk.mapdb.enabled=true)");
+      String file = mapDbBasePath + "/memory.db";
+      return new MapDBMemoryService(
+          new MapDBVectorStore(file, "adk-memory"),
+          new com.google.adk.memory.ZeroEmbeddingService(768));
+    }
+    log.info("Using InMemoryMemoryService (MapDB disabled)");
     return new InMemoryMemoryService();
   }
 

@@ -53,6 +53,8 @@ public final class Basic implements RequestProcessor {
         .ifPresent(liveConnectConfigBuilder::outputAudioTranscription);
     Optional.ofNullable(context.runConfig().inputAudioTranscription())
         .ifPresent(liveConnectConfigBuilder::inputAudioTranscription);
+    Optional.ofNullable(context.runConfig().realtimeInputConfig())
+        .ifPresent(liveConnectConfigBuilder::realtimeInputConfig);
 
     LlmRequest.Builder builder =
         request.toBuilder()

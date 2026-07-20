@@ -60,7 +60,7 @@ public final class ExampleToolTest {
     ExampleTool tool = ExampleTool.builder().addExample(makeExample("qin", "qout")).build();
 
     InvocationContext ctx = buildInvocationContext();
-    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
+    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.5-flash");
 
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
     LlmRequest updated = builder.build();
@@ -77,7 +77,7 @@ public final class ExampleToolTest {
     ExampleTool tool = ExampleTool.builder().exampleProvider(ProviderHolder.EXAMPLES).build();
 
     InvocationContext ctx = buildInvocationContext();
-    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
+    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.5-flash");
 
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
     LlmRequest updated = builder.build();
@@ -102,7 +102,7 @@ public final class ExampleToolTest {
             .userContent(Content.fromParts(Part.fromText("")))
             .runConfig(ctxWithContent.runConfig())
             .build();
-    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
+    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.5-flash");
 
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
     LlmRequest updated = builder.build();
@@ -123,7 +123,7 @@ public final class ExampleToolTest {
 
     ExampleTool tool = ExampleTool.fromConfig(args);
     InvocationContext ctx = buildInvocationContext();
-    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
+    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.5-flash");
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
 
     String si = String.join("\n", builder.build().getSystemInstructions());
@@ -147,7 +147,7 @@ public final class ExampleToolTest {
 
     ExampleTool tool = ExampleTool.fromConfig(args);
     InvocationContext ctx = buildInvocationContext();
-    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
+    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.5-flash");
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
 
     String si = String.join("\n", builder.build().getSystemInstructions());
@@ -344,7 +344,7 @@ public final class ExampleToolTest {
   public void processLlmRequest_doesNotAddFunctionDeclarations() {
     ExampleTool tool = ExampleTool.builder().addExample(makeExample("qin", "qout")).build();
     InvocationContext ctx = buildInvocationContext();
-    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.0-flash");
+    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-2.5-flash");
 
     tool.processLlmRequest(builder, ToolContext.builder(ctx).build()).blockingAwait();
     LlmRequest updated = builder.build();

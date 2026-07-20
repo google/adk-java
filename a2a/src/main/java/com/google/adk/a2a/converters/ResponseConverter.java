@@ -45,7 +45,9 @@ import io.a2a.spec.Task;
 import io.a2a.spec.TaskArtifactUpdateEvent;
 import io.a2a.spec.TaskState;
 import io.a2a.spec.TaskStatusUpdateEvent;
+import io.a2a.spec.TextPart;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -374,5 +376,71 @@ public final class ResponseConverter {
         .author(invocationContext.agent().name())
         .branch(invocationContext.branch().orElse(null))
         .timestamp(Instant.now().toEpochMilli());
+  }
+
+  private static Message emptyAgentMessage(String contextId) {
+    Message.Builder builder =
+        new Message.Builder()
+            .messageId(UUID.randomUUID().toString())
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("")));
+    if (contextId != null) {
+      builder.contextId(contextId);
+    }
+    return builder.build();
+  }
+
+  /** Converts a list of ADK events into a single aggregated A2A message. */
+  public static Message eventsToMessage(List<Event> events, String contextId, String taskId) {
+    if (events == null || events.isEmpty()) {
+      return emptyAgentMessage(contextId);
+    }
+
+    if (events.size() == 1) {
+      return eventToMessage(events.get(0), contextId);
+    }
+
+    List<io.a2a.spec.Part<?>> parts = new ArrayList<>();
+    for (Event event : events) {
+      parts.addAll(eventParts(event));
+    }
+
+    Message.Builder builder =
+        new Message.Builder()
+            .messageId(taskId != null ? taskId : UUID.randomUUID().toString())
+            .role(Message.Role.AGENT)
+            .parts(parts);
+    if (contextId != null) {
+      builder.contextId(contextId);
+    }
+    return builder.build();
+  }
+
+  /** Converts a single ADK event into an A2A message. */
+  public static Message eventToMessage(Event event, String contextId) {
+    List<io.a2a.spec.Part<?>> parts = eventParts(event);
+
+    Message.Builder builder =
+        new Message.Builder()
+            .messageId(event.id() != null ? event.id() : UUID.randomUUID().toString())
+            .role(event.author().equalsIgnoreCase("user") ? Message.Role.USER : Message.Role.AGENT)
+            .parts(parts);
+    if (contextId != null) {
+      builder.contextId(contextId);
+    }
+    return builder.build();
+  }
+
+  private static List<io.a2a.spec.Part<?>> eventParts(Event event) {
+    List<io.a2a.spec.Part<?>> parts = new ArrayList<>();
+    Optional<Content> content = event.content();
+    if (content.isEmpty() || content.get().parts().isEmpty()) {
+      return parts;
+    }
+
+    for (com.google.genai.types.Part genaiPart : content.get().parts().get()) {
+      parts.add(PartConverter.fromGenaiPart(genaiPart, false));
+    }
+    return parts;
   }
 }
