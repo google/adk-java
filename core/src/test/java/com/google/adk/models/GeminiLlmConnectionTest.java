@@ -19,6 +19,7 @@ package com.google.adk.models;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
@@ -164,9 +165,43 @@ public final class GeminiLlmConnectionTest {
     testObserver.assertComplete();
     LlmResponse response = testObserver.values().get(0);
     assertThat(response.content()).isPresent();
+    assertThat(response.content().get().role()).hasValue("model");
     assertThat(response.content().get().parts()).isPresent();
     assertThat(response.content().get().parts().get()).hasSize(1);
     assertThat(response.content().get().parts().get().get(0).functionCall()).hasValue(functionCall);
+    assertThat(response.partial()).hasValue(false);
+    assertThat(response.turnComplete()).hasValue(false);
+  }
+
+  @Test
+  public void convertToServerResponse_withMultipleFunctionCalls_preservesAllCallsAsParts() {
+    // Regression test for parallel tool calling on the live/BIDI path: a single toolCall message
+    // can carry multiple FunctionCalls, and all of them must be preserved (not just the last).
+    FunctionCall getWeather =
+        FunctionCall.builder().name("getWeather").args(ImmutableMap.of("city", "Paris")).build();
+    FunctionCall getTime =
+        FunctionCall.builder()
+            .name("getTime")
+            .args(ImmutableMap.of("timezone", "Europe/London"))
+            .build();
+    LiveServerToolCall toolCall =
+        LiveServerToolCall.builder().functionCalls(ImmutableList.of(getWeather, getTime)).build();
+
+    LiveServerMessage message = LiveServerMessage.builder().toolCall(toolCall).build();
+
+    TestObserver<LlmResponse> testObserver = new TestObserver<>();
+
+    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+
+    testObserver.assertValueCount(1);
+    testObserver.assertComplete();
+    LlmResponse response = testObserver.values().get(0);
+    assertThat(response.content()).isPresent();
+    assertThat(response.content().get().role()).hasValue("model");
+    assertThat(response.content().get().parts()).isPresent();
+    assertThat(response.content().get().parts().get()).hasSize(2);
+    assertThat(response.content().get().parts().get().get(0).functionCall()).hasValue(getWeather);
+    assertThat(response.content().get().parts().get().get(1).functionCall()).hasValue(getTime);
     assertThat(response.partial()).hasValue(false);
     assertThat(response.turnComplete()).hasValue(false);
   }

@@ -24,7 +24,6 @@ import com.google.genai.Client;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
-import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.LiveSendClientContentParameters;
@@ -202,14 +201,15 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     toolCall
         .functionCalls()
         .ifPresent(
-            calls -> {
-              for (FunctionCall call : calls) {
+            calls ->
                 builder.content(
                     Content.builder()
-                        .parts(ImmutableList.of(Part.builder().functionCall(call).build()))
-                        .build());
-              }
-            });
+                        .role("model")
+                        .parts(
+                            calls.stream()
+                                .map(call -> Part.builder().functionCall(call).build())
+                                .collect(toImmutableList()))
+                        .build()));
     return builder.partial(false).turnComplete(false).build();
   }
 
