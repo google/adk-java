@@ -273,7 +273,8 @@ public class FirestoreSessionServiceTest {
     when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
     when(mockSessionSnapshot.exists()).thenReturn(true);
     when(mockSessionSnapshot.getReference()).thenReturn(mockSessionDocRef);
-    when(mockSessionSnapshot.getData()).thenReturn(ImmutableMap.of("state", Map.of()));
+    when(mockSessionSnapshot.getData())
+        .thenReturn(ImmutableMap.of(Constants.KEY_APP_NAME, APP_NAME, "state", Map.of()));
     when(mockQuery.whereGreaterThan(Constants.KEY_TIMESTAMP, timestamp.toString()))
         .thenReturn(mockQuery);
     when(mockQuery.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
@@ -778,6 +779,7 @@ public class FirestoreSessionServiceTest {
     when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
     when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
     when(mockSessionSnapshot.exists()).thenReturn(true);
+    when(mockSessionSnapshot.get(Constants.KEY_APP_NAME)).thenReturn(APP_NAME);
     when(mockSessionSnapshot.getReference()).thenReturn(mockSessionDocRef);
     when(mockQuery.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
     Map<String, Object> eventData =
@@ -828,6 +830,10 @@ public class FirestoreSessionServiceTest {
   void deleteSession_deletesEventsAndSession() {
     // Arrange
     when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    // The ownership check fetches the session document first.
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    when(mockSessionSnapshot.exists()).thenReturn(true);
+    when(mockSessionSnapshot.get(Constants.KEY_APP_NAME)).thenReturn(APP_NAME);
     when(mockSessionDocRef.collection(Constants.EVENTS_SUBCOLLECTION_NAME))
         .thenReturn(mockEventsCollection);
     when(mockEventsCollection.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
@@ -900,5 +906,76 @@ public class FirestoreSessionServiceTest {
           assertThat(response.sessions().get(1).id()).isEqualTo("session-2");
           return true;
         });
+  }
+
+  // --- appName scope enforcement tests ---
+  // Sessions are keyed by (userId, sessionId) only, so getSession, deleteSession and listEvents
+  // must reject a request whose appName does not match the stored session's appName; otherwise one
+  // application could read, list the events of, or delete another application's session for the
+  // same user.
+
+  /** Tests that getSession emits an error when the stored appName does not match the request. */
+  @Test
+  void getSession_appNameMismatch_emitsError() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    when(mockSessionSnapshot.exists()).thenReturn(true);
+    when(mockSessionSnapshot.getData())
+        .thenReturn(
+            ImmutableMap.of(
+                "id",
+                SESSION_ID,
+                Constants.KEY_APP_NAME,
+                "other-app",
+                "userId",
+                USER_ID,
+                "updateTime",
+                NOW.toString(),
+                "state",
+                Collections.emptyMap()));
+
+    // Act
+    TestObserver<Session> testObserver =
+        sessionService.getSession(APP_NAME, USER_ID, SESSION_ID, Optional.empty()).test();
+
+    // Assert
+    testObserver.assertError(SessionNotFoundException.class);
+  }
+
+  /** Tests that listEvents emits an error when the stored appName does not match the request. */
+  @Test
+  void listEvents_appNameMismatch_emitsError() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    when(mockSessionSnapshot.exists()).thenReturn(true);
+    when(mockSessionSnapshot.get(Constants.KEY_APP_NAME)).thenReturn("other-app");
+
+    // Act
+    TestObserver<ListEventsResponse> testObserver =
+        sessionService.listEvents(APP_NAME, USER_ID, SESSION_ID).test();
+
+    // Assert
+    testObserver.assertError(SessionNotFoundException.class);
+  }
+
+  /**
+   * Tests that deleteSession does not delete when the stored appName does not match the request.
+   */
+  @Test
+  void deleteSession_appNameMismatch_doesNotDelete() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    when(mockSessionSnapshot.exists()).thenReturn(true);
+    when(mockSessionSnapshot.get(Constants.KEY_APP_NAME)).thenReturn("other-app");
+
+    // Act
+    sessionService.deleteSession(APP_NAME, USER_ID, SESSION_ID).test().assertComplete();
+
+    // Assert: the session (belonging to another app) must be left intact.
+    verify(mockSessionDocRef, never()).delete();
+    verify(mockWriteBatch, never()).commit();
   }
 }
