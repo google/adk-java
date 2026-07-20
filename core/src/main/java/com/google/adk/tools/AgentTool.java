@@ -181,7 +181,11 @@ public class AgentTool extends BaseTool {
     Runner runner = new InMemoryRunner(this.agent, toolContext.agentName(), plugins);
     return runner
         .sessionService()
-        .createSession(toolContext.agentName(), "tmp-user", toolContext.state(), null)
+        .createSession(
+            toolContext.agentName(),
+            toolContext.userId(),
+            (Map<String, Object>) toolContext.state(),
+            null)
         .flatMapPublisher(session -> runner.runAsync(session.userId(), session.id(), content))
         .doOnNext(
             event -> {
