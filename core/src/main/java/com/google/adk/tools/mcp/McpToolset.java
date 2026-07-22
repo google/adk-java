@@ -25,6 +25,7 @@ import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.ToolPredicate;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Booleans;
 import io.modelcontextprotocol.client.McpSyncClient;
@@ -416,10 +417,7 @@ public class McpToolset implements BaseToolset {
       }
 
       List<String> toolNames = mcpToolsetConfig.toolFilter();
-      Object connectionParameters =
-          Optional.<Object>ofNullable(mcpToolsetConfig.stdioConnectionParams())
-              .or(() -> Optional.ofNullable(mcpToolsetConfig.sseServerParams()))
-              .orElse(mcpToolsetConfig.stdioConnectionParams());
+      Object connectionParameters = resolveConnectionParameters(mcpToolsetConfig);
 
       // Create McpToolset with McpSessionManager having appropriate connection parameters
       if (toolNames != null) {
@@ -430,5 +428,21 @@ public class McpToolset implements BaseToolset {
     } catch (IllegalArgumentException e) {
       throw new ConfigurationException("Failed to parse McpToolsetConfig from ToolArgsConfig", e);
     }
+  }
+
+  /**
+   * Resolves the single connection-parameters object from an already-validated config. {@code
+   * stdioServerParams} is converted to the MCP SDK {@link ServerParameters}, the type {@link
+   * DefaultMcpTransportBuilder} accepts; the other variants pass through unchanged.
+   */
+  @VisibleForTesting
+  static Object resolveConnectionParameters(McpToolsetConfig mcpToolsetConfig) {
+    return Optional.<Object>ofNullable(mcpToolsetConfig.stdioConnectionParams())
+        .or(() -> Optional.ofNullable(mcpToolsetConfig.sseServerParams()))
+        .or(
+            () ->
+                Optional.ofNullable(mcpToolsetConfig.stdioServerParams())
+                    .map(StdioServerParameters::toServerParameters))
+        .orElseThrow(() -> new IllegalStateException("Validated MCP connection params missing."));
   }
 }
