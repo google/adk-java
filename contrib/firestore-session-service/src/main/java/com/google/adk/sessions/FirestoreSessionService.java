@@ -177,6 +177,16 @@ public class FirestoreSessionService implements BaseSessionService {
                 return Maybe.empty();
               }
 
+              // Enforce the (appName, userId, sessionId) scope. The Firestore
+              // document is keyed only by (userId, sessionId), so without this
+              // check a caller could read a session that belongs to a different
+              // application for the same user. Treat an appName mismatch as
+              // "not found" so cross-application existence is not leaked.
+              if (!appName.equals(data.get(APP_NAME_KEY))) {
+                logger.warn("Session {} does not belong to app {}", sessionId, appName);
+                return Maybe.error(new SessionNotFoundException("Session not found: " + sessionId));
+              }
+
               // Fetch events based on config
               GetSessionConfig config =
                   configOpt.orElseGet(() -> GetSessionConfig.builder().build());
@@ -491,6 +501,16 @@ public class FirestoreSessionService implements BaseSessionService {
           com.google.cloud.firestore.DocumentReference sessionRef =
               getSessionsCollection(userId).document(sessionId);
 
+          // Enforce the (appName, userId, sessionId) scope before deleting.
+          // The document is keyed only by (userId, sessionId), so without this
+          // check a caller could delete a session that belongs to a different
+          // application for the same user.
+          DocumentSnapshot sessionDoc = sessionRef.get().get();
+          if (!sessionDoc.exists() || !appName.equals(sessionDoc.get(APP_NAME_KEY))) {
+            logger.warn("Session {} not found for app {}; nothing to delete", sessionId, appName);
+            return;
+          }
+
           // 1. Fetch all events in the subcollection to delete them in batches.
           CollectionReference eventsRef = sessionRef.collection(EVENTS_SUBCOLLECTION_NAME);
           com.google.api.core.ApiFuture<com.google.cloud.firestore.QuerySnapshot> eventsQuery =
@@ -536,9 +556,11 @@ public class FirestoreSessionService implements BaseSessionService {
               getSessionsCollection(userId).document(sessionId).get();
           DocumentSnapshot sessionDocument = sessionFuture.get(); // Block for the result
 
-          if (!sessionDocument.exists()) {
+          if (!sessionDocument.exists() || !appName.equals(sessionDocument.get(APP_NAME_KEY))) {
             logger.warn(
-                "Session not found for sessionId: {}. Returning empty list of events.", sessionId);
+                "Session not found for sessionId: {} in app {}. Returning empty list of events.",
+                sessionId,
+                appName);
             throw new SessionNotFoundException(appName + "," + userId + "," + sessionId);
           }
 
