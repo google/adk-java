@@ -587,6 +587,52 @@ public class VertexAiSessionServiceTest {
     assertThat(session.events().stream().map(Event::id)).containsExactly("e2", "e3").inOrder();
   }
 
+  @Test
+  public void getSession_afterTimestampNarrowerThanNumRecentEvents_appliesBothFilters() {
+    sessionMap.put("10", mockSessionJson("10", "2024-12-12T12:00:30.000000Z"));
+    eventMap.put(
+        "10",
+        mockEventsJson(
+            mockEventJson("e1", "2024-12-12T12:00:05.000000Z"),
+            mockEventJson("e2", "2024-12-12T12:00:10.000000Z"),
+            mockEventJson("e3", "2024-12-12T12:00:15.000000Z"),
+            mockEventJson("e4", "2024-12-12T12:00:20.000000Z")));
+    GetSessionConfig config =
+        GetSessionConfig.builder()
+            .afterTimestamp(Instant.parse("2024-12-12T12:00:15.000000Z"))
+            .numRecentEvents(3)
+            .build();
+
+    Session session =
+        vertexAiSessionService.getSession("123", "user", "10", Optional.of(config)).blockingGet();
+
+    // afterTimestamp must be applied: without it, numRecentEvents(3) would keep e2, e3, e4.
+    assertThat(session.events().stream().map(Event::id)).containsExactly("e3", "e4").inOrder();
+  }
+
+  @Test
+  public void getSession_numRecentEventsNarrowerThanAfterTimestamp_appliesBothFilters() {
+    sessionMap.put("11", mockSessionJson("11", "2024-12-12T12:00:30.000000Z"));
+    eventMap.put(
+        "11",
+        mockEventsJson(
+            mockEventJson("e1", "2024-12-12T12:00:05.000000Z"),
+            mockEventJson("e2", "2024-12-12T12:00:10.000000Z"),
+            mockEventJson("e3", "2024-12-12T12:00:15.000000Z"),
+            mockEventJson("e4", "2024-12-12T12:00:20.000000Z")));
+    GetSessionConfig config =
+        GetSessionConfig.builder()
+            .afterTimestamp(Instant.parse("2024-12-12T12:00:10.000000Z"))
+            .numRecentEvents(2)
+            .build();
+
+    Session session =
+        vertexAiSessionService.getSession("123", "user", "11", Optional.of(config)).blockingGet();
+
+    // afterTimestamp keeps e2, e3, e4; numRecentEvents must then trim to the 2 most recent.
+    assertThat(session.events().stream().map(Event::id)).containsExactly("e3", "e4").inOrder();
+  }
+
   private static String mockSessionJson(String sessionId, String updateTime) {
     return String.format(
         """

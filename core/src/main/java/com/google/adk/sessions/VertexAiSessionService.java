@@ -249,14 +249,11 @@ public final class VertexAiSessionService implements BaseSessionService {
   }
 
   /**
-   * Builds the server-side events filter for {@code afterTimestamp}, mirroring the Python and Go
-   * implementations (inclusive {@code timestamp>=}). The filter is only applied when {@code
-   * numRecentEvents} is not set, matching the precedence in {@link #filterEvents}.
+   * Inclusive server-side {@code timestamp>=} filter for {@code afterTimestamp}, or null. Applied
+   * independently of {@code numRecentEvents} (see {@link #filterEvents}), so both filters compose.
    */
   private static @Nullable String afterTimestampFilter(Optional<GetSessionConfig> config) {
-    if (config.isPresent()
-        && config.get().numRecentEvents().isEmpty()
-        && config.get().afterTimestamp().isPresent()) {
+    if (config.isPresent() && config.get().afterTimestamp().isPresent()) {
       return "timestamp>=\"" + config.get().afterTimestamp().get() + "\"";
     }
     return null;
