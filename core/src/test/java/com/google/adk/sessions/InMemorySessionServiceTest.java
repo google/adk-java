@@ -317,4 +317,27 @@ public final class InMemorySessionServiceTest {
     assertThat(sessions.get("app-name").get("user-id")).isNotNull();
     assertThat(sessions.get("app-name").get("user-id")).hasSize(1);
   }
+
+  @Test
+  public void getSession_numRecentEventsAndAfterTimestamp_appliesBothFilters() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session = sessionService.createSession("app", "user").blockingGet();
+    for (long ts : new long[] {100, 200, 300, 400, 500}) {
+      var unused =
+          sessionService.appendEvent(session, Event.builder().timestamp(ts).build()).blockingGet();
+    }
+    GetSessionConfig config =
+        GetSessionConfig.builder()
+            .numRecentEvents(4)
+            .afterTimestamp(Instant.ofEpochMilli(300))
+            .build();
+
+    Session retrieved =
+        sessionService.getSession("app", "user", session.id(), Optional.of(config)).blockingGet();
+
+    // numRecentEvents keeps 200..500, then afterTimestamp drops 200; the pre-fix code kept 200.
+    assertThat(retrieved.events().stream().map(Event::timestamp))
+        .containsExactly(300L, 400L, 500L)
+        .inOrder();
+  }
 }

@@ -150,12 +150,12 @@ public final class InMemorySessionService implements BaseSessionService {
               }
             });
 
-    // Only apply timestamp filter if numRecentEvents was not applied
-    if (config.numRecentEvents().isEmpty() && config.afterTimestamp().isPresent()) {
-      Instant threshold = config.afterTimestamp().get();
-
-      eventsInCopy.removeIf(event -> getInstantFromEvent(event).isBefore(threshold));
-    }
+    // Then drop events before afterTimestamp, so both filters compose.
+    config
+        .afterTimestamp()
+        .ifPresent(
+            threshold ->
+                eventsInCopy.removeIf(event -> getInstantFromEvent(event).isBefore(threshold)));
 
     // Merge state into the potentially filtered copy and return
     return Maybe.just(mergeWithGlobalState(appName, userId, sessionCopy));
