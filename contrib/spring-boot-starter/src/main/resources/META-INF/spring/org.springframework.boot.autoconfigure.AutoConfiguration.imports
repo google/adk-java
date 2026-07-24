@@ -1,0 +1,8 @@
+com.google.adk.autoconfigure.AdkArtifactsAutoConfiguration
+com.google.adk.autoconfigure.AdkSessionAutoConfiguration
+com.google.adk.autoconfigure.AdkFirestoreSessionAutoConfiguration
+com.google.adk.autoconfigure.AdkMemoryAutoConfiguration
+com.google.adk.autoconfigure.AdkFirestoreMemoryAutoConfiguration
+com.google.adk.autoconfigure.AdkRunConfigAutoConfiguration
+com.google.adk.autoconfigure.AdkFirestoreAutoConfiguration
+com.google.adk.autoconfigure.AdkRunnerAutoConfiguration
