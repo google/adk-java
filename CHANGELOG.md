@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.7.1](https://github.com/google/adk-java/compare/v1.7.0...v1.7.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **core:** fallback to name when Agent description is missing ([233b83b](https://github.com/google/adk-java/commit/233b83bcacc39f7b6a1204a7644a1a5f13557a20))
+* **events:** accumulate endOfAgent in EventActions.merge to preserve parallel stop requests ([03b04fa](https://github.com/google/adk-java/commit/03b04fa2b17b8b9fc508add4d1013e83a4975cfe))
+* **mcp:** honor stdioServerParams in McpToolset.fromConfig ([cf71d7b](https://github.com/google/adk-java/commit/cf71d7bb07398d6fabd3a3ade24f31db98f9f36e))
+* preserve all parallel function calls on the live (BIDI) connection ([edc330d](https://github.com/google/adk-java/commit/edc330d760d8194058610907e717f13425717d8b))
+* **sessions:** apply afterTimestamp and numRecentEvents together in VertexAiSessionService ([24a4588](https://github.com/google/adk-java/commit/24a4588004228d6117d9ab4a45ce93be4c952d3c))
+* **sessions:** apply numRecentEvents and afterTimestamp together in InMemorySessionService ([4d19f7d](https://github.com/google/adk-java/commit/4d19f7d92becff955de12e2a58bc6bb23f14492d))
+
 ## [1.7.0](https://github.com/google/adk-java/compare/v1.6.0...v1.7.0) (2026-07-17)
 
 
