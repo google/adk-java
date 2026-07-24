@@ -20,6 +20,8 @@ import static java.util.stream.Collectors.toCollection;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Completable;
@@ -32,7 +34,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
@@ -58,11 +59,21 @@ public final class InMemorySessionService implements BaseSessionService {
   // Structure: appName -> stateKey -> stateValue
   private final ConcurrentMap<String, ConcurrentMap<String, Object>> appState;
 
+  private final TimeProvider timeProvider;
+  private final UuidProvider uuidProvider;
+
   /** Creates a new instance of the in-memory session service with empty storage. */
   public InMemorySessionService() {
+    this(TimeProvider.SYSTEM, UuidProvider.SYSTEM);
+  }
+
+  /** Creates a new instance backed by the given time and UUID providers. */
+  public InMemorySessionService(TimeProvider timeProvider, UuidProvider uuidProvider) {
     this.sessions = new ConcurrentHashMap<>();
     this.userState = new ConcurrentHashMap<>();
     this.appState = new ConcurrentHashMap<>();
+    this.timeProvider = timeProvider;
+    this.uuidProvider = uuidProvider;
   }
 
   @Override
@@ -87,7 +98,7 @@ public final class InMemorySessionService implements BaseSessionService {
         Optional.ofNullable(sessionId)
             .map(String::trim)
             .filter(s -> !s.isEmpty())
-            .orElseGet(() -> UUID.randomUUID().toString());
+            .orElseGet(uuidProvider::newUuid);
 
     // Ensure state map and events list are mutable for the new session
     ConcurrentMap<String, Object> initialState =
@@ -99,7 +110,7 @@ public final class InMemorySessionService implements BaseSessionService {
             .appName(appName)
             .userId(userId)
             .state(initialState)
-            .lastUpdateTime(Instant.now())
+            .lastUpdateTime(timeProvider.now())
             .build();
 
     sessions
