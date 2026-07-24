@@ -393,7 +393,7 @@ public class EventActions extends JsonBaseModel {
       other.escalate().ifPresent(this::escalate);
       this.requestedAuthConfigs.putAll(other.requestedAuthConfigs());
       this.requestedToolConfirmations.putAll(other.requestedToolConfirmations());
-      this.endOfAgent = other.endOfAgent();
+      this.endOfAgent = this.endOfAgent || other.endOfAgent();
       other.compaction().ifPresent(this::compaction);
       return this;
     }

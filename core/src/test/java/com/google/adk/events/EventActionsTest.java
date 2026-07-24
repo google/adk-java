@@ -112,6 +112,20 @@ public final class EventActionsTest {
   }
 
   @Test
+  public void merge_endOfAgentIsOrderIndependent() {
+    // A tool that ends the invocation, and one that leaves the flag at its default false. Folding
+    // parallel tool responses must keep endOfAgent set whichever order they are merged in.
+    EventActions requestsStop = EventActions.builder().endOfAgent(true).build();
+    EventActions leavesUnset = EventActions.builder().build();
+
+    EventActions stopFirst = EventActions.builder().merge(requestsStop).merge(leavesUnset).build();
+    EventActions stopLast = EventActions.builder().merge(leavesUnset).merge(requestsStop).build();
+
+    assertThat(stopFirst.endOfAgent()).isTrue();
+    assertThat(stopLast.endOfAgent()).isTrue();
+  }
+
+  @Test
   public void setArtifactDelta_copiesRegularMap() {
     EventActions eventActions = new EventActions();
     ImmutableMap<String, Integer> artifactDelta = ImmutableMap.of("artifact1", 1);
