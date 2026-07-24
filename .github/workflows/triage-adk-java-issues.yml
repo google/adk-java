@@ -72,8 +72,8 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
           EVENT_NAME: ${{ github.event_name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          # ISSUE_TITLE removed: prevents prompt injection; agent fetches via GitHub API
+          # ISSUE_BODY removed: prevents prompt injection; agent fetches via GitHub API
           # Number of issues to process per scheduled batch run.
           ISSUE_COUNT_TO_PROCESS: '3'
           # Comma-separated GitHub handles to round-robin assign issues to.
