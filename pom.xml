@@ -36,6 +36,7 @@
     <module>tutorials/city-time-weather</module>
     <module>tutorials/live-audio-single-agent</module>
     <module>a2a</module>
+    <module>tokt</module>
   </modules>
 
   <properties>
@@ -67,6 +68,10 @@
     <truth.version>1.4.5</truth.version>
     <jspecify.version>1.0.0</jspecify.version>
     <rxjava.version>3.1.12</rxjava.version>
+    <!-- ADK Kotlin engine interop (google-adk-tokt module). -->
+    <kotlin.version>2.1.20</kotlin.version>
+    <kotlinx-coroutines.version>1.10.2</kotlinx-coroutines.version>
+    <adk-kotlin.version>0.6.0</adk-kotlin.version>
     <reactor-core.version>3.7.0</reactor-core.version>
     <wiremock.version>2.35.1</wiremock.version>
     <assertj.version>3.27.7</assertj.version>
