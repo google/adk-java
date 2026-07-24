@@ -150,7 +150,7 @@ public final class ToolResolverTest {
 
   @Test
   public void testResolveToolsetInstanceViaReflection_classNotFound_throwsException() {
-    String toolsetName = "com.nonexistent.package.NonExistentClass.FIELD";
+    String toolsetName = "com.google.adk.nonexistent.NonExistentClass.FIELD";
 
     assertThrows(
         ClassNotFoundException.class,
@@ -195,7 +195,7 @@ public final class ToolResolverTest {
 
   @Test
   public void testResolveInstanceViaReflection_classNotFound_throwsException() {
-    String toolName = "com.nonexistent.package.NonExistentClass.FIELD";
+    String toolName = "com.google.adk.nonexistent.NonExistentClass.FIELD";
 
     assertThrows(
         ClassNotFoundException.class, () -> ToolResolver.resolveInstanceViaReflection(toolName));
