@@ -18,6 +18,7 @@ package com.google.adk.tools.retrieval;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.google.adk.config.AdkConfiguration;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.tools.ToolContext;
 import com.google.adk.utils.ModelNameUtils;
@@ -106,7 +107,8 @@ public class VertexAiRagRetrieval extends BaseRetrievalTool {
       LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
     LlmRequest llmRequest = llmRequestBuilder.build();
     // Use Gemini built-in Vertex AI RAG tool for Gemini models when using Vertex AI API Model
-    boolean useVertexAi = Boolean.parseBoolean(System.getenv("GOOGLE_GENAI_USE_VERTEXAI"));
+    boolean useVertexAi =
+        Boolean.parseBoolean(AdkConfiguration.getOrDefault("GOOGLE_GENAI_USE_VERTEXAI", "false"));
     if (useVertexAi && llmRequest.model().filter(ModelNameUtils::isGeminiModel).isPresent()) {
       GenerateContentConfig config =
           llmRequest.config().orElseGet(() -> GenerateContentConfig.builder().build());
