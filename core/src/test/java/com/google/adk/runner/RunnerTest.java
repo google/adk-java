@@ -23,6 +23,7 @@ import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Arrays.stream;
@@ -50,6 +51,7 @@ import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
+import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmRequest;
@@ -3040,6 +3042,275 @@ public final class RunnerTest {
     assertThat(artifactsSavedCounter.get()).isEqualTo(2);
     // agent was run
     assertThat(simplifyEvents(events.values())).containsExactly("test agent: from llm");
+  }
+
+  private static final String BLOB_MIME_TYPE = "example/octet-stream";
+  private static final String BLOB_PAYLOAD = "blob payload";
+  private static final String PLACEHOLDER_FORMAT =
+      "Uploaded file: %s. It has been saved to the artifacts";
+
+  private static Part blobPart() {
+    return Part.fromBytes(BLOB_PAYLOAD.getBytes(UTF_8), BLOB_MIME_TYPE);
+  }
+
+  /** The text the runner substitutes for the blob it offloaded to {@code fileName}. */
+  private static String placeholderFor(String fileName) {
+    return PLACEHOLDER_FORMAT.formatted(fileName);
+  }
+
+  /**
+   * A message whose parts list is immutable: {@code Content.Builder.parts(List)} stores the
+   * caller's list without copying it.
+   */
+  private static Content immutablePartsMessage() {
+    return Content.builder()
+        .role("user")
+        .parts(ImmutableList.of(Part.fromText("hello"), blobPart()))
+        .build();
+  }
+
+  /** A message whose parts list genai itself collected into an {@code ImmutableList}. */
+  private static Content partBuilderPartsMessage() {
+    return Content.builder()
+        .role("user")
+        .parts(Part.fromText("hello").toBuilder(), blobPart().toBuilder())
+        .build();
+  }
+
+  /**
+   * A message whose parts list accepts {@code set}. Used where the assertion is that the runner
+   * leaves the caller's message alone: with an immutable list the runner could not have modified it
+   * either way, so only a mutable one distinguishes copying from rewriting in place.
+   */
+  private static Content mutablePartsMessage() {
+    return Content.builder()
+        .role("user")
+        .parts(new ArrayList<>(ImmutableList.of(Part.fromText("hello"), blobPart())))
+        .build();
+  }
+
+  /**
+   * A message carrying two blobs, at part indices 1 and 2. The runner names each artifact after the
+   * index of the part it came from, so only a message with more than one blob distinguishes that
+   * from a running counter.
+   */
+  private static Content twoBlobsMessage() {
+    return Content.builder()
+        .role("user")
+        .parts(ImmutableList.of(Part.fromText("hello"), blobPart(), blobPart()))
+        .build();
+  }
+
+  private static RunConfig saveInputBlobs(boolean enabled) {
+    return RunConfig.builder().saveInputBlobsAsArtifacts(enabled).build();
+  }
+
+  /**
+   * Points {@link #runner} at a runner backed by a fresh {@link InMemoryArtifactService}, with a
+   * fresh {@link #session} on it. What the service stored is read back with {@link #artifactNames}
+   * and {@link Runner#artifactService()}.
+   */
+  private void useRunnerWithArtifactService() {
+    this.runner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .artifactService(new InMemoryArtifactService())
+            .build();
+    this.session = this.runner.sessionService().createSession("test", "user").blockingGet();
+  }
+
+  /** The names of the artifacts saved for {@link #session}. */
+  private ImmutableList<String> artifactNames() {
+    return ImmutableList.copyOf(
+        runner
+            .artifactService()
+            .listArtifactKeys("test", "user", session.id())
+            .blockingGet()
+            .filenames());
+  }
+
+  /** The name of the single saved artifact whose file name ends in {@code suffix}. */
+  private String artifactNameEndingIn(String suffix) {
+    ImmutableList<String> matches =
+        artifactNames().stream().filter(name -> name.endsWith(suffix)).collect(toImmutableList());
+    assertThat(matches).hasSize(1);
+    return matches.get(0);
+  }
+
+  /** The user message that was actually appended to the session. */
+  private Content appendedUserMessage() {
+    Session stored =
+        runner
+            .sessionService()
+            .getSession("test", "user", session.id(), Optional.empty())
+            .blockingGet();
+    return stored.events().stream()
+        .filter(event -> event.author().equals("user"))
+        .findFirst()
+        .flatMap(Event::content)
+        .orElseThrow(() -> new AssertionError("No user message was appended to the session."));
+  }
+
+  /** The parts of the user message that was actually appended to the session. */
+  private List<Part> appendedUserParts() {
+    return appendedUserMessage()
+        .parts()
+        .orElseThrow(() -> new AssertionError("The appended user message has no parts."));
+  }
+
+  /** Asserts the run reached the model and emitted the agent's reply. */
+  private static void assertAgentReplied(TestSubscriber<Event> events) {
+    events.assertComplete();
+    assertThat(simplifyEvents(events.values())).containsExactly("test agent: from llm");
+  }
+
+  @Test
+  public void saveInputBlobsAsArtifacts_immutablePartsList_savesArtifactAndCompletes() {
+    useRunnerWithArtifactService();
+
+    var events =
+        runner.runAsync("user", session.id(), immutablePartsMessage(), saveInputBlobs(true)).test();
+
+    assertAgentReplied(events);
+    assertThat(artifactNames()).hasSize(1);
+  }
+
+  @Test
+  public void saveInputBlobsAsArtifacts_partBuilderPartsList_savesArtifactAndCompletes() {
+    useRunnerWithArtifactService();
+
+    var events =
+        runner
+            .runAsync("user", session.id(), partBuilderPartsMessage(), saveInputBlobs(true))
+            .test();
+
+    assertAgentReplied(events);
+    assertThat(artifactNames()).hasSize(1);
+  }
+
+  @Test
+  public void saveInputBlobsAsArtifacts_doesNotModifyCallerMessage() {
+    useRunnerWithArtifactService();
+    Content callerMessage = mutablePartsMessage();
+
+    var events = runner.runAsync("user", session.id(), callerMessage, saveInputBlobs(true)).test();
+
+    assertAgentReplied(events);
+    assertThat(artifactNames()).hasSize(1);
+    assertThat(callerMessage.parts().get().get(1).inlineData()).isPresent();
+    assertThat(callerMessage.parts().get().get(1).text()).isEmpty();
+  }
+
+  @Test
+  public void saveInputBlobsAsArtifacts_appendedEventReplacesBlobWithPlaceholder() {
+    useRunnerWithArtifactService();
+
+    var events =
+        runner.runAsync("user", session.id(), immutablePartsMessage(), saveInputBlobs(true)).test();
+
+    assertAgentReplied(events);
+    // The appended message is a copy of the caller's, so the role has to survive the copy.
+    assertThat(appendedUserMessage().role()).hasValue("user");
+    List<Part> appended = appendedUserParts();
+    assertThat(appended).hasSize(2);
+    assertThat(appended.get(0).text()).hasValue("hello");
+    assertThat(appended.get(1).inlineData()).isEmpty();
+    assertThat(appended.get(1).text()).hasValue(placeholderFor(artifactNames().get(0)));
+  }
+
+  @Test
+  public void saveInputBlobsAsArtifacts_twoBlobs_namesEachArtifactAfterItsPartIndex() {
+    useRunnerWithArtifactService();
+
+    var events =
+        runner.runAsync("user", session.id(), twoBlobsMessage(), saveInputBlobs(true)).test();
+
+    assertAgentReplied(events);
+    assertThat(artifactNames()).hasSize(2);
+    List<Part> appended = appendedUserParts();
+    assertThat(appended).hasSize(3);
+    assertThat(appended.get(1).text()).hasValue(placeholderFor(artifactNameEndingIn("_1")));
+    assertThat(appended.get(2).text()).hasValue(placeholderFor(artifactNameEndingIn("_2")));
+  }
+
+  @Test
+  public void saveInputBlobsAsArtifacts_storesBlobVerbatim() {
+    useRunnerWithArtifactService();
+
+    var events =
+        runner.runAsync("user", session.id(), immutablePartsMessage(), saveInputBlobs(true)).test();
+
+    assertAgentReplied(events);
+    assertThat(artifactNames()).hasSize(1);
+    Part stored =
+        runner
+            .artifactService()
+            .loadArtifact("test", "user", session.id(), artifactNames().get(0))
+            .blockingGet();
+    assertThat(new String(stored.inlineData().get().data().get(), UTF_8)).isEqualTo(BLOB_PAYLOAD);
+    assertThat(stored.inlineData().get().mimeType()).hasValue(BLOB_MIME_TYPE);
+  }
+
+  @Test
+  public void saveInputBlobsAsArtifacts_textOnlyMessage_passesThroughUnchanged() {
+    useRunnerWithArtifactService();
+    Content callerMessage = Content.fromParts(Part.fromText("hello"));
+
+    var events = runner.runAsync("user", session.id(), callerMessage, saveInputBlobs(true)).test();
+
+    assertAgentReplied(events);
+    assertThat(artifactNames()).isEmpty();
+    List<Part> appended = appendedUserParts();
+    assertThat(appended).hasSize(1);
+    assertThat(appended.get(0).text()).hasValue("hello");
+    assertThat(callerMessage.parts().get().get(0).text()).hasValue("hello");
+  }
+
+  @Test
+  public void saveInputBlobsAsArtifacts_disabledWithTextOnlyMessage_passesThroughUnchanged() {
+    // The default path for every ordinary agent call: no blob, and the option at its default false.
+    // The runner must not touch the message at all.
+    useRunnerWithArtifactService();
+    Content callerMessage = Content.fromParts(Part.fromText("hello"));
+
+    var events = runner.runAsync("user", session.id(), callerMessage, saveInputBlobs(false)).test();
+
+    assertAgentReplied(events);
+    assertThat(artifactNames()).isEmpty();
+    List<Part> appended = appendedUserParts();
+    assertThat(appended).hasSize(1);
+    assertThat(appended.get(0).text()).hasValue("hello");
+    assertThat(callerMessage.parts().get().get(0).text()).hasValue("hello");
+  }
+
+  @Test
+  public void saveInputBlobsAsArtifacts_disabled_keepsBlobAndSavesNothing() {
+    useRunnerWithArtifactService();
+
+    var events =
+        runner
+            .runAsync("user", session.id(), immutablePartsMessage(), saveInputBlobs(false))
+            .test();
+
+    assertAgentReplied(events);
+    assertThat(artifactNames()).isEmpty();
+    assertThat(appendedUserParts().get(1).inlineData()).isPresent();
+  }
+
+  @Test
+  public void saveInputBlobsAsArtifacts_fromPartsConstruction_savesArtifactAndCompletes() {
+    useRunnerWithArtifactService();
+    Content fromPartsMessage = Content.fromParts(Part.fromText("hello"), blobPart());
+
+    var events =
+        runner.runAsync("user", session.id(), fromPartsMessage, saveInputBlobs(true)).test();
+
+    assertAgentReplied(events);
+    assertThat(artifactNames()).hasSize(1);
+    List<Part> appended = appendedUserParts();
+    assertThat(appended).hasSize(2);
+    assertThat(appended.get(1).inlineData()).isEmpty();
+    assertThat(appended.get(1).text()).hasValue(placeholderFor(artifactNames().get(0)));
   }
 
   @Test

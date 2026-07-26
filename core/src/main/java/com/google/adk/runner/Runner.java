@@ -347,6 +347,9 @@ public class Runner {
   /**
    * Appends a new user message to the session history with optional state delta.
    *
+   * <p>{@code newMessage} is never modified; when inline blobs are saved as artifacts, the appended
+   * event carries a copy in which the blob data is replaced by placeholders.
+   *
    * @throws IllegalArgumentException if message has no parts.
    */
   private Single<Event> appendNewMessageToSession(
@@ -357,12 +360,16 @@ public class Runner {
       @Nullable Map<String, Object> stateDelta) {
     checkArgument(newMessage.parts().isPresent(), "No parts in the new_message.");
 
+    Content messageToAppend = newMessage;
     Completable saveArtifactsFlow = Completable.complete();
     if (this.artifactService != null && saveInputBlobsAsArtifacts) {
       // The runner directly saves the artifacts (if applicable) in the user message and replaces
-      // the artifact data with a file name placeholder.
-      for (int i = 0; i < newMessage.parts().get().size(); i++) {
-        Part part = newMessage.parts().get().get(i);
+      // the artifact data with a file name placeholder. The rewrite happens on a copy of the parts
+      // list: the caller's list may be immutable, and the caller does not expect the message it
+      // passed to runAsync to be modified.
+      List<Part> parts = new ArrayList<>(newMessage.parts().get());
+      for (int i = 0; i < parts.size(); i++) {
+        Part part = parts.get(i);
         if (part.inlineData().isEmpty()) {
           continue;
         }
@@ -373,14 +380,11 @@ public class Runner {
                     .saveArtifact(this.appName, session.userId(), session.id(), fileName, part)
                     .ignoreElement());
 
-        newMessage
-            .parts()
-            .get()
-            .set(
-                i,
-                Part.fromText(
-                    "Uploaded file: " + fileName + ". It has been saved to the artifacts"));
+        parts.set(
+            i,
+            Part.fromText("Uploaded file: " + fileName + ". It has been saved to the artifacts"));
       }
+      messageToAppend = newMessage.toBuilder().parts(ImmutableList.copyOf(parts)).build();
     }
     // Appends only. We do not yield the event because it's not from the model.
     Event.Builder eventBuilder =
@@ -388,7 +392,7 @@ public class Runner {
             .id(Event.generateEventId())
             .invocationId(invocationContext.invocationId())
             .author("user")
-            .content(newMessage);
+            .content(messageToAppend);
 
     // Add state delta if provided
     if (stateDelta != null && !stateDelta.isEmpty()) {
