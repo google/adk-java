@@ -37,6 +37,7 @@
     <module>tutorials/live-audio-single-agent</module>
     <module>a2a</module>
     <module>tokt</module>
+    <module>contrib/spring-boot-starter</module>
   </modules>
 
   <properties>
