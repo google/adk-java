@@ -35,6 +35,7 @@
     <module>contrib/firestore-session-service</module>
     <module>tutorials/city-time-weather</module>
     <module>tutorials/live-audio-single-agent</module>
+    <module>tutorials/code-assistant</module>
     <module>a2a</module>
   </modules>
 
