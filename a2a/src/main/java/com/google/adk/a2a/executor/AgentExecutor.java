@@ -66,6 +66,15 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
   private static final Logger logger = LoggerFactory.getLogger(AgentExecutor.class);
   private static final String USER_ID_PREFIX = "A2A_USER_";
   private static final String A2A_METADATA_KEY = "a2a_metadata";
+
+  /**
+   * Env var that puts exception text back into the failure message sent to the peer.
+   *
+   * <p>Off by default, and meant for local debugging only: enabling it on a network-reachable
+   * deployment restores the disclosure {@link #failedMessage} exists to prevent.
+   */
+  private static final String DEBUG_ERRORS_ENV_VAR = "ADK_DEBUG_ERRORS";
+
   private final Map<String, Disposable> activeTasks = new ConcurrentHashMap<>();
   private final Runner.Builder runnerBuilder;
   private final AgentExecutorConfig agentExecutorConfig;
@@ -233,11 +242,8 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
             .materialize()
             .flatMapCompletable(
                 notification -> {
-                  Throwable error = notification.getError();
-                  if (error != null) {
-                    logger.error("Runner failed to execute", error);
-                  }
-                  return handleExecutionEnd(ctx, error, eventQueue);
+                  // The failure is logged, with its correlation id, by failedMessage().
+                  return handleExecutionEnd(ctx, notification.getError(), eventQueue);
                 })
             .doFinally(() -> cleanupTask(ctx.getTaskId()))
             .subscribe(
@@ -304,14 +310,48 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
                 }));
   }
 
+  /**
+   * Builds the failure message handed back to the remote peer.
+   *
+   * <p>The peer is not trusted with {@code e.getMessage()}: exception text routinely names absolute
+   * filesystem paths, class and module locations, configuration values and echoed request payloads,
+   * none of which the caller needs and all of which are useful reconnaissance. The throwable is
+   * logged here in full next to a short opaque id, and the peer gets a fixed summary plus that same
+   * id, so an operator handed the id can find the real stack trace. Set {@code ADK_DEBUG_ERRORS=1}
+   * to put the exception text back into the response while debugging locally.
+   */
   private static Message failedMessage(RequestContext context, Throwable e) {
+    String errorId = UUID.randomUUID().toString();
+    logger.error("Runner failed to execute [errorId={}]", errorId, e);
     return new Message.Builder()
         .messageId(UUID.randomUUID().toString())
         .contextId(context.getContextId())
         .taskId(context.getTaskId())
         .role(Message.Role.AGENT)
-        .parts(ImmutableList.of(new TextPart(e.getMessage())))
+        .parts(ImmutableList.of(new TextPart(failureText(e, errorId, debugErrorsEnabled()))))
         .build();
+  }
+
+  /**
+   * Returns the failure text that is safe to hand to the remote peer.
+   *
+   * @param includeDetail whether to append the exception type and message; see {@link
+   *     #DEBUG_ERRORS_ENV_VAR}.
+   */
+  static String failureText(Throwable e, String errorId, boolean includeDetail) {
+    String text = "Agent execution failed. (error_id: " + errorId + ")";
+    if (includeDetail) {
+      text = text + ": " + e.getClass().getName() + ": " + e.getMessage();
+    }
+    return text;
+  }
+
+  private static boolean debugErrorsEnabled() {
+    String value = System.getenv(DEBUG_ERRORS_ENV_VAR);
+    if (value == null) {
+      return false;
+    }
+    return value.equals("1") || value.equalsIgnoreCase("true");
   }
 
   // Processor that will process all events related to the one runner invocation.
