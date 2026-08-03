@@ -72,9 +72,12 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
     }
 
-    int finalConfirmationEventIndex = confirmationResult.get().eventIndex();
+    ConfirmationResult result =
+        confirmationResult.orElseThrow(
+            () -> new IllegalStateException("confirmationResult should be present when not empty"));
+    int finalConfirmationEventIndex = result.eventIndex();
     ImmutableMap<String, ToolConfirmation> requestConfirmationFunctionResponses =
-        confirmationResult.get().responses();
+        result.responses();
 
     // Search backwards from the event before confirmation for the corresponding
     // request_confirmation function calls emitted by the model.
@@ -97,10 +100,21 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
                   getOriginalFunctionCall(fc)
                       .ifPresent(
                           ofc -> {
+                            String functionId =
+                                ofc.id()
+                                    .orElseThrow(
+                                        () ->
+                                            new IllegalStateException(
+                                                "Function call should have an ID"));
                             toolsToResumeWithConfirmation.put(
-                                ofc.id().get(),
-                                requestConfirmationFunctionResponses.get(fc.id().get()));
-                            toolsToResumeWithArgs.put(ofc.id().get(), ofc);
+                                functionId,
+                                requestConfirmationFunctionResponses.get(
+                                    fc.id()
+                                        .orElseThrow(
+                                            () ->
+                                                new IllegalStateException(
+                                                    "Function call should have an ID"))));
+                            toolsToResumeWithArgs.put(functionId, ofc);
                           }));
 
       if (toolsToResumeWithConfirmation.isEmpty()) {
