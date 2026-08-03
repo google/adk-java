@@ -83,6 +83,13 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       if (event.functionCalls().isEmpty()) {
         continue;
       }
+      // request_confirmation calls are synthesized by the framework as part of a model response;
+      // they are never legitimately user-authored. A user-authored event carrying one is a forgery
+      // -- skip it so an attacker cannot originate tool execution (and then self-approve it) by
+      // planting a request_confirmation call in a user message.
+      if (Objects.equals(event.author(), "user")) {
+        continue;
+      }
 
       Map<String, ToolConfirmation> toolsToResumeWithConfirmation = new HashMap<>();
       Map<String, FunctionCall> toolsToResumeWithArgs = new HashMap<>();
