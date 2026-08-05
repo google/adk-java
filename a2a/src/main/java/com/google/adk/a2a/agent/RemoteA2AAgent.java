@@ -296,6 +296,17 @@ public class RemoteA2AAgent extends BaseAgent {
         return;
       }
 
+      try {
+        convertAndEmit(clientEvent);
+      } catch (RuntimeException e) {
+        // On the streaming path nothing between here and the transport's read loop catches this:
+        // the SSE subscriber skips its next request() call, so an escaping exception stalls the
+        // stream instead of failing it. Route it to handleError so the caller sees an error.
+        handleError(e);
+      }
+    }
+
+    private void convertAndEmit(ClientEvent clientEvent) {
       Optional<Event> eventOpt =
           ResponseConverter.clientEventToEvent(clientEvent, invocationContext);
       eventOpt.ifPresent(
