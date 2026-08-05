@@ -25,6 +25,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.google.adk.a2a.common.A2AClientError;
 import com.google.adk.a2a.common.A2AMetadata;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.CallbackContext;
@@ -51,6 +52,7 @@ import io.a2a.spec.AgentCard;
 import io.a2a.spec.Artifact;
 import io.a2a.spec.DataPart;
 import io.a2a.spec.FilePart;
+import io.a2a.spec.FileWithBytes;
 import io.a2a.spec.FileWithUri;
 import io.a2a.spec.Message;
 import io.a2a.spec.Task;
@@ -61,10 +63,12 @@ import io.a2a.spec.TaskStatusUpdateEvent;
 import io.a2a.spec.TextPart;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -298,6 +302,58 @@ public final class RemoteA2AAgentTest {
     assertText(events.get(0), 1, "world");
     assertRequestMetadata(events.get(0));
     assertResponseMetadata(events.get(0));
+  }
+
+  @Test
+  public void runAsync_whenConversionThrows_reportsError() {
+    RemoteA2AAgent agent = createAgent();
+    mockStreamResponse(consumer -> consumer.accept(unconvertibleEvent(), agentCard));
+
+    agent
+        .runAsync(invocationContext)
+        .test()
+        .awaitDone(5, SECONDS)
+        .assertError(A2AClientError.class)
+        .assertError(e -> e.getCause() instanceof IllegalArgumentException);
+  }
+
+  @Test
+  public void runAsync_whenConversionThrowsOffThread_terminatesInsteadOfStalling()
+      throws InterruptedException {
+    RemoteA2AAgent agent = createAgent();
+    // Deliver off-thread and do not join, mimicking a transport that pushes events after
+    // sendMessage returns. A throw that escapes handleEvent there reaches no RxJava boundary, so
+    // without the guard nothing ever terminates the flow and awaitDone below times out.
+    CountDownLatch delivered = new CountDownLatch(1);
+    mockStreamResponse(
+        consumer -> {
+          Thread thread =
+              new Thread(
+                  () -> {
+                    try {
+                      consumer.accept(unconvertibleEvent(), agentCard);
+                    } finally {
+                      delivered.countDown();
+                    }
+                  });
+          // The throw is the behaviour under test; keep it off the test's stderr.
+          thread.setUncaughtExceptionHandler((t, e) -> {});
+          thread.start();
+        });
+
+    TestSubscriber<Event> subscriber = agent.runAsync(invocationContext).test();
+    assertThat(delivered.await(5, SECONDS)).isTrue();
+
+    subscriber.awaitDone(5, SECONDS).assertError(A2AClientError.class);
+  }
+
+  /** An event whose file part carries invalid base64, so {@code PartConverter} cannot decode it. */
+  private ClientEvent unconvertibleEvent() {
+    return createTestEvent(
+        new FilePart(new FileWithBytes("text/plain", "bad.txt", "!!!")),
+        TaskState.WORKING,
+        true,
+        false);
   }
 
   @Test
