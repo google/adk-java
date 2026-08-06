@@ -39,9 +39,19 @@ public final class Basic implements RequestProcessor {
     }
     LlmAgent agent = (LlmAgent) context.agent();
     String modelName =
-        agent.resolvedModel().model().isPresent()
-            ? agent.resolvedModel().model().get().model()
-            : agent.resolvedModel().modelName().get();
+        agent
+            .resolvedModel()
+            .model()
+            .map(model -> model.model())
+            .orElseGet(
+                () ->
+                    agent
+                        .resolvedModel()
+                        .modelName()
+                        .orElseThrow(
+                            () ->
+                                new IllegalStateException(
+                                    "Both model and modelName are not present in resolvedModel")));
 
     LiveConnectConfig.Builder liveConnectConfigBuilder =
         LiveConnectConfig.builder().responseModalities(context.runConfig().responseModalities());
