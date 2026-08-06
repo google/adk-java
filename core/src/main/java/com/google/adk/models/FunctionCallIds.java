@@ -16,7 +16,7 @@
 
 package com.google.adk.models;
 
-import java.util.UUID;
+import com.google.adk.platform.UuidProvider;
 
 /** Constants and helpers for ADK-generated function call IDs. */
 public final class FunctionCallIds {
@@ -26,7 +26,15 @@ public final class FunctionCallIds {
 
   /** Returns a new client-side function call ID with the ADK prefix. */
   public static String generateClientFunctionCallId() {
-    return AF_FUNCTION_CALL_ID_PREFIX + UUID.randomUUID();
+    return generateClientFunctionCallId(UuidProvider.SYSTEM);
+  }
+
+  /**
+   * Returns a new client-side function call ID with the ADK prefix, minted from the given {@link
+   * UuidProvider}.
+   */
+  public static String generateClientFunctionCallId(UuidProvider uuidProvider) {
+    return AF_FUNCTION_CALL_ID_PREFIX + uuidProvider.newUuid();
   }
 
   /** Returns whether {@code id} was generated client-side by the ADK. */
