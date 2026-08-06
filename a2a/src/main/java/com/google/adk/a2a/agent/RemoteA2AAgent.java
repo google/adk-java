@@ -36,13 +36,13 @@ import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.Part;
 import io.a2a.client.Client;
 import io.a2a.client.ClientEvent;
+import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskEvent;
 import io.a2a.client.TaskUpdateEvent;
 import io.a2a.spec.A2AClientException;
 import io.a2a.spec.AgentCard;
 import io.a2a.spec.Message;
 import io.a2a.spec.TaskArtifactUpdateEvent;
-import io.a2a.spec.TaskState;
 import io.a2a.spec.TaskStatusUpdateEvent;
 import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Flowable;
@@ -227,8 +227,7 @@ public class RemoteA2AAgent extends BaseAgent {
     return Flowable.create(
         emitter -> {
           StreamHandler handler =
-              new StreamHandler(
-                  emitter.serialize(), invocationContext, requestJson, streaming, name());
+              new StreamHandler(emitter.serialize(), invocationContext, requestJson, name());
           ImmutableList<BiConsumer<ClientEvent, AgentCard>> consumers =
               ImmutableList.of(handler::handleEvent);
           a2aClient.sendMessage(originalMessage, consumers, handler::handleError, null);
@@ -249,7 +248,6 @@ public class RemoteA2AAgent extends BaseAgent {
     private final FlowableEmitter<Event> emitter;
     private final InvocationContext invocationContext;
     private final String requestJson;
-    private final boolean streaming;
     private final String agentName;
     private boolean done = false;
     private final StringBuilder textBuffer = new StringBuilder();
@@ -259,12 +257,10 @@ public class RemoteA2AAgent extends BaseAgent {
         FlowableEmitter<Event> emitter,
         InvocationContext invocationContext,
         String requestJson,
-        boolean streaming,
         String agentName) {
       this.emitter = emitter;
       this.invocationContext = invocationContext;
       this.requestJson = requestJson;
-      this.streaming = streaming;
       this.agentName = agentName;
     }
 
@@ -522,13 +518,13 @@ public class RemoteA2AAgent extends BaseAgent {
   }
 
   private static boolean isCompleted(ClientEvent event) {
-    TaskState executionState = TaskState.UNKNOWN;
     if (event instanceof TaskEvent taskEvent) {
-      executionState = taskEvent.getTask().getStatus().state();
-    } else if (event instanceof TaskUpdateEvent updateEvent) {
-      executionState = updateEvent.getTask().getStatus().state();
+      return taskEvent.getTask().getStatus().state().isFinal();
     }
-    return executionState.equals(TaskState.COMPLETED);
+    if (event instanceof TaskUpdateEvent updateEvent) {
+      return updateEvent.getTask().getStatus().state().isFinal();
+    }
+    return false;
   }
 
   private static ImmutableList<Part> eventParts(Event event) {
