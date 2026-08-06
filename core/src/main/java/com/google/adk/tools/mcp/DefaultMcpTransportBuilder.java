@@ -18,7 +18,6 @@ package com.google.adk.tools.mcp;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 
-import com.google.common.collect.ImmutableMap;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.ServerParameters;
@@ -29,7 +28,9 @@ import io.modelcontextprotocol.spec.McpClientTransport;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Collection;
+import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 import reactor.core.publisher.Mono;
 
 /**
@@ -50,18 +51,24 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
           .sseEndpoint(
               sseServerParams.sseEndpoint() == null ? "sse" : sseServerParams.sseEndpoint())
           .customizeRequest(
-              builder ->
-                  Optional.ofNullable(sseServerParams.headers())
-                      .map(ImmutableMap::entrySet)
-                      .stream()
-                      .flatMap(Collection::stream)
-                      .forEach(
-                          entry ->
-                              builder.header(
-                                  entry.getKey(),
-                                  Optional.ofNullable(entry.getValue())
-                                      .map(Object::toString)
-                                      .orElse(""))))
+              builder -> {
+                Map<String, Object> effectiveHeaders;
+                try {
+                  Supplier<Map<String, Object>> provider = sseServerParams.headersProvider();
+                  effectiveHeaders = provider != null ? provider.get() : sseServerParams.headers();
+                } catch (Exception e) {
+                  throw new RuntimeException("Failed to retrieve headers from provider", e);
+                }
+                Optional.ofNullable(effectiveHeaders).map(Map::entrySet).stream()
+                    .flatMap(Collection::stream)
+                    .forEach(
+                        entry ->
+                            builder.header(
+                                entry.getKey(),
+                                Optional.ofNullable(entry.getValue())
+                                    .map(Object::toString)
+                                    .orElse("")));
+              })
           .build();
     } else if (connectionParams instanceof StreamableHttpServerParameters streamableParams) {
       // Split the URL so the transport's URI.resolve does not drop a custom path (b/513186321).
@@ -72,10 +79,17 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
               .jsonMapper(jsonMapper)
               .asyncHttpRequestCustomizer(
                   (requestBuilder, method, uri, body, context) -> {
-                    streamableParams
-                        .headers()
-                        .forEach((key, value) -> requestBuilder.header(key, value));
-                    return Mono.just(requestBuilder);
+                    try {
+                      Supplier<Map<String, String>> provider = streamableParams.headersProvider();
+                      Map<String, String> effectiveHeaders =
+                          provider != null ? provider.get() : streamableParams.headers();
+                      if (effectiveHeaders != null) {
+                        effectiveHeaders.forEach((key, value) -> requestBuilder.header(key, value));
+                      }
+                      return Mono.just(requestBuilder);
+                    } catch (Exception e) {
+                      return Mono.error(e);
+                    }
                   });
       if (split.endpoint() != null) {
         builder.endpoint(split.endpoint());
