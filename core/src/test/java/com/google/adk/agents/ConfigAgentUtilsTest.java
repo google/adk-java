@@ -332,6 +332,64 @@ public final class ConfigAgentUtilsTest {
   }
 
   @Test
+  public void fromConfig_subAgentConfigPathTraversal_throwsConfigurationException()
+      throws IOException {
+    // A file OUTSIDE the agent's own config directory, standing in for another tenant's or the
+    // host's data that config_path should never be able to reach.
+    File outsideDir = tempFolder.newFolder("outside");
+    File secretFile = new File(outsideDir, "secret.yaml");
+    Files.writeString(secretFile.toPath(), "agent_class: LlmAgent\nname: leaked\n");
+
+    File agentDir = tempFolder.newFolder("agents", "main");
+    File mainAgentFile = new File(agentDir, "main_agent.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: main_agent
+        description: Main agent with a traversing subagent reference
+        instruction: You are a main agent
+        sub_agents:
+          - name: escaping_subagent
+            config_path: ../../outside/secret.yaml
+        """);
+
+    ConfigurationException exception =
+        assertThrows(
+            ConfigurationException.class,
+            () -> ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath()));
+    assertThat(exception).hasMessageThat().contains("Path traversal detected");
+  }
+
+  @Test
+  public void fromConfig_subAgentAbsoluteConfigPath_throwsConfigurationException()
+      throws IOException {
+    File outsideFile = tempFolder.newFile("absolute_target.yaml");
+    Files.writeString(outsideFile.toPath(), "agent_class: LlmAgent\nname: leaked\n");
+
+    File mainAgentFile = tempFolder.newFile("main_agent.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        String.format(
+            """
+            agent_class: LlmAgent
+            name: main_agent
+            description: Main agent with an absolute-path subagent reference
+            instruction: You are a main agent
+            sub_agents:
+              - name: absolute_subagent
+                config_path: %s
+            """,
+            outsideFile.getAbsolutePath()));
+
+    ConfigurationException exception =
+        assertThrows(
+            ConfigurationException.class,
+            () -> ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath()));
+    assertThat(exception).hasMessageThat().contains("Absolute paths are not allowed");
+  }
+
+  @Test
   public void resolveSubAgents_missingConfigPath_throwsConfigurationException() throws IOException {
     File mainAgentFile = tempFolder.newFile("main_agent.yaml");
     Files.writeString(
