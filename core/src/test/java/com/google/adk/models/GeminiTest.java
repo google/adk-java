@@ -15,6 +15,7 @@
  */
 package com.google.adk.models;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
@@ -35,6 +36,7 @@ import com.google.genai.types.ToolResponse;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.functions.Predicate;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -1068,6 +1070,170 @@ public final class GeminiTest {
         isFinalThoughtResponseWithUsageMetadataAndSignature("", metadata, "sig"));
   }
 
+  // Consecutive text chunks are merged into a single part the aggregator builds from scratch, so a
+  // thought signature the chunks carried is lost unless it is copied across. The model expects its
+  // signature back verbatim; without it, it redoes the reasoning the signature stood for. Mirrors
+  // ADK Python's TestStreamingThoughtSignature.
+  @Test
+  public void processRawResponses_signatureOnMergedText_isPreserved() {
+    GenerateContentResponse chunk1 = toResponseWithTextAndSignature("At minute 5 ", "text-sig");
+    GenerateContentResponse chunk2 =
+        toResponseWithText("the presenter speaks.", FinishReason.Known.STOP);
+
+    LlmResponse finalResponse = aggregateFinalResponse(chunk1, chunk2);
+
+    ImmutableList<Part> parts = ImmutableList.copyOf(finalResponse.content().get().parts().get());
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).text()).hasValue("At minute 5 the presenter speaks.");
+    assertThat(parts.get(0).thoughtSignature()).hasValue("text-sig".getBytes(UTF_8));
+  }
+
+  // The signature can land on any chunk of the run, not just the first.
+  @Test
+  public void processRawResponses_signatureOnLaterTextChunk_isPreserved() {
+    GenerateContentResponse chunk1 = toResponseWithText("At minute 5 ");
+    GenerateContentResponse chunk2 = toResponseWithTextAndSignature("the presenter ", "late-sig");
+    GenerateContentResponse chunk3 = toResponseWithText("speaks.", FinishReason.Known.STOP);
+
+    LlmResponse finalResponse = aggregateFinalResponse(chunk1, chunk2, chunk3);
+
+    ImmutableList<Part> parts = ImmutableList.copyOf(finalResponse.content().get().parts().get());
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).text()).hasValue("At minute 5 the presenter speaks.");
+    assertThat(parts.get(0).thoughtSignature()).hasValue("late-sig".getBytes(UTF_8));
+  }
+
+  // A merged part carries one signature. This class keeps the last of the run rather than the
+  // first, because the part it flushes can still be rewritten by the final chunk's signature.
+  @Test
+  public void processRawResponses_multipleSignaturesInOneRun_keepsTheLast() {
+    GenerateContentResponse chunk1 = toResponseWithTextAndSignature("At minute 5 ", "first-sig");
+    GenerateContentResponse chunk2 = toResponseWithTextAndSignature("the presenter ", "second-sig");
+    GenerateContentResponse chunk3 =
+        toResponse(
+            Candidate.builder()
+                .content(
+                    Content.builder()
+                        .parts(Part.fromFunctionCall("done", ImmutableMap.of()))
+                        .build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+
+    LlmResponse finalResponse = aggregateFinalResponse(chunk1, chunk2, chunk3);
+
+    ImmutableList<Part> parts = ImmutableList.copyOf(finalResponse.content().get().parts().get());
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).thoughtSignature()).hasValue("second-sig".getBytes(UTF_8));
+  }
+
+  // A thought run and an answer run flush separately and must not swap signatures: the answer's
+  // signature arrives on the chunk that triggers the flush of the thought.
+  @Test
+  public void processRawResponses_thoughtAndAnswerRuns_keepTheirOwnSignatures() {
+    GenerateContentResponse chunk1 =
+        toResponse(
+            Part.builder()
+                .text("Let me check.")
+                .thought(true)
+                .thoughtSignature("thought-sig".getBytes(UTF_8))
+                .build());
+    GenerateContentResponse chunk2 =
+        toResponseWithTextAndSignature("It is a dog.", "answer-sig", FinishReason.Known.STOP);
+
+    LlmResponse finalResponse = aggregateFinalResponse(chunk1, chunk2);
+
+    ImmutableList<Part> parts = ImmutableList.copyOf(finalResponse.content().get().parts().get());
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).thought()).hasValue(true);
+    assertThat(parts.get(0).thoughtSignature()).hasValue("thought-sig".getBytes(UTF_8));
+    assertThat(parts.get(1).thoughtSignature()).hasValue("answer-sig".getBytes(UTF_8));
+  }
+
+  // A signature-only thought part is not emitted on its own, so its signature has to ride on the
+  // text run it sits in. It is dropped if it lands in the function call's slot instead.
+  @Test
+  public void processRawResponses_standaloneSignatureMidTextRun_ridesOnTheMergedText() {
+    GenerateContentResponse chunk1 = toResponseWithText("At minute 5 ");
+    GenerateContentResponse chunk2 =
+        toResponse(
+            Part.builder().thought(true).thoughtSignature("carried-sig".getBytes(UTF_8)).build());
+    GenerateContentResponse chunk3 =
+        toResponseWithText("the presenter speaks.", FinishReason.Known.STOP);
+
+    LlmResponse finalResponse = aggregateFinalResponse(chunk1, chunk2, chunk3);
+
+    ImmutableList<Part> parts = ImmutableList.copyOf(finalResponse.content().get().parts().get());
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).text()).hasValue("At minute 5 the presenter speaks.");
+    assertThat(parts.get(0).thoughtSignature()).hasValue("carried-sig".getBytes(UTF_8));
+  }
+
+  // A text chunk arriving mid-stream of a function call must not take the call's signature with it:
+  // the two runs flush together and each keeps its own.
+  @Test
+  public void processRawResponses_textInterleavedWithStreamedCall_keepsBothSignatures() {
+    GenerateContentResponse chunk1 =
+        toResponse(
+            Part.builder()
+                .functionCall(
+                    FunctionCall.builder()
+                        .name("search")
+                        .partialArgs(
+                            PartialArg.builder().jsonPath("$.q").stringValue("hel").build())
+                        .willContinue(true)
+                        .build())
+                .thoughtSignature("fc-sig".getBytes(UTF_8))
+                .build());
+    GenerateContentResponse chunk2 = toResponseWithTextAndSignature("Working on it.", "text-sig");
+    GenerateContentResponse chunk3 =
+        toResponse(
+            Candidate.builder()
+                .content(
+                    Content.builder()
+                        .parts(
+                            functionCallPart(
+                                FunctionCall.builder()
+                                    .partialArgs(
+                                        PartialArg.builder()
+                                            .jsonPath("$.q")
+                                            .stringValue("lo")
+                                            .build())
+                                    .willContinue(false)
+                                    .build()))
+                        .build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+
+    LlmResponse finalResponse = aggregateFinalResponse(chunk1, chunk2, chunk3);
+
+    ImmutableList<Part> parts = ImmutableList.copyOf(finalResponse.content().get().parts().get());
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).text()).hasValue("Working on it.");
+    assertThat(parts.get(0).thoughtSignature()).hasValue("text-sig".getBytes(UTF_8));
+    assertThat(parts.get(1).functionCall().get().name()).hasValue("search");
+    assertThat(parts.get(1).thoughtSignature()).hasValue("fc-sig".getBytes(UTF_8));
+  }
+
+  // Server-side media tools return signatures on parts holding nothing else. Such a part must
+  // survive as its own part rather than being folded into the surrounding text.
+  @Test
+  public void processRawResponses_contentFreeSignaturePart_isKept() {
+    GenerateContentResponse chunk1 = toResponseWithText("At minute 5 the presenter speaks.");
+    GenerateContentResponse chunk2 =
+        toResponse(Part.builder().thoughtSignature("call-context".getBytes(UTF_8)).build());
+    GenerateContentResponse chunk3 = toResponseWithText("", FinishReason.Known.STOP);
+
+    LlmResponse finalResponse = aggregateFinalResponse(chunk1, chunk2, chunk3);
+
+    ImmutableList<String> signatures =
+        finalResponse.content().get().parts().get().stream()
+            .map(Part::thoughtSignature)
+            .flatMap(Optional::stream)
+            .map(signature -> new String(signature, UTF_8))
+            .collect(toImmutableList());
+    assertThat(signatures).containsExactly("call-context");
+  }
+
   @Test
   public void functionCallThenEmptyTextWithStop_emitsPartialThenFinalAggregatedFunctionCall() {
     Flowable<GenerateContentResponse> rawResponses =
@@ -1475,6 +1641,28 @@ public final class GeminiTest {
                 .build())
         .usageMetadata(usageMetadata)
         .build();
+  }
+
+  private GenerateContentResponse toResponseWithTextAndSignature(String text, String signature) {
+    return toResponse(
+        Part.builder().text(text).thoughtSignature(signature.getBytes(UTF_8)).build());
+  }
+
+  private GenerateContentResponse toResponseWithTextAndSignature(
+      String text, String signature, FinishReason.Known finishReason) {
+    Part part = Part.builder().text(text).thoughtSignature(signature.getBytes(UTF_8)).build();
+    return toResponse(
+        Candidate.builder()
+            .content(Content.builder().parts(part).build())
+            .finishReason(new FinishReason(finishReason))
+            .build());
+  }
+
+  /** Runs the chunks through the aggregator and returns the final (non-partial) response. */
+  private static LlmResponse aggregateFinalResponse(GenerateContentResponse... chunks) {
+    return Iterables.getLast(
+        ImmutableList.copyOf(
+            Gemini.processRawResponses(Flowable.fromArray(chunks)).blockingIterable()));
   }
 
   private static Part functionCallPart(FunctionCall functionCall) {
