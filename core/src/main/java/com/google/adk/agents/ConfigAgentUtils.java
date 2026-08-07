@@ -250,21 +250,23 @@ public final class ConfigAgentUtils {
     Path subAgentConfigPath;
 
     if (Path.of(configPath).isAbsolute()) {
-      subAgentConfigPath = Path.of(configPath);
-    } else {
-      subAgentConfigPath = configDir.resolve(configPath);
+      throw new ConfigurationException(
+          "Absolute paths are not allowed in AgentTool config_path: " + configPath);
     }
+    subAgentConfigPath = configDir.resolve(configPath);
 
-    // Warn when the resolved config path escapes the agent's base directory. For backward
-    // compatibility this is still allowed, but the behavior is deprecated and will be disallowed
-    // in a future release.
-    Path resolvedConfigPath = subAgentConfigPath.normalize().toAbsolutePath();
-    Path baseDir = configDir.normalize().toAbsolutePath();
-    if (!resolvedConfigPath.startsWith(baseDir)) {
-      logger.warn(
-          "AgentTool config_path '{}' accesses a path outside the agent base directory; this"
-              + " behavior is deprecated and will be disallowed in a future release.",
-          configPath);
+    // Reject config paths that resolve outside the agent's base directory. Both sides are
+    // resolved to their real (symlink-free) absolute form where the paths exist, so a symlink
+    // inside the base directory cannot be used to escape it; if a path does not yet exist,
+    // the lexical absolute/normalized form is used, which still correctly rejects a literal
+    // "../" escape.
+    Path resolvedConfigPath = resolveReal(subAgentConfigPath.normalize().toAbsolutePath());
+    Path baseDir = resolveReal(configDir.normalize().toAbsolutePath());
+    if (!resolvedConfigPath.startsWith(baseDir) && !resolvedConfigPath.equals(baseDir)) {
+      throw new ConfigurationException(
+          "Path traversal detected: AgentTool config_path '"
+              + configPath
+              + "' resolves outside the agent base directory.");
     }
 
     if (!Files.exists(subAgentConfigPath)) {
@@ -277,6 +279,19 @@ public final class ConfigAgentUtils {
     } catch (Exception e) {
       throw new ConfigurationException(
           "Failed to load subagent from config: " + subAgentConfigPath, e);
+    }
+  }
+
+  /**
+   * Resolves symlinks in {@code path} where the path exists; falls back to the given (already
+   * normalized, absolute) path unchanged if it does not exist, so that a missing file is reported
+   * as not-found rather than misclassified as a traversal.
+   */
+  private static Path resolveReal(Path path) {
+    try {
+      return path.toRealPath();
+    } catch (IOException e) {
+      return path;
     }
   }
 
