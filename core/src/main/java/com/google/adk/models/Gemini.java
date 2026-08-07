@@ -321,6 +321,9 @@ public class Gemini extends BaseLlm {
     private final StringBuilder currentTextBuffer = new StringBuilder();
     // Always reassigned in accumulateParts() before it is read; the initializer is never observed.
     private boolean currentTextIsThought = false;
+    // Signature of the buffered text run, kept apart from the streamed function call's slot below
+    // so an interleaved chunk cannot flush one part carrying the other's signature.
+    private byte[] currentTextThoughtSignature = null;
     private byte[] currentThoughtSignature = null;
     private GenerateContentResponse lastRawResponse = null;
 
@@ -421,18 +424,17 @@ public class Gemini extends BaseLlm {
         String text = part.text().orElse("");
         if (!text.isEmpty()) {
           hasContent = true;
-          // The signature belongs to this text; capture it so flushTextBufferToSequence attaches
-          // it.
-          part.thoughtSignature().ifPresent(sig -> currentThoughtSignature = sig);
           boolean isThought = part.thought().orElse(false);
-          // Immediately flush the active text buffer to preserve the exact interleaved blocks of
-          // text/thoughts.
+          // Flush before capturing this chunk's signature below, or the signature of the run
+          // starting here lands on the run being flushed.
           if (!currentTextBuffer.isEmpty() && isThought != currentTextIsThought) {
             flushTextBufferToSequence();
           }
           if (currentTextBuffer.isEmpty()) {
             currentTextIsThought = isThought;
           }
+          // The signature rides on the merged part that flushTextBufferToSequence builds.
+          part.thoughtSignature().ifPresent(sig -> currentTextThoughtSignature = sig);
           currentTextBuffer.append(text);
         } else if (part.functionCall().isPresent()) {
           hasContent = true;
@@ -443,16 +445,16 @@ public class Gemini extends BaseLlm {
           // future part types) rather than an allowlist that silently drops unlisted types. Flush
           // buffered text first so parts keep their order, then append the part verbatim keeping
           // any
-          // thoughtSignature it carries. The signature is intentionally not captured into
-          // currentThoughtSignature, which would leak it onto the preceding part.
+          // thoughtSignature it carries. The signature is intentionally not captured, which would
+          // leak it onto the preceding part.
           hasContent = true;
           flushTextBufferToSequence();
           accumulatedSequence.add(part);
         } else {
           // Standalone thought/thought-signature part with no renderable content: not emitted on
-          // its
-          // own; capture its signature to re-attach to the last real part in processFinalResponse.
-          part.thoughtSignature().ifPresent(sig -> currentThoughtSignature = sig);
+          // its own; its signature rides on the text run it sits in, and overrides what that run's
+          // own chunks carried, because a signature-only part is an explicit carrier.
+          part.thoughtSignature().ifPresent(sig -> currentTextThoughtSignature = sig);
         }
       }
       return hasContent;
@@ -605,9 +607,9 @@ public class Gemini extends BaseLlm {
       if (!currentTextBuffer.isEmpty()) {
         Part.Builder partBuilder =
             Part.builder().text(currentTextBuffer.toString()).thought(currentTextIsThought);
-        if (currentThoughtSignature != null) {
-          partBuilder.thoughtSignature(currentThoughtSignature);
-          currentThoughtSignature = null;
+        if (currentTextThoughtSignature != null) {
+          partBuilder.thoughtSignature(currentTextThoughtSignature);
+          currentTextThoughtSignature = null;
         }
         accumulatedSequence.add(partBuilder.build());
         currentTextBuffer.setLength(0);
