@@ -1008,6 +1008,61 @@ public final class ContentsTest {
     var unused = contentsProcessor.processRequest(context, initialRequest).blockingGet();
   }
 
+  @Test
+  public void processRequest_siblingBranchSharesNamePrefix_excludesSiblingEvent() {
+    Event siblingEvent =
+        createBranchedAgentEvent("agent_1", "e1", "sibling output", "root.agent_1");
+
+    List<Content> result =
+        runContentsProcessorOnBranch(ImmutableList.of(siblingEvent), "agent_10", "root.agent_10");
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void processRequest_sameBranch_includesEvent() {
+    Event ownEvent = createBranchedAgentEvent("agent_10", "e1", "own output", "root.agent_10");
+
+    List<Content> result =
+        runContentsProcessorOnBranch(ImmutableList.of(ownEvent), "agent_10", "root.agent_10");
+
+    assertThat(result).isEqualTo(eventsToContents(ImmutableList.of(ownEvent)));
+  }
+
+  @Test
+  public void processRequest_ancestorBranch_includesEvent() {
+    Event ancestorEvent = createBranchedAgentEvent("agent_10", "e1", "ancestor output", "root");
+
+    List<Content> result =
+        runContentsProcessorOnBranch(ImmutableList.of(ancestorEvent), "agent_10", "root.agent_10");
+
+    assertThat(result).isEqualTo(eventsToContents(ImmutableList.of(ancestorEvent)));
+  }
+
+  @Test
+  public void processRequest_eventWithoutBranch_includesEvent() {
+    Event userEvent = createUserEvent("u1", "user input");
+
+    List<Content> result =
+        runContentsProcessorOnBranch(ImmutableList.of(userEvent), "agent_10", "root.agent_10");
+
+    assertThat(result).isEqualTo(eventsToContents(ImmutableList.of(userEvent)));
+  }
+
+  @Test
+  public void processRequest_noInvocationBranch_includesBranchedEvent() {
+    Event siblingEvent =
+        createBranchedAgentEvent("agent_1", "e1", "sibling output", "root.agent_1");
+
+    List<Content> result =
+        runContentsProcessorOnBranch(ImmutableList.of(siblingEvent), "agent_10", null);
+
+    assertThat(result)
+        .containsExactly(
+            Content.fromParts(
+                Part.fromText("For context:"), Part.fromText("[agent_1] said: sibling output")));
+  }
+
   private static Event createUserEvent(String id, String text) {
     return Event.builder()
         .id(id)
@@ -1039,6 +1094,18 @@ public final class ContentsTest {
         .content(
             Content.builder().role("model").parts(ImmutableList.of(Part.fromText(text))).build())
         .invocationId("invocationId")
+        .build();
+  }
+
+  private static Event createBranchedAgentEvent(
+      String agent, String id, String text, String branch) {
+    return Event.builder()
+        .id(id)
+        .author(agent)
+        .content(
+            Content.builder().role("model").parts(ImmutableList.of(Part.fromText(text))).build())
+        .invocationId("invocationId")
+        .branch(branch)
         .build();
   }
 
@@ -1218,6 +1285,31 @@ public final class ContentsTest {
             .session(session)
             .sessionService(sessionService)
             .runConfig(RunConfig.builder().groupFunctionResponsesInHistory(true).build())
+            .build();
+
+    LlmRequest initialRequest = LlmRequest.builder().build();
+    RequestProcessor.RequestProcessingResult result =
+        contentsProcessor.processRequest(context, initialRequest).blockingGet();
+    return result.updatedRequest().contents();
+  }
+
+  private List<Content> runContentsProcessorOnBranch(
+      List<Event> events, String agentName, String invocationBranch) {
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name(agentName)
+            .includeContents(LlmAgent.IncludeContents.DEFAULT)
+            .build();
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    session.events().addAll(events);
+    InvocationContext context =
+        InvocationContext.builder()
+            .invocationId("test-invocation")
+            .agent(agent)
+            .session(session)
+            .sessionService(sessionService)
+            .branch(invocationBranch)
             .build();
 
     LlmRequest initialRequest = LlmRequest.builder().build();

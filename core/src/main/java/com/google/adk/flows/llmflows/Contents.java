@@ -443,9 +443,13 @@ public final class Contents implements RequestProcessor {
   private static boolean isEventBelongsToBranch(@Nullable String invocationBranch, Event event) {
     @Nullable String eventBranch = event.branch().orElse(null);
 
+    // Branches are dot-joined agent names, so a raw prefix match would make "root.agent_10" belong
+    // to the branch "root.agent_1". Require either an exact match, or a prefix that ends on a
+    // segment boundary.
     return Strings.isNullOrEmpty(invocationBranch)
         || Strings.isNullOrEmpty(eventBranch)
-        || invocationBranch.startsWith(eventBranch);
+        || invocationBranch.equals(eventBranch)
+        || invocationBranch.startsWith(eventBranch + ".");
   }
 
   /**
