@@ -191,8 +191,22 @@ public abstract class LlmResponse extends JsonBaseModel {
       if (candidatesOpt.isPresent() && !candidatesOpt.get().isEmpty()) {
         Candidate candidate = candidatesOpt.get().get(0);
         this.finishReason(candidate.finishReason().orElse(null));
-        if (candidate.content().isPresent()) {
-          this.content(candidate.content().get());
+        // A blocked or truncated candidate still carries a content object, so its presence says
+        // nothing about whether the model produced anything. Decide on the parts instead, and let a
+        // candidate that stopped normally with nothing to say remain a successful, empty turn.
+        boolean hasParts =
+            candidate
+                .content()
+                .flatMap(Content::parts)
+                .map(parts -> !parts.isEmpty())
+                .orElse(false);
+        boolean stopped =
+            candidate
+                .finishReason()
+                .map(reason -> reason.knownEnum() == FinishReason.Known.STOP)
+                .orElse(false);
+        if (hasParts || stopped) {
+          this.content(candidate.content().orElse(null));
           this.groundingMetadata(candidate.groundingMetadata().orElse(null));
         } else {
           candidate.finishReason().ifPresent(this::errorCode);

@@ -23,9 +23,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.common.collect.ImmutableList;
+import com.google.genai.types.Candidate;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.Transcription;
@@ -249,5 +251,135 @@ public final class LlmResponseTest {
     assertThat(deserializedResponse.errorMessage()).isEmpty();
     assertThat(deserializedResponse.interrupted()).isEmpty();
     assertThat(deserializedResponse.usageMetadata()).isEmpty();
+  }
+
+  private LlmResponse createFromCandidate(Candidate candidate) {
+    return LlmResponse.create(
+        GenerateContentResponse.builder().candidates(ImmutableList.of(candidate)).build());
+  }
+
+  /** The shape a blocked or budget-exhausted candidate arrives in: content present, no parts. */
+  private Content emptyModelContent() {
+    return Content.builder().role("model").build();
+  }
+
+  @Test
+  public void testCreate_partlessCandidateOutOfTokens_isReportedAsError() {
+    LlmResponse response =
+        createFromCandidate(
+            Candidate.builder()
+                .content(emptyModelContent())
+                .finishReason(new FinishReason(FinishReason.Known.MAX_TOKENS))
+                .build());
+
+    assertThat(response.errorCode()).hasValue(new FinishReason(FinishReason.Known.MAX_TOKENS));
+    assertThat(response.finishReason()).hasValue(new FinishReason(FinishReason.Known.MAX_TOKENS));
+    assertThat(response.content()).isEmpty();
+  }
+
+  @Test
+  public void testCreate_partlessCandidateBlocked_reportsFinishMessageAsError() {
+    LlmResponse response =
+        createFromCandidate(
+            Candidate.builder()
+                .content(emptyModelContent())
+                .finishReason(new FinishReason(FinishReason.Known.SAFETY))
+                .finishMessage("Blocked by safety filters.")
+                .build());
+
+    assertThat(response.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+    assertThat(response.errorMessage()).hasValue("Blocked by safety filters.");
+    assertThat(response.content()).isEmpty();
+  }
+
+  @Test
+  public void testCreate_candidateWithEmptyPartsList_isReportedAsError() {
+    LlmResponse response =
+        createFromCandidate(
+            Candidate.builder()
+                .content(Content.builder().role("model").parts(ImmutableList.of()).build())
+                .finishReason(new FinishReason(FinishReason.Known.MAX_TOKENS))
+                .build());
+
+    assertThat(response.errorCode()).hasValue(new FinishReason(FinishReason.Known.MAX_TOKENS));
+    assertThat(response.content()).isEmpty();
+  }
+
+  @Test
+  public void testCreate_candidateWithEmptyTextPart_isReportedAsSuccess() {
+    Content content =
+        Content.builder().role("model").parts(ImmutableList.of(Part.fromText(""))).build();
+
+    LlmResponse response =
+        createFromCandidate(
+            Candidate.builder()
+                .content(content)
+                .finishReason(new FinishReason(FinishReason.Known.MAX_TOKENS))
+                .build());
+
+    assertThat(response.errorCode()).isEmpty();
+    assertThat(response.errorMessage()).isEmpty();
+    assertThat(response.content()).hasValue(content);
+  }
+
+  @Test
+  public void testCreate_partlessCandidateStoppedNormally_isReportedAsSuccess() {
+    Content content = emptyModelContent();
+
+    LlmResponse response =
+        createFromCandidate(
+            Candidate.builder()
+                .content(content)
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+
+    assertThat(response.errorCode()).isEmpty();
+    assertThat(response.errorMessage()).isEmpty();
+    assertThat(response.content()).hasValue(content);
+  }
+
+  @Test
+  public void testCreate_truncatedCandidateWithText_isReportedAsSuccess() {
+    Content content = createSampleContent("The bicycle began as the");
+
+    LlmResponse response =
+        createFromCandidate(
+            Candidate.builder()
+                .content(content)
+                .finishReason(new FinishReason(FinishReason.Known.MAX_TOKENS))
+                .build());
+
+    assertThat(response.errorCode()).isEmpty();
+    assertThat(response.errorMessage()).isEmpty();
+    assertThat(response.content()).hasValue(content);
+  }
+
+  /**
+   * A candidate that produced nothing and reported no reason has no failure to raise, so no error
+   * code is set. The part-less content object is not carried over either — it holds nothing, and
+   * this pins the behavior so a later change to the predicate cannot alter it unnoticed.
+   */
+  @Test
+  public void testCreate_partlessCandidateWithoutFinishReason_reportsNeitherContentNorError() {
+    LlmResponse response =
+        createFromCandidate(Candidate.builder().content(emptyModelContent()).build());
+
+    assertThat(response.errorCode()).isEmpty();
+    assertThat(response.errorMessage()).isEmpty();
+    assertThat(response.finishReason()).isEmpty();
+    assertThat(response.content()).isEmpty();
+  }
+
+  /** A turn that ended normally is not an error, even when the candidate carries no content. */
+  @Test
+  public void testCreate_contentlessCandidateStoppedNormally_isReportedAsSuccess() {
+    LlmResponse response =
+        createFromCandidate(
+            Candidate.builder().finishReason(new FinishReason(FinishReason.Known.STOP)).build());
+
+    assertThat(response.errorCode()).isEmpty();
+    assertThat(response.errorMessage()).isEmpty();
+    assertThat(response.finishReason()).hasValue(new FinishReason(FinishReason.Known.STOP));
+    assertThat(response.content()).isEmpty();
   }
 }
