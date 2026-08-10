@@ -254,25 +254,10 @@ public final class GcsArtifactService implements BaseArtifactService {
       String appName, String userId, String sessionId, String filename) {
     return Single.fromCallable(
         () -> {
-          String prefix = getBlobPrefix(appName, userId, sessionId, filename);
           try {
-            return Streams.stream(
-                    storageClient.list(bucketName, BlobListOption.prefix(prefix)).iterateAll())
-                .map(Blob::getName)
-                .map(
-                    name -> {
-                      int versionDelimiterIndex = name.lastIndexOf('/');
-                      return versionDelimiterIndex != -1
-                              && versionDelimiterIndex < name.length() - 1
-                          ? Optional.of(name.substring(versionDelimiterIndex + 1))
-                          : Optional.<String>empty();
-                    })
-                .flatMap(Optional::stream)
-                .map(Integer::parseInt)
-                .sorted()
-                .collect(ImmutableList.toImmutableList());
+            return readVersions(appName, userId, sessionId, filename);
           } catch (StorageException e) {
-            return ImmutableList.of();
+            return ImmutableList.<Integer>of();
           }
         });
   }
@@ -314,7 +299,7 @@ public final class GcsArtifactService implements BaseArtifactService {
 
   private Single<SaveResult> saveArtifactAndReturnBlob(
       String appName, String userId, String sessionId, String filename, Part artifact) {
-    return listVersions(appName, userId, sessionId, filename)
+    return Single.fromCallable(() -> versionsBeforeSaving(appName, userId, sessionId, filename))
         .map(versions -> versions.isEmpty() ? 0 : max(versions) + 1)
         .flatMap(
             nextVersion ->
@@ -350,5 +335,65 @@ public final class GcsArtifactService implements BaseArtifactService {
                         throw new VerifyException("Failed to save artifact to GCS", e);
                       }
                     }));
+  }
+
+  /**
+   * Reads the versions stored for an artifact, letting a storage failure propagate.
+   *
+   * <p>An empty result from this method therefore means the artifact has no versions, never that
+   * the listing could not be performed. Each caller decides what a failure means for it: {@link
+   * #listVersions} reports it as "no versions", while {@link #saveArtifactAndReturnBlob} must not,
+   * because it derives the next version number from the result and would otherwise write over an
+   * object that already exists.
+   *
+   * @param appName Application name.
+   * @param userId User ID.
+   * @param sessionId Session ID.
+   * @param filename Artifact filename.
+   * @return sorted version numbers found under the artifact's prefix.
+   * @throws StorageException if the listing could not be performed.
+   */
+  private ImmutableList<Integer> readVersions(
+      String appName, String userId, String sessionId, String filename) {
+    String prefix = getBlobPrefix(appName, userId, sessionId, filename);
+    return Streams.stream(
+            storageClient.list(bucketName, BlobListOption.prefix(prefix)).iterateAll())
+        .map(Blob::getName)
+        .map(
+            name -> {
+              int versionDelimiterIndex = name.lastIndexOf('/');
+              return versionDelimiterIndex != -1 && versionDelimiterIndex < name.length() - 1
+                  ? Optional.of(name.substring(versionDelimiterIndex + 1))
+                  : Optional.<String>empty();
+            })
+        .flatMap(Optional::stream)
+        .map(Integer::parseInt)
+        .sorted()
+        .collect(ImmutableList.toImmutableList());
+  }
+
+  /**
+   * Reads the versions that already exist, for a save that is about to derive the next version
+   * number from them.
+   *
+   * <p>The write that follows carries no precondition, so treating a failed listing as "no
+   * versions" would compute version 0 and replace whatever is already stored under that name, while
+   * reporting success to the caller. Surfacing the failure instead is the same choice {@link
+   * #listArtifactKeys} and {@link #deleteArtifact} already make for the same operation.
+   *
+   * @param appName Application name.
+   * @param userId User ID.
+   * @param sessionId Session ID.
+   * @param filename Artifact filename.
+   * @return sorted version numbers already stored for the artifact.
+   * @throws VerifyException if the versions could not be listed.
+   */
+  private ImmutableList<Integer> versionsBeforeSaving(
+      String appName, String userId, String sessionId, String filename) {
+    try {
+      return readVersions(appName, userId, sessionId, filename);
+    } catch (StorageException e) {
+      throw new VerifyException("Failed to list artifact versions from GCS", e);
+    }
   }
 }
