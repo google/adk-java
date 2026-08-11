@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.DefaultUsage;
@@ -184,19 +185,18 @@ class MessageConverterTest {
     Prompt prompt = messageConverter.toLlmPrompt(request);
 
     // Currently only UserMessage is created (function response is skipped)
-    assertThat(prompt.getInstructions()).hasSize(1);
+    assertThat(prompt.getInstructions()).hasSize(2);
 
     Message userMessage = prompt.getInstructions().get(0);
     assertThat(userMessage).isInstanceOf(UserMessage.class);
     assertThat(((UserMessage) userMessage).getText()).isEqualTo("What's the weather?");
 
-    // When Spring AI provides public API for ToolResponseMessage, uncomment:
-    // Message toolResponseMessage = prompt.getInstructions().get(1);
-    // assertThat(toolResponseMessage).isInstanceOf(ToolResponseMessage.class);
-    // ToolResponseMessage toolResponse = (ToolResponseMessage) toolResponseMessage;
-    // assertThat(toolResponse.getResponses()).hasSize(1);
-    // ToolResponseMessage.ToolResponse response = toolResponse.getResponses().get(0);
-    // assertThat(response.name()).isEqualTo("get_weather");
+    Message toolResponseMessage = prompt.getInstructions().get(1);
+    assertThat(toolResponseMessage).isInstanceOf(ToolResponseMessage.class);
+    ToolResponseMessage toolResponse = (ToolResponseMessage) toolResponseMessage;
+    assertThat(toolResponse.getResponses()).hasSize(1);
+    ToolResponseMessage.ToolResponse response = toolResponse.getResponses().get(0);
+    assertThat(response.name()).isEqualTo("get_weather");
   }
 
   @Test
