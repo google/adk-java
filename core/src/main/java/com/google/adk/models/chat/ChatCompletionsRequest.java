@@ -603,7 +603,11 @@ public final class ChatCompletionsRequest {
             FunctionDefinition def = new FunctionDefinition();
             def.name = fd.name().orElse("");
             def.description = fd.description().orElse("");
-            if (fd.parameters().isPresent()) {
+            if (fd.parametersJsonSchema().isPresent()) {
+              def.parameters =
+                  objectMapper.convertValue(
+                      fd.parametersJsonSchema().get(), new TypeReference<Map<String, Object>>() {});
+            } else if (fd.parameters().isPresent()) {
               def.parameters =
                   objectMapper.convertValue(
                       fd.parameters().get(), new TypeReference<Map<String, Object>>() {});
