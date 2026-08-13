@@ -332,6 +332,132 @@ public final class ConfigAgentUtilsTest {
   }
 
   @Test
+  public void resolveSubAgents_configPathEscapesAgentDirectory_isRejected() throws IOException {
+    // A sub-agent config_path must not be able to escape the referencing
+    // agent's own directory: a relative traversal sequence must be rejected
+    // before any file outside that directory is loaded and instantiated as
+    // a live sub-agent. Matches the hard rejection adk-python (171ae9e) and
+    // adk-go (604dd63) ship for the identical AgentTool config_path
+    // resolution.
+    File outsideDir = tempFolder.newFolder("outside");
+    File outsideFile = new File(outsideDir, "outside_agent.yaml");
+    Files.writeString(
+        outsideFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: outside_agent
+        description: Loaded from outside the agent bundle directory
+        instruction: This content lives outside the agent's own directory
+        """);
+
+    File agentsDir = tempFolder.newFolder("agents", "bundle");
+    File mainAgentFile = new File(agentsDir, "main_agent.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: main_agent
+        description: Main agent whose bundle references an escaping config_path
+        instruction: You are a main agent
+        sub_agents:
+          - name: sub_agent
+            config_path: ../../outside/outside_agent.yaml
+        """);
+
+    ConfigurationException exception =
+        assertThrows(
+            ConfigurationException.class,
+            () -> ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath()));
+    assertThat(fullMessageChain(exception)).contains("Path traversal detected");
+  }
+
+  @Test
+  public void resolveSubAgents_absoluteConfigPath_isRejected() throws IOException {
+    File secretsFile = tempFolder.newFile("secrets.yaml");
+    Files.writeString(
+        secretsFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: secrets_agent
+        """);
+
+    File agentsDir = tempFolder.newFolder("agents", "bundle");
+    File mainAgentFile = new File(agentsDir, "main_agent.yaml");
+    Files.writeString(
+        mainAgentFile.toPath(),
+        "agent_class: LlmAgent\n"
+            + "name: main_agent\n"
+            + "description: Main agent with an absolute config_path\n"
+            + "instruction: You are a main agent\n"
+            + "sub_agents:\n"
+            + "  - name: sub_agent\n"
+            + "    config_path: "
+            + secretsFile.getAbsolutePath()
+            + "\n");
+
+    ConfigurationException exception =
+        assertThrows(
+            ConfigurationException.class,
+            () -> ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath()));
+    assertThat(fullMessageChain(exception)).contains("Absolute paths are not allowed");
+  }
+
+  @Test
+  public void resolveSubAgents_configPathEscapeAttemptDoesNotLeakTargetFileContent()
+      throws IOException {
+    // Regression test for the information-disclosure amplifier: before the
+    // fix, an escaping config_path whose target failed to parse as a valid
+    // agent config propagated the raw file content into the thrown
+    // exception's message chain (via ComponentRegistry.resolveAgentClass).
+    // The traversal must now be rejected before the target file is ever
+    // read, so no content from it can reach the exception at all.
+    File victimDir = tempFolder.newFolder("victim_project");
+    File secretsFile = new File(victimDir, ".env");
+    Files.writeString(
+        secretsFile.toPath(),
+        "GOOGLE_API_KEY=AIzaSyD-THIS_IS_NOT_A_REAL_KEY_0123456789\n"
+            + "DATABASE_PASSWORD=hunter2_super_secret\n");
+
+    File bundleDir = tempFolder.newFolder("victim_project", "agents", "imported", "evil_bundle");
+    File maliciousAgentFile = new File(bundleDir, "main_agent.yaml");
+    Files.writeString(
+        maliciousAgentFile.toPath(),
+        """
+        agent_class: LlmAgent
+        name: main_agent
+        description: An imported agent bundle
+        instruction: You are a main agent
+        sub_agents:
+          - name: sub_agent
+            config_path: ../../../.env
+        """);
+
+    ConfigurationException exception =
+        assertThrows(
+            ConfigurationException.class,
+            () -> ConfigAgentUtils.fromConfig(maliciousAgentFile.getAbsolutePath()));
+
+    Throwable t = exception;
+    StringBuilder allMessages = new StringBuilder();
+    while (t != null) {
+      allMessages.append(t.getMessage()).append('\n');
+      t = t.getCause();
+    }
+    assertThat(allMessages.toString()).doesNotContain("GOOGLE_API_KEY");
+    assertThat(allMessages.toString()).doesNotContain("hunter2_super_secret");
+  }
+
+  /** Concatenates a Throwable's message and every cause's message, deepest last. */
+  private static String fullMessageChain(Throwable t) {
+    StringBuilder sb = new StringBuilder();
+    while (t != null) {
+      sb.append(t.getMessage()).append('\n');
+      t = t.getCause();
+    }
+    return sb.toString();
+  }
+
+  @Test
   public void resolveSubAgents_missingConfigPath_throwsConfigurationException() throws IOException {
     File mainAgentFile = tempFolder.newFile("main_agent.yaml");
     Files.writeString(
@@ -1382,10 +1508,12 @@ public final class ConfigAgentUtilsTest {
   }
 
   @Test
-  public void resolveSubAgents_withAbsoluteConfigPath_resolvesSuccessfully()
-      throws IOException, ConfigurationException {
-    // For backward compatibility an absolute config_path is still honored (it now logs a
-    // deprecation warning rather than being rejected).
+  public void resolveSubAgents_withAbsoluteConfigPath_isRejected() throws IOException {
+    // BREAKING CHANGE: an absolute config_path used to be honored for backward
+    // compatibility (logging a deprecation warning only). It is now rejected
+    // outright, matching the hard rejection adk-python (171ae9e) and adk-go
+    // (604dd63) already ship for the identical AgentTool config_path
+    // resolution.
     File subAgentFile = tempFolder.newFile("absolute_sub_agent.yaml");
     Files.writeString(
         subAgentFile.toPath(),
@@ -1412,19 +1540,22 @@ public final class ConfigAgentUtilsTest {
             """,
             absoluteConfigPath));
 
-    BaseAgent mainAgent = ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath());
-
-    assertThat(mainAgent.name()).isEqualTo("main_agent");
-    assertThat(mainAgent.subAgents()).hasSize(1);
-    assertThat(mainAgent.subAgents().get(0).name()).isEqualTo("absolute_sub_agent");
+    ConfigurationException exception =
+        assertThrows(
+            ConfigurationException.class,
+            () -> ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath()));
+    assertThat(fullMessageChain(exception)).contains("Absolute paths are not allowed");
   }
 
   @Test
-  public void resolveSubAgents_withTraversalConfigPath_resolvesSuccessfully()
-      throws IOException, ConfigurationException {
-    // For backward compatibility a config_path that escapes the agent directory via "../../" is
-    // still honored (it now logs a deprecation warning rather than being rejected). The agent
-    // config lives in a nested subdirectory so that "../../" escapes the agent directory.
+  public void resolveSubAgents_withTraversalConfigPath_isRejected() throws IOException {
+    // BREAKING CHANGE: a config_path that escapes the agent directory via
+    // "../../" used to be honored for backward compatibility (logging a
+    // deprecation warning only). It is now rejected outright, matching the
+    // hard rejection adk-python (171ae9e) and adk-go (604dd63) already ship
+    // for the identical AgentTool config_path resolution. The agent config
+    // lives in a nested subdirectory so that "../../" escapes the agent
+    // directory.
     File subAgentFile = tempFolder.newFile("outside_sub_agent.yaml");
     Files.writeString(
         subAgentFile.toPath(),
@@ -1449,11 +1580,11 @@ public final class ConfigAgentUtilsTest {
             config_path: ../../outside_sub_agent.yaml
         """);
 
-    BaseAgent mainAgent = ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath());
-
-    assertThat(mainAgent.name()).isEqualTo("main_agent");
-    assertThat(mainAgent.subAgents()).hasSize(1);
-    assertThat(mainAgent.subAgents().get(0).name()).isEqualTo("outside_sub_agent");
+    ConfigurationException exception =
+        assertThrows(
+            ConfigurationException.class,
+            () -> ConfigAgentUtils.fromConfig(mainAgentFile.getAbsolutePath()));
+    assertThat(fullMessageChain(exception)).contains("Path traversal detected");
   }
 
   @Test

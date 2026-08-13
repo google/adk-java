@@ -250,21 +250,37 @@ public final class ConfigAgentUtils {
     Path subAgentConfigPath;
 
     if (Path.of(configPath).isAbsolute()) {
-      subAgentConfigPath = Path.of(configPath);
-    } else {
-      subAgentConfigPath = configDir.resolve(configPath);
+      throw new ConfigurationException(
+          "Absolute paths are not allowed in AgentTool config_path: " + configPath);
     }
+    subAgentConfigPath = configDir.resolve(configPath);
 
-    // Warn when the resolved config path escapes the agent's base directory. For backward
-    // compatibility this is still allowed, but the behavior is deprecated and will be disallowed
-    // in a future release.
+    // Reject a resolved config path that escapes the agent's own base directory.
+    // Both sides are made absolute and symlinks are resolved where the paths
+    // exist, so a symlink inside the agent directory cannot be used to escape
+    // it either. Matches the hard rejection adk-python (171ae9e) and adk-go
+    // (604dd63) ship for the identical AgentTool config_path resolution.
     Path resolvedConfigPath = subAgentConfigPath.normalize().toAbsolutePath();
     Path baseDir = configDir.normalize().toAbsolutePath();
-    if (!resolvedConfigPath.startsWith(baseDir)) {
-      logger.warn(
-          "AgentTool config_path '{}' accesses a path outside the agent base directory; this"
-              + " behavior is deprecated and will be disallowed in a future release.",
-          configPath);
+    try {
+      resolvedConfigPath = resolvedConfigPath.toRealPath();
+    } catch (IOException e) {
+      // Falls through with the lexical (non-symlink-resolved) path so a
+      // missing file still reports as "not found" below rather than as a
+      // traversal rejection.
+    }
+    Path realBaseDir = baseDir;
+    try {
+      realBaseDir = baseDir.toRealPath();
+    } catch (IOException e) {
+      // Base directory always exists (it contains the config file currently
+      // being loaded); this is defensive only.
+    }
+    if (!resolvedConfigPath.startsWith(realBaseDir)) {
+      throw new ConfigurationException(
+          "Path traversal detected: config_path '"
+              + configPath
+              + "' resolves outside agent directory");
     }
 
     if (!Files.exists(subAgentConfigPath)) {
