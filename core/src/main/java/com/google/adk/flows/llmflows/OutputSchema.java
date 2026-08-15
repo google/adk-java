@@ -78,18 +78,24 @@ public final class OutputSchema implements RequestProcessor {
   }
 
   /**
-   * Check if function response contains set_model_response and extract JSON.
+   * Extracts a successfully validated {@code set_model_response} result as JSON.
+   *
+   * <p>Only a result that passed output-schema validation (recorded on the event actions by {@link
+   * SetModelResponseTool}) is returned. Validation feedback sent back to the model is never
+   * promoted to the final structured response.
    *
    * @param functionResponseEvent The function response event to check.
-   * @return JSON response string if set_model_response was called, Optional.empty() otherwise.
+   * @return JSON response string if set_model_response succeeded, Optional.empty() otherwise.
    */
   public static Optional<String> getStructuredModelResponse(Event functionResponseEvent) {
     for (FunctionResponse funcResponse : functionResponseEvent.functionResponses()) {
       if (Objects.equals(funcResponse.name().orElse(""), SetModelResponseTool.NAME)) {
-        Object response = funcResponse.response();
-        // The tool returns the args map directly.
+        Optional<Object> validatedResponse = functionResponseEvent.actions().setModelResponse();
+        if (validatedResponse.isEmpty()) {
+          return Optional.empty();
+        }
         try {
-          return Optional.of(JsonBaseModel.getMapper().writeValueAsString(response));
+          return Optional.of(JsonBaseModel.getMapper().writeValueAsString(validatedResponse.get()));
         } catch (JsonProcessingException e) {
           logger.error("Failed to serialize set_model_response result", e);
           return Optional.empty();
