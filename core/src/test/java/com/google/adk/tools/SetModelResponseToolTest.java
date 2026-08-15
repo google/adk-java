@@ -16,9 +16,12 @@
 
 package com.google.adk.tools;
 
+import static com.google.adk.testing.TestUtils.createInvocationContext;
+import static com.google.adk.testing.TestUtils.createTestAgent;
+import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.truth.Truth.assertThat;
-import static org.junit.Assert.assertThrows;
 
+import com.google.adk.models.LlmResponse;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
@@ -30,6 +33,12 @@ import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public final class SetModelResponseToolTest {
+
+  private static ToolContext createToolContext() {
+    return ToolContext.builder(
+            createInvocationContext(createTestAgent(createTestLlm(LlmResponse.builder().build()))))
+        .build();
+  }
 
   @Test
   public void declaration_returnsCorrectFunctionDeclaration() {
@@ -50,7 +59,7 @@ public final class SetModelResponseToolTest {
   }
 
   @Test
-  public void runAsync_returnsArgs() {
+  public void runAsync_returnsArgsAndRecordsValidatedResponse() {
     Schema outputSchema =
         Schema.builder()
             .type("OBJECT")
@@ -58,15 +67,37 @@ public final class SetModelResponseToolTest {
             .build();
 
     SetModelResponseTool tool = new SetModelResponseTool(outputSchema);
+    ToolContext toolContext = createToolContext();
     Map<String, Object> args = ImmutableMap.of("field1", "value1");
 
-    Map<String, Object> result = tool.runAsync(args, null).blockingGet();
+    Map<String, Object> result = tool.runAsync(args, toolContext).blockingGet();
 
     assertThat(result).isEqualTo(args);
+    assertThat(toolContext.actions().setModelResponse()).hasValue(args);
   }
 
   @Test
-  public void runAsync_validatesArgs() {
+  public void runAsync_invalidArgs_returnsValidationFeedback() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("field1", Schema.builder().type("STRING").build()))
+            .required(ImmutableList.of("field1"))
+            .build();
+
+    SetModelResponseTool tool = new SetModelResponseTool(outputSchema);
+    ToolContext toolContext = createToolContext();
+    Map<String, Object> invalidArgs = ImmutableMap.of();
+
+    Map<String, Object> result = tool.runAsync(invalidArgs, toolContext).blockingGet();
+
+    assertThat(result).containsKey("error");
+    assertThat((String) result.get("error")).contains("field1");
+    assertThat(toolContext.actions().setModelResponse()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_unknownArg_feedbackOmitsSchemaDump() {
     Schema outputSchema =
         Schema.builder()
             .type("OBJECT")
@@ -77,12 +108,12 @@ public final class SetModelResponseToolTest {
     SetModelResponseTool tool = new SetModelResponseTool(outputSchema);
     Map<String, Object> invalidArgs = ImmutableMap.of("field2", "value2");
 
-    // Should throw validation error
-    IllegalArgumentException exception =
-        assertThrows(
-            IllegalArgumentException.class, () -> tool.runAsync(invalidArgs, null).blockingGet());
+    Map<String, Object> result = tool.runAsync(invalidArgs, createToolContext()).blockingGet();
 
-    assertThat(exception).hasMessageThat().contains("does not match agent output schema");
+    String error = (String) result.get("error");
+    assertThat(error).contains("field2");
+    assertThat(error).contains("does not match agent output schema");
+    assertThat(error).doesNotContain(outputSchema.toString());
   }
 
   @Test
@@ -108,16 +139,18 @@ public final class SetModelResponseToolTest {
             .build();
 
     SetModelResponseTool tool = new SetModelResponseTool(complexSchema);
+    ToolContext toolContext = createToolContext();
     Map<String, Object> complexArgs =
         ImmutableMap.of(
             "id", 123,
             "tags", ImmutableList.of("tag1", "tag2"),
             "metadata", ImmutableMap.of("key", "value"));
 
-    Map<String, Object> result = tool.runAsync(complexArgs, null).blockingGet();
+    Map<String, Object> result = tool.runAsync(complexArgs, toolContext).blockingGet();
 
     assertThat(result).containsEntry("id", 123);
     assertThat(result).containsEntry("tags", ImmutableList.of("tag1", "tag2"));
     assertThat(result).containsEntry("metadata", ImmutableMap.of("key", "value"));
+    assertThat(toolContext.actions().setModelResponse()).hasValue(complexArgs);
   }
 }
