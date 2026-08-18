@@ -87,9 +87,11 @@ public final class PartConverter {
       com.google.genai.types.Part.Builder partBuilder =
           com.google.genai.types.Part.builder().text(textPart.getText());
       if (textPart.getMetadata() != null) {
-        partBuilder.partMetadata(textPart.getMetadata());
         if (Objects.equals(textPart.getMetadata().get("thought"), true)) {
           partBuilder.thought(true);
+        }
+        if (!textPart.getMetadata().isEmpty()) {
+          partBuilder.partMetadata(textPart.getMetadata());
         }
       }
       return partBuilder.build();
@@ -122,7 +124,7 @@ public final class PartConverter {
                       .fileUri(fileWithUri.uri())
                       .mimeType(fileWithUri.mimeType())
                       .build());
-      if (metadata != null) {
+      if (metadata != null && !metadata.isEmpty()) {
         builder.partMetadata(metadata);
       }
       return builder.build();
@@ -137,7 +139,7 @@ public final class PartConverter {
       com.google.genai.types.Part.Builder builder =
           com.google.genai.types.Part.builder()
               .inlineData(Blob.builder().data(decoded).mimeType(fileWithBytes.mimeType()).build());
-      if (metadata != null) {
+      if (metadata != null && !metadata.isEmpty()) {
         builder.partMetadata(metadata);
       }
       return builder.build();
