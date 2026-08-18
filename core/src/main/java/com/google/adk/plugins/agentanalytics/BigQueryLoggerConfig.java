@@ -126,8 +126,7 @@ public abstract class BigQueryLoggerConfig {
         .enabled(true)
         .maxContentLength(500 * 1024)
         .location("us") // Default location.
-        .datasetId("agent_analytics")
-        .tableName("events")
+        .tableName("agent_events")
         .clusteringFields(ImmutableList.of("event_type", "agent", "user_id"))
         .logMultiModalContent(true)
         .gcsBucketName("")

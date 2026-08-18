@@ -143,6 +143,27 @@ public class PluginManager extends BasePlugin {
         .compose(Tracing.withContext(capturedContext));
   }
 
+  public Completable runOnRunErrorCallback(InvocationContext invocationContext, Throwable error) {
+    return onRunErrorCallback(invocationContext, error);
+  }
+
+  @Override
+  public Completable onRunErrorCallback(InvocationContext invocationContext, Throwable error) {
+    Context capturedContext = Context.current();
+    return Flowable.fromIterable(plugins)
+        .concatMapCompletable(
+            plugin ->
+                plugin
+                    .onRunErrorCallback(invocationContext, error)
+                    .doOnError(
+                        e ->
+                            logger.error(
+                                "[{}] Error during callback 'onRunErrorCallback'",
+                                plugin.getName(),
+                                e)))
+        .compose(Tracing.withContext(capturedContext));
+  }
+
   @Override
   public Completable close() {
     Context capturedContext = Context.current();

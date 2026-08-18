@@ -159,18 +159,28 @@ public class PartConverterTest {
   }
 
   @Test
-  public void toGenaiPart_withDataPartFunctionCallByNameAndArgs_returnsGenaiFunctionCallPart() {
+  public void toGenaiPart_withUnlabelledFunctionCallShapedDataPart_doesNotBuildFunctionCall() {
     ImmutableMap<String, Object> data =
-        ImmutableMap.of("name", "func", "id", "1", "args", ImmutableMap.of("param", "value"));
+        ImmutableMap.of("name", "local_tool", "id", "1", "args", ImmutableMap.of("param", "value"));
     DataPart dataPart = new DataPart(data, null);
 
     Part result = PartConverter.toGenaiPart(dataPart);
 
-    assertThat(result.functionCall()).isPresent();
-    FunctionCall functionCall = result.functionCall().get();
-    assertThat(functionCall.name()).hasValue("func");
-    assertThat(functionCall.id()).hasValue("1");
-    assertThat(functionCall.args()).hasValue(ImmutableMap.of("param", "value"));
+    assertThat(result.functionCall()).isEmpty();
+    assertThat(result.inlineData()).isPresent();
+  }
+
+  @Test
+  public void toGenaiPart_withUnrelatedMetadataTypeAndFunctionCallShape_doesNotBuildFunctionCall() {
+    ImmutableMap<String, Object> data =
+        ImmutableMap.of("name", "local_tool", "id", "1", "args", ImmutableMap.of("param", "value"));
+    DataPart dataPart =
+        new DataPart(data, ImmutableMap.of(A2AMetadataKey.TYPE.getType(), "something_else"));
+
+    Part result = PartConverter.toGenaiPart(dataPart);
+
+    assertThat(result.functionCall()).isEmpty();
+    assertThat(result.inlineData()).isPresent();
   }
 
   @Test
@@ -194,19 +204,95 @@ public class PartConverterTest {
   }
 
   @Test
-  public void
-      toGenaiPart_withDataPartFunctionResponseByNameAndResponse_returnsGenaiFunctionResponsePart() {
+  public void toGenaiPart_withUnlabelledFunctionResponseShapedDataPart_doesNotBuildResponse() {
     ImmutableMap<String, Object> data =
         ImmutableMap.of("name", "func", "id", "1", "response", ImmutableMap.of("result", "value"));
     DataPart dataPart = new DataPart(data, null);
 
     Part result = PartConverter.toGenaiPart(dataPart);
 
+    assertThat(result.functionResponse()).isEmpty();
+    assertThat(result.inlineData()).isPresent();
+  }
+
+  // The four positive cases below deliberately use the literal wire strings rather than the enum
+  // constants. Inbound conversion and the outbound createDataPartFrom* helpers read the same enum,
+  // so an enum-based assertion moves in lockstep with the converter and could never fail. These
+  // literals are the contract shared with the Python, Kotlin and Go converters, which is what a
+  // typo would actually break.
+  @Test
+  public void toGenaiPart_withLabelledExecutableCode_returnsGenaiExecutableCodePart() {
+    DataPart dataPart =
+        new DataPart(
+            ImmutableMap.of("code", "print(1)", "language", "PYTHON"),
+            ImmutableMap.of("adk_type", "executable_code"));
+
+    Part result = PartConverter.toGenaiPart(dataPart);
+
+    assertThat(result.executableCode()).isPresent();
+    assertThat(result.executableCode().get().code()).hasValue("print(1)");
+  }
+
+  @Test
+  public void toGenaiPart_withLabelledCodeExecutionResult_returnsGenaiCodeExecutionResultPart() {
+    DataPart dataPart =
+        new DataPart(
+            ImmutableMap.of("outcome", "OUTCOME_OK", "output", "done"),
+            ImmutableMap.of("adk_type", "code_execution_result"));
+
+    Part result = PartConverter.toGenaiPart(dataPart);
+
+    assertThat(result.codeExecutionResult()).isPresent();
+    assertThat(result.codeExecutionResult().get().output()).hasValue("done");
+  }
+
+  @Test
+  public void toGenaiPart_withLabelledFunctionCall_returnsGenaiFunctionCallPart() {
+    DataPart dataPart =
+        new DataPart(
+            ImmutableMap.of("name", "func", "id", "1", "args", ImmutableMap.of("param", "value")),
+            ImmutableMap.of("adk_type", "function_call"));
+
+    Part result = PartConverter.toGenaiPart(dataPart);
+
+    assertThat(result.functionCall()).isPresent();
+    assertThat(result.functionCall().get().name()).hasValue("func");
+  }
+
+  @Test
+  public void toGenaiPart_withLabelledFunctionResponse_returnsGenaiFunctionResponsePart() {
+    DataPart dataPart =
+        new DataPart(
+            ImmutableMap.of(
+                "name", "func", "id", "1", "response", ImmutableMap.of("result", "value")),
+            ImmutableMap.of("adk_type", "function_response"));
+
+    Part result = PartConverter.toGenaiPart(dataPart);
+
     assertThat(result.functionResponse()).isPresent();
-    FunctionResponse functionResponse = result.functionResponse().get();
-    assertThat(functionResponse.name()).hasValue("func");
-    assertThat(functionResponse.id()).hasValue("1");
-    assertThat(functionResponse.response()).hasValue(ImmutableMap.of("result", "value"));
+    assertThat(result.functionResponse().get().name()).hasValue("func");
+  }
+
+  @Test
+  public void toGenaiPart_withUnlabelledExecutableCodeShapedDataPart_doesNotBuildExecutableCode() {
+    ImmutableMap<String, Object> data = ImmutableMap.of("code", "print(1)", "language", "PYTHON");
+    DataPart dataPart = new DataPart(data, null);
+
+    Part result = PartConverter.toGenaiPart(dataPart);
+
+    assertThat(result.executableCode()).isEmpty();
+    assertThat(result.inlineData()).isPresent();
+  }
+
+  @Test
+  public void toGenaiPart_withUnlabelledCodeResultShapedDataPart_doesNotBuildCodeResult() {
+    ImmutableMap<String, Object> data = ImmutableMap.of("outcome", "OUTCOME_OK", "output", "done");
+    DataPart dataPart = new DataPart(data, null);
+
+    Part result = PartConverter.toGenaiPart(dataPart);
+
+    assertThat(result.codeExecutionResult()).isEmpty();
+    assertThat(result.inlineData()).isPresent();
   }
 
   @Test
@@ -378,7 +464,7 @@ public class PartConverterTest {
   @Test
   public void toGenaiPart_dataPartWithEmptyStringCoercedToEmptyMap() {
     ImmutableMap<String, Object> data = ImmutableMap.of("name", "func", "id", "1", "args", "");
-    DataPart dataPart = new DataPart(data, null);
+    DataPart dataPart = new DataPart(data, functionCallMetadata());
 
     Part result = PartConverter.toGenaiPart(dataPart);
 
@@ -389,7 +475,7 @@ public class PartConverterTest {
   @Test
   public void toGenaiPart_dataPartWithNonMapCoercedToMap() {
     ImmutableMap<String, Object> data = ImmutableMap.of("name", "func", "id", "1", "args", 123);
-    DataPart dataPart = new DataPart(data, null);
+    DataPart dataPart = new DataPart(data, functionCallMetadata());
 
     Part result = PartConverter.toGenaiPart(dataPart);
 
@@ -462,5 +548,10 @@ public class PartConverterTest {
     assertThat(dataPart.getData()).containsExactly("key", "value");
     assertThat(dataPart.getMetadata())
         .containsExactly("metaKey", "metaValue", "partMetaKey", "partMetaValue");
+  }
+
+  private static ImmutableMap<String, Object> functionCallMetadata() {
+    return ImmutableMap.of(
+        A2AMetadataKey.TYPE.getType(), A2ADataPartMetadataType.FUNCTION_CALL.getType());
   }
 }

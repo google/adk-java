@@ -17,7 +17,7 @@
 
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk-parent</artifactId>
-  <version>1.7.1</version><!-- {x-version-update:google-adk:current} -->
+  <version>1.8.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
   <packaging>pom</packaging>
 
   <name>Google Agent Development Kit Maven Parent POM</name>
@@ -43,6 +43,9 @@
     <java.version>17</java.version>
     <maven.compiler.release>${java.version}</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Build output root; override to relocate build output (e.g. onto local
+         disk when the checkout is on a slow filesystem). -->
+    <adk.build.directory>${project.basedir}/target</adk.build.directory>
     <maven.checkstyle.plugin.version>3.6.0</maven.checkstyle.plugin.version>
 
     <auto-value.version>1.11.1</auto-value.version>
@@ -300,6 +303,7 @@
         <version>2.2.4</version>
       </extension>
     </extensions>
+    <directory>${adk.build.directory}</directory>
     <pluginManagement>
       <plugins>
         <plugin>

@@ -154,8 +154,7 @@ public final class PartConverter {
 
     String metadataType = metadata.getOrDefault(A2AMetadataKey.TYPE.getType(), "").toString();
 
-    if ((data.containsKey(NAME_KEY) && data.containsKey(ARGS_KEY))
-        || metadataType.equals(A2ADataPartMetadataType.FUNCTION_CALL.getType())) {
+    if (metadataType.equals(A2ADataPartMetadataType.FUNCTION_CALL.getType())) {
       String functionName = String.valueOf(data.getOrDefault(NAME_KEY, ""));
       String functionId = String.valueOf(data.getOrDefault(ID_KEY, ""));
       Map<String, Object> args = coerceToMap(data.get(ARGS_KEY));
@@ -169,8 +168,7 @@ public final class PartConverter {
       return builder.build();
     }
 
-    if ((data.containsKey(NAME_KEY) && data.containsKey(RESPONSE_KEY))
-        || metadataType.equals(A2ADataPartMetadataType.FUNCTION_RESPONSE.getType())) {
+    if (metadataType.equals(A2ADataPartMetadataType.FUNCTION_RESPONSE.getType())) {
       String functionName = String.valueOf(data.getOrDefault(NAME_KEY, ""));
       String functionId = String.valueOf(data.getOrDefault(ID_KEY, ""));
       Map<String, Object> response = coerceToMap(data.get(RESPONSE_KEY));
@@ -188,8 +186,7 @@ public final class PartConverter {
       return builder.build();
     }
 
-    if ((data.containsKey(CODE_KEY) && data.containsKey(LANGUAGE_KEY))
-        || metadataType.equals(A2ADataPartMetadataType.EXECUTABLE_CODE.getType())) {
+    if (metadataType.equals(A2ADataPartMetadataType.EXECUTABLE_CODE.getType())) {
       String code = String.valueOf(data.getOrDefault(CODE_KEY, ""));
       String language =
           String.valueOf(
@@ -204,8 +201,7 @@ public final class PartConverter {
       return builder.build();
     }
 
-    if ((data.containsKey(OUTCOME_KEY) && data.containsKey(OUTPUT_KEY))
-        || metadataType.equals(A2ADataPartMetadataType.CODE_EXECUTION_RESULT.getType())) {
+    if (metadataType.equals(A2ADataPartMetadataType.CODE_EXECUTION_RESULT.getType())) {
       String outcome =
           String.valueOf(data.getOrDefault(OUTCOME_KEY, Outcome.Known.OUTCOME_OK).toString());
       String output = String.valueOf(data.getOrDefault(OUTPUT_KEY, ""));
@@ -222,6 +218,8 @@ public final class PartConverter {
       return builder.build();
     }
 
+    logIfUnlabelledControlPayload(data, metadataType);
+
     try {
       String json = objectMapper.writeValueAsString(dataPart);
       String wrappedJson = A2A_DATA_PART_START_TAG + json + A2A_DATA_PART_END_TAG;
@@ -236,6 +234,37 @@ public final class PartConverter {
       return builder.build();
     } catch (JsonProcessingException e) {
       throw new IllegalArgumentException("Failed to serialize DataPart payload", e);
+    }
+  }
+
+  /**
+   * Warns when a DataPart carries a payload shaped like a control part but no {@code adk_type}
+   * label, so it is about to be carried through as generic data.
+   *
+   * <p>Conversion used to be inferred from this shape. A sender still relying on that - typically a
+   * non-ADK peer - now silently gets an inline JSON blob instead of a function call or response, so
+   * name the cause rather than leaving someone to bisect the converter.
+   */
+  private static void logIfUnlabelledControlPayload(Map<String, Object> data, String metadataType) {
+    if (!metadataType.isEmpty() || !logger.isWarnEnabled()) {
+      return;
+    }
+    String inferredType = null;
+    if (data.containsKey(NAME_KEY) && data.containsKey(ARGS_KEY)) {
+      inferredType = A2ADataPartMetadataType.FUNCTION_CALL.getType();
+    } else if (data.containsKey(NAME_KEY) && data.containsKey(RESPONSE_KEY)) {
+      inferredType = A2ADataPartMetadataType.FUNCTION_RESPONSE.getType();
+    } else if (data.containsKey(CODE_KEY) && data.containsKey(LANGUAGE_KEY)) {
+      inferredType = A2ADataPartMetadataType.EXECUTABLE_CODE.getType();
+    } else if (data.containsKey(OUTCOME_KEY) && data.containsKey(OUTPUT_KEY)) {
+      inferredType = A2ADataPartMetadataType.CODE_EXECUTION_RESULT.getType();
+    }
+    if (inferredType != null) {
+      logger.warn(
+          "A2A DataPart looks like a '{}' but carries no '{}' metadata; treating it as generic"
+              + " data. Senders must label control parts explicitly.",
+          inferredType,
+          A2AMetadataKey.TYPE.getType());
     }
   }
 

@@ -29,6 +29,7 @@ import com.google.adk.plugins.Plugin;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
+import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
@@ -66,6 +67,18 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
   private static final Logger logger = LoggerFactory.getLogger(AgentExecutor.class);
   private static final String USER_ID_PREFIX = "A2A_USER_";
   private static final String A2A_METADATA_KEY = "a2a_metadata";
+
+  /**
+   * Env var that puts exception text back into the failure message sent to the peer.
+   *
+   * <p>Off by default, and meant for local debugging only: enabling it on a network-reachable
+   * deployment restores the disclosure {@link #failedMessage} exists to prevent.
+   */
+  private static final String DEBUG_ERRORS_ENV_VAR = "ADK_DEBUG_ERRORS";
+
+  /** Length of the correlation id, matching {@code new_error_id()} in adk-python. */
+  private static final int ERROR_ID_LENGTH = 12;
+
   private final Map<String, Disposable> activeTasks = new ConcurrentHashMap<>();
   private final Runner.Builder runnerBuilder;
   private final AgentExecutorConfig agentExecutorConfig;
@@ -232,13 +245,7 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
             .ignoreElements()
             .materialize()
             .flatMapCompletable(
-                notification -> {
-                  Throwable error = notification.getError();
-                  if (error != null) {
-                    logger.error("Runner failed to execute", error);
-                  }
-                  return handleExecutionEnd(ctx, error, eventQueue);
-                })
+                notification -> handleExecutionEnd(ctx, notification.getError(), eventQueue))
             .doFinally(() -> cleanupTask(ctx.getTaskId()))
             .subscribe(
                 () -> {},
@@ -250,7 +257,16 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
   private Completable handleExecutionEnd(
       RequestContext ctx, Throwable error, EventQueue eventQueue) {
     TaskState state = error != null ? TaskState.FAILED : TaskState.COMPLETED;
-    Message message = error != null ? failedMessage(ctx, error) : null;
+    Message message = null;
+    if (error != null) {
+      // The peer is not trusted with the throwable: exception text routinely names absolute
+      // filesystem paths, class and module locations, configuration values and echoed request
+      // payloads, none of which the caller needs and all of which are useful reconnaissance. It is
+      // logged here in full under a short opaque id; the peer gets only that id.
+      String errorId = newErrorId();
+      logger.error("Runner failed to execute [error_id={}]", errorId, error);
+      message = failedMessage(ctx, error, errorId);
+    }
     TaskStatusUpdateEvent initialEvent =
         new TaskStatusUpdateEvent.Builder()
             .taskId(ctx.getTaskId())
@@ -304,14 +320,64 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
                 }));
   }
 
-  private static Message failedMessage(RequestContext context, Throwable e) {
+  /**
+   * Builds the failure message handed back to the remote peer.
+   *
+   * <p>It carries {@code errorId} rather than {@code e.getMessage()}, so an operator handed the id
+   * can find the real stack trace in the log while the peer learns nothing about the host. Set
+   * {@code ADK_DEBUG_ERRORS=1} to put the exception text back into the response while debugging
+   * locally.
+   */
+  private static Message failedMessage(RequestContext context, Throwable e, String errorId) {
     return new Message.Builder()
         .messageId(UUID.randomUUID().toString())
         .contextId(context.getContextId())
         .taskId(context.getTaskId())
         .role(Message.Role.AGENT)
-        .parts(ImmutableList.of(new TextPart(e.getMessage())))
+        .parts(ImmutableList.of(new TextPart(failureText(e, errorId, debugErrorsEnabled()))))
         .build();
+  }
+
+  /**
+   * Returns a short opaque id tying the peer's failure message to the logged throwable.
+   *
+   * <p>{@value #ERROR_ID_LENGTH} hex characters, the same shape as {@code new_error_id()} in
+   * adk-python, so an operator sees the same kind of id whichever runtime produced it.
+   */
+  private static String newErrorId() {
+    return UUID.randomUUID().toString().replace("-", "").substring(0, ERROR_ID_LENGTH);
+  }
+
+  /**
+   * Returns the failure text that is safe to hand to the remote peer.
+   *
+   * @param includeDetail whether to append the exception type and message; see {@link
+   *     #DEBUG_ERRORS_ENV_VAR}.
+   */
+  static String failureText(Throwable e, String errorId, boolean includeDetail) {
+    String text = "Agent execution failed. (error_id: " + errorId + ")";
+    if (includeDetail) {
+      text = text + ": " + e.getClass().getName() + ": " + e.getMessage();
+    }
+    return text;
+  }
+
+  private static boolean debugErrorsEnabled() {
+    return debugErrorsEnabled(System.getenv(DEBUG_ERRORS_ENV_VAR));
+  }
+
+  /**
+   * Returns whether {@code value}, as read from {@link #DEBUG_ERRORS_ENV_VAR}, turns the detail
+   * back on. Unset or unrecognized means off, matching {@code is_env_enabled} in adk-python.
+   *
+   * <p>Split from the env lookup so both outcomes are testable: {@code System.getenv} cannot be set
+   * from a test in-process.
+   */
+  static boolean debugErrorsEnabled(String value) {
+    if (value == null) {
+      return false;
+    }
+    return value.equals("1") || Ascii.equalsIgnoreCase(value, "true");
   }
 
   // Processor that will process all events related to the one runner invocation.

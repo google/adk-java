@@ -16,6 +16,7 @@
 
 package com.google.adk.plugins.agentanalytics;
 
+import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 
@@ -27,7 +28,7 @@ import org.junit.runners.JUnit4;
 public class BigQueryLoggerConfigTest {
 
   private static BigQueryLoggerConfig.Builder validBuilder() {
-    return BigQueryLoggerConfig.builder().projectId("test-project");
+    return BigQueryLoggerConfig.builder().projectId("test-project").datasetId("test-dataset");
   }
 
   @Test
@@ -36,6 +37,18 @@ public class BigQueryLoggerConfigTest {
     assertEquals("test-project", config.projectId());
     assertEquals(1, config.batchSize());
     assertEquals(10000, config.queueMaxSize());
+  }
+
+  @Test
+  public void build_defaults_matchCrossLanguageContract() {
+    BigQueryLoggerConfig config = validBuilder().build();
+    assertThat(config.tableName()).isEqualTo("agent_events");
+  }
+
+  @Test
+  public void build_missingDatasetId_throws() {
+    BigQueryLoggerConfig.Builder builder = BigQueryLoggerConfig.builder().projectId("test-project");
+    assertThrows(IllegalStateException.class, () -> builder.build());
   }
 
   @Test

@@ -88,6 +88,16 @@ public interface Plugin {
   }
 
   /**
+   * Callback executed when a run encounters an error.
+   *
+   * @param invocationContext The context for the entire invocation.
+   * @param error The exception that was raised.
+   */
+  default Completable onRunErrorCallback(InvocationContext invocationContext, Throwable error) {
+    return Completable.complete();
+  }
+
+  /**
    * Method executed when the runner is closed.
    *
    * <p>This method is used for cleanup tasks such as closing network connections or releasing

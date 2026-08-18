@@ -155,7 +155,10 @@ public final class Contents implements RequestProcessor {
       // TODO: Skip auth events.
 
       if (isOtherAgentReply(agentName, event)) {
-        filteredEvents.add(convertForeignEvent(event));
+        Event foreignEvent = convertForeignEvent(event);
+        if (foreignEvent != null) {
+          filteredEvents.add(foreignEvent);
+        }
       } else {
         filteredEvents.add(event);
       }
@@ -180,8 +183,9 @@ public final class Contents implements RequestProcessor {
    *
    * <p>This can happen to the events that only changed session state. When both content and
    * transcriptions are empty, the event will be considered as empty. The content is considered
-   * empty if none of its parts contain text, inline data, file data, function call, or function
-   * response. Parts with only thoughts are also considered empty.
+   * empty if none of its parts contain text, inline data, file data, function call, function
+   * response, server-side tool call, or server-side tool response. Parts with only thoughts are
+   * also considered empty.
    *
    * @param event the event to check.
    * @return {@code true} if the event is considered to have empty content, {@code false} otherwise.
@@ -205,12 +209,16 @@ public final class Contents implements RequestProcessor {
    *
    * <ul>
    *   <li>It has no meaningful content (text, inline_data, file_data, function_call,
-   *       function_response, executable_code, or code_execution_result), OR
-   *   <li>It is marked as a thought AND does not contain function_call or function_response
+   *       function_response, tool_call, tool_response, executable_code, or code_execution_result)
+   *       and no thought_signature, OR
+   *   <li>It is marked as a thought AND does not contain function_call, function_response,
+   *       tool_call, tool_response or thought_signature
    * </ul>
    *
    * <p>Function calls and responses are never invisible, even if marked as thought, because they
-   * represent actions that need to be executed or results that need to be processed.
+   * represent actions that need to be executed or results that need to be processed. Parts carrying
+   * a thought signature, and server-side tool calls and their responses, are never invisible
+   * either, because the caller is required to echo them back on the next request.
    *
    * @param part the part to check.
    * @return {@code true} if the part is invisible, {@code false} otherwise.
@@ -219,6 +227,18 @@ public final class Contents implements RequestProcessor {
     if (part.functionCall().isPresent() || part.functionResponse().isPresent()) {
       return false;
     }
+
+    // A thought signature is opaque state to hand back verbatim, and it routinely arrives on a part
+    // with nothing else in it, so it has to be checked before the emptiness test below.
+    if (part.thoughtSignature().map(signature -> signature.length > 0).orElse(false)) {
+      return false;
+    }
+
+    // Server-side tool calls/responses must be echoed back to the model.
+    if (part.toolCall().isPresent() || part.toolResponse().isPresent()) {
+      return false;
+    }
+
     return part.thought().orElse(false)
         || !(part.text().isPresent()
             || part.inlineData().isPresent()
@@ -387,8 +407,13 @@ public final class Contents implements RequestProcessor {
         && !event.author().equals("user");
   }
 
-  /** Converts an {@code event} authored by another agent to a 'contextual-only' event. */
-  private static Event convertForeignEvent(Event event) {
+  /**
+   * Converts an {@code event} authored by another agent to a 'contextual-only' event.
+   *
+   * <p>Returns {@code null} when nothing but the "For context:" preamble survives the conversion,
+   * so the caller drops the event instead of sending a preamble with no context after it.
+   */
+  private static @Nullable Event convertForeignEvent(Event event) {
     if (event.content().isEmpty()
         || event.content().get().parts().isEmpty()
         || event.content().get().parts().get().isEmpty()) {
@@ -401,9 +426,14 @@ public final class Contents implements RequestProcessor {
     String originalAuthor = event.author();
 
     for (Part part : event.content().get().parts().get()) {
-      if (part.text().isPresent()
-          && !part.text().get().isEmpty()
-          && !part.thought().orElse(false)) {
+      // Thoughts belong to the agent that produced them and are never narrated, whatever else the
+      // part carries. ADK Python and ADK Kotlin both skip them before the branches below.
+      if (part.thought().orElse(false)) {
+        continue;
+      }
+      // Blank text is not narrated: such a part is a signature carrier, and a bare "said:" would
+      // both pollute the prompt and keep the event alive on nothing.
+      if (part.text().map(text -> !text.isBlank()).orElse(false)) {
         parts.add(Part.fromText(String.format("[%s] said: %s", originalAuthor, part.text().get())));
       } else if (part.functionCall().isPresent()) {
         FunctionCall functionCall = part.functionCall().get();
@@ -423,9 +453,18 @@ public final class Contents implements RequestProcessor {
                     originalAuthor,
                     functionResponse.name().orElse("unknown_tool"),
                     functionResponse.response().map(Contents::convertMapToJson).orElse("{}"))));
-      } else {
+      } else if (part.inlineData().isPresent()
+          || part.fileData().isPresent()
+          || part.executableCode().isPresent()
+          || part.codeExecutionResult().isPresent()) {
         parts.add(part);
       }
+      // Anything else - a bare signature, a server-side call - belongs to the model instance that
+      // produced it, so claiming it for another agent would be wrong.
+    }
+
+    if (parts.size() == 1) {
+      return null;
     }
 
     Content content = Content.builder().role("user").parts(parts).build();

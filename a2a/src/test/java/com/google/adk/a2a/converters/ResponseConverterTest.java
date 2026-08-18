@@ -17,8 +17,8 @@
 package com.google.adk.a2a.converters;
 
 import static com.google.common.truth.Truth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.stream.Collectors.joining;
-import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
@@ -47,6 +47,7 @@ import io.a2a.spec.TaskStatus;
 import io.a2a.spec.TaskStatusUpdateEvent;
 import io.a2a.spec.TextPart;
 import io.reactivex.rxjava3.core.Flowable;
+import java.util.List;
 import java.util.Optional;
 import org.junit.Before;
 import org.junit.Test;
@@ -213,6 +214,92 @@ public final class ResponseConverterTest {
   }
 
   @Test
+  public void taskToEvent_withMalformedMetadata_dropsFieldsAndConverts() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Status message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.WORKING, statusMessage, null);
+    Task task =
+        testTask()
+            .status(status)
+            .artifacts(null)
+            .metadata(
+                ImmutableMap.of(
+                    A2AMetadataKey.GROUNDING_METADATA.getType(), "not-valid-json",
+                    A2AMetadataKey.USAGE_METADATA.getType(), "not-valid-json",
+                    A2AMetadataKey.CUSTOM_METADATA.getType(), "not-valid-json",
+                    A2AMetadataKey.ERROR_CODE.getType(), "not-valid-json"))
+            .build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(event.content().get().parts().get().get(0).text()).hasValue("Status message");
+    assertThat(event.groundingMetadata()).isEmpty();
+    assertThat(event.usageMetadata()).isEmpty();
+    assertThat(event.errorCode()).isEmpty();
+    assertThat(event.customMetadata().get())
+        .containsExactly(
+            CustomMetadata.builder().key("a2a:task_id").stringValue("task-1").build(),
+            CustomMetadata.builder().key("a2a:context_id").stringValue("context-1").build());
+  }
+
+  @Test
+  public void taskToEvent_withUnrecognizedMetadataField_dropsField() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Status message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.WORKING, statusMessage, null);
+    Task task =
+        testTask()
+            .status(status)
+            .artifacts(null)
+            .metadata(
+                ImmutableMap.of(
+                    // A nested object takes the convertValue branch rather than readValue. The
+                    // genai builders reject unknown fields, so snake_case fails to convert.
+                    A2AMetadataKey.GROUNDING_METADATA.getType(),
+                    ImmutableMap.of("web_search_queries", ImmutableList.of("test-query"))))
+            .build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(event.groundingMetadata()).isEmpty();
+    assertThat(event.content().get().parts().get().get(0).text()).hasValue("Status message");
+  }
+
+  @Test
+  public void taskToEvent_withOneMalformedMetadataField_keepsTheValidFields() {
+    GroundingMetadata groundingMetadata =
+        GroundingMetadata.builder().webSearchQueries("test-query").build();
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Status message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.WORKING, statusMessage, null);
+    Task task =
+        testTask()
+            .status(status)
+            .artifacts(null)
+            .metadata(
+                ImmutableMap.of(
+                    A2AMetadataKey.GROUNDING_METADATA.getType(),
+                    groundingMetadata.toJson(),
+                    A2AMetadataKey.USAGE_METADATA.getType(),
+                    "not-valid-json"))
+            .build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(event.groundingMetadata()).hasValue(groundingMetadata);
+    assertThat(event.usageMetadata()).isEmpty();
+  }
+
+  @Test
   public void messageToEvent_withMissingTaskId_returnsEvent() {
     Message a2aMessage =
         new Message.Builder()
@@ -270,6 +357,132 @@ public final class ResponseConverterTest {
     Event event = ResponseConverter.taskToEvent(task, invocationContext);
     assertThat(event).isNotNull();
     assertThat(event.longRunningToolIds().get()).containsExactly("call_123", "msg_123");
+  }
+
+  @Test
+  public void taskToEvent_withAuthRequired_parsesLongRunningToolIds() {
+    ImmutableMap<String, Object> data =
+        ImmutableMap.of("name", "myTool", "id", "call_123", "args", ImmutableMap.of());
+    ImmutableMap<String, Object> metadata =
+        ImmutableMap.of(
+            A2AMetadataKey.TYPE.getType(),
+            "function_call",
+            A2AMetadataKey.IS_LONG_RUNNING.getType(),
+            true);
+    DataPart dataPart = new DataPart(data, metadata);
+    ImmutableMap<String, Object> statusData =
+        ImmutableMap.of("name", "messageTools", "id", "msg_123", "args", ImmutableMap.of());
+    ImmutableMap<String, Object> statusMetadata =
+        ImmutableMap.of(
+            A2AMetadataKey.TYPE.getType(),
+            "function_call",
+            A2AMetadataKey.IS_LONG_RUNNING.getType(),
+            true);
+    DataPart statusDataPart = new DataPart(statusData, statusMetadata);
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(statusDataPart))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.AUTH_REQUIRED, statusMessage, null);
+
+    Artifact artifact =
+        new Artifact.Builder().artifactId("artifact-1").parts(ImmutableList.of(dataPart)).build();
+    Task task = testTask().status(status).artifacts(ImmutableList.of(artifact)).build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+    assertThat(event).isNotNull();
+    assertThat(event.longRunningToolIds().get()).containsExactly("call_123", "msg_123");
+    assertThat(event.turnComplete()).hasValue(true);
+  }
+
+  @Test
+  public void taskToEvent_withDataPartWithoutMetadata_fallsBackToInlineJson() {
+    DataPart dataPart =
+        new DataPart(
+            ImmutableMap.of("name", "myTool", "id", "call_123", "args", ImmutableMap.of()));
+    DataPart statusDataPart =
+        new DataPart(
+            ImmutableMap.of("name", "messageTool", "id", "msg_123", "args", ImmutableMap.of()));
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(statusDataPart))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.INPUT_REQUIRED, statusMessage, null);
+    Artifact artifact =
+        new Artifact.Builder().artifactId("artifact-1").parts(ImmutableList.of(dataPart)).build();
+    Task task = testTask().status(status).artifacts(ImmutableList.of(artifact)).build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(event.longRunningToolIds().get()).isEmpty();
+    List<com.google.genai.types.Part> parts = event.content().get().parts().get();
+    assertThat(parts).hasSize(2);
+    assertThat(parts.get(0).functionCall()).isEmpty();
+    assertThat(inlineJson(parts.get(0))).contains("call_123");
+    assertThat(parts.get(1).functionCall()).isEmpty();
+    assertThat(inlineJson(parts.get(1))).contains("msg_123");
+  }
+
+  @Test
+  public void artifactToEvent_withDataPartWithoutMetadata_fallsBackToInlineJson() {
+    DataPart dataPart =
+        new DataPart(
+            ImmutableMap.of("name", "myTool", "id", "call_123", "args", ImmutableMap.of()));
+    Artifact artifact =
+        new Artifact.Builder().artifactId("artifact-1").parts(ImmutableList.of(dataPart)).build();
+
+    Event event = ResponseConverter.artifactToEvent(artifact, invocationContext);
+
+    assertThat(event.longRunningToolIds().get()).isEmpty();
+    List<com.google.genai.types.Part> parts = event.content().get().parts().get();
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).functionCall()).isEmpty();
+    assertThat(inlineJson(parts.get(0))).contains("call_123");
+  }
+
+  /**
+   * {@return the wrapped JSON payload of a part that {@link PartConverter} carried through as
+   * generic data}
+   *
+   * <p>A DataPart with no {@code adk_type} metadata is not converted into a function call, even
+   * when its data is shaped like one; it is serialized into an inline JSON blob instead.
+   */
+  private static String inlineJson(com.google.genai.types.Part part) {
+    assertThat(part.inlineData()).isPresent();
+    assertThat(part.inlineData().get().mimeType()).hasValue("text/plain");
+    return new String(part.inlineData().get().data().get(), UTF_8);
+  }
+
+  @Test
+  public void taskToEvent_withMixedMetadataParts_keepsLongRunningId() {
+    DataPart noMetadataPart =
+        new DataPart(
+            ImmutableMap.of("name", "plainTool", "id", "call_plain", "args", ImmutableMap.of()));
+    DataPart longRunningPart =
+        new DataPart(
+            ImmutableMap.of("name", "lrTool", "id", "call_lr", "args", ImmutableMap.of()),
+            ImmutableMap.of(
+                A2AMetadataKey.TYPE.getType(),
+                "function_call",
+                A2AMetadataKey.IS_LONG_RUNNING.getType(),
+                true));
+    Artifact artifact =
+        new Artifact.Builder()
+            .artifactId("artifact-1")
+            .parts(ImmutableList.of(noMetadataPart, longRunningPart))
+            .build();
+    Task task =
+        testTask()
+            .status(new TaskStatus(TaskState.INPUT_REQUIRED, null, null))
+            .artifacts(ImmutableList.of(artifact))
+            .build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(event.longRunningToolIds().get()).containsExactly("call_lr");
+    assertThat(event.content().get().parts().get()).hasSize(2);
   }
 
   @Test
@@ -422,6 +635,52 @@ public final class ResponseConverterTest {
   }
 
   @Test
+  public void
+      clientEventToEvent_withAuthRequiredTaskStatusUpdateEvent_evenIfNonFinal_returnsTurnComplete() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Auth required message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.AUTH_REQUIRED, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        testTaskStatusUpdateEvent().isFinal(false).status(status).build();
+
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.content().get().parts().get().get(0).text())
+        .hasValue("Auth required message");
+    assertThat(resultEvent.partial().orElse(false)).isFalse();
+    assertThat(resultEvent.turnComplete()).hasValue(true);
+  }
+
+  @Test
+  public void
+      clientEventToEvent_withInputRequiredTaskStatusUpdateEvent_evenIfNonFinal_returnsTurnComplete() {
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Input required message")))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.INPUT_REQUIRED, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        testTaskStatusUpdateEvent().isFinal(false).status(status).build();
+
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+    assertThat(optionalEvent).isPresent();
+    Event resultEvent = optionalEvent.get();
+    assertThat(resultEvent.content().get().parts().get().get(0).text())
+        .hasValue("Input required message");
+    assertThat(resultEvent.partial().orElse(false)).isFalse();
+    assertThat(resultEvent.turnComplete()).hasValue(true);
+  }
+
+  @Test
   public void clientEventToEvent_withNonFinalTaskStatusUpdateEvent_withoutMessage_returnsEmpty() {
     TaskStatus status = new TaskStatus(TaskState.WORKING, null, null);
     TaskStatusUpdateEvent updateEvent =
@@ -452,7 +711,7 @@ public final class ResponseConverterTest {
   }
 
   @Test
-  public void taskToEvent_withInvalidMetadata_throwsException() {
+  public void taskToEvent_withInvalidMetadata_dropsFieldInsteadOfThrowing() {
     Message statusMessage =
         new Message.Builder()
             .role(Message.Role.AGENT)
@@ -467,12 +726,10 @@ public final class ResponseConverterTest {
                 ImmutableMap.of(A2AMetadataKey.GROUNDING_METADATA.getType(), "{ invalid json ]"))
             .build();
 
-    IllegalArgumentException exception =
-        assertThrows(
-            IllegalArgumentException.class,
-            () -> ResponseConverter.taskToEvent(task, invocationContext));
-    assertThat(exception).hasMessageThat().contains("Failed to parse metadata");
-    assertThat(exception).hasMessageThat().contains("GroundingMetadata");
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(event.groundingMetadata()).isEmpty();
+    assertThat(event.content().get().parts().get().get(0).text()).hasValue("Status message");
   }
 
   @Test

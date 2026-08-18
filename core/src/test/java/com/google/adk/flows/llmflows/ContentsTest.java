@@ -19,6 +19,7 @@ package com.google.adk.flows.llmflows;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Correspondence.transforming;
 import static com.google.common.truth.Truth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
@@ -33,10 +34,13 @@ import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import com.google.genai.types.ToolCall;
+import com.google.genai.types.ToolResponse;
 import java.util.ArrayList;
 import java.util.ConcurrentModificationException;
 import java.util.Iterator;
@@ -946,6 +950,294 @@ public final class ContentsTest {
     assertThat(contents).containsExactly(e.content().get());
   }
 
+  // On models that return a signature for every part, it arrives on parts holding nothing else.
+  // Dropping those as "empty" loses the reasoning the model expects back on the next turn.
+  @Test
+  public void processRequest_contentFreeThoughtSignatureEvent_notSkipped() {
+    Event signatureEvent =
+        createModelEvent(
+            "e2", Part.builder().thoughtSignature("call-context".getBytes(UTF_8)).build());
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("e1", "Summarize the video."), signatureEvent);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(2);
+    assertThat(contents.get(1).parts().get().get(0).thoughtSignature())
+        .hasValue("call-context".getBytes(UTF_8));
+  }
+
+  // A thought part carrying a signature is kept for the same reason, even though a bare thought
+  // part is dropped.
+  @Test
+  public void processRequest_thoughtWithSignatureEvent_notSkipped() {
+    Event thoughtEvent =
+        createModelEvent(
+            "e2",
+            Part.builder()
+                .thought(true)
+                .text("Let me check the frame at 0:05.")
+                .thoughtSignature("thought-sig".getBytes(UTF_8))
+                .build());
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("e1", "Summarize the video."), thoughtEvent);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(2);
+    assertThat(contents.get(1).parts().get().get(0).thoughtSignature())
+        .hasValue("thought-sig".getBytes(UTF_8));
+  }
+
+  // The caller must echo server-side tool parts back, so dropping them as "empty" makes the model
+  // redo the work or fail on a call with no matching response.
+  @Test
+  public void processRequest_serverSideToolCallAndResponseEvents_notSkipped() {
+    Event toolCallEvent =
+        createModelEvent(
+            "e2",
+            Part.builder()
+                .toolCall(
+                    ToolCall.builder()
+                        .id("tc1")
+                        .args(ImmutableMap.of("url", "https://example.com"))
+                        .build())
+                .build());
+    Event toolResponseEvent =
+        createModelEvent(
+            "e3",
+            Part.builder()
+                .toolResponse(
+                    ToolResponse.builder()
+                        .id("tc1")
+                        .response(ImmutableMap.of("content", "page text"))
+                        .build())
+                .build());
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("e1", "Summarize the linked page."), toolCallEvent, toolResponseEvent);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(3);
+    assertThat(contents.get(1).parts().get().get(0).toolCall().get().id()).hasValue("tc1");
+    ToolResponse toolResponse = contents.get(2).parts().get().get(0).toolResponse().get();
+    assertThat(toolResponse.id()).hasValue("tc1");
+    assertThat(toolResponse.response()).hasValue(ImmutableMap.of("content", "page text"));
+  }
+
+  // The echo-back contract holds regardless of how the model labels the part, so a thought marking
+  // must not drop it.
+  @Test
+  public void processRequest_serverSideToolCallMarkedAsThought_notSkipped() {
+    Event toolCallEvent =
+        createModelEvent(
+            "e2",
+            Part.builder()
+                .thought(true)
+                .toolCall(
+                    ToolCall.builder()
+                        .id("tc1")
+                        .args(ImmutableMap.of("url", "https://example.com"))
+                        .build())
+                .build());
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("e1", "Summarize the linked page."), toolCallEvent);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(2);
+    assertThat(contents.get(1).parts().get().get(0).toolCall().get().id()).hasValue("tc1");
+  }
+
+  // A server-side call belongs to the model instance that made it, so the other-agent path must
+  // keep dropping it rather than claiming the call on this agent's behalf.
+  @Test
+  public void processRequest_serverSideToolCallFromOtherAgent_isDropped() {
+    Event otherAgentToolCall =
+        Event.builder()
+            .id("e2")
+            .author(OTHER_AGENT)
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .toolCall(
+                                    ToolCall.builder()
+                                        .id("tc1")
+                                        .args(ImmutableMap.of("url", "https://example.com"))
+                                        .build())
+                                .build()))
+                    .build())
+            .invocationId("invocationId")
+            .build();
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("e1", "Summarize the linked page."), otherAgentToolCall);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(1);
+    assertThat(contents.get(0).parts().get().get(0).text()).hasValue("Summarize the linked page.");
+  }
+
+  @Test
+  public void processRequest_serverSideToolCallWithThoughtFromOtherAgent_isDropped() {
+    Event otherAgentToolCall =
+        Event.builder()
+            .id("e2")
+            .author(OTHER_AGENT)
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder().thought(true).text("Let me look it up.").build(),
+                            Part.builder()
+                                .toolCall(
+                                    ToolCall.builder()
+                                        .id("tc1")
+                                        .args(ImmutableMap.of("url", "https://example.com"))
+                                        .build())
+                                .build()))
+                    .build())
+            .invocationId("invocationId")
+            .build();
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("e1", "Summarize the linked page."), otherAgentToolCall);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(1);
+    assertThat(contents.get(0).parts().get().get(0).text()).hasValue("Summarize the linked page.");
+  }
+
+  // A thought-marked function call from another agent must not be narrated: the thought guard runs
+  // before the branches that would turn it into "[agent] called tool ...".
+  @Test
+  public void processRequest_thoughtMarkedFunctionCallFromOtherAgent_isDropped() {
+    Event otherAgentEvent =
+        Event.builder()
+            .id("e2")
+            .author(OTHER_AGENT)
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .thought(true)
+                                .functionCall(
+                                    FunctionCall.builder()
+                                        .name("lookup")
+                                        .args(ImmutableMap.of("q", "x"))
+                                        .build())
+                                .build()))
+                    .build())
+            .invocationId("invocationId")
+            .build();
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("e1", "What is in the picture?"), otherAgentEvent);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(1);
+  }
+
+  // Whitespace-only text is not content either, so the carrier that carries it must not be narrated
+  // as a bare "said:". Matches what the emptiness rule already treats as blank.
+  @Test
+  public void processRequest_blankTextSignaturePartFromOtherAgent_isNotNarrated() {
+    Event otherAgentEvent =
+        Event.builder()
+            .id("e2")
+            .author(OTHER_AGENT)
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .text("   ")
+                                .thoughtSignature(new byte[] {7, 7, 7})
+                                .build()))
+                    .build())
+            .invocationId("invocationId")
+            .build();
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("e1", "Summarize the video."), otherAgentEvent);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(1);
+  }
+
+  // Another agent's reasoning belongs to that agent and is never narrated: only the answer text
+  // beside it may be attributed.
+  @Test
+  public void processRequest_thoughtTextFromOtherAgent_isNotNarrated() {
+    Event otherAgentEvent =
+        Event.builder()
+            .id("e2")
+            .author(OTHER_AGENT)
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder().thought(true).text("Let me check the map.").build(),
+                            Part.fromText("It is in Paris.")))
+                    .build())
+            .invocationId("invocationId")
+            .build();
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("e1", "Where is it?"), otherAgentEvent);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(2);
+    assertThat(
+            contents.get(1).parts().get().stream()
+                .map(part -> part.text().orElse(""))
+                .collect(toImmutableList()))
+        .containsExactly("For context:", "[" + OTHER_AGENT + "] said: It is in Paris.");
+  }
+
+  // The other-agent path still narrates what it can: media parts pass through unchanged, so the
+  // drop above is about attribution rather than a blanket filter.
+  @Test
+  public void processRequest_mediaPartFromOtherAgent_isKept() {
+    Event otherAgentImage =
+        Event.builder()
+            .id("e2")
+            .author(OTHER_AGENT)
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .inlineData(
+                                    Blob.builder()
+                                        .mimeType("image/png")
+                                        .data(new byte[] {1, 2, 3})
+                                        .build())
+                                .build()))
+                    .build())
+            .invocationId("invocationId")
+            .build();
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("e1", "What is in the picture?"), otherAgentImage);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(2);
+    assertThat(contents.get(1).parts().get()).hasSize(2);
+    assertThat(contents.get(1).parts().get().get(0).text()).hasValue("For context:");
+    assertThat(contents.get(1).parts().get().get(1).inlineData()).isPresent();
+  }
+
   @Test
   public void processRequest_concurrentReadAndWrite_noException() throws Exception {
     LlmAgent agent =
@@ -1025,6 +1317,15 @@ public final class ContentsTest {
         .content(Content.fromParts(Part.fromText(text)))
         .invocationId(invocationId)
         .timestamp(timestamp)
+        .build();
+  }
+
+  private static Event createModelEvent(String id, Part part) {
+    return Event.builder()
+        .id(id)
+        .author(AGENT)
+        .content(Content.builder().role("model").parts(ImmutableList.of(part)).build())
+        .invocationId("invocationId")
         .build();
   }
 

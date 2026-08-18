@@ -36,6 +36,7 @@ import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.Part;
 import io.a2a.client.Client;
 import io.a2a.client.ClientEvent;
+import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskEvent;
 import io.a2a.client.TaskUpdateEvent;
 import io.a2a.spec.A2AClientException;
@@ -228,12 +229,23 @@ public class RemoteA2AAgent extends BaseAgent {
         emitter -> {
           StreamHandler handler =
               new StreamHandler(
-                  emitter.serialize(), invocationContext, requestJson, streaming, name());
+                  emitter.serialize(),
+                  invocationContext,
+                  requestJson,
+                  name(),
+                  /* subscribeThread= */ Thread.currentThread());
           ImmutableList<BiConsumer<ClientEvent, AgentCard>> consumers =
               ImmutableList.of(handler::handleEvent);
-          a2aClient.sendMessage(originalMessage, consumers, handler::handleError, null);
+          handler.dispatchSynchronously(
+              () -> a2aClient.sendMessage(originalMessage, consumers, handler::handleError, null));
         },
         BackpressureStrategy.BUFFER);
+  }
+
+  /** A {@link Runnable} that may throw, so the a2a client's checked exception can propagate. */
+  @FunctionalInterface
+  private interface ThrowingRunnable {
+    void run() throws Exception;
   }
 
   private @Nullable String serializeMessageToJson(Message message) {
@@ -249,8 +261,26 @@ public class RemoteA2AAgent extends BaseAgent {
     private final FlowableEmitter<Event> emitter;
     private final InvocationContext invocationContext;
     private final String requestJson;
-    private final boolean streaming;
     private final String agentName;
+    private final Thread subscribeThread;
+
+    /** True while {@code sendMessage} is running on {@link #subscribeThread}. */
+    private volatile boolean dispatchingSynchronously = false;
+
+    /**
+     * Runs the a2a client call that this handler is the consumer for, recording that any event
+     * delivered on {@link #subscribeThread} while it is on the stack came from synchronous
+     * dispatch. Owned here so the window cannot be left open by an edit at the call site.
+     */
+    void dispatchSynchronously(ThrowingRunnable dispatch) throws Exception {
+      dispatchingSynchronously = true;
+      try {
+        dispatch.run();
+      } finally {
+        dispatchingSynchronously = false;
+      }
+    }
+
     private boolean done = false;
     private final StringBuilder textBuffer = new StringBuilder();
     private final StringBuilder thoughtsBuffer = new StringBuilder();
@@ -259,16 +289,20 @@ public class RemoteA2AAgent extends BaseAgent {
         FlowableEmitter<Event> emitter,
         InvocationContext invocationContext,
         String requestJson,
-        boolean streaming,
-        String agentName) {
+        String agentName,
+        Thread subscribeThread) {
       this.emitter = emitter;
       this.invocationContext = invocationContext;
       this.requestJson = requestJson;
-      this.streaming = streaming;
       this.agentName = agentName;
+      this.subscribeThread = subscribeThread;
     }
 
     synchronized void handleError(Throwable e) {
+      handleError("Failed to communicate with the remote agent", e);
+    }
+
+    synchronized void handleError(String message, Throwable e) {
       // Mark the flow as done if it is already cancelled.
       if (!done) {
         done = emitter.isCancelled();
@@ -280,7 +314,7 @@ public class RemoteA2AAgent extends BaseAgent {
       }
       // If the error is raised, complete the flow with an error.
       done = true;
-      emitter.tryOnError(new A2AClientError("Failed to communicate with the remote agent", e));
+      emitter.tryOnError(new A2AClientError(message, e));
     }
 
     // TODO: b/483038527 - The synchronized block might block the thread, we should optimize for
@@ -296,8 +330,33 @@ public class RemoteA2AAgent extends BaseAgent {
         return;
       }
 
-      Optional<Event> eventOpt =
-          ResponseConverter.clientEventToEvent(clientEvent, invocationContext);
+      Optional<Event> eventOpt;
+      try {
+        eventOpt = ResponseConverter.clientEventToEvent(clientEvent, invocationContext);
+      } catch (Throwable t) {
+        logger.warn("Failed to convert A2A event", t);
+        handleError("Failed to convert the remote agent's response", t);
+        if (!dispatchingSynchronously || Thread.currentThread() != subscribeThread) {
+          // Delivered by the transport rather than from inside sendMessage: rethrow so the
+          // transport tears the connection down. Synchronous dispatch is the one case where
+          // Flowable.create has already failed the flow, and rethrowing into it would only add
+          // an undeliverable via RxJavaPlugins.
+          throw t;
+        }
+        return;
+      }
+      emit(clientEvent, eventOpt);
+    }
+
+    /**
+     * Emits a converted event.
+     *
+     * <p>Outside the conversion guard above only because of the {@code emitter} calls: RxJava's
+     * contract is that a downstream {@code onNext} does not throw, so such a throw is the
+     * subscriber's bug and must not be fed back to that same subscriber as {@code onError}. The
+     * surrounding aggregation bookkeeping is ADK's own; none of it throws on peer input today.
+     */
+    private void emit(ClientEvent clientEvent, Optional<Event> eventOpt) {
       eventOpt.ifPresent(
           event -> {
             addMetadata(event, clientEvent);
@@ -522,13 +581,15 @@ public class RemoteA2AAgent extends BaseAgent {
   }
 
   private static boolean isCompleted(ClientEvent event) {
-    TaskState executionState = TaskState.UNKNOWN;
+    TaskState state;
     if (event instanceof TaskEvent taskEvent) {
-      executionState = taskEvent.getTask().getStatus().state();
+      state = taskEvent.getTask().getStatus().state();
     } else if (event instanceof TaskUpdateEvent updateEvent) {
-      executionState = updateEvent.getTask().getStatus().state();
+      state = updateEvent.getTask().getStatus().state();
+    } else {
+      return false;
     }
-    return executionState.equals(TaskState.COMPLETED);
+    return state.isFinal() || state == TaskState.INPUT_REQUIRED || state == TaskState.AUTH_REQUIRED;
   }
 
   private static ImmutableList<Part> eventParts(Event event) {

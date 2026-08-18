@@ -18,6 +18,7 @@ projects that demonstrate how to expose that runtime over HTTP.
   library and exposes the JSON-RPC endpoint.
 
 ### High‑Level Picture
+
 ```mermaid
 graph LR
     classDef client fill:#E8F0FE,stroke:#1A73E8,color:#202124;
@@ -114,45 +115,52 @@ transport-agnostic `a2a/src/...` tree described above.
 All commands below assume you are in `google_adk`.
 
 1. **Start the Spring webservice sample** (run in its own terminal)
-   ```bash
-   lsof -ti :8081 | xargs -r kill
-   ./mvnw -f contrib/samples/a2a_remote/pom.xml spring-boot:run \
-     -Dspring-boot.run.arguments=--server.port=8081
-   ```
 
-   Background option:
-   ```bash
-   nohup env GOOGLE_GENAI_USE_VERTEXAI=FALSE \
+    ```bash
+    lsof -ti :8081 | xargs -r kill
+    ./mvnw -f contrib/samples/a2a_remote/pom.xml spring-boot:run \
+     -Dspring-boot.run.arguments=--server.port=8081
+    ```
+
+    Background option:
+
+    ```bash
+    nohup env GOOGLE_GENAI_USE_VERTEXAI=FALSE \
      GOOGLE_API_KEY=your_api_key \
      ./mvnw -f contrib/samples/a2a_remote/pom.xml spring-boot:run \
      -Dspring-boot.run.arguments=--server.port=8081 \
      > /tmp/a2a_webservice.log 2>&1 & echo $!
-   ```
-   The log can be found at /tmp/a2a_webservice.log.
+    ```
+
+    The log can be found at /tmp/a2a_webservice.log.
 
 2. **Run the basic client sample (`a2a_basic`)** (from another terminal)
-   ```bash
-   GOOGLE_GENAI_USE_VERTEXAI=FALSE \
-   GOOGLE_API_KEY=your_api_key \
-   ./mvnw -f contrib/samples/a2a_basic/pom.xml exec:java \
+
+    ```bash
+    GOOGLE_GENAI_USE_VERTEXAI=FALSE \
+    GOOGLE_API_KEY=your_api_key \
+    ./mvnw -f contrib/samples/a2a_basic/pom.xml exec:java \
      -Dexec.args="http://localhost:8081/a2a/remote"
-   ```
+    ```
 
-   The client logs the outbound JSON-RPC payload and shows the remote agent’s
-   reply (for example, `4 is not a prime number.`).
+    The client logs the outbound JSON-RPC payload and shows the remote agent’s
+    reply (for example, `4 is not a prime number.`).
 
-   > The first run downloads dependencies from Maven Central. Configure a
-   > mirror in `~/.m2/settings.xml` if your environment restricts outbound traffic.
+    > The first run downloads dependencies from Maven Central. Configure a
+    > mirror in `~/.m2/settings.xml` if your environment restricts outbound
+    > traffic.
 
-   Background option:
-   ```bash
-   nohup env GOOGLE_GENAI_USE_VERTEXAI=FALSE \
+    Background option:
+
+    ```bash
+    nohup env GOOGLE_GENAI_USE_VERTEXAI=FALSE \
      GOOGLE_API_KEY=your_api_key \
      ./mvnw -f contrib/samples/a2a_basic/pom.xml exec:java \
      -Dexec.args="http://localhost:8081/a2a/remote" \
      > /tmp/a2a_basic.log 2>&1 & echo $!
-   ```
-   Tail `/tmp/a2a_basic.log` to observe subsequent turns.
+    ```
+
+    Tail `/tmp/a2a_basic.log` to observe subsequent turns.
 
 To build the runtime, Spring webservice, and both samples together, activate the
 opt-in Maven profile:
@@ -204,7 +212,7 @@ Sample response:
           "args": { "nums": [6] },
           "name": "checkPrime"
         },
-        "metadata": { "type": "function_call" },
+        "metadata": { "adk_type": "function_call" },
         "kind": "data"
       },
       {
@@ -212,7 +220,7 @@ Sample response:
           "response": { "result": "No prime numbers found." },
           "name": "checkPrime"
         },
-        "metadata": { "type": "function_response" },
+        "metadata": { "adk_type": "function_response" },
         "kind": "data"
       },
       {

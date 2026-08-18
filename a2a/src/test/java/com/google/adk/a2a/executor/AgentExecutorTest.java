@@ -63,6 +63,10 @@ import org.mockito.ArgumentCaptor;
 @RunWith(JUnit4.class)
 public final class AgentExecutorTest {
 
+  /** A throwable message shaped like the ones that leak host detail. */
+  private static final String SECRET_ERROR =
+      "Runner error: /home/victim/.config/adk/credentials.json (No such file)";
+
   private EventQueue eventQueue;
   private List<Object> enqueuedEvents;
   private TestAgent testAgent;
@@ -137,7 +141,7 @@ public final class AgentExecutorTest {
   public void execute_withBeforeExecuteCallback_cancelsExecutionOnError() {
     // If callback returns error, execution should stop/fail.
     Callbacks.BeforeExecuteCallback callback =
-        ctx -> Single.error(new RuntimeException("Cancelled"));
+        ctx -> Single.error(new RuntimeException(SECRET_ERROR));
 
     AgentExecutorConfig config =
         AgentExecutorConfig.builder().beforeExecuteCallback(callback).build();
@@ -162,7 +166,10 @@ public final class AgentExecutorTest {
     assertThat(statusEvent.getStatus().state().toString()).isEqualTo("FAILED");
     assertThat(statusEvent.getStatus().message().getParts().get(0)).isInstanceOf(TextPart.class);
     TextPart textPart = (TextPart) statusEvent.getStatus().message().getParts().get(0);
-    assertThat(textPart.getText()).contains("Cancelled");
+    // The remote peer gets a correlation id for the logged throwable, not its
+    // message -- see AgentExecutor#failedMessage.
+    assertThat(textPart.getText()).startsWith("Agent execution failed. (error_id: ");
+    assertThat(textPart.getText()).doesNotContain(SECRET_ERROR);
   }
 
   @Test
@@ -289,7 +296,7 @@ public final class AgentExecutorTest {
 
   @Test
   public void execute_runnerFails_registersFailedEvent() {
-    testAgent.setEventsToEmit(Flowable.error(new RuntimeException("Runner error")));
+    testAgent.setEventsToEmit(Flowable.error(new RuntimeException(SECRET_ERROR)));
     AgentExecutor executor =
         new AgentExecutor.Builder()
             .agentExecutorConfig(AgentExecutorConfig.builder().build())
@@ -316,7 +323,48 @@ public final class AgentExecutorTest {
     assertThat(statusEvent.getStatus().state()).isEqualTo(TaskState.FAILED);
     assertThat(statusEvent.getStatus().message().getParts().get(0)).isInstanceOf(TextPart.class);
     TextPart textPart = (TextPart) statusEvent.getStatus().message().getParts().get(0);
-    assertThat(textPart.getText()).isEqualTo("Runner error");
+    // A runner failure is reported to the peer as a correlation id only: the
+    // throwable's message names host paths and is for the server log. The id is
+    // 12 hex characters, the shape adk-python emits.
+    assertThat(textPart.getText())
+        .matches("Agent execution failed\\. \\(error_id: [0-9a-f]{12}\\)");
+    assertThat(textPart.getText()).doesNotContain(SECRET_ERROR);
+    assertThat(textPart.getText()).doesNotContain("/home/victim");
+  }
+
+  @Test
+  public void failureText_withoutDebug_carriesOnlyTheCorrelationId() {
+    String text = AgentExecutor.failureText(new RuntimeException(SECRET_ERROR), "abc-123", false);
+
+    assertThat(text).isEqualTo("Agent execution failed. (error_id: abc-123)");
+  }
+
+  @Test
+  public void failureText_withDebug_carriesTheThrowableDetail() {
+    // ADK_DEBUG_ERRORS=1 is the documented opt-in for local debugging.
+    String text = AgentExecutor.failureText(new RuntimeException(SECRET_ERROR), "abc-123", true);
+
+    assertThat(text).startsWith("Agent execution failed. (error_id: abc-123): ");
+    assertThat(text).contains("java.lang.RuntimeException");
+    assertThat(text).contains(SECRET_ERROR);
+  }
+
+  @Test
+  public void debugErrorsEnabled_recognizesTheDocumentedValues() {
+    assertThat(AgentExecutor.debugErrorsEnabled("1")).isTrue();
+    assertThat(AgentExecutor.debugErrorsEnabled("true")).isTrue();
+    assertThat(AgentExecutor.debugErrorsEnabled("TRUE")).isTrue();
+    assertThat(AgentExecutor.debugErrorsEnabled("True")).isTrue();
+  }
+
+  @Test
+  public void debugErrorsEnabled_defaultsToOff() {
+    // Anything else leaves the redaction in place, including an unset variable.
+    assertThat(AgentExecutor.debugErrorsEnabled(null)).isFalse();
+    assertThat(AgentExecutor.debugErrorsEnabled("")).isFalse();
+    assertThat(AgentExecutor.debugErrorsEnabled("0")).isFalse();
+    assertThat(AgentExecutor.debugErrorsEnabled("false")).isFalse();
+    assertThat(AgentExecutor.debugErrorsEnabled("yes")).isFalse();
   }
 
   @Test

@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.8.0](https://github.com/google/adk-java/compare/v1.7.1...v1.8.0) (2026-08-13)
+
+
+### Features
+
+* Add onRunErrorCallback to ADK Plugin and Runner ([3e6b915](https://github.com/google/adk-java/commit/3e6b9154e089f24daf43c9ded7e4e40483fb7995))
+
+
+### Bug Fixes
+
+* **a2a:** drop unparseable A2A metadata instead of aborting conversion ([b75c916](https://github.com/google/adk-java/commit/b75c9169c630ab0450d16aa74898da6b953d0e78))
+* **a2a:** fail the A2A stream in the handler, not via the transport ([faa3482](https://github.com/google/adk-java/commit/faa3482fa70a5f750e4db04335ca5a5091be471e))
+* **a2a:** guard null DataPart metadata in ResponseConverter ([fcfd9bd](https://github.com/google/adk-java/commit/fcfd9bd8b1b5516932b9c5d72a62a191aea88e13))
+* **a2a:** require explicit adk_type metadata to convert A2A DataParts ([b704c5f](https://github.com/google/adk-java/commit/b704c5fc963d315c624b06d97a6a00d963e54cc0))
+* **core:** only resume tool confirmations for calls this agent emitted ([e5aba3a](https://github.com/google/adk-java/commit/e5aba3aa08c5b85a892e0c9164fa0ab8513786fa))
+* keep thought signature and tool call parts through streaming and history ([d7355a7](https://github.com/google/adk-java/commit/d7355a712345864682134762df890bf7b713b8c4))
+* **runner:** build a new message when saving input blobs, instead of writing into the caller's Content ([80c1a21](https://github.com/google/adk-java/commit/80c1a21da378f121fef3af065eb65dce0e0080c9))
+* stop returning exception text to remote A2A peers ([a3df463](https://github.com/google/adk-java/commit/a3df4632c19d857552af3d2c38373aabea9069de))
+* Update default BigQueryLoggerConfig table name and remove default dataset ID ([723a2ef](https://github.com/google/adk-java/commit/723a2ef0c4929879a6bd831287c34002ef02ef00))
+* update stream completion check in A2A SDK to handle all terminal and interrupted task states ([2b87d65](https://github.com/google/adk-java/commit/2b87d65d9704a61ff4668b8c9482a79fef9fe0d4))
+
 ## [1.7.1](https://github.com/google/adk-java/compare/v1.7.0...v1.7.1) (2026-07-28)
 
 

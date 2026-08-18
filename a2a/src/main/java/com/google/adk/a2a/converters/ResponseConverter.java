@@ -20,7 +20,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Streams.zip;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
@@ -59,6 +59,8 @@ import org.slf4j.LoggerFactory;
 public final class ResponseConverter {
   private static final ObjectMapper objectMapper = new ObjectMapper();
   private static final Logger logger = LoggerFactory.getLogger(ResponseConverter.class);
+  private static final JavaType CUSTOM_METADATA_LIST_TYPE =
+      objectMapper.getTypeFactory().constructCollectionType(List.class, CustomMetadata.class);
   private static final ImmutableSet<TaskState> PENDING_STATES =
       ImmutableSet.of(TaskState.WORKING, TaskState.SUBMITTED);
 
@@ -68,6 +70,8 @@ public final class ResponseConverter {
    * Converts a A2A {@link ClientEvent} to an ADK {@link Event}, based on the event type. Returns an
    * empty optional if the event should be ignored (e.g. if the event is not a final update for
    * TaskArtifactUpdateEvent or if the message is empty for TaskStatusUpdateEvent).
+   *
+   * <p>Unparseable ADK metadata is logged and dropped; the rest of the event is still converted.
    *
    * @throws IllegalArgumentException if the event type is not supported.
    */
@@ -89,6 +93,11 @@ public final class ResponseConverter {
       return false;
     }
     return Objects.equals(metadata.getOrDefault(A2AMetadataKey.PARTIAL.getType(), false), true);
+  }
+
+  private static boolean isLongRunning(@Nullable Map<String, Object> metadata) {
+    return metadata != null
+        && Objects.equals(metadata.get(A2AMetadataKey.IS_LONG_RUNNING.getType()), true);
   }
 
   /**
@@ -141,7 +150,9 @@ public final class ResponseConverter {
                     return messageToEvent(value, context, PENDING_STATES.contains(taskState));
                   });
 
-      if (statusEvent.isFinal()) {
+      if (statusEvent.isFinal()
+          || taskState == TaskState.INPUT_REQUIRED
+          || taskState == TaskState.AUTH_REQUIRED) {
         messageEvent =
             messageEvent
                 .map(Event::toBuilder)
@@ -182,7 +193,11 @@ public final class ResponseConverter {
     return builder.build();
   }
 
-  /** Converts an A2A message back to ADK events. */
+  /**
+   * Converts an A2A message back to ADK events.
+   *
+   * <p>Unparseable ADK metadata is logged and dropped; the rest of the event is still converted.
+   */
   public static Event messageToEvent(Message message, InvocationContext invocationContext) {
     return updateEventMetadata(
         remoteAgentEventBuilder(invocationContext)
@@ -212,6 +227,8 @@ public final class ResponseConverter {
    * Converts an A2A {@link Task} to an ADK {@link Event}. If the artifacts are present, the last
    * artifact is used. If not, the status message is used. If not, the last history message is used.
    * If none of these are present, an empty event is returned.
+   *
+   * <p>Unparseable ADK metadata is logged and dropped; the rest of the event is still converted.
    */
   public static Event taskToEvent(Task task, InvocationContext invocationContext) {
     ImmutableList.Builder<Part> genaiParts = ImmutableList.builder();
@@ -241,7 +258,9 @@ public final class ResponseConverter {
 
     ImmutableList<Part> finalParts = genaiParts.build();
     boolean isFinal =
-        task.getStatus().state().isFinal() || task.getStatus().state() == TaskState.INPUT_REQUIRED;
+        task.getStatus().state().isFinal()
+            || task.getStatus().state() == TaskState.INPUT_REQUIRED
+            || task.getStatus().state() == TaskState.AUTH_REQUIRED;
 
     if (finalParts.isEmpty() && !isFinal) {
       return emptyEvent(invocationContext);
@@ -249,7 +268,8 @@ public final class ResponseConverter {
     if (!finalParts.isEmpty()) {
       eventBuilder.content(fromModelParts(finalParts));
     }
-    if (task.getStatus().state() == TaskState.INPUT_REQUIRED) {
+    if (task.getStatus().state() == TaskState.INPUT_REQUIRED
+        || task.getStatus().state() == TaskState.AUTH_REQUIRED) {
       eventBuilder.longRunningToolIds(longRunningToolIds.build());
     }
     eventBuilder.turnComplete(isFinal);
@@ -266,9 +286,8 @@ public final class ResponseConverter {
               if (!(part instanceof DataPart dataPart)) {
                 return Optional.<String>empty();
               }
-              Object isLongRunning =
-                  dataPart.getMetadata().get(A2AMetadataKey.IS_LONG_RUNNING.getType());
-              if (!Objects.equals(isLongRunning, true)) {
+              // A2A peers may omit metadata entirely, which deserializes to null.
+              if (!isLongRunning(dataPart.getMetadata())) {
                 return Optional.<String>empty();
               }
               if (convertedPart.functionCall().isEmpty()) {
@@ -294,13 +313,13 @@ public final class ResponseConverter {
       clientMetadata = ImmutableMap.of();
     }
     Event.Builder eventBuilder = event.toBuilder();
-    Object groundingMetadata = clientMetadata.get(A2AMetadataKey.GROUNDING_METADATA.getType());
-    // if groundingMetadata is null, parseMetadata will return null as well.
-    eventBuilder.groundingMetadata(parseMetadata(groundingMetadata, GroundingMetadata.class));
-    Object usageMetadata = clientMetadata.get(A2AMetadataKey.USAGE_METADATA.getType());
-    // if usageMetadata is null, parseMetadata will return null as well.
+    eventBuilder.groundingMetadata(
+        parseMetadata(clientMetadata, A2AMetadataKey.GROUNDING_METADATA, GroundingMetadata.class));
     eventBuilder.usageMetadata(
-        parseMetadata(usageMetadata, GenerateContentResponseUsageMetadata.class));
+        parseMetadata(
+            clientMetadata,
+            A2AMetadataKey.USAGE_METADATA,
+            GenerateContentResponseUsageMetadata.class));
 
     ImmutableList.Builder<CustomMetadata> customMetadataList = ImmutableList.builder();
     customMetadataList
@@ -314,20 +333,35 @@ public final class ResponseConverter {
                 .key(AdkMetadataKey.CONTEXT_ID.getType())
                 .stringValue(contextId)
                 .build());
-    Object customMetadata = clientMetadata.get(A2AMetadataKey.CUSTOM_METADATA.getType());
-    if (customMetadata != null) {
-      customMetadataList.addAll(
-          parseMetadata(customMetadata, new TypeReference<List<CustomMetadata>>() {}));
+    List<CustomMetadata> parsedCustomMetadata =
+        parseMetadata(clientMetadata, A2AMetadataKey.CUSTOM_METADATA, CUSTOM_METADATA_LIST_TYPE);
+    if (parsedCustomMetadata != null) {
+      customMetadataList.addAll(parsedCustomMetadata);
     }
     eventBuilder.customMetadata(customMetadataList.build());
 
-    Object errorCode = clientMetadata.get(A2AMetadataKey.ERROR_CODE.getType());
-    eventBuilder.errorCode(parseMetadata(errorCode, FinishReason.class));
+    eventBuilder.errorCode(
+        parseMetadata(clientMetadata, A2AMetadataKey.ERROR_CODE, FinishReason.class));
 
     return eventBuilder.build();
   }
 
-  private static <T> @Nullable T parseMetadata(@Nullable Object metadata, Class<T> type) {
+  /**
+   * Reads {@code key} out of the peer-supplied {@code clientMetadata} and deserializes it.
+   *
+   * <p>Returns null when the key is absent, and also when its value cannot be parsed: metadata is
+   * peer-controlled, so a malformed value is logged and dropped rather than failing the whole
+   * conversion.
+   */
+  private static <T> @Nullable T parseMetadata(
+      Map<String, Object> clientMetadata, A2AMetadataKey key, Class<T> type) {
+    return parseMetadata(clientMetadata, key, objectMapper.getTypeFactory().constructType(type));
+  }
+
+  /** Overload of {@link #parseMetadata(Map, A2AMetadataKey, Class)} for generic target types. */
+  private static <T> @Nullable T parseMetadata(
+      Map<String, Object> clientMetadata, A2AMetadataKey key, JavaType type) {
+    Object metadata = clientMetadata.get(key.getType());
     try {
       if (metadata instanceof String jsonString) {
         return objectMapper.readValue(jsonString, type);
@@ -335,20 +369,25 @@ public final class ResponseConverter {
         return objectMapper.convertValue(metadata, type);
       }
     } catch (IllegalArgumentException | JsonProcessingException e) {
-      throw new IllegalArgumentException("Failed to parse metadata of type " + type, e);
+      logDroppedMetadata(key, e);
+      return null;
     }
   }
 
-  private static <T> @Nullable T parseMetadata(@Nullable Object metadata, TypeReference<T> type) {
-    try {
-      if (metadata instanceof String jsonString) {
-        return objectMapper.readValue(jsonString, type);
-      } else {
-        return objectMapper.convertValue(metadata, type);
-      }
-    } catch (IllegalArgumentException | JsonProcessingException e) {
-      throw new IllegalArgumentException("Failed to parse metadata of type " + type.getType(), e);
-    }
+  /**
+   * Reports a dropped metadata value.
+   *
+   * <p>The parser's message quotes the peer's bytes, so the warning carries only the key and the
+   * exception type. A peer that streams malformed metadata would otherwise be able to write
+   * arbitrary content and a stack trace into the log on every event. The full exception is
+   * available at debug level.
+   */
+  private static void logDroppedMetadata(A2AMetadataKey key, Exception e) {
+    logger.warn(
+        "Dropping unparseable A2A metadata for key {} ({})",
+        key.getType(),
+        e.getClass().getSimpleName());
+    logger.debug("Unparseable A2A metadata for key {}", key.getType(), e);
   }
 
   private static Event emptyEvent(InvocationContext invocationContext) {

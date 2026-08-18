@@ -321,6 +321,24 @@ public class Gemini extends BaseLlm {
     private final StringBuilder currentTextBuffer = new StringBuilder();
     // Always reassigned in accumulateParts() before it is read; the initializer is never observed.
     private boolean currentTextIsThought = false;
+
+    /**
+     * Returns whether the part is the empty-text terminator Gemini 3 ends a stream with: empty text
+     * and nothing else worth keeping. Compared by rebuilding rather than against a single literal,
+     * so a terminator that also carries an explicit {@code thought=false} is still recognised.
+     */
+    private static boolean isStreamTerminator(Part part) {
+      if (!part.text().map(String::isEmpty).orElse(false)) {
+        return false;
+      }
+      Part.Builder terminator = Part.builder().text("");
+      part.thought().ifPresent(terminator::thought);
+      return terminator.build().equals(part);
+    }
+
+    // Signature of the buffered text run, kept apart from the call's slot below so an interleaved
+    // chunk cannot flush one part carrying the other's signature.
+    private byte[] currentTextThoughtSignature = null;
     private byte[] currentThoughtSignature = null;
     private GenerateContentResponse lastRawResponse = null;
 
@@ -407,11 +425,11 @@ public class Gemini extends BaseLlm {
 
     /**
      * Accumulates content from incoming parts: text, function calls, and any other content part
-     * (inline image/audio data, file data, code execution, server-side tool calls/responses, and
-     * future part types). Standalone thought-signature/thought parts are the one exception: their
-     * signature is captured and re-attached to the last real part in {@link #processFinalResponse},
-     * so they are not emitted on their own. Function-call parts passed to this method are expected
-     * to already have IDs (see {@link #ensureFunctionCallIds}).
+     * (inline image/audio data, file data, code execution, server-side tool calls/responses,
+     * standalone thought signatures, and future part types), which are appended verbatim as ADK
+     * Python does. The empty-text part that ends a Gemini 3 stream is the one thing dropped.
+     * Function-call parts passed to this method are expected to already have IDs (see {@link
+     * #ensureFunctionCallIds}).
      *
      * @return true if any content part was present, false otherwise.
      */
@@ -421,38 +439,33 @@ public class Gemini extends BaseLlm {
         String text = part.text().orElse("");
         if (!text.isEmpty()) {
           hasContent = true;
-          // The signature belongs to this text; capture it so flushTextBufferToSequence attaches
-          // it.
-          part.thoughtSignature().ifPresent(sig -> currentThoughtSignature = sig);
           boolean isThought = part.thought().orElse(false);
-          // Immediately flush the active text buffer to preserve the exact interleaved blocks of
-          // text/thoughts.
+          // Flush before capturing this chunk's signature below, or the signature of the run
+          // starting here lands on the run being flushed.
           if (!currentTextBuffer.isEmpty() && isThought != currentTextIsThought) {
             flushTextBufferToSequence();
           }
           if (currentTextBuffer.isEmpty()) {
             currentTextIsThought = isThought;
           }
+          // Keep the first signature of the run, as ADK Python does; the merged part takes it in
+          // flushTextBufferToSequence.
+          if (currentTextThoughtSignature == null
+              && part.thoughtSignature().map(sig -> sig.length > 0).orElse(false)) {
+            currentTextThoughtSignature = part.thoughtSignature().get();
+          }
           currentTextBuffer.append(text);
         } else if (part.functionCall().isPresent()) {
           hasContent = true;
           processFunctionCallPart(part);
-        } else if (part.text().isEmpty() && !part.thought().orElse(false)) {
-          // Mirror ADK Python's catch-all: preserve any part that is not text or a function call
-          // (inline image/audio data, file data, code execution, server-side tool calls/responses,
-          // future part types) rather than an allowlist that silently drops unlisted types. Flush
-          // buffered text first so parts keep their order, then append the part verbatim keeping
-          // any
-          // thoughtSignature it carries. The signature is intentionally not captured into
-          // currentThoughtSignature, which would leak it onto the preceding part.
+        } else if (isStreamTerminator(part)) {
+          // Gemini 3 ends a stream with a bare empty text part; it carries nothing to keep.
+        } else {
+          // Everything else is appended as the model sent it, signature included. Relocating a
+          // signature onto a neighbouring part would hand it back on a part the model never signed.
           hasContent = true;
           flushTextBufferToSequence();
           accumulatedSequence.add(part);
-        } else {
-          // Standalone thought/thought-signature part with no renderable content: not emitted on
-          // its
-          // own; capture its signature to re-attach to the last real part in processFinalResponse.
-          part.thoughtSignature().ifPresent(sig -> currentThoughtSignature = sig);
         }
       }
       return hasContent;
@@ -476,7 +489,8 @@ public class Gemini extends BaseLlm {
               || (currentFcName != null && !hasName);
       if (streamedPart) {
         // Capture the thought signature from the first chunk that carries one.
-        if (part.thoughtSignature().isPresent() && currentThoughtSignature == null) {
+        if (currentThoughtSignature == null
+            && part.thoughtSignature().map(sig -> sig.length > 0).orElse(false)) {
           currentThoughtSignature = part.thoughtSignature().get();
         }
         processStreamingFunctionCall(fc);
@@ -605,9 +619,9 @@ public class Gemini extends BaseLlm {
       if (!currentTextBuffer.isEmpty()) {
         Part.Builder partBuilder =
             Part.builder().text(currentTextBuffer.toString()).thought(currentTextIsThought);
-        if (currentThoughtSignature != null) {
-          partBuilder.thoughtSignature(currentThoughtSignature);
-          currentThoughtSignature = null;
+        if (currentTextThoughtSignature != null) {
+          partBuilder.thoughtSignature(currentTextThoughtSignature);
+          currentTextThoughtSignature = null;
         }
         accumulatedSequence.add(partBuilder.build());
         currentTextBuffer.setLength(0);
@@ -652,18 +666,9 @@ public class Gemini extends BaseLlm {
         return Flowable.just(finalResponseBuilder.build());
       }
 
-      // If the final chunk carries a thoughtSignature (e.g. from a preceding function call or
-      // thought), attach it to the last accumulated part in the sequence.
-      GeminiUtil.getPart0FromLlmResponse(currentResponse)
-          .flatMap(Part::thoughtSignature)
-          .ifPresent(
-              signature -> {
-                int targetIndex = accumulatedSequence.size() - 1;
-                Part targetPart = accumulatedSequence.get(targetIndex);
-                accumulatedSequence.set(
-                    targetIndex, targetPart.toBuilder().thoughtSignature(signature).build());
-              });
-
+      // No re-attach of the final chunk's signature: every part now keeps the signature the model
+      // put on it, so reading part 0 and stamping the last part could only mis-attribute one. ADK
+      // Python and the ADK Kotlin sibling have no equivalent either.
       return Flowable.just(
           finalResponseBuilder
               .content(Content.builder().role("model").parts(accumulatedSequence).build())
