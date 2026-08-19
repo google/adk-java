@@ -28,6 +28,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Callbacks;
+import com.google.adk.agents.CancellationTokenSource;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.ReadonlyContext;
@@ -71,6 +72,58 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link BaseLlmFlow}. */
 @RunWith(JUnit4.class)
 public final class BaseLlmFlowTest {
+
+  @Test
+  public void run_cancelledBeforeSubscription_completesWithoutCallingModel() {
+    AtomicInteger modelCalls = new AtomicInteger();
+    TestLlm testLlm =
+        createTestLlm(
+            () -> {
+              modelCalls.incrementAndGet();
+              return Flowable.just(
+                  createLlmResponse(Content.fromParts(Part.fromText("unreachable"))));
+            });
+    CancellationTokenSource cancellation = new CancellationTokenSource();
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgent(testLlm),
+            RunConfig.builder().cancellationToken(cancellation.token()).build());
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    cancellation.cancel();
+
+    baseLlmFlow.run(invocationContext).test().assertComplete().assertNoErrors().assertNoValues();
+
+    assertThat(modelCalls.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void run_cancelledBeforeToolExecution_preservesModelEventAndSkipsTool() {
+    Content functionCall =
+        Content.fromParts(Part.fromFunctionCall("counting_tool", ImmutableMap.of()));
+    TestLlm testLlm = createTestLlm(createLlmResponse(functionCall));
+    AtomicInteger toolCalls = new AtomicInteger();
+    CancellationTokenSource cancellation = new CancellationTokenSource();
+    Callbacks.BeforeToolCallback cancelBeforeTool =
+        (unusedContext, unusedTool, unusedArgs, unusedToolContext) -> {
+          cancellation.cancel();
+          return Maybe.empty();
+        };
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .tools(ImmutableList.of(new CountingTool("counting_tool", toolCalls)))
+            .beforeToolCallback(cancelBeforeTool)
+            .build();
+    InvocationContext invocationContext =
+        createInvocationContext(
+            agent, RunConfig.builder().cancellationToken(cancellation.token()).build());
+
+    List<Event> events =
+        createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertEqualIgnoringFunctionIds(events.get(0).content().get(), functionCall);
+    assertThat(toolCalls.get()).isEqualTo(0);
+  }
 
   @Test
   public void run_singleTextResponse_returnsSingleEvent() {
@@ -660,6 +713,26 @@ public final class BaseLlmFlowTest {
     @Override
     public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
       return Single.just(response);
+    }
+  }
+
+  private static final class CountingTool extends BaseTool {
+    private final AtomicInteger calls;
+
+    CountingTool(String name, AtomicInteger calls) {
+      super(name, "tool description for " + name);
+      this.calls = calls;
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(FunctionDeclaration.builder().name(name()).build());
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+      calls.incrementAndGet();
+      return Single.just(ImmutableMap.of("result", "called"));
     }
   }
 

@@ -45,7 +45,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 class LangChain4jIntegrationTest {
 
   public static final String CLAUDE_4_6_SONNET = "claude-sonnet-4-6";
-  public static final String GEMINI_2_0_FLASH = "gemini-2.0-flash";
+  public static final String GEMINI_3_6_FLASH = "gemini-3.6-flash";
   public static final String GPT_4_O_MINI = "gpt-4o-mini";
 
   @Test
@@ -174,7 +174,7 @@ class LangChain4jIntegrationTest {
         LlmAgent.builder()
             .name("weather-agent")
             .description("Weather agent")
-            .model(GEMINI_2_0_FLASH)
+            .model(GEMINI_3_6_FLASH)
             .instruction(
                 """
                 Your role is to always answer that the weather is sunny and 20°C.
@@ -270,7 +270,7 @@ class LangChain4jIntegrationTest {
         LlmAgent.builder()
             .name("coordinator-agent")
             .description("Coordinator agent")
-            .model(GEMINI_2_0_FLASH)
+            .model(GEMINI_3_6_FLASH)
             .instruction(
                 """
                 Your role is to coordinate 2 agents:
@@ -303,8 +303,8 @@ class LangChain4jIntegrationTest {
     assertEquals(1, hiEvent1.functionCalls().size());
     FunctionCall hiFunctionCall = hiEvent1.functionCalls().get(0);
     assertTrue(hiFunctionCall.id().isPresent());
-    assertEquals(Optional.of("transferToAgent"), hiFunctionCall.name());
-    assertEquals(Optional.of(Map.of("agentName", "greeterAgent")), hiFunctionCall.args());
+    assertEquals(Optional.of("transfer_to_agent"), hiFunctionCall.name());
+    assertEquals(Optional.of(Map.of("agent_name", "greeterAgent")), hiFunctionCall.args());
 
     Event hiEvent2 = hiEvents.get(1);
     assertTrue(hiEvent2.content().isPresent());
@@ -312,7 +312,7 @@ class LangChain4jIntegrationTest {
     assertEquals(1, hiEvent2.functionResponses().size());
     FunctionResponse hiFunctionResponse = hiEvent2.functionResponses().get(0);
     assertTrue(hiFunctionResponse.id().isPresent());
-    assertEquals(Optional.of("transferToAgent"), hiFunctionResponse.name());
+    assertEquals(Optional.of("transfer_to_agent"), hiFunctionResponse.name());
     assertEquals(Optional.of(Map.of()), hiFunctionResponse.response()); // Empty map for response
 
     Event hiEvent3 = hiEvents.get(2);
@@ -329,8 +329,8 @@ class LangChain4jIntegrationTest {
     assertEquals(1, byeEvent1.functionCalls().size());
     FunctionCall byeFunctionCall = byeEvent1.functionCalls().get(0);
     assertTrue(byeFunctionCall.id().isPresent());
-    assertEquals(Optional.of("transferToAgent"), byeFunctionCall.name());
-    assertEquals(Optional.of(Map.of("agentName", "farewellAgent")), byeFunctionCall.args());
+    assertEquals(Optional.of("transfer_to_agent"), byeFunctionCall.name());
+    assertEquals(Optional.of(Map.of("agent_name", "farewellAgent")), byeFunctionCall.args());
 
     Event byeEvent2 = byeEvents.get(1);
     assertTrue(byeEvent2.content().isPresent());
@@ -338,7 +338,7 @@ class LangChain4jIntegrationTest {
     assertEquals(1, byeEvent2.functionResponses().size());
     FunctionResponse byeFunctionResponse = byeEvent2.functionResponses().get(0);
     assertTrue(byeFunctionResponse.id().isPresent());
-    assertEquals(Optional.of("transferToAgent"), byeFunctionResponse.name());
+    assertEquals(Optional.of("transfer_to_agent"), byeFunctionResponse.name());
     assertEquals(Optional.of(Map.of()), byeFunctionResponse.response()); // Empty map for response
 
     Event byeEvent3 = byeEvents.get(2);

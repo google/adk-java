@@ -42,6 +42,7 @@ import static org.mockito.Mockito.when;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.Callbacks.AfterModelCallback;
+import com.google.adk.agents.CancellationTokenSource;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
@@ -105,6 +106,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
@@ -176,6 +178,46 @@ public final class RunnerTest {
   @After
   public void tearDown() {
     Tracing.setTracerForTesting(originalTracer);
+  }
+
+  @Test
+  public void runAsync_cancellationCompletesNormallyAndDisposesModelStream() {
+    AtomicBoolean subscribed = new AtomicBoolean();
+    AtomicBoolean disposed = new AtomicBoolean();
+    TestLlm neverCompletingLlm =
+        new TestLlm(
+            () ->
+                Flowable.<LlmResponse>never()
+                    .doOnSubscribe(unused -> subscribed.set(true))
+                    .doFinally(() -> disposed.set(true)));
+    Runner cancellationRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("cancellation_test")
+                    .rootAgent(createTestAgent(neverCompletingLlm))
+                    .build())
+            .build();
+    Session cancellationSession =
+        cancellationRunner
+            .sessionService()
+            .createSession("cancellation_test", "user")
+            .blockingGet();
+    CancellationTokenSource cancellation = new CancellationTokenSource();
+    TestSubscriber<Event> subscriber =
+        cancellationRunner
+            .runAsync(
+                "user",
+                cancellationSession.id(),
+                createContent("stop"),
+                RunConfig.builder().cancellationToken(cancellation.token()).build())
+            .test();
+    assertThat(subscribed.get()).isTrue();
+
+    cancellation.cancel();
+
+    subscriber.assertComplete().assertNoErrors().assertNoValues();
+    assertThat(disposed.get()).isTrue();
   }
 
   @Test

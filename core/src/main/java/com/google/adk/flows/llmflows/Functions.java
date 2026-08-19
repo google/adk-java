@@ -292,6 +292,9 @@ public final class Functions {
     return functionCall ->
         Maybe.defer(
                 () -> {
+                  if (invocationContext.isCancellationRequested()) {
+                    return Maybe.empty();
+                  }
                   BaseTool tool = tools.get(functionCall.name().get());
                   ToolContext toolContext =
                       ToolContext.builder(invocationContext)
@@ -308,14 +311,16 @@ public final class Functions {
                           .switchIfEmpty(
                               Maybe.defer(
                                       () ->
-                                          isLive
-                                              ? processFunctionLive(
-                                                  invocationContext,
-                                                  tool,
-                                                  toolContext,
-                                                  functionCall,
-                                                  functionArgs)
-                                              : callTool(tool, functionArgs, toolContext))
+                                          invocationContext.isCancellationRequested()
+                                              ? Maybe.empty()
+                                              : isLive
+                                                  ? processFunctionLive(
+                                                      invocationContext,
+                                                      tool,
+                                                      toolContext,
+                                                      functionCall,
+                                                      functionArgs)
+                                                  : callTool(tool, functionArgs, toolContext))
                                   .compose(Tracing.withContext(parentContext)));
 
                   return postProcessFunctionResult(
@@ -540,6 +545,9 @@ public final class Functions {
                   .defaultIfEmpty(Optional.ofNullable(initialFunctionResult))
                   .flatMapMaybe(
                       finalOptionalResult -> {
+                        if (invocationContext.isCancellationRequested()) {
+                          return Maybe.empty();
+                        }
                         Map<String, Object> finalFunctionResult = finalOptionalResult.orElse(null);
                         boolean hasNoResult =
                             finalFunctionResult == null || finalFunctionResult.isEmpty();
@@ -599,6 +607,9 @@ public final class Functions {
       BaseTool tool,
       Map<String, Object> functionArgs,
       ToolContext toolContext) {
+    if (invocationContext.isCancellationRequested()) {
+      return Maybe.empty();
+    }
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
 
@@ -671,6 +682,9 @@ public final class Functions {
       Map<String, Object> functionArgs,
       ToolContext toolContext,
       Map<String, Object> functionResult) {
+    if (invocationContext.isCancellationRequested()) {
+      return Maybe.empty();
+    }
     if (invocationContext.agent() instanceof LlmAgent) {
       LlmAgent agent = (LlmAgent) invocationContext.agent();
 

@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.DefaultUsage;
@@ -119,6 +120,7 @@ class MessageConverterTest {
 
   @Test
   void testToLlmPromptWithFunctionCall() {
+    byte[] thoughtSignature = {1, 2, 3};
     FunctionCall functionCall =
         FunctionCall.builder()
             .name("get_weather")
@@ -127,7 +129,8 @@ class MessageConverterTest {
             .build();
 
     // Create Part with FunctionCall inside using Part.builder
-    Part functionCallPart = Part.builder().functionCall(functionCall).build();
+    Part functionCallPart =
+        Part.builder().functionCall(functionCall).thoughtSignature(thoughtSignature).build();
 
     Content assistantContent =
         Content.builder()
@@ -151,17 +154,12 @@ class MessageConverterTest {
     assertThat(toolCall.id()).isEqualTo("call_123"); // ID should be preserved now
     assertThat(toolCall.name()).isEqualTo("get_weather");
     assertThat(toolCall.type()).isEqualTo("function");
+    assertThat(assistantMessage.getMetadata().get("thoughtSignatures"))
+        .isEqualTo(List.of(thoughtSignature));
   }
 
   @Test
   void testToLlmPromptWithFunctionResponse() {
-    // TODO: This test is currently limited due to Spring AI 1.1.0 API constraints
-    // ToolResponseMessage constructors are protected, so function responses are skipped
-    // Once Spring AI provides public APIs, this test should be updated to verify:
-    // 1. ToolResponseMessage is created
-    // 2. Tool response data is properly converted
-    // 3. Tool call IDs are preserved
-
     FunctionResponse functionResponse =
         FunctionResponse.builder()
             .name("get_weather")
@@ -174,29 +172,27 @@ class MessageConverterTest {
             .role("user")
             .parts(
                 Part.fromText("What's the weather?"),
-                Part.fromFunctionResponse(
-                    functionResponse.name().orElse(""),
-                    functionResponse.response().orElse(Map.of())))
+                Part.builder().functionResponse(functionResponse).build())
             .build();
 
     LlmRequest request = LlmRequest.builder().contents(List.of(userContent)).build();
 
     Prompt prompt = messageConverter.toLlmPrompt(request);
 
-    // Currently only UserMessage is created (function response is skipped)
-    assertThat(prompt.getInstructions()).hasSize(1);
+    assertThat(prompt.getInstructions()).hasSize(2);
 
-    Message userMessage = prompt.getInstructions().get(0);
+    Message toolResponseMessage = prompt.getInstructions().get(0);
+    assertThat(toolResponseMessage).isInstanceOf(ToolResponseMessage.class);
+    ToolResponseMessage toolResponse = (ToolResponseMessage) toolResponseMessage;
+    assertThat(toolResponse.getResponses()).hasSize(1);
+    ToolResponseMessage.ToolResponse response = toolResponse.getResponses().get(0);
+    assertThat(response.id()).isEqualTo("call_123");
+    assertThat(response.name()).isEqualTo("get_weather");
+    assertThat(response.responseData()).contains("temperature", "72°F", "condition", "sunny");
+
+    Message userMessage = prompt.getInstructions().get(1);
     assertThat(userMessage).isInstanceOf(UserMessage.class);
     assertThat(((UserMessage) userMessage).getText()).isEqualTo("What's the weather?");
-
-    // When Spring AI provides public API for ToolResponseMessage, uncomment:
-    // Message toolResponseMessage = prompt.getInstructions().get(1);
-    // assertThat(toolResponseMessage).isInstanceOf(ToolResponseMessage.class);
-    // ToolResponseMessage toolResponse = (ToolResponseMessage) toolResponseMessage;
-    // assertThat(toolResponse.getResponses()).hasSize(1);
-    // ToolResponseMessage.ToolResponse response = toolResponse.getResponses().get(0);
-    // assertThat(response.name()).isEqualTo("get_weather");
   }
 
   @Test
@@ -217,6 +213,7 @@ class MessageConverterTest {
 
   @Test
   void testToLlmResponseFromChatResponseWithToolCalls() {
+    byte[] thoughtSignature = {1, 2, 3};
     AssistantMessage.ToolCall toolCall =
         new AssistantMessage.ToolCall(
             "call_123", "function", "get_weather", "{\"location\":\"San Francisco\"}");
@@ -224,6 +221,7 @@ class MessageConverterTest {
     AssistantMessage assistantMessage =
         AssistantMessage.builder()
             .content("Let me check the weather.")
+            .properties(Map.of("thoughtSignatures", List.of(thoughtSignature)))
             .toolCalls(List.of(toolCall))
             .build();
 
@@ -245,6 +243,7 @@ class MessageConverterTest {
     assertThat(functionCallPart.functionCall().get().name()).contains("get_weather");
     // Verify ID is preserved
     assertThat(functionCallPart.functionCall().get().id()).contains("call_123");
+    assertThat(functionCallPart.thoughtSignature()).contains(thoughtSignature);
   }
 
   @Test
