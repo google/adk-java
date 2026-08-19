@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/google/adk-java/compare/v1.8.0...v1.8.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* update Java ADK ResponseConverter to propagate long-running tool IDs on AUTH_REQUIRED state ([2d20d1b](https://github.com/google/adk-java/commit/2d20d1b213a0cc98994be9cf3ed5e070abed6df2))
+
 ## [1.8.0](https://github.com/google/adk-java/compare/v1.7.1...v1.8.0) (2026-08-13)
 
 
