@@ -142,8 +142,21 @@ final class VertexAiClient {
     return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
   }
 
+  /**
+   * Escapes a value for use as a single URL path segment, so that it cannot introduce extra path
+   * segments ({@code /}, {@code ..}) or start a query string or fragment ({@code ?}, {@code #}).
+   */
+  private static String escapePathSegment(String value) {
+    return UrlEscapers.urlPathSegmentEscaper().escape(value);
+  }
+
   Maybe<JsonNode> listEvents(String reasoningEngineId, String sessionId, @Nullable String filter) {
-    String path = "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId + "/events";
+    String path =
+        "reasoningEngines/"
+            + reasoningEngineId
+            + "/sessions/"
+            + escapePathSegment(sessionId)
+            + "/events";
     if (filter != null) {
       path += "?filter=" + UrlEscapers.urlFormParameterEscaper().escape(filter);
     }
@@ -154,13 +167,17 @@ final class VertexAiClient {
 
   Maybe<JsonNode> getSession(String reasoningEngineId, String sessionId) {
     return performApiRequest(
-            "GET", "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId, "")
+            "GET",
+            "reasoningEngines/" + reasoningEngineId + "/sessions/" + escapePathSegment(sessionId),
+            "")
         .flatMapMaybe(apiResponse -> getJsonResponse(apiResponse));
   }
 
   Completable deleteSession(String reasoningEngineId, String sessionId) {
     return performApiRequest(
-            "DELETE", "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId, "")
+            "DELETE",
+            "reasoningEngines/" + reasoningEngineId + "/sessions/" + escapePathSegment(sessionId),
+            "")
         .doOnSuccess(ApiResponse::close)
         .ignoreElement();
   }
@@ -168,7 +185,11 @@ final class VertexAiClient {
   Completable appendEvent(String reasoningEngineId, String sessionId, String eventJson) {
     return performApiRequest(
             "POST",
-            "reasoningEngines/" + reasoningEngineId + "/sessions/" + sessionId + ":appendEvent",
+            "reasoningEngines/"
+                + reasoningEngineId
+                + "/sessions/"
+                + escapePathSegment(sessionId)
+                + ":appendEvent",
             eventJson)
         .flatMapCompletable(
             response -> {
