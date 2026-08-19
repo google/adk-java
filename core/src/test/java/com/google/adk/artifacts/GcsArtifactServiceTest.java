@@ -20,6 +20,7 @@ import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -452,6 +453,7 @@ public class GcsArtifactServiceTest {
   @Test
   public void listVersions_storageException_returnsEmptyList() {
     String prefix = String.format("%s/%s/%s/%s/", APP_NAME, USER_ID, SESSION_ID, FILENAME);
+
     when(mockStorage.list(BUCKET_NAME, BlobListOption.prefix(prefix)))
         .thenThrow(new StorageException(500, "Induced error"));
 
@@ -459,6 +461,46 @@ public class GcsArtifactServiceTest {
         service.listVersions(APP_NAME, USER_ID, SESSION_ID, FILENAME).blockingGet();
 
     assertThat(versions).isEmpty();
+  }
+
+  @Test
+  public void save_listStorageException_propagates() {
+    Part artifact = Part.fromBytes(new byte[] {4, 5}, "image/png");
+    when(mockStorage.list(eq(BUCKET_NAME), any(BlobListOption.class)))
+        .thenThrow(new StorageException(500, "Induced error"));
+
+    VerifyException thrown =
+        assertThrows(
+            VerifyException.class,
+            () ->
+                service
+                    .saveArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact)
+                    .blockingGet());
+
+    // The cause is the whole point: an operator has to be able to see which call failed and why.
+    assertThat(thrown).hasCauseThat().isInstanceOf(StorageException.class);
+    verify(mockStorage).list(eq(BUCKET_NAME), any(BlobListOption.class));
+  }
+
+  /**
+   * The listing failing is not itself the harm. Deriving a version number from the empty list it
+   * used to return is: the save computed version 0 and replaced whatever was already stored under
+   * that name. This asserts no write is attempted at all.
+   */
+  @Test
+  public void save_listStorageException_doesNotWrite() {
+    Part artifact = Part.fromBytes(new byte[] {4, 5}, "image/png");
+    when(mockStorage.list(eq(BUCKET_NAME), any(BlobListOption.class)))
+        .thenThrow(new StorageException(500, "Induced error"));
+
+    assertThrows(
+        VerifyException.class,
+        () ->
+            service.saveArtifact(APP_NAME, USER_ID, SESSION_ID, FILENAME, artifact).blockingGet());
+
+    // Asserts the listing was reached, so this cannot pass by failing earlier for another reason.
+    verify(mockStorage).list(eq(BUCKET_NAME), any(BlobListOption.class));
+    verify(mockStorage, never()).create(any(BlobInfo.class), any(byte[].class));
   }
 
   @Test
