@@ -165,7 +165,26 @@ public final class VertexAiSessionService implements BaseSessionService {
   @Override
   public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
     validateSessionId(sessionId);
-    return listEventsInternal(appName, sessionId, /* filter= */ null);
+    String reasoningEngineId = parseReasoningEngineId(appName);
+    return client
+        .getSession(reasoningEngineId, sessionId)
+        .flatMapSingle(
+            getSessionResponseMap -> {
+              // Enforce ownership using the owner reported by the backend, not the
+              // requested user id, mirroring the check getSession/deleteSession use.
+              // Deny as empty so existence is not revealed to a non-owner.
+              String ownerUserId =
+                  Optional.ofNullable(getSessionResponseMap.get("userId"))
+                      .map(JsonNode::asText)
+                      .orElse(null);
+              if (!userId.equals(ownerUserId)) {
+                return Single.just(ListEventsResponse.builder().build());
+              }
+              return listEventsInternal(appName, sessionId, /* filter= */ null);
+            })
+        // No session found at all (rather than an ownership mismatch): behave the
+        // same as before, returning an empty response instead of erroring.
+        .defaultIfEmpty(ListEventsResponse.builder().build());
   }
 
   private Single<ListEventsResponse> listEventsInternal(
