@@ -19,6 +19,8 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Field;
 import java.time.Instant;
@@ -64,6 +66,18 @@ public final class InMemorySessionServiceTest {
     assertThat(session.appName()).isEqualTo("app-name");
     assertThat(session.userId()).isEqualTo("user-id");
     assertThat(session.state()).isEmpty();
+  }
+
+  @Test
+  public void createSession_withDeterministicProviders_usesProvidersForIdAndTime() {
+    TimeProvider fixedClock = () -> Instant.ofEpochMilli(1234L);
+    UuidProvider fixedUuids = () -> "fixed-session-id";
+    InMemorySessionService sessionService = new InMemorySessionService(fixedClock, fixedUuids);
+
+    Session session = sessionService.createSession("app-name", "user-id").blockingGet();
+
+    assertThat(session.id()).isEqualTo("fixed-session-id");
+    assertThat(session.lastUpdateTime()).isEqualTo(Instant.ofEpochMilli(1234L));
   }
 
   @Test
