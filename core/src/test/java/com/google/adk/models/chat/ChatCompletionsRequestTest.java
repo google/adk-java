@@ -614,6 +614,40 @@ public final class ChatCompletionsRequestTest {
   }
 
   @Test
+  public void testFromLlmRequest_withParametersJsonSchema() throws Exception {
+    Map<String, Object> jsonSchema =
+        ImmutableMap.of(
+            "type",
+            "object",
+            "properties",
+            ImmutableMap.of("jobId", ImmutableMap.of("$ref", "#/$defs/jobId")),
+            "required",
+            ImmutableList.of("jobId"),
+            "$defs",
+            ImmutableMap.of("jobId", ImmutableMap.of("type", "string")));
+    FunctionDeclaration function =
+        FunctionDeclaration.builder()
+            .name("analyze_premerge_failures_by_job")
+            .parametersJsonSchema(jsonSchema)
+            .build();
+
+    Tool tool = Tool.builder().functionDeclarations(ImmutableList.of(function)).build();
+    GenerateContentConfig config =
+        GenerateContentConfig.builder().tools(ImmutableList.of(tool)).build();
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("openai-compatible-model")
+            .config(config)
+            .contents(ImmutableList.of())
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.tools).hasSize(1);
+    assertThat(request.tools.get(0).function.parameters).isEqualTo(jsonSchema);
+  }
+
+  @Test
   public void testFromLlmRequest_normalizesSchemaTypeToLowerCase() throws Exception {
     Schema param1Schema = Schema.builder().type("STRING").build();
 
