@@ -524,6 +524,9 @@ public class Runner {
     Preconditions.checkNotNull(runConfig, "runConfig cannot be null");
     return Flowable.defer(
             () -> {
+              if (runConfig.cancellationToken().isCancellationRequested()) {
+                return Flowable.empty();
+              }
               Context capturedContext = Context.current();
               BaseAgent rootAgent = this.agent;
               String invocationId = InvocationContext.newInvocationContextId();
@@ -778,6 +781,9 @@ public class Runner {
       Session session, @Nullable LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
     return Flowable.defer(
         () -> {
+          if (runConfig.cancellationToken().isCancellationRequested()) {
+            return Flowable.empty();
+          }
           Context capturedContext = Context.current();
           InvocationContext invocationContext =
               newInvocationContextForLive(session, liveRequestQueue, runConfig);

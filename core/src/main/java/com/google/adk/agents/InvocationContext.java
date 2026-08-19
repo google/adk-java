@@ -166,6 +166,16 @@ public class InvocationContext {
     return runConfig;
   }
 
+  /** Returns the cancellation token for this invocation. */
+  public CancellationToken cancellationToken() {
+    return runConfig.cancellationToken();
+  }
+
+  /** Returns whether cancellation has been requested for this invocation. */
+  public boolean isCancellationRequested() {
+    return cancellationToken().isCancellationRequested();
+  }
+
   /**
    * Returns a map for storing temporary context data that can be shared between different parts of
    * the invocation (e.g., before/on/after model callbacks).

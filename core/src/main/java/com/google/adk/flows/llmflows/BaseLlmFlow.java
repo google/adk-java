@@ -60,8 +60,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -106,7 +108,13 @@ public abstract class BaseLlmFlow implements BaseFlow {
     return Flowable.fromIterable(allProcessors)
         .concatMap(
             processor ->
-                Single.defer(() -> processor.processRequest(context, llmRequestRef.get()))
+                Single.defer(
+                        () ->
+                            context.isCancellationRequested()
+                                ? Single.just(
+                                    RequestProcessingResult.create(
+                                        llmRequestRef.get(), ImmutableList.of()))
+                                : processor.processRequest(context, llmRequestRef.get()))
                     .compose(Tracing.withContext(currentContext))
                     .doOnSuccess(result -> llmRequestRef.set(result.updatedRequest()))
                     .flattenAsFlowable(
@@ -182,7 +190,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
     for (ResponseProcessor processor : responseProcessors) {
       currentLlmResponse =
           currentLlmResponse
-              .flatMap(response -> processor.processResponse(context, response))
+              .flatMap(
+                  response ->
+                      context.isCancellationRequested()
+                          ? Single.just(
+                              ResponseProcessingResult.create(response, ImmutableList.of()))
+                          : processor.processResponse(context, response))
               .doOnSuccess(
                   result -> {
                     if (result.events() != null) {
@@ -220,6 +233,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
     return Flowable.defer(
         () -> {
+          if (context.isCancellationRequested()) {
+            return Flowable.empty();
+          }
           Span span =
               Tracing.getTracer().spanBuilder("call_llm").setParent(spanContext).startSpan();
           Context callLlmContext = spanContext.with(span);
@@ -249,6 +265,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
                           .switchIfEmpty(
                               Flowable.defer(
                                   () -> {
+                                    if (context.isCancellationRequested()) {
+                                      return Flowable.empty();
+                                    }
                                     LlmAgent agent = (LlmAgent) context.agent();
                                     BaseLlm llm =
                                         agent.resolvedModel().model().isPresent()
@@ -261,6 +280,11 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                             finalLlmRequest,
                                             context.runConfig().streamingMode()
                                                 == StreamingMode.SSE)
+                                        .takeUntil(
+                                            context
+                                                .cancellationToken()
+                                                .onCancellation()
+                                                .andThen(Flowable.just(Boolean.TRUE)))
                                         .onErrorResumeNext(
                                             exception ->
                                                 handleOnModelErrorCallback(
@@ -277,9 +301,11 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                             })
                                         .concatMap(
                                             llmResp ->
-                                                handleAfterModelCallback(
-                                                        context, llmResp, eventForCallbackUsage)
-                                                    .toFlowable())
+                                                context.isCancellationRequested()
+                                                    ? Flowable.empty()
+                                                    : handleAfterModelCallback(
+                                                            context, llmResp, eventForCallbackUsage)
+                                                        .toFlowable())
                                         .flatMap(
                                             llmResp ->
                                                 postprocess(
@@ -309,6 +335,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
    */
   private Maybe<LlmResponse> handleBeforeModelCallback(
       InvocationContext context, LlmRequest.Builder llmRequestBuilder, Event modelResponseEvent) {
+    if (context.isCancellationRequested()) {
+      return Maybe.empty();
+    }
     Context currentContext = Context.current();
     Event callbackEvent = modelResponseEvent.toBuilder().build();
     CallbackContext callbackContext =
@@ -437,7 +466,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                   Flowable.defer(
                       () -> {
                         LlmRequest llmRequestAfterPreprocess = llmRequestRef.get();
-                        if (context.endInvocation()) {
+                        if (context.endInvocation() || context.isCancellationRequested()) {
                           logger.debug("End invocation requested during preprocessing.");
                           return Flowable.empty();
                         }
@@ -528,6 +557,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
             .flatMapPublisher(
                 eventList -> {
                   if (eventList.isEmpty()
+                      || invocationContext.isCancellationRequested()
                       || Iterables.getLast(eventList).finalResponse()
                       || Iterables.getLast(eventList).actions().endInvocation().orElse(false)) {
                     logger.debug(
@@ -571,7 +601,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
         Flowable.defer(
             () -> {
               LlmRequest llmRequestAfterPreprocess = llmRequestRef.get();
-              if (invocationContext.endInvocation()) {
+              if (invocationContext.endInvocation()
+                  || invocationContext.isCancellationRequested()) {
                 return Flowable.empty();
               }
 
@@ -582,6 +613,19 @@ public abstract class BaseLlmFlow implements BaseFlow {
                       ? agent.resolvedModel().model().get()
                       : LlmRegistry.getLlm(agent.resolvedModel().modelName().get());
               BaseLlmConnection connection = llm.connect(llmRequestAfterPreprocess);
+              AtomicBoolean connectionClosed = new AtomicBoolean();
+              Runnable closeConnection =
+                  () -> {
+                    if (connectionClosed.compareAndSet(false, true)) {
+                      connection.close();
+                    }
+                  };
+              Consumer<Throwable> closeConnectionWithError =
+                  error -> {
+                    if (connectionClosed.compareAndSet(false, true)) {
+                      connection.close(error);
+                    }
+                  };
               Completable historySent =
                   llmRequestAfterPreprocess.contents().isEmpty()
                       ? Completable.complete()
@@ -636,18 +680,18 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                     } else if (request.blob().isPresent()) {
                                       return connection.sendRealtime(request.blob().get());
                                     }
-                                    return Completable.fromAction(connection::close);
+                                    return Completable.fromAction(closeConnection::run);
                                   }))
                       .subscribeWith(
                           new DisposableCompletableObserver() {
                             @Override
                             public void onComplete() {
-                              connection.close();
+                              closeConnection.run();
                             }
 
                             @Override
                             public void onError(Throwable e) {
-                              connection.close(e);
+                              closeConnectionWithError.accept(e);
                             }
                           });
 
@@ -664,6 +708,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
               Flowable<Event> receiveFlow =
                   connection
                       .receive()
+                      .takeUntil(
+                          invocationContext
+                              .cancellationToken()
+                              .onCancellation()
+                              .andThen(Flowable.just(Boolean.TRUE)))
+                      .takeWhile(unused -> !invocationContext.isCancellationRequested())
                       .flatMap(
                           llmResponse -> {
                             Event baseEventForThisLlmResponse =
@@ -677,6 +727,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
                           })
                       .flatMap(
                           event -> {
+                            if (invocationContext.isCancellationRequested()) {
+                              return Flowable.empty();
+                            }
                             Flowable<Event> events = Flowable.just(event);
                             if (event.actions().transferToAgent().isPresent()) {
                               BaseAgent rootAgent = invocationContext.agent().rootAgent();
@@ -710,9 +763,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
                             if (event.actions().transferToAgent().isPresent()
                                 || event.actions().endInvocation().orElse(false)) {
                               sendTask.dispose();
-                              connection.close();
+                              closeConnection.run();
                             }
-                          });
+                          })
+                      .doOnError(closeConnectionWithError::accept)
+                      .doOnCancel(closeConnection::run)
+                      .doFinally(sendTask::dispose);
 
               return Tracing.traceFlowable(
                       callLlmContext,
