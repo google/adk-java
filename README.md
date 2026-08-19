@@ -96,6 +96,41 @@ Same as the beloved Python Development UI.
 A built-in development UI to help you test, evaluate, debug, and showcase your agent(s).
 <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/adk-web-dev-ui-function-call.png"/>
 
+### Custom OpenAI-Compatible Endpoints
+
+ADK-Java supports any OpenAI-compatible LLM endpoint (Groq, Ollama, Azure OpenAI, Perplexity, etc.) via `OpenAiCompatibleLlm`:
+
+```java
+import com.google.adk.models.OpenAiCompatibleLlm;
+import com.google.common.collect.ImmutableMap;
+
+// Register custom endpoint
+OpenAiCompatibleLlm.builder()
+    .baseUrl("https://api.groq.com/openai/v1/")
+    .headers(ImmutableMap.of("Authorization", "Bearer " + apiKey))
+    .modelName("groq-llama3-70b")
+    .build()
+    .registerWithPattern("groq-.*");
+
+// Use in agent
+LlmAgent agent = LlmAgent.builder()
+    .model("groq-llama3-70b")
+    .instruction("You are a helpful assistant.")
+    .build();
+```
+
+**Supported Providers:** Groq, Ollama, Azure OpenAI, Perplexity, or any service implementing OpenAI's Chat Completions API.
+
+**Local Development with Ollama:**
+```java
+OpenAiCompatibleLlm.builder()
+    .baseUrl("http://localhost:11434/v1/")
+    .headers(ImmutableMap.of())
+    .modelName("ollama-llama2")
+    .build()
+    .registerWithPattern("ollama-.*");
+```
+
 ### Evaluate Agents
 
 Coming soon...
