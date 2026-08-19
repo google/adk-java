@@ -21,12 +21,14 @@ import io.modelcontextprotocol.util.Assert;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
 /** Server parameters for Streamable HTTP client transport. */
 public class StreamableHttpServerParameters {
   private final String url;
   private final Map<String, String> headers;
+  private final @Nullable Supplier<Map<String, String>> headersProvider;
   private final Duration timeout;
   private final Duration readTimeout;
   private final boolean terminateOnClose;
@@ -36,6 +38,7 @@ public class StreamableHttpServerParameters {
    *
    * @param url The base URL for the MCP Streamable HTTP server.
    * @param headers Optional headers to include in requests.
+   * @param headersProvider Optional supplier of headers, evaluated per-request for dynamic auth.
    * @param timeout Timeout for HTTP operations (default: 30 seconds).
    * @param readTimeout Timeout for reading data from the streamed http events(default: 5 minutes).
    * @param terminateOnClose Whether to terminate the session on close (default: true).
@@ -43,12 +46,14 @@ public class StreamableHttpServerParameters {
   public StreamableHttpServerParameters(
       String url,
       Map<String, String> headers,
+      @Nullable Supplier<Map<String, String>> headersProvider,
       @Nullable Duration timeout,
       @Nullable Duration readTimeout,
       @Nullable Boolean terminateOnClose) {
     Assert.hasText(url, "url must not be empty");
     this.url = url;
     this.headers = headers == null ? Collections.emptyMap() : headers;
+    this.headersProvider = headersProvider;
     this.timeout = timeout == null ? Duration.ofSeconds(30) : timeout;
     this.readTimeout = readTimeout == null ? Duration.ofMinutes(5) : readTimeout;
     this.terminateOnClose = terminateOnClose == null || terminateOnClose;
@@ -60,6 +65,11 @@ public class StreamableHttpServerParameters {
 
   public Map<String, String> headers() {
     return headers;
+  }
+
+  @Nullable
+  public Supplier<Map<String, String>> headersProvider() {
+    return headersProvider;
   }
 
   public Duration timeout() {
@@ -82,6 +92,7 @@ public class StreamableHttpServerParameters {
   public static class Builder {
     private String url;
     private Map<String, String> headers = Collections.emptyMap();
+    private @Nullable Supplier<Map<String, String>> headersProvider;
     private Duration timeout = Duration.ofSeconds(30);
     private Duration readTimeout = Duration.ofMinutes(5);
     private boolean terminateOnClose = true;
@@ -98,6 +109,12 @@ public class StreamableHttpServerParameters {
     @CanIgnoreReturnValue
     public Builder headers(Map<String, String> headers) {
       this.headers = headers;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder headersProvider(@Nullable Supplier<Map<String, String>> headersProvider) {
+      this.headersProvider = headersProvider;
       return this;
     }
 
@@ -121,7 +138,7 @@ public class StreamableHttpServerParameters {
 
     public StreamableHttpServerParameters build() {
       return new StreamableHttpServerParameters(
-          url, headers, timeout, readTimeout, terminateOnClose);
+          url, headers, headersProvider, timeout, readTimeout, terminateOnClose);
     }
   }
 }
