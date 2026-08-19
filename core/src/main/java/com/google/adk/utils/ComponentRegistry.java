@@ -437,7 +437,33 @@ public class ComponentRegistry {
         .map(clazz -> clazz.asSubclass(type));
   }
 
+  /**
+   * Allowlist of trusted package prefixes for dynamic class loading.
+   *
+   * <p>Security: Only classes from these packages can be loaded via reflection when specified in
+   * YAML agent configurations. This prevents arbitrary class loading attacks (CVE-2026-4810).
+   */
+  private static final Set<String> ALLOWED_CLASS_PREFIXES =
+      Set.of("com.google.adk.", "google.adk.");
+
+  private static boolean isAllowedClassForLoading(String className) {
+    if (isNullOrEmpty(className)) {
+      return false;
+    }
+    for (String prefix : ALLOWED_CLASS_PREFIXES) {
+      if (className.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private static Optional<Class<? extends BaseToolset>> loadToolsetClass(String className) {
+    // Security: Only allow class loading from trusted ADK packages
+    if (!isAllowedClassForLoading(className)) {
+      logger.warn("Blocked dynamic class loading from untrusted package: {}", className);
+      return Optional.empty();
+    }
     try {
       Class<?> clazz = Thread.currentThread().getContextClassLoader().loadClass(className);
       if (BaseToolset.class.isAssignableFrom(clazz)) {
