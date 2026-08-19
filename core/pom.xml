@@ -274,7 +274,11 @@
                 <GOOGLE_GENAI_USE_VERTEXAI>true</GOOGLE_GENAI_USE_VERTEXAI>
               </environmentVariables>
               <!-- run a second variant of the following tests -->
-              <test>VertexAiRagRetrievalTest#processLlmRequest_gemini2Model_addVertexRagStoreToConfig, VertexAiRagRetrievalTest#processLlmRequest_otherModel_doNotAddVertexRagStoreToConfig</test>
+              <test>
+                VertexAiRagRetrievalTest#processLlmRequest_gemini2Model_addVertexRagStoreToConfig,
+                VertexAiRagRetrievalTest#processLlmRequest_otherModel_doNotAddVertexRagStoreToConfig,
+                VertexAiRagRetrievalTest#processLlmRequest_gemini2Model_withoutSimilarityTopK_addVertexRagStoreToConfig
+              </test>
             </configuration>
           </execution>
           <execution>
