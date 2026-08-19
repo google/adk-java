@@ -22,6 +22,7 @@ import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import java.net.URI;
@@ -261,10 +262,15 @@ public class MessageConverter {
       if (part.text().isPresent()) {
         textBuilder.append(part.text().get());
       } else if (part.functionResponse().isPresent()) {
-        // TODO: Spring AI 1.1.0 ToolResponseMessage constructors are protected
-        // For now, we skip tool responses in user messages
-        // This will need to be addressed in a future update when Spring AI provides
-        // a public API for creating ToolResponseMessage
+        FunctionResponse functionResponse = part.functionResponse().get();
+        String id = functionResponse.id().orElse("");
+        String name = functionResponse.name().orElse("");
+        String responseData = toJson(functionResponse.response().orElse(Map.of()));
+
+        ToolResponseMessage.ToolResponse toolResponse =
+            new ToolResponseMessage.ToolResponse(id, name, responseData);
+        toolResponseMessages.add(
+            ToolResponseMessage.builder().responses(List.of(toolResponse)).build());
       } else if (part.inlineData().isPresent()) {
         // Handle inline media data (images, audio, video, etc.)
         com.google.genai.types.Blob blob = part.inlineData().get();
@@ -298,7 +304,9 @@ public class MessageConverter {
     }
 
     List<Message> messages = new ArrayList<>();
-    messages.add(UserMessage.builder().text(textBuilder.toString()).media(mediaList).build());
+    if (textBuilder.length() > 0 || !mediaList.isEmpty() || toolResponseMessages.isEmpty()) {
+      messages.add(UserMessage.builder().text(textBuilder.toString()).media(mediaList).build());
+    }
     messages.addAll(toolResponseMessages);
 
     return messages;
