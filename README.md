@@ -90,6 +90,23 @@ LlmAgent rootAgent = LlmAgent.builder()
     .build();
 ```
 
+Models are resolved through the `LlmRegistry` by name. In addition to Gemini,
+Vertex AI, Apigee, and Claude, you can use the [OrcaRouter](https://www.orcarouter.ai)
+model gateway as an OpenAI-compatible endpoint — set the `ORCAROUTER_API_KEY`
+environment variable and pass a model like `orcarouter/auto`:
+
+```java
+LlmAgent agent = LlmAgent.builder()
+    .name("assistant")
+    .model("orcarouter/auto") // Routed through the OrcaRouter gateway
+    .instruction("You are a helpful assistant.")
+    .build();
+```
+
+The gateway also runs gateway-level, zero-trust security for AI agents on the
+same endpoint — screening every prompt/response and governing every tool call
+on a default-deny basis, with no application code changes.
+
 ### Development UI
 
 Same as the beloved Python Development UI.
