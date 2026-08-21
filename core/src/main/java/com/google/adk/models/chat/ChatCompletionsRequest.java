@@ -575,6 +575,16 @@ public final class ChatCompletionsRequest {
       schema.strict = true;
       format.jsonSchema = schema;
       request.responseFormat = format;
+    } else if (config.responseSchema().isPresent()) {
+      ResponseFormatJsonSchema format = new ResponseFormatJsonSchema();
+      ResponseFormatJsonSchema.JsonSchema schema = new ResponseFormatJsonSchema.JsonSchema();
+      schema.name = "response_schema";
+      schema.schema =
+          objectMapper.convertValue(
+              config.responseSchema().get(), new TypeReference<Map<String, Object>>() {});
+      schema.strict = true;
+      format.jsonSchema = schema;
+      request.responseFormat = format;
     } else if (config.responseMimeType().isPresent()
         && config.responseMimeType().get().equals("application/json")) {
       request.responseFormat = new ResponseFormatJsonObject();
