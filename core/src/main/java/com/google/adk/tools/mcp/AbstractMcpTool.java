@@ -131,8 +131,11 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
       return ImmutableMap.of("error", errorMessage);
     }
 
+    Map<String, Object> resultMap =
+        objectMapper.convertValue(callResult, new TypeReference<Map<String, Object>>() {});
+
     if (contents == null || contents.isEmpty()) {
-      return ImmutableMap.of();
+      return resultMap;
     }
 
     List<String> textOutputs = new ArrayList<>();
@@ -145,11 +148,7 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
     }
 
     if (textOutputs.isEmpty()) {
-      return ImmutableMap.of(
-          "error",
-          "Tool '" + mcpToolName + "' returned content that is not TextContent.",
-          "content_details",
-          contents.toString());
+      return resultMap;
     }
 
     List<Map<String, Object>> resultMaps = new ArrayList<>();
@@ -161,6 +160,7 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
         resultMaps.add(ImmutableMap.of("text", textOutput));
       }
     }
-    return ImmutableMap.of("text_output", resultMaps);
+    resultMap.put("text_output", resultMaps);
+    return resultMap;
   }
 }
