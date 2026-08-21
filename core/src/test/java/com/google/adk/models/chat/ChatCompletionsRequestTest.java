@@ -758,6 +758,73 @@ public final class ChatCompletionsRequestTest {
         .isInstanceOf(ChatCompletionsRequest.ResponseFormatJsonObject.class);
   }
 
+  @Test
+  public void testFromLlmRequest_withTypedResponseSchema() throws Exception {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "rootCause", Schema.builder().type("STRING").build(),
+                    "confidence", Schema.builder().type("NUMBER").build()))
+            .required(ImmutableList.of("rootCause", "confidence"))
+            .build();
+
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("openai-compatible-model")
+            .outputSchema(outputSchema)
+            .contents(ImmutableList.of())
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.responseFormat)
+        .isInstanceOf(ChatCompletionsRequest.ResponseFormatJsonSchema.class);
+    ChatCompletionsRequest.ResponseFormatJsonSchema format =
+        (ChatCompletionsRequest.ResponseFormatJsonSchema) request.responseFormat;
+    assertThat(format.jsonSchema.name).isEqualTo("response_schema");
+    assertThat(format.jsonSchema.strict).isTrue();
+    assertThat(format.jsonSchema.schema).isNotNull();
+    assertThat(format.jsonSchema.schema.get("type")).isEqualTo("object");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> props = (Map<String, Object>) format.jsonSchema.schema.get("properties");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> rootCause = (Map<String, Object>) props.get("rootCause");
+    assertThat(rootCause.get("type")).isEqualTo("string");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> confidence = (Map<String, Object>) props.get("confidence");
+    assertThat(confidence.get("type")).isEqualTo("number");
+    assertThat(format.jsonSchema.schema.get("required"))
+        .isEqualTo(ImmutableList.of("rootCause", "confidence"));
+  }
+
+  @Test
+  public void testFromLlmRequest_withRawResponseJsonSchemaPrecedenceOverTypedSchema()
+      throws Exception {
+    Schema typedSchema = Schema.builder().type("OBJECT").build();
+    ImmutableMap<String, Object> rawSchema = ImmutableMap.of("type", "object", "title", "raw");
+
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("openai-compatible-model")
+            .config(
+                GenerateContentConfig.builder()
+                    .responseSchema(typedSchema)
+                    .responseJsonSchema(rawSchema)
+                    .build())
+            .contents(ImmutableList.of())
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.responseFormat)
+        .isInstanceOf(ChatCompletionsRequest.ResponseFormatJsonSchema.class);
+    ChatCompletionsRequest.ResponseFormatJsonSchema format =
+        (ChatCompletionsRequest.ResponseFormatJsonSchema) request.responseFormat;
+    assertThat(format.jsonSchema.schema).isEqualTo(rawSchema);
+  }
+
   // ----- thought_signature round-trip on the request side ----------------------------------
   //
   // The four chat source files share a single contract for round-tripping Gemini's
