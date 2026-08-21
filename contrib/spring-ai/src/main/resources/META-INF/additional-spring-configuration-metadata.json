@@ -1,0 +1,63 @@
+{
+  "properties": [
+    {
+      "name": "adk.spring-ai.temperature",
+      "type": "java.lang.Double",
+      "description": "Default temperature for controlling randomness in responses. Must be between 0.0 and 2.0.",
+      "defaultValue": 0.7
+    },
+    {
+      "name": "adk.spring-ai.max-tokens",
+      "type": "java.lang.Integer",
+      "description": "Default maximum number of tokens to generate. Must be a positive integer.",
+      "defaultValue": 2048
+    },
+    {
+      "name": "adk.spring-ai.top-p",
+      "type": "java.lang.Double",
+      "description": "Default nucleus sampling parameter. Must be between 0.0 and 1.0.",
+      "defaultValue": 0.9
+    },
+    {
+      "name": "adk.spring-ai.top-k",
+      "type": "java.lang.Integer",
+      "description": "Default top-k sampling parameter. Must be a positive integer."
+    },
+    {
+      "name": "adk.spring-ai.validation.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to enable strict validation of configuration parameters.",
+      "defaultValue": true
+    },
+    {
+      "name": "adk.spring-ai.validation.fail-fast",
+      "type": "java.lang.Boolean",
+      "description": "Whether to fail fast on invalid configuration.",
+      "defaultValue": true
+    },
+    {
+      "name": "adk.spring-ai.observability.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to enable observability features.",
+      "defaultValue": true
+    },
+    {
+      "name": "adk.spring-ai.observability.include-content",
+      "type": "java.lang.Boolean",
+      "description": "Whether to include request/response content in traces.",
+      "defaultValue": false
+    },
+    {
+      "name": "adk.spring-ai.observability.metrics-enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to collect metrics.",
+      "defaultValue": true
+    },
+    {
+      "name": "adk.spring-ai.auto-configuration.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to enable SpringAI auto-configuration.",
+      "defaultValue": true
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  // A recommended set of settings for VS Code.
+  //
+  // formatOnType and formatOnPaste is a very bad idea for slow formatters
+  // (such as an external Google Java Format invocation exec), so just on Save:
+  "editor.formatOnSave": true,
+  "editor.formatOnType": false,
+  "editor.formatOnPaste": false,
+
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+
+  "[java]": {
+    "editor.tabSize": 2,
+    // Format Java using https://github.com/google/google-java-format,
+    // via https://github.com/JoseVSeb/google-java-format-for-vs-code
+    "editor.defaultFormatter": "josevseb.google-java-format-for-vs-code",
+    "editor.codeActionsOnSave": {
+      // Used by at least JS as well as Java, so only overridden for [java]
+      "source.organizeImports": "always",
+      "source.addMissingImports": "never"
+    }
+  },
+  // Keep this version in sync with the same version in pom.xml
+  // NB: Changes to this are only taken into account on start-up, so need to restart.
+  "java.format.settings.google.version": "1.27.0",
+  // TODO https://github.com/eclipse-jdtls/eclipse.jdt.ls/issues/3050
+  "java.compile.nullAnalysis.mode": "automatic",
+  "java.completion.importOrder": ["#", "", "javax", "java"], //# is static
+  "java.completion.favoriteStaticMembers": ["com.google.common.truth.Truth.*"],
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.import.maven.enabled": true
+}

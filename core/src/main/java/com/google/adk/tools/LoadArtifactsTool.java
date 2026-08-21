@@ -1,0 +1,261 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// LoadArtifactsTool.java
+package com.google.adk.tools;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.google.adk.JsonBaseModel;
+import com.google.adk.models.LlmRequest;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.genai.types.Blob;
+import com.google.genai.types.Content;
+import com.google.genai.types.FunctionDeclaration;
+import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.Part;
+import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.Single;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+
+/**
+ * A tool that loads artifacts and adds them to the session.
+ *
+ * <p>This tool informs the model about available artifacts and provides their content when
+ * requested by the model through a function call.
+ *
+ * <p>The declaration of this tool is consistent with the Python version. Refer to:
+ * https://github.com/google/adk-python/blob/main/src/google/adk/tools/load_artifacts_tool.py
+ *
+ * <p>Usage example in an LlmAgent:
+ *
+ * <pre>{@code
+ * LlmAgent agent = LlmAgent.builder()
+ *     .addTool(LoadArtifactsTool.INSTANCE)
+ *     .build();
+ * }</pre>
+ */
+public final class LoadArtifactsTool extends BaseTool {
+  public static final LoadArtifactsTool INSTANCE = new LoadArtifactsTool();
+  private static final ImmutableList<String> GEMINI_SUPPORTED_INLINE_MIME_PREFIXES =
+      ImmutableList.of("image/", "audio/", "video/");
+  private static final ImmutableSet<String> GEMINI_SUPPORTED_INLINE_MIME_TYPES =
+      ImmutableSet.of("application/pdf");
+  private static final ImmutableSet<String> TEXT_LIKE_MIME_TYPES =
+      ImmutableSet.of("application/csv", "application/json", "application/xml");
+
+  public LoadArtifactsTool() {
+    super("load_artifacts", "Loads the artifacts and adds them to the session.");
+  }
+
+  @Override
+  public Optional<FunctionDeclaration> declaration() {
+    return Optional.of(
+        FunctionDeclaration.builder()
+            .name(this.name())
+            .description(this.description())
+            .parameters(
+                Schema.builder()
+                    .type("OBJECT")
+                    .properties(
+                        ImmutableMap.of(
+                            "artifact_names",
+                            Schema.builder()
+                                .type("ARRAY")
+                                .items(Schema.builder().type("STRING").build())
+                                .build()))
+                    .build())
+            .build());
+  }
+
+  @Override
+  public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+    @SuppressWarnings("unchecked")
+    List<String> artifactNames =
+        (List<String>) args.getOrDefault("artifact_names", ImmutableList.of());
+    return Single.just(ImmutableMap.of("artifact_names", artifactNames));
+  }
+
+  @Override
+  public Completable processLlmRequest(
+      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+    return super.processLlmRequest(llmRequestBuilder, toolContext)
+        .andThen(appendArtifactsToLlmRequest(llmRequestBuilder, toolContext));
+  }
+
+  public Completable appendArtifactsToLlmRequest(
+      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+
+    return toolContext
+        .listArtifacts()
+        .flatMapCompletable(
+            artifactNamesList -> {
+              if (artifactNamesList.isEmpty()) {
+                return Completable.complete();
+              }
+
+              appendInitialInstructions(llmRequestBuilder, artifactNamesList);
+
+              return processLoadArtifactsFunctionCall(llmRequestBuilder, toolContext);
+            });
+  }
+
+  private void appendInitialInstructions(
+      LlmRequest.Builder llmRequestBuilder, List<String> artifactNamesList) {
+    try {
+      String instructions =
+          String.format(
+              "You have a list of artifacts:\n"
+                  + "  %s\n\n"
+                  + "When the user asks questions about any of the artifacts, you should call the"
+                  + " `load_artifacts` function to load the artifact. Do not generate any text"
+                  + " other than the function call. Whenever you are asked about artifacts, you"
+                  + " should first load it. You must always load an artifact to access its"
+                  + " content, even if it has been loaded before.",
+              JsonBaseModel.getMapper().writeValueAsString(artifactNamesList));
+      llmRequestBuilder.appendInstructions(ImmutableList.of(instructions));
+    } catch (JsonProcessingException e) {
+      throw new IllegalStateException("Failed to serialize artifact names to JSON", e);
+    }
+  }
+
+  private Completable processLoadArtifactsFunctionCall(
+      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext) {
+
+    LlmRequest currentRequestState = llmRequestBuilder.build();
+    List<Content> currentContents = currentRequestState.contents();
+
+    if (currentContents.isEmpty()) {
+      return Completable.complete();
+    }
+
+    return Iterables.getLast(currentContents)
+        .parts()
+        .filter(partsList -> !partsList.isEmpty())
+        .flatMap(partsList -> partsList.get(0).functionResponse())
+        .filter(fr -> Objects.equals(fr.name().orElse(null), "load_artifacts"))
+        .flatMap(FunctionResponse::response)
+        .flatMap(responseMap -> Optional.ofNullable(responseMap.get("artifact_names")))
+        .filter(obj -> obj instanceof List)
+        .map(obj -> (List<?>) obj)
+        .filter(list -> !list.isEmpty())
+        .map(
+            artifactNamesRaw -> {
+              @SuppressWarnings("unchecked")
+              List<String> artifactNamesToLoad = (List<String>) artifactNamesRaw;
+
+              return Observable.fromIterable(artifactNamesToLoad)
+                  .flatMapCompletable(
+                      artifactName ->
+                          loadAndAppendIndividualArtifact(
+                              llmRequestBuilder, toolContext, artifactName));
+            })
+        .orElse(Completable.complete());
+  }
+
+  private Completable loadAndAppendIndividualArtifact(
+      LlmRequest.Builder llmRequestBuilder, ToolContext toolContext, String artifactName) {
+
+    return toolContext
+        .loadArtifact(artifactName)
+        .flatMapCompletable(
+            actualArtifact ->
+                Completable.fromAction(
+                    () ->
+                        appendArtifactToLlmRequest(
+                            llmRequestBuilder,
+                            "Artifact " + artifactName + " is:",
+                            artifactName,
+                            actualArtifact)));
+  }
+
+  private void appendArtifactToLlmRequest(
+      LlmRequest.Builder llmRequestBuilder, String prefix, String artifactName, Part artifact) {
+    llmRequestBuilder.contents(
+        ImmutableList.<Content>builder()
+            .addAll(llmRequestBuilder.build().contents())
+            .add(Content.fromParts(Part.fromText(prefix), asSafePartForLlm(artifact, artifactName)))
+            .build());
+  }
+
+  private static String normalizeMimeType(String mimeType) {
+    if (mimeType == null) {
+      return "";
+    }
+    int separatorIndex = mimeType.indexOf(';');
+    if (separatorIndex >= 0) {
+      mimeType = mimeType.substring(0, separatorIndex);
+    }
+    return mimeType.trim();
+  }
+
+  private static boolean isInlineMimeTypeSupported(String mimeType) {
+    String normalized = normalizeMimeType(mimeType);
+    if (normalized.isEmpty()) {
+      return false;
+    }
+    if (GEMINI_SUPPORTED_INLINE_MIME_TYPES.contains(normalized)) {
+      return true;
+    }
+    return GEMINI_SUPPORTED_INLINE_MIME_PREFIXES.stream().anyMatch(normalized::startsWith);
+  }
+
+  private static Part asSafePartForLlm(Part artifact, String artifactName) {
+    Optional<Blob> inlineData = artifact.inlineData();
+    if (inlineData.isEmpty()) {
+      return artifact;
+    }
+
+    Blob blob = inlineData.get();
+    if (isInlineMimeTypeSupported(blob.mimeType().orElse(null))) {
+      return artifact;
+    }
+
+    String mimeType = normalizeMimeType(blob.mimeType().orElse(null));
+    if (mimeType.isEmpty()) {
+      mimeType = "application/octet-stream";
+    }
+
+    Optional<byte[]> data = blob.data();
+    if (data.isEmpty()) {
+      return Part.fromText(
+          String.format(
+              "[Artifact: %s, type: %s. No inline data was provided.]", artifactName, mimeType));
+    }
+
+    if (mimeType.startsWith("text/") || TEXT_LIKE_MIME_TYPES.contains(mimeType)) {
+      return Part.fromText(new String(data.get(), StandardCharsets.UTF_8));
+    }
+
+    double sizeKb = data.get().length / 1024.0;
+    return Part.fromText(
+        String.format(
+            Locale.US,
+            "[Binary artifact: %s, type: %s, size: %.1f KB. Content cannot be displayed inline.]",
+            artifactName,
+            mimeType,
+            sizeKb));
+  }
+}

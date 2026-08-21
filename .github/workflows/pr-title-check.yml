@@ -1,0 +1,31 @@
+# Validates that the PR title is a Conventional Commit. Pull requests are
+# squash-merged into a single commit (see pr-commit-check.yml), so the PR title
+# becomes the commit message release-please parses for versioning and changelog
+# generation.
+name: PR Title Check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check-pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Conventional Commit title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-zA-Z0-9][a-zA-Z0-9/]*[a-zA-Z0-9]\))?!?:.*[^.[:space:]]$'
+          if [[ "$PR_TITLE" =~ $pattern ]]; then
+            echo "PR title is a valid Conventional Commit: $PR_TITLE"
+          else
+            echo "::error::Invalid PR title: \"$PR_TITLE\""
+            echo "Expected: <type>[(scope)][!]: <description>"
+            echo "Allowed types: build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test"
+            echo "The description must not be empty and must not end with a period."
+            exit 1
+          fi

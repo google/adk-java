@@ -1,0 +1,51 @@
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.google.adk.plugins.recordings;
+
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
+import com.google.auto.value.AutoValue;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
+import java.util.Optional;
+import javax.annotation.Nullable;
+
+/** Paired tool call and response for replay. */
+@AutoValue
+@JsonDeserialize(builder = AutoValue_ToolRecording.Builder.class)
+public abstract class ToolRecording {
+
+  /** The tool call. */
+  public abstract Optional<FunctionCall> toolCall();
+
+  /** The tool response. */
+  public abstract Optional<FunctionResponse> toolResponse();
+
+  public static Builder builder() {
+    return new AutoValue_ToolRecording.Builder();
+  }
+
+  /** Builder for ToolRecording. */
+  @AutoValue.Builder
+  @JsonPOJOBuilder(withPrefix = "")
+  public abstract static class Builder {
+    public abstract Builder toolCall(@Nullable FunctionCall toolCall);
+
+    public abstract Builder toolResponse(@Nullable FunctionResponse toolResponse);
+
+    public abstract ToolRecording build();
+  }
+}
