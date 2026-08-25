@@ -154,6 +154,19 @@ public class InMemoryArtifactServiceTest {
     assertThat(resultFromOriginalSession).isEmpty();
   }
 
+  @Test
+  public void listArtifactKeys_failedUserNamespaceLoad_doesNotCreatePhantomKey() {
+    Optional<Part> missing =
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, SESSION_A, USER_FILENAME));
+
+    assertThat(missing).isEmpty();
+
+    ListArtifactsResponse response =
+        service.listArtifactKeys(APP_NAME, USER_ID, SESSION_B).blockingGet();
+
+    assertThat(response.filenames()).isEmpty();
+  }
+
   private static <T> Optional<T> asOptional(Maybe<T> maybe) {
     return maybe.map(Optional::of).defaultIfEmpty(Optional.empty()).blockingGet();
   }

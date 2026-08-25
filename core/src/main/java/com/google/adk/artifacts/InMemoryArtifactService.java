@@ -81,7 +81,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
       String appName, String userId, String sessionId, String filename, @Nullable Integer version) {
     List<Part> versions =
         getArtifactsMap(appName, userId, sessionId, filename)
-            .computeIfAbsent(filename, unused -> new ArrayList<>());
+            .getOrDefault(filename, ImmutableList.of());
 
     if (versions.isEmpty()) {
       return Maybe.empty();
@@ -113,7 +113,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
     filenames.addAll(
         getArtifactsMapForSessionKey(appName, userId, USER_NAMESPACE_SESSION_KEY).keySet());
     return Single.just(
-        ListArtifactsResponse.builder().filenames(ImmutableList.copyOf(filenames)).build());
+        ListArtifactsResponse.builder().filenames(ImmutableList.sortedCopyOf(filenames)).build());
   }
 
   /**
@@ -138,7 +138,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
       String appName, String userId, String sessionId, String filename) {
     int size =
         getArtifactsMap(appName, userId, sessionId, filename)
-            .computeIfAbsent(filename, unused -> new ArrayList<>())
+            .getOrDefault(filename, ImmutableList.of())
             .size();
     if (size == 0) {
       return Single.just(ImmutableList.of());
