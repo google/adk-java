@@ -23,6 +23,9 @@ import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.LiveSendClientContentParameters;
+import com.google.genai.types.LiveSendRealtimeInputParameters;
+import com.google.genai.types.LiveSendToolResponseParameters;
 import com.google.genai.types.LiveServerContent;
 import com.google.genai.types.LiveServerMessage;
 import com.google.genai.types.LiveServerSetupComplete;
@@ -31,7 +34,12 @@ import com.google.genai.types.LiveServerToolCallCancellation;
 import com.google.genai.types.Part;
 import com.google.genai.types.UsageMetadata;
 import io.reactivex.rxjava3.observers.TestObserver;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -325,5 +333,79 @@ public final class GeminiLlmConnectionTest {
             .totalTokenCount(30)
             .build();
     assertThat(usageResponse.usageMetadata()).hasValue(expectedUsageMetadata);
+  }
+
+  @Test
+  public void receive_completesWhenTransportSignalsStreamEnd() {
+    // A transport that ends its own receive stream completes the connection's response stream, so a
+    // live run with no client close still terminates.
+    FakeTransport transport = new FakeTransport(/* endStreamOnReceive= */ true);
+    GeminiLlmConnection connection =
+        new GeminiLlmConnection(CompletableFuture.completedFuture(transport));
+
+    TestSubscriber<LlmResponse> subscriber = connection.receive().test();
+    subscriber.awaitDone(5, TimeUnit.SECONDS);
+
+    subscriber.assertComplete();
+    subscriber.assertNoErrors();
+  }
+
+  @Test
+  public void close_afterTransportStreamEnd_isNoOp() {
+    FakeTransport transport = new FakeTransport(/* endStreamOnReceive= */ true);
+    GeminiLlmConnection connection =
+        new GeminiLlmConnection(CompletableFuture.completedFuture(transport));
+    TestSubscriber<LlmResponse> subscriber = connection.receive().test();
+    subscriber.awaitDone(5, TimeUnit.SECONDS);
+    subscriber.assertComplete();
+
+    connection.close(); // Already completed via stream-end; must not re-terminate or error.
+
+    subscriber.assertComplete();
+    subscriber.assertNoErrors();
+    // completeReceive leaves the transport to close itself, so no close() is issued on this path.
+    assertThat(transport.closeCount.get()).isEqualTo(0);
+  }
+
+  /**
+   * A minimal in-process {@link GeminiLiveTransport} that records closes and can end its stream.
+   */
+  private static final class FakeTransport implements GeminiLiveTransport {
+    private final boolean endStreamOnReceive;
+    final AtomicInteger closeCount = new AtomicInteger();
+
+    FakeTransport(boolean endStreamOnReceive) {
+      this.endStreamOnReceive = endStreamOnReceive;
+    }
+
+    @Override
+    public CompletableFuture<Void> sendClientContent(LiveSendClientContentParameters params) {
+      return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public CompletableFuture<Void> sendRealtimeInput(LiveSendRealtimeInputParameters params) {
+      return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public CompletableFuture<Void> sendToolResponse(LiveSendToolResponseParameters params) {
+      return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public CompletableFuture<Void> receive(
+        Consumer<LiveServerMessage> onMessage, Runnable onStreamEnd) {
+      if (endStreamOnReceive) {
+        onStreamEnd.run();
+      }
+      return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public CompletableFuture<Void> close() {
+      closeCount.incrementAndGet();
+      return CompletableFuture.completedFuture(null);
+    }
   }
 }

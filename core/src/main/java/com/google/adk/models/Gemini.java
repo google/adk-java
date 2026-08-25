@@ -313,7 +313,17 @@ public class Gemini extends BaseLlm {
     logger.debug("Connecting to model {}", effectiveModelName);
     logger.trace("Connection Config: {}", liveConnectConfig);
 
-    return new GeminiLlmConnection(apiClient, effectiveModelName, liveConnectConfig);
+    return new GeminiLlmConnection(connectLiveTransport(effectiveModelName, liveConnectConfig));
+  }
+
+  /**
+   * Opens the live transport the connection drives. Overridable so a test can supply an in-process
+   * {@link GeminiLiveTransport} double and exercise the real {@link GeminiLlmConnection} without a
+   * network.
+   */
+  protected CompletableFuture<GeminiLiveTransport> connectLiveTransport(
+      String modelName, LiveConnectConfig config) {
+    return apiClient.async.live.connect(modelName, config).thenApply(GenAiLiveTransport::new);
   }
 
   private static final class StreamingResponseAggregator {

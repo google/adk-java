@@ -19,13 +19,10 @@ package com.google.adk.models;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.common.collect.ImmutableList;
-import com.google.genai.AsyncSession;
-import com.google.genai.Client;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionResponse;
-import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.LiveSendClientContentParameters;
 import com.google.genai.types.LiveSendRealtimeInputParameters;
 import com.google.genai.types.LiveSendToolResponseParameters;
@@ -61,38 +58,26 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
 
   private static final Logger logger = LoggerFactory.getLogger(GeminiLlmConnection.class);
 
-  private final Client apiClient;
-  private final String modelName;
-  private final LiveConnectConfig connectConfig;
-  private final CompletableFuture<AsyncSession> sessionFuture;
+  private final CompletableFuture<GeminiLiveTransport> transportFuture;
   private final PublishProcessor<LlmResponse> responseProcessor = PublishProcessor.create();
   private final Flowable<LlmResponse> responseFlowable = responseProcessor.serialize();
   private final CompositeDisposable disposables = new CompositeDisposable();
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
   /**
-   * Establishes a new connection.
+   * Establishes a new connection over the given live transport.
    *
-   * @param apiClient The API client for communication.
-   * @param modelName The specific Gemini model endpoint (e.g., "gemini-2.0-flash).
-   * @param connectConfig Configuration parameters for the live session.
+   * @param transportFuture The live transport the connection drives, once established.
    */
-  GeminiLlmConnection(Client apiClient, String modelName, LiveConnectConfig connectConfig) {
-    this.apiClient = Objects.requireNonNull(apiClient);
-    this.modelName = Objects.requireNonNull(modelName);
-    this.connectConfig = Objects.requireNonNull(connectConfig);
-
-    this.sessionFuture =
-        this.apiClient
-            .async
-            .live
-            .connect(this.modelName, this.connectConfig)
+  GeminiLlmConnection(CompletableFuture<GeminiLiveTransport> transportFuture) {
+    this.transportFuture =
+        Objects.requireNonNull(transportFuture)
             .whenCompleteAsync(
-                (session, throwable) -> {
+                (transport, throwable) -> {
                   if (throwable != null) {
                     handleConnectionError(throwable);
-                  } else if (session != null) {
-                    setupReceiver(session);
+                  } else if (transport != null) {
+                    setupReceiver(transport);
                   } else if (!closed.get()) {
                     handleConnectionError(
                         new SocketException("WebSocket connection failed without explicit error."));
@@ -100,19 +85,28 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
                 });
   }
 
-  /** Configures the session to forward incoming messages to the response processor. */
-  private void setupReceiver(AsyncSession session) {
+  /** Configures the transport to forward incoming messages to the response processor. */
+  private void setupReceiver(GeminiLiveTransport transport) {
     if (closed.get()) {
-      closeSessionIgnoringErrors(session);
+      closeTransportIgnoringErrors(transport);
       return;
     }
-    session
-        .receive(this::handleServerMessage)
+    transport
+        .receive(this::handleServerMessage, this::completeReceive)
         .exceptionally(
             error -> {
               handleReceiveError(error);
               return null;
             });
+  }
+
+  /** Completes the response stream when the transport's receive stream ends, ending the run. */
+  private void completeReceive() {
+    // Only a transport that ends its own stream reaches this, so it owns its close; none is issued.
+    if (closed.compareAndSet(false, true)) {
+      responseProcessor.onComplete();
+      disposables.dispose();
+    }
   }
 
   /** Processes messages received from the WebSocket server. */
@@ -241,7 +235,9 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     if (closed.compareAndSet(false, true)) {
       logger.error("Error during WebSocket receive operation", throwable);
       responseProcessor.onError(throwable);
-      sessionFuture.thenAccept(this::closeSessionIgnoringErrors).exceptionally(unusedError -> null);
+      transportFuture
+          .thenAccept(this::closeTransportIgnoringErrors)
+          .exceptionally(unusedError -> null);
     }
   }
 
@@ -286,22 +282,22 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
   @Override
   public Completable sendRealtime(Blob blob) {
     return Completable.fromFuture(
-        sessionFuture.thenCompose(
-            session ->
-                session.sendRealtimeInput(
+        transportFuture.thenCompose(
+            transport ->
+                transport.sendRealtimeInput(
                     LiveSendRealtimeInputParameters.builder().media(blob).build())));
   }
 
   /** Helper to send client content parameters. */
   private Completable sendClientContentInternal(LiveSendClientContentParameters parameters) {
     return Completable.fromFuture(
-        sessionFuture.thenCompose(session -> session.sendClientContent(parameters)));
+        transportFuture.thenCompose(transport -> transport.sendClientContent(parameters)));
   }
 
   /** Helper to send tool response parameters. */
   private Completable sendToolResponseInternal(LiveSendToolResponseParameters parameters) {
     return Completable.fromFuture(
-        sessionFuture.thenCompose(session -> session.sendToolResponse(parameters)));
+        transportFuture.thenCompose(transport -> transport.sendToolResponse(parameters)));
   }
 
   @Override
@@ -331,26 +327,26 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
         responseProcessor.onError(throwable);
       }
 
-      if (sessionFuture.isDone()) {
-        sessionFuture
-            .thenAccept(this::closeSessionIgnoringErrors)
+      if (transportFuture.isDone()) {
+        transportFuture
+            .thenAccept(this::closeTransportIgnoringErrors)
             .exceptionally(unusedError -> null);
       } else {
-        sessionFuture.cancel(false);
+        transportFuture.cancel(false);
       }
 
       disposables.dispose();
     }
   }
 
-  /** Closes the AsyncSession safely, logging any errors. */
-  private void closeSessionIgnoringErrors(AsyncSession session) {
-    if (session != null) {
-      session
+  /** Closes the transport safely, logging any errors. */
+  private void closeTransportIgnoringErrors(GeminiLiveTransport transport) {
+    if (transport != null) {
+      transport
           .close()
           .exceptionally(
               closeError -> {
-                logger.warn("Error occurred while closing AsyncSession", closeError);
+                logger.warn("Error occurred while closing live transport", closeError);
                 return null; // Suppress error during close
               });
     }
