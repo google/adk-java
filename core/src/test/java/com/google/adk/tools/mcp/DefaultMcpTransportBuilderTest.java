@@ -62,6 +62,33 @@ public final class DefaultMcpTransportBuilderTest {
   }
 
   @Test
+  public void build_withSseServerParametersWithHeaders_configuresRequestBuilder() throws Exception {
+    SseServerParameters params =
+        SseServerParameters.builder()
+            .url("http://localhost:1234")
+            .sseEndpoint("custom-sse")
+            .headers(
+                ImmutableMap.of("Authorization", "Bearer token-123", "X-Custom-Header", "value"))
+            .build();
+
+    HttpClientSseClientTransport transport =
+        (HttpClientSseClientTransport) transportBuilder.build(params);
+
+    assertThat(transport).isNotNull();
+
+    // Verify requestBuilder has headers configured via reflection
+    Field requestBuilderField =
+        HttpClientSseClientTransport.class.getDeclaredField("requestBuilder");
+    requestBuilderField.setAccessible(true);
+    HttpRequest.Builder requestBuilder = (HttpRequest.Builder) requestBuilderField.get(transport);
+
+    Map<String, String> headers =
+        collectHeaders(requestBuilder.uri(URI.create("http://localhost:1234")));
+    assertThat(headers).containsEntry("Authorization", "Bearer token-123");
+    assertThat(headers).containsEntry("X-Custom-Header", "value");
+  }
+
+  @Test
   public void build_withStreamableHttpServerParameters_returnsStreamableHttpTransport() {
     StreamableHttpServerParameters params =
         StreamableHttpServerParameters.builder().url("http://localhost:1234").build();

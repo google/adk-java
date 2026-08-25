@@ -22,6 +22,7 @@ import com.google.adk.tools.BaseTool;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
 import io.modelcontextprotocol.spec.McpSchema;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -59,6 +60,7 @@ public final class ConversionUtilsTest {
     assertThat(result.name()).isEqualTo("withParams");
     assertThat(result.description()).isEqualTo("has params");
     assertThat(result.inputSchema()).isNotNull();
+    assertThat(result.inputSchema()).containsEntry("type", "OBJECT");
   }
 
   @Test
@@ -72,7 +74,29 @@ public final class ConversionUtilsTest {
 
     assertThat(result.name()).isEqualTo("noParams");
     assertThat(result.description()).isEqualTo("no params");
-    assertThat(result.inputSchema()).isNull();
+    assertThat(result.inputSchema()).isNotNull();
+    assertThat(result.inputSchema()).isEqualTo(Map.of());
+  }
+
+  @Test
+  public void adkToMcpToolType_declarationWithParametersJsonSchema_preservesInputSchema() {
+    Map<String, Object> jsonSchema =
+        Map.of(
+            "type",
+            "object",
+            "properties",
+            Map.of("city", Map.of("type", "string", "description", "the city")),
+            "required",
+            java.util.List.of("city"));
+    FunctionDeclaration declaration =
+        FunctionDeclaration.builder().name("weatherTool").parametersJsonSchema(jsonSchema).build();
+    BaseTool tool = new FakeTool("weatherTool", "weather lookup", Optional.of(declaration));
+
+    McpSchema.Tool result = ConversionUtils.adkToMcpToolType(tool);
+
+    assertThat(result.name()).isEqualTo("weatherTool");
+    assertThat(result.description()).isEqualTo("weather lookup");
+    assertThat(result.inputSchema()).isEqualTo(jsonSchema);
   }
 
   @Test
@@ -83,6 +107,7 @@ public final class ConversionUtilsTest {
 
     assertThat(result.name()).isEqualTo("bare");
     assertThat(result.description()).isEqualTo("no declaration");
-    assertThat(result.inputSchema()).isNull();
+    assertThat(result.inputSchema()).isNotNull();
+    assertThat(result.inputSchema()).isEqualTo(Map.of());
   }
 }

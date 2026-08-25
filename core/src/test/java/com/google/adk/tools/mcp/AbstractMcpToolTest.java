@@ -22,12 +22,14 @@ import static org.mockito.Mockito.mock;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
+import com.google.genai.types.FunctionDeclaration;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -71,5 +73,59 @@ public final class AbstractMcpToolTest {
 
     assertEquals("", tool.description());
     assertEquals("realTool", tool.name());
+  }
+
+  @Test
+  public void declaration_withMcp2MapSchema_createsFunctionDeclarationSuccessfully() {
+    McpSyncClient sessionMock = mock(McpSyncClient.class);
+    McpSessionManager managerMock = mock(McpSessionManager.class);
+
+    Map<String, Object> schemaMap =
+        Map.of("type", "object", "properties", Map.of("city", Map.of("type", "string")));
+
+    McpSchema.Tool schemaTool =
+        McpSchema.Tool.builder()
+            .name("weatherTool")
+            .description("Fetches weather")
+            .inputSchema(schemaMap)
+            .build();
+
+    McpTool tool = new McpTool(schemaTool, sessionMock, managerMock, objectMapper);
+
+    Optional<FunctionDeclaration> declarationOpt = tool.declaration();
+    assertThat(declarationOpt).isPresent();
+    FunctionDeclaration declaration = declarationOpt.get();
+
+    assertThat(declaration.name()).hasValue("weatherTool");
+    assertThat(declaration.description()).hasValue("Fetches weather");
+    assertThat(declaration.parametersJsonSchema()).isPresent();
+    assertThat(declaration.parametersJsonSchema().get()).isEqualTo(schemaMap);
+  }
+
+  @Test
+  public void declaration_withOutputSchema_setsResponseJsonSchema() {
+    McpSyncClient sessionMock = mock(McpSyncClient.class);
+    McpSessionManager managerMock = mock(McpSessionManager.class);
+
+    Map<String, Object> inputSchema = Map.of("type", "object");
+    Map<String, Object> outputSchema =
+        Map.of("type", "object", "properties", Map.of("status", Map.of("type", "string")));
+
+    McpSchema.Tool schemaTool =
+        McpSchema.Tool.builder()
+            .name("outputTool")
+            .description("Tool with output schema")
+            .inputSchema(inputSchema)
+            .outputSchema(outputSchema)
+            .build();
+
+    McpTool tool = new McpTool(schemaTool, sessionMock, managerMock, objectMapper);
+
+    Optional<FunctionDeclaration> declarationOpt = tool.declaration();
+    assertThat(declarationOpt).isPresent();
+    FunctionDeclaration declaration = declarationOpt.get();
+
+    assertThat(declaration.responseJsonSchema()).isPresent();
+    assertThat(declaration.responseJsonSchema().get()).isEqualTo(outputSchema);
   }
 }

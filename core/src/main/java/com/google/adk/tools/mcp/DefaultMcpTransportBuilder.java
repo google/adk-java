@@ -18,7 +18,6 @@ package com.google.adk.tools.mcp;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 
-import com.google.common.collect.ImmutableMap;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.ServerParameters;
@@ -28,8 +27,7 @@ import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpClientTransport;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.Collection;
-import java.util.Optional;
+import java.net.http.HttpRequest;
 import reactor.core.publisher.Mono;
 
 /**
@@ -46,22 +44,17 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
     if (connectionParams instanceof ServerParameters serverParameters) {
       return new StdioClientTransport(serverParameters, jsonMapper);
     } else if (connectionParams instanceof SseServerParameters sseServerParams) {
+      HttpRequest.Builder requestBuilder = HttpRequest.newBuilder();
+      if (sseServerParams.headers() != null) {
+        sseServerParams
+            .headers()
+            .forEach(
+                (key, value) -> requestBuilder.header(key, value != null ? value.toString() : ""));
+      }
       return HttpClientSseClientTransport.builder(sseServerParams.url())
           .sseEndpoint(
               sseServerParams.sseEndpoint() == null ? "sse" : sseServerParams.sseEndpoint())
-          .customizeRequest(
-              builder ->
-                  Optional.ofNullable(sseServerParams.headers())
-                      .map(ImmutableMap::entrySet)
-                      .stream()
-                      .flatMap(Collection::stream)
-                      .forEach(
-                          entry ->
-                              builder.header(
-                                  entry.getKey(),
-                                  Optional.ofNullable(entry.getValue())
-                                      .map(Object::toString)
-                                      .orElse(""))))
+          .requestBuilder(requestBuilder)
           .build();
     } else if (connectionParams instanceof StreamableHttpServerParameters streamableParams) {
       // Split the URL so the transport's URI.resolve does not drop a custom path (b/513186321).
