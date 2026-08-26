@@ -29,6 +29,7 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -37,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.DefaultUsage;
@@ -154,14 +156,103 @@ class MessageConverterTest {
   }
 
   @Test
-  void testToLlmPromptWithFunctionResponse() {
-    // TODO: This test is currently limited due to Spring AI 1.1.0 API constraints
-    // ToolResponseMessage constructors are protected, so function responses are skipped
-    // Once Spring AI provides public APIs, this test should be updated to verify:
-    // 1. ToolResponseMessage is created
-    // 2. Tool response data is properly converted
-    // 3. Tool call IDs are preserved
+  @SuppressWarnings("unchecked")
+  void testToLlmPromptReplaysThoughtSignatureOnFunctionCall() {
+    // A thought signature on the model's function-call part must be surfaced in the assistant
+    // message metadata so the Spring AI Google provider can replay it on the next request.
+    byte[] signature = "thought-signature".getBytes(StandardCharsets.UTF_8);
+    FunctionCall functionCall =
+        FunctionCall.builder()
+            .name("get_weather")
+            .args(Map.of("location", "San Francisco"))
+            .id("call_123")
+            .build();
+    Content assistantContent =
+        Content.builder()
+            .role("model")
+            .parts(Part.builder().functionCall(functionCall).thoughtSignature(signature).build())
+            .build();
 
+    LlmRequest request = LlmRequest.builder().contents(List.of(assistantContent)).build();
+
+    Prompt prompt = messageConverter.toLlmPrompt(request);
+
+    Message message = prompt.getInstructions().get(0);
+    assertThat(message).isInstanceOf(AssistantMessage.class);
+    AssistantMessage assistantMessage = (AssistantMessage) message;
+    assertThat(assistantMessage.getToolCalls()).hasSize(1);
+    Object signatures = assistantMessage.getMetadata().get("thoughtSignatures");
+    assertThat(signatures).isInstanceOf(List.class);
+    assertThat((List<byte[]>) signatures).containsExactly(signature);
+  }
+
+  @Test
+  void testToLlmResponsePreservesThoughtSignatureOnFunctionCall() {
+    // A thought signature carried in the provider's assistant-message metadata must be attached to
+    // the ADK function-call part so it survives the round-trip back to the model.
+    byte[] signature = "thought-signature".getBytes(StandardCharsets.UTF_8);
+    AssistantMessage assistantMessage =
+        AssistantMessage.builder()
+            .content("")
+            .properties(Map.of("thoughtSignatures", List.of(signature)))
+            .toolCalls(
+                List.of(
+                    new AssistantMessage.ToolCall(
+                        "call_123", "function", "get_weather", "{\"location\":\"San Francisco\"}")))
+            .build();
+    ChatResponse chatResponse = new ChatResponse(List.of(new Generation(assistantMessage)));
+
+    LlmResponse response = messageConverter.toLlmResponse(chatResponse);
+
+    List<Part> parts = response.content().orElseThrow().parts().orElseThrow();
+    Part functionCallPart =
+        parts.stream().filter(part -> part.functionCall().isPresent()).findFirst().orElseThrow();
+    assertThat(functionCallPart.thoughtSignature()).isPresent();
+    assertThat(functionCallPart.thoughtSignature().get()).isEqualTo(signature);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void testToLlmPromptReplaysThoughtSignaturesForParallelToolCalls() {
+    // Parallel tool calls each carry their own thought signature; order must be preserved.
+    byte[] signatureA = "signature-a".getBytes(StandardCharsets.UTF_8);
+    byte[] signatureB = "signature-b".getBytes(StandardCharsets.UTF_8);
+    Content assistantContent =
+        Content.builder()
+            .role("model")
+            .parts(
+                Part.builder()
+                    .functionCall(
+                        FunctionCall.builder()
+                            .name("get_weather")
+                            .args(Map.of("location", "San Francisco"))
+                            .id("call_a")
+                            .build())
+                    .thoughtSignature(signatureA)
+                    .build(),
+                Part.builder()
+                    .functionCall(
+                        FunctionCall.builder()
+                            .name("get_time")
+                            .args(Map.of("location", "New York"))
+                            .id("call_b")
+                            .build())
+                    .thoughtSignature(signatureB)
+                    .build())
+            .build();
+
+    LlmRequest request = LlmRequest.builder().contents(List.of(assistantContent)).build();
+
+    Prompt prompt = messageConverter.toLlmPrompt(request);
+
+    AssistantMessage assistantMessage = (AssistantMessage) prompt.getInstructions().get(0);
+    assertThat(assistantMessage.getToolCalls()).hasSize(2);
+    Object signatures = assistantMessage.getMetadata().get("thoughtSignatures");
+    assertThat((List<byte[]>) signatures).containsExactly(signatureA, signatureB);
+  }
+
+  @Test
+  void testToLlmPromptWithFunctionResponse() {
     FunctionResponse functionResponse =
         FunctionResponse.builder()
             .name("get_weather")
@@ -174,29 +265,59 @@ class MessageConverterTest {
             .role("user")
             .parts(
                 Part.fromText("What's the weather?"),
-                Part.fromFunctionResponse(
-                    functionResponse.name().orElse(""),
-                    functionResponse.response().orElse(Map.of())))
+                Part.builder().functionResponse(functionResponse).build())
             .build();
 
     LlmRequest request = LlmRequest.builder().contents(List.of(userContent)).build();
 
     Prompt prompt = messageConverter.toLlmPrompt(request);
 
-    // Currently only UserMessage is created (function response is skipped)
-    assertThat(prompt.getInstructions()).hasSize(1);
+    // A user text part plus a function response yield a UserMessage and a ToolResponseMessage.
+    assertThat(prompt.getInstructions()).hasSize(2);
 
     Message userMessage = prompt.getInstructions().get(0);
     assertThat(userMessage).isInstanceOf(UserMessage.class);
     assertThat(((UserMessage) userMessage).getText()).isEqualTo("What's the weather?");
 
-    // When Spring AI provides public API for ToolResponseMessage, uncomment:
-    // Message toolResponseMessage = prompt.getInstructions().get(1);
-    // assertThat(toolResponseMessage).isInstanceOf(ToolResponseMessage.class);
-    // ToolResponseMessage toolResponse = (ToolResponseMessage) toolResponseMessage;
-    // assertThat(toolResponse.getResponses()).hasSize(1);
-    // ToolResponseMessage.ToolResponse response = toolResponse.getResponses().get(0);
-    // assertThat(response.name()).isEqualTo("get_weather");
+    Message toolMessage = prompt.getInstructions().get(1);
+    assertThat(toolMessage).isInstanceOf(ToolResponseMessage.class);
+    List<ToolResponseMessage.ToolResponse> responses =
+        ((ToolResponseMessage) toolMessage).getResponses();
+    assertThat(responses).hasSize(1);
+    ToolResponseMessage.ToolResponse response = responses.get(0);
+    assertThat(response.id()).isEqualTo("call_123");
+    assertThat(response.name()).isEqualTo("get_weather");
+    assertThat(response.responseData()).contains("72°F").contains("sunny");
+  }
+
+  @Test
+  void testToLlmPromptWithFunctionResponseOnly() {
+    // A function-response-only turn must become a ToolResponseMessage, not an empty UserMessage:
+    // otherwise the request ends on the model's tool-call turn and the backend rejects it.
+    FunctionResponse functionResponse =
+        FunctionResponse.builder()
+            .name("get_weather")
+            .response(Map.of("temperature", "72°F"))
+            .id("call_123")
+            .build();
+
+    Content toolResponseContent =
+        Content.builder()
+            .role("user")
+            .parts(Part.builder().functionResponse(functionResponse).build())
+            .build();
+
+    LlmRequest request = LlmRequest.builder().contents(List.of(toolResponseContent)).build();
+
+    Prompt prompt = messageConverter.toLlmPrompt(request);
+
+    assertThat(prompt.getInstructions()).hasSize(1);
+    Message message = prompt.getInstructions().get(0);
+    assertThat(message).isInstanceOf(ToolResponseMessage.class);
+    ToolResponseMessage.ToolResponse response =
+        ((ToolResponseMessage) message).getResponses().get(0);
+    assertThat(response.id()).isEqualTo("call_123");
+    assertThat(response.name()).isEqualTo("get_weather");
   }
 
   @Test
