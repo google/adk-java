@@ -143,12 +143,15 @@ public class AdkWebServer implements WebMvcConfigurer {
   }
 
   /**
-   * Configures simple automated controllers: - Redirects the root path "/" to "/dev-ui". - Forwards
-   * requests to "/dev-ui" to "/dev-ui/index.html" so the ResourceHandler serves it.
+   * Configures simple automated controllers: - Redirects the root path "/" to "dev-ui" (context-
+   * relative, not "/dev-ui", so it stays reverse-proxy-prefix-aware when this app runs behind a
+   * proxy that strips a path prefix and forwards it via server.forward-headers-strategy /
+   * X-Forwarded-Prefix). - Forwards requests to "/dev-ui" to "/dev-ui/index.html" so the
+   * ResourceHandler serves it.
    */
   @Override
   public void addViewControllers(ViewControllerRegistry registry) {
-    registry.addRedirectViewController("/", "/dev-ui");
+    registry.addRedirectViewController("/", "dev-ui");
     registry.addViewController("/dev-ui").setViewName("forward:/index.html");
     registry.addViewController("/dev-ui/").setViewName("forward:/index.html");
   }
