@@ -22,6 +22,7 @@ import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import java.net.URI;
@@ -54,15 +55,13 @@ import org.springframework.util.MimeType;
  * <ul>
  *   <li>Text content in all message types
  *   <li>Tool/function calls in assistant messages
+ *   <li>Tool/function responses in user messages
  *   <li>System instructions and configuration options
  * </ul>
- *
- * <p>Note: Media attachments and tool responses are currently not supported due to Spring AI 1.1.0
- * API limitations (protected/private constructors). These will be added once Spring AI provides
- * public APIs for these features.
  */
 public class MessageConverter {
 
+  private static final String THOUGHT_SIGNATURES_METADATA_KEY = "thoughtSignatures";
   private static final TypeReference<Map<String, Object>> MAP_TYPE_REFERENCE =
       new TypeReference<>() {};
 
@@ -261,10 +260,17 @@ public class MessageConverter {
       if (part.text().isPresent()) {
         textBuilder.append(part.text().get());
       } else if (part.functionResponse().isPresent()) {
-        // TODO: Spring AI 1.1.0 ToolResponseMessage constructors are protected
-        // For now, we skip tool responses in user messages
-        // This will need to be addressed in a future update when Spring AI provides
-        // a public API for creating ToolResponseMessage
+        FunctionResponse functionResponse = part.functionResponse().get();
+        ToolResponseMessage.ToolResponse toolResponse =
+            new ToolResponseMessage.ToolResponse(
+                functionResponse.id().orElse(""),
+                functionResponse
+                    .name()
+                    .orElseThrow(
+                        () -> new IllegalStateException("Function response name is missing")),
+                toJson(functionResponse.response().orElse(Map.of())));
+        toolResponseMessages.add(
+            ToolResponseMessage.builder().responses(List.of(toolResponse)).build());
       } else if (part.inlineData().isPresent()) {
         // Handle inline media data (images, audio, video, etc.)
         com.google.genai.types.Blob blob = part.inlineData().get();
@@ -298,8 +304,10 @@ public class MessageConverter {
     }
 
     List<Message> messages = new ArrayList<>();
-    messages.add(UserMessage.builder().text(textBuilder.toString()).media(mediaList).build());
     messages.addAll(toolResponseMessages);
+    if (toolResponseMessages.isEmpty() || textBuilder.length() > 0 || !mediaList.isEmpty()) {
+      messages.add(UserMessage.builder().text(textBuilder.toString()).media(mediaList).build());
+    }
 
     return messages;
   }
@@ -307,12 +315,14 @@ public class MessageConverter {
   private AssistantMessage handleAssistantContent(Content content) {
     StringBuilder textBuilder = new StringBuilder();
     List<AssistantMessage.ToolCall> toolCalls = new ArrayList<>();
+    List<byte[]> thoughtSignatures = new ArrayList<>();
 
     for (Part part : content.parts().orElse(List.of())) {
       if (part.text().isPresent()) {
         textBuilder.append(part.text().get());
       } else if (part.functionCall().isPresent()) {
         FunctionCall functionCall = part.functionCall().get();
+        part.thoughtSignature().ifPresent(thoughtSignatures::add);
         toolCalls.add(
             new AssistantMessage.ToolCall(
                 functionCall
@@ -330,7 +340,12 @@ public class MessageConverter {
     if (toolCalls.isEmpty()) {
       return new AssistantMessage(text);
     } else {
-      return AssistantMessage.builder().content(text).toolCalls(toolCalls).build();
+      AssistantMessage.Builder<?> builder =
+          AssistantMessage.builder().content(text).toolCalls(toolCalls);
+      if (!thoughtSignatures.isEmpty()) {
+        builder.properties(Map.of(THOUGHT_SIGNATURES_METADATA_KEY, thoughtSignatures));
+      }
+      return builder.build();
     }
   }
 
@@ -434,6 +449,8 @@ public class MessageConverter {
 
   private Content convertAssistantMessageToContent(AssistantMessage assistantMessage) {
     List<Part> parts = new ArrayList<>();
+    List<byte[]> thoughtSignatures = getThoughtSignatures(assistantMessage);
+    int thoughtSignatureIndex = 0;
 
     // Add text content
     if (assistantMessage.getText() != null && !assistantMessage.getText().isEmpty()) {
@@ -451,8 +468,13 @@ public class MessageConverter {
           FunctionCall functionCall =
               FunctionCall.builder().id(toolCall.id()).name(toolCall.name()).args(args).build();
 
-          // Create Part with the FunctionCall (preserves ID)
-          parts.add(Part.builder().functionCall(functionCall).build());
+          // Preserve Gemini thought signatures alongside their corresponding function calls.
+          Part.Builder partBuilder = Part.builder().functionCall(functionCall);
+          if (thoughtSignatureIndex < thoughtSignatures.size()) {
+            partBuilder.thoughtSignature(thoughtSignatures.get(thoughtSignatureIndex));
+            thoughtSignatureIndex++;
+          }
+          parts.add(partBuilder.build());
         } catch (JsonProcessingException e) {
           throw MessageConversionException.jsonParsingFailed("tool call arguments", e);
         }
@@ -460,6 +482,14 @@ public class MessageConverter {
     }
 
     return Content.builder().role("model").parts(parts).build();
+  }
+
+  private List<byte[]> getThoughtSignatures(AssistantMessage assistantMessage) {
+    Object value = assistantMessage.getMetadata().get(THOUGHT_SIGNATURES_METADATA_KEY);
+    if (!(value instanceof List<?> values)) {
+      return List.of();
+    }
+    return values.stream().filter(byte[].class::isInstance).map(byte[].class::cast).toList();
   }
 
   private String toJson(Object object) {

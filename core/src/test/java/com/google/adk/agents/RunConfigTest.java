@@ -74,6 +74,18 @@ public final class RunConfigTest {
     assertThat(runConfig.autoCreateSession()).isFalse();
     assertThat(runConfig.groupFunctionResponsesInHistoryOverride()).isEmpty();
     assertThat(runConfig.groupFunctionResponsesInHistory()).isFalse();
+    assertThat(runConfig.cancellationToken().isCancellationRequested()).isFalse();
+  }
+
+  @Test
+  public void cancellationToken_isPropagatedByCopyBuilder() {
+    CancellationTokenSource source = new CancellationTokenSource();
+    RunConfig runConfig = RunConfig.builder().cancellationToken(source.token()).build();
+
+    RunConfig copy = RunConfig.builder(runConfig).build();
+    source.cancel();
+
+    assertThat(copy.cancellationToken().isCancellationRequested()).isTrue();
   }
 
   @Test

@@ -331,16 +331,26 @@ public abstract class BaseAgent {
         },
         agentInvocation -> {
           InvocationContext invocationContext = agentInvocation.getCtx();
+          if (invocationContext.isCancellationRequested()) {
+            return Flowable.empty();
+          }
           Flowable<Event> mainAndAfterEvents =
-              Flowable.defer(() -> runImplementation.apply(invocationContext))
+              Flowable.defer(
+                      () ->
+                          invocationContext.isCancellationRequested()
+                              ? Flowable.empty()
+                              : runImplementation.apply(invocationContext))
                   .concatWith(
                       Flowable.defer(
                           () ->
-                              callCallback(
-                                      afterCallbacksToFunctions(
-                                          invocationContext.pluginManager(), afterAgentCallback),
-                                      invocationContext)
-                                  .toFlowable()));
+                              invocationContext.isCancellationRequested()
+                                  ? Flowable.empty()
+                                  : callCallback(
+                                          afterCallbacksToFunctions(
+                                              invocationContext.pluginManager(),
+                                              afterAgentCallback),
+                                          invocationContext)
+                                      .toFlowable()));
 
           return callCallback(
                   beforeCallbacksToFunctions(

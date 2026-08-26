@@ -117,6 +117,9 @@ public abstract class RunConfig {
 
   public abstract ImmutableMap<String, Object> customMetadata();
 
+  /** Token used to cooperatively cancel this run. */
+  public abstract CancellationToken cancellationToken();
+
   public abstract Builder toBuilder();
 
   public static Builder builder() {
@@ -128,6 +131,7 @@ public abstract class RunConfig {
         .toolExecutionMode(ToolExecutionMode.NONE)
         .maxLlmCalls(500)
         .autoCreateSession(false)
+        .cancellationToken(CancellationToken.none())
         .customMetadata(ImmutableMap.of());
   }
 
@@ -144,6 +148,7 @@ public abstract class RunConfig {
         .outputAudioTranscription(runConfig.outputAudioTranscription())
         .inputAudioTranscription(runConfig.inputAudioTranscription())
         .autoCreateSession(runConfig.autoCreateSession())
+        .cancellationToken(runConfig.cancellationToken())
         .groupFunctionResponsesInHistoryOverride(
             runConfig.groupFunctionResponsesInHistoryOverride())
         .customMetadata(runConfig.customMetadata());
@@ -243,6 +248,9 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder customMetadata(Map<String, Object> customMetadata);
+
+    @CanIgnoreReturnValue
+    public abstract Builder cancellationToken(CancellationToken cancellationToken);
 
     /**
      * Sets the three-state grouping override.
