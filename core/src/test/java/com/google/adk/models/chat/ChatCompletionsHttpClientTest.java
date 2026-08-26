@@ -36,11 +36,14 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.HttpOptions;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.MediaType;
@@ -124,6 +127,26 @@ public final class ChatCompletionsHttpClientTest {
         .model("gpt-4")
         .contents(ImmutableList.of(Content.builder().parts(Part.fromText("hello")).build()))
         .build();
+  }
+
+  private Throwable captureError(
+      Flowable<LlmResponse> flowable,
+      ArgumentCaptor<Callback> callbackCaptor,
+      Response mockResponse)
+      throws InterruptedException, IOException {
+    AtomicReference<Throwable> errorRef = new AtomicReference<>();
+    CountDownLatch latch = new CountDownLatch(1);
+    var unused =
+        flowable.subscribe(
+            resp -> {},
+            err -> {
+              errorRef.set(err);
+              latch.countDown();
+            },
+            latch::countDown);
+    callbackCaptor.getValue().onResponse(mockCall, mockResponse);
+    latch.await(AWAIT_TIMEOUT.toMillis(), MILLISECONDS);
+    return errorRef.get();
   }
 
   @Test
@@ -351,16 +374,14 @@ public final class ChatCompletionsHttpClientTest {
     ArgumentCaptor<Callback> callbackCaptor = ArgumentCaptor.forClass(Callback.class);
     doNothing().when(mockCall).enqueue(callbackCaptor.capture());
 
-    TestSubscriber<LlmResponse> testSubscriber = client.complete(minimalRequest(), false).test();
+    Throwable error =
+        captureError(client.complete(minimalRequest(), false), callbackCaptor, mockResponse);
 
-    callbackCaptor.getValue().onResponse(mockCall, mockResponse);
-    testSubscriber.await(AWAIT_TIMEOUT.toMillis(), MILLISECONDS);
-
-    testSubscriber.assertError(
-        e ->
-            e instanceof IOException
-                && e.getMessage().contains("HTTP request failed with status:")
-                && e.getMessage().contains("server exploded"));
+    assertThat(error).isInstanceOf(ChatCompletionsHttpException.class);
+    ChatCompletionsHttpException exception = (ChatCompletionsHttpException) error;
+    assertThat(exception.getMessage()).contains("HTTP request failed with status:");
+    assertThat(exception.getMessage()).contains("server exploded");
+    assertThat(exception.responseBody()).contains("server exploded");
   }
 
   /**
@@ -391,6 +412,101 @@ public final class ChatCompletionsHttpClientTest {
 
     testSubscriber.assertNoValues();
     testSubscriber.assertError(Throwable.class);
+  }
+
+  @Test
+  public void complete_nonStreaming_429_emitsTypedExceptionWithStatusCode() throws Exception {
+    Response mockResponse =
+        createMockResponse("{\"error\":\"rate limited\"}", JSON, 429, "Too Many Requests");
+
+    ArgumentCaptor<Callback> callbackCaptor = ArgumentCaptor.forClass(Callback.class);
+    doNothing().when(mockCall).enqueue(callbackCaptor.capture());
+
+    Throwable error =
+        captureError(client.complete(minimalRequest(), false), callbackCaptor, mockResponse);
+
+    assertThat(error).isInstanceOf(ChatCompletionsHttpException.class);
+    ChatCompletionsHttpException exception = (ChatCompletionsHttpException) error;
+    assertThat(exception.statusCode()).isEqualTo(429);
+    assertThat(exception.responseBody()).contains("rate limited");
+  }
+
+  @Test
+  public void complete_nonStreaming_401_emitsSameTypeWithDistinctStatusCode() throws Exception {
+    Response mockResponse =
+        createMockResponse("{\"error\":\"unauthorized\"}", JSON, 401, "Unauthorized");
+
+    ArgumentCaptor<Callback> callbackCaptor = ArgumentCaptor.forClass(Callback.class);
+    doNothing().when(mockCall).enqueue(callbackCaptor.capture());
+
+    Throwable error =
+        captureError(client.complete(minimalRequest(), false), callbackCaptor, mockResponse);
+
+    assertThat(error).isInstanceOf(ChatCompletionsHttpException.class);
+    ChatCompletionsHttpException exception = (ChatCompletionsHttpException) error;
+    assertThat(exception.statusCode()).isEqualTo(401);
+  }
+
+  @Test
+  public void complete_streaming_429_emitsTypedExceptionWithStatusCode() throws Exception {
+    Response mockResponse =
+        createMockResponse("{\"error\":\"rate limited\"}", JSON, 429, "Too Many Requests");
+
+    ArgumentCaptor<Callback> callbackCaptor = ArgumentCaptor.forClass(Callback.class);
+    doNothing().when(mockCall).enqueue(callbackCaptor.capture());
+
+    Throwable error =
+        captureError(client.complete(minimalRequest(), true), callbackCaptor, mockResponse);
+
+    assertThat(error).isInstanceOf(ChatCompletionsHttpException.class);
+    assertThat(((ChatCompletionsHttpException) error).statusCode()).isEqualTo(429);
+  }
+
+  @Test
+  public void complete_nonStreaming_connectionFailure_remainsPlainIOException() throws Exception {
+    ArgumentCaptor<Callback> callbackCaptor = ArgumentCaptor.forClass(Callback.class);
+    doNothing().when(mockCall).enqueue(callbackCaptor.capture());
+
+    AtomicReference<Throwable> errorRef = new AtomicReference<>();
+    CountDownLatch latch = new CountDownLatch(1);
+    var unused =
+        client
+            .complete(minimalRequest(), false)
+            .subscribe(
+                resp -> {},
+                err -> {
+                  errorRef.set(err);
+                  latch.countDown();
+                },
+                latch::countDown);
+
+    callbackCaptor.getValue().onFailure(mockCall, new IOException("Connection reset"));
+    latch.await(AWAIT_TIMEOUT.toMillis(), MILLISECONDS);
+
+    Throwable error = errorRef.get();
+    assertThat(error).isInstanceOf(IOException.class);
+    assertThat(error).isNotInstanceOf(ChatCompletionsHttpException.class);
+  }
+
+  @Test
+  public void complete_nonStreaming_bodyContainingCodeText_doesNotAffectExposedStatus()
+      throws Exception {
+    Response mockResponse =
+        createMockResponse(
+            "{\"error\":{\"code\":429,\"message\":\"unrelated\"}}",
+            JSON,
+            500,
+            "Internal Server Error");
+
+    ArgumentCaptor<Callback> callbackCaptor = ArgumentCaptor.forClass(Callback.class);
+    doNothing().when(mockCall).enqueue(callbackCaptor.capture());
+
+    Throwable error =
+        captureError(client.complete(minimalRequest(), false), callbackCaptor, mockResponse);
+
+    ChatCompletionsHttpException exception = (ChatCompletionsHttpException) error;
+    assertThat(exception.statusCode()).isEqualTo(500);
+    assertThat(exception.responseBody()).contains("\"code\":429");
   }
 
   /**
