@@ -33,10 +33,34 @@ import org.jspecify.annotations.Nullable;
 
 /** An in-memory implementation of the {@link BaseArtifactService}. */
 public final class InMemoryArtifactService implements BaseArtifactService {
-  private final Map<String, Map<String, Map<String, Map<String, List<Part>>>>> artifacts;
+  private final Map<String, List<Part>> artifacts;
 
   public InMemoryArtifactService() {
     this.artifacts = new HashMap<>();
+  }
+
+  /**
+   * Checks if a filename uses the user namespace.
+   *
+   * @param filename Filename to check.
+   * @return true if prefixed with "user:", false otherwise.
+   */
+  private static boolean fileHasUserNamespace(String filename) {
+    return filename != null && filename.startsWith("user:");
+  }
+
+  /**
+   * Builds the storage key for an artifact.
+   *
+   * <p>A "user:"-prefixed filename is stored under a session-independent, user-scoped key so it is
+   * visible from every session for that user, matching {@link GcsArtifactService} and adk-python's
+   * {@code InMemoryArtifactService}. Any other filename is scoped to the given session, as before.
+   */
+  private static String artifactKey(
+      String appName, String userId, String sessionId, String filename) {
+    return fileHasUserNamespace(filename)
+        ? String.format("%s/%s/user/%s", appName, userId, filename)
+        : String.format("%s/%s/%s/%s", appName, userId, sessionId, filename);
   }
 
   /**
@@ -48,8 +72,8 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   public Single<Integer> saveArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact) {
     List<Part> versions =
-        getArtifactsMap(appName, userId, sessionId)
-            .computeIfAbsent(filename, unused -> new ArrayList<>());
+        artifacts.computeIfAbsent(
+            artifactKey(appName, userId, sessionId, filename), unused -> new ArrayList<>());
     versions.add(artifact);
     return Single.just(versions.size() - 1);
   }
@@ -63,8 +87,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   public Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, @Nullable Integer version) {
     List<Part> versions =
-        getArtifactsMap(appName, userId, sessionId)
-            .computeIfAbsent(filename, unused -> new ArrayList<>());
+        artifacts.getOrDefault(artifactKey(appName, userId, sessionId, filename), List.of());
 
     if (versions.isEmpty()) {
       return Maybe.empty();
@@ -81,17 +104,25 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   }
 
   /**
-   * Lists filenames of stored artifacts for the session.
+   * Lists filenames of stored artifacts for the session, including every "user:"-namespaced
+   * artifact for the user regardless of which session saved it.
    *
    * @return Single with list of artifact filenames.
    */
   @Override
   public Single<ListArtifactsResponse> listArtifactKeys(
       String appName, String userId, String sessionId) {
-    return Single.just(
-        ListArtifactsResponse.builder()
-            .filenames(ImmutableList.copyOf(getArtifactsMap(appName, userId, sessionId).keySet()))
-            .build());
+    String sessionPrefix = String.format("%s/%s/%s/", appName, userId, sessionId);
+    String userPrefix = String.format("%s/%s/user/", appName, userId);
+    List<String> filenames = new ArrayList<>();
+    for (String key : artifacts.keySet()) {
+      if (key.startsWith(sessionPrefix)) {
+        filenames.add(key.substring(sessionPrefix.length()));
+      } else if (key.startsWith(userPrefix)) {
+        filenames.add(key.substring(userPrefix.length()));
+      }
+    }
+    return Single.just(ListArtifactsResponse.builder().filenames(filenames).build());
   }
 
   /**
@@ -102,7 +133,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   @Override
   public Completable deleteArtifact(
       String appName, String userId, String sessionId, String filename) {
-    getArtifactsMap(appName, userId, sessionId).remove(filename);
+    artifacts.remove(artifactKey(appName, userId, sessionId, filename));
     return Completable.complete();
   }
 
@@ -115,9 +146,7 @@ public final class InMemoryArtifactService implements BaseArtifactService {
   public Single<ImmutableList<Integer>> listVersions(
       String appName, String userId, String sessionId, String filename) {
     int size =
-        getArtifactsMap(appName, userId, sessionId)
-            .computeIfAbsent(filename, unused -> new ArrayList<>())
-            .size();
+        artifacts.getOrDefault(artifactKey(appName, userId, sessionId, filename), List.of()).size();
     if (size == 0) {
       return Single.just(ImmutableList.of());
     }
@@ -129,12 +158,5 @@ public final class InMemoryArtifactService implements BaseArtifactService {
       String appName, String userId, String sessionId, String filename, Part artifact) {
     return saveArtifact(appName, userId, sessionId, filename, artifact)
         .flatMap(version -> loadArtifact(appName, userId, sessionId, filename, version).toSingle());
-  }
-
-  private Map<String, List<Part>> getArtifactsMap(String appName, String userId, String sessionId) {
-    return artifacts
-        .computeIfAbsent(appName, unused -> new HashMap<>())
-        .computeIfAbsent(userId, unused -> new HashMap<>())
-        .computeIfAbsent(sessionId, unused -> new HashMap<>());
   }
 }

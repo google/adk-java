@@ -72,6 +72,53 @@ public class InMemoryArtifactServiceTest {
     assertThat(result).hasValue(artifact);
   }
 
+  @Test
+  public void loadArtifact_userNamespacedFile_visibleFromDifferentSession() {
+    String userFilename = "user:profile.txt";
+    Part artifact = Part.fromBytes(new byte[] {1, 2, 3}, "text/plain");
+    var unused =
+        service.saveArtifact(APP_NAME, USER_ID, "session-a", userFilename, artifact).blockingGet();
+
+    Optional<Part> result =
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, "session-b", userFilename));
+
+    assertThat(result).hasValue(artifact);
+  }
+
+  @Test
+  public void listArtifactKeys_includesUserNamespacedFilesFromOtherSessions() {
+    String userFilename = "user:profile.txt";
+    Part userArtifact = Part.fromBytes(new byte[] {1}, "text/plain");
+    Part sessionArtifact = Part.fromBytes(new byte[] {2}, "text/plain");
+    var unused1 =
+        service
+            .saveArtifact(APP_NAME, USER_ID, "session-a", userFilename, userArtifact)
+            .blockingGet();
+    var unused2 =
+        service
+            .saveArtifact(APP_NAME, USER_ID, "session-b", FILENAME, sessionArtifact)
+            .blockingGet();
+
+    ListArtifactsResponse response =
+        service.listArtifactKeys(APP_NAME, USER_ID, "session-b").blockingGet();
+
+    assertThat(response.filenames()).containsExactly(userFilename, FILENAME);
+  }
+
+  @Test
+  public void deleteArtifact_userNamespacedFile_removesFromEverySession() {
+    String userFilename = "user:profile.txt";
+    Part artifact = Part.fromBytes(new byte[] {1, 2, 3}, "text/plain");
+    var unused =
+        service.saveArtifact(APP_NAME, USER_ID, "session-a", userFilename, artifact).blockingGet();
+
+    service.deleteArtifact(APP_NAME, USER_ID, "session-b", userFilename).blockingAwait();
+
+    Optional<Part> result =
+        asOptional(service.loadArtifact(APP_NAME, USER_ID, "session-a", userFilename));
+    assertThat(result).isEmpty();
+  }
+
   private static <T> Optional<T> asOptional(Maybe<T> maybe) {
     return maybe.map(Optional::of).defaultIfEmpty(Optional.empty()).blockingGet();
   }
