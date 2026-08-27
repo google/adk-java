@@ -25,6 +25,7 @@ import com.google.common.collect.ImmutableList;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
+import io.modelcontextprotocol.spec.McpSchema.ImageContent;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import java.util.List;
 import java.util.Map;
@@ -59,6 +60,43 @@ public final class AbstractMcpToolTest {
 
     Map<?, ?> contentItem = (Map<?, ?>) content.get(0);
     assertThat(contentItem).containsEntry("text", "success");
+  }
+
+  @Test
+  public void testWrapCallResult_preservesCompleteSuccessfulResult() {
+    Map<String, Object> structuredContent = Map.of("count", 2);
+    CallToolResult result =
+        CallToolResult.builder()
+            .content(
+                ImmutableList.of(
+                    new TextContent("first"),
+                    new ImageContent("aW1hZ2U=", "image/png")))
+            .structuredContent(structuredContent)
+            .isError(false)
+            .build();
+
+    Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
+
+    assertThat(map).containsEntry("isError", false);
+    assertThat(map).containsEntry("structuredContent", structuredContent);
+    assertThat((List<?>) map.get("content")).hasSize(2);
+    assertThat(map).containsKey("text_output");
+  }
+
+  @Test
+  public void testWrapCallResult_preservesSuccessfulNonTextResult() {
+    CallToolResult result =
+        CallToolResult.builder()
+            .content(ImmutableList.of(new ImageContent("aW1hZ2U=", "image/png")))
+            .isError(false)
+            .build();
+
+    Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
+
+    assertThat(map).containsEntry("isError", false);
+    assertThat((List<?>) map.get("content")).hasSize(1);
+    assertThat((List<?>) map.get("text_output")).isEmpty();
+    assertThat(map).doesNotContainKey("error");
   }
 
   @Test

@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.mcp.McpToolException.McpToolDeclarationException;
 import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
@@ -31,6 +32,7 @@ import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import io.modelcontextprotocol.spec.McpSchema.ToolAnnotations;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -145,11 +147,14 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
     }
 
     if (textOutputs.isEmpty()) {
-      return ImmutableMap.of(
-          "error",
-          "Tool '" + mcpToolName + "' returned content that is not TextContent.",
-          "content_details",
-          contents.toString());
+      Map<String, Object> result = new HashMap<>();
+      result.put("text_output", ImmutableList.of());
+      result.put("content", contents);
+      result.put("isError", Boolean.FALSE);
+      if (callResult.structuredContent() != null) {
+        result.put("structuredContent", callResult.structuredContent());
+      }
+      return result;
     }
 
     List<Map<String, Object>> resultMaps = new ArrayList<>();
@@ -161,6 +166,13 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
         resultMaps.add(ImmutableMap.of("text", textOutput));
       }
     }
-    return ImmutableMap.of("text_output", resultMaps);
+    Map<String, Object> result = new HashMap<>();
+    result.put("text_output", resultMaps);
+    result.put("content", contents);
+    result.put("isError", Boolean.FALSE);
+    if (callResult.structuredContent() != null) {
+      result.put("structuredContent", callResult.structuredContent());
+    }
+    return result;
   }
 }
