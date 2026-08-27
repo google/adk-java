@@ -20,7 +20,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.adk.events.Event;
 import com.google.adk.sessions.Session;
-import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Part;
@@ -105,8 +104,9 @@ public final class InMemoryMemoryService implements BaseMemoryService {
 
               Set<String> wordsInEvent = new HashSet<>();
               for (Part part : event.content().get().parts().get()) {
-                if (!Strings.isNullOrEmpty(part.text().get())) {
-                  Matcher matcher = WORD_PATTERN.matcher(part.text().get());
+                String text = part.text().orElse("");
+                if (!text.isEmpty()) {
+                  Matcher matcher = WORD_PATTERN.matcher(text);
                   while (matcher.find()) {
                     wordsInEvent.add(matcher.group().toLowerCase(Locale.ROOT));
                   }
