@@ -35,6 +35,11 @@ public interface ChatCompletionsClient {
    * messages. This encapsulates building the payload, sending the request to the completions
    * endpoint, and initiating the handling of complete calls.
    *
+   * <p>On a non-2xx HTTP response the returned {@link io.reactivex.rxjava3.core.Flowable} emits a
+   * {@link ChatCompletionsHttpException}; callers can inspect {@link
+   * ChatCompletionsHttpException#statusCode()} without parsing the message text. On a
+   * connection-level failure a plain {@link java.io.IOException} is emitted instead.
+   *
    * @param llmRequest The request containing the model, configuration, and sequence of messages.
    * @param stream Whether to request a streaming response.
    * @return A {@link Flowable} emitting the discrete (or combined) {@link LlmResponse} objects.

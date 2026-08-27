@@ -249,11 +249,8 @@ public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
                     if (!response.isSuccessful()) {
                       String bodyStr = body != null ? body.string() : "";
                       emitter.tryOnError(
-                          new IOException(
-                              "HTTP request failed with status: "
-                                  + response
-                                  + " - body: "
-                                  + bodyStr));
+                          new ChatCompletionsHttpException(
+                              response.code(), response.toString(), bodyStr));
                       return;
                     }
                     if (body == null) {
@@ -349,8 +346,7 @@ public final class ChatCompletionsHttpClient implements ChatCompletionsClient {
         if (!response.isSuccessful()) {
           String bodyStr = body != null ? body.string() : "";
           emitter.tryOnError(
-              new IOException(
-                  "HTTP request failed with status: " + response + " - body: " + bodyStr));
+              new ChatCompletionsHttpException(response.code(), response.toString(), bodyStr));
           return;
         }
         if (body == null) {
