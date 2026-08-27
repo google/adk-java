@@ -484,6 +484,27 @@ public class PartConverterTest {
   }
 
   @Test
+  public void toGenaiPart_withTextPartEmptyMetadata_doesNotSetPartMetadata() {
+    TextPart textPart = new TextPart("Hello", ImmutableMap.of());
+
+    Part result = PartConverter.toGenaiPart(textPart);
+
+    assertThat(result.text()).hasValue("Hello");
+    assertThat(result.partMetadata()).isEmpty();
+  }
+
+  @Test
+  public void toGenaiPart_withFilePartEmptyMetadata_doesNotSetPartMetadata() {
+    FilePart filePart =
+        new FilePart(
+            new FileWithUri("text/plain", "file.txt", "http://file.txt"), ImmutableMap.of());
+
+    Part result = PartConverter.toGenaiPart(filePart);
+
+    assertThat(result.partMetadata()).isEmpty();
+  }
+
+  @Test
   public void toGenaiPart_withTextPartMetadata_propagatesMetadata() {
     TextPart textPart = new TextPart("Hello", ImmutableMap.of("key", "value"));
 
