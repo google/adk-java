@@ -16,18 +16,30 @@
 
 package com.google.adk.sessions;
 
+import static org.junit.Assert.assertThrows;
+
 import okhttp3.ResponseBody;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
-/** The API response contains a response to a call to the GenAI APIs. */
-public abstract class ApiResponse implements AutoCloseable {
-  /** Gets the HttpEntity. */
-  public abstract ResponseBody getResponseBody();
+@RunWith(JUnit4.class)
+public final class ApiResponseTest {
 
-  /** Gets the HTTP status code of the response. */
-  public int getStatusCode() {
-    throw new UnsupportedOperationException("getStatusCode() is not implemented.");
+  private static final class SubclassWithoutStatusCodeOverride extends ApiResponse {
+    @Override
+    public ResponseBody getResponseBody() {
+      return null;
+    }
+
+    @Override
+    public void close() {}
   }
 
-  @Override
-  public abstract void close();
+  @Test
+  public void getStatusCode_notOverridden_throwsUnsupportedOperationException() {
+    ApiResponse response = new SubclassWithoutStatusCodeOverride();
+
+    assertThrows(UnsupportedOperationException.class, response::getStatusCode);
+  }
 }

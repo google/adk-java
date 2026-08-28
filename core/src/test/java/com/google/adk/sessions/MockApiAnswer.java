@@ -99,10 +99,19 @@ class MockApiAnswer implements Answer<ApiResponse> {
   }
 
   private static ApiResponse responseWithBody(String body) {
+    return responseWithStatus(200, body);
+  }
+
+  static ApiResponse responseWithStatus(int statusCode, String body) {
     return new ApiResponse() {
       @Override
       public ResponseBody getResponseBody() {
-        return ResponseBody.create(JSON_MEDIA_TYPE, body);
+        return body == null ? null : ResponseBody.create(JSON_MEDIA_TYPE, body);
+      }
+
+      @Override
+      public int getStatusCode() {
+        return statusCode;
       }
 
       @Override
@@ -144,7 +153,7 @@ class MockApiAnswer implements Answer<ApiResponse> {
     if (sessionData != null) {
       return responseWithBody(sessionData);
     } else {
-      throw new RuntimeException("Session not found: " + sessionId);
+      return responseWithStatus(404, "");
     }
   }
 
