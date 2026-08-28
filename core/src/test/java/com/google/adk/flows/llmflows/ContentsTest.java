@@ -427,14 +427,15 @@ public final class ContentsTest {
         .containsExactly(
             u1.content().get(),
             Content.fromParts(
-                Part.fromText("For context:"),
-                Part.fromText("[other_agent] said: Some text"),
-                Part.fromText(
-                    "[other_agent] called tool `tool1` with parameters: "
-                        + "{\"arg1\":\"value\",\"arg2\":[1,2]}")),
+                otherAgentPreamblePart(),
+                otherAgentPart("[other_agent] said:", "Some text"),
+                otherAgentPart(
+                    "[other_agent] called tool `tool1` with parameters:",
+                    "{\"arg1\":\"value\",\"arg2\":[1,2]}")),
             Content.fromParts(
-                Part.fromText("For context:"),
-                Part.fromText("[other_agent] `tool1` tool returned result: {\"result\":\"ok\"}")),
+                otherAgentPreamblePart(),
+                otherAgentPart(
+                    "[other_agent] `tool1` tool returned result:", "{\"result\":\"ok\"}")),
             a1.content().get(),
             fr2.content().get())
         .inOrder();
@@ -464,8 +465,8 @@ public final class ContentsTest {
     assertThat(result)
         .containsExactly(
             Content.fromParts(
-                Part.fromText("For context:"),
-                Part.fromText("[other_agent] said: Other Agent Turn")));
+                otherAgentPreamblePart(),
+                otherAgentPart("[other_agent] said:", "Other Agent Turn")));
   }
 
   @Test
@@ -1201,7 +1202,9 @@ public final class ContentsTest {
             contents.get(1).parts().get().stream()
                 .map(part -> part.text().orElse(""))
                 .collect(toImmutableList()))
-        .containsExactly("For context:", "[" + OTHER_AGENT + "] said: It is in Paris.");
+        .containsExactly(
+            Fencing.OTHER_AGENT_CONTEXT_PREAMBLE,
+            "[" + OTHER_AGENT + "] said:\n" + Fencing.quoteUntrusted("It is in Paris."));
   }
 
   // The other-agent path still narrates what it can: media parts pass through unchanged, so the
@@ -1234,7 +1237,8 @@ public final class ContentsTest {
 
     assertThat(contents).hasSize(2);
     assertThat(contents.get(1).parts().get()).hasSize(2);
-    assertThat(contents.get(1).parts().get().get(0).text()).hasValue("For context:");
+    assertThat(contents.get(1).parts().get().get(0).text())
+        .hasValue(Fencing.OTHER_AGENT_CONTEXT_PREAMBLE);
     assertThat(contents.get(1).parts().get().get(1).inlineData()).isPresent();
   }
 
@@ -1352,7 +1356,7 @@ public final class ContentsTest {
     assertThat(result)
         .containsExactly(
             Content.fromParts(
-                Part.fromText("For context:"), Part.fromText("[agent_1] said: sibling output")));
+                otherAgentPreamblePart(), otherAgentPart("[agent_1] said:", "sibling output")));
   }
 
   private static Event createUserEvent(String id, String text) {
@@ -1362,6 +1366,14 @@ public final class ContentsTest {
         .content(Content.fromParts(Part.fromText(text)))
         .invocationId("invocationId")
         .build();
+  }
+
+  private static Part otherAgentPreamblePart() {
+    return Part.fromText(Fencing.OTHER_AGENT_CONTEXT_PREAMBLE);
+  }
+
+  private static Part otherAgentPart(String attribution, String payload) {
+    return Part.fromText(attribution + "\n" + Fencing.quoteUntrusted(payload));
   }
 
   private static Event createUserEvent(
