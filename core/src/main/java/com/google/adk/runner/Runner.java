@@ -346,14 +346,15 @@ public class Runner {
   }
 
   /**
-   * Appends a new user message to the session history with optional state delta.
+   * Prepares and creates the user-authored {@link Event}, saving any input blobs as artifacts and
+   * attaching state deltas if configured.
    *
-   * <p>{@code newMessage} is never modified; when inline blobs are saved as artifacts, the appended
+   * <p>{@code newMessage} is never modified; when inline blobs are saved as artifacts, the returned
    * event carries a copy in which the blob data is replaced by placeholders.
    *
    * @throws IllegalArgumentException if message has no parts.
    */
-  private Single<Event> appendNewMessageToSession(
+  private Single<Event> createUserMessageEvent(
       Session session,
       Content newMessage,
       InvocationContext invocationContext,
@@ -387,7 +388,6 @@ public class Runner {
       }
       messageToAppend = newMessage.toBuilder().parts(ImmutableList.copyOf(parts)).build();
     }
-    // Appends only. We do not yield the event because it's not from the model.
     Event.Builder eventBuilder =
         Event.builder()
             .id(Event.generateEventId())
@@ -400,9 +400,7 @@ public class Runner {
       eventBuilder.actions(
           EventActions.builder().stateDelta(new ConcurrentHashMap<>(stateDelta)).build());
     }
-
-    return saveArtifactsFlow.andThen(
-        this.sessionService.appendEvent(session, eventBuilder.build()));
+    return saveArtifactsFlow.andThen(Single.just(eventBuilder.build()));
   }
 
   /** See {@link #runAsync(String, String, Content, RunConfig, Map)}. */
@@ -529,8 +527,9 @@ public class Runner {
               BaseAgent rootAgent = this.agent;
               String invocationId = InvocationContext.newInvocationContextId();
 
-              // Pre-merge stateDelta so onUserMessageCallback can access it.
-              // Safe: session is a copy; persistence still happens via appendNewMessageToSession.
+              // Eagerly merge stateDelta into session state so onUserMessageCallback() can see it.
+              // Safe: this in-memory update is ahead of time; canonical persistence still happens
+              // when userEvent is appended in runAgentForUserEvent().
               if (stateDelta != null && !stateDelta.isEmpty()) {
                 stateDelta.forEach((key, value) -> session.state().put(key, value));
               }
@@ -549,15 +548,15 @@ public class Runner {
                   .defaultIfEmpty(newMessage)
                   .flatMap(
                       content ->
-                          appendNewMessageToSession(
+                          createUserMessageEvent(
                               session,
                               content,
                               initialContext,
                               runConfig.saveInputBlobsAsArtifacts(),
                               stateDelta))
                   .flatMapPublisher(
-                      event ->
-                          runAgentWithUpdatedSession(initialContext, session, event, rootAgent)
+                      userEvent ->
+                          runAgentForUserEvent(initialContext, session, userEvent, rootAgent)
                               .compose(Tracing.<Event>withContext(capturedContext)))
                   .doOnError(
                       throwable ->
@@ -572,6 +571,30 @@ public class Runner {
               span.setStatus(StatusCode.ERROR, "Error in runAsync Flowable execution");
               span.recordException(throwable);
             });
+  }
+
+  /**
+   * Persists the user message event to the session and executes the agent.
+   *
+   * <p>The initial {@code userEvent} is persisted to {@code session} to update session history and
+   * state, and is used to initialize the {@link InvocationContext}. The returned {@link Flowable}
+   * yields <b>only</b> model/agent events (and any event produced by {@code beforeRunCallback});
+   * the user event itself is not emitted into the output stream.
+   *
+   * @param initialContext the context from the start of the invocation, used to preserve metadata
+   *     and callback data.
+   * @param session the session to append the user message to and execute within.
+   * @param userEvent the unpersisted user message event.
+   * @param rootAgent the agent to be executed.
+   * @return a stream of events generated during execution by the model/agent and plugins.
+   */
+  private Flowable<Event> runAgentForUserEvent(
+      InvocationContext initialContext, Session session, Event userEvent, BaseAgent rootAgent) {
+    return this.sessionService
+        .appendEvent(session, userEvent)
+        .flatMapPublisher(
+            unusedPersistedEvent ->
+                runAgentWithUpdatedSession(initialContext, session, userEvent, rootAgent));
   }
 
   /**
