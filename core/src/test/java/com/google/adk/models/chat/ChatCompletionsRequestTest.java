@@ -616,16 +616,11 @@ public final class ChatCompletionsRequestTest {
 
   @Test
   public void testFromLlmRequest_withParametersJsonSchema() throws Exception {
-    Map<String, Object> jsonSchema =
-        ImmutableMap.of(
-            "type",
-            "object",
-            "properties",
-            ImmutableMap.of("jobId", ImmutableMap.of("$ref", "#/$defs/jobId")),
-            "required",
-            ImmutableList.of("jobId"),
-            "$defs",
-            ImmutableMap.of("jobId", ImmutableMap.of("type", "string")));
+    Map<String, Object> properties =
+        ImmutableMap.of("jobId", ImmutableMap.of("$ref", "#/$defs/jobId"));
+    Map<String, Object> defs = ImmutableMap.of("jobId", ImmutableMap.of("type", "string"));
+    JsonSchema jsonSchema =
+        new JsonSchema("object", properties, ImmutableList.of("jobId"), null, defs, null);
     FunctionDeclaration function =
         FunctionDeclaration.builder()
             .name("analyze_premerge_failures_by_job")
@@ -645,7 +640,17 @@ public final class ChatCompletionsRequestTest {
     ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
 
     assertThat(request.tools).hasSize(1);
-    assertThat(request.tools.get(0).function.parameters).isEqualTo(jsonSchema);
+    assertThat(request.tools.get(0).function.parameters)
+        .isEqualTo(
+            ImmutableMap.of(
+                "type",
+                "object",
+                "properties",
+                properties,
+                "required",
+                ImmutableList.of("jobId"),
+                "$defs",
+                defs));
   }
 
   @Test
