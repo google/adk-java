@@ -607,6 +607,9 @@ public final class ChatCompletionsRequest {
               def.parameters =
                   objectMapper.convertValue(
                       fd.parametersJsonSchema().get(), new TypeReference<Map<String, Object>>() {});
+              if (!def.parameters.containsKey("properties")) {
+                def.parameters.put("properties", ImmutableMap.of());
+              }
             } else if (fd.parameters().isPresent()) {
               def.parameters =
                   objectMapper.convertValue(
