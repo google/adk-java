@@ -410,8 +410,13 @@ public final class Contents implements RequestProcessor {
   /**
    * Converts an {@code event} authored by another agent to a 'contextual-only' event.
    *
-   * <p>Returns {@code null} when nothing but the "For context:" preamble survives the conversion,
-   * so the caller drops the event instead of sending a preamble with no context after it.
+   * <p>Returns {@code null} when nothing but the preamble survives the conversion, so the caller
+   * drops the event instead of sending a preamble with no context after it.
+   *
+   * <p>The relayed text is attacker-reachable: whoever talks to the other agent steers what it
+   * says, and its tool results carry whatever the tool read. Each relayed text payload is therefore
+   * fenced (see {@link Fencing}), and the leading part states that fenced content is data, so a
+   * payload has to be believed rather than merely obeyed.
    */
   private static @Nullable Event convertForeignEvent(Event event) {
     if (event.content().isEmpty()
@@ -421,7 +426,7 @@ public final class Contents implements RequestProcessor {
     }
 
     List<Part> parts = new ArrayList<>();
-    parts.add(Part.fromText("For context:"));
+    parts.add(Part.fromText(Fencing.OTHER_AGENT_CONTEXT_PREAMBLE));
 
     String originalAuthor = event.author();
 
@@ -434,25 +439,35 @@ public final class Contents implements RequestProcessor {
       // Blank text is not narrated: such a part is a signature carrier, and a bare "said:" would
       // both pollute the prompt and keep the event alive on nothing.
       if (part.text().map(text -> !text.isBlank()).orElse(false)) {
-        parts.add(Part.fromText(String.format("[%s] said: %s", originalAuthor, part.text().get())));
-      } else if (part.functionCall().isPresent()) {
-        FunctionCall functionCall = part.functionCall().get();
         parts.add(
             Part.fromText(
                 String.format(
-                    "[%s] called tool `%s` with parameters: %s",
+                    "[%s] said:\n%s", originalAuthor, Fencing.quoteUntrusted(part.text().get()))));
+      } else if (part.functionCall().isPresent()) {
+        FunctionCall functionCall = part.functionCall().get();
+        // The tool name is model-chosen too, so it is elided but left unfenced: it reads as
+        // part of the sentence and a fence there would obscure which tool ran.
+        parts.add(
+            Part.fromText(
+                String.format(
+                    "[%s] called tool `%s` with parameters:\n%s",
                     originalAuthor,
-                    functionCall.name().orElse("unknown_tool"),
-                    functionCall.args().map(Contents::convertMapToJson).orElse("{}"))));
+                    Fencing.elideQuoteMarkers(functionCall.name().orElse("unknown_tool")),
+                    Fencing.quoteUntrusted(
+                        functionCall.args().map(Contents::convertMapToJson).orElse("{}")))));
       } else if (part.functionResponse().isPresent()) {
         FunctionResponse functionResponse = part.functionResponse().get();
         parts.add(
             Part.fromText(
                 String.format(
-                    "[%s] `%s` tool returned result: %s",
+                    "[%s] `%s` tool returned result:\n%s",
                     originalAuthor,
-                    functionResponse.name().orElse("unknown_tool"),
-                    functionResponse.response().map(Contents::convertMapToJson).orElse("{}"))));
+                    Fencing.elideQuoteMarkers(functionResponse.name().orElse("unknown_tool")),
+                    Fencing.quoteUntrusted(
+                        functionResponse
+                            .response()
+                            .map(Contents::convertMapToJson)
+                            .orElse("{}")))));
       } else if (part.inlineData().isPresent()
           || part.fileData().isPresent()
           || part.executableCode().isPresent()
