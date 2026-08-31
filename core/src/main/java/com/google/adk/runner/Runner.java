@@ -55,6 +55,8 @@ import com.google.common.collect.MapMaker;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Modality;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Span;
@@ -68,9 +70,11 @@ import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
@@ -358,6 +362,22 @@ public class Runner {
       InvocationContext invocationContext,
       boolean saveInputBlobsAsArtifacts,
       @Nullable Map<String, Object> stateDelta) {
+    return appendNewMessageToSession(
+        session,
+        newMessage,
+        invocationContext,
+        saveInputBlobsAsArtifacts,
+        stateDelta,
+        /* branch= */ null);
+  }
+
+  private Single<Event> appendNewMessageToSession(
+      Session session,
+      Content newMessage,
+      InvocationContext invocationContext,
+      boolean saveInputBlobsAsArtifacts,
+      @Nullable Map<String, Object> stateDelta,
+      @Nullable String branch) {
     checkArgument(newMessage.parts().isPresent(), "No parts in the new_message.");
 
     Content messageToAppend = newMessage;
@@ -392,6 +412,7 @@ public class Runner {
             .id(Event.generateEventId())
             .invocationId(invocationContext.invocationId())
             .author("user")
+            .branch(branch)
             .content(messageToAppend);
 
     // Add state delta if provided
@@ -505,6 +526,62 @@ public class Runner {
     return runAsync(userId, sessionId, newMessage, RunConfig.builder().build());
   }
 
+  /** See {@link #resumeAsync(String, String, String, Content, RunConfig)}. */
+  public Flowable<Event> resumeAsync(
+      String userId, String sessionId, @Nullable String invocationId) {
+    return resumeAsync(
+        userId, sessionId, invocationId, /* newMessage= */ null, RunConfig.builder().build());
+  }
+
+  /**
+   * Resumes a paused, resumable invocation instead of starting a new one: the message is optional
+   * and the run continues an existing invocation rather than minting a new id.
+   *
+   * <p>The invocation to resume is resolved from {@code newMessage} when it carries a function
+   * response, else from {@code invocationId}, else from the last event in the session. Agent
+   * checkpoints are rehydrated from history, and an invocation whose active agent already finished
+   * resolves to a no-op.
+   *
+   * @param userId the user id of the session.
+   * @param sessionId the session id.
+   * @param invocationId the invocation to resume; may be {@code null} when it can be inferred.
+   * @param newMessage an optional message (typically a function response) to append before running.
+   * @param runConfig the run configuration.
+   * @return the events generated while resuming, or an empty stream when there is nothing to
+   *     resume.
+   * @throws IllegalArgumentException if the app is not resumable or the invocation cannot be
+   *     resolved.
+   */
+  public Flowable<Event> resumeAsync(
+      String userId,
+      String sessionId,
+      @Nullable String invocationId,
+      @Nullable Content newMessage,
+      RunConfig runConfig) {
+    checkArgument(
+        isResumable(),
+        "resumeAsync requires an App configured with a resumable ResumabilityConfig.");
+    return Flowable.defer(
+            () ->
+                this.sessionService
+                    .getSession(appName, userId, sessionId, Optional.empty())
+                    .switchIfEmpty(
+                        Single.error(
+                            () ->
+                                new IllegalArgumentException(
+                                    String.format(
+                                        "Session not found: %s for user %s", sessionId, userId))))
+                    .flatMapPublisher(
+                        session ->
+                            runResumableFromSession(
+                                session,
+                                invocationId,
+                                newMessage,
+                                runConfig,
+                                /* stateDelta= */ null)))
+        .compose(Tracing.trace("invocation"));
+  }
+
   /**
    * Runs the agent asynchronously using a provided Session object.
    *
@@ -522,6 +599,21 @@ public class Runner {
     Preconditions.checkNotNull(session, "session cannot be null");
     Preconditions.checkNotNull(newMessage, "newMessage cannot be null");
     Preconditions.checkNotNull(runConfig, "runConfig cannot be null");
+    // When resumable, a message that resolves to an existing invocation (e.g. a function response
+    // to a paused call) resumes it; any other message starts a new invocation. Disabled: unchanged.
+    if (isResumable()) {
+      return runResumableFromSession(
+          session, /* providedInvocationId= */ null, newMessage, runConfig, stateDelta);
+    }
+    return runNewInvocation(session, newMessage, runConfig, stateDelta);
+  }
+
+  /** Starts a brand-new invocation for {@code newMessage} (the default, non-resume flow). */
+  private Flowable<Event> runNewInvocation(
+      Session session,
+      Content newMessage,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta) {
     return Flowable.defer(
             () -> {
               Context capturedContext = Context.current();
@@ -668,6 +760,176 @@ public class Runner {
         .map(SlidingWindowEventCompactor::new)
         .map(c -> c.compact(session, sessionService))
         .orElseGet(Completable::complete);
+  }
+
+  /**
+   * Resumes an existing invocation when one resolves from {@code providedInvocationId} or a
+   * function response in {@code newMessage}; otherwise starts a new invocation. Requires
+   * resumability.
+   */
+  private Flowable<Event> runResumableFromSession(
+      Session session,
+      @Nullable String providedInvocationId,
+      @Nullable Content newMessage,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta) {
+    return Flowable.defer(
+        () -> {
+          String resolvedInvocationId =
+              resolveInvocationId(session, newMessage, providedInvocationId);
+          if (resolvedInvocationId == null) {
+            if (newMessage == null) {
+              return Flowable.<Event>error(
+                  new IllegalArgumentException(
+                      "No new message provided and no resumable invocation to resume."));
+            }
+            return runNewInvocation(session, newMessage, runConfig, stateDelta);
+          }
+          return resumeCore(session, resolvedInvocationId, newMessage, runConfig, stateDelta);
+        });
+  }
+
+  /**
+   * Runs an existing invocation on the given session: optionally appends {@code newMessage},
+   * rehydrates agent checkpoints, skips a completed invocation, and runs the resolved agent under
+   * the resumed invocation id.
+   */
+  private Flowable<Event> resumeCore(
+      Session session,
+      String resolvedInvocationId,
+      @Nullable Content newMessage,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta) {
+    return Flowable.defer(
+        () -> {
+          Context capturedContext = Context.current();
+          if (stateDelta != null && !stateDelta.isEmpty()) {
+            stateDelta.forEach((key, value) -> session.state().put(key, value));
+          }
+
+          // Append the function-response message under the resumed invocation first, inheriting the
+          // branch of the call it answers, so routing and rehydration see it.
+          Completable appendMessage = Completable.complete();
+          if (newMessage != null) {
+            InvocationContext appendContext =
+                newInvocationContextBuilder(session)
+                    .invocationId(resolvedInvocationId)
+                    .runConfig(runConfig)
+                    .userContent(newMessage)
+                    .build();
+            String branch =
+                matchingFunctionCallEvent(session, newMessage).flatMap(Event::branch).orElse(null);
+            appendMessage =
+                appendNewMessageToSession(
+                        session,
+                        newMessage,
+                        appendContext,
+                        runConfig.saveInputBlobsAsArtifacts(),
+                        stateDelta,
+                        branch)
+                    .ignoreElement();
+          }
+
+          return appendMessage
+              .andThen(
+                  Flowable.defer(
+                      () -> {
+                        // Build the resumed context after any append so routing and rehydration see
+                        // the latest history.
+                        InvocationContext context =
+                            newInvocationContextBuilder(session)
+                                .invocationId(resolvedInvocationId)
+                                .runConfig(runConfig)
+                                .userContent(newMessage == null ? Content.fromParts() : newMessage)
+                                .build();
+                        context.populateInvocationAgentStates();
+
+                        // No-op guard: a completed invocation (its active agent already finished)
+                        // is not re-run.
+                        if (context.endOfAgents().getOrDefault(context.agent().name(), false)) {
+                          return Flowable.<Event>empty();
+                        }
+
+                        PersistBarrier.enable(context);
+
+                        return context
+                            .agent()
+                            .runAsync(context)
+                            .concatMap(
+                                agentEvent -> {
+                                  Single<Event> persistStep =
+                                      agentEvent.partial().orElse(false)
+                                          ? Single.just(agentEvent)
+                                          : this.sessionService.appendEvent(session, agentEvent);
+                                  return persistStep
+                                      .doOnSuccess(
+                                          unusedEvent ->
+                                              PersistBarrier.markPersisted(
+                                                  context, agentEvent.id()))
+                                      .doOnError(
+                                          error ->
+                                              PersistBarrier.markFailed(
+                                                  context, agentEvent.id(), error))
+                                      .flatMap(
+                                          registeredEvent ->
+                                              context
+                                                  .pluginManager()
+                                                  .onEventCallback(context, registeredEvent)
+                                                  .defaultIfEmpty(registeredEvent))
+                                      .toFlowable();
+                                })
+                            .concatWith(Completable.defer(() -> compactEvents(session)));
+                      }))
+              .compose(Tracing.<Event>withContext(capturedContext));
+        });
+  }
+
+  /**
+   * Resolves which invocation a request targets: the invocation that issued the function call
+   * matching {@code newMessage}'s function response, else the caller-supplied {@code invocationId}.
+   * Returns {@code null} when neither applies (a fresh message starts a new invocation).
+   */
+  private static @Nullable String resolveInvocationId(
+      Session session, @Nullable Content newMessage, @Nullable String invocationId) {
+    if (newMessage != null) {
+      Optional<String> fromResponse =
+          matchingFunctionCallEvent(session, newMessage).map(Event::invocationId);
+      if (fromResponse.isPresent()) {
+        return fromResponse.get();
+      }
+    }
+    return invocationId;
+  }
+
+  /**
+   * Returns the session event whose function call matches a function response id carried by {@code
+   * newMessage}, searching newest-first. Both the resumed invocation id and the branch of the
+   * appended function-response event are derived from it.
+   */
+  private static Optional<Event> matchingFunctionCallEvent(Session session, Content newMessage) {
+    Set<String> responseIds = new HashSet<>();
+    newMessage
+        .parts()
+        .ifPresent(
+            parts ->
+                parts.forEach(
+                    part ->
+                        part.functionResponse()
+                            .flatMap(FunctionResponse::id)
+                            .ifPresent(responseIds::add)));
+    if (responseIds.isEmpty()) {
+      return Optional.empty();
+    }
+    List<Event> events = session.events();
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event event = events.get(i);
+      for (FunctionCall call : event.functionCalls()) {
+        if (call.id().isPresent() && responseIds.contains(call.id().get())) {
+          return Optional.of(event);
+        }
+      }
+    }
+    return Optional.empty();
   }
 
   private void copySessionStates(Session source, Session target) {

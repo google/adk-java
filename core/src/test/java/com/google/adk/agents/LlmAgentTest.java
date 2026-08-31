@@ -23,6 +23,7 @@ import static com.google.adk.testing.TestUtils.createTestAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
+import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
@@ -33,7 +34,10 @@ import com.google.adk.agents.Callbacks.BeforeModelCallback;
 import com.google.adk.agents.Callbacks.BeforeToolCallback;
 import com.google.adk.agents.Callbacks.OnModelErrorCallback;
 import com.google.adk.agents.Callbacks.OnToolErrorCallback;
+import com.google.adk.apps.ResumabilityConfig;
+import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
 import com.google.adk.examples.Example;
 import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.LlmRequest;
@@ -631,5 +635,111 @@ public final class LlmAgentTest {
     assertThat(request.config().isPresent()).isTrue();
     var config = request.config().get();
     assertThat(config.tools().isPresent()).isFalse();
+  }
+
+  // ---- Resumability: resume into a transferred sub-agent (parity with ResumableLlmAgentTest).
+  // ----
+
+  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
+  private static InvocationContext resumableContextWithSeededEvent(
+      LlmAgent rootAgent, Event seededEvent) {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session = sessionService.createSession("app", "user").blockingGet();
+    var unused = sessionService.appendEvent(session, seededEvent).blockingGet();
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .artifactService(new InMemoryArtifactService())
+        .invocationId("inv")
+        .agent(rootAgent)
+        .session(session)
+        .userContent(Content.fromParts(Part.fromText("hi")))
+        .runConfig(RunConfig.builder().build())
+        .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+        .build();
+  }
+
+  @Test
+  public void runAsync_resumeFromTransferCall_runsTransferredSubAgent() {
+    LlmAgent sub =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub response")))
+            .name("sub")
+            .build();
+    TestLlm rootLlm = createTestLlm(createTextLlmResponse("root should not run"));
+    LlmAgent root = createTestAgentBuilder(rootLlm).name("root").subAgents(sub).build();
+    Event transferEvent =
+        Event.builder()
+            .id("t1")
+            .invocationId("inv")
+            .author("root")
+            .actions(EventActions.builder().transferToAgent("sub").build())
+            .content(Content.fromParts(Part.fromText("transferring")))
+            .build();
+    InvocationContext context = resumableContextWithSeededEvent(root, transferEvent);
+    context.setAgentState("root", ImmutableMap.of(), /* endOfAgent= */ false);
+
+    List<Event> events = root.runAsync(context).toList().blockingGet();
+
+    // The transferred sub-agent runs; the root model is not re-invoked; root marks end-of-agent.
+    assertThat(simplifyEvents(events)).contains("sub: sub response");
+    assertThat(rootLlm.getRequests()).isEmpty();
+    assertThat(
+            events.stream()
+                .anyMatch(event -> event.author().equals("root") && event.actions().endOfAgent()))
+        .isTrue();
+  }
+
+  @Test
+  public void runAsync_resumeNoTransfer_continuesRootAgent() {
+    TestLlm rootLlm = createTestLlm(createTextLlmResponse("root continues"));
+    LlmAgent root = createTestAgentBuilder(rootLlm).name("root").build();
+    Event priorModelResponse =
+        Event.builder()
+            .id("m1")
+            .invocationId("inv")
+            .author("root")
+            .content(Content.fromParts(Part.fromText("earlier response")))
+            .build();
+    InvocationContext context = resumableContextWithSeededEvent(root, priorModelResponse);
+    context.setAgentState("root", ImmutableMap.of(), /* endOfAgent= */ false);
+
+    List<Event> events = root.runAsync(context).toList().blockingGet();
+
+    // No transfer recorded: the root agent continues by invoking its model.
+    assertThat(simplifyEvents(events)).contains("root: root continues");
+    assertThat(rootLlm.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void runAsync_resumeFromTransferToPeer_runsTransferredPeerAgent() {
+    LlmAgent root =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("root")))
+            .name("root")
+            .subAgents(
+                createTestAgentBuilder(
+                        createTestLlm(createTextLlmResponse("agent A should not re-run")))
+                    .name("agent_a")
+                    .build(),
+                createTestAgentBuilder(createTestLlm(createTextLlmResponse("agent B response")))
+                    .name("agent_b")
+                    .build())
+            .build();
+    // agent_a transferred to its peer agent_b (not a descendant), then the invocation paused.
+    LlmAgent agentA = (LlmAgent) root.findAgent("agent_a").get();
+    Event transferEvent =
+        Event.builder()
+            .id("t1")
+            .invocationId("inv")
+            .author("agent_a")
+            .actions(EventActions.builder().transferToAgent("agent_b").build())
+            .content(Content.fromParts(Part.fromText("transferring to peer")))
+            .build();
+    InvocationContext context = resumableContextWithSeededEvent(agentA, transferEvent);
+    context.setAgentState("agent_a", ImmutableMap.of(), /* endOfAgent= */ false);
+
+    List<Event> events = agentA.runAsync(context).toList().blockingGet();
+
+    // The transferred peer runs; agent_a does not re-run itself.
+    assertThat(simplifyEvents(events)).contains("agent_b: agent B response");
+    assertThat(simplifyEvents(events)).doesNotContain("agent_a: agent A should not re-run");
   }
 }

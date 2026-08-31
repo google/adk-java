@@ -20,6 +20,7 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
+import com.google.adk.events.Event;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
 import com.google.adk.plugins.Plugin;
@@ -27,11 +28,19 @@ import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -56,6 +65,10 @@ public class InvocationContext {
   private final @Nullable ResumabilityConfig resumabilityConfig;
   private final InvocationCostManager invocationCostManager;
   private final Map<String, Object> callbackContextData;
+  // Resumability checkpoints, shared by reference across derived contexts so a sub-agent's
+  // checkpoint is visible to its parent and the runner.
+  private final Map<String, Map<String, Object>> agentStates;
+  private final Map<String, Boolean> endOfAgents;
 
   @Nullable private String branch;
   private BaseAgent agent;
@@ -83,6 +96,8 @@ public class InvocationContext {
     // invocation invocation so that Plugins can access the same data it during the invocation
     // across all types of callbacks.
     this.callbackContextData = builder.callbackContextData;
+    this.agentStates = builder.agentStates;
+    this.endOfAgents = builder.endOfAgents;
   }
 
   /** Returns a new {@link Builder} for creating {@link InvocationContext} instances. */
@@ -230,6 +245,150 @@ public class InvocationContext {
     return resumabilityConfig != null && resumabilityConfig.isResumable();
   }
 
+  /**
+   * Returns the per-agent resumability checkpoint states for this invocation, keyed by agent name.
+   * Shared by reference across derived contexts within the invocation.
+   */
+  public Map<String, Map<String, Object>> agentStates() {
+    return agentStates;
+  }
+
+  /** Returns the per-agent end-of-agent flags for this invocation, keyed by agent name. */
+  public Map<String, Boolean> endOfAgents() {
+    return endOfAgents;
+  }
+
+  /**
+   * Sets the checkpoint state of an agent explicitly. Does not implicitly initialize.
+   *
+   * @param agentName the agent whose state to set.
+   * @param agentState the serialized agent state to store; ignored when {@code endOfAgent} is true.
+   * @param endOfAgent when true, marks the agent finished and drops any stored state.
+   */
+  void setAgentState(
+      String agentName, @Nullable Map<String, Object> agentState, boolean endOfAgent) {
+    if (endOfAgent) {
+      endOfAgents.put(agentName, true);
+      agentStates.remove(agentName);
+    } else if (agentState != null) {
+      agentStates.put(agentName, agentState);
+      endOfAgents.put(agentName, false);
+    } else {
+      endOfAgents.remove(agentName);
+      agentStates.remove(agentName);
+    }
+  }
+
+  /** Recursively resets the checkpoint state of all sub-agents of the given agent. */
+  void resetSubAgentStates(String agentName) {
+    Optional<BaseAgent> target = agent.findAgent(agentName);
+    if (target.isEmpty()) {
+      return;
+    }
+    for (BaseAgent subAgent : target.get().subAgents()) {
+      setAgentState(subAgent.name(), null, false);
+      resetSubAgentStates(subAgent.name());
+    }
+  }
+
+  /**
+   * Rehydrates {@link #agentStates()} and {@link #endOfAgents()} from the current invocation's
+   * history when this invocation is resumable. For each event carrying agent-state information,
+   * sets the authoring agent's checkpoint; for a non-workflow author that already produced content,
+   * seeds an empty state so it is treated as mid-run.
+   */
+  public void populateInvocationAgentStates() {
+    if (!isResumable()) {
+      return;
+    }
+    for (Event event : getEvents(/* currentInvocation= */ true, /* currentBranch= */ false)) {
+      String author = event.author();
+      if (author == null) {
+        continue;
+      }
+      Optional<Map<String, Object>> agentState = event.actions().agentState();
+      if (event.actions().endOfAgent()) {
+        endOfAgents.put(author, true);
+        agentStates.remove(author);
+      } else if (agentState.isPresent()) {
+        agentStates.put(author, agentState.get());
+        endOfAgents.put(author, false);
+      } else if (!author.equals("user")
+          && event.content().isPresent()
+          && !agentStates.containsKey(author)) {
+        agentStates.put(author, new HashMap<>());
+        endOfAgents.put(author, false);
+      }
+    }
+  }
+
+  /**
+   * Returns the current session's events, optionally filtered to the current invocation and/or the
+   * current branch. Reads the in-memory {@link Session#events()} list, which {@link
+   * BaseSessionService#appendEvent} keeps in sync. A {@code null}-branch event is visible on any
+   * branch.
+   *
+   * @param currentInvocation whether to filter to events from this invocation.
+   * @param currentBranch whether to filter to events on this branch (or with no branch).
+   */
+  List<Event> getEvents(boolean currentInvocation, boolean currentBranch) {
+    List<Event> results = new ArrayList<>(session.events());
+    if (currentInvocation) {
+      results.removeIf(event -> !invocationId.equals(event.invocationId()));
+    }
+    if (currentBranch) {
+      results.removeIf(
+          event -> event.branch().isPresent() && !event.branch().get().equals(this.branch));
+    }
+    return results;
+  }
+
+  /**
+   * Returns whether to pause the invocation right after this event. Pausing (unlike ending) leaves
+   * the invocation resumable. Both conditions must hold: the app is {@link #isResumable()} and the
+   * event carries a long-running function call (including a synthetic {@code
+   * adk_request_confirmation} HITL request).
+   */
+  boolean shouldPauseInvocation(Event event) {
+    if (!isResumable()) {
+      return false;
+    }
+    Set<String> longRunningIds = event.longRunningToolIds().orElse(ImmutableSet.of());
+    if (longRunningIds.isEmpty()) {
+      return false;
+    }
+    ImmutableList<FunctionCall> functionCalls = event.functionCalls();
+    if (functionCalls.isEmpty()) {
+      return false;
+    }
+    return functionCalls.stream()
+        .anyMatch(call -> call.id().isPresent() && longRunningIds.contains(call.id().get()));
+  }
+
+  /**
+   * Finds the current-invocation event whose function call matches the first function response id
+   * in {@code functionResponseEvent}, searching newest-first.
+   */
+  Optional<Event> findMatchingFunctionCall(Event functionResponseEvent) {
+    ImmutableList<FunctionResponse> responses = functionResponseEvent.functionResponses();
+    if (responses.isEmpty()) {
+      return Optional.empty();
+    }
+    Optional<String> targetId = responses.get(0).id();
+    if (targetId.isEmpty()) {
+      return Optional.empty();
+    }
+    List<Event> events = getEvents(/* currentInvocation= */ true, /* currentBranch= */ false);
+    for (int i = events.size() - 1; i >= 0; i--) {
+      for (FunctionCall call : events.get(i).functionCalls()) {
+        if (call.id().isPresent() && call.id().get().equals(targetId.get())) {
+          return Optional.of(events.get(i));
+        }
+      }
+    }
+    return Optional.empty();
+  }
+
   private static class InvocationCostManager {
     private final AtomicInteger numberOfLlmCalls = new AtomicInteger(0);
 
@@ -289,6 +448,10 @@ public class InvocationContext {
       // invocation invocation so that Plugins can access the same data it during the invocation
       // across all types of callbacks.
       this.callbackContextData = context.callbackContextData;
+      // Shared by reference so a sub-agent's checkpoint is visible to its parent and the runner
+      // within one invocation.
+      this.agentStates = context.agentStates;
+      this.endOfAgents = context.endOfAgents;
     }
 
     private BaseSessionService sessionService;
@@ -309,6 +472,8 @@ public class InvocationContext {
     private @Nullable ResumabilityConfig resumabilityConfig;
     private InvocationCostManager invocationCostManager = new InvocationCostManager();
     private Map<String, Object> callbackContextData = new ConcurrentHashMap<>();
+    private Map<String, Map<String, Object>> agentStates = new ConcurrentHashMap<>();
+    private Map<String, Boolean> endOfAgents = new ConcurrentHashMap<>();
 
     /**
      * Sets the session service for managing session state.
