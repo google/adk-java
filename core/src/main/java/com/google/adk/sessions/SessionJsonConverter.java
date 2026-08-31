@@ -114,6 +114,7 @@ final class SessionJsonConverter {
       putIfNotEmpty(actionsJson, "requestedAuthConfigs", actions.requestedAuthConfigs());
       putIfNotEmpty(
           actionsJson, "requestedToolConfirmations", actions.requestedToolConfirmations());
+      actions.agentState().ifPresent(v -> actionsJson.put("agentState", v));
       eventJson.put("actions", actionsJson);
     }
     event.content().ifPresent(c -> eventJson.put("content", SessionUtils.encodeContent(c)));
@@ -192,6 +193,14 @@ final class SessionJsonConverter {
           Optional.ofNullable(actionsMap.get("requestedToolConfirmations"))
               .map(SessionJsonConverter::asConcurrentMapOfToolConfirmations)
               .orElse(new ConcurrentHashMap<>()));
+      Object agentState = actionsMap.get("agentState");
+      if (agentState instanceof Map) {
+        eventActionsBuilder.agentState((Map<String, Object>) agentState);
+      } else if (agentState != null) {
+        // Drop a non-map agentState (a session written by another ADK runtime) rather than failing
+        // the whole session load on an unchecked cast.
+        logger.warn("Ignoring 'agentState' of unexpected type {}", agentState.getClass().getName());
+      }
     }
 
     Event event =

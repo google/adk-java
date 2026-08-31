@@ -399,6 +399,14 @@ public final class FunctionsTest {
     assertThat(result).containsExactly(confirmationCall1, confirmationCall2);
   }
 
+  @Test
+  public void hasPendingLongRunningCall_singleEventWithFunctionResponse_returnsFalse() {
+    // A single event cannot hold both a paused call and its response, so nothing is pending (and
+    // the pending-call lookup must not read a nonexistent prior event).
+    assertThat(Functions.hasPendingLongRunningCall(ImmutableList.of(functionResponseEvent("c1"))))
+        .isFalse();
+  }
+
   // Default ToolExecutionMode.NONE behaves like PARALLEL: blocking tools still execute serially
   // on the caller thread (no worker scheduler is used), preserving the historical default.
   @Test
@@ -568,8 +576,36 @@ public final class FunctionsTest {
     assertThat(Functions.hasPendingLongRunningCall(ImmutableList.<Event>of())).isFalse();
   }
 
+  @Test
+  public void hasPendingLongRunningCall_list_matchingResponse_stillReturnsTrue() {
+    // Responses are not matched against calls: the call event is inside the two-event window, so
+    // even its own answer leaves this true. The resumable flow matches responses in StepResume;
+    // this predicate serves only the legacy flow, which pauses here as it always did.
+    ImmutableList<Event> events =
+        ImmutableList.of(longRunningCallEvent("call1"), functionResponseEvent("call1"));
+    assertThat(Functions.hasPendingLongRunningCall(events)).isTrue();
+  }
+
   private static Event longRunningCallEvent(String callId) {
     return functionCallEvent(callId, callId);
+  }
+
+  private static Event functionResponseEvent(String callId) {
+    return Event.builder()
+        .id("response_" + callId)
+        .invocationId("invocation1")
+        .author("user")
+        .content(
+            Content.fromParts(
+                Part.builder()
+                    .functionResponse(
+                        FunctionResponse.builder()
+                            .id(callId)
+                            .name("tool")
+                            .response(ImmutableMap.of())
+                            .build())
+                    .build()))
+        .build();
   }
 
   // Event with a function call; longRunningId, when non-null, is marked long-running.
