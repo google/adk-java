@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.9.0](https://github.com/google/adk-java/compare/v1.8.0...v1.9.0) (2026-08-28)
+
+
+### Features
+
+* add a GeminiLiveTransport seam to GeminiLlmConnection ([e8b1c20](https://github.com/google/adk-java/commit/e8b1c20d10680e7ed8e936ae1ac0ab768a0b8345))
+
+
+### Bug Fixes
+
+* **artifacts:** honor the "user:" namespace in InMemoryArtifactService ([0f46d5c](https://github.com/google/adk-java/commit/0f46d5c57ad6eba4496e93e694a0e34b010b2f30))
+* **artifacts:** honor user: namespace, prevent phantom keys, sort listing ([01e1e41](https://github.com/google/adk-java/commit/01e1e41d4cb4cbd9b29d85bb1ef78110ccf575ba))
+* avoid setting Part.partMetadata when metadata is empty ([c05206f](https://github.com/google/adk-java/commit/c05206fa76792ec1d0f759cf53e99af9d1a72fbd))
+* **chat:** expose non-success HTTP status via typed exception ([052f31a](https://github.com/google/adk-java/commit/052f31ad3799124a36bb3bb732458d748fcc6586))
+* preserve tool responses and thought signatures in Spring AI message conversion ([6eef478](https://github.com/google/adk-java/commit/6eef47800baf57e2446e69febaa22fe11faf8f58))
+* support typed responseSchema in ChatCompletionsRequest ([8c06011](https://github.com/google/adk-java/commit/8c06011ef20e45f081ada54e675eca6963ba255c))
+* update Java ADK ResponseConverter to propagate long-running tool IDs on AUTH_REQUIRED state ([2d20d1b](https://github.com/google/adk-java/commit/2d20d1b213a0cc98994be9cf3ed5e070abed6df2))
+
 ## [1.8.0](https://github.com/google/adk-java/compare/v1.7.1...v1.8.0) (2026-08-13)
 
 
