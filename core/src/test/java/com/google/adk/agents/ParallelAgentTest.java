@@ -16,12 +16,22 @@
 
 package com.google.adk.agents;
 
+import static com.google.adk.testing.TestUtils.createEscalateEvent;
+import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
+import static com.google.adk.testing.TestUtils.createResumableInvocationContext;
+import static com.google.adk.testing.TestUtils.createSubAgent;
+import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
+import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.createTextLlmResponse;
+import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 import com.google.adk.events.Event;
+import com.google.adk.tools.FunctionTool;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
@@ -30,6 +40,7 @@ import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.schedulers.TestScheduler;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -193,5 +204,213 @@ public final class ParallelAgentTest {
     testScheduler.advanceTimeBy(200, MILLISECONDS);
     testSubscriber.assertValueCount(1);
     testSubscriber.assertComplete();
+  }
+
+  // ---- Resumability: checkpoint / skip-completed / pause. ----
+
+  /** Tools for the resumability tests. */
+  public static final class Tools {
+    private Tools() {}
+
+    // A long-running tool awaiting an external result returns nothing yet, so a branch pauses.
+    @SuppressWarnings("unused") // Invoked reflectively by FunctionTool.
+    public static @Nullable ImmutableMap<String, Object> waitForApproval(String reason) {
+      return null;
+    }
+  }
+
+  @Test
+  public void runAsync_resumable_allSubAgentsEnd_emitsEndOfAgent() {
+    LlmAgent sub1 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub1 done")))
+            .name("sub1")
+            .build();
+    LlmAgent sub2 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub2 done")))
+            .name("sub2")
+            .build();
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder().name("parallel").subAgents(sub1, sub2).build();
+    InvocationContext context = createResumableInvocationContext(parallelAgent);
+
+    List<Event> events = parallelAgent.runAsync(context).toList().blockingGet();
+
+    assertThat(
+            events.stream()
+                .anyMatch(
+                    event -> event.author().equals("parallel") && event.actions().endOfAgent()))
+        .isTrue();
+  }
+
+  @Test
+  public void runAsync_resumable_sequentialSubAgentEnds_emitsEndOfAgent() {
+    LlmAgent leaf =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("leaf done")))
+            .name("leaf")
+            .build();
+    SequentialAgent sequential =
+        SequentialAgent.builder().name("sequential").subAgents(leaf).build();
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder().name("parallel").subAgents(sequential).build();
+    InvocationContext context = createResumableInvocationContext(parallelAgent);
+
+    List<Event> events = parallelAgent.runAsync(context).toList().blockingGet();
+
+    // A SequentialAgent child records end-of-agent on completion, so the parallel agent ends too.
+    assertThat(
+            events.stream()
+                .anyMatch(
+                    event -> event.author().equals("parallel") && event.actions().endOfAgent()))
+        .isTrue();
+  }
+
+  @Test
+  public void runAsync_resumable_loopSubAgentEnds_emitsEndOfAgent() {
+    LlmAgent leaf =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("leaf done")))
+            .name("leaf")
+            .build();
+    LoopAgent loop = LoopAgent.builder().name("loop").subAgents(leaf).maxIterations(1).build();
+    ParallelAgent parallelAgent = ParallelAgent.builder().name("parallel").subAgents(loop).build();
+    InvocationContext context = createResumableInvocationContext(parallelAgent);
+
+    List<Event> events = parallelAgent.runAsync(context).toList().blockingGet();
+
+    // A LoopAgent child records end-of-agent on completion, so the parallel agent ends too.
+    assertThat(
+            events.stream()
+                .anyMatch(
+                    event -> event.author().equals("parallel") && event.actions().endOfAgent()))
+        .isTrue();
+  }
+
+  @Test
+  public void runAsync_resumable_subAgentEscalates_emitsEndOfAgent() {
+    BaseAgent escalating = createSubAgent("escalating", createEscalateEvent("esc"));
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder().name("parallel").subAgents(escalating).build();
+    InvocationContext context = createResumableInvocationContext(parallelAgent);
+
+    List<Event> events = parallelAgent.runAsync(context).toList().blockingGet();
+
+    // A sub-agent escalation ends the parallel agent even though no branch recorded end-of-agent.
+    assertThat(
+            events.stream()
+                .anyMatch(
+                    event -> event.author().equals("parallel") && event.actions().endOfAgent()))
+        .isTrue();
+  }
+
+  @Test
+  public void runAsync_notResumable_doesNotEmitEndOfAgent() {
+    LlmAgent sub1 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub1 done")))
+            .name("sub1")
+            .build();
+    ParallelAgent parallelAgent = ParallelAgent.builder().name("parallel").subAgents(sub1).build();
+    InvocationContext context = createInvocationContext(parallelAgent);
+
+    List<Event> events = parallelAgent.runAsync(context).toList().blockingGet();
+
+    assertThat(events.stream().anyMatch(event -> event.actions().endOfAgent())).isFalse();
+  }
+
+  @Test
+  public void runAsync_resumable_oneBranchPauses_doesNotEmitEndOfAgent() {
+    LlmAgent pausing =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "c1", "waitForApproval", ImmutableMap.of("reason", "x"))))
+            .name("pausing")
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "waitForApproval",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build();
+    LlmAgent completing =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("done")))
+            .name("completing")
+            .build();
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder().name("parallel").subAgents(pausing, completing).build();
+    InvocationContext context = createResumableInvocationContext(parallelAgent);
+
+    List<Event> events = parallelAgent.runAsync(context).toList().blockingGet();
+
+    // One branch paused: the parallel agent does not end.
+    assertThat(
+            events.stream()
+                .anyMatch(
+                    event -> event.author().equals("parallel") && event.actions().endOfAgent()))
+        .isFalse();
+  }
+
+  @Test
+  public void runAsync_resumable_firstRun_emitsInitialStateCheckpoint() {
+    LlmAgent sub1 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub1 done")))
+            .name("sub1")
+            .build();
+    ParallelAgent parallelAgent = ParallelAgent.builder().name("parallel").subAgents(sub1).build();
+    InvocationContext context = createResumableInvocationContext(parallelAgent);
+    // No prior state for "parallel": this is a first run, so an initial checkpoint is recorded.
+
+    List<Event> events = parallelAgent.runAsync(context).toList().blockingGet();
+
+    assertThat(
+            events.stream()
+                .anyMatch(
+                    event ->
+                        event.author().equals("parallel")
+                            && event.actions().agentState().isPresent()))
+        .isTrue();
+  }
+
+  @Test
+  public void runAsync_resumable_resume_doesNotReEmitInitialStateCheckpoint() {
+    LlmAgent sub1 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub1 done")))
+            .name("sub1")
+            .build();
+    ParallelAgent parallelAgent = ParallelAgent.builder().name("parallel").subAgents(sub1).build();
+    InvocationContext context = createResumableInvocationContext(parallelAgent);
+    // The parallel agent already checkpointed that it started in a prior run.
+    context.setAgentState("parallel", ImmutableMap.of(), /* endOfAgent= */ false);
+
+    List<Event> events = parallelAgent.runAsync(context).toList().blockingGet();
+
+    // No new initial checkpoint is emitted on resume (only the final end-of-agent checkpoint).
+    assertThat(
+            events.stream()
+                .anyMatch(
+                    event ->
+                        event.author().equals("parallel")
+                            && event.actions().agentState().isPresent()))
+        .isFalse();
+  }
+
+  @Test
+  public void runAsync_resumable_skipsCompletedBranchesOnResume() {
+    LlmAgent sub1 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub1 done")))
+            .name("sub1")
+            .build();
+    LlmAgent sub2 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub2 done")))
+            .name("sub2")
+            .build();
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder().name("parallel").subAgents(sub1, sub2).build();
+    InvocationContext context = createResumableInvocationContext(parallelAgent);
+    // sub1 already finished in a prior run.
+    context.setAgentState("sub1", /* agentState= */ null, /* endOfAgent= */ true);
+
+    List<Event> events = parallelAgent.runAsync(context).toList().blockingGet();
+
+    assertThat(simplifyEvents(events)).doesNotContain("sub1: sub1 done");
+    assertThat(simplifyEvents(events)).contains("sub2: sub2 done");
   }
 }

@@ -277,6 +277,46 @@ public final class SessionJsonConverterTest {
   }
 
   @Test
+  public void convertEventToJson_agentState_success() throws JsonProcessingException {
+    EventActions actions =
+        EventActions.builder()
+            .agentState(ImmutableMap.of("current_sub_agent", "b_agent", "times_looped", 2))
+            .build();
+    Event event =
+        Event.builder()
+            .author("agent")
+            .invocationId("inv-1")
+            .timestamp(Instant.parse("2023-01-01T00:00:00.123Z").toEpochMilli())
+            .actions(actions)
+            .build();
+
+    String json = SessionJsonConverter.convertEventToJson(event, true);
+    JsonNode actionsNode = objectMapper.readTree(json).get("actions");
+
+    assertThat(actionsNode.get("agentState").get("current_sub_agent").asText())
+        .isEqualTo("b_agent");
+    assertThat(actionsNode.get("agentState").get("times_looped").asInt()).isEqualTo(2);
+  }
+
+  @Test
+  public void fromApiEvent_agentState_success() {
+    Map<String, Object> apiEvent = new HashMap<>();
+    apiEvent.put("name", "sessions/123/events/456");
+    apiEvent.put("invocationId", "inv-1");
+    apiEvent.put("author", "agent");
+    apiEvent.put("timestamp", "2023-01-01T00:00:00.123Z");
+    Map<String, Object> actions = new HashMap<>();
+    actions.put("agentState", ImmutableMap.of("current_sub_agent", "b_agent", "times_looped", 2));
+    apiEvent.put("actions", actions);
+
+    Event event = SessionJsonConverter.fromApiEvent(apiEvent);
+
+    assertThat(event.actions().agentState()).isPresent();
+    assertThat(event.actions().agentState().get()).containsEntry("current_sub_agent", "b_agent");
+    assertThat(event.actions().agentState().get()).containsEntry("times_looped", 2);
+  }
+
+  @Test
   public void fromApiEvent_minimalEvent_success() {
     Map<String, Object> apiEvent = new HashMap<>();
     apiEvent.put("name", "sessions/123/events/456");

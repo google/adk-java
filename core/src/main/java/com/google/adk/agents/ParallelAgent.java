@@ -19,12 +19,14 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
+import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -175,13 +177,79 @@ public class ParallelAgent extends BaseAgent {
       return Flowable.empty();
     }
 
-    var updatedInvocationContext = setBranchForCurrentAgent(this, invocationContext);
-    List<Flowable<Event>> agentFlowables = new ArrayList<>();
-    for (BaseAgent subAgent : currentSubAgents) {
-      agentFlowables.add(subAgent.runAsync(updatedInvocationContext).subscribeOn(scheduler));
+    if (!invocationContext.isResumable()) {
+      var updatedInvocationContext = setBranchForCurrentAgent(this, invocationContext);
+      List<Flowable<Event>> agentFlowables = new ArrayList<>();
+      for (BaseAgent subAgent : currentSubAgents) {
+        agentFlowables.add(subAgent.runAsync(updatedInvocationContext).subscribeOn(scheduler));
+      }
+      return Flowable.merge(agentFlowables)
+          .takeUntil((Event event) -> event.actions().escalate().orElse(false));
     }
-    return Flowable.merge(agentFlowables)
-        .takeUntil((Event event) -> event.actions().escalate().orElse(false));
+
+    // Resumable: skip completed branches, checkpoint that this agent started, pause (without
+    // ending) if any branch pauses, and end only once every active branch finished.
+    return Flowable.defer(
+        () -> {
+          List<BaseAgent> activeSubAgents = new ArrayList<>();
+          for (BaseAgent subAgent : currentSubAgents) {
+            if (!invocationContext.endOfAgents().getOrDefault(subAgent.name(), false)) {
+              activeSubAgents.add(subAgent);
+            }
+          }
+
+          Flowable<Event> initialCheckpoint = Flowable.empty();
+          if (!invocationContext.agentStates().containsKey(name())) {
+            initialCheckpoint = checkpointAndRecord(invocationContext, ImmutableMap.of());
+          }
+
+          var updatedInvocationContext = setBranchForCurrentAgent(this, invocationContext);
+          AtomicBoolean paused = new AtomicBoolean(false);
+          AtomicBoolean escalated = new AtomicBoolean(false);
+          List<Flowable<Event>> agentFlowables = new ArrayList<>();
+          for (BaseAgent subAgent : activeSubAgents) {
+            agentFlowables.add(
+                subAgent
+                    .runAsync(updatedInvocationContext)
+                    .subscribeOn(scheduler)
+                    .doOnNext(
+                        event -> {
+                          if (invocationContext.shouldPauseInvocation(event)) {
+                            paused.set(true);
+                          }
+                          if (event.actions().escalate().orElse(false)) {
+                            escalated.set(true);
+                          }
+                        }));
+          }
+          Flowable<Event> merged =
+              Flowable.merge(agentFlowables)
+                  .takeUntil((Event event) -> event.actions().escalate().orElse(false));
+
+          return initialCheckpoint
+              .concatWith(merged)
+              .concatWith(
+                  Flowable.defer(
+                      () -> {
+                        if (paused.get()) {
+                          return Flowable.<Event>empty();
+                        }
+                        // A sub-agent escalation ends this agent even if other branches did not
+                        // finish; otherwise it ends once every active branch finished (a custom
+                        // BaseAgent that never records endOfAgent may not reach the latter).
+                        boolean allEnded =
+                            activeSubAgents.stream()
+                                .allMatch(
+                                    a ->
+                                        invocationContext
+                                            .endOfAgents()
+                                            .getOrDefault(a.name(), false));
+                        if (escalated.get() || allEnded) {
+                          return endOfAgentAndRecord(invocationContext);
+                        }
+                        return Flowable.empty();
+                      }));
+        });
   }
 
   /**

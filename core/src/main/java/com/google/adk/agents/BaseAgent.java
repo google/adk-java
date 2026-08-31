@@ -16,6 +16,7 @@
 
 package com.google.adk.agents;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.String.format;
@@ -23,6 +24,7 @@ import static java.lang.String.format;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.telemetry.Instrumentation;
 import com.google.adk.telemetry.Instrumentation.AgentInvocation;
@@ -38,6 +40,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.regex.Pattern;
@@ -135,10 +138,8 @@ public abstract class BaseAgent {
       throw new IllegalArgumentException(
           format("Agent name '%s' does not match regex '%s'.", name, IDENTIFIER_REGEX));
     }
-    if (name.equals(Role.USER)) {
-      throw new IllegalArgumentException(
-          "Agent name cannot be 'user'; reserved for end-user input.");
-    }
+    checkArgument(
+        !name.equals(Role.USER), "Agent name cannot be 'user'; reserved for end-user input.");
   }
 
   /**
@@ -457,6 +458,46 @@ public abstract class BaseAgent {
    */
   public Flowable<Event> runLive(InvocationContext parentContext) {
     return run(parentContext, this::runLiveImpl);
+  }
+
+  /**
+   * Records this agent's end-of-agent checkpoint and returns it as a single-event stream. Recording
+   * it via {@link InvocationContext#setAgentState} clears this agent's state and marks it finished,
+   * so a later run can skip it.
+   *
+   * @param context Current invocation context.
+   * @return a stream of the single {@code endOfAgent = true} checkpoint event.
+   */
+  final Flowable<Event> endOfAgentAndRecord(InvocationContext context) {
+    context.setAgentState(name(), /* agentState= */ null, /* endOfAgent= */ true);
+    return Flowable.just(checkpointEvent(context, EventActions.builder().endOfAgent(true).build()));
+  }
+
+  /**
+   * Records {@code agentState} for this agent and returns the matching checkpoint event as a
+   * single-event stream. Recording it via {@link InvocationContext#setAgentState} (not yet ended)
+   * lets a later run resume at the right point.
+   *
+   * @param context Current invocation context.
+   * @param agentState The serialized agent state to persist.
+   * @return a stream of the single checkpoint event carrying {@code agentState}.
+   */
+  final Flowable<Event> checkpointAndRecord(
+      InvocationContext context, Map<String, Object> agentState) {
+    context.setAgentState(name(), agentState, /* endOfAgent= */ false);
+    return Flowable.just(
+        checkpointEvent(context, EventActions.builder().agentState(agentState).build()));
+  }
+
+  /** Builds a resumability checkpoint event authored by this agent carrying {@code actions}. */
+  private Event checkpointEvent(InvocationContext context, EventActions actions) {
+    return Event.builder()
+        .id(Event.generateEventId())
+        .invocationId(context.invocationId())
+        .author(name())
+        .branch(context.branch().orElse(null))
+        .actions(actions)
+        .build();
   }
 
   /**
