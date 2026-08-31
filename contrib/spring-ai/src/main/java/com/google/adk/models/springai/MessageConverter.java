@@ -77,8 +77,14 @@ public class MessageConverter {
   private final ConfigMapper configMapper;
 
   public MessageConverter(ObjectMapper objectMapper) {
+    this(
+        objectMapper,
+        new ToolConverter(objectMapper, ToolExecutionMode.ADK_MANAGED, /* resolver= */ null));
+  }
+
+  public MessageConverter(ObjectMapper objectMapper, ToolConverter toolConverter) {
     this.objectMapper = objectMapper;
-    this.toolConverter = new ToolConverter();
+    this.toolConverter = toolConverter;
     this.configMapper = new ConfigMapper();
   }
 

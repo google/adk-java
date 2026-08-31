@@ -15,6 +15,7 @@
  */
 package com.google.adk.models.springai.autoconfigure;
 
+import com.google.adk.models.springai.AdkToolContextResolver;
 import com.google.adk.models.springai.SpringAI;
 import com.google.adk.models.springai.SpringAIEmbedding;
 import com.google.adk.models.springai.properties.SpringAIProperties;
@@ -23,6 +24,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.StreamingChatModel;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -83,7 +85,10 @@ public class SpringAIAutoConfiguration {
   @ConditionalOnMissingBean(SpringAI.class)
   @ConditionalOnBean({ChatModel.class, StreamingChatModel.class})
   public SpringAI springAIWithBothModels(
-      ChatModel chatModel, StreamingChatModel streamingChatModel, SpringAIProperties properties) {
+      ChatModel chatModel,
+      StreamingChatModel streamingChatModel,
+      SpringAIProperties properties,
+      ObjectProvider<AdkToolContextResolver> toolContextResolverProvider) {
 
     String modelName = determineModelName(chatModel, properties);
     logger.info(
@@ -91,7 +96,13 @@ public class SpringAIAutoConfiguration {
         modelName);
 
     validateConfiguration(properties);
-    return new SpringAI(chatModel, streamingChatModel, modelName, properties.getObservability());
+    return new SpringAI(
+        chatModel,
+        streamingChatModel,
+        modelName,
+        properties.getObservability(),
+        properties.getToolExecution().getMode(),
+        toolContextResolverProvider.getIfAvailable());
   }
 
   /**
@@ -104,13 +115,21 @@ public class SpringAIAutoConfiguration {
   @Bean
   @ConditionalOnMissingBean(SpringAI.class)
   @ConditionalOnBean(ChatModel.class)
-  public SpringAI springAIWithChatModel(ChatModel chatModel, SpringAIProperties properties) {
+  public SpringAI springAIWithChatModel(
+      ChatModel chatModel,
+      SpringAIProperties properties,
+      ObjectProvider<AdkToolContextResolver> toolContextResolverProvider) {
 
     String modelName = determineModelName(chatModel, properties);
     logger.info("Auto-configuring SpringAI with ChatModel only. Model: {}", modelName);
 
     validateConfiguration(properties);
-    return new SpringAI(chatModel, modelName, properties.getObservability());
+    return new SpringAI(
+        chatModel,
+        modelName,
+        properties.getObservability(),
+        properties.getToolExecution().getMode(),
+        toolContextResolverProvider.getIfAvailable());
   }
 
   /**
@@ -124,13 +143,20 @@ public class SpringAIAutoConfiguration {
   @ConditionalOnMissingBean({SpringAI.class, ChatModel.class})
   @ConditionalOnBean(StreamingChatModel.class)
   public SpringAI springAIWithStreamingModel(
-      StreamingChatModel streamingChatModel, SpringAIProperties properties) {
+      StreamingChatModel streamingChatModel,
+      SpringAIProperties properties,
+      ObjectProvider<AdkToolContextResolver> toolContextResolverProvider) {
 
     String modelName = determineModelName(streamingChatModel, properties);
     logger.info("Auto-configuring SpringAI with StreamingChatModel only. Model: {}", modelName);
 
     validateConfiguration(properties);
-    return new SpringAI(streamingChatModel, modelName, properties.getObservability());
+    return new SpringAI(
+        streamingChatModel,
+        modelName,
+        properties.getObservability(),
+        properties.getToolExecution().getMode(),
+        toolContextResolverProvider.getIfAvailable());
   }
 
   /**

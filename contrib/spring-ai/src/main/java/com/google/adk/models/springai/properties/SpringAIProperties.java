@@ -15,6 +15,7 @@
  */
 package com.google.adk.models.springai.properties;
 
+import com.google.adk.models.springai.ToolExecutionMode;
 import jakarta.annotation.Nullable;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
@@ -66,6 +67,9 @@ public class SpringAIProperties {
 
   /** Observability settings. */
   private Observability observability = new Observability();
+
+  /** Tool execution ownership settings. */
+  private ToolExecution toolExecution = new ToolExecution();
 
   public String getModel() {
     return model;
@@ -121,6 +125,14 @@ public class SpringAIProperties {
 
   public void setObservability(Observability observability) {
     this.observability = observability;
+  }
+
+  public ToolExecution getToolExecution() {
+    return toolExecution;
+  }
+
+  public void setToolExecution(ToolExecution toolExecution) {
+    this.toolExecution = toolExecution;
   }
 
   /** Configuration validation settings. */
@@ -181,6 +193,20 @@ public class SpringAIProperties {
 
     public void setMetricsEnabled(boolean metricsEnabled) {
       this.metricsEnabled = metricsEnabled;
+    }
+  }
+
+  /** Tool execution ownership configuration. */
+  public static class ToolExecution {
+    /** Framework responsible for executing model tool calls. */
+    private ToolExecutionMode mode = ToolExecutionMode.ADK_MANAGED;
+
+    public ToolExecutionMode getMode() {
+      return mode;
+    }
+
+    public void setMode(ToolExecutionMode mode) {
+      this.mode = mode;
     }
   }
 }

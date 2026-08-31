@@ -17,7 +17,9 @@ package com.google.adk.models.springai.autoconfigure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.google.adk.models.springai.AdkToolContextResolver;
 import com.google.adk.models.springai.SpringAI;
+import com.google.adk.models.springai.ToolExecutionMode;
 import com.google.adk.models.springai.properties.SpringAIProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -161,6 +163,37 @@ class SpringAIAutoConfigurationTest {
               assertThat(properties.getObservability().isEnabled()).isTrue();
               assertThat(properties.getObservability().isMetricsEnabled()).isTrue();
               assertThat(properties.getObservability().isIncludeContent()).isFalse();
+              assertThat(properties.getToolExecution().getMode())
+                  .isEqualTo(ToolExecutionMode.ADK_MANAGED);
+            });
+  }
+
+  @Test
+  void springAiManagedModeFailsFastWithoutContextResolver() {
+    contextRunner
+        .withUserConfiguration(TestConfigurationWithChatModel.class)
+        .withPropertyValues("adk.spring-ai.tool-execution.mode=spring-ai-managed")
+        .run(
+            context -> {
+              assertThat(context).hasFailed();
+              assertThat(context.getStartupFailure())
+                  .hasRootCauseInstanceOf(IllegalArgumentException.class)
+                  .hasRootCauseMessage(
+                      "An AdkToolContextResolver is required when tool execution is SPRING_AI_MANAGED");
+            });
+  }
+
+  @Test
+  void springAiManagedModeStartsWithContextResolverBean() {
+    contextRunner
+        .withUserConfiguration(TestConfigurationWithChatModelAndResolver.class)
+        .withPropertyValues("adk.spring-ai.tool-execution.mode=spring-ai-managed")
+        .run(
+            context -> {
+              assertThat(context).hasNotFailed();
+              assertThat(context).hasSingleBean(SpringAI.class);
+              assertThat(context.getBean(SpringAIProperties.class).getToolExecution().getMode())
+                  .isEqualTo(ToolExecutionMode.SPRING_AI_MANAGED);
             });
   }
 
@@ -198,6 +231,21 @@ class SpringAIAutoConfigurationTest {
           Flux.just(
               new ChatResponse(
                   java.util.List.of(new Generation(new AssistantMessage("streaming")))));
+    }
+  }
+
+  @Configuration
+  static class TestConfigurationWithChatModelAndResolver {
+    @Bean
+    public ChatModel chatModel() {
+      return prompt ->
+          new ChatResponse(java.util.List.of(new Generation(new AssistantMessage("response"))));
+    }
+
+    @Bean
+    public AdkToolContextResolver adkToolContextResolver() {
+      return (tool, arguments, context) ->
+          org.mockito.Mockito.mock(com.google.adk.tools.ToolContext.class);
     }
   }
 }
