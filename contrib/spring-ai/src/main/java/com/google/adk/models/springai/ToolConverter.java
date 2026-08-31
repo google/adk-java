@@ -16,6 +16,7 @@
 package com.google.adk.models.springai;
 
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
@@ -24,6 +25,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
@@ -39,6 +41,9 @@ import org.springframework.ai.tool.function.FunctionToolCallback;
 public class ToolConverter {
 
   private static final Logger logger = LoggerFactory.getLogger(ToolConverter.class);
+
+  /** Key for passing an ADK {@link ToolContext} through Spring AI's tool context map. */
+  public static final String ADK_TOOL_CONTEXT = "adk_tool_context";
 
   /**
    * Creates a tool registry from ADK tools for internal tracking.
@@ -120,35 +125,17 @@ public class ToolConverter {
       if (tool.declaration().isPresent()) {
         FunctionDeclaration declaration = tool.declaration().get();
 
-        // Create a ToolCallback that wraps the ADK tool
-        // Create a Function that takes Map input and calls the ADK tool
-        java.util.function.Function<Map<String, Object>, String> toolFunction =
-            args -> {
-              try {
-                logger.debug("Spring AI calling tool '{}'", tool.name());
-                logger.debug("Raw args from Spring AI: {}", args);
-                logger.debug("Args type: {}", args.getClass().getName());
-                logger.debug("Args keys: {}", args.keySet());
-                for (Map.Entry<String, Object> entry : args.entrySet()) {
-                  logger.debug(
-                      "  {} -> {} ({})",
-                      entry.getKey(),
-                      entry.getValue(),
-                      entry.getValue().getClass().getName());
-                }
-
-                // Handle different argument formats that Spring AI might pass
-                Map<String, Object> processedArgs = processArguments(args, declaration);
-                logger.debug("Processed args for ADK: {}", processedArgs);
-
-                // Call the ADK tool and wait for the result
-                Map<String, Object> result = tool.runAsync(processedArgs, null).blockingGet();
-                // Convert result back to JSON string
-                return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(result);
-              } catch (Exception e) {
-                throw new RuntimeException("Tool execution failed: " + e.getMessage(), e);
-              }
-            };
+        BiFunction<
+                Map<String, Object>,
+                org.springframework.ai.chat.model.ToolContext,
+                Map<String, Object>>
+            toolFunction =
+                (args, springAiToolContext) -> {
+                  logger.debug("Spring AI calling tool '{}'", tool.name());
+                  Map<String, Object> processedArgs = processArguments(args, declaration);
+                  return tool.runAsync(processedArgs, adkToolContextFrom(springAiToolContext))
+                      .blockingGet();
+                };
 
         FunctionToolCallback.Builder callbackBuilder =
             FunctionToolCallback.builder(tool.name(), toolFunction).description(tool.description());
@@ -191,6 +178,26 @@ public class ToolConverter {
     }
 
     return toolCallbacks;
+  }
+
+  private ToolContext adkToolContextFrom(
+      org.springframework.ai.chat.model.ToolContext springAiToolContext) {
+    if (springAiToolContext == null) {
+      return null;
+    }
+
+    Object context = springAiToolContext.getContext().get(ADK_TOOL_CONTEXT);
+    if (context == null) {
+      return null;
+    }
+    if (!(context instanceof ToolContext adkToolContext)) {
+      throw new IllegalArgumentException(
+          "Spring AI tool context entry '"
+              + ADK_TOOL_CONTEXT
+              + "' must be an ADK ToolContext, but was "
+              + context.getClass().getName());
+    }
+    return adkToolContext;
   }
 
   /**

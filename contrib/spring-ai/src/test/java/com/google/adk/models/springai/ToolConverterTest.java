@@ -16,17 +16,24 @@
 package com.google.adk.models.springai;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.Single;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 
 class ToolConverterTest {
 
@@ -211,5 +218,104 @@ class ToolConverterTest {
 
     assertThat(toolCallbacks).hasSize(1);
     assertThat(toolCallbacks.get(0).getToolDefinition().name()).isEqualTo("get_weather");
+  }
+
+  @Test
+  void testToolCallbackWithoutAdkContextKeepsExistingNullContextBehavior() {
+    RecordingTool tool = new RecordingTool();
+    ToolCallback callback = toolConverter.convertToSpringAiTools(Map.of(tool.name(), tool)).get(0);
+
+    String directResult = callback.call("{\"location\":\"Paris\"}");
+    String emptyContextResult =
+        callback.call(
+            "{\"location\":\"Paris\"}",
+            new org.springframework.ai.chat.model.ToolContext(Map.of()));
+
+    assertThat(directResult).contains("sunny");
+    assertThat(emptyContextResult).contains("sunny");
+    assertThat(tool.invocationCount()).isEqualTo(2);
+    assertThat(tool.context()).isNull();
+    assertThat(tool.arguments()).containsEntry("location", "Paris");
+  }
+
+  @Test
+  void testToolCallbackUsesAdkContextFromSpringAiToolContext() {
+    RecordingTool tool = new RecordingTool();
+    ToolCallback callback = toolConverter.convertToSpringAiTools(Map.of(tool.name(), tool)).get(0);
+    ToolContext adkToolContext = mock(ToolContext.class);
+    org.springframework.ai.chat.model.ToolContext springAiToolContext =
+        new org.springframework.ai.chat.model.ToolContext(
+            Map.of(ToolConverter.ADK_TOOL_CONTEXT, adkToolContext));
+
+    String result = callback.call("{\"location\":\"Paris\"}", springAiToolContext);
+
+    assertThat(result).contains("sunny");
+    assertThat(tool.invocationCount()).isEqualTo(1);
+    assertThat(tool.context()).isSameAs(adkToolContext);
+    assertThat(tool.arguments()).containsEntry("location", "Paris");
+  }
+
+  @Test
+  void testToolCallbackRejectsWrongAdkContextType() {
+    RecordingTool tool = new RecordingTool();
+    ToolCallback callback = toolConverter.convertToSpringAiTools(Map.of(tool.name(), tool)).get(0);
+    org.springframework.ai.chat.model.ToolContext springAiToolContext =
+        new org.springframework.ai.chat.model.ToolContext(
+            Map.of(ToolConverter.ADK_TOOL_CONTEXT, "not an ADK ToolContext"));
+
+    assertThatThrownBy(() -> callback.call("{\"location\":\"Paris\"}", springAiToolContext))
+        .isInstanceOf(ToolExecutionException.class)
+        .hasRootCauseInstanceOf(IllegalArgumentException.class)
+        .hasRootCauseMessage(
+            "Spring AI tool context entry 'adk_tool_context' must be an ADK ToolContext, but was java.lang.String");
+    assertThat(tool.invocationCount()).isZero();
+  }
+
+  private static final class RecordingTool extends BaseTool {
+    private final FunctionDeclaration declaration;
+    private final AtomicInteger invocationCount = new AtomicInteger();
+    private final AtomicReference<Map<String, Object>> arguments = new AtomicReference<>();
+    private final AtomicReference<ToolContext> context = new AtomicReference<>();
+
+    private RecordingTool() {
+      super("get_weather", "Get weather for a location");
+      this.declaration =
+          FunctionDeclaration.builder()
+              .name(name())
+              .description(description())
+              .parameters(
+                  Schema.builder()
+                      .type("OBJECT")
+                      .properties(Map.of("location", Schema.builder().type("STRING").build()))
+                      .required(List.of("location"))
+                      .build())
+              .build();
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(declaration);
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(
+        Map<String, Object> arguments, ToolContext toolContext) {
+      invocationCount.incrementAndGet();
+      this.arguments.set(arguments);
+      context.set(toolContext);
+      return Single.just(Map.of("forecast", "sunny"));
+    }
+
+    private int invocationCount() {
+      return invocationCount.get();
+    }
+
+    private Map<String, Object> arguments() {
+      return arguments.get();
+    }
+
+    private ToolContext context() {
+      return context.get();
+    }
   }
 }
