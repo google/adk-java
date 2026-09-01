@@ -206,16 +206,29 @@ final class VertexAiClient {
    */
   @Nullable
   private static Maybe<JsonNode> getJsonResponse(ApiResponse apiResponse) {
+    if (apiResponse == null) {
+      return Maybe.empty();
+    }
     try {
-      if (apiResponse == null || apiResponse.getResponseBody() == null) {
+      int statusCode = apiResponse.getStatusCode();
+      String responseString;
+      try {
+        ResponseBody responseBody = apiResponse.getResponseBody();
+        responseString = responseBody == null ? "" : responseBody.string();
+      } catch (IOException e) {
+        return Maybe.error(new UncheckedIOException(e));
+      }
+
+      if (statusCode == 404) {
+        return Maybe.empty();
+      }
+      if (statusCode < 200 || statusCode >= 300) {
+        return Maybe.error(new VertexAiApiException(statusCode, responseString));
+      }
+      if (responseString.isEmpty()) {
         return Maybe.empty();
       }
       try {
-        ResponseBody responseBody = apiResponse.getResponseBody();
-        String responseString = responseBody.string(); // Read body here
-        if (responseString.isEmpty()) {
-          return Maybe.empty();
-        }
         return Maybe.just(objectMapper.readTree(responseString));
       } catch (IOException e) {
         return Maybe.error(new UncheckedIOException(e));

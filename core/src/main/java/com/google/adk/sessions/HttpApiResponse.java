@@ -35,6 +35,11 @@ public final class HttpApiResponse extends ApiResponse {
     return response.body();
   }
 
+  @Override
+  public int getStatusCode() {
+    return response.code();
+  }
+
   /** Closes the Http response. */
   @Override
   public void close() {

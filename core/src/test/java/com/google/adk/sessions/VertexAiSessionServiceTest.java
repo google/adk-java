@@ -241,15 +241,10 @@ public class VertexAiSessionServiceTest {
   }
 
   @Test
-  public void getEmptySession_success() {
-    RuntimeException exception =
-        assertThrows(
-            RuntimeException.class,
-            () ->
-                vertexAiSessionService
-                    .getSession("123", "user", "0", Optional.empty())
-                    .blockingGet());
-    assertThat(exception).hasMessageThat().contains("Session not found: 0");
+  public void getEmptySession_returnsNull() {
+    Session session =
+        vertexAiSessionService.getSession("123", "user", "0", Optional.empty()).blockingGet();
+    assertThat(session).isNull();
   }
 
   @Test
@@ -258,14 +253,41 @@ public class VertexAiSessionServiceTest {
         vertexAiSessionService.getSession("123", "user", "1", Optional.empty()).blockingGet();
     assertThat(session.toJson()).isEqualTo(getMockSession().toJson());
     vertexAiSessionService.deleteSession("123", "user", "1").blockingAwait();
-    RuntimeException exception =
+    Session sessionAfterDelete =
+        vertexAiSessionService.getSession("123", "user", "1", Optional.empty()).blockingGet();
+    assertThat(sessionAfterDelete).isNull();
+  }
+
+  @Test
+  public void getSession_permissionDenied_propagatesAsError() {
+    when(mockApiClient.request(eq("GET"), eq("reasoningEngines/123/sessions/1"), eq("")))
+        .thenReturn(
+            MockApiAnswer.responseWithStatus(
+                403, "{\"userId\": \"user\", \"error\": \"permission denied\"}"));
+
+    VertexAiApiException exception =
         assertThrows(
-            RuntimeException.class,
+            VertexAiApiException.class,
             () ->
                 vertexAiSessionService
                     .getSession("123", "user", "1", Optional.empty())
                     .blockingGet());
-    assertThat(exception).hasMessageThat().contains("Session not found: 1");
+    assertThat(exception.statusCode()).isEqualTo(403);
+  }
+
+  @Test
+  public void getSession_serverError_propagatesAsError() {
+    when(mockApiClient.request(eq("GET"), eq("reasoningEngines/123/sessions/1"), eq("")))
+        .thenReturn(MockApiAnswer.responseWithStatus(500, "{\"error\": \"internal\"}"));
+
+    VertexAiApiException exception =
+        assertThrows(
+            VertexAiApiException.class,
+            () ->
+                vertexAiSessionService
+                    .getSession("123", "user", "1", Optional.empty())
+                    .blockingGet());
+    assertThat(exception.statusCode()).isEqualTo(500);
   }
 
   @Test
