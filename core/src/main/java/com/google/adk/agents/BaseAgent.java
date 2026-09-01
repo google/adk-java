@@ -185,7 +185,7 @@ public abstract class BaseAgent {
    *
    * @return the description of the agent.
    */
-  public final String description() {
+  public String description() {
     return description;
   }
 

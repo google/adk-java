@@ -49,8 +49,8 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
       return HttpClientSseClientTransport.builder(sseServerParams.url())
           .sseEndpoint(
               sseServerParams.sseEndpoint() == null ? "sse" : sseServerParams.sseEndpoint())
-          .httpRequestCustomizer(
-              (builder, method, uri, body, context) ->
+          .customizeRequest(
+              builder ->
                   Optional.ofNullable(sseServerParams.headers())
                       .map(ImmutableMap::entrySet)
                       .stream()

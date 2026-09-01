@@ -26,6 +26,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Content;
+import io.modelcontextprotocol.spec.McpSchema.JsonSchema;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import io.modelcontextprotocol.spec.McpSchema.ToolAnnotations;
@@ -86,7 +87,7 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
 
   @Override
   public Optional<FunctionDeclaration> declaration() {
-    Map<String, Object> inputSchema = this.mcpTool.inputSchema();
+    JsonSchema inputSchema = this.mcpTool.inputSchema();
     Map<String, Object> outputSchema = this.mcpTool.outputSchema();
     try {
       return Optional.ofNullable(inputSchema)
