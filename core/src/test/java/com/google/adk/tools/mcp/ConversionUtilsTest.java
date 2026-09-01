@@ -62,7 +62,7 @@ public final class ConversionUtilsTest {
   }
 
   @Test
-  public void adkToMcpToolType_declarationWithoutParameters_omitsInputSchema() {
+  public void adkToMcpToolType_declarationWithoutParameters_defaultsInputSchema() {
     // A present declaration with no parameters is a valid no-argument tool. Before the fix this
     // threw NoSuchElementException from an unguarded Optional.get() on parameters().
     FunctionDeclaration declaration = FunctionDeclaration.builder().name("noParams").build();
@@ -72,17 +72,17 @@ public final class ConversionUtilsTest {
 
     assertThat(result.name()).isEqualTo("noParams");
     assertThat(result.description()).isEqualTo("no params");
-    assertThat(result.inputSchema()).isNull();
+    assertThat(result.inputSchema()).containsExactly("type", "object");
   }
 
   @Test
-  public void adkToMcpToolType_noDeclaration_omitsInputSchema() {
+  public void adkToMcpToolType_noDeclaration_defaultsInputSchema() {
     BaseTool tool = new FakeTool("bare", "no declaration", Optional.empty());
 
     McpSchema.Tool result = ConversionUtils.adkToMcpToolType(tool);
 
     assertThat(result.name()).isEqualTo("bare");
     assertThat(result.description()).isEqualTo("no declaration");
-    assertThat(result.inputSchema()).isNull();
+    assertThat(result.inputSchema()).containsExactly("type", "object");
   }
 }
