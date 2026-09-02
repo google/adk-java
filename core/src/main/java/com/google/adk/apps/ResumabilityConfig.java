@@ -20,13 +20,11 @@ import com.google.auto.value.AutoValue;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 
 /**
- * App resumability config, mirroring Python ADK v1's {@code ResumabilityConfig}: pause on a
- * long-running call and resume from the last event. Applies to all agents in the app.
+ * App resumability config, mirroring Python ADK's experimental {@code ResumabilityConfig}: pause on
+ * a long-running call and resume from the last event. Applies to all agents in the app.
  *
- * @deprecated Partial feature: only event-reconstruction-based pause/resume for {@code
- *     SequentialAgent} is implemented. Full session resumability (persisted agent state, durable
- *     resume, other workflow agents) is not yet available. Forward-compatible: the same config will
- *     drive full resumability once it lands.
+ * @deprecated Experimental and not yet stable: resume is best-effort and at-least-once, so a
+ *     resuming tool must be idempotent and any temporary in-memory state is lost on resumption.
  */
 @Deprecated
 @AutoValue

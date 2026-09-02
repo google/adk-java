@@ -134,8 +134,7 @@ public class App {
     /**
      * Sets the app resumability config.
      *
-     * @deprecated See {@link ResumabilityConfig}: partial feature, full resumability not yet
-     *     available.
+     * @deprecated See {@link ResumabilityConfig}: experimental and not yet stable.
      */
     @CanIgnoreReturnValue
     @Deprecated

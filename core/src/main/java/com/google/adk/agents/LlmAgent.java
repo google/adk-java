@@ -70,6 +70,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -660,7 +661,99 @@ public class LlmAgent extends BaseAgent {
 
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    return llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    if (!invocationContext.isResumable()) {
+      return llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    }
+    return Flowable.defer(
+        () -> {
+          // Resumed after a transfer: continue the transferred sub-agent instead of re-invoking
+          // the model, then mark this agent done.
+          if (invocationContext.agentStates().containsKey(name())) {
+            Optional<BaseAgent> resumeTarget = getSubagentToResume(invocationContext);
+            if (resumeTarget.isPresent()) {
+              return resumeTarget
+                  .get()
+                  .runAsync(invocationContext)
+                  .concatWith(
+                      Flowable.defer(
+                          () -> {
+                            invocationContext.setAgentState(name(), /* agentState= */ null, true);
+                            return Flowable.just(endOfAgentEvent(invocationContext));
+                          }));
+            }
+          }
+          // A long-running call this invocation paused on is still unanswered: do not re-invoke the
+          // model until every paused call has a response (Python ADK 2.x decide_resume). A fully
+          // answered set of parallel calls continues so the model can summarize.
+          if (invocationContext.hasUnansweredPausedCall()) {
+            return Flowable.<Event>empty();
+          }
+          // Normal path: emit an end-of-agent checkpoint on completion so a later run can skip
+          // this agent, unless it paused on a long-running call (then suppress it so it can
+          // resume).
+          Flowable<Event> events =
+              llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+          AtomicBoolean paused = new AtomicBoolean(false);
+          return events
+              .doOnNext(
+                  event -> {
+                    if (invocationContext.shouldPauseInvocation(event)) {
+                      paused.set(true);
+                    }
+                  })
+              .concatWith(
+                  Flowable.defer(
+                      () -> {
+                        if (paused.get() || !Objects.equals(invocationContext.agent(), this)) {
+                          return Flowable.empty();
+                        }
+                        invocationContext.setAgentState(name(), /* agentState= */ null, true);
+                        return Flowable.just(endOfAgentEvent(invocationContext));
+                      }));
+        });
+  }
+
+  private Optional<BaseAgent> getTransferToAgentOrNull(Event event, String fromAgent) {
+    if (fromAgent.equals(event.author())) {
+      Optional<String> transferTo = event.actions().transferToAgent();
+      if (transferTo.isPresent() && !transferTo.get().equals(fromAgent)) {
+        return rootAgent().findAgent(transferTo.get());
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * When this agent is being resumed, returns the sub-agent it had transferred to (so the resume
+   * continues that sub-agent), or empty when this agent should continue itself.
+   */
+  private Optional<BaseAgent> getSubagentToResume(InvocationContext context) {
+    List<Event> events =
+        context.getEvents(/* currentInvocation= */ true, /* currentBranch= */ true);
+    if (events.isEmpty()) {
+      return Optional.empty();
+    }
+    Event lastEvent = events.get(events.size() - 1);
+    if (name().equals(lastEvent.author())) {
+      return getTransferToAgentOrNull(lastEvent, name());
+    }
+    if (Objects.equals(lastEvent.author(), "user")) {
+      Optional<Event> functionCallEvent = context.findMatchingFunctionCall(lastEvent);
+      if (functionCallEvent.isEmpty()) {
+        throw new IllegalArgumentException(
+            "No matching function call to resume agent " + name() + " from a function response.");
+      }
+      if (name().equals(functionCallEvent.get().author())) {
+        return Optional.empty();
+      }
+    }
+    for (int i = events.size() - 2; i >= 0; i--) {
+      Optional<BaseAgent> agent = getTransferToAgentOrNull(events.get(i), name());
+      if (agent.isPresent()) {
+        return agent;
+      }
+    }
+    return Optional.empty();
   }
 
   @Override

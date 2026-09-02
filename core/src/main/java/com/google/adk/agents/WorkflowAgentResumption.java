@@ -48,12 +48,5 @@ final class WorkflowAgentResumption {
     return Optional.empty();
   }
 
-  /**
-   * Whether the event emits a long-running call still awaiting a response (e.g. a HITL request).
-   */
-  static boolean hasPendingLongRunningCall(Event event) {
-    return Functions.hasPendingLongRunningCall(event);
-  }
-
   private WorkflowAgentResumption() {}
 }

@@ -112,6 +112,61 @@ public final class EventActionsTest {
   }
 
   @Test
+  public void agentState_roundTripsThroughToBuilder() {
+    EventActions actions =
+        EventActions.builder().agentState(ImmutableMap.of("current_sub_agent", "b")).build();
+
+    EventActions rebuilt = actions.toBuilder().build();
+
+    assertThat(rebuilt).isEqualTo(actions);
+    assertThat(rebuilt.agentState()).hasValue(ImmutableMap.of("current_sub_agent", "b"));
+  }
+
+  @Test
+  public void agentState_roundTripsThroughJson() {
+    EventActions actions =
+        EventActions.builder().agentState(ImmutableMap.of("times_looped", 2)).build();
+
+    EventActions deserialized = EventActions.fromJsonString(actions.toJson(), EventActions.class);
+
+    assertThat(deserialized.agentState()).isPresent();
+    assertThat(deserialized.agentState().get()).containsEntry("times_looped", 2);
+  }
+
+  @Test
+  public void agentState_absentByDefault_andOmittedFromJson() {
+    EventActions actions = EventActions.builder().build();
+
+    assertThat(actions.agentState()).isEmpty();
+    // Kept out of the serialized form so pre-existing events stay byte-identical.
+    assertThat(actions.toJson()).doesNotContain("agentState");
+  }
+
+  @Test
+  public void merge_agentState_lastWins() {
+    EventActions first =
+        EventActions.builder().agentState(ImmutableMap.of("current_sub_agent", "a")).build();
+    EventActions second =
+        EventActions.builder().agentState(ImmutableMap.of("current_sub_agent", "b")).build();
+
+    EventActions merged = first.toBuilder().merge(second).build();
+
+    assertThat(merged.agentState()).hasValue(ImmutableMap.of("current_sub_agent", "b"));
+  }
+
+  @Test
+  public void merge_agentState_disjointKeys_replacesWholeMap() {
+    // agentState is a single checkpoint payload: merge replaces it wholesale (last-wins) rather
+    // than deep-merging keys.
+    EventActions first = EventActions.builder().agentState(ImmutableMap.of("a", 1)).build();
+    EventActions second = EventActions.builder().agentState(ImmutableMap.of("b", 2)).build();
+
+    EventActions merged = first.toBuilder().merge(second).build();
+
+    assertThat(merged.agentState()).hasValue(ImmutableMap.of("b", 2));
+  }
+
+  @Test
   public void merge_endOfAgentIsOrderIndependent() {
     // A tool that ends the invocation, and one that leaves the flag at its default false. Folding
     // parallel tool responses must keep endOfAgent set whichever order they are merged in.
