@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.1](https://github.com/google/adk-java/compare/v1.9.0...v1.9.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **models:** set additionalProperties on schemas for OpenAI strict structured outputs ([4b058cd](https://github.com/google/adk-java/commit/4b058cd17346944ac047828eda6424e495204bf9))
+* **sessions:** validate HTTP status before parsing Vertex AI session responses ([4192aca](https://github.com/google/adk-java/commit/4192aca586bf0bd47f3fa14bbd7d5959d3c07fdb))
+
 ## [1.9.0](https://github.com/google/adk-java/compare/v1.8.0...v1.9.0) (2026-08-28)
 
 
