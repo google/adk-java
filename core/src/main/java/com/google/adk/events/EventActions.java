@@ -44,6 +44,7 @@ public class EventActions extends JsonBaseModel {
   private ConcurrentMap<String, Map<String, Object>> requestedAuthConfigs;
   private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
   private boolean endOfAgent;
+  private @Nullable Map<String, Object> agentState;
   private @Nullable EventCompaction compaction;
 
   /** Default constructor for Jackson. */
@@ -66,6 +67,7 @@ public class EventActions extends JsonBaseModel {
     this.requestedAuthConfigs = builder.requestedAuthConfigs;
     this.requestedToolConfirmations = builder.requestedToolConfirmations;
     this.endOfAgent = builder.endOfAgent;
+    this.agentState = builder.agentState;
     this.compaction = builder.compaction;
   }
 
@@ -192,6 +194,19 @@ public class EventActions extends JsonBaseModel {
     this.endOfAgent = endInvocation;
   }
 
+  /**
+   * The checkpointed state of the authoring agent at this event, used for session resumability.
+   * Only set by ADK workflow/agent machinery on resumable invocations.
+   */
+  @JsonProperty("agentState")
+  public Optional<Map<String, Object>> agentState() {
+    return Optional.ofNullable(agentState);
+  }
+
+  public void setAgentState(@Nullable Map<String, Object> agentState) {
+    this.agentState = agentState;
+  }
+
   @JsonProperty("compaction")
   public Optional<EventCompaction> compaction() {
     return Optional.ofNullable(compaction);
@@ -226,6 +241,7 @@ public class EventActions extends JsonBaseModel {
         && Objects.equals(requestedAuthConfigs, that.requestedAuthConfigs)
         && Objects.equals(requestedToolConfirmations, that.requestedToolConfirmations)
         && (endOfAgent == that.endOfAgent)
+        && Objects.equals(agentState, that.agentState)
         && Objects.equals(compaction, that.compaction);
   }
 
@@ -241,6 +257,7 @@ public class EventActions extends JsonBaseModel {
         requestedAuthConfigs,
         requestedToolConfirmations,
         endOfAgent,
+        agentState,
         compaction);
   }
 
@@ -255,6 +272,7 @@ public class EventActions extends JsonBaseModel {
     private ConcurrentMap<String, Map<String, Object>> requestedAuthConfigs;
     private ConcurrentMap<String, ToolConfirmation> requestedToolConfirmations;
     private boolean endOfAgent = false;
+    private @Nullable Map<String, Object> agentState;
     private @Nullable EventCompaction compaction;
 
     public Builder() {
@@ -276,6 +294,7 @@ public class EventActions extends JsonBaseModel {
       this.requestedToolConfirmations =
           new ConcurrentHashMap<>(eventActions.requestedToolConfirmations());
       this.endOfAgent = eventActions.endOfAgent;
+      this.agentState = eventActions.agentState;
       this.compaction = eventActions.compaction;
     }
 
@@ -377,6 +396,13 @@ public class EventActions extends JsonBaseModel {
     }
 
     @CanIgnoreReturnValue
+    @JsonProperty("agentState")
+    public Builder agentState(@Nullable Map<String, Object> agentState) {
+      this.agentState = agentState;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
     @JsonProperty("compaction")
     public Builder compaction(@Nullable EventCompaction value) {
       this.compaction = value;
@@ -394,6 +420,7 @@ public class EventActions extends JsonBaseModel {
       this.requestedAuthConfigs.putAll(other.requestedAuthConfigs());
       this.requestedToolConfirmations.putAll(other.requestedToolConfirmations());
       this.endOfAgent = this.endOfAgent || other.endOfAgent();
+      other.agentState().ifPresent(this::agentState);
       other.compaction().ifPresent(this::compaction);
       return this;
     }

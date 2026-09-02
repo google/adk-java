@@ -568,8 +568,42 @@ public final class FunctionsTest {
     assertThat(Functions.hasPendingLongRunningCall(ImmutableList.<Event>of())).isFalse();
   }
 
+  @Test
+  public void hasPendingLongRunningCall_list_responseResolvesCall_returnsFalse() {
+    // The trailing function response resolves the pending long-running call, so the flow continues.
+    ImmutableList<Event> events =
+        ImmutableList.of(longRunningCallEvent("call1"), functionResponseEvent("call1"));
+    assertThat(Functions.hasPendingLongRunningCall(events)).isFalse();
+  }
+
+  @Test
+  public void hasPendingLongRunningCall_list_responseForDifferentCall_returnsTrue() {
+    // The response does not resolve the pending call, so the long-running call still pauses.
+    ImmutableList<Event> events =
+        ImmutableList.of(longRunningCallEvent("call1"), functionResponseEvent("other"));
+    assertThat(Functions.hasPendingLongRunningCall(events)).isTrue();
+  }
+
   private static Event longRunningCallEvent(String callId) {
     return functionCallEvent(callId, callId);
+  }
+
+  private static Event functionResponseEvent(String callId) {
+    return Event.builder()
+        .id("response_" + callId)
+        .invocationId("invocation1")
+        .author("user")
+        .content(
+            Content.fromParts(
+                Part.builder()
+                    .functionResponse(
+                        FunctionResponse.builder()
+                            .id(callId)
+                            .name("tool")
+                            .response(ImmutableMap.of())
+                            .build())
+                    .build()))
+        .build();
   }
 
   // Event with a function call; longRunningId, when non-null, is marked long-running.

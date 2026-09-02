@@ -20,7 +20,10 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
+import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
 import com.google.adk.plugins.PluginManager;
@@ -28,7 +31,10 @@ import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.Part;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -723,5 +729,333 @@ public final class InvocationContextTest {
 
     IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
     assertThat(exception).hasMessageThat().isEqualTo("Session service must be set.");
+  }
+
+  // ---- Resumability: runtime checkpoint state (parity with Kotlin InvocationContextTest). ----
+
+  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
+  private InvocationContext resumableContext(Session eventSession, String invocationId) {
+    return InvocationContext.builder()
+        .sessionService(mockSessionService)
+        .artifactService(mockArtifactService)
+        .agent(mockAgent)
+        .session(eventSession)
+        .invocationId(invocationId)
+        .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+        .build();
+  }
+
+  private static Event agentEvent(
+      String invocationId, String author, EventActions actions, Content content) {
+    Event.Builder builder =
+        Event.builder().id(Event.generateEventId()).invocationId(invocationId).author(author);
+    if (actions != null) {
+      builder.actions(actions);
+    }
+    if (content != null) {
+      builder.content(content);
+    }
+    return builder.build();
+  }
+
+  @Test
+  public void isResumable_configTrue_returnsTrue() {
+    InvocationContext context = resumableContext(session, "inv");
+    assertThat(context.isResumable()).isTrue();
+  }
+
+  @Test
+  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
+  public void isResumable_configFalse_returnsFalse() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .resumabilityConfig(ResumabilityConfig.builder().resumable(false).build())
+            .build();
+    assertThat(context.isResumable()).isFalse();
+  }
+
+  @Test
+  public void isResumable_nullConfig_returnsFalse() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .build();
+    assertThat(context.isResumable()).isFalse();
+  }
+
+  @Test
+  public void setAgentState_storesStateAndClearsEnd() {
+    InvocationContext context = resumableContext(session, "inv");
+
+    context.setAgentState("a", ImmutableMap.of("k", "v"), /* endOfAgent= */ false);
+
+    assertThat(context.agentStates()).containsEntry("a", ImmutableMap.of("k", "v"));
+    assertThat(context.endOfAgents()).containsEntry("a", false);
+  }
+
+  @Test
+  public void setAgentState_endOfAgent_marksEndedAndDropsState() {
+    InvocationContext context = resumableContext(session, "inv");
+    context.setAgentState("a", ImmutableMap.of("k", "v"), /* endOfAgent= */ false);
+
+    context.setAgentState("a", /* agentState= */ null, /* endOfAgent= */ true);
+
+    assertThat(context.endOfAgents()).containsEntry("a", true);
+    assertThat(context.agentStates()).doesNotContainKey("a");
+  }
+
+  @Test
+  public void setAgentState_nullStateNotEnded_clearsBoth() {
+    InvocationContext context = resumableContext(session, "inv");
+    context.setAgentState("a", ImmutableMap.of("k", "v"), /* endOfAgent= */ false);
+
+    context.setAgentState("a", /* agentState= */ null, /* endOfAgent= */ false);
+
+    assertThat(context.agentStates()).doesNotContainKey("a");
+    assertThat(context.endOfAgents()).doesNotContainKey("a");
+  }
+
+  @Test
+  public void shouldPauseInvocation_resumableWithLongRunningCall_returnsTrue() {
+    InvocationContext context = resumableContext(session, "inv");
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("inv")
+            .author("a")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(FunctionCall.builder().id("c1").name("tool").build())
+                        .build()))
+            .longRunningToolIds(ImmutableSet.of("c1"))
+            .build();
+
+    assertThat(context.shouldPauseInvocation(event)).isTrue();
+  }
+
+  @Test
+  public void shouldPauseInvocation_notResumable_returnsFalse() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .invocationId("inv")
+            .build();
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("inv")
+            .author("a")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(FunctionCall.builder().id("c1").name("tool").build())
+                        .build()))
+            .longRunningToolIds(ImmutableSet.of("c1"))
+            .build();
+
+    assertThat(context.shouldPauseInvocation(event)).isFalse();
+  }
+
+  @Test
+  public void shouldPauseInvocation_noLongRunningIds_returnsFalse() {
+    InvocationContext context = resumableContext(session, "inv");
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("inv")
+            .author("a")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(FunctionCall.builder().id("c1").name("tool").build())
+                        .build()))
+            .build();
+
+    assertThat(context.shouldPauseInvocation(event)).isFalse();
+  }
+
+  @Test
+  public void shouldPauseInvocation_callIdNotInLongRunningSet_returnsFalse() {
+    InvocationContext context = resumableContext(session, "inv");
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("inv")
+            .author("a")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(FunctionCall.builder().id("c1").name("tool").build())
+                        .build()))
+            .longRunningToolIds(ImmutableSet.of("other"))
+            .build();
+
+    assertThat(context.shouldPauseInvocation(event)).isFalse();
+  }
+
+  @Test
+  public void getEvents_filtersByInvocationAndBranch() {
+    Session eventSession = Session.builder("s").build();
+    Event thisInv = agentEvent("inv", "a", null, Content.fromParts(Part.fromText("x")));
+    Event otherInv = agentEvent("other", "a", null, Content.fromParts(Part.fromText("y")));
+    Event branchB =
+        Event.builder()
+            .id("e3")
+            .invocationId("inv")
+            .author("a")
+            .branch("branchB")
+            .content(Content.fromParts(Part.fromText("z")))
+            .build();
+    eventSession.events().add(thisInv);
+    eventSession.events().add(otherInv);
+    eventSession.events().add(branchB);
+    InvocationContext context = resumableContext(eventSession, "inv");
+
+    assertThat(context.getEvents(/* currentInvocation= */ true, /* currentBranch= */ false))
+        .containsExactly(thisInv, branchB)
+        .inOrder();
+    // A null-branch event is visible on any branch; the "branchB" event is filtered out.
+    assertThat(context.getEvents(/* currentInvocation= */ true, /* currentBranch= */ true))
+        .containsExactly(thisInv);
+  }
+
+  @Test
+  public void populateInvocationAgentStates_notResumable_doesNothing() {
+    Session eventSession = Session.builder("s").build();
+    eventSession
+        .events()
+        .add(
+            agentEvent(
+                "inv",
+                "a",
+                EventActions.builder().agentState(ImmutableMap.of("k", "v")).build(),
+                Content.fromParts(Part.fromText("x"))));
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(eventSession)
+            .invocationId("inv")
+            .build();
+
+    context.populateInvocationAgentStates();
+
+    assertThat(context.agentStates()).isEmpty();
+    assertThat(context.endOfAgents()).isEmpty();
+  }
+
+  @Test
+  public void populateInvocationAgentStates_endOfAgentEvent_marksEndedAndRemovesState() {
+    Session eventSession = Session.builder("s").build();
+    eventSession
+        .events()
+        .add(
+            agentEvent(
+                "inv",
+                "a",
+                EventActions.builder().agentState(ImmutableMap.of("k", "v")).build(),
+                Content.fromParts(Part.fromText("x"))));
+    eventSession
+        .events()
+        .add(agentEvent("inv", "a", EventActions.builder().endOfAgent(true).build(), null));
+    InvocationContext context = resumableContext(eventSession, "inv");
+
+    context.populateInvocationAgentStates();
+
+    assertThat(context.endOfAgents()).containsEntry("a", true);
+    assertThat(context.agentStates()).doesNotContainKey("a");
+  }
+
+  @Test
+  public void populateInvocationAgentStates_agentStateEvent_setsStateAndClearsEnd() {
+    Session eventSession = Session.builder("s").build();
+    eventSession
+        .events()
+        .add(
+            agentEvent(
+                "inv",
+                "a",
+                EventActions.builder().agentState(ImmutableMap.of("k", "v")).build(),
+                Content.fromParts(Part.fromText("x"))));
+    InvocationContext context = resumableContext(eventSession, "inv");
+
+    context.populateInvocationAgentStates();
+
+    assertThat(context.agentStates()).containsEntry("a", ImmutableMap.of("k", "v"));
+    assertThat(context.endOfAgents()).containsEntry("a", false);
+  }
+
+  @Test
+  public void populateInvocationAgentStates_agentStateAndEndOfAgent_endOfAgentWins() {
+    Session eventSession = Session.builder("s").build();
+    eventSession
+        .events()
+        .add(
+            agentEvent(
+                "inv",
+                "a",
+                EventActions.builder()
+                    .endOfAgent(true)
+                    .agentState(ImmutableMap.of("k", "v"))
+                    .build(),
+                Content.fromParts(Part.fromText("x"))));
+    InvocationContext context = resumableContext(eventSession, "inv");
+
+    context.populateInvocationAgentStates();
+
+    assertThat(context.endOfAgents()).containsEntry("a", true);
+    assertThat(context.agentStates()).doesNotContainKey("a");
+  }
+
+  @Test
+  public void populateInvocationAgentStates_newContentFromNonUserAuthor_initializesEmptyState() {
+    Session eventSession = Session.builder("s").build();
+    eventSession
+        .events()
+        .add(agentEvent("inv", "a", null, Content.fromParts(Part.fromText("hello"))));
+    InvocationContext context = resumableContext(eventSession, "inv");
+
+    context.populateInvocationAgentStates();
+
+    assertThat(context.agentStates()).containsKey("a");
+    assertThat(context.agentStates().get("a")).isEmpty();
+    assertThat(context.endOfAgents()).containsEntry("a", false);
+  }
+
+  @Test
+  public void populateInvocationAgentStates_userMessage_ignoredForDefaultState() {
+    Session eventSession = Session.builder("s").build();
+    eventSession
+        .events()
+        .add(agentEvent("inv", "user", null, Content.fromParts(Part.fromText("hi"))));
+    InvocationContext context = resumableContext(eventSession, "inv");
+
+    context.populateInvocationAgentStates();
+
+    assertThat(context.agentStates()).isEmpty();
+  }
+
+  @Test
+  public void populateInvocationAgentStates_noContentNoState_ignored() {
+    Session eventSession = Session.builder("s").build();
+    eventSession.events().add(agentEvent("inv", "a", null, null));
+    InvocationContext context = resumableContext(eventSession, "inv");
+
+    context.populateInvocationAgentStates();
+
+    assertThat(context.agentStates()).isEmpty();
+    assertThat(context.endOfAgents()).isEmpty();
   }
 }

@@ -24,6 +24,7 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
@@ -71,6 +72,22 @@ public final class TestUtils {
     return createInvocationContext(agent, RunConfig.builder().build());
   }
 
+  /** Like {@link #createInvocationContext(BaseAgent)} but with resumability enabled. */
+  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
+  public static InvocationContext createResumableInvocationContext(BaseAgent agent) {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    return InvocationContext.builder()
+        .sessionService(sessionService)
+        .artifactService(new InMemoryArtifactService())
+        .invocationId("invocationId")
+        .agent(agent)
+        .session(sessionService.createSession("test_app", "test-user").blockingGet())
+        .userContent(Content.fromParts(Part.fromText("user content")))
+        .runConfig(RunConfig.builder().build())
+        .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+        .build();
+  }
+
   public static InvocationContext createInvocationContext(
       BaseAgent agent, BaseSessionService sessionService, Session session) {
     return InvocationContext.builder()
@@ -103,6 +120,30 @@ public final class TestUtils {
     return events.stream()
         .map(event -> event.author() + ": " + formatEventContent(event))
         .collect(toImmutableList());
+  }
+
+  /** Marker rendered for an end-of-agent checkpoint event by {@link #simplifyResumableEvents}. */
+  public static final String END_OF_AGENT = "end_of_agent";
+
+  /**
+   * Like {@link #simplifyEvents} but renders resumability checkpoint events distinctly: an
+   * end-of-agent event as {@link #END_OF_AGENT} and an agent-state event as {@code
+   * agent_state=...}. Mirrors the Kotlin {@code simplifyResumableEvents} test helper.
+   */
+  public static ImmutableList<String> simplifyResumableEvents(List<Event> events) {
+    return events.stream()
+        .map(event -> event.author() + ": " + formatResumableEvent(event))
+        .collect(toImmutableList());
+  }
+
+  private static String formatResumableEvent(Event event) {
+    if (event.actions().endOfAgent()) {
+      return END_OF_AGENT;
+    }
+    if (event.actions().agentState().isPresent()) {
+      return "agent_state=" + event.actions().agentState().get();
+    }
+    return formatEventContent(event);
   }
 
   private static String formatEventContent(Event event) {

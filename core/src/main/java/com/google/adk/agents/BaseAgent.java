@@ -23,6 +23,7 @@ import static java.lang.String.format;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.telemetry.Instrumentation;
 import com.google.adk.telemetry.Instrumentation.AgentInvocation;
@@ -38,6 +39,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.regex.Pattern;
@@ -457,6 +459,43 @@ public abstract class BaseAgent {
    */
   public Flowable<Event> runLive(InvocationContext parentContext) {
     return run(parentContext, this::runLiveImpl);
+  }
+
+  /**
+   * Builds an end-of-agent checkpoint event for a resumable invocation, marking that this agent
+   * finished its run. Emitting it (and recording it via {@link InvocationContext#setAgentState})
+   * lets a later run skip a completed agent.
+   *
+   * @param context Current invocation context.
+   * @return an event whose actions carry {@code endOfAgent = true}.
+   */
+  protected Event endOfAgentEvent(InvocationContext context) {
+    return Event.builder()
+        .id(Event.generateEventId())
+        .invocationId(context.invocationId())
+        .author(name())
+        .branch(context.branch().orElse(null))
+        .actions(EventActions.builder().endOfAgent(true).build())
+        .build();
+  }
+
+  /**
+   * Builds a checkpoint event carrying this agent's serialized state for a resumable invocation.
+   * Callers also record the state via {@link InvocationContext#setAgentState} so a later run
+   * resumes at the right point.
+   *
+   * @param context Current invocation context.
+   * @param agentState The serialized agent state to persist.
+   * @return an event whose actions carry {@code agentState}.
+   */
+  protected Event createStateEvent(InvocationContext context, Map<String, Object> agentState) {
+    return Event.builder()
+        .id(Event.generateEventId())
+        .invocationId(context.invocationId())
+        .author(name())
+        .branch(context.branch().orElse(null))
+        .actions(EventActions.builder().agentState(agentState).build())
+        .build();
   }
 
   /**
