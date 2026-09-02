@@ -20,13 +20,11 @@ import com.google.auto.value.AutoValue;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 
 /**
- * App resumability config, mirroring Python ADK v1's {@code ResumabilityConfig}: pause on a
- * long-running call and resume from the last event. Applies to all agents in the app.
+ * App resumability config, mirroring Python ADK's experimental {@code ResumabilityConfig}: pause on
+ * a long-running call and resume from the last event. Applies to all agents in the app.
  *
- * @deprecated Partial feature: only event-reconstruction-based pause/resume for {@code
- *     SequentialAgent} is implemented. Full session resumability (persisted agent state, durable
- *     resume, other workflow agents) is not yet available. Forward-compatible: the same config will
- *     drive full resumability once it lands.
+ * @deprecated Experimental and not yet stable: resume is best-effort and at-least-once, so a
+ *     resuming tool must be idempotent and any temporary in-memory state is lost on resumption.
  */
 @Deprecated
 @AutoValue
@@ -35,8 +33,23 @@ public abstract class ResumabilityConfig {
   /** Whether the app supports agent resumption. */
   public abstract boolean isResumable();
 
+  /**
+   * Whether a plain-text {@code runAsync} continuation -- a user message that is not a function
+   * response -- resumes the last unfinished invocation instead of starting a new one. Off by
+   * default, matching Python ADK, where a plain-text {@code runAsync} always starts a new
+   * invocation and a paused invocation is resumed explicitly.
+   *
+   * @deprecated Back-compat shim for callers that deliver a resume as a plain-text turn. Migrate to
+   *     {@code Runner.resumeAsync(userId, sessionId, invocationId, message, runConfig)} (or send a
+   *     function response to the paused call) and stop setting this flag; it will be removed.
+   */
+  @Deprecated
+  public abstract boolean isPlainTextContinuationAutoResume();
+
   public static Builder builder() {
-    return new AutoValue_ResumabilityConfig.Builder().resumable(false);
+    return new AutoValue_ResumabilityConfig.Builder()
+        .resumable(false)
+        .plainTextContinuationAutoResume(false);
   }
 
   /** Builder for {@link ResumabilityConfig}. */
@@ -44,6 +57,15 @@ public abstract class ResumabilityConfig {
   public abstract static class Builder {
     @CanIgnoreReturnValue
     public abstract Builder resumable(boolean isResumable);
+
+    /**
+     * @deprecated Back-compat shim only; migrate to {@code Runner.resumeAsync(...)} (or send a
+     *     function response to the paused call). See {@link
+     *     ResumabilityConfig#isPlainTextContinuationAutoResume()}.
+     */
+    @Deprecated
+    @CanIgnoreReturnValue
+    public abstract Builder plainTextContinuationAutoResume(boolean value);
 
     public abstract ResumabilityConfig build();
   }
