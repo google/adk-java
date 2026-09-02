@@ -25,7 +25,9 @@ import com.google.genai.types.AvatarConfig;
 import com.google.genai.types.CustomizedAvatar;
 import com.google.genai.types.Modality;
 import com.google.genai.types.SpeechConfig;
+import java.time.Duration;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -57,6 +59,7 @@ public final class RunConfigTest {
     assertThat(runConfig.outputAudioTranscription()).isEqualTo(audioTranscriptionConfig);
     assertThat(runConfig.inputAudioTranscription()).isEqualTo(audioTranscriptionConfig);
     assertThat(runConfig.maxLlmCalls()).isEqualTo(10);
+    assertThat(runConfig.retryConfig().maxAttempts()).isEqualTo(1);
   }
 
   @Test
@@ -71,6 +74,7 @@ public final class RunConfigTest {
     assertThat(runConfig.outputAudioTranscription()).isNull();
     assertThat(runConfig.inputAudioTranscription()).isNull();
     assertThat(runConfig.maxLlmCalls()).isEqualTo(500);
+    assertThat(runConfig.retryConfig()).isEqualTo(RetryConfig.disabled());
     assertThat(runConfig.autoCreateSession()).isFalse();
     assertThat(runConfig.groupFunctionResponsesInHistoryOverride()).isEmpty();
     assertThat(runConfig.groupFunctionResponsesInHistory()).isFalse();
@@ -158,6 +162,39 @@ public final class RunConfigTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> RunConfig.builder().setMaxLlmCalls(Integer.MAX_VALUE).build());
+  }
+
+  @Test
+  public void retryConfig_customValues_areAppliedAndCopied() {
+    RetryConfig retryConfig =
+        RetryConfig.builder()
+            .maxAttempts(3)
+            .initialBackoff(Duration.ofMillis(100))
+            .maxBackoff(Duration.ofSeconds(2))
+            .multiplier(1.5)
+            .jitterRatio(0.2)
+            .retryableStatusCodes(Set.of(429, 503))
+            .build();
+
+    RunConfig runConfig = RunConfig.builder().retryConfig(retryConfig).build();
+    RunConfig copied = RunConfig.builder(runConfig).build();
+
+    assertThat(copied.retryConfig()).isEqualTo(retryConfig);
+  }
+
+  @Test
+  public void retryConfig_invalidValues_throwIllegalArgumentException() {
+    assertThrows(
+        IllegalArgumentException.class, () -> RetryConfig.builder().maxAttempts(0).build());
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            RetryConfig.builder()
+                .initialBackoff(Duration.ofSeconds(2))
+                .maxBackoff(Duration.ofSeconds(1))
+                .build());
+    assertThrows(
+        IllegalArgumentException.class, () -> RetryConfig.builder().jitterRatio(1.1).build());
   }
 
   @Test
