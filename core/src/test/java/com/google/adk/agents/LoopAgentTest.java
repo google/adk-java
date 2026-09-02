@@ -19,6 +19,7 @@ package com.google.adk.agents; // Changed package
 import static com.google.adk.testing.TestUtils.createEscalateEvent;
 import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
+import static com.google.adk.testing.TestUtils.createResumableInvocationContext;
 import static com.google.adk.testing.TestUtils.createSubAgent;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
@@ -27,8 +28,11 @@ import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.events.Event;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -239,5 +243,97 @@ public final class LoopAgentTest {
 
     assertThat(normalAgentRunCount.get()).isEqualTo(3);
     assertThat(subAgent2RunCount.get()).isEqualTo(1);
+  }
+
+  // ---- Resumability: durable checkpoint resume (parity with Kotlin LoopAgentTest). ----
+
+  @Test
+  public void runAsync_resumable_emitsEndOfAgent() {
+    TestBaseAgent subAgent =
+        createSubAgent("sub", createEvent("e").toBuilder().author("sub").build());
+    LoopAgent loopAgent =
+        LoopAgent.builder().name("loop").subAgents(subAgent).maxIterations(1).build();
+    InvocationContext context = createResumableInvocationContext(loopAgent);
+
+    List<Event> events = loopAgent.runAsync(context).toList().blockingGet();
+
+    assertThat(
+            events.stream()
+                .anyMatch(event -> event.author().equals("loop") && event.actions().endOfAgent()))
+        .isTrue();
+  }
+
+  @Test
+  public void runAsync_notResumable_doesNotEmitEndOfAgent() {
+    TestBaseAgent subAgent =
+        createSubAgent("sub", createEvent("e").toBuilder().author("sub").build());
+    LoopAgent loopAgent =
+        LoopAgent.builder().name("loop").subAgents(subAgent).maxIterations(1).build();
+    InvocationContext context = createInvocationContext(loopAgent);
+
+    List<Event> events = loopAgent.runAsync(context).toList().blockingGet();
+
+    assertThat(events.stream().anyMatch(event -> event.actions().endOfAgent())).isFalse();
+  }
+
+  @Test
+  public void runAsync_resumingFromMiddle_restoresIterationAndAgent() {
+    TestBaseAgent agent1 =
+        createSubAgent(
+            "agent1", () -> Flowable.just(createEvent("a1").toBuilder().author("agent1").build()));
+    TestBaseAgent agent2 =
+        createSubAgent(
+            "agent2", () -> Flowable.just(createEvent("a2").toBuilder().author("agent2").build()));
+    LoopAgent loopAgent =
+        LoopAgent.builder().name("loop").subAgents(agent1, agent2).maxIterations(3).build();
+    InvocationContext context = createResumableInvocationContext(loopAgent);
+    // Resume mid-loop: iteration 1, at agent2.
+    context.setAgentState(
+        "loop",
+        ImmutableMap.of("current_sub_agent", "agent2", "times_looped", 1),
+        /* endOfAgent= */ false);
+
+    List<Event> events = loopAgent.runAsync(context).toList().blockingGet();
+
+    // The first sub-agent to run is agent2 (agent1 is skipped in the resumed iteration).
+    String firstSubAgentAuthor =
+        events.stream()
+            .filter(event -> event.content().isPresent())
+            .map(Event::author)
+            .filter(author -> author.equals("agent1") || author.equals("agent2"))
+            .findFirst()
+            .orElse(null);
+    assertThat(firstSubAgentAuthor).isEqualTo("agent2");
+    // The loop still finishes (reaches maxIterations) and marks end-of-agent.
+    assertThat(
+            events.stream()
+                .anyMatch(event -> event.author().equals("loop") && event.actions().endOfAgent()))
+        .isTrue();
+  }
+
+  @Test
+  public void runAsync_resumable_pausesOnLongRunningCall_doesNotEmitEndOfAgent() {
+    Event longRunningCall =
+        Event.builder()
+            .id("lro")
+            .invocationId("invocationId")
+            .author("sub")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(FunctionCall.builder().id("c1").name("tool").build())
+                        .build()))
+            .longRunningToolIds(ImmutableSet.of("c1"))
+            .build();
+    TestBaseAgent subAgent = createSubAgent("sub", longRunningCall);
+    LoopAgent loopAgent =
+        LoopAgent.builder().name("loop").subAgents(subAgent).maxIterations(5).build();
+    InvocationContext context = createResumableInvocationContext(loopAgent);
+
+    List<Event> events = loopAgent.runAsync(context).toList().blockingGet();
+
+    // Paused on the long-running call: no end-of-agent, and the loop did not run 5 iterations.
+    assertThat(events.stream().anyMatch(event -> event.actions().endOfAgent())).isFalse();
+    assertThat(events.stream().filter(event -> event.author().equals("sub")).count()).isEqualTo(1L);
   }
 }

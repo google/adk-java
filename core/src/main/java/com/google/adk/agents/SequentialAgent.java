@@ -17,8 +17,11 @@ package com.google.adk.agents;
 
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
+import com.google.common.collect.ImmutableMap;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -108,22 +111,58 @@ public class SequentialAgent extends BaseAgent {
       return Flowable.fromIterable(subAgents)
           .concatMap(subAgent -> subAgent.runAsync(invocationContext));
     }
-    int startIndex =
-        WorkflowAgentResumption.resumeSubAgentIndex(invocationContext, subAgents).orElse(0);
+    // Resumable: checkpoint each sub-agent before it runs, fast-forward to the checkpoint on
+    // resume, and pause (without ending) on a long-running call.
+    Map<String, Object> state = invocationContext.agentStates().get(name());
+    String startSubAgentName =
+        state == null ? null : (String) state.get(WorkflowAgentStates.CURRENT_SUB_AGENT);
+    int startIndex;
+    boolean isResuming;
+    if (startSubAgentName != null) {
+      startIndex = WorkflowAgentStates.findIndexForResumption(subAgents, startSubAgentName, logger);
+      isResuming = true;
+    } else {
+      // Back-compat: a session paused before checkpoints existed has no agentState; reconstruct
+      // the resume point from history so it still fast-forwards past completed sub-agents.
+      Optional<Integer> reconstructed =
+          WorkflowAgentResumption.resumeSubAgentIndex(invocationContext, subAgents);
+      startIndex = reconstructed.orElse(0);
+      isResuming = reconstructed.isPresent();
+    }
     AtomicBoolean paused = new AtomicBoolean(false);
+    AtomicBoolean resuming = new AtomicBoolean(isResuming);
     return Flowable.fromIterable(subAgents.subList(startIndex, subAgents.size()))
         .concatMap(
             subAgent ->
-                paused.get()
-                    ? Flowable.<Event>empty()
-                    : subAgent
-                        .runAsync(invocationContext)
-                        .doOnNext(
-                            event -> {
-                              if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
-                                paused.set(true);
-                              }
-                            }));
+                Flowable.defer(
+                    () -> {
+                      if (paused.get()) {
+                        return Flowable.<Event>empty();
+                      }
+                      Flowable<Event> checkpoint = Flowable.empty();
+                      if (!resuming.getAndSet(false)) {
+                        ImmutableMap<String, Object> subState =
+                            ImmutableMap.of(WorkflowAgentStates.CURRENT_SUB_AGENT, subAgent.name());
+                        invocationContext.setAgentState(name(), subState, /* endOfAgent= */ false);
+                        checkpoint = Flowable.just(createStateEvent(invocationContext, subState));
+                      }
+                      Flowable<Event> run =
+                          subAgent
+                              .runAsync(invocationContext)
+                              .doOnNext(
+                                  event -> {
+                                    if (invocationContext.shouldPauseInvocation(event)) {
+                                      paused.set(true);
+                                    }
+                                  });
+                      return checkpoint.concatWith(run);
+                    }))
+        .concatWith(
+            Flowable.defer(
+                () ->
+                    paused.get()
+                        ? Flowable.<Event>empty()
+                        : Flowable.just(endOfAgentEvent(invocationContext))));
   }
 
   /**
