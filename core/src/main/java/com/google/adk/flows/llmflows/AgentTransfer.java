@@ -16,17 +16,16 @@
 
 package com.google.adk.flows.llmflows;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.events.EventActions;
 import com.google.adk.models.LlmRequest;
-import com.google.adk.tools.Annotations.Schema;
-import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
+import com.google.adk.tools.TransferToAgentTool;
 import com.google.common.collect.ImmutableList;
 import io.reactivex.rxjava3.core.Single;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -55,21 +54,13 @@ public final class AgentTransfer implements RequestProcessor {
             .appendInstructions(
                 ImmutableList.of(buildTargetAgentsInstructions(agent, transferTargets)));
 
-    FunctionTool agentTransferTool = createTransferToAgentTool();
+    // Offering only the reachable agents keeps the model from naming one that does not exist.
+    TransferToAgentTool agentTransferTool =
+        TransferToAgentTool.create(
+            transferTargets.stream().map(BaseAgent::name).collect(toImmutableList()));
     agentTransferTool.processLlmRequest(builder, ToolContext.builder(context).build());
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
-  }
-
-  private FunctionTool createTransferToAgentTool() {
-    Method transferToAgentMethod;
-    try {
-      transferToAgentMethod =
-          AgentTransfer.class.getMethod("transferToAgent", String.class, ToolContext.class);
-    } catch (NoSuchMethodException e) {
-      throw new IllegalStateException(e);
-    }
-    return FunctionTool.create(transferToAgentMethod);
   }
 
   /** Builds a string with the target agent’s name and description. */
@@ -143,25 +134,5 @@ public final class AgentTransfer implements RequestProcessor {
     }
 
     return transferTargets;
-  }
-
-  @Schema(
-      name = "transfer_to_agent",
-      description =
-          """
-          Transfer the question to another agent.
-
-            This tool hands off control to another agent when it's more suitable to
-            answer the user's question according to the agent's description.
-
-            Args:
-              agent_name: the agent name to transfer to.
-            \
-          """)
-  public static void transferToAgent(
-      @Schema(name = "agent_name") String agentName,
-      @Schema(optional = true) ToolContext toolContext) {
-    EventActions eventActions = toolContext.eventActions();
-    toolContext.setActions(eventActions.toBuilder().transferToAgent(agentName).build());
   }
 }
