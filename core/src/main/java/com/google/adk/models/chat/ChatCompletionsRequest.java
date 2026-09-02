@@ -29,8 +29,10 @@ import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.models.LlmRequest;
+import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
@@ -40,10 +42,13 @@ import com.google.genai.types.Type;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -572,7 +577,7 @@ public final class ChatCompletionsRequest {
       schema.schema =
           objectMapper.convertValue(
               config.responseJsonSchema().get(), new TypeReference<Map<String, Object>>() {});
-      schema.strict = true;
+      applyStrictOutputRules(schema);
       format.jsonSchema = schema;
       request.responseFormat = format;
     } else if (config.responseSchema().isPresent()) {
@@ -582,7 +587,7 @@ public final class ChatCompletionsRequest {
       schema.schema =
           objectMapper.convertValue(
               config.responseSchema().get(), new TypeReference<Map<String, Object>>() {});
-      schema.strict = true;
+      applyStrictOutputRules(schema);
       format.jsonSchema = schema;
       request.responseFormat = format;
     } else if (config.responseMimeType().isPresent()
@@ -594,6 +599,113 @@ public final class ChatCompletionsRequest {
       request.logprobs = true;
       config.logprobs().ifPresent(v -> request.topLogprobs = Math.toIntExact(v));
     }
+  }
+
+  /**
+   * Prepares a response schema for strict structured outputs, closing its object nodes and clearing
+   * the strict flag for the violations that can be detected locally.
+   *
+   * @param schema The json_schema payload to adjust in place.
+   */
+  private static void applyStrictOutputRules(ResponseFormatJsonSchema.JsonSchema schema) {
+    closeObjectSchemas(schema.schema);
+    schema.strict = isStrictCompatible(schema.schema);
+    if (!schema.strict) {
+      logger.warn(
+          "Response schema is not strict-compatible; sending response_format with strict=false.");
+    }
+  }
+
+  /** Schema keywords whose value is a map of name to subschema. */
+  private static final ImmutableList<String> SCHEMA_MAP_KEYWORDS =
+      ImmutableList.of("$defs", "properties");
+
+  /** Schema keywords whose value is a subschema, or a list of them. */
+  private static final ImmutableList<String> SCHEMA_LIST_KEYWORDS =
+      ImmutableList.of("anyOf", "oneOf", "allOf", "items");
+
+  /**
+   * Returns the subschemas nested directly under {@code node}.
+   *
+   * @param node The schema node to walk.
+   */
+  private static ImmutableList<Object> subschemas(Map<?, ?> node) {
+    ImmutableList.Builder<Object> nested = ImmutableList.builder();
+    for (String container : SCHEMA_MAP_KEYWORDS) {
+      if (node.get(container) instanceof Map<?, ?> members) {
+        members.values().stream().filter(Objects::nonNull).forEach(nested::add);
+      }
+    }
+    for (String keyword : SCHEMA_LIST_KEYWORDS) {
+      Object value = node.get(keyword);
+      // "items" is a single schema in draft 2020-12 but a list in the older tuple form.
+      if (value instanceof List<?> members) {
+        members.stream().filter(Objects::nonNull).forEach(nested::add);
+      } else if (value != null) {
+        nested.add(value);
+      }
+    }
+    return nested.build();
+  }
+
+  /**
+   * Adds {@code additionalProperties: false} to every object node that declares properties, which
+   * strict structured outputs require and the genai {@code Schema} type cannot express.
+   *
+   * @param node The schema node to adjust in place.
+   */
+  private static void closeObjectSchemas(Object node) {
+    if (!(node instanceof Map<?, ?> rawNode)) {
+      return;
+    }
+    // Safe: the tree comes from convertValue into Map<String, Object>, so every key is a String.
+    @SuppressWarnings("unchecked")
+    Map<String, Object> schema = (Map<String, Object>) rawNode;
+    if (declaresProperties(schema) && schema.get("additionalProperties") == null) {
+      schema.put("additionalProperties", false);
+    }
+    subschemas(schema).forEach(ChatCompletionsRequest::closeObjectSchemas);
+  }
+
+  /**
+   * Returns whether every object node stays closed and declares exactly the properties it lists in
+   * {@code required}, which is the part of strict mode checkable without knowing the endpoint.
+   *
+   * @param node The schema node to inspect.
+   */
+  private static boolean isStrictCompatible(Object node) {
+    if (!(node instanceof Map<?, ?> rawNode)) {
+      return true;
+    }
+    Map<?, ?> schema = rawNode;
+    Object additionalProperties = schema.get("additionalProperties");
+    if (additionalProperties != null && !additionalProperties.equals(false)) {
+      return false;
+    }
+    if (declaresProperties(schema)) {
+      Object required = schema.get("required");
+      Set<?> listed = required instanceof List<?> names ? new HashSet<>(names) : ImmutableSet.of();
+      if (!listed.equals(((Map<?, ?>) schema.get("properties")).keySet())) {
+        return false;
+      }
+    }
+    return subschemas(schema).stream().allMatch(ChatCompletionsRequest::isStrictCompatible);
+  }
+
+  /** Returns whether {@code schema} is an object node carrying a properties map. */
+  private static boolean declaresProperties(Map<?, ?> schema) {
+    return isObjectType(schema.get("type")) && schema.get("properties") instanceof Map;
+  }
+
+  /** Returns whether {@code type} names an object, allowing the {@code ["object","null"]} form. */
+  private static boolean isObjectType(Object type) {
+    if (type instanceof String name) {
+      return Ascii.equalsIgnoreCase(name, "object");
+    }
+    return type instanceof Collection<?> names
+        && names.stream()
+            .anyMatch(
+                name -> name instanceof String text && Ascii.equalsIgnoreCase(text, "object"));
   }
 
   /**

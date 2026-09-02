@@ -19,6 +19,7 @@ package com.google.adk.models.chat;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.models.LlmRequest;
@@ -38,7 +39,9 @@ import com.google.genai.types.Schema;
 import com.google.genai.types.Tool;
 import com.google.genai.types.ToolConfig;
 import java.util.AbstractMap;
+import java.util.Arrays;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -823,6 +826,357 @@ public final class ChatCompletionsRequestTest {
     ChatCompletionsRequest.ResponseFormatJsonSchema format =
         (ChatCompletionsRequest.ResponseFormatJsonSchema) request.responseFormat;
     assertThat(format.jsonSchema.schema).isEqualTo(rawSchema);
+  }
+
+  // ----- strict structured-output normalization ---------------------------------------------
+  // These assert the serialized payload, which is what the HTTP client puts on the wire.
+
+  private static JsonNode serializedSchema(ChatCompletionsRequest request) throws Exception {
+    ChatCompletionsRequest.ResponseFormatJsonSchema format =
+        (ChatCompletionsRequest.ResponseFormatJsonSchema) request.responseFormat;
+    return JsonBaseModel.getMapper()
+        .readTree(JsonBaseModel.getMapper().writeValueAsString(format))
+        .at("/json_schema/schema");
+  }
+
+  private static boolean serializedStrict(ChatCompletionsRequest request) throws Exception {
+    ChatCompletionsRequest.ResponseFormatJsonSchema format =
+        (ChatCompletionsRequest.ResponseFormatJsonSchema) request.responseFormat;
+    return JsonBaseModel.getMapper()
+        .readTree(JsonBaseModel.getMapper().writeValueAsString(format))
+        .at("/json_schema/strict")
+        .asBoolean();
+  }
+
+  private static ChatCompletionsRequest requestWithRawSchema(Map<String, Object> rawSchema) {
+    return ChatCompletionsRequest.fromLlmRequest(
+        LlmRequest.builder()
+            .model("openai-compatible-model")
+            .config(GenerateContentConfig.builder().responseJsonSchema(rawSchema).build())
+            .contents(ImmutableList.of())
+            .build(),
+        false);
+  }
+
+  private static ChatCompletionsRequest requestWithTypedSchema(Schema outputSchema) {
+    return ChatCompletionsRequest.fromLlmRequest(
+        LlmRequest.builder()
+            .model("openai-compatible-model")
+            .outputSchema(outputSchema)
+            .contents(ImmutableList.of())
+            .build(),
+        false);
+  }
+
+  @Test
+  public void testFromLlmRequest_typedSchema_closesRootNestedAndArrayItemObjects()
+      throws Exception {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "addr",
+                    Schema.builder()
+                        .type("OBJECT")
+                        .properties(
+                            ImmutableMap.of("city", Schema.builder().type("STRING").build()))
+                        .required(ImmutableList.of("city"))
+                        .build(),
+                    "tags",
+                    Schema.builder()
+                        .type("ARRAY")
+                        .items(
+                            Schema.builder()
+                                .type("OBJECT")
+                                .properties(
+                                    ImmutableMap.of("k", Schema.builder().type("STRING").build()))
+                                .required(ImmutableList.of("k"))
+                                .build())
+                        .build()))
+            .required(ImmutableList.of("addr", "tags"))
+            .build();
+
+    ChatCompletionsRequest request = requestWithTypedSchema(outputSchema);
+    JsonNode schema = serializedSchema(request);
+
+    assertThat(schema.path("additionalProperties").toString()).isEqualTo("false");
+    assertThat(schema.at("/properties/addr/additionalProperties").toString()).isEqualTo("false");
+    assertThat(schema.at("/properties/tags/items/additionalProperties").toString())
+        .isEqualTo("false");
+    assertThat(serializedStrict(request)).isTrue();
+  }
+
+  @Test
+  public void testFromLlmRequest_optionalProperty_downgradesToNonStrictAndStillCloses()
+      throws Exception {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "rootCause", Schema.builder().type("STRING").build(),
+                    "notes", Schema.builder().type("STRING").build()))
+            .required(ImmutableList.of("rootCause"))
+            .build();
+
+    ChatCompletionsRequest request = requestWithTypedSchema(outputSchema);
+
+    assertThat(serializedStrict(request)).isFalse();
+    assertThat(serializedSchema(request).path("additionalProperties").toString())
+        .isEqualTo("false");
+  }
+
+  @Test
+  public void testFromLlmRequest_nullableObjectTypeArray_isTreatedAsObject() throws Exception {
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "type",
+            "object",
+            "properties",
+            ImmutableMap.of(
+                "addr",
+                ImmutableMap.of(
+                    "type",
+                    ImmutableList.of("object", "null"),
+                    "properties",
+                    ImmutableMap.of("city", ImmutableMap.of("type", "string")),
+                    "required",
+                    ImmutableList.of("city"))),
+            "required",
+            ImmutableList.of("addr"));
+
+    JsonNode schema = serializedSchema(requestWithRawSchema(rawSchema));
+
+    assertThat(schema.at("/properties/addr/additionalProperties").toString()).isEqualTo("false");
+  }
+
+  @Test
+  public void testFromLlmRequest_requiredNamingUnknownProperty_downgradesToNonStrict()
+      throws Exception {
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "type", "object",
+            "properties", ImmutableMap.of("a", ImmutableMap.of("type", "string")),
+            "required", ImmutableList.of("a", "ghost"));
+
+    assertThat(serializedStrict(requestWithRawSchema(rawSchema))).isFalse();
+  }
+
+  @Test
+  public void testFromLlmRequest_callerAdditionalProperties_isKeptAndSiblingStillCloses()
+      throws Exception {
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "type",
+            "object",
+            "properties",
+            ImmutableMap.of(
+                "open",
+                ImmutableMap.of(
+                    "type",
+                    "object",
+                    "properties",
+                    ImmutableMap.of("a", ImmutableMap.of("type", "string")),
+                    "required",
+                    ImmutableList.of("a"),
+                    "additionalProperties",
+                    true),
+                "closed",
+                ImmutableMap.of(
+                    "type", "object",
+                    "properties", ImmutableMap.of("b", ImmutableMap.of("type", "string")),
+                    "required", ImmutableList.of("b"))),
+            "required",
+            ImmutableList.of("open", "closed"));
+
+    ChatCompletionsRequest request = requestWithRawSchema(rawSchema);
+    JsonNode schema = serializedSchema(request);
+
+    assertThat(schema.at("/properties/open/additionalProperties").toString()).isEqualTo("true");
+    assertThat(schema.at("/properties/closed/additionalProperties").toString()).isEqualTo("false");
+    assertThat(serializedStrict(request)).isFalse();
+  }
+
+  @Test
+  public void testFromLlmRequest_emptyPropertiesMap_isClosed() throws Exception {
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of("type", "object", "properties", ImmutableMap.of());
+
+    ChatCompletionsRequest request = requestWithRawSchema(rawSchema);
+
+    assertThat(serializedSchema(request).path("additionalProperties").toString())
+        .isEqualTo("false");
+    assertThat(serializedStrict(request)).isTrue();
+  }
+
+  @Test
+  public void testFromLlmRequest_objectWithoutProperties_isLeftUnchanged() throws Exception {
+    ImmutableMap<String, Object> rawSchema = ImmutableMap.of("type", "object");
+
+    ChatCompletionsRequest request = requestWithRawSchema(rawSchema);
+
+    assertThat(serializedSchema(request).has("additionalProperties")).isFalse();
+    assertThat(serializedStrict(request)).isTrue();
+  }
+
+  @Test
+  public void testFromLlmRequest_combinatorMembers_areClosed() throws Exception {
+    ImmutableMap<String, Object> member =
+        ImmutableMap.of(
+            "type", "object",
+            "properties", ImmutableMap.of("a", ImmutableMap.of("type", "string")),
+            "required", ImmutableList.of("a"));
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "type",
+            "object",
+            "properties",
+            ImmutableMap.of(
+                "either", ImmutableMap.of("anyOf", ImmutableList.of(member)),
+                "exactly", ImmutableMap.of("oneOf", ImmutableList.of(member))),
+            "required",
+            ImmutableList.of("either", "exactly"));
+
+    JsonNode schema = serializedSchema(requestWithRawSchema(rawSchema));
+
+    assertThat(schema.at("/properties/either/anyOf/0/additionalProperties").toString())
+        .isEqualTo("false");
+    assertThat(schema.at("/properties/exactly/oneOf/0/additionalProperties").toString())
+        .isEqualTo("false");
+  }
+
+  @Test
+  public void testFromLlmRequest_rawSchema_doesNotMutateCallerMap() throws Exception {
+    Map<String, Object> inner = new LinkedHashMap<>();
+    inner.put("type", "string");
+    Map<String, Object> properties = new LinkedHashMap<>();
+    properties.put("a", inner);
+    Map<String, Object> rawSchema = new LinkedHashMap<>();
+    rawSchema.put("type", "object");
+    rawSchema.put("properties", properties);
+    rawSchema.put("required", ImmutableList.of("a"));
+    String before = rawSchema.toString();
+
+    ChatCompletionsRequest unusedRequest = requestWithRawSchema(rawSchema);
+
+    assertThat(rawSchema.toString()).isEqualTo(before);
+  }
+
+  @Test
+  public void testFromLlmRequest_nullSubschemaValues_areTolerated() throws Exception {
+    Map<String, Object> properties = new LinkedHashMap<>();
+    properties.put("a", null);
+    properties.put(
+        "b", ImmutableMap.of("anyOf", Arrays.asList(null, ImmutableMap.of("type", "string"))));
+    Map<String, Object> rawSchema = new LinkedHashMap<>();
+    rawSchema.put("type", "object");
+    rawSchema.put("properties", properties);
+
+    JsonNode schema = serializedSchema(requestWithRawSchema(rawSchema));
+
+    assertThat(schema.path("additionalProperties").toString()).isEqualTo("false");
+  }
+
+  @Test
+  public void testFromLlmRequest_tupleFormItems_areClosed() throws Exception {
+    ImmutableMap<String, Object> member =
+        ImmutableMap.of(
+            "type", "object",
+            "properties", ImmutableMap.of("a", ImmutableMap.of("type", "string")),
+            "required", ImmutableList.of("a"));
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "type",
+            "object",
+            "properties",
+            ImmutableMap.of(
+                "pair", ImmutableMap.of("type", "array", "items", ImmutableList.of(member))),
+            "required",
+            ImmutableList.of("pair"));
+
+    JsonNode schema = serializedSchema(requestWithRawSchema(rawSchema));
+
+    assertThat(schema.at("/properties/pair/items/0/additionalProperties").toString())
+        .isEqualTo("false");
+  }
+
+  @Test
+  public void testFromLlmRequest_nullInsideRequired_isTolerated() throws Exception {
+    Map<String, Object> rawSchema = new LinkedHashMap<>();
+    rawSchema.put("type", "object");
+    rawSchema.put("properties", ImmutableMap.of("a", ImmutableMap.of("type", "string")));
+    rawSchema.put("required", Arrays.asList("a", null));
+
+    ChatCompletionsRequest request = requestWithRawSchema(rawSchema);
+
+    assertThat(serializedStrict(request)).isFalse();
+    assertThat(serializedSchema(request).path("additionalProperties").toString())
+        .isEqualTo("false");
+  }
+
+  @Test
+  public void testFromLlmRequest_defsAreNormalized() throws Exception {
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "type",
+            "object",
+            "$defs",
+            ImmutableMap.of(
+                "Addr",
+                ImmutableMap.of(
+                    "type", "object",
+                    "properties", ImmutableMap.of("city", ImmutableMap.of("type", "string")),
+                    "required", ImmutableList.of("city"))),
+            "properties",
+            ImmutableMap.of("addr", ImmutableMap.of("$ref", "#/$defs/Addr")),
+            "required",
+            ImmutableList.of("addr"));
+
+    JsonNode schema = serializedSchema(requestWithRawSchema(rawSchema));
+
+    assertThat(schema.at("/$defs/Addr/additionalProperties").toString()).isEqualTo("false");
+  }
+
+  @Test
+  public void testFromLlmRequest_uppercaseObjectType_isTreatedAsObject() throws Exception {
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "type", "OBJECT",
+            "properties", ImmutableMap.of("a", ImmutableMap.of("type", "STRING")),
+            "required", ImmutableList.of("a"));
+
+    JsonNode schema = serializedSchema(requestWithRawSchema(rawSchema));
+
+    assertThat(schema.path("additionalProperties").toString()).isEqualTo("false");
+  }
+
+  @Test
+  public void testFromLlmRequest_explicitNullAdditionalProperties_isClosed() throws Exception {
+    Map<String, Object> rawSchema = new LinkedHashMap<>();
+    rawSchema.put("type", "object");
+    rawSchema.put("properties", ImmutableMap.of("a", ImmutableMap.of("type", "string")));
+    rawSchema.put("required", ImmutableList.of("a"));
+    rawSchema.put("additionalProperties", null);
+
+    ChatCompletionsRequest request = requestWithRawSchema(rawSchema);
+
+    assertThat(serializedSchema(request).path("additionalProperties").toString())
+        .isEqualTo("false");
+    assertThat(serializedStrict(request)).isTrue();
+  }
+
+  @Test
+  public void testFromLlmRequest_propertiesWithoutObjectType_isLeftUnchanged() throws Exception {
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "properties", ImmutableMap.of("a", ImmutableMap.of("type", "string")),
+            "required", ImmutableList.of("a"));
+
+    ChatCompletionsRequest request = requestWithRawSchema(rawSchema);
+
+    assertThat(serializedSchema(request).has("additionalProperties")).isFalse();
+    assertThat(serializedStrict(request)).isTrue();
   }
 
   // ----- thought_signature round-trip on the request side ----------------------------------
