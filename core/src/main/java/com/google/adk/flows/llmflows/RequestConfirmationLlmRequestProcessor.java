@@ -73,31 +73,12 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
     }
 
-    int finalConfirmationEventIndex = confirmationResult.get().eventIndex();
+    ConfirmationResult result =
+        confirmationResult.orElseThrow(
+            () -> new IllegalStateException("confirmationResult should be present when not empty"));
+    int finalConfirmationEventIndex = result.eventIndex();
     ImmutableMap<String, ToolConfirmation> requestConfirmationFunctionResponses =
-        confirmationResult.get().responses();
-    String agentName = invocationContext.agent().name();
-    ImmutableMap<String, AuthoredFunctionCall> functionCallsById =
-        functionCallsById(events, agentName);
-    ImmutableSet<String> confirmationRequestedIds = confirmationRequestedIds(events);
-    // A tool has been confirmed, but it might already have been executed by a subsequent processor
-    // or in a subsequent turn: such calls have a function response after the user confirmation
-    // event. This is applied before the resumability check rather than after, because
-    // findMostRecentConfirmations re-matches the same stale user event on every later LLM call, so
-    // a settled confirmation would otherwise be re-examined - and re-logged - for the rest of the
-    // session.
-    //
-    // Only responses this agent produced count. A peer event landing after the approval that
-    // reuses the pending call's ID would otherwise convince this scan the tool had already run,
-    // silently dropping the approval - and it short-circuits before the resumability check, so
-    // that would not even leave a log line.
-    ImmutableSet<String> alreadyResumedIds =
-        events.subList(finalConfirmationEventIndex + 1, events.size()).stream()
-            .filter(event -> Objects.equals(event.author(), agentName))
-            .flatMap(event -> event.functionResponses().stream())
-            .map(FunctionResponse::id)
-            .flatMap(Optional::stream)
-            .collect(toImmutableSet());
+        result.responses();
 
     // Search backwards from the event before confirmation for the corresponding
     // request_confirmation function calls emitted by the model.
@@ -132,10 +113,21 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
                                   ofc, functionCallsById, confirmationRequestedIds, agentName))
                       .ifPresent(
                           ofc -> {
+                            String functionId =
+                                ofc.id()
+                                    .orElseThrow(
+                                        () ->
+                                            new IllegalStateException(
+                                                "Function call should have an ID"));
                             toolsToResumeWithConfirmation.put(
-                                ofc.id().get(),
-                                requestConfirmationFunctionResponses.get(fc.id().get()));
-                            toolsToResumeWithArgs.put(ofc.id().get(), ofc);
+                                functionId,
+                                requestConfirmationFunctionResponses.get(
+                                    fc.id()
+                                        .orElseThrow(
+                                            () ->
+                                                new IllegalStateException(
+                                                    "Function call should have an ID"))));
+                            toolsToResumeWithArgs.put(functionId, ofc);
                           }));
 
       // If all confirmed tools in this event have already been processed, continue
