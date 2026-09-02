@@ -54,6 +54,12 @@
       "defaultValue": true
     },
     {
+      "name": "adk.spring-ai.tool-execution.mode",
+      "type": "com.google.adk.models.springai.ToolExecutionMode",
+      "description": "Framework responsible for executing model tool calls. SPRING_AI_MANAGED requires an AdkToolContextResolver bean.",
+      "defaultValue": "ADK_MANAGED"
+    },
+    {
       "name": "adk.spring-ai.auto-configuration.enabled",
       "type": "java.lang.Boolean",
       "description": "Whether to enable SpringAI auto-configuration.",

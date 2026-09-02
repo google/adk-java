@@ -15,7 +15,10 @@
  */
 package com.google.adk.models.springai;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
@@ -23,7 +26,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
@@ -39,6 +45,34 @@ import org.springframework.ai.tool.function.FunctionToolCallback;
 public class ToolConverter {
 
   private static final Logger logger = LoggerFactory.getLogger(ToolConverter.class);
+
+  private final ObjectMapper objectMapper;
+  private final ToolExecutionMode toolExecutionMode;
+  private final AdkToolContextResolver toolContextResolver;
+
+  /** Creates a converter that exposes tool definitions while ADK owns tool execution. */
+  public ToolConverter() {
+    this(new ObjectMapper(), ToolExecutionMode.ADK_MANAGED, null);
+  }
+
+  /** Creates a converter with an explicit tool execution owner and context resolver. */
+  public ToolConverter(
+      ObjectMapper objectMapper,
+      ToolExecutionMode toolExecutionMode,
+      AdkToolContextResolver toolContextResolver) {
+    this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
+    this.toolExecutionMode =
+        Objects.requireNonNull(toolExecutionMode, "toolExecutionMode must not be null");
+    if (toolExecutionMode == ToolExecutionMode.SPRING_AI_MANAGED && toolContextResolver == null) {
+      throw new IllegalArgumentException(
+          "An AdkToolContextResolver is required when tool execution is SPRING_AI_MANAGED");
+    }
+    this.toolContextResolver = toolContextResolver;
+  }
+
+  public ToolExecutionMode getToolExecutionMode() {
+    return toolExecutionMode;
+  }
 
   /**
    * Creates a tool registry from ADK tools for internal tracking.
@@ -120,143 +154,128 @@ public class ToolConverter {
       if (tool.declaration().isPresent()) {
         FunctionDeclaration declaration = tool.declaration().get();
 
-        // Create a ToolCallback that wraps the ADK tool
-        // Create a Function that takes Map input and calls the ADK tool
-        java.util.function.Function<Map<String, Object>, String> toolFunction =
-            args -> {
-              try {
-                logger.debug("Spring AI calling tool '{}'", tool.name());
-                logger.debug("Raw args from Spring AI: {}", args);
-                logger.debug("Args type: {}", args.getClass().getName());
-                logger.debug("Args keys: {}", args.keySet());
-                for (Map.Entry<String, Object> entry : args.entrySet()) {
-                  logger.debug(
-                      "  {} -> {} ({})",
-                      entry.getKey(),
-                      entry.getValue(),
-                      entry.getValue().getClass().getName());
-                }
-
-                // Handle different argument formats that Spring AI might pass
-                Map<String, Object> processedArgs = processArguments(args, declaration);
-                logger.debug("Processed args for ADK: {}", processedArgs);
-
-                // Call the ADK tool and wait for the result
-                Map<String, Object> result = tool.runAsync(processedArgs, null).blockingGet();
-                // Convert result back to JSON string
-                return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(result);
-              } catch (Exception e) {
-                throw new RuntimeException("Tool execution failed: " + e.getMessage(), e);
-              }
-            };
-
-        FunctionToolCallback.Builder callbackBuilder =
-            FunctionToolCallback.builder(tool.name(), toolFunction).description(tool.description());
-
-        // Convert ADK schema to Spring AI schema if available
-        if (declaration.parameters().isPresent()) {
-          // Use Map.class to indicate the input is an object/map
-          callbackBuilder.inputType(Map.class);
-
-          // Convert ADK schema to Spring AI JSON schema format
-          Map<String, Object> springAiSchema =
-              convertSchemaToSpringAi(declaration.parameters().get());
-          logger.debug("Generated Spring AI schema for {}: {}", tool.name(), springAiSchema);
-
-          // Provide the schema as JSON string using inputSchema method
-          try {
-            String schemaJson =
-                new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writeValueAsString(springAiSchema);
-            callbackBuilder.inputSchema(schemaJson);
-            logger.debug("Set input schema JSON: {}", schemaJson);
-          } catch (Exception e) {
-            logger.error("Error serializing schema to JSON: {}", e.getMessage(), e);
-          }
-        } else if (declaration.parametersJsonSchema().isPresent()) {
-          callbackBuilder.inputType(Map.class);
-          try {
-            String schemaJson =
-                new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writeValueAsString(declaration.parametersJsonSchema().get());
-            callbackBuilder.inputSchema(schemaJson);
-            logger.debug("Set input schema JSON from parametersJsonSchema: {}", schemaJson);
-          } catch (Exception e) {
-            logger.error("Error serializing parametersJsonSchema to JSON: {}", e.getMessage(), e);
-          }
+        if (toolExecutionMode == ToolExecutionMode.ADK_MANAGED) {
+          // Spring AI still requires callbacks to expose tool definitions to the model. The
+          // callback intentionally has no side effect: ADK will execute the returned function call
+          // later with the InvocationContext-backed ToolContext.
+          Function<Map<String, Object>, String> definitionOnlyCallback = arguments -> "";
+          toolCallbacks.add(
+              configureCallback(
+                      tool,
+                      declaration,
+                      FunctionToolCallback.builder(tool.name(), definitionOnlyCallback))
+                  .build());
+        } else {
+          BiFunction<
+                  Map<String, Object>,
+                  org.springframework.ai.chat.model.ToolContext,
+                  Map<String, Object>>
+              executableCallback =
+                  (arguments, springAiToolContext) -> {
+                    Map<String, Object> processedArguments =
+                        processArguments(arguments, declaration);
+                    ToolContext adkToolContext =
+                        Objects.requireNonNull(
+                            toolContextResolver.resolve(
+                                tool, processedArguments, springAiToolContext),
+                            "AdkToolContextResolver returned null for tool " + tool.name());
+                    return tool.runAsync(processedArguments, adkToolContext).blockingGet();
+                  };
+          toolCallbacks.add(
+              configureCallback(
+                      tool,
+                      declaration,
+                      FunctionToolCallback.builder(tool.name(), executableCallback))
+                  .build());
         }
-
-        toolCallbacks.add(callbackBuilder.build());
       }
     }
 
     return toolCallbacks;
   }
 
-  /**
-   * Process arguments from Spring AI format to ADK format. Spring AI might pass arguments in
-   * different formats depending on the provider.
-   */
-  private Map<String, Object> processArguments(
-      Map<String, Object> args, FunctionDeclaration declaration) {
+  private <O> FunctionToolCallback.Builder<Map<String, Object>, O> configureCallback(
+      BaseTool tool,
+      FunctionDeclaration declaration,
+      FunctionToolCallback.Builder<Map<String, Object>, O> callbackBuilder) {
+    callbackBuilder.description(tool.description()).inputType(Map.class);
+
     if (declaration.parameters().isPresent()) {
-      var schema = declaration.parameters().get();
+      Map<String, Object> springAiSchema = convertSchemaToSpringAi(declaration.parameters().get());
+      logger.debug("Generated Spring AI schema for {}: {}", tool.name(), springAiSchema);
+      configureInputSchema(callbackBuilder, springAiSchema, tool.name());
+    } else if (declaration.parametersJsonSchema().isPresent()) {
+      configureInputSchema(callbackBuilder, declaration.parametersJsonSchema().get(), tool.name());
+    }
+
+    return callbackBuilder;
+  }
+
+  private <O> void configureInputSchema(
+      FunctionToolCallback.Builder<Map<String, Object>, O> callbackBuilder,
+      Object schema,
+      String toolName) {
+    try {
+      String schemaJson = objectMapper.writeValueAsString(schema);
+      callbackBuilder.inputSchema(schemaJson);
+      logger.debug("Set input schema JSON for {}: {}", toolName, schemaJson);
+    } catch (JsonProcessingException e) {
+      throw new IllegalArgumentException(
+          "Unable to serialize input schema for tool " + toolName, e);
+    }
+  }
+
+  /** Normalizes provider-specific argument wrappers to the ADK tool's declared parameters. */
+  private Map<String, Object> processArguments(
+      Map<String, Object> arguments, FunctionDeclaration declaration) {
+    if (declaration.parameters().isPresent()) {
+      Schema schema = declaration.parameters().get();
       if (schema.properties().isPresent()) {
-        return normalizeArguments(args, schema.properties().get().keySet());
+        return normalizeArguments(arguments, schema.properties().get().keySet());
       }
     } else if (declaration.parametersJsonSchema().isPresent()) {
       try {
         @SuppressWarnings("unchecked")
-        Map<String, Object> schemaMap =
-            new com.fasterxml.jackson.databind.ObjectMapper()
-                .convertValue(declaration.parametersJsonSchema().get(), Map.class);
-        Object propertiesObj = schemaMap.get("properties");
-        if (propertiesObj instanceof Map) {
-          @SuppressWarnings("unchecked")
-          Set<String> expectedParams = ((Map<String, Object>) propertiesObj).keySet();
-          return normalizeArguments(args, expectedParams);
+        Map<String, Object> schema =
+            objectMapper.convertValue(declaration.parametersJsonSchema().get(), Map.class);
+        Object properties = schema.get("properties");
+        if (properties instanceof Map<?, ?> propertiesMap) {
+          return normalizeArguments(arguments, propertiesMap.keySet());
         }
-      } catch (Exception e) {
+      } catch (IllegalArgumentException e) {
         logger.warn(
             "Error processing parametersJsonSchema for argument mapping: {}", e.getMessage());
       }
     }
 
-    // If no processing worked, return original args and let ADK handle the error
-    return args;
+    return arguments;
   }
 
   private Map<String, Object> normalizeArguments(
-      Map<String, Object> args, Set<String> expectedParams) {
-    // Check if all expected parameters are present at the top level
-    boolean allParamsPresent = expectedParams.stream().allMatch(args::containsKey);
-    if (allParamsPresent) {
-      return args;
+      Map<String, Object> arguments, Set<?> expectedParameters) {
+    if (expectedParameters.stream().allMatch(arguments::containsKey)) {
+      return arguments;
     }
 
-    // Check if arguments are nested under a single key (common pattern)
-    if (args.size() == 1) {
-      var singleValue = args.values().iterator().next();
-      if (singleValue instanceof Map) {
+    if (arguments.size() == 1) {
+      Object singleValue = arguments.values().iterator().next();
+      if (singleValue instanceof Map<?, ?> nestedArguments
+          && expectedParameters.stream().allMatch(nestedArguments::containsKey)) {
         @SuppressWarnings("unchecked")
-        Map<String, Object> nestedArgs = (Map<String, Object>) singleValue;
-        boolean allNestedParamsPresent = expectedParams.stream().allMatch(nestedArgs::containsKey);
-        if (allNestedParamsPresent) {
-          return nestedArgs;
-        }
+        Map<String, Object> normalizedArguments = (Map<String, Object>) nestedArguments;
+        return normalizedArguments;
       }
     }
 
-    // Check if we have a single parameter function and got a direct value
-    if (expectedParams.size() == 1) {
-      String expectedParam = expectedParams.iterator().next();
-      if (args.size() == 1 && !args.containsKey(expectedParam)) {
-        Object singleValue = args.values().iterator().next();
-        return Map.of(expectedParam, singleValue);
+    if (expectedParameters.size() == 1 && arguments.size() == 1) {
+      Object expectedParameter = expectedParameters.iterator().next();
+      if (expectedParameter instanceof String parameterName
+          && !arguments.containsKey(parameterName)) {
+        return Map.of(parameterName, arguments.values().iterator().next());
       }
     }
 
-    return args;
+    return arguments;
   }
 
   /** Simple metadata holder for tool information. */

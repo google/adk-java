@@ -327,6 +327,9 @@ adk:
     observability:
       enabled: true
       metrics-enabled: true
+    tool-execution:
+      # Default: ADK executes tool calls with its InvocationContext-backed ToolContext.
+      mode: ADK_MANAGED
 ```
 
 ## Architecture
@@ -399,15 +402,16 @@ Converts between ADK tools and Spring AI function calling format.
 **Key Features:**
 - Converts ADK `BaseTool` to Spring AI `ToolCallback`
 - Schema conversion from ADK format to Spring AI JSON schema
-- Intelligent argument processing for different provider formats
 - **Function Schema Registration:** Properly registers JSON schemas with Spring AI using `inputSchema()` method
+- Configurable tool execution ownership: `ADK_MANAGED` (default) or `SPRING_AI_MANAGED`
+- Never executes an ADK tool with a hard-coded `null` `ToolContext`
 - Debug logging for troubleshooting function calling issues
 
 **Function Calling Flow:**
 1. ADK `FunctionDeclaration` → Spring AI `FunctionToolCallback`
 2. ADK schema → JSON schema string
-3. Runtime argument conversion and validation
-4. Tool execution and result serialization
+3. In `ADK_MANAGED` mode, Spring AI returns the function call and ADK executes it with the current invocation context
+4. In `SPRING_AI_MANAGED` mode, Spring AI executes the callback using an application-provided `AdkToolContextResolver`
 
 #### 4. SpringAIEmbedding (SpringAIEmbedding.java)
 
@@ -482,7 +486,9 @@ Flowable<LlmResponse> stream = springAI.generateContent(llmRequest, true);
 
 ### Function Calling
 
-The library supports function calling through ADK tools:
+The library supports function calling through ADK tools. Tool execution is owned by ADK by
+default, preserving ADK's tool callbacks, confirmation flow, state changes, and
+`InvocationContext`-backed `ToolContext`:
 
 ```java
 // Create agent with tools
@@ -494,6 +500,25 @@ LlmAgent agent = LlmAgent.builder()
 
 // Tools are automatically converted to Spring AI format
 ```
+
+Applications that intentionally want Spring AI to own the tool-calling loop can opt in explicitly:
+
+```java
+AdkToolContextResolver resolver = (tool, arguments, springAiContext) ->
+    resolveToolContextForTheCurrentRequest();
+
+SpringAI springAI = new SpringAI(
+    chatModel,
+    "gpt-4o-mini",
+    ToolExecutionMode.SPRING_AI_MANAGED,
+    resolver);
+```
+
+The resolver must return a non-null ADK `ToolContext` for every call. Spring Boot applications can
+select the same mode with `adk.spring-ai.tool-execution.mode=SPRING_AI_MANAGED` and must provide a
+single `AdkToolContextResolver` bean. Configuration fails fast when that bean is missing. In this
+mode, each streaming model turn is buffered so tool calls can be detected safely; chunks from the
+final model turn are emitted after that turn completes.
 
 ### Embedding Generation
 
@@ -594,6 +619,8 @@ adk:
       enabled: true
       metrics-enabled: true
       include-content: false
+    tool-execution:
+      mode: ADK_MANAGED
 ```
 
 ### Auto-Configuration Beans
@@ -679,8 +706,9 @@ The library provides comprehensive error handling through `SpringAIErrorMapper`:
 ### Function Calling
 1. Ensure function schemas are properly defined in ADK tools
 2. Test function calling with each provider separately
-3. Handle provider-specific argument format differences
-4. Use debug logging to troubleshoot function calling issues
+3. Keep `ADK_MANAGED` unless the application deliberately supplies ADK context for Spring AI-managed execution
+4. Never return `null` from an `AdkToolContextResolver`
+5. Use debug logging to troubleshoot function calling issues
 
 ### Performance
 1. Use streaming for long responses

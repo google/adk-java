@@ -16,14 +16,20 @@
 package com.google.adk.models.springai;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.Single;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.tool.ToolCallback;
@@ -211,5 +217,133 @@ class ToolConverterTest {
 
     assertThat(toolCallbacks).hasSize(1);
     assertThat(toolCallbacks.get(0).getToolDefinition().name()).isEqualTo("get_weather");
+    assertThat(toolCallbacks.get(0).getToolDefinition().inputSchema())
+        .contains("\"location\"")
+        .contains("\"required\"");
+  }
+
+  @Test
+  void convertedToolCallbackOnlyProvidesDefinitionAndDoesNotExecuteAdkTool() {
+    FunctionDeclaration function =
+        FunctionDeclaration.builder()
+            .name("context_tool")
+            .description("A tool that requires ADK execution context")
+            .parametersJsonSchema(
+                Map.of(
+                    "type",
+                    "object",
+                    "properties",
+                    Map.of("value", Map.of("type", "string")),
+                    "required",
+                    List.of("value")))
+            .build();
+    List<ToolContext> receivedContexts = new ArrayList<>();
+    BaseTool contextTool =
+        new BaseTool("context_tool", "A tool that requires ADK execution context") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(function);
+          }
+
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            receivedContexts.add(toolContext);
+            return Single.just(Map.of("value", args.get("value")));
+          }
+        };
+
+    ToolCallback callback =
+        toolConverter.convertToSpringAiTools(Map.of(contextTool.name(), contextTool)).get(0);
+
+    String resultWithoutSpringContext = callback.call("{\"value\":\"test\"}");
+    String resultWithSpringContext =
+        callback.call(
+            "{\"value\":\"test\"}",
+            new org.springframework.ai.chat.model.ToolContext(Map.of("requestId", "test")));
+
+    assertThat(resultWithoutSpringContext).isEmpty();
+    assertThat(resultWithSpringContext).isEmpty();
+    assertThat(receivedContexts).isEmpty();
+  }
+
+  @Test
+  void springAiManagedModeRequiresToolContextResolver() {
+    assertThatThrownBy(
+            () -> new ToolConverter(new ObjectMapper(), ToolExecutionMode.SPRING_AI_MANAGED, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("AdkToolContextResolver");
+  }
+
+  @Test
+  void springAiManagedCallbackExecutesToolWithResolvedAdkContext() {
+    FunctionDeclaration function =
+        FunctionDeclaration.builder()
+            .name("context_tool")
+            .description("A tool that requires ADK execution context")
+            .parametersJsonSchema(
+                Map.of("type", "object", "properties", Map.of("value", Map.of("type", "string"))))
+            .build();
+    AtomicReference<ToolContext> receivedAdkContext = new AtomicReference<>();
+    AtomicReference<org.springframework.ai.chat.model.ToolContext> receivedSpringAiContext =
+        new AtomicReference<>();
+    AtomicReference<Map<String, Object>> receivedArguments = new AtomicReference<>();
+    ToolContext resolvedContext = org.mockito.Mockito.mock(ToolContext.class);
+    BaseTool contextTool =
+        new BaseTool("context_tool", "A tool that requires ADK execution context") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(function);
+          }
+
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            receivedAdkContext.set(toolContext);
+            return Single.just(Map.of("echo", args.get("value")));
+          }
+        };
+    ToolConverter executableConverter =
+        new ToolConverter(
+            new ObjectMapper(),
+            ToolExecutionMode.SPRING_AI_MANAGED,
+            (tool, arguments, springAiContext) -> {
+              receivedArguments.set(arguments);
+              receivedSpringAiContext.set(springAiContext);
+              return resolvedContext;
+            });
+    ToolCallback callback =
+        executableConverter.convertToSpringAiTools(Map.of(contextTool.name(), contextTool)).get(0);
+    org.springframework.ai.chat.model.ToolContext springAiContext =
+        new org.springframework.ai.chat.model.ToolContext(Map.of("requestId", "test"));
+
+    String result = callback.call("{\"wrapper\":{\"value\":\"hello\"}}", springAiContext);
+
+    assertThat(result).contains("\"echo\":\"hello\"");
+    assertThat(receivedArguments.get()).containsEntry("value", "hello");
+    assertThat(receivedSpringAiContext.get()).isSameAs(springAiContext);
+    assertThat(receivedAdkContext.get()).isSameAs(resolvedContext);
+  }
+
+  @Test
+  void springAiManagedCallbackRejectsNullResolvedContext() {
+    FunctionDeclaration function =
+        FunctionDeclaration.builder().name("context_tool").description("context tool").build();
+    BaseTool contextTool =
+        new BaseTool("context_tool", "context tool") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(function);
+          }
+        };
+    ToolConverter executableConverter =
+        new ToolConverter(
+            new ObjectMapper(), ToolExecutionMode.SPRING_AI_MANAGED, (tool, args, context) -> null);
+    ToolCallback callback =
+        executableConverter.convertToSpringAiTools(Map.of(contextTool.name(), contextTool)).get(0);
+
+    assertThatThrownBy(() -> callback.call("{}"))
+        .hasRootCauseInstanceOf(NullPointerException.class)
+        .hasRootCauseMessage("AdkToolContextResolver returned null for tool context_tool");
   }
 }

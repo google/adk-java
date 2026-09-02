@@ -23,15 +23,24 @@ import static org.mockito.Mockito.when;
 
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -257,6 +266,121 @@ class SpringAITest {
   }
 
   @Test
+  void adkManagedModeReturnsToolCallWithoutExecutingTool() {
+    AtomicInteger executions = new AtomicInteger();
+    BaseTool tool = contextTool(executions, null);
+    AssistantMessage toolCallMessage =
+        AssistantMessage.builder()
+            .content("")
+            .toolCalls(
+                List.of(
+                    new AssistantMessage.ToolCall(
+                        "call-1", "function", tool.name(), "{\"value\":\"hello\"}")))
+            .build();
+    when(mockChatModel.call(any(Prompt.class)))
+        .thenReturn(new ChatResponse(List.of(new Generation(toolCallMessage))));
+    LlmRequest request =
+        LlmRequest.builder()
+            .contents(testRequest.contents())
+            .tools(Map.of(tool.name(), tool))
+            .build();
+
+    LlmResponse response =
+        new SpringAI(mockChatModel).generateContent(request, false).blockingFirst();
+
+    assertThat(response.content()).isPresent();
+    assertThat(response.content().get().parts().get().get(0).functionCall()).isPresent();
+    assertThat(executions).hasValue(0);
+  }
+
+  @Test
+  void springAiManagedModeExecutesToolOnceAndReturnsFinalModelResponse() {
+    AtomicInteger executions = new AtomicInteger();
+    ToolContext resolvedContext = mock(ToolContext.class);
+    BaseTool tool = contextTool(executions, resolvedContext);
+    AssistantMessage toolCallMessage =
+        AssistantMessage.builder()
+            .content("")
+            .toolCalls(
+                List.of(
+                    new AssistantMessage.ToolCall(
+                        "call-1", "function", tool.name(), "{\"value\":\"hello\"}")))
+            .build();
+    List<Prompt> prompts = new ArrayList<>();
+    ChatModel twoTurnModel =
+        prompt -> {
+          prompts.add(prompt);
+          if (prompts.size() == 1) {
+            return new ChatResponse(List.of(new Generation(toolCallMessage)));
+          }
+          return new ChatResponse(List.of(new Generation(new AssistantMessage("final answer"))));
+        };
+    LlmRequest request =
+        LlmRequest.builder()
+            .contents(testRequest.contents())
+            .tools(Map.of(tool.name(), tool))
+            .build();
+    SpringAI springAI =
+        new SpringAI(
+            twoTurnModel,
+            "test-model",
+            ToolExecutionMode.SPRING_AI_MANAGED,
+            (baseTool, arguments, springAiContext) -> resolvedContext);
+
+    LlmResponse response = springAI.generateContent(request, false).blockingFirst();
+
+    assertThat(response.content().orElseThrow().text()).contains("final answer");
+    assertThat(executions).hasValue(1);
+    assertThat(prompts).hasSize(2);
+    assertThat(prompts.get(1).getInstructions())
+        .anyMatch(message -> message instanceof ToolResponseMessage);
+  }
+
+  @Test
+  void springAiManagedModeExecutesToolOnceWhenStreaming() {
+    AtomicInteger executions = new AtomicInteger();
+    AtomicInteger modelCalls = new AtomicInteger();
+    ToolContext resolvedContext = mock(ToolContext.class);
+    BaseTool tool = contextTool(executions, resolvedContext);
+    AssistantMessage toolCallMessage =
+        AssistantMessage.builder()
+            .content("")
+            .toolCalls(
+                List.of(
+                    new AssistantMessage.ToolCall(
+                        "call-1", "function", tool.name(), "{\"value\":\"hello\"}")))
+            .build();
+    StreamingChatModel twoTurnStreamingModel =
+        prompt -> {
+          if (modelCalls.incrementAndGet() == 1) {
+            return Flux.just(new ChatResponse(List.of(new Generation(toolCallMessage))));
+          }
+          return Flux.just(
+              createStreamingChatResponse("final "), createStreamingChatResponse("answer"));
+        };
+    LlmRequest request =
+        LlmRequest.builder()
+            .contents(testRequest.contents())
+            .tools(Map.of(tool.name(), tool))
+            .build();
+    SpringAI springAI =
+        new SpringAI(
+            twoTurnStreamingModel,
+            "test-model",
+            ToolExecutionMode.SPRING_AI_MANAGED,
+            (baseTool, arguments, springAiContext) -> resolvedContext);
+
+    List<LlmResponse> responses = springAI.generateContent(request, true).toList().blockingGet();
+
+    assertThat(responses).hasSize(2);
+    assertThat(responses)
+        .extracting(response -> response.content().orElseThrow().text())
+        .containsExactly("final ", "answer");
+    assertThat(executions).hasValue(1);
+    assertThat(modelCalls).hasValue(2);
+  }
+
+  @Test
   void testGenerateContentStreamingBackpressure() {
     // Create a large number of streaming responses to test backpressure
     Flux<ChatResponse> largeResponseFlux =
@@ -280,5 +404,31 @@ class SpringAITest {
     AssistantMessage assistantMessage = new AssistantMessage(text);
     Generation generation = new Generation(assistantMessage);
     return new ChatResponse(List.of(generation));
+  }
+
+  private BaseTool contextTool(AtomicInteger executions, ToolContext expectedContext) {
+    FunctionDeclaration declaration =
+        FunctionDeclaration.builder()
+            .name("context_tool")
+            .description("context tool")
+            .parametersJsonSchema(
+                Map.of("type", "object", "properties", Map.of("value", Map.of("type", "string"))))
+            .build();
+    return new BaseTool("context_tool", "context tool") {
+      @Override
+      public Optional<FunctionDeclaration> declaration() {
+        return Optional.of(declaration);
+      }
+
+      @Override
+      public Single<Map<String, Object>> runAsync(
+          Map<String, Object> args, ToolContext toolContext) {
+        if (expectedContext != null) {
+          assertThat(toolContext).isSameAs(expectedContext);
+        }
+        executions.incrementAndGet();
+        return Single.just(Map.of("echo", args.get("value")));
+      }
+    };
   }
 }

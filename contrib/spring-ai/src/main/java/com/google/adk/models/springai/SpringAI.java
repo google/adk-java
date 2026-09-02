@@ -26,11 +26,15 @@ import com.google.adk.models.springai.properties.SpringAIProperties;
 import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.MessageAggregator;
 import org.springframework.ai.chat.model.StreamingChatModel;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.ToolCallingManager;
+import org.springframework.ai.model.tool.ToolExecutionResult;
 import reactor.core.publisher.Flux;
 
 /**
@@ -41,67 +45,86 @@ import reactor.core.publisher.Flux;
  */
 public class SpringAI extends BaseLlm {
 
+  private static final int MAX_TOOL_CALL_ITERATIONS = 100;
+
   private final ChatModel chatModel;
   private final StreamingChatModel streamingChatModel;
   private final ObjectMapper objectMapper;
   private final MessageConverter messageConverter;
   private final SpringAIObservabilityHandler observabilityHandler;
+  private final ToolExecutionMode toolExecutionMode;
+  private final ToolCallingManager toolCallingManager;
+  private final int maxToolCallIterations;
 
   public SpringAI(ChatModel chatModel) {
-    super(extractModelName(chatModel));
-    this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
-    this.streamingChatModel =
-        (chatModel instanceof StreamingChatModel) ? (StreamingChatModel) chatModel : null;
-    this.objectMapper = new ObjectMapper();
-    this.messageConverter = new MessageConverter(objectMapper);
-    this.observabilityHandler =
-        new SpringAIObservabilityHandler(createDefaultObservabilityConfig());
+    this(chatModel, extractModelName(chatModel));
   }
 
   public SpringAI(ChatModel chatModel, String modelName) {
-    super(Objects.requireNonNull(modelName, "model name cannot be null"));
-    this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
-    this.streamingChatModel =
-        (chatModel instanceof StreamingChatModel) ? (StreamingChatModel) chatModel : null;
-    this.objectMapper = new ObjectMapper();
-    this.messageConverter = new MessageConverter(objectMapper);
-    this.observabilityHandler =
-        new SpringAIObservabilityHandler(createDefaultObservabilityConfig());
+    this(
+        chatModel,
+        chatModel instanceof StreamingChatModel ? (StreamingChatModel) chatModel : null,
+        modelName,
+        createDefaultObservabilityConfig(),
+        ToolExecutionMode.ADK_MANAGED,
+        null,
+        MAX_TOOL_CALL_ITERATIONS);
+  }
+
+  public SpringAI(
+      ChatModel chatModel,
+      String modelName,
+      ToolExecutionMode toolExecutionMode,
+      AdkToolContextResolver toolContextResolver) {
+    this(
+        chatModel,
+        chatModel instanceof StreamingChatModel ? (StreamingChatModel) chatModel : null,
+        modelName,
+        createDefaultObservabilityConfig(),
+        toolExecutionMode,
+        toolContextResolver,
+        MAX_TOOL_CALL_ITERATIONS);
   }
 
   public SpringAI(StreamingChatModel streamingChatModel) {
-    super(extractModelName(streamingChatModel));
-    this.chatModel =
-        (streamingChatModel instanceof ChatModel) ? (ChatModel) streamingChatModel : null;
-    this.streamingChatModel =
-        Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
-    this.objectMapper = new ObjectMapper();
-    this.messageConverter = new MessageConverter(objectMapper);
-    this.observabilityHandler =
-        new SpringAIObservabilityHandler(createDefaultObservabilityConfig());
+    this(streamingChatModel, extractModelName(streamingChatModel));
   }
 
   public SpringAI(StreamingChatModel streamingChatModel, String modelName) {
-    super(Objects.requireNonNull(modelName, "model name cannot be null"));
-    this.chatModel =
-        (streamingChatModel instanceof ChatModel) ? (ChatModel) streamingChatModel : null;
-    this.streamingChatModel =
-        Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
-    this.objectMapper = new ObjectMapper();
-    this.messageConverter = new MessageConverter(objectMapper);
-    this.observabilityHandler =
-        new SpringAIObservabilityHandler(createDefaultObservabilityConfig());
+    this(
+        streamingChatModel instanceof ChatModel ? (ChatModel) streamingChatModel : null,
+        streamingChatModel,
+        modelName,
+        createDefaultObservabilityConfig(),
+        ToolExecutionMode.ADK_MANAGED,
+        null,
+        MAX_TOOL_CALL_ITERATIONS);
+  }
+
+  public SpringAI(
+      StreamingChatModel streamingChatModel,
+      String modelName,
+      ToolExecutionMode toolExecutionMode,
+      AdkToolContextResolver toolContextResolver) {
+    this(
+        streamingChatModel instanceof ChatModel ? (ChatModel) streamingChatModel : null,
+        streamingChatModel,
+        modelName,
+        createDefaultObservabilityConfig(),
+        toolExecutionMode,
+        toolContextResolver,
+        MAX_TOOL_CALL_ITERATIONS);
   }
 
   public SpringAI(ChatModel chatModel, StreamingChatModel streamingChatModel, String modelName) {
-    super(Objects.requireNonNull(modelName, "model name cannot be null"));
-    this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
-    this.streamingChatModel =
-        Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
-    this.objectMapper = new ObjectMapper();
-    this.messageConverter = new MessageConverter(objectMapper);
-    this.observabilityHandler =
-        new SpringAIObservabilityHandler(createDefaultObservabilityConfig());
+    this(
+        chatModel,
+        streamingChatModel,
+        modelName,
+        createDefaultObservabilityConfig(),
+        ToolExecutionMode.ADK_MANAGED,
+        null,
+        MAX_TOOL_CALL_ITERATIONS);
   }
 
   public SpringAI(
@@ -109,44 +132,116 @@ public class SpringAI extends BaseLlm {
       StreamingChatModel streamingChatModel,
       String modelName,
       SpringAIProperties.Observability observabilityConfig) {
-    super(Objects.requireNonNull(modelName, "model name cannot be null"));
-    this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
-    this.streamingChatModel =
-        Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
-    this.objectMapper = new ObjectMapper();
-    this.messageConverter = new MessageConverter(objectMapper);
-    this.observabilityHandler =
-        new SpringAIObservabilityHandler(
-            Objects.requireNonNull(observabilityConfig, "observabilityConfig cannot be null"));
+    this(
+        chatModel,
+        streamingChatModel,
+        modelName,
+        observabilityConfig,
+        ToolExecutionMode.ADK_MANAGED,
+        null,
+        MAX_TOOL_CALL_ITERATIONS);
+  }
+
+  public SpringAI(
+      ChatModel chatModel,
+      StreamingChatModel streamingChatModel,
+      String modelName,
+      SpringAIProperties.Observability observabilityConfig,
+      ToolExecutionMode toolExecutionMode,
+      AdkToolContextResolver toolContextResolver) {
+    this(
+        chatModel,
+        streamingChatModel,
+        modelName,
+        observabilityConfig,
+        toolExecutionMode,
+        toolContextResolver,
+        MAX_TOOL_CALL_ITERATIONS);
   }
 
   public SpringAI(
       ChatModel chatModel, String modelName, SpringAIProperties.Observability observabilityConfig) {
-    super(Objects.requireNonNull(modelName, "model name cannot be null"));
-    this.chatModel = Objects.requireNonNull(chatModel, "chatModel cannot be null");
-    this.streamingChatModel =
-        (chatModel instanceof StreamingChatModel) ? (StreamingChatModel) chatModel : null;
-    this.objectMapper = new ObjectMapper();
-    this.messageConverter = new MessageConverter(objectMapper);
-    this.observabilityHandler =
-        new SpringAIObservabilityHandler(
-            Objects.requireNonNull(observabilityConfig, "observabilityConfig cannot be null"));
+    this(
+        chatModel,
+        chatModel instanceof StreamingChatModel ? (StreamingChatModel) chatModel : null,
+        modelName,
+        observabilityConfig,
+        ToolExecutionMode.ADK_MANAGED,
+        null,
+        MAX_TOOL_CALL_ITERATIONS);
+  }
+
+  public SpringAI(
+      ChatModel chatModel,
+      String modelName,
+      SpringAIProperties.Observability observabilityConfig,
+      ToolExecutionMode toolExecutionMode,
+      AdkToolContextResolver toolContextResolver) {
+    this(
+        chatModel,
+        chatModel instanceof StreamingChatModel ? (StreamingChatModel) chatModel : null,
+        modelName,
+        observabilityConfig,
+        toolExecutionMode,
+        toolContextResolver,
+        MAX_TOOL_CALL_ITERATIONS);
   }
 
   public SpringAI(
       StreamingChatModel streamingChatModel,
       String modelName,
       SpringAIProperties.Observability observabilityConfig) {
+    this(
+        streamingChatModel instanceof ChatModel ? (ChatModel) streamingChatModel : null,
+        streamingChatModel,
+        modelName,
+        observabilityConfig,
+        ToolExecutionMode.ADK_MANAGED,
+        null,
+        MAX_TOOL_CALL_ITERATIONS);
+  }
+
+  public SpringAI(
+      StreamingChatModel streamingChatModel,
+      String modelName,
+      SpringAIProperties.Observability observabilityConfig,
+      ToolExecutionMode toolExecutionMode,
+      AdkToolContextResolver toolContextResolver) {
+    this(
+        streamingChatModel instanceof ChatModel ? (ChatModel) streamingChatModel : null,
+        streamingChatModel,
+        modelName,
+        observabilityConfig,
+        toolExecutionMode,
+        toolContextResolver,
+        MAX_TOOL_CALL_ITERATIONS);
+  }
+
+  private SpringAI(
+      ChatModel chatModel,
+      StreamingChatModel streamingChatModel,
+      String modelName,
+      SpringAIProperties.Observability observabilityConfig,
+      ToolExecutionMode toolExecutionMode,
+      AdkToolContextResolver toolContextResolver,
+      int maxToolCallIterations) {
     super(Objects.requireNonNull(modelName, "model name cannot be null"));
-    this.chatModel =
-        (streamingChatModel instanceof ChatModel) ? (ChatModel) streamingChatModel : null;
-    this.streamingChatModel =
-        Objects.requireNonNull(streamingChatModel, "streamingChatModel cannot be null");
+    if (chatModel == null && streamingChatModel == null) {
+      throw new NullPointerException("At least one chat model must be configured");
+    }
+    this.chatModel = chatModel;
+    this.streamingChatModel = streamingChatModel;
     this.objectMapper = new ObjectMapper();
-    this.messageConverter = new MessageConverter(objectMapper);
+    ToolConverter toolConverter =
+        new ToolConverter(objectMapper, toolExecutionMode, toolContextResolver);
+    this.messageConverter = new MessageConverter(objectMapper, toolConverter);
     this.observabilityHandler =
         new SpringAIObservabilityHandler(
             Objects.requireNonNull(observabilityConfig, "observabilityConfig cannot be null"));
+    this.toolExecutionMode = toolExecutionMode;
+    this.maxToolCallIterations = maxToolCallIterations;
+    this.toolCallingManager =
+        ToolCallingManager.builder().maxTotalToolCalls(maxToolCallIterations).build();
   }
 
   @Override
@@ -174,7 +269,7 @@ public class SpringAI extends BaseLlm {
       Prompt prompt = messageConverter.toLlmPrompt(llmRequest, resolveDefaultOptions());
       observabilityHandler.logRequest(prompt.toString(), model());
 
-      ChatResponse chatResponse = chatModel.call(prompt);
+      ChatResponse chatResponse = callChatModel(prompt);
       LlmResponse llmResponse = messageConverter.toLlmResponse(chatResponse);
 
       observabilityHandler.logResponse(extractTextFromResponse(llmResponse), model());
@@ -204,7 +299,7 @@ public class SpringAI extends BaseLlm {
             Prompt prompt = messageConverter.toLlmPrompt(llmRequest, resolveDefaultOptions());
             observabilityHandler.logRequest(prompt.toString(), model());
 
-            Flux<ChatResponse> responseFlux = streamingChatModel.stream(prompt);
+            Flux<ChatResponse> responseFlux = streamChatModel(prompt, 0);
 
             responseFlux
                 .doOnError(
@@ -251,6 +346,63 @@ public class SpringAI extends BaseLlm {
         BackpressureStrategy.BUFFER);
   }
 
+  private ChatResponse callChatModel(Prompt initialPrompt) {
+    Prompt prompt = initialPrompt;
+    ChatResponse chatResponse = chatModel.call(prompt);
+    if (toolExecutionMode == ToolExecutionMode.ADK_MANAGED) {
+      return chatResponse;
+    }
+
+    int iteration = 0;
+    while (chatResponse.hasToolCalls()) {
+      if (iteration++ >= maxToolCallIterations) {
+        throw new IllegalStateException(
+            "Spring AI tool execution exceeded " + maxToolCallIterations + " iterations");
+      }
+      ToolExecutionResult toolExecutionResult =
+          toolCallingManager.executeToolCalls(prompt, chatResponse);
+      if (toolExecutionResult.returnDirect()) {
+        return new ChatResponse(ToolExecutionResult.buildGenerations(toolExecutionResult));
+      }
+      prompt = new Prompt(toolExecutionResult.conversationHistory(), prompt.getOptions());
+      chatResponse = chatModel.call(prompt);
+    }
+    return chatResponse;
+  }
+
+  private Flux<ChatResponse> streamChatModel(Prompt prompt, int iteration) {
+    if (toolExecutionMode == ToolExecutionMode.ADK_MANAGED) {
+      return streamingChatModel.stream(prompt);
+    }
+    if (iteration >= maxToolCallIterations) {
+      return Flux.error(
+          new IllegalStateException(
+              "Spring AI tool execution exceeded " + maxToolCallIterations + " iterations"));
+    }
+
+    AtomicReference<ChatResponse> aggregatedResponse = new AtomicReference<>();
+    return new MessageAggregator()
+        .aggregate(streamingChatModel.stream(prompt), aggregatedResponse::set)
+        .collectList()
+        .flatMapMany(
+            chunks -> {
+              ChatResponse chatResponse = aggregatedResponse.get();
+              if (chatResponse == null || !chatResponse.hasToolCalls()) {
+                return Flux.fromIterable(chunks);
+              }
+
+              ToolExecutionResult toolExecutionResult =
+                  toolCallingManager.executeToolCalls(prompt, chatResponse);
+              if (toolExecutionResult.returnDirect()) {
+                return Flux.just(
+                    new ChatResponse(ToolExecutionResult.buildGenerations(toolExecutionResult)));
+              }
+              Prompt nextPrompt =
+                  new Prompt(toolExecutionResult.conversationHistory(), prompt.getOptions());
+              return streamChatModel(nextPrompt, iteration + 1);
+            });
+  }
+
   @Override
   public BaseLlmConnection connect(LlmRequest llmRequest) {
     throw new UnsupportedOperationException(
@@ -283,7 +435,7 @@ public class SpringAI extends BaseLlm {
     return className.toLowerCase().replace("chatmodel", "").replace("model", "");
   }
 
-  private SpringAIProperties.Observability createDefaultObservabilityConfig() {
+  private static SpringAIProperties.Observability createDefaultObservabilityConfig() {
     SpringAIProperties.Observability config = new SpringAIProperties.Observability();
     config.setEnabled(true);
     config.setMetricsEnabled(true);

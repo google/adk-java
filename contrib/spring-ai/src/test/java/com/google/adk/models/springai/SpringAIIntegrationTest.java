@@ -20,16 +20,23 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
-import com.google.adk.models.springai.integrations.tools.WeatherTool;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
-import com.google.adk.tools.FunctionTool;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Single;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -108,7 +115,39 @@ class SpringAIIntegrationTest {
 
   @Test
   void testAgentWithToolsUsingDummyModel() {
-    // given - Create a dummy ChatModel that simulates tool calling
+    AtomicInteger toolExecutions = new AtomicInteger();
+    AtomicReference<ToolContext> receivedToolContext = new AtomicReference<>();
+    FunctionDeclaration declaration =
+        FunctionDeclaration.builder()
+            .name("get_weather")
+            .description("Get the weather for a city")
+            .parametersJsonSchema(
+                Map.of(
+                    "type",
+                    "object",
+                    "properties",
+                    Map.of("city", Map.of("type", "string")),
+                    "required",
+                    List.of("city")))
+            .build();
+    BaseTool weatherTool =
+        new BaseTool("get_weather", "Get the weather for a city") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(declaration);
+          }
+
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            toolExecutions.incrementAndGet();
+            receivedToolContext.set(toolContext);
+            return Single.just(Map.of("forecast", "Sunny in " + args.get("city")));
+          }
+        };
+
+    // The model returns a real tool call on its first turn and consumes ADK's tool response on its
+    // second turn.
     ChatModel dummyChatModel =
         new ChatModel() {
           private int callCount = 0;
@@ -119,14 +158,22 @@ class SpringAIIntegrationTest {
             AssistantMessage message;
 
             if (callCount == 1) {
-              // First call - simulate asking for weather
-              message = new AssistantMessage("I need to check the weather for Paris.");
-            } else {
-              // Subsequent calls - provide final answer
               message =
-                  new AssistantMessage(
-                      "The weather in Paris is beautiful and sunny with temperatures from 10°C in"
-                          + " the morning up to 24°C in the afternoon.");
+                  AssistantMessage.builder()
+                      .content("")
+                      .toolCalls(
+                          List.of(
+                              new AssistantMessage.ToolCall(
+                                  "weather-call-1",
+                                  "function",
+                                  "get_weather",
+                                  "{\"city\":\"Paris\"}")))
+                      .build();
+            } else {
+              assertTrue(
+                  prompt.getInstructions().stream()
+                      .anyMatch(instruction -> instruction instanceof ToolResponseMessage));
+              message = new AssistantMessage("The weather in Paris is sunny.");
             }
 
             Generation generation = new Generation(message);
@@ -146,7 +193,7 @@ class SpringAIIntegrationTest {
                 If asked about the weather forecast for a city,
                 you MUST call the `getWeather` function.
                 """)
-            .tools(FunctionTool.create(WeatherTool.class, "getWeather"))
+            .tools(weatherTool)
             .build();
 
     // when
@@ -186,6 +233,8 @@ class SpringAIIntegrationTest {
                         && event.content().get().text().toLowerCase().contains("paris"));
 
     assertTrue(hasParisResponse, "Should have a response mentioning Paris");
+    assertEquals(1, toolExecutions.get(), "ADK should execute the tool exactly once");
+    assertNotNull(receivedToolContext.get(), "ADK must pass a non-null ToolContext");
   }
 
   @Test
