@@ -53,9 +53,10 @@ final class BigQueryUtils {
   static final String A2A_TASK_ID_KEY = "a2a:task_id";
   static final String A2A_CONTEXT_ID_KEY = "a2a:context_id";
 
-  private static final ImmutableList<String> VIEW_COMMON_COLUMNS =
+  static final ImmutableList<String> VIEW_COMMON_COLUMNS =
       ImmutableList.of(
           "timestamp",
+          "event_id",
           "event_type",
           "agent",
           "session_id",

@@ -327,6 +327,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     // Log common fields
     Map<String, Object> row = new HashMap<>();
     row.put("timestamp", Instant.now());
+    row.put("event_id", UUID.randomUUID().toString().replace("-", ""));
     row.put("event_type", eventType);
     row.put("agent", resolveAgentName(invocationContext, eventData));
     row.put("session_id", invocationContext.session().id());
