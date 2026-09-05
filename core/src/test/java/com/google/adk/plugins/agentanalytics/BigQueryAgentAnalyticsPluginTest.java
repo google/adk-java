@@ -21,6 +21,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -86,8 +87,10 @@ import io.opentelemetry.context.Scope;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.reactivex.rxjava3.core.Flowable;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -476,6 +479,11 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertNotNull(timestampField);
     assertFalse(timestampField.isNullable());
 
+    // event_id is NULLABLE in BigQuerySchema.getEventsSchema()
+    Field eventIdField = schema.findField("event_id");
+    assertNotNull(eventIdField);
+    assertTrue(eventIdField.isNullable());
+
     // event_type is NULLABLE in BigQuerySchema.getEventsSchema()
     Field eventTypeField = schema.findField("event_type");
     assertNotNull(eventTypeField);
@@ -505,6 +513,11 @@ public class BigQueryAgentAnalyticsPluginTest {
                     "USER_MESSAGE_RECEIVED")) {
                   failureMessage[0] =
                       "Wrong event_type: " + root.getVector("event_type").getObject(0);
+                } else if (!root.getVector("event_id")
+                    .getObject(0)
+                    .toString()
+                    .matches("^[0-9a-f]{32}$")) {
+                  failureMessage[0] = "Wrong event_id: " + root.getVector("event_id").getObject(0);
                 } else if (!root.getVector("agent").getObject(0).toString().equals("agent_name")) {
                   failureMessage[0] = "Wrong agent: " + root.getVector("agent").getObject(0);
                 } else if (!root.getVector("session_id")
@@ -558,6 +571,51 @@ public class BigQueryAgentAnalyticsPluginTest {
     state.getBatchProcessor("invocation_id").flush();
 
     assertTrue(failureMessage[0], checksPassed[0]);
+  }
+
+  @Test
+  public void schemaAndViews_exposeEventId() {
+    com.google.cloud.bigquery.Schema schema = BigQuerySchema.getEventsSchema();
+    com.google.cloud.bigquery.Field eventIdField = schema.getFields().get("event_id");
+    assertNotNull(eventIdField);
+    assertEquals(StandardSQLTypeName.STRING, eventIdField.getType().getStandardType());
+    assertEquals(Mode.NULLABLE, eventIdField.getMode());
+    assertTrue(BigQueryUtils.VIEW_COMMON_COLUMNS.contains("event_id"));
+  }
+
+  @Test
+  public void eachEmittedRow_hasDistinctHexEventId() throws Exception {
+    List<String> eventIds = new ArrayList<>();
+    when(mockWriter.append(any(ArrowRecordBatch.class)))
+        .thenAnswer(
+            invocation -> {
+              ArrowRecordBatch recordedBatch = invocation.getArgument(0);
+              Schema schema = BigQuerySchema.getArrowSchema();
+              try (VectorSchemaRoot root =
+                  VectorSchemaRoot.create(
+                      schema, state.getBatchProcessor("invocation_id").allocator)) {
+                VectorLoader loader = new VectorLoader(root);
+                loader.load(recordedBatch);
+                for (int i = 0; i < root.getRowCount(); i++) {
+                  eventIds.add(root.getVector("event_id").getObject(i).toString());
+                }
+              }
+              return ApiFutures.immediateFuture(AppendRowsResponse.getDefaultInstance());
+            });
+
+    Content content1 = Content.fromParts(Part.fromText("hello"));
+    Content content2 = Content.fromParts(Part.fromText("world"));
+    plugin.onUserMessageCallback(mockInvocationContext, content1).blockingSubscribe();
+    plugin.onUserMessageCallback(mockInvocationContext, content2).blockingSubscribe();
+    state.getBatchProcessor("invocation_id").flush();
+
+    assertEquals(2, eventIds.size());
+    assertNotEquals(eventIds.get(0), eventIds.get(1));
+    for (String eventId : eventIds) {
+      assertEquals(32, eventId.length());
+      assertEquals(eventId.toLowerCase(Locale.ROOT), eventId);
+      assertTrue(eventId.matches("^[0-9a-f]{32}$"));
+    }
   }
 
   @Test
@@ -1165,7 +1223,7 @@ public class BigQueryAgentAnalyticsPluginTest {
     Map<String, Object> row;
     while ((row = state.getBatchProcessor("invocation_id").queue.poll()) != null) {
       if (Objects.equals(row.get("event_type"), "TOOL_STARTING")
-          && "tool_b".equals(((ObjectNode) row.get("content")).get("tool").asText())) {
+          && Objects.equals(((ObjectNode) row.get("content")).get("tool").asText(), "tool_b")) {
         startingB = row;
       }
     }
