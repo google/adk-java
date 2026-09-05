@@ -136,6 +136,6 @@ public final class InMemoryMemoryService implements BaseMemoryService {
   }
 
   private String formatTimestamp(long timestamp) {
-    return Instant.ofEpochSecond(timestamp).toString();
+    return Instant.ofEpochMilli(timestamp).toString();
   }
 }
