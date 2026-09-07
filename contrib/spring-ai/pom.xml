@@ -31,6 +31,9 @@
     <properties>
         <spring-ai.version>2.0.1</spring-ai.version>
         <testcontainers.version>1.21.3</testcontainers.version>
+        <!-- Load mockito-core as a startup -javaagent so the inline mock maker does not rely
+             on runtime self-attachment, which newer JDKs block. -->
+        <mockito.javaagent.arg>-javaagent:${org.mockito:mockito-core:jar}</mockito.javaagent.arg>
     </properties>
 
     <dependencyManagement>

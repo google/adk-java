@@ -28,6 +28,11 @@
     <name>Agent Development Kit - LangChain4j</name>
     <description>LangChain4j integration for the Agent Development Kit.</description>
 
+    <properties>
+        <!-- Load mockito-core as a startup -javaagent so the inline mock maker does not rely
+             on runtime self-attachment, which newer JDKs block. -->
+        <mockito.javaagent.arg>-javaagent:${org.mockito:mockito-core:jar}</mockito.javaagent.arg>
+    </properties>
 
     <dependencyManagement>
         <dependencies>

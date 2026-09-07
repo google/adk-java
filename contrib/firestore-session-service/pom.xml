@@ -28,6 +28,11 @@
     <name>Agent Development Kit - Firestore Session Management</name>
     <description>Firestore integration with Agent Development Kit for User Session Management</description>
 
+    <properties>
+        <!-- Load mockito-core as a startup -javaagent so the inline mock maker does not rely
+             on runtime self-attachment, which newer JDKs block. -->
+        <mockito.javaagent.arg>-javaagent:${org.mockito:mockito-core:jar}</mockito.javaagent.arg>
+    </properties>
 
     <dependencies>
 
@@ -90,6 +95,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <argLine>
+                        ${mockito.javaagent.arg}
                         ${jacoco.agent.argLine}
                         --add-opens java.base/java.util=ALL-UNNAMED
                         --add-opens java.base/java.lang=ALL-UNNAMED

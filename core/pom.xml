@@ -27,7 +27,11 @@
   <name>Agent Development Kit</name>
   <description>Agent Development Kit: an open-source, code-first toolkit designed to simplify building, evaluating, and deploying advanced AI agents anywhere.</description>
 
-
+  <properties>
+    <!-- Load mockito-core as a startup -javaagent so the inline mock maker does not rely on
+         runtime self-attachment, which newer JDKs block. -->
+    <mockito.javaagent.arg>-javaagent:${org.mockito:mockito-core:jar}</mockito.javaagent.arg>
+  </properties>
 
   <dependencies>
     <dependency>

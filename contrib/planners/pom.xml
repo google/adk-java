@@ -28,6 +28,12 @@
     <name>Agent Development Kit - Planners</name>
     <description>Built-in planner implementations for the ADK PlannerAgent, including GOAP (Goal-Oriented Action Planning), P2P (Peer-to-Peer), and Supervisor planners.</description>
 
+    <properties>
+        <!-- Load mockito-core as a startup -javaagent so the inline mock maker does not rely
+             on runtime self-attachment, which newer JDKs block. -->
+        <mockito.javaagent.arg>-javaagent:${org.mockito:mockito-core:jar}</mockito.javaagent.arg>
+    </properties>
+
     <dependencies>
         <!-- Main dependencies -->
         <dependency>
