@@ -18,9 +18,11 @@ package com.google.adk.agents;
 
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
+import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.jspecify.annotations.Nullable;
@@ -149,29 +151,105 @@ public class LoopAgent extends BaseAgent {
           .takeUntil(LoopAgent::hasEscalateAction);
     }
 
-    // Resumable: stop looping once a sub-agent emits a pending long-running call (e.g. HITL),
-    // matching Python ADK v1 and avoiding a runaway loop. The current sub-agent still finishes;
-    // resuming into the paused iteration needs persisted state (future work).
-    AtomicBoolean paused = new AtomicBoolean(false);
-    AtomicInteger timesLooped = new AtomicInteger(0);
-    return Flowable.fromIterable(subAgents)
-        .concatMap(
-            subAgent ->
-                paused.get()
-                    ? Flowable.empty()
-                    : subAgent
-                        .runAsync(invocationContext)
-                        .doOnNext(
-                            event -> {
-                              if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
-                                paused.set(true);
-                              }
-                            }))
-        .repeatUntil(
-            () ->
-                paused.get()
-                    || (maxIterations != null && timesLooped.incrementAndGet() >= maxIterations))
-        .takeUntil(LoopAgent::hasEscalateAction);
+    // Resumable: checkpoint {current_sub_agent, times_looped} before each sub-agent, resume into
+    // the checkpointed iteration, pause (not end) on a long-running call, and reset sub-agent
+    // state between iterations.
+    return Flowable.defer(
+        () -> {
+          Map<String, Object> state = invocationContext.agentStates().get(name());
+          String startSubAgentName =
+              state == null ? null : (String) state.get(WorkflowAgentStates.CURRENT_SUB_AGENT);
+          int startTimesLooped =
+              state == null || state.get(WorkflowAgentStates.TIMES_LOOPED) == null
+                  ? 0
+                  : ((Number) state.get(WorkflowAgentStates.TIMES_LOOPED)).intValue();
+          int startIndex =
+              WorkflowAgentStates.findIndexForResumption(subAgents, startSubAgentName, logger);
+          AtomicInteger timesLooped = new AtomicInteger(startTimesLooped);
+          AtomicBoolean shouldExit = new AtomicBoolean(false);
+          AtomicBoolean paused = new AtomicBoolean(false);
+          if (maxIterations != null && startTimesLooped >= maxIterations) {
+            return Flowable.just(endOfAgentEvent(invocationContext));
+          }
+          return runLoopIteration(
+              invocationContext,
+              subAgents,
+              startIndex,
+              new AtomicBoolean(startSubAgentName != null),
+              timesLooped,
+              shouldExit,
+              paused);
+        });
+  }
+
+  /**
+   * Runs one loop iteration over the sub-agents from {@code startIndex}, then either recurses for
+   * the next iteration or terminates (emitting end-of-agent unless paused). Shared holders carry
+   * the loop's mutable state across iterations.
+   */
+  private Flowable<Event> runLoopIteration(
+      InvocationContext context,
+      List<? extends BaseAgent> subAgents,
+      int startIndex,
+      AtomicBoolean resumingFirst,
+      AtomicInteger timesLooped,
+      AtomicBoolean shouldExit,
+      AtomicBoolean paused) {
+    Flowable<Event> iteration =
+        Flowable.fromIterable(subAgents.subList(startIndex, subAgents.size()))
+            .concatMap(
+                subAgent ->
+                    Flowable.defer(
+                        () -> {
+                          if (shouldExit.get() || paused.get()) {
+                            return Flowable.<Event>empty();
+                          }
+                          Flowable<Event> checkpoint = Flowable.empty();
+                          if (!resumingFirst.getAndSet(false)) {
+                            ImmutableMap<String, Object> subState =
+                                ImmutableMap.of(
+                                    WorkflowAgentStates.CURRENT_SUB_AGENT, subAgent.name(),
+                                    WorkflowAgentStates.TIMES_LOOPED, timesLooped.get());
+                            context.setAgentState(name(), subState, /* endOfAgent= */ false);
+                            checkpoint = Flowable.just(createStateEvent(context, subState));
+                          }
+                          Flowable<Event> run =
+                              subAgent
+                                  .runAsync(context)
+                                  .doOnNext(
+                                      event -> {
+                                        if (hasEscalateAction(event)) {
+                                          shouldExit.set(true);
+                                        }
+                                        if (context.shouldPauseInvocation(event)) {
+                                          paused.set(true);
+                                        }
+                                      });
+                          return checkpoint.concatWith(run);
+                        }));
+    return iteration.concatWith(
+        Flowable.defer(
+            () -> {
+              if (paused.get()) {
+                return Flowable.<Event>empty();
+              }
+              if (shouldExit.get()) {
+                return Flowable.just(endOfAgentEvent(context));
+              }
+              int looped = timesLooped.incrementAndGet();
+              context.resetSubAgentStates(name());
+              if (maxIterations != null && looped >= maxIterations) {
+                return Flowable.just(endOfAgentEvent(context));
+              }
+              return runLoopIteration(
+                  context,
+                  subAgents,
+                  /* startIndex= */ 0,
+                  new AtomicBoolean(false),
+                  timesLooped,
+                  shouldExit,
+                  paused);
+            }));
   }
 
   @Override

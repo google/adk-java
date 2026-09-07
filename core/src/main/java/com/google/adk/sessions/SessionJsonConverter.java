@@ -114,6 +114,7 @@ final class SessionJsonConverter {
       putIfNotEmpty(actionsJson, "requestedAuthConfigs", actions.requestedAuthConfigs());
       putIfNotEmpty(
           actionsJson, "requestedToolConfirmations", actions.requestedToolConfirmations());
+      actions.agentState().ifPresent(v -> actionsJson.put("agentState", v));
       eventJson.put("actions", actionsJson);
     }
     event.content().ifPresent(c -> eventJson.put("content", SessionUtils.encodeContent(c)));
@@ -192,6 +193,10 @@ final class SessionJsonConverter {
           Optional.ofNullable(actionsMap.get("requestedToolConfirmations"))
               .map(SessionJsonConverter::asConcurrentMapOfToolConfirmations)
               .orElse(new ConcurrentHashMap<>()));
+      Object agentState = actionsMap.get("agentState");
+      if (agentState != null) {
+        eventActionsBuilder.agentState((Map<String, Object>) agentState);
+      }
     }
 
     Event event =
