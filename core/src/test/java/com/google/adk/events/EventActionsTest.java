@@ -89,6 +89,7 @@ public final class EventActionsTest {
             .requestedToolConfirmations(
                 new ConcurrentHashMap<>(ImmutableMap.of("tool2", TOOL_CONFIRMATION)))
             .endOfAgent(true)
+            .setModelResponse(ImmutableMap.of("field1", "value1"))
             .build();
 
     EventActions merged = eventActions1.toBuilder().merge(eventActions2).build();
@@ -109,6 +110,7 @@ public final class EventActionsTest {
         .containsExactly("tool1", TOOL_CONFIRMATION, "tool2", TOOL_CONFIRMATION);
     assertThat(merged.endOfAgent()).isTrue();
     assertThat(merged.compaction()).hasValue(COMPACTION);
+    assertThat(merged.setModelResponse()).hasValue(ImmutableMap.of("field1", "value1"));
   }
 
   @Test
@@ -177,6 +179,7 @@ public final class EventActionsTest {
         EventActions.builder()
             .deletedArtifactIds(ImmutableSet.of("d1", "d2"))
             .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("k", "v")))
+            .setModelResponse(ImmutableMap.of("field1", "value1"))
             .build();
 
     String json = eventActions.toJson();
@@ -184,6 +187,7 @@ public final class EventActionsTest {
 
     assertThat(deserialized).isEqualTo(eventActions);
     assertThat(deserialized.deletedArtifactIds()).containsExactly("d1", "d2");
+    assertThat(deserialized.setModelResponse()).hasValue(ImmutableMap.of("field1", "value1"));
   }
 
   @Test
