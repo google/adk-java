@@ -61,7 +61,8 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
   @Override
   public Single<RequestProcessor.RequestProcessingResult> processRequest(
       InvocationContext invocationContext, LlmRequest llmRequest) {
-    ImmutableList<Event> events = ImmutableList.copyOf(invocationContext.session().events());
+    // A confirmation is answered on the branch that asked for it; a parallel tree's is not ours.
+    ImmutableList<Event> events = invocationContext.eventsOnCurrentBranch();
     if (events.isEmpty()) {
       logger.trace(
           "No events are present in the session. Skipping request confirmation processing.");

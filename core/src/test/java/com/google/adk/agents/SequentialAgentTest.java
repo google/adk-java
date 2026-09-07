@@ -249,6 +249,22 @@ public final class SequentialAgentTest {
     assertThat(WorkflowAgentResumption.resumeSubAgentIndex(context, root.subAgents())).isEmpty();
   }
 
+  @Test
+  public void resumeSubAgentIndex_branchedNestedAuthor_returnsThatSubAgentIndex() {
+    // A Sequential nested inside a Parallel carries a branch a filter would hide.
+    TestBaseAgent first = createSubAgent("first_agent");
+    TestBaseAgent nested = createSubAgent("nested_agent");
+    SequentialAgent branch =
+        SequentialAgent.builder().name("branch_agent").subAgents(ImmutableList.of(nested)).build();
+    SequentialAgent root =
+        SequentialAgent.builder().name("root").subAgents(ImmutableList.of(first, branch)).build();
+
+    InvocationContext context =
+        contextResumingBranchedCall(root, "nested_agent", "p.root", "p.root.branch_agent");
+
+    assertThat(WorkflowAgentResumption.resumeSubAgentIndex(context, root.subAgents())).hasValue(1);
+  }
+
   // Session ending with a function response that resumes a call authored by callAuthor.
   private static InvocationContext contextResumingCall(BaseAgent rootAgent, String callAuthor) {
     InMemorySessionService sessionService = new InMemorySessionService();
@@ -283,5 +299,46 @@ public final class SequentialAgentTest {
     var unusedCall = sessionService.appendEvent(session, callEvent).blockingGet();
     var unusedResponse = sessionService.appendEvent(session, responseEvent).blockingGet();
     return createInvocationContext(rootAgent, sessionService, session);
+  }
+
+  // As above, but the context sits on contextBranch and the call event on callBranch.
+  private static InvocationContext contextResumingBranchedCall(
+      BaseAgent rootAgent, String callAuthor, String contextBranch, String callBranch) {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session = sessionService.createSession("test_app", "test-user").blockingGet();
+    Event callEvent =
+        Event.builder()
+            .id("call_event")
+            .invocationId("invocationId")
+            .author(callAuthor)
+            .branch(callBranch)
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(FunctionCall.builder().id("call_id").name("tool").build())
+                        .build()))
+            .build();
+    Event responseEvent =
+        Event.builder()
+            .id("response_event")
+            .invocationId("invocationId")
+            .author("user")
+            .branch(contextBranch)
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .id("call_id")
+                                .name("tool")
+                                .response(ImmutableMap.of())
+                                .build())
+                        .build()))
+            .build();
+    var unusedCall = sessionService.appendEvent(session, callEvent).blockingGet();
+    var unusedResponse = sessionService.appendEvent(session, responseEvent).blockingGet();
+    InvocationContext context = createInvocationContext(rootAgent, sessionService, session);
+    context.branch(contextBranch);
+    return context;
   }
 }
