@@ -37,6 +37,10 @@ import org.springframework.test.web.servlet.MockMvc;
  *
  * <p>The filter honours the standard {@code Forwarded} header as well as {@code X-Forwarded-*}, so
  * both are covered.
+ *
+ * <p>This is the path taken when {@code adk.web.backend-url} is unset. Setting it supplies the
+ * prefix directly and the forwarded one is ignored, though the host and scheme still come from
+ * these headers while the filter is enabled.
  */
 @SpringBootTest(properties = "server.forward-headers-strategy=framework")
 @AutoConfigureMockMvc
