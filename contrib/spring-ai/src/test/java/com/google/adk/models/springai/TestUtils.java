@@ -32,7 +32,8 @@ public class TestUtils {
     ArrayList<Event> allEvents = new ArrayList<>();
 
     Runner runner = new InMemoryRunner(agent, agent.name());
-    Session session = runner.sessionService().createSession(agent.name(), "user132").blockingGet();
+    Session session =
+        runner.sessionService().createSession(runner.appName(), "user132").blockingGet();
 
     for (Object message : messages) {
       Content messageContent = null;
@@ -68,7 +69,7 @@ public class TestUtils {
 
     Runner runner = new InMemoryRunner(agent);
     Session session =
-        runner.sessionService().createSession(agent.name(), "test-user").blockingGet();
+        runner.sessionService().createSession(runner.appName(), "test-user").blockingGet();
 
     List<Event> events = new ArrayList<>();
 
@@ -93,7 +94,7 @@ public class TestUtils {
 
     Runner runner = new InMemoryRunner(agent);
     Session session =
-        runner.sessionService().createSession(agent.name(), "test-user").blockingGet();
+        runner.sessionService().createSession(runner.appName(), "test-user").blockingGet();
 
     List<Event> events = new ArrayList<>();
 
