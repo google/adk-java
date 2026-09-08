@@ -117,6 +117,9 @@ public abstract class RunConfig {
 
   public abstract ImmutableMap<String, Object> customMetadata();
 
+  /** Returns the transport-reported identity of the request sender, if any. */
+  public abstract Optional<CallerIdentity> callerIdentity();
+
   public abstract Builder toBuilder();
 
   public static Builder builder() {
@@ -146,7 +149,8 @@ public abstract class RunConfig {
         .autoCreateSession(runConfig.autoCreateSession())
         .groupFunctionResponsesInHistoryOverride(
             runConfig.groupFunctionResponsesInHistoryOverride())
-        .customMetadata(runConfig.customMetadata());
+        .customMetadata(runConfig.customMetadata())
+        .callerIdentity(runConfig.callerIdentity());
   }
 
   /** Builder for {@link RunConfig}. */
@@ -173,6 +177,12 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder avatarConfig(@Nullable AvatarConfig avatarConfig);
+
+    @CanIgnoreReturnValue
+    public abstract Builder callerIdentity(Optional<CallerIdentity> callerIdentity);
+
+    @CanIgnoreReturnValue
+    public abstract Builder callerIdentity(CallerIdentity callerIdentity);
 
     @Deprecated
     @CanIgnoreReturnValue

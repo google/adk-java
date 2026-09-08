@@ -17,6 +17,7 @@
 package com.google.adk.apps;
 
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.ConfirmationPolicy;
 import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.Role;
 import com.google.adk.plugins.Plugin;
@@ -24,6 +25,7 @@ import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.List;
+import java.util.Objects;
 import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 
@@ -45,6 +47,7 @@ public class App {
   private final @Nullable EventsCompactionConfig eventsCompactionConfig;
   private final @Nullable ContextCacheConfig contextCacheConfig;
   private final @Nullable ResumabilityConfig resumabilityConfig;
+  private final ConfirmationPolicy confirmationPolicy;
 
   private App(
       String name,
@@ -52,13 +55,15 @@ public class App {
       List<? extends Plugin> plugins,
       @Nullable EventsCompactionConfig eventsCompactionConfig,
       @Nullable ContextCacheConfig contextCacheConfig,
-      @Nullable ResumabilityConfig resumabilityConfig) {
+      @Nullable ResumabilityConfig resumabilityConfig,
+      ConfirmationPolicy confirmationPolicy) {
     this.name = name;
     this.rootAgent = rootAgent;
     this.plugins = ImmutableList.copyOf(plugins);
     this.eventsCompactionConfig = eventsCompactionConfig;
     this.contextCacheConfig = contextCacheConfig;
     this.resumabilityConfig = resumabilityConfig;
+    this.confirmationPolicy = confirmationPolicy;
   }
 
   public String name() {
@@ -87,6 +92,14 @@ public class App {
     return resumabilityConfig;
   }
 
+  /**
+   * Returns the policy deciding whether the caller may approve tool confirmations. Defaults to
+   * {@link ConfirmationPolicy#REJECT_UNAUTHENTICATED}.
+   */
+  public ConfirmationPolicy confirmationPolicy() {
+    return confirmationPolicy;
+  }
+
   /** Builder for {@link App}. */
   public static class Builder {
     private String name;
@@ -95,6 +108,7 @@ public class App {
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
     @Nullable private ContextCacheConfig contextCacheConfig;
     private @Nullable ResumabilityConfig resumabilityConfig;
+    private ConfirmationPolicy confirmationPolicy = ConfirmationPolicy.REJECT_UNAUTHENTICATED;
 
     @CanIgnoreReturnValue
     public Builder name(String name) {
@@ -145,6 +159,13 @@ public class App {
       return this;
     }
 
+    /** Sets the policy deciding whether the caller may approve tool confirmations. */
+    @CanIgnoreReturnValue
+    public Builder confirmationPolicy(ConfirmationPolicy confirmationPolicy) {
+      this.confirmationPolicy = Objects.requireNonNull(confirmationPolicy);
+      return this;
+    }
+
     public App build() {
       if (name == null) {
         throw new IllegalStateException("App name must be provided.");
@@ -154,7 +175,13 @@ public class App {
       }
       validateAppName(name);
       return new App(
-          name, rootAgent, plugins, eventsCompactionConfig, contextCacheConfig, resumabilityConfig);
+          name,
+          rootAgent,
+          plugins,
+          eventsCompactionConfig,
+          contextCacheConfig,
+          resumabilityConfig,
+          confirmationPolicy);
     }
   }
 

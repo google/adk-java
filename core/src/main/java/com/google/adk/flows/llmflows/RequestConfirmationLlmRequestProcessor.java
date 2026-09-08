@@ -24,6 +24,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.CallerIdentity;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.Role;
@@ -42,9 +43,11 @@ import com.google.genai.types.Part;
 import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -57,6 +60,9 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       LoggerFactory.getLogger(RequestConfirmationLlmRequestProcessor.class);
   private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
   private static final String ORIGINAL_FUNCTION_CALL = "originalFunctionCall";
+  private static final String CONFIRMATION_REFUSED_ERROR =
+      "Tool confirmation refused: the sender of this request may not approve this tool call. See"
+          + " ConfirmationPolicy.";
 
   @Override
   public Single<RequestProcessor.RequestProcessingResult> processRequest(
@@ -101,6 +107,8 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
             .flatMap(Optional::stream)
             .collect(toImmutableSet());
 
+    List<FunctionCall> refusedCalls = new ArrayList<>();
+
     // Search backwards from the event before confirmation for the corresponding
     // request_confirmation function calls emitted by the model.
     for (int i = finalConfirmationEventIndex - 1; i >= 0; i--) {
@@ -108,10 +116,7 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       if (event.functionCalls().isEmpty()) {
         continue;
       }
-      // Only this agent can ask this agent's user for confirmation. Function call parts also reach
-      // the session from an A2A peer response - ResponseConverter turns one into a model-role event
-      // authored by the local RemoteA2AAgent - and honouring a confirmation call from there would
-      // let the peer choose which local tool runs.
+      // Only resume confirmation prompts emitted by this agent.
       if (!Objects.equals(event.author(), agentName)) {
         continue;
       }
@@ -134,6 +139,10 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
                                   ofc, functionCallsById, confirmationRequestedIds, agentName))
                       .ifPresent(
                           ofc -> {
+                            if (!senderMayApprove(invocationContext)) {
+                              refusedCalls.add(ofc);
+                              return;
+                            }
                             toolsToResumeWithConfirmation.put(
                                 ofc.id().get(),
                                 requestConfirmationFunctionResponses.get(fc.id().get()));
@@ -162,7 +171,16 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
               });
     }
 
-    return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
+    return Single.just(
+        RequestProcessingResult.create(llmRequest, refusalEvents(invocationContext, refusedCalls)));
+  }
+
+  /** Returns an error response event for {@code refusedCalls}, or an empty list if none. */
+  private static ImmutableList<Event> refusalEvents(
+      InvocationContext invocationContext, List<FunctionCall> refusedCalls) {
+    return refusedCalls.isEmpty()
+        ? ImmutableList.of()
+        : ImmutableList.of(buildRefusalEvent(invocationContext, refusedCalls));
   }
 
   private static Optional<ConfirmationResult> findMostRecentConfirmations(
@@ -311,6 +329,47 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       return false;
     }
     return true;
+  }
+
+  /**
+   * Returns true if the request sender is permitted by the confirmation policy to approve calls.
+   */
+  private static boolean senderMayApprove(InvocationContext invocationContext) {
+    CallerIdentity caller =
+        invocationContext.runConfig().callerIdentity().orElseGet(CallerIdentity::absent);
+    if (invocationContext.confirmationPolicy().canApprove(caller)) {
+      return true;
+    }
+    logger.warn(
+        "Ignoring a tool confirmation: the sender is not permitted to approve one"
+            + " (authenticated={}).",
+        caller.authenticated());
+    return false;
+  }
+
+  /** Builds an event containing error function responses for each refused tool confirmation. */
+  private static Event buildRefusalEvent(
+      InvocationContext invocationContext, List<FunctionCall> refusedCalls) {
+    ImmutableList<Part> parts =
+        refusedCalls.stream()
+            .map(
+                call ->
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .id(call.id().get())
+                                .name(call.name().orElse(""))
+                                .response(ImmutableMap.of("error", CONFIRMATION_REFUSED_ERROR))
+                                .build())
+                        .build())
+            .collect(toImmutableList());
+    return Event.builder()
+        .id(Event.generateEventId())
+        .invocationId(invocationContext.invocationId())
+        .author(invocationContext.agent().name())
+        .branch(invocationContext.branch().orElse(null))
+        .content(Content.builder().role(Role.USER).parts(parts).build())
+        .build();
   }
 
   private Optional<FunctionCall> getOriginalFunctionCall(FunctionCall functionCall) {

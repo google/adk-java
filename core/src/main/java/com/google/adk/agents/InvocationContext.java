@@ -62,6 +62,7 @@ public class InvocationContext {
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
   private final @Nullable ResumabilityConfig resumabilityConfig;
+  private final ConfirmationPolicy confirmationPolicy;
   private final InvocationCostManager invocationCostManager;
   private final Map<String, Object> callbackContextData;
 
@@ -86,6 +87,7 @@ public class InvocationContext {
     this.eventsCompactionConfig = builder.eventsCompactionConfig;
     this.contextCacheConfig = builder.contextCacheConfig;
     this.resumabilityConfig = builder.resumabilityConfig;
+    this.confirmationPolicy = builder.confirmationPolicy;
     this.invocationCostManager = builder.invocationCostManager;
     // Don't copy the callback context data.  This should be the same instance for the full
     // invocation invocation so that Plugins can access the same data it during the invocation
@@ -157,6 +159,11 @@ public class InvocationContext {
   /** Returns the agent being invoked. */
   public BaseAgent agent() {
     return agent;
+  }
+
+  /** Returns the policy deciding whether the caller may approve tool confirmations. */
+  public ConfirmationPolicy confirmationPolicy() {
+    return confirmationPolicy;
   }
 
   /** Returns the session associated with this invocation. */
@@ -370,6 +377,7 @@ public class InvocationContext {
       this.eventsCompactionConfig = context.eventsCompactionConfig;
       this.contextCacheConfig = context.contextCacheConfig;
       this.resumabilityConfig = context.resumabilityConfig;
+      this.confirmationPolicy = context.confirmationPolicy;
       this.invocationCostManager = context.invocationCostManager;
       // Don't copy the callback context data.  This should be the same instance for the full
       // invocation invocation so that Plugins can access the same data it during the invocation
@@ -393,6 +401,7 @@ public class InvocationContext {
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
     @Nullable private ContextCacheConfig contextCacheConfig;
     private @Nullable ResumabilityConfig resumabilityConfig;
+    private ConfirmationPolicy confirmationPolicy = ConfirmationPolicy.REJECT_UNAUTHENTICATED;
     private InvocationCostManager invocationCostManager = new InvocationCostManager();
     private Map<String, Object> callbackContextData = new ConcurrentHashMap<>();
 
@@ -465,6 +474,13 @@ public class InvocationContext {
     @CanIgnoreReturnValue
     public Builder branch(@Nullable String branch) {
       this.branch = branch;
+      return this;
+    }
+
+    /** Sets the policy deciding whether the caller may approve tool confirmations. */
+    @CanIgnoreReturnValue
+    public Builder confirmationPolicy(ConfirmationPolicy confirmationPolicy) {
+      this.confirmationPolicy = Objects.requireNonNull(confirmationPolicy);
       return this;
     }
 
@@ -644,6 +660,7 @@ public class InvocationContext {
         && Objects.equals(eventsCompactionConfig, that.eventsCompactionConfig)
         && Objects.equals(contextCacheConfig, that.contextCacheConfig)
         && Objects.equals(resumabilityConfig, that.resumabilityConfig)
+        && Objects.equals(confirmationPolicy, that.confirmationPolicy)
         && Objects.equals(invocationCostManager, that.invocationCostManager)
         && Objects.equals(callbackContextData, that.callbackContextData);
   }
@@ -667,6 +684,7 @@ public class InvocationContext {
         eventsCompactionConfig,
         contextCacheConfig,
         resumabilityConfig,
+        confirmationPolicy,
         invocationCostManager,
         callbackContextData);
   }

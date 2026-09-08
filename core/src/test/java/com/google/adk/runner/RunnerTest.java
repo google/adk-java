@@ -42,6 +42,7 @@ import static org.mockito.Mockito.when;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.Callbacks.AfterModelCallback;
+import com.google.adk.agents.ConfirmationPolicy;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
@@ -2586,6 +2587,33 @@ public final class RunnerTest {
 
     assertThat(simplifyEvents(events)).contains("a_agent: agent A done");
     assertThat(simplifyEvents(events)).contains("c_agent: agent C done");
+  }
+
+  @Test
+  public void runAsync_appSetsConfirmationPolicy_reachesTheInvocationContext() {
+    BasePlugin capturingPlugin = mockPlugin("capturing");
+    ArgumentCaptor<InvocationContext> contextCaptor =
+        ArgumentCaptor.forClass(InvocationContext.class);
+    when(capturingPlugin.beforeRunCallback(contextCaptor.capture())).thenReturn(Maybe.empty());
+    Runner appRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(
+                        createTestAgentBuilder(createTestLlm(createTextLlmResponse("done")))
+                            .build())
+                    .plugins(ImmutableList.of(capturingPlugin))
+                    .confirmationPolicy(ConfirmationPolicy.AUTHENTICATED_ONLY)
+                    .build())
+            .build();
+    Session appSession = appRunner.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        appRunner.runAsync("user", appSession.id(), createContent("hello")).toList().blockingGet();
+
+    assertThat(contextCaptor.getValue().confirmationPolicy())
+        .isEqualTo(ConfirmationPolicy.AUTHENTICATED_ONLY);
   }
 
   // ResumabilityConfig is off by default and reflects the configured value.

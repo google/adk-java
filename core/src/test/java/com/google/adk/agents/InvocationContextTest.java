@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 
+import com.google.adk.apps.App;
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.events.Event;
@@ -768,6 +769,30 @@ public final class InvocationContextTest {
 
     IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
     assertThat(exception).hasMessageThat().isEqualTo("Session service must be set.");
+  }
+
+  @Test
+  public void confirmationPolicy_setOnAppAndContext_preservesConfiguredPolicy() {
+    App app =
+        App.builder()
+            .name("test_app")
+            .rootAgent(mockAgent)
+            .confirmationPolicy(ConfirmationPolicy.AUTHENTICATED_ONLY)
+            .build();
+    InvocationContext context =
+        contextOnBranch(null).toBuilder().confirmationPolicy(app.confirmationPolicy()).build();
+
+    assertThat(app.confirmationPolicy()).isEqualTo(ConfirmationPolicy.AUTHENTICATED_ONLY);
+    assertThat(context.confirmationPolicy()).isEqualTo(ConfirmationPolicy.AUTHENTICATED_ONLY);
+    assertThat(context).isNotEqualTo(contextOnBranch(null));
+    assertThat(App.builder().name("a").rootAgent(mockAgent).build().confirmationPolicy())
+        .isEqualTo(ConfirmationPolicy.REJECT_UNAUTHENTICATED);
+  }
+
+  @Test
+  public void confirmationPolicy_defaultOnTheBuilder_rejectsUnauthenticated() {
+    assertThat(contextOnBranch(null).confirmationPolicy())
+        .isEqualTo(ConfirmationPolicy.REJECT_UNAUTHENTICATED);
   }
 
   @Test

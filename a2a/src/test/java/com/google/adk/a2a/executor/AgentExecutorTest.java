@@ -27,6 +27,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.CallerIdentity;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
@@ -35,10 +36,13 @@ import com.google.adk.events.Event;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import io.a2a.server.ServerCallContext;
 import io.a2a.server.agentexecution.RequestContext;
+import io.a2a.server.auth.User;
 import io.a2a.server.events.EventQueue;
 import io.a2a.spec.Message;
 import io.a2a.spec.MessageSendParams;
@@ -462,6 +466,87 @@ public final class AgentExecutorTest {
 
     RunConfig runConfig = testAgent.lastInvocationContext.runConfig();
     assertThat(runConfig.customMetadata()).doesNotContainKey("a2a_metadata");
+  }
+
+  @Test
+  public void execute_withAuthenticatedCaller_stampsThatIdentity() {
+    testAgent.setEventsToEmit(Flowable.empty());
+    AgentExecutor executor = executorForIdentityTest();
+    RequestContext ctx = createRequestContext();
+    when(ctx.getCallContext())
+        .thenReturn(
+            new ServerCallContext(
+                new User() {
+                  @Override
+                  public boolean isAuthenticated() {
+                    return true;
+                  }
+
+                  @Override
+                  public String getUsername() {
+                    return "operator";
+                  }
+                },
+                ImmutableMap.of(),
+                ImmutableSet.of()));
+
+    executor.execute(ctx, eventQueue);
+
+    CallerIdentity caller =
+        testAgent.lastInvocationContext.runConfig().callerIdentity().orElseThrow();
+    assertThat(caller.authenticated()).isTrue();
+    assertThat(caller.name()).hasValue("operator");
+  }
+
+  @Test
+  public void execute_withUnauthenticatedCaller_stampsUnauthenticated() {
+    testAgent.setEventsToEmit(Flowable.empty());
+    AgentExecutor executor = executorForIdentityTest();
+    RequestContext ctx = createRequestContext();
+    when(ctx.getCallContext())
+        .thenReturn(
+            new ServerCallContext(
+                new User() {
+                  @Override
+                  public boolean isAuthenticated() {
+                    return false;
+                  }
+
+                  @Override
+                  public String getUsername() {
+                    return "";
+                  }
+                },
+                ImmutableMap.of(),
+                ImmutableSet.of()));
+
+    executor.execute(ctx, eventQueue);
+
+    CallerIdentity caller =
+        testAgent.lastInvocationContext.runConfig().callerIdentity().orElseThrow();
+    assertThat(caller.authenticated()).isFalse();
+    assertThat(caller.name()).isEmpty();
+  }
+
+  @Test
+  public void execute_withoutCallContext_stampsUnauthenticated() {
+    testAgent.setEventsToEmit(Flowable.empty());
+    AgentExecutor executor = executorForIdentityTest();
+
+    executor.execute(createRequestContext(), eventQueue);
+
+    CallerIdentity caller =
+        testAgent.lastInvocationContext.runConfig().callerIdentity().orElseThrow();
+    assertThat(caller.authenticated()).isFalse();
+  }
+
+  private AgentExecutor executorForIdentityTest() {
+    return new AgentExecutor.Builder()
+        .agentExecutorConfig(AgentExecutorConfig.builder().build())
+        .app(App.builder().name("test_app").rootAgent(testAgent).build())
+        .sessionService(new InMemorySessionService())
+        .artifactService(new InMemoryArtifactService())
+        .build();
   }
 
   private RequestContext createRequestContext() {

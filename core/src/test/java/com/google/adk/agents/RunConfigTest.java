@@ -187,4 +187,20 @@ public final class RunConfigTest {
     assertThat(runConfig.avatarConfig().customizedAvatar().get().imageMimeType())
         .hasValue("image/jpeg");
   }
+
+  @Test
+  public void callerIdentity_default_isAbsent() {
+    assertThat(RunConfig.builder().build().callerIdentity()).isEmpty();
+  }
+
+  @Test
+  public void copyBuilder_preservesCallerIdentity() {
+    // RunConfig.builder(RunConfig) is hand-written, so a new field is dropped unless added there.
+    RunConfig original =
+        RunConfig.builder().callerIdentity(CallerIdentity.authenticatedAs("operator")).build();
+
+    RunConfig copy = RunConfig.builder(original).build();
+
+    assertThat(copy.callerIdentity()).hasValue(CallerIdentity.authenticatedAs("operator"));
+  }
 }

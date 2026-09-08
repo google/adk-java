@@ -22,9 +22,13 @@ import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.Arrays.stream;
 
+import com.google.adk.agents.CallerIdentity;
+import com.google.adk.agents.ConfirmationPolicy;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
@@ -133,6 +137,51 @@ public class RequestConfirmationLlmRequestProcessorTest {
           CONFIRMATION_REQUESTED_EVENT,
           REQUEST_CONFIRMATION_EVENT,
           USER_CONFIRMATION_EVENT);
+
+  private static final String SECOND_ORIGINAL_FUNCTION_CALL_ID = "second_original_fc_id";
+  private static final String SECOND_FUNCTION_CALL_ID = "second_fc_id";
+  private static final ImmutableMap<String, Object> SECOND_ORIGINAL_FUNCTION_CALL_ARGS =
+      ImmutableMap.of("say", "goodbye");
+  private static final FunctionCall SECOND_FUNCTION_CALL =
+      FunctionCall.builder()
+          .id(SECOND_FUNCTION_CALL_ID)
+          .name(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+          .args(
+              ImmutableMap.of(
+                  "originalFunctionCall",
+                  ImmutableMap.of(
+                      "id",
+                      Optional.of(SECOND_ORIGINAL_FUNCTION_CALL_ID),
+                      "name",
+                      Optional.of(ECHO_TOOL_NAME),
+                      "args",
+                      Optional.of(SECOND_ORIGINAL_FUNCTION_CALL_ARGS))))
+          .build();
+
+  private static final Event SECOND_ORIGINAL_FUNCTION_CALL_EVENT =
+      functionCallEvent(
+          AGENT_NAME,
+          FunctionCall.builder()
+              .id(SECOND_ORIGINAL_FUNCTION_CALL_ID)
+              .name(ECHO_TOOL_NAME)
+              .args(SECOND_ORIGINAL_FUNCTION_CALL_ARGS)
+              .build());
+
+  private static final Event SECOND_CONFIRMATION_REQUESTED_EVENT =
+      confirmationRequestedEvent(SECOND_ORIGINAL_FUNCTION_CALL_ID);
+
+  private static final Event SECOND_REQUEST_CONFIRMATION_EVENT =
+      functionCallEvent(AGENT_NAME, SECOND_FUNCTION_CALL);
+
+  /** One user event approving both pending calls at once. */
+  private static final Event BOTH_CONFIRMATIONS_USER_EVENT =
+      Event.builder()
+          .author("user")
+          .content(
+              Content.fromParts(
+                  confirmationResponsePart(FUNCTION_CALL_ID),
+                  confirmationResponsePart(SECOND_FUNCTION_CALL_ID)))
+          .build();
 
   private static final RequestConfirmationLlmRequestProcessor processor =
       new RequestConfirmationLlmRequestProcessor();
@@ -439,11 +488,213 @@ public class RequestConfirmationLlmRequestProcessorTest {
         .build();
   }
 
-  private static Event functionCallEvent(String author, FunctionCall functionCall) {
+  private static Event functionCallEvent(String author, FunctionCall... functionCalls) {
     return Event.builder()
         .author(author)
-        .content(Content.fromParts(Part.builder().functionCall(functionCall).build()))
+        .content(
+            Content.fromParts(
+                stream(functionCalls)
+                    .map(functionCall -> Part.builder().functionCall(functionCall).build())
+                    .toArray(Part[]::new)))
         .build();
+  }
+
+  /** The tool's own response asking for the call with {@code originalCallId} to be confirmed. */
+  private static Event confirmationRequestedEvent(String originalCallId) {
+    return Event.builder()
+        .author(AGENT_NAME)
+        .content(
+            Content.fromParts(
+                Part.builder()
+                    .functionResponse(
+                        FunctionResponse.builder()
+                            .id(originalCallId)
+                            .name(ECHO_TOOL_NAME)
+                            .response(ImmutableMap.of("error", "requires confirmation"))
+                            .build())
+                    .build()))
+        .actions(
+            EventActions.builder()
+                .requestedToolConfirmations(
+                    ImmutableMap.of(
+                        originalCallId, ToolConfirmation.builder().hint("please confirm").build()))
+                .build())
+        .build();
+  }
+
+  /** A user's approval of the confirmation call {@code confirmationCallId}. */
+  private static Part confirmationResponsePart(String confirmationCallId) {
+    return Part.builder()
+        .functionResponse(
+            FunctionResponse.builder()
+                .id(confirmationCallId)
+                .name(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+                .response(ImmutableMap.of("confirmed", true))
+                .build())
+        .build();
+  }
+
+  @Test
+  public void runAsync_unauthenticatedSenderUnderAuthenticatedOnlyPolicy_doesNotCallFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    assertRefusal(
+        resumedEventsWithPolicy(
+            agent,
+            session,
+            RunConfig.builder().callerIdentity(CallerIdentity.unauthenticated()).build(),
+            ConfirmationPolicy.AUTHENTICATED_ONLY));
+  }
+
+  @Test
+  public void runAsync_authenticatedSenderUnderAuthenticatedOnlyPolicy_callsOriginalFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    ImmutableList<Event> resumed =
+        resumedEventsWithPolicy(
+            agent,
+            session,
+            RunConfig.builder().callerIdentity(CallerIdentity.authenticatedAs("operator")).build(),
+            ConfirmationPolicy.AUTHENTICATED_ONLY);
+
+    assertThat(resumed).hasSize(1);
+    FunctionResponse fr = resumed.get(0).functionResponses().get(0);
+    assertThat(fr.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
+    assertThat(fr.response()).hasValue(ImmutableMap.of("result", ORIGINAL_FUNCTION_CALL_ARGS));
+  }
+
+  @Test
+  public void runAsync_defaultPolicyAndNoTransportIdentity_stillCallsOriginalFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    ImmutableList<Event> resumed =
+        resumedEventsWithPolicy(
+            agent, session, RunConfig.builder().build(), ConfirmationPolicy.REJECT_UNAUTHENTICATED);
+
+    assertThat(resumed).hasSize(1);
+    assertThat(resumed.get(0).functionResponses().get(0).response())
+        .hasValue(ImmutableMap.of("result", ORIGINAL_FUNCTION_CALL_ARGS));
+  }
+
+  @Test
+  public void runAsync_defaultPolicyAndUnauthenticatedSender_doesNotCallFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    assertRefusal(
+        resumedEventsWithPolicy(
+            agent,
+            session,
+            RunConfig.builder().callerIdentity(CallerIdentity.unauthenticated()).build(),
+            ConfirmationPolicy.REJECT_UNAUTHENTICATED));
+  }
+
+  @Test
+  public void runAsync_noCallerIdentityUnderAuthenticatedOnlyPolicy_doesNotCallFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    assertRefusal(
+        resumedEventsWithPolicy(
+            agent, session, RunConfig.builder().build(), ConfirmationPolicy.AUTHENTICATED_ONLY));
+  }
+
+  @Test
+  public void runAsync_refusedConfirmation_respondsWithAnError() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    ImmutableList<Event> events =
+        resumedEventsWithPolicy(
+            agent,
+            session,
+            RunConfig.builder().callerIdentity(CallerIdentity.unauthenticated()).build(),
+            ConfirmationPolicy.REJECT_UNAUTHENTICATED);
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).author()).isEqualTo(AGENT_NAME);
+    FunctionResponse response = events.get(0).functionResponses().get(0);
+    assertThat(response.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
+    assertThat(response.name()).hasValue(ECHO_TOOL_NAME);
+    assertThat(response.response().get()).containsKey("error");
+    assertThat((String) response.response().get().get("error")).doesNotContain("hello");
+  }
+
+  @Test
+  public void runAsync_refusedConfirmationAlreadyAnswered_isNotReExamined() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+    RunConfig runConfig =
+        RunConfig.builder().callerIdentity(CallerIdentity.unauthenticated()).build();
+
+    ImmutableList<Event> firstPass =
+        resumedEventsWithPolicy(
+            agent, session, runConfig, ConfirmationPolicy.REJECT_UNAUTHENTICATED);
+    session.events().addAll(firstPass);
+    ImmutableList<Event> secondPass =
+        resumedEventsWithPolicy(
+            agent, session, runConfig, ConfirmationPolicy.REJECT_UNAUTHENTICATED);
+
+    assertThat(firstPass).hasSize(1);
+    assertThat(secondPass).isEmpty();
+  }
+
+  @Test
+  public void runAsync_multipleConfirmationsRefusedInOnePass_reportsThemInOneEvent() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session =
+        Session.builder("session_id")
+            .events(
+                ImmutableList.of(
+                    SECOND_ORIGINAL_FUNCTION_CALL_EVENT,
+                    SECOND_CONFIRMATION_REQUESTED_EVENT,
+                    SECOND_REQUEST_CONFIRMATION_EVENT,
+                    ORIGINAL_FUNCTION_CALL_EVENT,
+                    CONFIRMATION_REQUESTED_EVENT,
+                    REQUEST_CONFIRMATION_EVENT,
+                    BOTH_CONFIRMATIONS_USER_EVENT))
+            .build();
+
+    ImmutableList<Event> events =
+        resumedEventsWithPolicy(
+            agent,
+            session,
+            RunConfig.builder().callerIdentity(CallerIdentity.unauthenticated()).build(),
+            ConfirmationPolicy.REJECT_UNAUTHENTICATED);
+
+    assertThat(events).hasSize(1);
+    ImmutableList<FunctionResponse> responses = events.get(0).functionResponses();
+    ImmutableList<String> refusedIds =
+        responses.stream().map(fr -> fr.id().orElse("")).collect(toImmutableList());
+    assertThat(refusedIds)
+        .containsExactly(ORIGINAL_FUNCTION_CALL_ID, SECOND_ORIGINAL_FUNCTION_CALL_ID);
+    responses.forEach(fr -> assertThat(fr.response().get()).containsKey("error"));
+  }
+
+  private static void assertRefusal(ImmutableList<Event> events) {
+    assertThat(events).hasSize(1);
+    FunctionResponse response = events.get(0).functionResponses().get(0);
+    assertThat(response.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
+    assertThat(response.response().get()).containsKey("error");
+  }
+
+  private static ImmutableList<Event> resumedEventsWithPolicy(
+      LlmAgent agent, Session session, RunConfig runConfig, ConfirmationPolicy approver) {
+    InvocationContext context =
+        InvocationContext.builder()
+            .pluginManager(new PluginManager())
+            .invocationId(InvocationContext.newInvocationContextId())
+            .agent(agent)
+            .session(session)
+            .sessionService(sessionService)
+            .runConfig(runConfig)
+            .confirmationPolicy(approver)
+            .build();
+    return ImmutableList.copyOf(
+        processor.processRequest(context, LlmRequest.builder().build()).blockingGet().events());
   }
 
   private static InvocationContext buildInvocationContext(LlmAgent agent, Session session) {
