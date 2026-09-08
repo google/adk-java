@@ -25,6 +25,7 @@ import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.web.config.DevUiAssets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -109,48 +110,33 @@ public class AdkWebServer implements WebMvcConfigurer {
   }
 
   /**
-   * Configures resource handlers for serving static content (like the Dev UI). Maps requests
-   * starting with "/dev-ui/" to the directory specified by the 'adk.web.ui.dir' system property.
+   * Maps requests under "/dev-ui/" to the directory named by the 'adk.web.ui.dir' property, or to
+   * the bundled copy on the classpath when that is unset.
    */
   @Override
   public void addResourceHandlers(ResourceHandlerRegistry registry) {
-    if (webUiDir != null && !webUiDir.isEmpty()) {
-      // Ensure the path uses forward slashes and ends with a slash
-      String location = webUiDir.replace("\\", "/");
-      if (!location.startsWith("file:")) {
-        location = "file:" + location; // Ensure file: prefix
-      }
-      if (!location.endsWith("/")) {
-        location += "/";
-      }
-      log.debug("Mapping URL path /** to static resources at location: {}", location);
-      registry
-          .addResourceHandler("/**")
-          .addResourceLocations(location)
-          .setCachePeriod(0)
-          .resourceChain(true);
-
-    } else {
-      log.debug(
-          "System property 'adk.web.ui.dir' or config 'adk.web.ui.dir' is not set. Mapping URL path"
-              + " /** to classpath:/browser/");
-      registry
-          .addResourceHandler("/**")
-          .addResourceLocations("classpath:/browser/")
-          .setCachePeriod(0)
-          .resourceChain(true);
-    }
+    String location = DevUiAssets.assetRoot(webUiDir);
+    log.debug("Mapping URL path /dev-ui/** to static resources at location: {}", location);
+    registry
+        .addResourceHandler("/dev-ui/**")
+        .addResourceLocations(location)
+        .setCachePeriod(0)
+        .resourceChain(true);
   }
 
   /**
-   * Configures simple automated controllers: - Redirects the root path "/" to "/dev-ui". - Forwards
-   * requests to "/dev-ui" to "/dev-ui/index.html" so the ResourceHandler serves it.
+   * Configures simple automated controllers: "/" and "/dev-ui" both redirect to "/dev-ui/", which
+   * forwards to the UI's index.html. The trailing slash is required: index.html declares a {@code
+   * <base href="./">}, so served from "/dev-ui" the app resolves its own router path to "dev-ui"
+   * and matches none of its routes. The query string is carried across because the UI selects its
+   * agent from {@code ?app=} and the sample READMEs send users to the slashless "/dev-ui", so a
+   * redirect that dropped it would silently ignore the selection.
    */
   @Override
   public void addViewControllers(ViewControllerRegistry registry) {
-    registry.addRedirectViewController("/", "/dev-ui");
-    registry.addViewController("/dev-ui").setViewName("forward:/index.html");
-    registry.addViewController("/dev-ui/").setViewName("forward:/index.html");
+    registry.addRedirectViewController("/", "/dev-ui/").setKeepQueryParams(true);
+    registry.addRedirectViewController("/dev-ui", "/dev-ui/").setKeepQueryParams(true);
+    registry.addViewController("/dev-ui/").setViewName("forward:/dev-ui/index.html");
   }
 
   /**

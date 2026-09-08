@@ -17,6 +17,7 @@
 package com.google.adk.web;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -40,22 +41,52 @@ public class AdkWebServerUITest {
 
   @Autowired private MockMvc mockMvc;
 
-  @Test
-  public void rootShouldRedirectToDevUi() throws Exception {
+  @ParameterizedTest
+  @ValueSource(strings = {"/", "/dev-ui"})
+  public void devUiEntryPoints_shouldRedirectToTrailingSlashForm(String path) throws Exception {
+    // index.html declares <base href="./">, which only resolves correctly from "/dev-ui/".
     mockMvc
-        .perform(get("/"))
+        .perform(get(path))
         .andExpect(status().is3xxRedirection())
-        .andExpect(redirectedUrl("/dev-ui"));
+        .andExpect(redirectedUrl("/dev-ui/"));
+  }
+
+  @Test
+  public void devUiRoot_shouldForwardToIndexHtml() throws Exception {
+    // MockMvc records a forward without running it, so assert the target, not a status.
+    mockMvc.perform(get("/dev-ui/")).andExpect(forwardedUrl("/dev-ui/index.html"));
+  }
+
+  @Test
+  public void devUiIndexHtml_shouldBeServed() throws Exception {
+    // The other half: the target the forward names actually resolves through the mount.
+    mockMvc.perform(get("/dev-ui/index.html")).andExpect(status().isOk());
+  }
+
+  @Test
+  public void devUiAssets_shouldBeServedBelowDevUi() throws Exception {
+    mockMvc.perform(get("/dev-ui/adk_favicon.svg")).andExpect(status().isOk());
   }
 
   @ParameterizedTest
-  @ValueSource(strings = {"/dev-ui", "/dev-ui/"})
-  public void devUiEndpointsShouldReturnOk(String path) throws Exception {
-    mockMvc.perform(get(path)).andExpect(status().isOk());
+  @ValueSource(strings = {"/", "/dev-ui"})
+  public void devUiEntryPoints_shouldKeepQueryString(String path) throws Exception {
+    // The UI picks its agent from ?app=, and the sample READMEs send users to "/dev-ui".
+    mockMvc
+        .perform(get(path + "?app=my-agent"))
+        .andExpect(status().is3xxRedirection())
+        .andExpect(redirectedUrl("/dev-ui/?app=my-agent"));
   }
 
   @Test
-  public void nonExistentUiPageShouldReturnNotFound() throws Exception {
-    mockMvc.perform(get("/non-existent-page")).andExpect(status().isNotFound());
+  public void devUiAssets_shouldNotBeServedAtRoot() throws Exception {
+    // Narrowing the handler from "/**" to "/dev-ui/**" makes this deliberately unreachable.
+    mockMvc.perform(get("/adk_favicon.svg")).andExpect(status().isNotFound());
+  }
+
+  @Test
+  public void nonExistentDevUiPath_shouldReturnNotFound() throws Exception {
+    // No SPA fallback, deliberately: a deep link 404s rather than serving index.html.
+    mockMvc.perform(get("/dev-ui/non-existent-page")).andExpect(status().isNotFound());
   }
 }
