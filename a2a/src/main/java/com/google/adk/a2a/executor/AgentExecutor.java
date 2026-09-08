@@ -20,6 +20,7 @@ import static java.util.Objects.requireNonNull;
 import com.google.adk.a2a.converters.EventConverter;
 import com.google.adk.a2a.converters.PartConverter;
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.CallerIdentity;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
 import com.google.adk.artifacts.BaseArtifactService;
@@ -34,7 +35,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
+import io.a2a.server.ServerCallContext;
 import io.a2a.server.agentexecution.RequestContext;
+import io.a2a.server.auth.User;
 import io.a2a.server.events.EventQueue;
 import io.a2a.server.tasks.TaskUpdater;
 import io.a2a.spec.Artifact;
@@ -298,7 +301,7 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
    * RunConfig#customMetadata()}.
    */
   private RunConfig runConfigWithA2aMetadata(RequestContext ctx) {
-    RunConfig runConfig = agentExecutorConfig.runConfig();
+    RunConfig runConfig = withCallerIdentity(agentExecutorConfig.runConfig(), ctx);
     MessageSendParams params = ctx.getParams();
     Map<String, Object> requestMetadata = params == null ? null : params.metadata();
     if (requestMetadata == null || requestMetadata.isEmpty()) {
@@ -307,6 +310,24 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     Map<String, Object> customMetadata = new HashMap<>(runConfig.customMetadata());
     customMetadata.put(A2A_METADATA_KEY, requestMetadata);
     return runConfig.toBuilder().customMetadata(customMetadata).build();
+  }
+
+  /**
+   * Copies the caller the transport authenticated onto the run config, so a {@link
+   * com.google.adk.agents.ConfirmationApprover} can tell an operator from a peer.
+   *
+   * <p>The peer-supplied context id this class derives a user id from says nothing about who the
+   * sender is; only the server call context does.
+   */
+  private static RunConfig withCallerIdentity(RunConfig runConfig, RequestContext ctx) {
+    ServerCallContext callContext = ctx.getCallContext();
+    User user = callContext == null ? null : callContext.getUser();
+    if (user == null) {
+      return runConfig.toBuilder().callerIdentity(CallerIdentity.unauthenticated()).build();
+    }
+    return runConfig.toBuilder()
+        .callerIdentity(CallerIdentity.of(user.isAuthenticated(), user.getUsername()))
+        .build();
   }
 
   private Maybe<Session> prepareSession(

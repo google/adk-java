@@ -117,6 +117,14 @@ public abstract class RunConfig {
 
   public abstract ImmutableMap<String, Object> customMetadata();
 
+  /**
+   * Who the transport authenticated as the sender of this request, when it authenticates at all.
+   *
+   * <p>Set by the server layer, not by application code. Consulted by the app's {@code
+   * ConfirmationApprover}.
+   */
+  public abstract Optional<CallerIdentity> callerIdentity();
+
   public abstract Builder toBuilder();
 
   public static Builder builder() {
@@ -146,7 +154,8 @@ public abstract class RunConfig {
         .autoCreateSession(runConfig.autoCreateSession())
         .groupFunctionResponsesInHistoryOverride(
             runConfig.groupFunctionResponsesInHistoryOverride())
-        .customMetadata(runConfig.customMetadata());
+        .customMetadata(runConfig.customMetadata())
+        .callerIdentity(runConfig.callerIdentity());
   }
 
   /** Builder for {@link RunConfig}. */
@@ -173,6 +182,12 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder avatarConfig(@Nullable AvatarConfig avatarConfig);
+
+    @CanIgnoreReturnValue
+    public abstract Builder callerIdentity(Optional<CallerIdentity> callerIdentity);
+
+    @CanIgnoreReturnValue
+    public abstract Builder callerIdentity(CallerIdentity callerIdentity);
 
     @Deprecated
     @CanIgnoreReturnValue

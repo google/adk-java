@@ -17,6 +17,7 @@
 package com.google.adk.apps;
 
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.ConfirmationApprover;
 import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.Role;
 import com.google.adk.plugins.Plugin;
@@ -45,6 +46,7 @@ public class App {
   private final @Nullable EventsCompactionConfig eventsCompactionConfig;
   private final @Nullable ContextCacheConfig contextCacheConfig;
   private final @Nullable ResumabilityConfig resumabilityConfig;
+  private final ConfirmationApprover confirmationApprover;
 
   private App(
       String name,
@@ -52,13 +54,15 @@ public class App {
       List<? extends Plugin> plugins,
       @Nullable EventsCompactionConfig eventsCompactionConfig,
       @Nullable ContextCacheConfig contextCacheConfig,
-      @Nullable ResumabilityConfig resumabilityConfig) {
+      @Nullable ResumabilityConfig resumabilityConfig,
+      ConfirmationApprover confirmationApprover) {
     this.name = name;
     this.rootAgent = rootAgent;
     this.plugins = ImmutableList.copyOf(plugins);
     this.eventsCompactionConfig = eventsCompactionConfig;
     this.contextCacheConfig = contextCacheConfig;
     this.resumabilityConfig = resumabilityConfig;
+    this.confirmationApprover = confirmationApprover;
   }
 
   public String name() {
@@ -87,6 +91,14 @@ public class App {
     return resumabilityConfig;
   }
 
+  /**
+   * Returns the policy deciding whether a request's sender may satisfy a tool confirmation.
+   * Defaults to {@link ConfirmationApprover#REJECT_UNAUTHENTICATED}.
+   */
+  public ConfirmationApprover confirmationApprover() {
+    return confirmationApprover;
+  }
+
   /** Builder for {@link App}. */
   public static class Builder {
     private String name;
@@ -95,6 +107,7 @@ public class App {
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
     @Nullable private ContextCacheConfig contextCacheConfig;
     private @Nullable ResumabilityConfig resumabilityConfig;
+    private ConfirmationApprover confirmationApprover = ConfirmationApprover.REJECT_UNAUTHENTICATED;
 
     @CanIgnoreReturnValue
     public Builder name(String name) {
@@ -145,6 +158,13 @@ public class App {
       return this;
     }
 
+    /** Sets who may satisfy a tool confirmation for this app. */
+    @CanIgnoreReturnValue
+    public Builder confirmationApprover(ConfirmationApprover confirmationApprover) {
+      this.confirmationApprover = confirmationApprover;
+      return this;
+    }
+
     public App build() {
       if (name == null) {
         throw new IllegalStateException("App name must be provided.");
@@ -154,7 +174,13 @@ public class App {
       }
       validateAppName(name);
       return new App(
-          name, rootAgent, plugins, eventsCompactionConfig, contextCacheConfig, resumabilityConfig);
+          name,
+          rootAgent,
+          plugins,
+          eventsCompactionConfig,
+          contextCacheConfig,
+          resumabilityConfig,
+          confirmationApprover);
     }
   }
 
