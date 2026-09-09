@@ -19,12 +19,15 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
+import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -175,13 +178,19 @@ public class ParallelAgent extends BaseAgent {
       return Flowable.empty();
     }
 
+    ImmutableSet<String> directSubAgentNames =
+        currentSubAgents.stream()
+            .map(BaseAgent::name)
+            .filter(Objects::nonNull)
+            .collect(ImmutableSet.toImmutableSet());
+
     var updatedInvocationContext = setBranchForCurrentAgent(this, invocationContext);
     List<Flowable<Event>> agentFlowables = new ArrayList<>();
     for (BaseAgent subAgent : currentSubAgents) {
       agentFlowables.add(subAgent.runAsync(updatedInvocationContext).subscribeOn(scheduler));
     }
     return Flowable.merge(agentFlowables)
-        .takeUntil((Event event) -> event.actions().escalate().orElse(false));
+        .takeUntil((Event event) -> asksThisAgentToExit(event, directSubAgentNames));
   }
 
   /**
@@ -194,5 +203,15 @@ public class ParallelAgent extends BaseAgent {
   protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
     return Flowable.error(
         new UnsupportedOperationException("runLive is not defined for ParallelAgent yet."));
+  }
+
+  /**
+   * Returns true if this ParallelAgent should stop remaining sibling branches.
+   *
+   * <p>Only escalate events from a direct sub-agent count. Escalate from a nested agent (for
+   * example inside a LoopAgent) must not cancel sibling branches.
+   */
+  private static boolean asksThisAgentToExit(Event event, Set<String> directSubAgentNames) {
+    return event.actions().escalate().orElse(false) && directSubAgentNames.contains(event.author());
   }
 }
