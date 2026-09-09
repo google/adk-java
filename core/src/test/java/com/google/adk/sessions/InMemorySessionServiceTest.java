@@ -16,6 +16,7 @@
 package com.google.adk.sessions;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
@@ -112,6 +113,48 @@ public final class InMemorySessionServiceTest {
     assertThat(listedSession.state()).containsEntry("_app_appKey", "appValue");
     assertThat(listedSession.state()).containsEntry("_user_userKey", "userValue");
     assertThat(listedSession.state()).containsEntry("temp:tempKey", "tempValue");
+  }
+
+  @Test
+  public void createSession_duplicateSessionId_throwsAndKeepsExistingSession() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    HashMap<String, Object> initialState = new HashMap<>();
+    initialState.put("sessionKey", "sessionValue");
+    Session session =
+        sessionService
+            .createSession("app-name", "user-id", initialState, "session-1")
+            .blockingGet();
+    var unused = sessionService.appendEvent(session, Event.builder().build()).blockingGet();
+
+    Single<Session> duplicate =
+        sessionService.createSession("app-name", "user-id", new HashMap<>(), "session-1");
+
+    assertThrows(SessionAlreadyExistsException.class, duplicate::blockingGet);
+
+    assertThat(sessionService.listEvents("app-name", "user-id", "session-1").blockingGet().events())
+        .hasSize(1);
+    Session stored =
+        sessionService
+            .getSession("app-name", "user-id", "session-1", Optional.empty())
+            .blockingGet();
+    assertThat(stored.state()).containsEntry("sessionKey", "sessionValue");
+  }
+
+  @Test
+  public void createSession_sameSessionIdDifferentUser_isAllowed() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    var unused =
+        sessionService
+            .createSession("app-name", "user-a", new HashMap<>(), "session-1")
+            .blockingGet();
+
+    Session other =
+        sessionService
+            .createSession("app-name", "user-b", new HashMap<>(), "session-1")
+            .blockingGet();
+
+    assertThat(other.id()).isEqualTo("session-1");
+    assertThat(other.userId()).isEqualTo("user-b");
   }
 
   @Test
