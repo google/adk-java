@@ -18,16 +18,14 @@ package com.google.adk.tokt.codecs
 
 import com.google.adk.agents.RunConfig as JavaRunConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
+import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
 
 /**
- * Converts the Kotlin `kt.agents.RunConfig` to the ADK Java [JavaRunConfig] a bridged Java
- * component reads through its invocation context.
+ * Converts between the Kotlin `kt.agents.RunConfig` and the ADK Java [JavaRunConfig].
  *
- * Only the three settings both frameworks model cross: streaming mode, the LLM call budget, and
- * custom metadata. The Java-only settings (response modalities, speech and avatar config, audio
- * transcription, tool execution mode, save-input-blobs, auto-create-session, and the
- * group-function-responses override) keep their Java defaults, as the Kotlin engine has nothing to
- * source them from.
+ * Only three settings cross both ways: streaming mode, the LLM call budget, and custom metadata.
+ * [toJava] leaves the Java-only settings at their defaults; [fromJava] instead rejects a Java
+ * setting the engine cannot honor rather than dropping it silently.
  */
 internal object RunConfigCodec {
 
@@ -42,4 +40,34 @@ internal object RunConfigCodec {
       .maxLlmCalls(config.maxLlmCalls)
       .customMetadata(config.customMetadata.orEmpty())
       .build()
+
+  /** Returns the Kotlin [KtRunConfig] view of the Java [config]. */
+  @Suppress(
+    "deprecation"
+  ) // Reads the deprecated groupFunctionResponsesInHistoryOverride to reject it.
+  fun fromJava(config: JavaRunConfig): KtRunConfig {
+    val unsupported = buildList {
+      if (config.streamingMode() == JavaRunConfig.StreamingMode.BIDI) add("streamingMode=BIDI")
+      if (config.saveInputBlobsAsArtifacts()) add("saveInputBlobsAsArtifacts")
+      if (config.toolExecutionMode() != JavaRunConfig.ToolExecutionMode.NONE)
+        add("toolExecutionMode")
+      if (config.responseModalities().isNotEmpty()) add("responseModalities")
+      if (config.speechConfig() != null) add("speechConfig")
+      if (config.avatarConfig() != null) add("avatarConfig")
+      if (config.outputAudioTranscription() != null) add("outputAudioTranscription")
+      if (config.inputAudioTranscription() != null) add("inputAudioTranscription")
+      if (config.groupFunctionResponsesInHistoryOverride().isPresent)
+        add("groupFunctionResponsesInHistoryOverride")
+    }
+    require(unsupported.isEmpty()) {
+      "RunConfig settings not supported by the ADK Kotlin engine: $unsupported"
+    }
+    return KtRunConfig(
+      // Only NONE and SSE reach here; BIDI is rejected above.
+      streamingMode =
+        enumByNameOrNull<KtStreamingMode>(config.streamingMode().name) ?: KtStreamingMode.NONE,
+      maxLlmCalls = config.maxLlmCalls(),
+      customMetadata = config.customMetadata().takeIf { it.isNotEmpty() },
+    )
+  }
 }

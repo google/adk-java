@@ -19,6 +19,7 @@ package com.google.adk.tokt
 import com.google.adk.agents.BaseAgent as JavaBaseAgent
 import com.google.adk.agents.CallbackContext as JavaCallbackContext
 import com.google.adk.agents.InvocationContext as JavaInvocationContext
+import com.google.adk.agents.LiveRequestQueue
 import com.google.adk.agents.ReadonlyContext as JavaReadonlyContext
 import com.google.adk.agents.RunConfig as JavaRunConfig
 import com.google.adk.artifacts.InMemoryArtifactService as JavaInMemoryArtifactService
@@ -35,6 +36,7 @@ import com.google.adk.kt.events.Event as KtEvent
 import com.google.adk.kt.events.EventActions as KtEventActions
 import com.google.adk.kt.models.LlmResponse as KtLlmResponse
 import com.google.adk.kt.runners.InMemoryRunner as KtInMemoryRunner
+import com.google.adk.kt.runners.Runner as KtRunner
 import com.google.adk.kt.sessions.GetSessionConfig as KtGetSessionConfig
 import com.google.adk.kt.sessions.SessionKey as KtSessionKey
 import com.google.adk.kt.sessions.State as KtState
@@ -74,6 +76,7 @@ import com.google.adk.models.LlmRequest as JavaLlmRequest
 import com.google.adk.models.LlmResponse as JavaLlmResponse
 import com.google.adk.plugins.BasePlugin as JavaBasePlugin
 import com.google.adk.plugins.PluginManager as JavaPluginManager
+import com.google.adk.runner.Runner as JavaRunner
 import com.google.adk.sessions.BaseSessionService as JavaBaseSessionService
 import com.google.adk.sessions.GetSessionConfig as JavaGetSessionConfig
 import com.google.adk.sessions.InMemorySessionService as JavaInMemorySessionService
@@ -86,6 +89,7 @@ import com.google.adk.tokt.codecs.FunctionDeclarationCodec
 import com.google.adk.tokt.codecs.GroundingMetadataCodec
 import com.google.adk.tokt.codecs.KtEventActionsToJavaView
 import com.google.adk.tokt.codecs.PartCodec
+import com.google.adk.tokt.codecs.RunConfigCodec
 import com.google.adk.tokt.codecs.SchemaCodec
 import com.google.adk.tokt.codecs.SessionCodec
 import com.google.adk.tokt.codecs.agentStateFromJava
@@ -136,7 +140,9 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -570,6 +576,16 @@ class KtRunnerInteropTest {
       throw UnsupportedOperationException()
   }
 
+  /** A Kotlin runner that records whether [close] was called, delegating everything else. */
+  private class ClosingSpyKtRunner(private val delegate: KtRunner) : KtRunner by delegate {
+    var closed = false
+
+    override fun close() {
+      closed = true
+      delegate.close()
+    }
+  }
+
   @Test
   fun javaAdkToKt_convertsEntireCollections() {
     // Tools: order preserved, each Java tool wrapped as a Kotlin tool.
@@ -674,6 +690,427 @@ class KtRunnerInteropTest {
       listOf("done"),
       parts?.map { it.text },
       "the executableCode-only part should be dropped, leaving just the text part",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_runsAKotlinRunner_throughTheJavaRunnerApi() {
+    // A Kotlin-engine runner, wrapped and then driven exactly like an ADK Java Runner.
+    val ktRunner =
+      KtInMemoryRunner(
+        agent =
+          KtLlmAgent(
+            name = "a",
+            model =
+              JavaAdkToKt.asKtModel(
+                SequentialJavaModel(listOf(modelText("done from the kotlin engine")))
+              ),
+          ),
+        appName = "app",
+      )
+    val javaRunner: JavaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+
+    val events: List<JavaEvent> =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+          JavaRunConfig.builder().autoCreateSession(true).build(),
+        )
+        .toList()
+        .blockingGet()
+
+    // Events come back Java-shaped (genai Content), converted from the Kotlin engine's output.
+    assertEquals(
+      "done from the kotlin engine",
+      events.firstNotNullOfOrNull {
+        it.content().getOrNull()?.parts()?.getOrNull()?.firstOrNull()?.text()?.getOrNull()
+      },
+      "the Java-facing runAsync should stream the Kotlin engine's events",
+    )
+    assertEquals("app", javaRunner.appName(), "appName should report the Kotlin runner's")
+
+    // The run persisted through the Kotlin runner's own session service, readable via the
+    // Java-facing accessor (the reverse session-service adapter).
+    val session =
+      javaRunner.sessionService().getSession("app", "u", "s", Optional.empty()).blockingGet()
+    assertTrue(
+      session != null && session.events().isNotEmpty(),
+      "the run should be persisted and visible through the Java sessionService()",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_nonDefaultRunConfig_reachesTheKotlinEngine() {
+    // A Java RunConfig set through the Java API must map onto the Kotlin engine; the plugin reads
+    // the config the engine actually received.
+    val plugin = RunConfigCapturingJavaPlugin()
+    val ktRunner =
+      KtInMemoryRunner(
+        app =
+          KtApp(
+            appName = "app",
+            rootAgent =
+              KtLlmAgent(
+                name = "a",
+                model = JavaAdkToKt.asKtModel(SequentialJavaModel(listOf(modelText("done")))),
+              ),
+            plugins = listOf(JavaAdkToKt.asKtPlugin(plugin)),
+          )
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+
+    val events =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+          JavaRunConfig.builder()
+            .streamingMode(JavaRunConfig.StreamingMode.SSE)
+            .maxLlmCalls(7)
+            .autoCreateSession(true)
+            .build(),
+        )
+        .toList()
+        .blockingGet()
+
+    assertTrue(events.isNotEmpty(), "the run should have produced events")
+    val seen = assertNotNull(plugin.seen, "the plugin should have been handed the run config")
+    assertEquals(JavaRunConfig.StreamingMode.SSE, seen.streamingMode(), "streamingMode should map")
+    assertEquals(7, seen.maxLlmCalls(), "maxLlmCalls should map")
+  }
+
+  @Test
+  fun asJavaRunner_runLiveErrors_andAgentReturnsAnInspectionView() {
+    val ktRunner =
+      KtInMemoryRunner(
+        agent =
+          KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+        appName = "app",
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+
+    // Live mode is not bridged; it must fail loudly through the stream (like the base Runner), not
+    // throw eagerly at the call site.
+    assertFailsWith<UnsupportedOperationException> {
+      javaRunner
+        .runLive("u", "s", LiveRequestQueue(), JavaRunConfig.builder().build())
+        .toList()
+        .blockingGet()
+    }
+    // agent() returns an inspection-only view of the Kotlin agent - readable, but not runnable.
+    assertEquals("a", javaRunner.agent().name(), "agent() should expose the Kotlin agent's name")
+
+    // The session-based runLive overload must fail the same way, through the stream.
+    val session = javaRunner.sessionService().createSession("app", "u", null, "s").blockingGet()
+    assertFailsWith<UnsupportedOperationException> {
+      javaRunner
+        .runLive(session, LiveRequestQueue(), JavaRunConfig.builder().build())
+        .toList()
+        .blockingGet()
+    }
+  }
+
+  @Test
+  fun asJavaRunner_pluginManager_listsUnwrappedJavaPlugins() {
+    // A Java plugin adapted onto the Kotlin runner is unwrapped back to the original instance, so a
+    // Java caller (e.g. an AgentTool with includePlugins) sees the real plugins.
+    val plugin = RunConfigCapturingJavaPlugin()
+    val ktRunner =
+      KtInMemoryRunner(
+        app =
+          KtApp(
+            appName = "app",
+            rootAgent =
+              KtLlmAgent(
+                name = "a",
+                model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList())),
+              ),
+            plugins = listOf(JavaAdkToKt.asKtPlugin(plugin)),
+          )
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+
+    assertSame(
+      plugin,
+      javaRunner.pluginManager().getPlugin("run_config_plugin").getOrNull(),
+      "the adapted Java plugin should be unwrapped to the original instance",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_pluginManager_registrationThrows() {
+    // The Kotlin engine's plugins are fixed at construction, so a late Java-side registration must
+    // fail loudly rather than silently never run.
+    val ktRunner =
+      KtInMemoryRunner(
+        agent =
+          KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+        appName = "app",
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+
+    assertFailsWith<UnsupportedOperationException> {
+      javaRunner.pluginManager().registerPlugin(CountingJavaPlugin())
+    }
+  }
+
+  @Test
+  fun asJavaRunner_artifactService_present_isBridgedFaithfully() {
+    val ktRunner =
+      KtInMemoryRunner(
+        agent =
+          KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+        appName = "app",
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+
+    // The runner's in-memory artifact service is bridged back faithfully: a save is visible to a
+    // later load through the same service.
+    val artifacts =
+      assertNotNull(javaRunner.artifactService(), "artifactService() should be present")
+    val version =
+      artifacts.saveArtifact("app", "u", "s", "note.txt", GenaiPart.fromText("v1")).blockingGet()
+    assertEquals(
+      "v1",
+      artifacts.loadArtifact("app", "u", "s", "note.txt").blockingGet()?.text()?.orElse(""),
+      "a bridged artifact save (version $version) should be readable through the same service",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_artifactService_absent_isNull() {
+    val ktRunner =
+      KtInMemoryRunner(
+        agent =
+          KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+        appName = "app",
+        artifactService = null,
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+
+    // No artifact service on the Kotlin runner: reported as null, mirroring its nullable field.
+    assertNull(
+      javaRunner.artifactService(),
+      "artifactService() should be null when the Kotlin runner has none",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_memoryService_absent_isNull() {
+    val ktRunner =
+      KtInMemoryRunner(
+        agent =
+          KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+        appName = "app",
+        memoryService = null,
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+
+    assertNull(
+      javaRunner.memoryService(),
+      "memoryService() should be null when the Kotlin runner has none",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_memoryService_present_isBridgedFaithfully() {
+    val ktRunner =
+      KtInMemoryRunner(
+        agent =
+          KtLlmAgent(
+            name = "a",
+            model = JavaAdkToKt.asKtModel(SequentialJavaModel(listOf(modelText("Paris")))),
+          ),
+        appName = "app",
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+
+    // Run once so the Kotlin runner persists a session, then index and search it back through the
+    // bridged Java memoryService() - present, and round-tripping faithfully.
+    javaRunner
+      .runAsync(
+        "u",
+        "s",
+        GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+        JavaRunConfig.builder().autoCreateSession(true).build(),
+      )
+      .blockingSubscribe()
+    val memory = assertNotNull(javaRunner.memoryService(), "memoryService() should be present")
+    val session =
+      javaRunner.sessionService().getSession("app", "u", "s", Optional.empty()).blockingGet()!!
+    memory.addSessionToMemory(session).blockingAwait()
+
+    assertTrue(
+      memory.searchMemory("app", "u", "Paris").blockingGet().memories().isNotEmpty(),
+      "a session indexed through the bridged memoryService() should be keyword-searchable",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_close_closesTheKotlinRunner() {
+    val ktRunner =
+      ClosingSpyKtRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+          appName = "app",
+        )
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+
+    javaRunner.close().blockingAwait()
+
+    assertTrue(ktRunner.closed, "close() should delegate to the Kotlin runner's close()")
+  }
+
+  @Test
+  fun asJavaRunner_missingSession_withoutAutoCreate_errors() {
+    // The Java Runner errors on a missing session unless autoCreateSession is set; the wrapper must
+    // honor that rather than silently creating one the way the Kotlin engine does.
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(
+              name = "a",
+              model = JavaAdkToKt.asKtModel(SequentialJavaModel(listOf(modelText("done")))),
+            ),
+          appName = "app",
+        )
+      )
+
+    assertFailsWith<IllegalArgumentException> {
+      javaRunner
+        .runAsync(
+          "u",
+          "missing",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+          JavaRunConfig.builder().build(),
+        )
+        .toList()
+        .blockingGet()
+    }
+  }
+
+  @Test
+  fun asJavaRunner_missingSession_withAutoCreate_runs() {
+    // With autoCreateSession set, a missing session is created and the run proceeds, matching the
+    // Java Runner and the Kotlin engine's own default behavior.
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(
+              name = "a",
+              model = JavaAdkToKt.asKtModel(SequentialJavaModel(listOf(modelText("done")))),
+            ),
+          appName = "app",
+        )
+      )
+
+    val events =
+      javaRunner
+        .runAsync(
+          "u",
+          "missing",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+          JavaRunConfig.builder().autoCreateSession(true).build(),
+        )
+        .toList()
+        .blockingGet()
+
+    assertTrue(events.isNotEmpty(), "the run should proceed once the session is auto-created")
+  }
+
+  @Test
+  fun asJavaRunner_existingSession_withoutAutoCreate_runs() {
+    // The Java RunConfig default is autoCreateSession=false; an existing session must still run,
+    // covering the standard multi-turn path without auto-creation.
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(
+              name = "a",
+              model = JavaAdkToKt.asKtModel(SequentialJavaModel(listOf(modelText("done")))),
+            ),
+          appName = "app",
+        )
+      )
+    javaRunner.sessionService().createSession("app", "u", null, "s").ignoreElement().blockingAwait()
+
+    val events =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+          JavaRunConfig.builder().build(),
+        )
+        .toList()
+        .blockingGet()
+
+    assertTrue(events.isNotEmpty(), "an existing session should run with the default RunConfig")
+  }
+
+  @Test
+  fun asJavaRunner_runAsync_removedStateSentinel_deletesTheKey() {
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(
+              name = "a",
+              model =
+                JavaAdkToKt.asKtModel(
+                  SequentialJavaModel(listOf(modelText("one"), modelText("two")))
+                ),
+            ),
+          appName = "app",
+        )
+      )
+
+    // Turn 1: write a session-state key through the 5-arg runAsync stateDelta.
+    javaRunner
+      .runAsync(
+        "u",
+        "s",
+        GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+        JavaRunConfig.builder().autoCreateSession(true).build(),
+        mutableMapOf<String, Any>("k" to "v"),
+      )
+      .ignoreElements()
+      .blockingAwait()
+    assertEquals(
+      "v",
+      javaRunner
+        .sessionService()
+        .getSession("app", "u", "s", Optional.empty())
+        .blockingGet()!!
+        .state()["k"],
+      "turn 1 should persist the state key (so the removal below is not a vacuous pass)",
+    )
+    // Turn 2: remove it with the Java REMOVED sentinel; the bridge must translate it to a deletion
+    // rather than store the Java singleton as a value the engine cannot match.
+    javaRunner
+      .runAsync(
+        "u",
+        "s",
+        GenaiContent.builder().role("user").parts(GenaiPart.fromText("bye")).build(),
+        JavaRunConfig.builder().build(),
+        mutableMapOf<String, Any>("k" to JavaState.REMOVED),
+      )
+      .ignoreElements()
+      .blockingAwait()
+
+    val session =
+      javaRunner.sessionService().getSession("app", "u", "s", Optional.empty()).blockingGet()!!
+    assertFalse(
+      session.state().containsKey("k"),
+      "a Java REMOVED sentinel in the runAsync stateDelta must delete the key, not store it",
     )
   }
 
@@ -2768,6 +3205,46 @@ class KtRunnerInteropTest {
       failure.message?.contains("requestedAuthConfigs") == true,
       "the failure should name the unsupported field, got ${failure.message}",
     )
+  }
+
+  @Test
+  fun runConfigFromJava_unsupportedField_failsRatherThanDroppingIt() {
+    val java = JavaRunConfig.builder().maxLlmCalls(5).saveInputBlobsAsArtifacts(true).build()
+
+    val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJava(java) }
+
+    assertTrue(
+      failure.message?.contains("saveInputBlobsAsArtifacts") == true,
+      "the failure should name the unsupported field, got ${failure.message}",
+    )
+  }
+
+  @Test
+  fun runConfigFromJava_bidiStreaming_failsRatherThanDowngradingToNone() {
+    val java = JavaRunConfig.builder().streamingMode(JavaRunConfig.StreamingMode.BIDI).build()
+
+    val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJava(java) }
+
+    assertTrue(
+      failure.message?.contains("streamingMode=BIDI") == true,
+      "the failure should name BIDI, got ${failure.message}",
+    )
+  }
+
+  @Test
+  fun runConfigFromJava_supportedFields_convert() {
+    val java =
+      JavaRunConfig.builder()
+        .maxLlmCalls(5)
+        .streamingMode(JavaRunConfig.StreamingMode.SSE)
+        .customMetadata(mapOf("k" to "v"))
+        .build()
+
+    val kt = RunConfigCodec.fromJava(java)
+
+    assertEquals(5, kt.maxLlmCalls)
+    assertEquals(KtStreamingMode.SSE, kt.streamingMode)
+    assertEquals<Map<String, Any?>?>(mapOf("k" to "v"), kt.customMetadata)
   }
 
   private companion object {
