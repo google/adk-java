@@ -127,6 +127,23 @@ public final class Session extends JsonBaseModel {
       return this;
     }
 
+    /**
+     * Backs {@link Session#events()} with the given list directly, <b>without copying</b>, so the
+     * session reflects a caller-owned live or converting view whose events grow as the owner
+     * appends. The caller keeps ownership and the list's own semantics - thread-safety, and a
+     * read-only view throwing on {@code add} - so ordinary code should use {@link #events(List)},
+     * which defensively copies.
+     *
+     * @deprecated Not a real deprecation - a warn-off for application code from a seam meant for
+     *     ADK's own framework and interop adapters; use {@link #events(List)} instead.
+     */
+    @Deprecated
+    @CanIgnoreReturnValue
+    public Builder eventsView(List<Event> events) {
+      this.events = events;
+      return this;
+    }
+
     @CanIgnoreReturnValue
     public Builder lastUpdateTime(Instant lastUpdateTime) {
       this.lastUpdateTime = lastUpdateTime;
