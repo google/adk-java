@@ -35,8 +35,24 @@ public abstract class ResumabilityConfig {
   /** Whether the app supports agent resumption. */
   public abstract boolean isResumable();
 
+  /**
+   * Whether a plain-text {@code runAsync} continuation -- a user message that is not a function
+   * response -- resumes the last unfinished invocation instead of starting a new one. Off by
+   * default, matching Python ADK, where a plain-text {@code runAsync} always starts a new
+   * invocation and a paused invocation is resumed explicitly.
+   *
+   * @deprecated Back-compat shim for callers that deliver a resume as a plain-text turn. Migrate to
+   *     {@code Runner.runAsync(userId, sessionId, invocationId, message, runConfig, stateDelta)}
+   *     (or send a function response to the paused call) and stop setting this flag; it will be
+   *     removed.
+   */
+  @Deprecated
+  public abstract boolean isPlainTextContinuationAutoResume();
+
   public static Builder builder() {
-    return new AutoValue_ResumabilityConfig.Builder().resumable(false);
+    return new AutoValue_ResumabilityConfig.Builder()
+        .resumable(false)
+        .plainTextContinuationAutoResume(false);
   }
 
   /** Builder for {@link ResumabilityConfig}. */
@@ -44,6 +60,15 @@ public abstract class ResumabilityConfig {
   public abstract static class Builder {
     @CanIgnoreReturnValue
     public abstract Builder resumable(boolean isResumable);
+
+    /**
+     * @deprecated Back-compat shim only; migrate to {@code Runner.runAsync(...)} with an invocation
+     *     id (or send a function response to the paused call). See {@link
+     *     ResumabilityConfig#isPlainTextContinuationAutoResume()}.
+     */
+    @Deprecated
+    @CanIgnoreReturnValue
+    public abstract Builder plainTextContinuationAutoResume(boolean value);
 
     public abstract ResumabilityConfig build();
   }
