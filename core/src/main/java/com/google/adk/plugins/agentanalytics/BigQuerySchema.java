@@ -49,7 +49,7 @@ public final class BigQuerySchema {
    * The version of the BigQuery schema. Each time the schema is changed(new fields are added), this
    * should be incremented.
    */
-  static final String SCHEMA_VERSION = "1";
+  static final String SCHEMA_VERSION = "2";
 
   static final String SCHEMA_VERSION_LABEL_KEY = "adk_schema_version";
 
@@ -74,6 +74,12 @@ public final class BigQuerySchema {
         Field.newBuilder("timestamp", StandardSQLTypeName.TIMESTAMP)
             .setMode(Field.Mode.REQUIRED)
             .setDescription("The UTC timestamp when the event occurred.")
+            .build(),
+        Field.newBuilder("event_id", StandardSQLTypeName.STRING)
+            .setMode(Field.Mode.NULLABLE)
+            .setDescription(
+                "A unique identifier assigned before enqueue. Storage Write API retries preserve"
+                    + " this value so duplicate rows can be identified reliably.")
             .build(),
         Field.newBuilder("event_type", StandardSQLTypeName.STRING)
             .setMode(Field.Mode.NULLABLE)
