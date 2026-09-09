@@ -134,4 +134,56 @@ public final class ParallelAgentEscalationTest {
     // Test RxJava Disposal behavior: SlowAgent won't emit anything
     subscriber.assertValueCount(2);
   }
+
+  @Test
+  public void runAsync_nestedLoopEscalation_keepsSiblingBranchesRunning() {
+    TestScheduler testScheduler = new TestScheduler();
+
+    TestAgent escalatingAgent =
+        new TestAgent(
+            "escalating_agent",
+            10,
+            testScheduler,
+            "Escalating!",
+            EventActions.builder().escalate(true).build());
+
+    TestAgent slowAgent = new TestAgent("slow_agent", 100, testScheduler, "Finished");
+
+    LoopAgent loopAgent =
+        LoopAgent.builder().name("loop").subAgents(escalatingAgent).maxIterations(3).build();
+
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(loopAgent, slowAgent)
+            .scheduler(testScheduler)
+            .build();
+
+    InvocationContext invocationContext = createInvocationContext(parallelAgent);
+
+    var subscriber = parallelAgent.runAsync(invocationContext).test();
+
+    // Escalation is raised on the first iteration, so the loop stops there even though
+    // maxIterations(3) would have allowed two more passes at 20ms and 30ms. Advancing
+    // past all three windows proves the cut came from the escalation, not the cap.
+    testScheduler.advanceTimeBy(40, MILLISECONDS);
+    subscriber.assertValueCount(1);
+    assertThat(subscriber.values().get(0).author()).isEqualTo("escalating_agent");
+    // The escalation came from a nested agent, not a direct sub-agent, so the parallel
+    // agent must not short-circuit its remaining branches.
+    subscriber.assertNotComplete();
+
+    // Slow agent completes at 100ms
+    testScheduler.advanceTimeBy(100, MILLISECONDS);
+    subscriber.assertValueCount(2);
+
+    Event event1 = subscriber.values().get(0);
+    assertThat(event1.author()).isEqualTo("escalating_agent");
+    assertThat(event1.actions().escalate()).hasValue(true);
+
+    Event event2 = subscriber.values().get(1);
+    assertThat(event2.author()).isEqualTo("slow_agent");
+
+    subscriber.assertComplete();
+  }
 }
