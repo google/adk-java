@@ -22,6 +22,7 @@ import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -205,6 +206,85 @@ public class VertexAiSessionServiceTest {
         mapper.readValue(newSessionJson, new TypeReference<Map<String, Object>>() {});
     assertThat(newSessionMap.get("userId")).isEqualTo("test_user");
     assertThat(newSessionMap.get("sessionState")).isEqualTo(sessionStateMap);
+  }
+
+  @Test
+  public void createSession_sessionId_createsSessionUnderThatId() throws Exception {
+    Session createdSession =
+        vertexAiSessionService
+            .createSession("123", "test_user", (Map<String, Object>) null, "my-session")
+            .blockingGet();
+
+    // The id reaches the fake only through the request query string.
+    assertThat(createdSession.id()).isEqualTo("my-session");
+    assertThat(sessionMap).containsKey("my-session");
+  }
+
+  @Test
+  public void createSession_backendChoosesDifferentId_returnsBackendId() throws Exception {
+    Session createdSession =
+        vertexAiSessionService
+            .createSession(
+                "123", "test_user", (Map<String, Object>) null, MockApiAnswer.OVERRIDDEN_REQUEST_ID)
+            .blockingGet();
+
+    // The backend is authoritative: its id wins over the one the caller asked for.
+    assertThat(createdSession.id()).isEqualTo(MockApiAnswer.BACKEND_CHOSEN_ID);
+  }
+
+  @Test
+  public void createSession_sessionIdWithReservedCharacters_escapedIntoQuery() throws Exception {
+    // VertexAiClient is reachable without the service's validation, so it must escape the id.
+    ArgumentCaptor<String> path = ArgumentCaptor.forClass(String.class);
+    Object unused =
+        new VertexAiClient("test-project", "test-location", mockApiClient)
+            .createSession("123", "user", null, "a b&c=d")
+            .blockingGet();
+
+    verify(mockApiClient).request(eq("POST"), path.capture(), anyString());
+    assertThat(path.getValue()).isEqualTo("reasoningEngines/123/sessions?sessionId=a+b%26c%3Dd");
+  }
+
+  @Test
+  public void createSession_emptySessionId_usesBackendGeneratedId() throws Exception {
+    // The interface contract treats an empty id the same way as a null one.
+    Session createdSession =
+        vertexAiSessionService
+            .createSession("123", "test_user", (Map<String, Object>) null, "")
+            .blockingGet();
+
+    assertThat(createdSession.id()).isEqualTo(MockApiAnswer.GENERATED_SESSION_ID);
+  }
+
+  @Test
+  public void createSession_invalidSessionId_throwsWithoutCallingBackend() throws Exception {
+    // Whitespace is not empty, so it reaches the allowlist and is rejected there.
+    for (String bad : ImmutableList.of("bad/id", "   ")) {
+      assertThrows(
+          IllegalArgumentException.class,
+          () ->
+              vertexAiSessionService.createSession(
+                  "123", "test_user", (Map<String, Object>) null, bad));
+    }
+
+    verify(mockApiClient, never()).request(anyString(), anyString(), anyString());
+  }
+
+  @Test
+  public void createSession_backendRejectsSessionId_propagatesAsError() {
+    // The local allowlist is looser than the backend's, so a locally valid id can still be refused.
+    when(mockApiClient.request(
+            eq("POST"), eq("reasoningEngines/123/sessions?sessionId=My_Session_ID"), anyString()))
+        .thenReturn(MockApiAnswer.responseWithStatus(400, "{\"error\": \"invalid session_id\"}"));
+
+    // The id clears local validation, so nothing throws until the call is subscribed.
+    Single<Session> session =
+        vertexAiSessionService.createSession(
+            "123", "test_user", (Map<String, Object>) null, "My_Session_ID");
+
+    VertexAiApiException exception =
+        assertThrows(VertexAiApiException.class, () -> session.blockingGet());
+    assertThat(exception.statusCode()).isEqualTo(400);
   }
 
   @Test

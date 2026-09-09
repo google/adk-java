@@ -16,13 +16,14 @@
 
 package com.google.adk.sessions;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.events.Event;
 import java.io.IOException;
 import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -44,7 +45,7 @@ class MockApiAnswer implements Answer<ApiResponse> {
   private static final Pattern SESSION_REGEX =
       Pattern.compile("^reasoningEngines/([^/]+)/sessions/([^/]+)$");
   private static final Pattern SESSIONS_REGEX =
-      Pattern.compile("^reasoningEngines/([^/]+)/sessions$");
+      Pattern.compile("^reasoningEngines/([^/]+)/sessions(?:\\?sessionId=(.+))?$");
   private static final Pattern SESSIONS_FILTER_REGEX =
       Pattern.compile("^reasoningEngines/([^/]+)/sessions\\?filter=(.+)$");
   private static final String USER_ID_FILTER_PREFIX = "user_id=";
@@ -55,6 +56,17 @@ class MockApiAnswer implements Answer<ApiResponse> {
   private static final Pattern TIMESTAMP_FILTER_REGEX = Pattern.compile("timestamp>=\"(.*)\"");
   private static final MediaType JSON_MEDIA_TYPE =
       MediaType.parse("application/json; charset=utf-8");
+
+  /** The id this fake mints when the caller requests none. */
+  static final String GENERATED_SESSION_ID = "4";
+
+  /**
+   * A requested id this fake deliberately overrides, so a test can assert the backend's id wins.
+   */
+  static final String OVERRIDDEN_REQUEST_ID = "backend-renames-this";
+
+  /** The id this fake substitutes for {@link #OVERRIDDEN_REQUEST_ID}. */
+  static final String BACKEND_CHOSEN_ID = "backend-chosen-id";
 
   private final Map<String, String> sessionMap;
   private final Map<String, String> eventMap;
@@ -121,12 +133,30 @@ class MockApiAnswer implements Answer<ApiResponse> {
 
   private ApiResponse handleCreateSession(String path, InvocationOnMock invocation)
       throws Exception {
-    String newSessionId = "4";
+    Matcher sessionsMatcher = SESSIONS_REGEX.matcher(path);
+    if (!sessionsMatcher.matches()) {
+      return null;
+    }
+    // Create the session under the caller-supplied id, as the real service does.
+    String basePath = "reasoningEngines/" + sessionsMatcher.group(1) + "/sessions";
+    String requestedSessionId =
+        sessionsMatcher.group(2) == null
+            ? null
+            : URLDecoder.decode(sessionsMatcher.group(2), UTF_8);
+    String newSessionId;
+    if (requestedSessionId == null) {
+      newSessionId = GENERATED_SESSION_ID;
+    } else if (requestedSessionId.equals(OVERRIDDEN_REQUEST_ID)) {
+      // Lets a test prove the response id wins over the requested one.
+      newSessionId = BACKEND_CHOSEN_ID;
+    } else {
+      newSessionId = requestedSessionId;
+    }
     Map<String, Object> requestDict =
         mapper.readValue(
             (String) invocation.getArgument(2), new TypeReference<Map<String, Object>>() {});
     Map<String, Object> newSessionData = new HashMap<>();
-    newSessionData.put("name", path + "/" + newSessionId);
+    newSessionData.put("name", basePath + "/" + newSessionId);
     newSessionData.put("userId", requestDict.get("userId"));
     newSessionData.put("sessionState", requestDict.get("sessionState"));
     newSessionData.put("updateTime", "2024-12-12T12:12:12.123456Z");
@@ -141,7 +171,7 @@ class MockApiAnswer implements Answer<ApiResponse> {
               "done": false
             }
             """,
-            path, newSessionId));
+            basePath, newSessionId));
   }
 
   private ApiResponse handleGetSession(String path) throws Exception {
@@ -165,7 +195,7 @@ class MockApiAnswer implements Answer<ApiResponse> {
     // Decode the URL-escaped filter and read the quoted user_id literal back with
     // a JSON parser, as the real server would. An unquoted/injected filter is
     // rejected.
-    String decodedFilter = URLDecoder.decode(sessionsMatcher.group(2), StandardCharsets.UTF_8);
+    String decodedFilter = URLDecoder.decode(sessionsMatcher.group(2), UTF_8);
     if (!decodedFilter.startsWith(USER_ID_FILTER_PREFIX)) {
       throw new IllegalArgumentException("Unsupported sessions filter: " + decodedFilter);
     }
@@ -245,10 +275,7 @@ class MockApiAnswer implements Answer<ApiResponse> {
     }
     String sessionId = matcher.group(2);
     // The client URL-escapes the filter value; decode it as the real server would.
-    String filter =
-        matcher.group(3) == null
-            ? null
-            : URLDecoder.decode(matcher.group(3), StandardCharsets.UTF_8);
+    String filter = matcher.group(3) == null ? null : URLDecoder.decode(matcher.group(3), UTF_8);
     String eventData = eventMap.get(sessionId);
     if (eventData != null) {
       if (filter != null) {

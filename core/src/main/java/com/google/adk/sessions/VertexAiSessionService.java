@@ -25,6 +25,7 @@ import com.google.adk.JsonBaseModel;
 import com.google.adk.events.Event;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.base.Splitter;
+import com.google.common.base.Strings;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.HttpOptions;
 import io.reactivex.rxjava3.core.Completable;
@@ -79,19 +80,32 @@ public final class VertexAiSessionService implements BaseSessionService {
     return createSession(appName, userId, (Map<String, Object>) state, sessionId);
   }
 
+  /**
+   * Creates a session, requesting {@code sessionId} as its id when one is given. A non-empty id
+   * must match {@code [a-zA-Z0-9_-]+}; an empty or null one asks the backend to generate it.
+   *
+   * <p>The backend's rule is narrower still - up to 63 characters from {@code [a-z0-9-]}, starting
+   * with a letter and ending with a letter or digit - so it rejects some ids that pass validation
+   * here.
+   */
   @Override
   public Single<Session> createSession(
       String appName,
       String userId,
       @Nullable Map<String, Object> state,
       @Nullable String sessionId) {
+    // Empty means "generate one" just as null does, per this method's contract.
+    String requestedSessionId = Strings.emptyToNull(sessionId);
+    if (requestedSessionId != null) {
+      validateSessionId(requestedSessionId);
+    }
 
     String reasoningEngineId = parseReasoningEngineId(appName);
     return client
-        .createSession(reasoningEngineId, userId, state)
+        .createSession(reasoningEngineId, userId, state, requestedSessionId)
         .map(
             getSessionResponseMap ->
-                parseSession(getSessionResponseMap, appName, userId, sessionId))
+                parseSession(getSessionResponseMap, appName, userId, requestedSessionId))
         .toSingle();
   }
 
@@ -125,14 +139,12 @@ public final class VertexAiSessionService implements BaseSessionService {
 
     return client
         .listSessions(reasoningEngineId, userId)
-        .map(
-            listSessionsResponseMap ->
-                parseListSessionsResponse(listSessionsResponseMap, appName, userId))
+        .map(listSessionsResponseMap -> parseListSessionsResponse(listSessionsResponseMap, appName))
         .defaultIfEmpty(ListSessionsResponse.builder().sessions(new ArrayList<>()).build());
   }
 
   private ListSessionsResponse parseListSessionsResponse(
-      JsonNode listSessionsResponseMap, String appName, String userId) {
+      JsonNode listSessionsResponseMap, String appName) {
     JsonNode sessionsNode = listSessionsResponseMap.get("sessions");
     if (sessionsNode == null || sessionsNode.isNull() || sessionsNode.isEmpty()) {
       return ListSessionsResponse.builder().build();
