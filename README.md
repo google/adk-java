@@ -129,3 +129,5 @@ information, see the
 --------------------------------------------------------------------------------
 
 *Happy Agent Building!*
+
+<!-- Release pipeline rehearsal: validating maintenance-branch patch flow (v1.9.0 + 1 commit -> v1.9.1). Safe to revert. -->
