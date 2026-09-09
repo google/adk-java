@@ -27,5 +27,6 @@
     <module>github/adktriaging</module>
     <module>helloworld</module>
     <module>mcpfilesystem</module>
+    <module>spring-boot-adk-template</module>
   </modules>
 </project>
