@@ -17,7 +17,7 @@
 
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk-parent</artifactId>
-  <version>1.9.1-SNAPSHOT</version><!-- {x-version-update:google-adk:current} -->
+  <version>1.10.0</version><!-- {x-version-update:google-adk:current} -->
   <packaging>pom</packaging>
 
   <name>Google Agent Development Kit Maven Parent POM</name>
@@ -86,7 +86,7 @@
          mockito-core (directly or transitively) must set it to
          "-javaagent:${org.mockito:mockito-core:jar}" so the inline mock maker loads as a
          startup agent instead of self-attaching at runtime, which newer JDKs block. -->
-    <mockito.javaagent.arg></mockito.javaagent.arg>
+    <mockito.javaagent.arg/>
     <surefire.argLine>${mockito.javaagent.arg} @{jacoco.agent.argLine} --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED -Dio.netty.tryReflectionSetAccessible=true</surefire.argLine>
   </properties>
 
