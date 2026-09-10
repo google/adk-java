@@ -257,7 +257,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                                 agent.resolvedModel().modelName().get());
                                     LlmRequest finalLlmRequest = llmRequestBuilder.build();
 
-                                    return llm.generateContent(
+                                    return LlmRetryPolicy.execute(
+                                            context,
+                                            llm,
                                             finalLlmRequest,
                                             context.runConfig().streamingMode()
                                                 == StreamingMode.SSE)
