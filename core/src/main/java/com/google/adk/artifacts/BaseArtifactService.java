@@ -24,8 +24,13 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import org.jspecify.annotations.Nullable;
 
-/** Base interface for artifact services. */
-public interface BaseArtifactService {
+/**
+ * Base interface for artifact services.
+ *
+ * @deprecated Use {@link ArtifactService} instead.
+ */
+@Deprecated(forRemoval = true)
+public interface BaseArtifactService extends ArtifactService {
 
   /**
    * Saves an artifact.
@@ -40,55 +45,40 @@ public interface BaseArtifactService {
   Single<Integer> saveArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact);
 
-  /** Saves an artifact. */
   default Single<Integer> saveArtifact(SessionKey sessionKey, String filename, Part artifact) {
     return saveArtifact(
         sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, artifact);
   }
 
-  /**
-   * Saves an artifact and returns it with fileData if available.
-   *
-   * <p>Implementations should override this default method for efficiency, as the default performs
-   * two I/O operations (save then load).
-   *
-   * @param appName the app name
-   * @param userId the user ID
-   * @param sessionId the session ID
-   * @param filename the filename
-   * @param artifact the artifact to save
-   * @return the saved artifact with fileData if available.
-   */
   default Single<Part> saveAndReloadArtifact(
       String appName, String userId, String sessionId, String filename, Part artifact) {
     return saveArtifact(appName, userId, sessionId, filename, artifact)
         .flatMap(version -> loadArtifact(appName, userId, sessionId, filename, version).toSingle());
   }
 
-  /** Saves an artifact and returns it with fileData if available. */
+  @Override
   default Single<Part> saveAndReloadArtifact(
       SessionKey sessionKey, String filename, Part artifact) {
     return saveAndReloadArtifact(
         sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, artifact);
   }
 
-  /** Loads the latest version of an artifact from the service. */
   default Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename) {
     return loadArtifact(appName, userId, sessionId, filename, /* version= */ (Integer) null);
   }
 
-  /** Loads the latest version of an artifact from the service. */
+  @Override
   default Maybe<Part> loadArtifact(SessionKey sessionKey, String filename) {
     return loadArtifact(sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename);
   }
 
-  /** Loads a specific version of an artifact from the service. */
   default Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, int version) {
     return loadArtifact(appName, userId, sessionId, filename, Integer.valueOf(version));
   }
 
+  @Override
   default Maybe<Part> loadArtifact(SessionKey sessionKey, String filename, int version) {
     return loadArtifact(
         sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename, version);
@@ -97,46 +87,24 @@ public interface BaseArtifactService {
   Maybe<Part> loadArtifact(
       String appName, String userId, String sessionId, String filename, @Nullable Integer version);
 
-  /**
-   * Lists all the artifact filenames within a session.
-   *
-   * @param appName the app name
-   * @param userId the user ID
-   * @param sessionId the session ID
-   * @return the list artifact response containing filenames
-   */
   Single<ListArtifactsResponse> listArtifactKeys(String appName, String userId, String sessionId);
 
+  @Override
   default Single<ListArtifactsResponse> listArtifactKeys(SessionKey sessionKey) {
     return listArtifactKeys(sessionKey.appName(), sessionKey.userId(), sessionKey.id());
   }
 
-  /**
-   * Deletes an artifact.
-   *
-   * @param appName the app name
-   * @param userId the user ID
-   * @param sessionId the session ID
-   * @param filename the filename
-   */
   Completable deleteArtifact(String appName, String userId, String sessionId, String filename);
 
+  @Override
   default Completable deleteArtifact(SessionKey sessionKey, String filename) {
     return deleteArtifact(sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename);
   }
 
-  /**
-   * Lists all the versions (as revision IDs) of an artifact.
-   *
-   * @param appName the app name
-   * @param userId the user ID
-   * @param sessionId the session ID
-   * @param filename the artifact filename
-   * @return A list of integer version numbers.
-   */
   Single<ImmutableList<Integer>> listVersions(
       String appName, String userId, String sessionId, String filename);
 
+  @Override
   default Single<ImmutableList<Integer>> listVersions(SessionKey sessionKey, String filename) {
     return listVersions(sessionKey.appName(), sessionKey.userId(), sessionKey.id(), filename);
   }
