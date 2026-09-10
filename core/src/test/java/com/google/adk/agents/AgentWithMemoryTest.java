@@ -87,7 +87,8 @@ public final class AgentWithMemoryTest {
             .build();
 
     InMemoryRunner runner = new InMemoryRunner(agent);
-    String sessionId = runner.sessionService().createSession(agentName, userId).blockingGet().id();
+    String sessionId =
+        runner.sessionService().createSession(runner.appName(), userId).blockingGet().id();
 
     Content firstMessage = Content.fromParts(Part.fromText("My name is James"));
 
@@ -101,7 +102,7 @@ public final class AgentWithMemoryTest {
     Session updatedSession =
         runner
             .sessionService()
-            .getSession("test_agent", userId, sessionId, Optional.empty())
+            .getSession(runner.appName(), userId, sessionId, Optional.empty())
             .blockingGet();
 
     // Save the updated session to memory so we can bring it up on the next request.

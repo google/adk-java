@@ -75,7 +75,7 @@ class SpringAIIntegrationTest {
     // when
     Runner runner = new InMemoryRunner(agent);
     Session session =
-        runner.sessionService().createSession(agent.name(), "test-user").blockingGet();
+        runner.sessionService().createSession(runner.appName(), "test-user").blockingGet();
 
     Content userMessage =
         Content.builder().role("user").parts(List.of(Part.fromText("What is a qubit?"))).build();
@@ -152,7 +152,7 @@ class SpringAIIntegrationTest {
     // when
     Runner runner = new InMemoryRunner(agent);
     Session session =
-        runner.sessionService().createSession(agent.name(), "test-user").blockingGet();
+        runner.sessionService().createSession(runner.appName(), "test-user").blockingGet();
 
     Content userMessage =
         Content.builder()
@@ -221,7 +221,7 @@ class SpringAIIntegrationTest {
     // when
     Runner runner = new InMemoryRunner(agent);
     Session session =
-        runner.sessionService().createSession(agent.name(), "test-user").blockingGet();
+        runner.sessionService().createSession(runner.appName(), "test-user").blockingGet();
 
     Content userMessage =
         Content.builder()
