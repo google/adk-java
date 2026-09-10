@@ -58,7 +58,14 @@ public final class OutputSchema implements RequestProcessor {
     }
 
     // Add the set_model_response tool to handle structured output
-    SetModelResponseTool setResponseTool = new SetModelResponseTool(agent.outputSchema().get());
+    SetModelResponseTool setResponseTool =
+        new SetModelResponseTool(
+            agent
+                .outputSchema()
+                .orElseThrow(
+                    () ->
+                        new IllegalStateException(
+                            "outputSchema should be present when toolsUnion is not empty")));
     LlmRequest.Builder builder = request.toBuilder();
 
     return setResponseTool
