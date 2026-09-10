@@ -38,7 +38,17 @@ public final class LiveRequestQueue {
   }
 
   public void content(Content content) {
-    processor.onNext(LiveRequest.builder().content(content).build());
+    content(content, true);
+  }
+
+  /**
+   * Sends content to the model with explicit control over whether it completes the current turn.
+   *
+   * @param content the content to send
+   * @param turnComplete whether the model should begin responding after receiving the content
+   */
+  public void content(Content content, boolean turnComplete) {
+    processor.onNext(LiveRequest.builder().content(content).turnComplete(turnComplete).build());
   }
 
   public void realtime(Blob blob) {

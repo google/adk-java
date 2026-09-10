@@ -46,6 +46,16 @@ public abstract class LiveRequest extends JsonBaseModel {
   public abstract Optional<Content> content();
 
   /**
+   * Returns whether sending {@link #content()} should complete the current turn.
+   *
+   * <p>If unset, content sends complete the turn to preserve the existing behavior.
+   *
+   * @return An optional boolean indicating whether the current turn should be completed.
+   */
+  @JsonProperty("turnComplete")
+  public abstract Optional<Boolean> turnComplete();
+
+  /**
    * Returns the blob of the request.
    *
    * <p>If set, send the blob to the model in realtime mode.
@@ -82,6 +92,9 @@ public abstract class LiveRequest extends JsonBaseModel {
 
     @JsonProperty("content")
     public abstract Builder content(@Nullable Content content);
+
+    @JsonProperty("turnComplete")
+    public abstract Builder turnComplete(@Nullable Boolean turnComplete);
 
     @JsonProperty("blob")
     public abstract Builder blob(@Nullable Blob blob);
