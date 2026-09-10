@@ -135,7 +135,7 @@ public abstract class BaseAgent {
       throw new IllegalArgumentException(
           format("Agent name '%s' does not match regex '%s'.", name, IDENTIFIER_REGEX));
     }
-    if (name.equals("user")) {
+    if (name.equals(Role.USER)) {
       throw new IllegalArgumentException(
           "Agent name cannot be 'user'; reserved for end-user input.");
     }

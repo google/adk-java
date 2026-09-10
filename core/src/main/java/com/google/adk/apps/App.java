@@ -18,6 +18,7 @@ package com.google.adk.apps;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.ContextCacheConfig;
+import com.google.adk.agents.Role;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.common.collect.ImmutableList;
@@ -168,7 +169,7 @@ public class App {
               + name
               + "': must be a valid identifier consisting of letters, digits, and underscores.");
     }
-    if (name.equals("user")) {
+    if (name.equals(Role.USER)) {
       throw new IllegalArgumentException("App name cannot be 'user'; reserved for end-user input.");
     }
   }

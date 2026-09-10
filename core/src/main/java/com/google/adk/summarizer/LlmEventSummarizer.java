@@ -20,6 +20,7 @@ import static java.util.function.Predicate.not;
 import static java.util.stream.Collectors.joining;
 
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.Role;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.EventCompaction;
@@ -76,7 +77,7 @@ public final class LlmEventSummarizer implements BaseEventSummarizer {
             .contents(
                 ImmutableList.of(
                     Content.builder()
-                        .role("user")
+                        .role(Role.USER)
                         .parts(ImmutableList.of(Part.fromText(prompt)))
                         .build()))
             .build();
@@ -101,7 +102,7 @@ public final class LlmEventSummarizer implements BaseEventSummarizer {
                             compaction ->
                                 Event.builder()
                                     .id(Event.generateEventId())
-                                    .author("user")
+                                    .author(Role.USER)
                                     .actions(EventActions.builder().compaction(compaction).build())
                                     .invocationId(Event.generateEventId())
                                     .build())));

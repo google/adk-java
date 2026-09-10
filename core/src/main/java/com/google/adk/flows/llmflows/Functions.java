@@ -25,6 +25,7 @@ import com.google.adk.agents.Callbacks.BeforeToolCallback;
 import com.google.adk.agents.Callbacks.OnToolErrorCallback;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.Role;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
@@ -379,7 +380,7 @@ public final class Functions {
                   result -> {
                     String resultText = "Function " + tool.name() + " returned: " + result;
                     Content updateContent =
-                        Content.builder().role("user").parts(Part.fromText(resultText)).build();
+                        Content.builder().role(Role.USER).parts(Part.fromText(resultText)).build();
                     invocationContext.liveRequestQueue().get().content(updateContent);
                   },
                   error -> logger.error("Error in streaming tool " + tool.name(), error.getCause()),
@@ -588,7 +589,7 @@ public final class Functions {
             .invocationId(baseEvent.invocationId())
             .author(baseEvent.author())
             .branch(baseEvent.branch().orElse(null))
-            .content(Content.builder().role("user").parts(mergedParts).build())
+            .content(Content.builder().role(Role.USER).parts(mergedParts).build())
             .actions(mergedActionsBuilder.build())
             .timestamp(baseEvent.timestamp())
             .build());
@@ -739,7 +740,7 @@ public final class Functions {
         .invocationId(invocationContext.invocationId())
         .author(invocationContext.agent().name())
         .branch(invocationContext.branch().orElse(null))
-        .content(Content.builder().role("user").parts(partFunctionResponse).build())
+        .content(Content.builder().role(Role.USER).parts(partFunctionResponse).build())
         .actions(toolContext.eventActions())
         .build();
   }

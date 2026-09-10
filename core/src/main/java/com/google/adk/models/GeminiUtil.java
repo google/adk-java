@@ -17,6 +17,7 @@ package com.google.adk.models;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.google.adk.agents.Role;
 import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -202,11 +203,11 @@ public final class GeminiUtil {
   static List<Content> ensureModelResponse(List<Content> contents) {
     // Last content must be from the user, otherwise the model won't respond.
     if (contents.isEmpty()
-        || !Ascii.equalsIgnoreCase(Iterables.getLast(contents).role().orElse(""), "user")) {
+        || !Ascii.equalsIgnoreCase(Iterables.getLast(contents).role().orElse(""), Role.USER)) {
       Content userContent =
           Content.builder()
               .parts(ImmutableList.of(Part.fromText(CONTINUE_OUTPUT_MESSAGE)))
-              .role("user")
+              .role(Role.USER)
               .build();
       return Stream.concat(contents.stream(), Stream.of(userContent)).collect(toImmutableList());
     }

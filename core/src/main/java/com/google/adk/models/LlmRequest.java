@@ -25,6 +25,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.Role;
 import com.google.adk.tools.BaseTool;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
@@ -195,7 +196,7 @@ public abstract class LlmRequest extends JsonBaseModel {
                   .map(text -> text + "\n\n" + instructions)
                   .orElse(instructions));
 
-      String role = currentSystemInstruction.flatMap(Content::role).orElse("user");
+      String role = currentSystemInstruction.flatMap(Content::role).orElse(Role.USER);
 
       return Content.builder().parts(part).role(role).build();
     }

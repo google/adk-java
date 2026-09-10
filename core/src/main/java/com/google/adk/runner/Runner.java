@@ -24,6 +24,7 @@ import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.Role;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
@@ -391,7 +392,7 @@ public class Runner {
         Event.builder()
             .id(Event.generateEventId())
             .invocationId(invocationContext.invocationId())
-            .author("user")
+            .author(Role.USER)
             .content(messageToAppend);
 
     // Add state delta if provided
@@ -867,7 +868,7 @@ public class Runner {
       if (author == null) {
         continue;
       }
-      if (author.equals("user")) {
+      if (author.equals(Role.USER)) {
         continue;
       }
 

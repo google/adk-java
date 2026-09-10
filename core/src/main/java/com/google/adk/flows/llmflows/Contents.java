@@ -23,6 +23,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.Role;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
@@ -112,7 +113,7 @@ public final class Contents implements RequestProcessor {
     // Find the latest event that starts the current turn and process from there.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
-      if (event.author().equals("user") || isOtherAgentReply(agentName, event)) {
+      if (event.author().equals(Role.USER) || isOtherAgentReply(agentName, event)) {
         return getContents(
             currentBranch, events.subList(i, events.size()), agentName, groupFunctionResponses);
       }
@@ -404,7 +405,7 @@ public final class Contents implements RequestProcessor {
   private static boolean isOtherAgentReply(String agentName, Event event) {
     return !agentName.isEmpty()
         && !event.author().equals(agentName)
-        && !event.author().equals("user");
+        && !event.author().equals(Role.USER);
   }
 
   /**
@@ -482,8 +483,8 @@ public final class Contents implements RequestProcessor {
       return null;
     }
 
-    Content content = Content.builder().role("user").parts(parts).build();
-    return event.toBuilder().author("user").content(content).build();
+    Content content = Content.builder().role(Role.USER).parts(parts).build();
+    return event.toBuilder().author(Role.USER).content(content).build();
   }
 
   private static String convertMapToJson(Map<String, Object> struct) {

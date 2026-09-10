@@ -22,6 +22,7 @@ import static java.util.stream.Collectors.joining;
 
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.Role;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
@@ -114,7 +115,7 @@ public final class CodeExecutionUtils {
                   + lastPart.codeExecutionResult().get().output()
                   + executionResultDelimiters.get(1));
       newParts.set(newParts.size() - 1, newPart);
-      return Content.builder().parts(newParts).role("user").build();
+      return Content.builder().parts(newParts).role(Role.USER).build();
     }
 
     return content;

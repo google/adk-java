@@ -28,6 +28,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.Role;
 import com.google.adk.models.LlmRequest;
 import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableList;
@@ -377,7 +378,7 @@ public final class ChatCompletionsRequest {
    */
   private static List<Message> processContent(Content content) {
     Message msg = new Message();
-    String role = content.role().orElse("user");
+    String role = content.role().orElse(Role.USER);
     msg.role = role.equals("model") ? "assistant" : role;
 
     List<ContentPart> contentParts = new ArrayList<>();

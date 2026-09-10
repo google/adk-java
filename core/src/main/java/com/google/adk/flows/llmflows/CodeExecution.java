@@ -22,6 +22,7 @@ import static java.util.stream.Collectors.toCollection;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.Role;
 import com.google.adk.codeexecutors.BuiltInCodeExecutor;
 import com.google.adk.codeexecutors.CodeExecutionUtils;
 import com.google.adk.codeexecutors.CodeExecutionUtils.CodeExecutionInput;
@@ -347,7 +348,7 @@ public final class CodeExecution {
     for (int i = 0; i < llmRequest.contents().size(); i++) {
       Content content = llmRequest.contents().get(i);
       if (content.role().isEmpty()
-          || !Objects.equals(content.role().get(), "user")
+          || !Objects.equals(content.role().get(), Role.USER)
           || content.parts().isEmpty()) {
         continue;
       }

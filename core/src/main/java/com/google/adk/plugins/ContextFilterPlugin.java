@@ -18,6 +18,7 @@ package com.google.adk.plugins;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.adk.agents.CallbackContext;
+import com.google.adk.agents.Role;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -63,7 +64,6 @@ import org.slf4j.LoggerFactory;
 public class ContextFilterPlugin extends BasePlugin {
   private static final Logger logger = LoggerFactory.getLogger(ContextFilterPlugin.class);
   private static final String MODEL_ROLE = "model";
-  private static final String USER_ROLE = "user";
 
   private final Optional<Integer> numInvocationsToKeep;
   private final Optional<UnaryOperator<List<Content>>> customFilter;
@@ -159,7 +159,7 @@ public class ContextFilterPlugin extends BasePlugin {
     int finalSplitIndex = adjustIndexForToolCalls(candidateSplitIndex, contents);
     // The Nth model turn can be preceded by user turns; expand window to include them.
     while (finalSplitIndex > 0
-        && hasRole(contents.get(finalSplitIndex - 1), USER_ROLE)
+        && hasRole(contents.get(finalSplitIndex - 1), Role.USER)
         && !isFunctionResponse(contents.get(finalSplitIndex - 1))) {
       finalSplitIndex--;
     }
@@ -174,7 +174,7 @@ public class ContextFilterPlugin extends BasePlugin {
         if (modelTurnsToFind == 0) {
           int startIndex = i;
           // Include all preceding user messages in the same turn.
-          while (startIndex > 0 && hasRole(contents.get(startIndex - 1), USER_ROLE)) {
+          while (startIndex > 0 && hasRole(contents.get(startIndex - 1), Role.USER)) {
             startIndex--;
           }
           return startIndex;

@@ -26,6 +26,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.Role;
 import com.google.adk.events.Event;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.models.LlmRequest;
@@ -169,7 +170,7 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
     // function responses.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
-      if (!Objects.equals(event.author(), "user") || event.functionResponses().isEmpty()) {
+      if (!Objects.equals(event.author(), Role.USER) || event.functionResponses().isEmpty()) {
         continue;
       }
 
