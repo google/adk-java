@@ -40,6 +40,8 @@ import com.google.adk.kt.runners.Runner as KtRunner
 import com.google.adk.kt.sessions.GetSessionConfig as KtGetSessionConfig
 import com.google.adk.kt.sessions.SessionKey as KtSessionKey
 import com.google.adk.kt.sessions.State as KtState
+import com.google.adk.kt.tools.BaseTool as KtBaseTool
+import com.google.adk.kt.tools.ToolContext as KtToolContext
 import com.google.adk.kt.types.Blob as KtBlob
 import com.google.adk.kt.types.Content as KtContent
 import com.google.adk.kt.types.FileData as KtFileData
@@ -515,6 +517,101 @@ class KtRunnerInteropTest {
         }
   }
 
+  /** A native Kotlin tool (not an adapted Java tool), used to prove plugin tool callbacks fire. */
+  private class NativeKtEchoTool : KtBaseTool("native_kt_echo", "native kotlin echo") {
+    override fun declaration(): com.google.adk.kt.types.FunctionDeclaration? = null
+
+    override suspend fun run(context: KtToolContext, args: Map<String, Any?>): Any =
+      mapOf("echoed" to (args["text"] ?: ""))
+  }
+
+  /** A native Kotlin tool whose body always fails - used to drive the onToolError path. */
+  private class NativeKtThrowingTool :
+    KtBaseTool("native_kt_throwing", "native kotlin failing tool") {
+    override fun declaration(): com.google.adk.kt.types.FunctionDeclaration? = null
+
+    override suspend fun run(context: KtToolContext, args: Map<String, Any?>): Any =
+      throw IllegalStateException("native tool boom")
+  }
+
+  /**
+   * A Java plugin that records the tools its beforeTool callback is handed and denies each one -
+   * used to prove the callback fires, with the real tool name, even for a native Kotlin tool.
+   */
+  private class ToolDenyingJavaPlugin : JavaBasePlugin("tool_denying_plugin") {
+    val seenToolNames = CopyOnWriteArrayList<String>()
+
+    @JvmSuppressWildcards
+    override fun beforeToolCallback(
+      tool: JavaBaseTool,
+      toolArgs: Map<String, Any>,
+      toolContext: JavaToolContext,
+    ): Maybe<Map<String, Any>> {
+      seenToolNames.add(tool.name())
+      return Maybe.just(mapOf("error" to "denied by policy: ${tool.name()}"))
+    }
+  }
+
+  /** A Java plugin whose beforeTool tries to *run* the tool it is handed, capturing any error. */
+  private class ToolRunningJavaPlugin : JavaBasePlugin("tool_running_plugin") {
+    var runError: Throwable? = null
+
+    @JvmSuppressWildcards
+    override fun beforeToolCallback(
+      tool: JavaBaseTool,
+      toolArgs: Map<String, Any>,
+      toolContext: JavaToolContext,
+    ): Maybe<Map<String, Any>> {
+      try {
+        val unused = tool.runAsync(toolArgs, toolContext).blockingGet()
+      } catch (e: Throwable) {
+        runError = e
+      }
+      return Maybe.empty()
+    }
+  }
+
+  /**
+   * A Java plugin whose afterTool callback records the tools it is handed and replaces each
+   * result - used to prove the callback fires, with the real tool name, even for a native Kotlin
+   * tool.
+   */
+  private class ToolResultOverridingJavaPlugin : JavaBasePlugin("tool_result_overriding_plugin") {
+    val seenToolNames = CopyOnWriteArrayList<String>()
+
+    @JvmSuppressWildcards
+    override fun afterToolCallback(
+      tool: JavaBaseTool,
+      toolArgs: Map<String, Any>,
+      toolContext: JavaToolContext,
+      result: Map<String, Any>,
+    ): Maybe<Map<String, Any>> {
+      seenToolNames.add(tool.name())
+      return Maybe.just(mapOf("overridden" to tool.name()))
+    }
+  }
+
+  /**
+   * A Java plugin whose onToolError callback records the tool and error it is handed and returns a
+   * fallback - used to prove the callback fires for a native Kotlin tool and can swallow its error.
+   */
+  private class ToolErrorSwallowingJavaPlugin : JavaBasePlugin("tool_error_swallowing_plugin") {
+    val seenToolNames = CopyOnWriteArrayList<String>()
+    var seenError: Throwable? = null
+
+    @JvmSuppressWildcards
+    override fun onToolErrorCallback(
+      tool: JavaBaseTool,
+      toolArgs: Map<String, Any>,
+      toolContext: JavaToolContext,
+      error: Throwable,
+    ): Maybe<Map<String, Any>> {
+      seenToolNames.add(tool.name())
+      seenError = error
+      return Maybe.just(mapOf("recovered" to "from ${tool.name()}"))
+    }
+  }
+
   /** A Java model that replays a fixed sequence of responses, one per LLM step. */
   private class SequentialJavaModel(private val turns: List<GenaiContent>) :
     JavaBaseLlm("java-model") {
@@ -646,6 +743,190 @@ class KtRunnerInteropTest {
         "the Kotlin removal sentinel must be translated to the Java one",
       )
     }
+
+  @Test
+  fun ktRunner_pluginBeforeToolCallback_firesForNativeKotlinTool_andCanDenyIt() = runBlocking {
+    // A native Kotlin tool has no Java form, yet a Java plugin's beforeToolCallback must still
+    // reach
+    // it (via an inspection-only Java view) so it can read the tool by name and short-circuit the
+    // call - the mechanism tool-call policy enforcement relies on.
+    val plugin = ToolDenyingJavaPlugin()
+    val agent =
+      KtLlmAgent(
+        name = "a",
+        model =
+          JavaAdkToKt.asKtModel(
+            SequentialJavaModel(
+              listOf(modelFunctionCall("native_kt_echo", mapOf("text" to "hi")), modelText("done"))
+            )
+          ),
+        tools = listOf(NativeKtEchoTool()),
+      )
+    val runner =
+      KtInMemoryRunner(
+        app =
+          KtApp(
+            appName = "app",
+            rootAgent = agent,
+            plugins = listOf(JavaAdkToKt.asKtPlugin(plugin)),
+          )
+      )
+
+    val events = runner.turn()
+
+    // The callback fired for the native Kotlin tool, seeing its real name.
+    assertEquals(listOf("native_kt_echo"), plugin.seenToolNames.toList())
+
+    // The denial short-circuited execution: the function response is the injected error, not the
+    // tool's own "echoed" output.
+    val functionResponse =
+      events.flatMap { it.functionResponses() }.singleOrNull()
+        ?: fail("expected exactly one function response")
+    assertEquals("denied by policy: native_kt_echo", functionResponse.response["error"])
+    assertTrue(
+      !functionResponse.response.containsKey("echoed"),
+      "the tool body must not have run after a beforeTool denial",
+    )
+  }
+
+  @Test
+  fun ktRunner_pluginAfterToolCallback_firesForNativeKotlinTool_andCanOverrideResult() =
+    runBlocking {
+      // afterToolCallback is wired through the same inspection-only Java view as beforeTool, so it
+      // must reach a native Kotlin tool too and be able to replace its result.
+      val plugin = ToolResultOverridingJavaPlugin()
+      val agent =
+        KtLlmAgent(
+          name = "a",
+          model =
+            JavaAdkToKt.asKtModel(
+              SequentialJavaModel(
+                listOf(
+                  modelFunctionCall("native_kt_echo", mapOf("text" to "hi")),
+                  modelText("done"),
+                )
+              )
+            ),
+          tools = listOf(NativeKtEchoTool()),
+        )
+      val runner =
+        KtInMemoryRunner(
+          app =
+            KtApp(
+              appName = "app",
+              rootAgent = agent,
+              plugins = listOf(JavaAdkToKt.asKtPlugin(plugin)),
+            )
+        )
+
+      val events = runner.turn()
+
+      // The callback fired for the native Kotlin tool, seeing its real name.
+      assertEquals(listOf("native_kt_echo"), plugin.seenToolNames.toList())
+
+      // The override replaced the tool's own "echoed" output.
+      val functionResponse =
+        events.flatMap { it.functionResponses() }.singleOrNull()
+          ?: fail("expected exactly one function response")
+      assertEquals("native_kt_echo", functionResponse.response["overridden"])
+      assertTrue(
+        !functionResponse.response.containsKey("echoed"),
+        "the afterTool override must replace the tool's own result",
+      )
+    }
+
+  @Test
+  fun ktRunner_pluginOnToolErrorCallback_firesForNativeKotlinTool_andCanSwallowTheError() =
+    runBlocking {
+      // onToolErrorCallback is wired through the same inspection-only Java view, so a Java plugin
+      // can
+      // observe and recover from a native Kotlin tool's failure, returning a fallback in its place.
+      val plugin = ToolErrorSwallowingJavaPlugin()
+      val agent =
+        KtLlmAgent(
+          name = "a",
+          model =
+            JavaAdkToKt.asKtModel(
+              SequentialJavaModel(
+                listOf(
+                  modelFunctionCall("native_kt_throwing", mapOf("text" to "hi")),
+                  modelText("done"),
+                )
+              )
+            ),
+          tools = listOf(NativeKtThrowingTool()),
+        )
+      val runner =
+        KtInMemoryRunner(
+          app =
+            KtApp(
+              appName = "app",
+              rootAgent = agent,
+              plugins = listOf(JavaAdkToKt.asKtPlugin(plugin)),
+            )
+        )
+
+      val events = runner.turn()
+
+      // The callback fired for the native Kotlin tool, seeing its real name and the exact error the
+      // tool body threw (delivered unwrapped, so this is the tool's failure, not a framework one).
+      assertEquals(listOf("native_kt_throwing"), plugin.seenToolNames.toList())
+      val seenError = plugin.seenError
+      assertTrue(
+        seenError is IllegalStateException,
+        "onToolError should receive the tool's thrown error, got $seenError",
+      )
+      assertEquals("native tool boom", seenError?.message)
+
+      // The fallback swallowed the error: the run produced the recovery result rather than failing.
+      val functionResponse =
+        events.flatMap { it.functionResponses() }.singleOrNull()
+          ?: fail("expected exactly one function response")
+      assertEquals("from native_kt_throwing", functionResponse.response["recovered"])
+    }
+
+  @Test
+  fun ktRunner_inspectionOnlyToolView_failsLoudIfAPluginRunsANativeKotlinTool() = runBlocking {
+    // The native Kotlin tool is handed to the plugin as an inspection-only Java view; running it
+    // must fail loud (the Kotlin runner is the sole driver of tool execution), mirroring the
+    // agent inspection-only view.
+    val plugin = ToolRunningJavaPlugin()
+    val agent =
+      KtLlmAgent(
+        name = "a",
+        model =
+          JavaAdkToKt.asKtModel(
+            SequentialJavaModel(
+              listOf(modelFunctionCall("native_kt_echo", mapOf("text" to "hi")), modelText("done"))
+            )
+          ),
+        tools = listOf(NativeKtEchoTool()),
+      )
+    val runner =
+      KtInMemoryRunner(
+        app =
+          KtApp(
+            appName = "app",
+            rootAgent = agent,
+            plugins = listOf(JavaAdkToKt.asKtPlugin(plugin)),
+          )
+      )
+
+    runner.turn()
+
+    val runError = plugin.runError
+    assertTrue(
+      runError is UnsupportedOperationException,
+      "running the inspection-only tool view should fail with UnsupportedOperationException, got " +
+        "$runError",
+    )
+    // BaseTool.runAsync's default also throws UnsupportedOperationException, so assert the message.
+    assertTrue(
+      runError?.message?.contains("inspection-only") == true,
+      "the failure should be KtToolToJava's descriptive error mentioning \"inspection-only\", got " +
+        "${runError?.message}",
+    )
+  }
 
   @Test
   fun ktRunner_modelPartCarryingOnlyAnUnmappedKind_isDropped() = runBlocking {
