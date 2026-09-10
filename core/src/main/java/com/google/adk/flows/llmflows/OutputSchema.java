@@ -109,7 +109,8 @@ public final class OutputSchema implements RequestProcessor {
   public static Event createFinalModelResponseEvent(
       InvocationContext context, String jsonResponse) {
     return Event.builder()
-        .id(Event.generateEventId())
+        .id(context.newUuid())
+        .timestamp(context.now().toEpochMilli())
         .invocationId(context.invocationId())
         .author(context.agent().name())
         .branch(context.branch().orElse(null))
