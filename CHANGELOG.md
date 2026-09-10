@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.10.0](https://github.com/google/adk-java/compare/v1.9.0...v1.10.0) (2026-09-10)
+
+
+### Features
+
+* add @Experimental annotation for unstable ADK APIs ([69914f4](https://github.com/google/adk-java/commit/69914f4b69f3461f33a757b2ce191750b45f2136))
+* add EventActions.agentState for session-resumability checkpoints ([8505a01](https://github.com/google/adk-java/commit/8505a017298c128c88c405300e52de001b22d0de))
+* add one-way ADK Java to Kotlin engine interop module ([baff584](https://github.com/google/adk-java/commit/baff584d520e3a1ad28f0021b1db2b4792549de6))
+* add opt-in ResumabilityConfig flag for plain-text continuation auto-resume ([f0fb722](https://github.com/google/adk-java/commit/f0fb722cd6369e9179b6194f544d324e89ba9101))
+* Add unique event_id to BigQuery agent analytics events ([15c70de](https://github.com/google/adk-java/commit/15c70ded3f99d207df4a6e97d68a9380e9ecb05e))
+* fire ADK Java plugin tool callbacks for native Kotlin tools ([fda5a10](https://github.com/google/adk-java/commit/fda5a1027ae4646ee32bd5d722b4531ad55416eb))
+* run an ADK Kotlin-engine runner behind the ADK Java Runner API ([6ff8241](https://github.com/google/adk-java/commit/6ff82412b4b19d1e6c98f464659018e6636861f2))
+
+
+### Bug Fixes
+
+* **memory:** format search timestamps as epoch millis ([5269b87](https://github.com/google/adk-java/commit/5269b8751a6b0c2fa89d41b79b0b1fb0b6cacb9a))
+* **models:** set additionalProperties on schemas for OpenAI strict structured outputs ([4b058cd](https://github.com/google/adk-java/commit/4b058cd17346944ac047828eda6424e495204bf9))
+* **sessions:** forward the caller-supplied session id in VertexAiSessionService ([77eae25](https://github.com/google/adk-java/commit/77eae25844dbc7d49101461c97d7a8711ba5e9dd))
+* **sessions:** validate HTTP status before parsing Vertex AI session responses ([4192aca](https://github.com/google/adk-java/commit/4192aca586bf0bd47f3fa14bbd7d5959d3c07fdb))
+
 ## [1.9.0](https://github.com/google/adk-java/compare/v1.8.0...v1.9.0) (2026-08-28)
 
 
