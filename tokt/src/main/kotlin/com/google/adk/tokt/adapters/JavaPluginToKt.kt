@@ -49,7 +49,9 @@ import kotlinx.coroutines.withContext
  * Exposes an ADK Java [JavaPlugin] as a Kotlin [KtPlugin] so a Java app's plugins run on the Kotlin
  * runner. Each callback converts the Kotlin context to its Java view, invokes the plugin off the
  * engine dispatcher, and reconciles the actions it wrote back onto the Kotlin side. Tool-level
- * callbacks apply only to Kt-backed Java tools ([JavaToolToKt]).
+ * callbacks fire for every tool: an adapted Java tool ([JavaToolToKt]) unwraps to its original
+ * instance, and a native Kotlin tool is presented through an inspection-only [KtToolToJava] view
+ * (see [ktToolAsJava]) -- so the plugin can read the tool and write actions, but must not run it.
  */
 internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
 
@@ -189,14 +191,15 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     else CallbackChoice.Continue(Unit)
   }
 
-  // Tool-level callbacks (only Kt-backed Java tools).
+  // Tool-level callbacks. An adapted Java tool fires natively; a native Kotlin tool is passed
+  // through an inspection-only Java view ([KtToolToJava]).
 
   override suspend fun beforeTool(
     context: KtToolContext,
     tool: KtBaseTool,
     args: Map<String, Any?>,
   ): CallbackChoice<Map<String, Any?>, Map<String, Any?>> {
-    val javaTool = (tool as? JavaToolToKt)?.javaTool ?: return CallbackChoice.Continue(args)
+    val javaTool = ktToolAsJava(tool)
     val javaContext = ktToolContextToJava(context)
     val mutableArgs = args.toMutableMap()
     val override = onIo { plugin.beforeToolCallback(javaTool, mutableArgs, javaContext) }
@@ -211,7 +214,7 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     args: Map<String, Any?>,
     result: Map<String, Any?>,
   ): Map<String, Any?> {
-    val javaTool = (tool as? JavaToolToKt)?.javaTool ?: return result
+    val javaTool = ktToolAsJava(tool)
     val javaContext = ktToolContextToJava(context)
     val override = onIo { plugin.afterToolCallback(javaTool, args, javaContext, result) }
     reconcileActionsToKt(javaContext.actions(), context.actions)
@@ -224,7 +227,7 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     args: Map<String, Any?>,
     error: Throwable,
   ): CallbackChoice<Unit, Map<String, Any?>> {
-    val javaTool = (tool as? JavaToolToKt)?.javaTool ?: return CallbackChoice.Continue(Unit)
+    val javaTool = ktToolAsJava(tool)
     val javaContext = ktToolContextToJava(context)
     val fallback = onIo { plugin.onToolErrorCallback(javaTool, args, javaContext, error) }
     reconcileActionsToKt(javaContext.actions(), context.actions)
