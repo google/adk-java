@@ -18,9 +18,11 @@ package com.google.adk.agents;
 
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
+import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.jspecify.annotations.Nullable;
@@ -149,29 +151,109 @@ public class LoopAgent extends BaseAgent {
           .takeUntil(LoopAgent::hasEscalateAction);
     }
 
-    // Resumable: stop looping once a sub-agent emits a pending long-running call (e.g. HITL),
-    // matching Python ADK v1 and avoiding a runaway loop. The current sub-agent still finishes;
-    // resuming into the paused iteration needs persisted state (future work).
-    AtomicBoolean paused = new AtomicBoolean(false);
-    AtomicInteger timesLooped = new AtomicInteger(0);
-    return Flowable.fromIterable(subAgents)
-        .concatMap(
-            subAgent ->
-                paused.get()
-                    ? Flowable.empty()
-                    : subAgent
-                        .runAsync(invocationContext)
-                        .doOnNext(
-                            event -> {
-                              if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
-                                paused.set(true);
-                              }
-                            }))
-        .repeatUntil(
-            () ->
-                paused.get()
-                    || (maxIterations != null && timesLooped.incrementAndGet() >= maxIterations))
-        .takeUntil(LoopAgent::hasEscalateAction);
+    // Resumable: checkpoint {current_sub_agent, times_looped} before each sub-agent, resume into
+    // the checkpointed iteration, pause (not end) on a long-running call, and reset sub-agent
+    // state between iterations.
+    return Flowable.defer(
+        () -> {
+          Map<String, Object> state = invocationContext.agentStates().get(name());
+          String startSubAgentName =
+              state != null && state.get(WorkflowAgentStates.CURRENT_SUB_AGENT) instanceof String s
+                  ? s
+                  : null;
+          int startTimesLooped =
+              state != null && state.get(WorkflowAgentStates.TIMES_LOOPED) instanceof Number n
+                  ? n.intValue()
+                  : 0;
+          int startIndex =
+              WorkflowAgentStates.findIndexForResumption(subAgents, startSubAgentName, logger);
+          LoopState loopState = new LoopState(startSubAgentName != null, startTimesLooped);
+          return runLoopIteration(invocationContext, subAgents, startIndex, loopState);
+        });
+  }
+
+  /** Mutable state shared across the iterations of one resumable {@link LoopAgent} run. */
+  private static final class LoopState {
+    /** True until the sub-agent being resumed into has run; that sub-agent skips its checkpoint. */
+    final AtomicBoolean resuming;
+
+    final AtomicInteger timesLooped;
+    final AtomicBoolean shouldExit = new AtomicBoolean(false);
+    final AtomicBoolean paused = new AtomicBoolean(false);
+
+    LoopState(boolean resuming, int timesLooped) {
+      this.resuming = new AtomicBoolean(resuming);
+      this.timesLooped = new AtomicInteger(timesLooped);
+    }
+  }
+
+  /**
+   * Runs one loop iteration over the sub-agents from {@code startIndex}, then either recurses for
+   * the next iteration or terminates (emitting end-of-agent unless paused). {@code state} carries
+   * the loop's mutable state across iterations.
+   */
+  private Flowable<Event> runLoopIteration(
+      InvocationContext context,
+      List<? extends BaseAgent> subAgents,
+      int startIndex,
+      LoopState state) {
+    return Flowable.defer(
+        () -> {
+          // Iteration cap, checked in one place before each iteration: this covers both a resume
+          // that starts already at/over the cap and the transition after an iteration completes.
+          if (maxIterations != null && state.timesLooped.get() >= maxIterations) {
+            return endOfAgentAndRecord(context);
+          }
+          Flowable<Event> iteration =
+              Flowable.fromIterable(subAgents.subList(startIndex, subAgents.size()))
+                  .concatMap(
+                      subAgent ->
+                          Flowable.defer(
+                              () -> {
+                                if (state.shouldExit.get() || state.paused.get()) {
+                                  return Flowable.<Event>empty();
+                                }
+                                Flowable<Event> checkpoint = Flowable.empty();
+                                if (!state.resuming.getAndSet(false)) {
+                                  ImmutableMap<String, Object> subState =
+                                      ImmutableMap.of(
+                                          WorkflowAgentStates.CURRENT_SUB_AGENT, subAgent.name(),
+                                          WorkflowAgentStates.TIMES_LOOPED,
+                                              state.timesLooped.get());
+                                  checkpoint = checkpointAndRecord(context, subState);
+                                }
+                                Flowable<Event> run =
+                                    subAgent
+                                        .runAsync(context)
+                                        .doOnNext(
+                                            event -> {
+                                              if (hasEscalateAction(event)) {
+                                                state.shouldExit.set(true);
+                                              }
+                                              if (context.shouldPauseInvocation(event)) {
+                                                state.paused.set(true);
+                                              }
+                                            });
+                                return checkpoint.concatWith(run);
+                              }));
+          return iteration.concatWith(
+              Flowable.defer(
+                  () -> {
+                    // Pause takes precedence over escalation-exit so a long-running pause stays
+                    // resumable.
+                    if (state.paused.get()) {
+                      return Flowable.<Event>empty();
+                    }
+                    if (state.shouldExit.get()) {
+                      return endOfAgentAndRecord(context);
+                    }
+                    state.timesLooped.incrementAndGet();
+                    context.resetSubAgentStates(name());
+                    // A fresh iteration restarts at the first sub-agent (state.resuming is already
+                    // false here). The cap is re-checked at the top of the next iteration.
+                    return runLoopIteration(context, subAgents, /* startIndex= */ 0, state);
+                  }));
+        });
   }
 
   @Override

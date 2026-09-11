@@ -22,8 +22,9 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Helpers for resuming workflow agents from session events. Temporary until session resumption
- * (persisted agent state) is available.
+ * Back-compat helper: reconstructs a workflow agent's resume point from session events for
+ * invocations paused before durable agent-state checkpoints existed (used from {@link
+ * SequentialAgent} when no checkpoint state is present).
  */
 final class WorkflowAgentResumption {
 
@@ -46,13 +47,6 @@ final class WorkflowAgentResumption {
       }
     }
     return Optional.empty();
-  }
-
-  /**
-   * Whether the event emits a long-running call still awaiting a response (e.g. a HITL request).
-   */
-  static boolean hasPendingLongRunningCall(Event event) {
-    return Functions.hasPendingLongRunningCall(event);
   }
 
   private WorkflowAgentResumption() {}

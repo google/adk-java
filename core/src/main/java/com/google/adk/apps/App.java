@@ -19,6 +19,7 @@ package com.google.adk.apps;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.Role;
+import com.google.adk.annotations.Experimental;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.common.collect.ImmutableList;
@@ -35,7 +36,6 @@ import org.jspecify.annotations.Nullable;
  * and communication across all agents in the hierarchy. The {@code plugins} are application-wide
  * components that provide shared capabilities and services to the entire system.
  */
-@SuppressWarnings("deprecation") // Plumbs the deprecated ResumabilityConfig.
 public class App {
   private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
 
@@ -83,6 +83,7 @@ public class App {
     return contextCacheConfig;
   }
 
+  @Experimental
   public @Nullable ResumabilityConfig resumabilityConfig() {
     return resumabilityConfig;
   }
@@ -132,14 +133,9 @@ public class App {
       return this;
     }
 
-    /**
-     * Sets the app resumability config.
-     *
-     * @deprecated See {@link ResumabilityConfig}: partial feature, full resumability not yet
-     *     available.
-     */
+    /** Sets the app resumability config. Experimental; see {@link ResumabilityConfig}. */
     @CanIgnoreReturnValue
-    @Deprecated
+    @Experimental
     public Builder resumabilityConfig(ResumabilityConfig resumabilityConfig) {
       this.resumabilityConfig = resumabilityConfig;
       return this;
