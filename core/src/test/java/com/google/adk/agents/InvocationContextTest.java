@@ -21,17 +21,23 @@ import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 
 import com.google.adk.artifacts.BaseArtifactService;
+import com.google.adk.events.Event;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.Part;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.jspecify.annotations.Nullable;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -723,5 +729,185 @@ public final class InvocationContextTest {
 
     IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
     assertThat(exception).hasMessageThat().isEqualTo("Session service must be set.");
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_userEventOnSubBranch_isIncluded() {
+    Event userOnChild = userEvent("agent_1.child");
+
+    assertThat(contextOnBranch("agent_1", userOnChild).eventsOnCurrentBranch())
+        .containsExactly(userOnChild);
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_agentEventOnSubBranch_isExcluded() {
+    // Asymmetric with the user case on purpose: descendants' internal events stay hidden.
+    Event agentOnChild = agentEvent("agent_1.child");
+
+    assertThat(contextOnBranch("agent_1", agentOnChild).eventsOnCurrentBranch()).isEmpty();
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_siblingBranch_isExcluded() {
+    Event userOnSibling = userEvent("agent_2");
+
+    assertThat(contextOnBranch("agent_1", userOnSibling).eventsOnCurrentBranch()).isEmpty();
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_userEventOnLookalikeBranch_isExcluded() {
+    // "agent_10" shares a prefix with "agent_1" but is not a sub-branch of it.
+    Event userOnLookalike = userEvent("agent_10");
+
+    assertThat(contextOnBranch("agent_1", userOnLookalike).eventsOnCurrentBranch()).isEmpty();
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_emptyBranch_doesNotMatchBranchedEvents() {
+    // An empty string is a real branch value, not a synonym for "match everything".
+    Event userOnBranch = userEvent("agent_1");
+
+    assertThat(contextOnBranch("", userOnBranch).eventsOnCurrentBranch()).isEmpty();
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_noBranch_matchesEveryUserEventButNotAgentEvents() {
+    Event userElsewhere = userEvent("agent_2.child");
+    Event agentElsewhere = agentEvent("agent_2.child");
+
+    assertThat(contextOnBranch(null, userElsewhere, agentElsewhere).eventsOnCurrentBranch())
+        .containsExactly(userElsewhere);
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_userResponseToCallInSubtree_isKept() {
+    Event callOnChild = callEvent("agent_1.child", "fc_1");
+    Event reply = userResponseEvent("agent_1", "fc_1");
+
+    assertThat(contextOnBranch("agent_1", callOnChild, reply).eventsOnCurrentBranch())
+        .containsExactly(reply);
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_userResponseToCallElsewhere_isDropped() {
+    // Sitting on this branch is not enough: the reply answers a parallel tree's call.
+    Event callElsewhere = callEvent("agent_2", "fc_1");
+    Event reply = userResponseEvent("agent_1", "fc_1");
+
+    assertThat(contextOnBranch("agent_1", callElsewhere, reply).eventsOnCurrentBranch()).isEmpty();
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_userResponseToLookalikeBranchCall_isDropped() {
+    // "agent_10" shares a prefix with "agent_1" but is not a sub-branch of it.
+    Event callOnLookalike = callEvent("agent_10", "fc_1");
+    Event reply = userResponseEvent("agent_1", "fc_1");
+
+    assertThat(contextOnBranch("agent_1", callOnLookalike, reply).eventsOnCurrentBranch())
+        .isEmpty();
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_severalReplies_eachJudgedAgainstItsOwnCall() {
+    Event callHere = callEvent("agent_1", "fc_here");
+    Event callOnChild = callEvent("agent_1.child", "fc_child");
+    Event callElsewhere = callEvent("agent_2", "fc_far");
+    Event replyHere = userResponseEvent("agent_1", "fc_here");
+    Event replyFar = userResponseEvent("agent_1", "fc_far");
+    Event replyChild = userResponseEvent("agent_1", "fc_child");
+
+    InvocationContext context =
+        contextOnBranch(
+            "agent_1", callHere, callOnChild, callElsewhere, replyHere, replyFar, replyChild);
+
+    // callHere matches exactly so it survives; the sub-branch calls do not, but their replies do.
+    assertThat(context.eventsOnCurrentBranch())
+        .containsExactly(callHere, replyHere, replyChild)
+        .inOrder();
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_emptyBranchAndDotPrefixedEvent_isExcluded() {
+    // Pins the empty-branch guard: without it the prefix test would admit a dot-prefixed branch.
+    Event dotPrefixed = userEvent(".x");
+
+    assertThat(contextOnBranch("", dotPrefixed).eventsOnCurrentBranch()).isEmpty();
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_rootAgentEventWhileOnSubBranch_isExcluded() {
+    // The narrowing direction: the old scan admitted every event, this one demands equality.
+    Event rootAgentEvent = agentEvent(null);
+
+    assertThat(contextOnBranch("agent_1", rootAgentEvent).eventsOnCurrentBranch()).isEmpty();
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_rootUserEventWhileOnSubBranch_isIncluded() {
+    // The user twin of the case above: a null-branch user event still matches.
+    Event rootUserEvent = userEvent(null);
+
+    assertThat(contextOnBranch("agent_1", rootUserEvent).eventsOnCurrentBranch())
+        .containsExactly(rootUserEvent);
+  }
+
+  @Test
+  public void eventsOnCurrentBranch_userResponseToUnbranchedCall_isDropped() {
+    // A root-level call contributes no id, so a reply answering only it is dropped.
+    Event rootCall = callEvent(null, "fc_1");
+    Event reply = userResponseEvent("agent_1", "fc_1");
+
+    assertThat(contextOnBranch("agent_1", rootCall, reply).eventsOnCurrentBranch()).isEmpty();
+  }
+
+  private InvocationContext contextOnBranch(@Nullable String branch, Event... events) {
+    return InvocationContext.builder()
+        .sessionService(mockSessionService)
+        .artifactService(mockArtifactService)
+        .memoryService(mockMemoryService)
+        .pluginManager(pluginManager)
+        .invocationId(testInvocationId)
+        .branch(branch)
+        .agent(mockAgent)
+        .session(Session.builder("test-session-id").events(ImmutableList.copyOf(events)).build())
+        .runConfig(runConfig)
+        .build();
+  }
+
+  private static Event userEvent(@Nullable String branch) {
+    return Event.builder().author("user").branch(branch).build();
+  }
+
+  private static Event agentEvent(@Nullable String branch) {
+    return Event.builder().author("some_agent").branch(branch).build();
+  }
+
+  private static Event callEvent(@Nullable String branch, String callId) {
+    return Event.builder()
+        .author("some_agent")
+        .branch(branch)
+        .content(
+            Content.fromParts(
+                Part.builder()
+                    .functionCall(FunctionCall.builder().id(callId).name("t").build())
+                    .build()))
+        .build();
+  }
+
+  private static Event userResponseEvent(@Nullable String branch, String callId) {
+    return Event.builder()
+        .author("user")
+        .branch(branch)
+        .content(
+            Content.fromParts(
+                Part.builder()
+                    .functionResponse(
+                        FunctionResponse.builder()
+                            .id(callId)
+                            .name("t")
+                            .response(ImmutableMap.of())
+                            .build())
+                    .build()))
+        .build();
   }
 }
