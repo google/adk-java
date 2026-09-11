@@ -48,11 +48,13 @@ import com.google.adk.tools.BaseToolset as JavaBaseToolset
  * control-flow writes reach the engine. Blocking work is fine: calls are dispatched off the thread
  * driving the agent.
  *
+ * A bridged plugin's error callbacks fire: `onRunErrorCallback` is notification-only -- the engine
+ * re-raises the run's error to the caller afterwards regardless, so it cannot recover the run (it
+ * is for logging, telemetry, or cleanup) -- while the `onModelErrorCallback` and
+ * `onToolErrorCallback` recovery hooks fire and can recover.
+ *
  * The interop surfaces a signal the engine cannot honor rather than silently dropping it:
  * - Setting `branch` on a bridged context throws. The branch is the engine's to set.
- * - A bridged plugin that overrides `onRunErrorCallback` is skipped with a warning (not run): the
- *   engine surfaces run-level errors through the returned event stream to the caller, not to
- *   plugins. The `onModelErrorCallback` and `onToolErrorCallback` recovery hooks do fire.
  * - A bridged tool's or plugin's `requestedAuthConfigs` or `deletedArtifactIds` write throws - the
  *   engine's event actions have no equivalent. Its `skipSummarization`,
  *   `requestedToolConfirmations` and `agentState` writes do cross, from a tool and a plugin alike.
