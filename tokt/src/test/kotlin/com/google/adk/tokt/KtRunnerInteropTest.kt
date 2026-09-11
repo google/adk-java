@@ -26,6 +26,8 @@ import com.google.adk.artifacts.InMemoryArtifactService as JavaInMemoryArtifactS
 import com.google.adk.events.Event as JavaEvent
 import com.google.adk.events.EventActions as JavaEventActions
 import com.google.adk.events.EventCompaction as JavaEventCompaction
+import com.google.adk.kt.agents.BaseAgent as KtBaseAgent
+import com.google.adk.kt.agents.InvocationContext as KtInvocationContext
 import com.google.adk.kt.agents.LlmAgent as KtLlmAgent
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
@@ -149,6 +151,8 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 
@@ -451,12 +455,21 @@ class KtRunnerInteropTest {
     }
   }
 
-  /** A Java plugin that overrides onRunErrorCallback, which the engine cannot fire. */
+  /** A Java plugin that records every error its onRunErrorCallback is notified of. */
   private class OnRunErrorJavaPlugin : JavaBasePlugin("on_run_error_plugin") {
+    val errors = CopyOnWriteArrayList<Throwable>()
+
     override fun onRunErrorCallback(
       invocationContext: JavaInvocationContext,
       error: Throwable,
-    ): Completable = Completable.complete()
+    ): Completable = Completable.fromAction { errors.add(error) }
+  }
+
+  /** A native Kotlin agent that always fails, to drive the run-error path. */
+  private class FailingKtAgent : KtBaseAgent(name = "failing") {
+    override fun runAsyncImpl(context: KtInvocationContext): Flow<KtEvent> = flow {
+      throw RuntimeException("boom")
+    }
   }
 
   /** A Java plugin that requests an auth config the engine cannot represent, from before-agent. */
@@ -3444,12 +3457,25 @@ class KtRunnerInteropTest {
   }
 
   @Test
-  fun asKtPlugin_pluginOverridingOnRunError_isSkippedNotRejected() {
-    // The engine never fires onRunErrorCallback, so the override is skipped with a warning rather
-    // than rejected; adaptation still succeeds and the plugin's other callbacks run.
-    val plugin = JavaAdkToKt.asKtPlugin(OnRunErrorJavaPlugin())
+  fun ktRunner_javaPluginOnRunErrorCallback_firesWhenRunFails() = runBlocking {
+    // A bridged Java plugin's onRunErrorCallback fires (notification-only) when the run fails, and
+    // the error still propagates to the caller.
+    val plugin = OnRunErrorJavaPlugin()
+    val runner =
+      KtInMemoryRunner(
+        app =
+          KtApp(
+            appName = "app",
+            rootAgent = FailingKtAgent(),
+            plugins = listOf(JavaAdkToKt.asKtPlugin(plugin)),
+          )
+      )
 
-    assertEquals("on_run_error_plugin", plugin.name)
+    val thrown = assertFailsWith<RuntimeException> { runner.turn() }
+
+    // The plugin was notified exactly once, with the same error instance that failed the run.
+    assertEquals(1, plugin.errors.size)
+    assertSame(thrown, plugin.errors.single())
   }
 
   @Test
