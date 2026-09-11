@@ -74,6 +74,14 @@ public final class InMemorySessionService implements BaseSessionService {
     return createSession(appName, userId, (Map<String, Object>) state, sessionId);
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>This implementation never overwrites an existing session.
+   *
+   * @throws SessionAlreadyExistsException if {@code sessionId} is supplied and a session already
+   *     exists under it for this app and user.
+   */
   @Override
   public Single<Session> createSession(
       String appName,
@@ -102,10 +110,15 @@ public final class InMemorySessionService implements BaseSessionService {
             .lastUpdateTime(Instant.now())
             .build();
 
-    sessions
-        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
-        .put(resolvedSessionId, newSession);
+    // Atomic: a read-then-write would let two concurrent creators both win.
+    Session existing =
+        sessions
+            .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+            .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
+            .putIfAbsent(resolvedSessionId, newSession);
+    if (existing != null) {
+      return Single.error(new SessionAlreadyExistsException());
+    }
 
     // Create a mutable copy for the return value
     Session returnCopy = copySession(newSession);

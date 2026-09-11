@@ -35,6 +35,10 @@ import org.jspecify.annotations.Nullable;
  * methods for creating, retrieving, listing, and deleting sessions, as well as listing and
  * appending events to a session. Implementations of this interface handle the underlying storage
  * and retrieval logic.
+ *
+ * <p>Every {@code createSession} overload that accepts a session id shares one contract: an
+ * implementation that rejects duplicates signals a taken id with {@link
+ * SessionAlreadyExistsException}, and implementations differ on whether they do.
  */
 public interface BaseSessionService {
 
@@ -68,6 +72,8 @@ public interface BaseSessionService {
    * @param sessionId An optional client-provided identifier for the session. If empty or null, the
    *     service should generate a unique ID.
    * @return The newly created {@link Session} instance.
+   * @throws SessionAlreadyExistsException if {@code sessionId} is already in use for this app and
+   *     user; only implementations that reject duplicates throw it.
    * @throws SessionException if creation fails.
    */
   default Single<Session> createSession(
