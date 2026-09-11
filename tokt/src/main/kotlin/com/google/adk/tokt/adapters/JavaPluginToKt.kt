@@ -16,7 +16,6 @@
 
 package com.google.adk.tokt.adapters
 
-import com.google.adk.agents.InvocationContext as JavaInvocationContext
 import com.google.adk.kt.agents.CallbackContext as KtCallbackContext
 import com.google.adk.kt.agents.InvocationContext as KtInvocationContext
 import com.google.adk.kt.callbacks.CallbackChoice
@@ -40,7 +39,6 @@ import com.google.adk.tokt.context.ktCallbackContextToJava
 import com.google.adk.tokt.context.ktToolContextToJava
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Maybe
-import java.util.logging.Logger
 import kotlinx.coroutines.rx3.await
 import kotlinx.coroutines.rx3.awaitSingleOrNull
 import kotlinx.coroutines.withContext
@@ -54,30 +52,6 @@ import kotlinx.coroutines.withContext
  * (see [ktToolAsJava]) -- so the plugin can read the tool and write actions, but must not run it.
  */
 internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
-
-  private companion object {
-    val logger: Logger = Logger.getLogger(JavaPluginToKt::class.java.name)
-  }
-
-  init {
-    // The engine surfaces run-level errors through the event stream, not to plugins, so an
-    // onRunErrorCallback override cannot fire here; warn and skip it rather than failing
-    // adaptation.
-    val onRunError =
-      plugin.javaClass.getMethod(
-        "onRunErrorCallback",
-        JavaInvocationContext::class.java,
-        Throwable::class.java,
-      )
-    // declaringClass is Plugin only when neither the class nor an intermediate interface overrode
-    // it.
-    if (onRunError.declaringClass != JavaPlugin::class.java) {
-      logger.warning(
-        "Bridged Java plugin '${plugin.name}' overrides onRunErrorCallback, which the ADK Kotlin " +
-          "engine does not invoke; the override is skipped (run errors surface via the event stream)."
-      )
-    }
-  }
 
   override val name: String
     get() = plugin.name
@@ -126,6 +100,11 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
   override suspend fun afterRun(invocationContext: KtInvocationContext) {
     val javaContext = KtInvocationContextToJavaView(invocationContext)
     completeOnIo { plugin.afterRunCallback(javaContext) }
+  }
+
+  override suspend fun onRunError(invocationContext: KtInvocationContext, error: Throwable) {
+    val javaContext = KtInvocationContextToJavaView(invocationContext)
+    completeOnIo { plugin.onRunErrorCallback(javaContext, error) }
   }
 
   // Agent-level callbacks.
