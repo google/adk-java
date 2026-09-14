@@ -55,6 +55,7 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
@@ -70,6 +71,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -660,7 +662,133 @@ public class LlmAgent extends BaseAgent {
 
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    return llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    if (!invocationContext.isResumable()) {
+      return llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    }
+    return Flowable.defer(
+        () -> {
+          // Resumed after a transfer: continue the transferred sub-agent instead of re-invoking
+          // the model, then mark this agent done -- unless the sub-agent pauses again, so a later
+          // turn can resume that pause.
+          if (invocationContext.agentStates().containsKey(name())) {
+            Optional<BaseAgent> resumeTarget = findSubAgentToResume(invocationContext);
+            if (resumeTarget.isPresent()) {
+              AtomicBoolean resumePaused = new AtomicBoolean(false);
+              return resumeTarget
+                  .get()
+                  .runAsync(invocationContext)
+                  .doOnNext(
+                      event -> {
+                        if (invocationContext.shouldPauseInvocation(event)) {
+                          resumePaused.set(true);
+                        }
+                      })
+                  .concatWith(
+                      Flowable.defer(
+                          () -> {
+                            if (resumePaused.get()) {
+                              return Flowable.<Event>empty();
+                            }
+                            return endOfAgentAndRecord(invocationContext);
+                          }));
+            }
+          }
+          // Don't re-invoke the model while any paused long-running call is unanswered.
+          if (invocationContext.hasUnansweredPausedCall()) {
+            return Flowable.<Event>empty();
+          }
+          // Normal path: emit an end-of-agent checkpoint on completion so a later run can skip
+          // this agent, unless it paused on a long-running call (then suppress it so it can
+          // resume).
+          Flowable<Event> events =
+              llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+          AtomicBoolean paused = new AtomicBoolean(false);
+          AtomicBoolean transferred = new AtomicBoolean(false);
+          return events
+              .doOnNext(
+                  event -> {
+                    if (invocationContext.shouldPauseInvocation(event)) {
+                      paused.set(true);
+                    }
+                  })
+              .concatMap(
+                  event -> {
+                    // On a transfer this agent authored, close this agent here -- before the
+                    // transferred-to sub-agent runs -- so its checkpoint marks it done and a later
+                    // turn resumes at the sub-agent, not the finished root.
+                    if (transferTargetFrom(event).isPresent()) {
+                      transferred.set(true);
+                      return Flowable.just(event)
+                          .concatWith(endOfAgentAndRecord(invocationContext));
+                    }
+                    return Flowable.just(event);
+                  })
+              .concatWith(
+                  Flowable.defer(
+                      () -> {
+                        if (paused.get() || transferred.get()) {
+                          return Flowable.empty();
+                        }
+                        return endOfAgentAndRecord(invocationContext);
+                      }));
+        });
+  }
+
+  /**
+   * Returns the agent this agent transferred to in {@code event} (an event this agent authored that
+   * carries a transfer to a different agent), or empty when {@code event} is not such a transfer.
+   */
+  private Optional<BaseAgent> transferTargetFrom(Event event) {
+    if (name().equals(event.author())) {
+      return event
+          .actions()
+          .transferToAgent()
+          .filter(target -> !target.equals(name()))
+          .flatMap(target -> rootAgent().findAgent(target));
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * When this agent is being resumed, returns the sub-agent it had transferred to (so the resume
+   * continues that sub-agent), or empty when this agent should continue itself.
+   */
+  private Optional<BaseAgent> findSubAgentToResume(InvocationContext context) {
+    List<Event> events = context.events(/* currentInvocation= */ true, /* currentBranch= */ true);
+    if (events.isEmpty()) {
+      return Optional.empty();
+    }
+    Event lastEvent = Iterables.getLast(events);
+    if (name().equals(lastEvent.author())) {
+      return transferTargetFrom(lastEvent);
+    }
+    if (Objects.equals(lastEvent.author(), Role.USER)) {
+      // A plain-text resume message (no function response) is not a transfer resume: continue this
+      // agent rather than requiring a matching function call.
+      if (lastEvent.functionResponses().isEmpty()) {
+        return Optional.empty();
+      }
+      // IAE (not ISE): an unresolvable resume surfaces through Runner.runAsync's IAE contract.
+      Event functionCallEvent =
+          context
+              .findMatchingFunctionCall(lastEvent)
+              .orElseThrow(
+                  () ->
+                      new IllegalArgumentException(
+                          "No matching function call to resume agent "
+                              + name()
+                              + " from a function response."));
+      if (name().equals(functionCallEvent.author())) {
+        return Optional.empty();
+      }
+    }
+    for (int i = events.size() - 2; i >= 0; i--) {
+      Optional<BaseAgent> agent = transferTargetFrom(events.get(i));
+      if (agent.isPresent()) {
+        return agent;
+      }
+    }
+    return Optional.empty();
   }
 
   @Override

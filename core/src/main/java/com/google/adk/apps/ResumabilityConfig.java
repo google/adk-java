@@ -16,19 +16,18 @@
 
 package com.google.adk.apps;
 
+import com.google.adk.annotations.Experimental;
 import com.google.auto.value.AutoValue;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 
 /**
- * App resumability config, mirroring Python ADK v1's {@code ResumabilityConfig}: pause on a
- * long-running call and resume from the last event. Applies to all agents in the app.
+ * App resumability config: pause on a long-running call and resume from the last event. Applies to
+ * all agents in the app.
  *
- * @deprecated Partial feature: only event-reconstruction-based pause/resume for {@code
- *     SequentialAgent} is implemented. Full session resumability (persisted agent state, durable
- *     resume, other workflow agents) is not yet available. Forward-compatible: the same config will
- *     drive full resumability once it lands.
+ * <p>Experimental and not yet stable: resume is best-effort and at-least-once, so a resuming tool
+ * must be idempotent and any temporary in-memory state is lost on resumption.
  */
-@Deprecated
+@Experimental
 @AutoValue
 public abstract class ResumabilityConfig {
 
@@ -38,8 +37,8 @@ public abstract class ResumabilityConfig {
   /**
    * Whether a plain-text {@code runAsync} continuation -- a user message that is not a function
    * response -- resumes the last unfinished invocation instead of starting a new one. Off by
-   * default, matching Python ADK, where a plain-text {@code runAsync} always starts a new
-   * invocation and a paused invocation is resumed explicitly.
+   * default: a plain-text {@code runAsync} starts a new invocation and a paused invocation is
+   * resumed explicitly.
    *
    * @deprecated Back-compat shim for callers that deliver a resume as a plain-text turn. Migrate to
    *     {@code Runner.runAsync(userId, sessionId, invocationId, message, runConfig, stateDelta)}

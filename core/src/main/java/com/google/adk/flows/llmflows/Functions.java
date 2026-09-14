@@ -472,11 +472,32 @@ public final class Functions {
   }
 
   /**
-   * Returns whether the last one or two events hold a pending long-running call, meaning a
-   * resumable flow should pause instead of calling the model again. Mirrors Python ADK v1's
-   * flow-level pause check on {@code events[-1]} and {@code events[-2]}.
+   * Returns whether the last one or two events hold a long-running call still awaiting a response,
+   * meaning a resumable flow should pause instead of calling the model again. A response that
+   * resolves the call -- the tool's own same-turn value, or a later user-injected resume -- lets
+   * the flow continue and the model summarize; only a no-response return (null or empty result,
+   * which emits no function response) pauses.
    */
   static boolean hasPendingLongRunningCall(List<Event> events) {
+    if (events.isEmpty()) {
+      return false;
+    }
+    Event last = Iterables.getLast(events);
+    if (events.size() >= 2 && !last.functionResponses().isEmpty()) {
+      Event pending = events.get(events.size() - 2);
+      Set<String> longRunningIds = pending.longRunningToolIds().orElse(ImmutableSet.of());
+      Set<String> pausedIds = new HashSet<>();
+      for (FunctionCall call : pending.functionCalls()) {
+        call.id().filter(longRunningIds::contains).ifPresent(pausedIds::add);
+      }
+      Set<String> resolvedIds = new HashSet<>();
+      for (FunctionResponse response : last.functionResponses()) {
+        response.id().ifPresent(resolvedIds::add);
+      }
+      if (!pausedIds.isEmpty() && resolvedIds.containsAll(pausedIds)) {
+        return false;
+      }
+    }
     int from = Math.max(0, events.size() - 2);
     for (int i = events.size() - 1; i >= from; i--) {
       if (hasPendingLongRunningCall(events.get(i))) {

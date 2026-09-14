@@ -399,6 +399,28 @@ public final class FunctionsTest {
     assertThat(result).containsExactly(confirmationCall1, confirmationCall2);
   }
 
+  @Test
+  public void hasPendingLongRunningCall_singleEventWithFunctionResponse_returnsFalse() {
+    // A single event cannot hold both a paused call and its response, so nothing is pending (and
+    // the pending-call lookup must not read a nonexistent prior event).
+    assertThat(Functions.hasPendingLongRunningCall(ImmutableList.of(functionResponseEvent("c1"))))
+        .isFalse();
+  }
+
+  @Test
+  public void hasPendingLongRunningCall_sequentialAnsweredCalls_returnsFalse() {
+    // Two long-running calls, each answered by the immediately following response: the pending-call
+    // lookup must inspect the second-to-last event (the latest call), not some other index.
+    assertThat(
+            Functions.hasPendingLongRunningCall(
+                ImmutableList.of(
+                    longRunningCallEvent("c1"),
+                    functionResponseEvent("c1"),
+                    longRunningCallEvent("c2"),
+                    functionResponseEvent("c2"))))
+        .isFalse();
+  }
+
   // Default ToolExecutionMode.NONE behaves like PARALLEL: blocking tools still execute serially
   // on the caller thread (no worker scheduler is used), preserving the historical default.
   @Test
@@ -568,8 +590,42 @@ public final class FunctionsTest {
     assertThat(Functions.hasPendingLongRunningCall(ImmutableList.<Event>of())).isFalse();
   }
 
+  @Test
+  public void hasPendingLongRunningCall_list_responseResolvesCall_returnsFalse() {
+    // The trailing function response resolves the pending long-running call, so the flow continues.
+    ImmutableList<Event> events =
+        ImmutableList.of(longRunningCallEvent("call1"), functionResponseEvent("call1"));
+    assertThat(Functions.hasPendingLongRunningCall(events)).isFalse();
+  }
+
+  @Test
+  public void hasPendingLongRunningCall_list_responseForDifferentCall_returnsTrue() {
+    // The response does not resolve the pending call, so the long-running call still pauses.
+    ImmutableList<Event> events =
+        ImmutableList.of(longRunningCallEvent("call1"), functionResponseEvent("other"));
+    assertThat(Functions.hasPendingLongRunningCall(events)).isTrue();
+  }
+
   private static Event longRunningCallEvent(String callId) {
     return functionCallEvent(callId, callId);
+  }
+
+  private static Event functionResponseEvent(String callId) {
+    return Event.builder()
+        .id("response_" + callId)
+        .invocationId("invocation1")
+        .author("user")
+        .content(
+            Content.fromParts(
+                Part.builder()
+                    .functionResponse(
+                        FunctionResponse.builder()
+                            .id(callId)
+                            .name("tool")
+                            .response(ImmutableMap.of())
+                            .build())
+                    .build()))
+        .build();
   }
 
   // Event with a function call; longRunningId, when non-null, is marked long-running.

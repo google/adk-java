@@ -536,9 +536,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     return Flowable.empty();
                   } else if (invocationContext.isResumable()
                       && Functions.hasPendingLongRunningCall(eventList)) {
-                    // When resumable, a pending long-running call (e.g. HITL) pauses the flow
-                    // instead of calling the model again, matching Python ADK v1 and avoiding a
-                    // runaway re-issue loop. The disabled path is unchanged.
+                    // Resumable: pause on an unanswered long-running call, but continue once it has
+                    // a response.
                     logger.debug("Pausing flow execution on a pending long-running call.");
                     return Flowable.empty();
                   } else {
