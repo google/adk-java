@@ -45,7 +45,7 @@ public class AdkWebServerUITest {
     mockMvc
         .perform(get("/"))
         .andExpect(status().is3xxRedirection())
-        .andExpect(redirectedUrl("/dev-ui"));
+        .andExpect(redirectedUrl("dev-ui"));
   }
 
   @ParameterizedTest
