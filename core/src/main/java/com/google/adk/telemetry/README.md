@@ -151,6 +151,7 @@ The following classes are the primary places where spans are created:
 
 **ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS**: This environment variable controls
 whether LLM request/response content and tool arguments/responses are captured
-in span attributes. It defaults to `true`. Set to `false` to exclude potentially
-large or sensitive data from traces, in which case a `{}` JSON object will be
-recorded instead.
+in span attributes. It defaults to `false` per OpenTelemetry GenAI semantic
+conventions, which classify content attributes as opt-in due to privacy and data
+volume concerns. Set to `true` to include content in traces (e.g., for local
+development or debugging). When disabled, a `{}` JSON object is recorded instead.
