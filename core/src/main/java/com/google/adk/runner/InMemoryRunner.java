@@ -26,11 +26,10 @@ import java.util.List;
 
 /** The class for the in-memory GenAi runner, using in-memory artifact and session services. */
 public class InMemoryRunner extends Runner {
+  private static final String DEFAULT_APP_NAME = "InMemoryRunner";
 
   public InMemoryRunner(BaseAgent agent) {
-    // TODO: Change the default appName to InMemoryRunner to align with adk python.
-    // Check the dev UI in case we break something there.
-    this(agent, /* appName= */ agent.name(), ImmutableList.of());
+    this(agent, DEFAULT_APP_NAME, ImmutableList.of());
   }
 
   public InMemoryRunner(BaseAgent agent, String appName) {
