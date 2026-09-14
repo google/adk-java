@@ -40,22 +40,44 @@ public class AdkWebServerUITest {
 
   @Autowired private MockMvc mockMvc;
 
-  @Test
-  public void rootShouldRedirectToDevUi() throws Exception {
+  @ParameterizedTest
+  @ValueSource(strings = {"/", "/dev-ui"})
+  public void devUiEntryPoints_shouldRedirectToTrailingSlashForm(String path) throws Exception {
+    // index.html declares <base href="./">, which only resolves correctly from "/dev-ui/".
     mockMvc
-        .perform(get("/"))
+        .perform(get(path))
         .andExpect(status().is3xxRedirection())
-        .andExpect(redirectedUrl("/dev-ui"));
+        .andExpect(redirectedUrl("/dev-ui/"));
+  }
+
+  @Test
+  public void devUi_shouldBeServedAtTrailingSlashForm() throws Exception {
+    mockMvc.perform(get("/dev-ui/")).andExpect(status().isOk());
+  }
+
+  @Test
+  public void devUiAssets_shouldBeServedBelowDevUi() throws Exception {
+    mockMvc.perform(get("/dev-ui/adk_favicon.svg")).andExpect(status().isOk());
   }
 
   @ParameterizedTest
-  @ValueSource(strings = {"/dev-ui", "/dev-ui/"})
-  public void devUiEndpointsShouldReturnOk(String path) throws Exception {
-    mockMvc.perform(get(path)).andExpect(status().isOk());
+  @ValueSource(strings = {"/", "/dev-ui"})
+  public void devUiEntryPoints_shouldKeepQueryString(String path) throws Exception {
+    // The UI picks its agent from ?app=, and the sample READMEs send users to "/dev-ui".
+    mockMvc
+        .perform(get(path + "?app=my-agent"))
+        .andExpect(status().is3xxRedirection())
+        .andExpect(redirectedUrl("/dev-ui/?app=my-agent"));
   }
 
   @Test
-  public void nonExistentUiPageShouldReturnNotFound() throws Exception {
+  public void devUiAssets_shouldNotBeServedAtRoot() throws Exception {
+    // Narrowing the handler from "/**" to "/dev-ui/**" makes this deliberately unreachable.
+    mockMvc.perform(get("/adk_favicon.svg")).andExpect(status().isNotFound());
+  }
+
+  @Test
+  public void nonExistentUiPage_shouldReturnNotFound() throws Exception {
     mockMvc.perform(get("/non-existent-page")).andExpect(status().isNotFound());
   }
 }
