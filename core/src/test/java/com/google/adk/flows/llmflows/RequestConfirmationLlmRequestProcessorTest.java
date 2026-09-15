@@ -20,10 +20,14 @@ import static com.google.adk.flows.llmflows.Functions.REQUEST_CONFIRMATION_FUNCT
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.agents.CallerIdentity;
+import com.google.adk.agents.ConfirmationApprover;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
@@ -398,6 +402,29 @@ public class RequestConfirmationLlmRequestProcessorTest {
     assertThat(createAgentWithEchoTool().name()).isEqualTo(AGENT_NAME);
   }
 
+  @Test
+  public void runAsync_approvalOnParallelBranch_doesNotCallOriginalFunction() {
+    // An approval answered in a parallel tree is not this branch's, though it names the call.
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = sessionWithApprovalOn("agent_1", "agent_2");
+
+    assertThat(resumedEventsOnBranch(agent, session, "agent_1")).isEmpty();
+  }
+
+  @Test
+  public void runAsync_approvalOnSubBranch_callsOriginalFunction() {
+    // The user may answer on a descendant sub-branch, so scoping must not break the normal path.
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = sessionWithApprovalOn("agent_1", "agent_1.child");
+
+    ImmutableList<Event> resumed = resumedEventsOnBranch(agent, session, "agent_1");
+
+    assertThat(resumed).hasSize(1);
+    FunctionResponse response = resumed.get(0).functionResponses().get(0);
+    assertThat(response.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
+    assertThat(response.name()).hasValue(ECHO_TOOL_NAME);
+  }
+
   private static ImmutableList<Event> resumedEvents(LlmAgent agent, Session session) {
     return ImmutableList.copyOf(
         processor
@@ -422,6 +449,156 @@ public class RequestConfirmationLlmRequestProcessorTest {
         .build();
   }
 
+  @Test
+  public void runAsync_unauthenticatedSenderUnderAuthenticatedOnlyApprover_doesNotCallFunction() {
+    // The peer self-approval case: every content check passes, and only the sender's identity
+    // separates this from a real operator's approval.
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    assertRefusal(
+        resumedEventsWithApprover(
+            agent,
+            session,
+            RunConfig.builder().callerIdentity(CallerIdentity.unauthenticated()).build(),
+            ConfirmationApprover.AUTHENTICATED_ONLY));
+  }
+
+  @Test
+  public void runAsync_authenticatedSenderUnderAuthenticatedOnlyApprover_callsOriginalFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    ImmutableList<Event> resumed =
+        resumedEventsWithApprover(
+            agent,
+            session,
+            RunConfig.builder().callerIdentity(CallerIdentity.authenticatedAs("operator")).build(),
+            ConfirmationApprover.AUTHENTICATED_ONLY);
+
+    assertThat(resumed).hasSize(1);
+    FunctionResponse fr = resumed.get(0).functionResponses().get(0);
+    assertThat(fr.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
+    // The refusal event shares the id and the name, so only the payload tells the two apart.
+    assertThat(fr.response()).hasValue(ImmutableMap.of("result", ORIGINAL_FUNCTION_CALL_ARGS));
+  }
+
+  @Test
+  public void runAsync_defaultApproverAndNoTransportIdentity_stillCallsOriginalFunction() {
+    // No identity reached the invocation, which is every in-process and local run. The default
+    // must leave those alone.
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    ImmutableList<Event> resumed =
+        resumedEventsWithApprover(
+            agent,
+            session,
+            RunConfig.builder().build(),
+            ConfirmationApprover.REJECT_UNAUTHENTICATED);
+
+    assertThat(resumed).hasSize(1);
+    // The refusal event shares the id and the name, so only the payload tells the two apart.
+    assertThat(resumed.get(0).functionResponses().get(0).response())
+        .hasValue(ImmutableMap.of("result", ORIGINAL_FUNCTION_CALL_ARGS));
+  }
+
+  @Test
+  public void runAsync_defaultApproverAndUnauthenticatedSender_doesNotCallFunction() {
+    // The peer self-approval case, closed without anyone configuring anything.
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    assertRefusal(
+        resumedEventsWithApprover(
+            agent,
+            session,
+            RunConfig.builder().callerIdentity(CallerIdentity.unauthenticated()).build(),
+            ConfirmationApprover.REJECT_UNAUTHENTICATED));
+  }
+
+  @Test
+  public void runAsync_noCallerIdentityUnderAuthenticatedOnlyApprover_doesNotCallFunction() {
+    // Every non-A2A surface produces this shape, so it is the common case, not an edge.
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    assertRefusal(
+        resumedEventsWithApprover(
+            agent, session, RunConfig.builder().build(), ConfirmationApprover.AUTHENTICATED_ONLY));
+  }
+
+  @Test
+  public void runAsync_refusedConfirmation_respondsWithAnError() {
+    // A refusal that emits nothing looks to the caller like the agent hanging.
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+
+    ImmutableList<Event> events =
+        resumedEventsWithApprover(
+            agent,
+            session,
+            RunConfig.builder().callerIdentity(CallerIdentity.unauthenticated()).build(),
+            ConfirmationApprover.REJECT_UNAUTHENTICATED);
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).author()).isEqualTo(AGENT_NAME);
+    FunctionResponse response = events.get(0).functionResponses().get(0);
+    assertThat(response.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
+    assertThat(response.name()).hasValue(ECHO_TOOL_NAME);
+    assertThat(response.response().get()).containsKey("error");
+    // The reason must not carry the sender or the call's arguments back to the model.
+    assertThat((String) response.response().get().get("error")).doesNotContain("hello");
+  }
+
+  @Test
+  public void runAsync_refusedConfirmationAlreadyAnswered_isNotReExamined() {
+    // The refusal settles the call, so a later pass of the same invocation must skip the stale
+    // user event instead of judging - and logging - it again for the rest of the session.
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = Session.builder("session_id").events(CONFIRMED_CALL_EVENTS).build();
+    RunConfig runConfig =
+        RunConfig.builder().callerIdentity(CallerIdentity.unauthenticated()).build();
+
+    ImmutableList<Event> firstPass =
+        resumedEventsWithApprover(
+            agent, session, runConfig, ConfirmationApprover.REJECT_UNAUTHENTICATED);
+    // The runner persists whatever a processor emits, which is what the next pass reads.
+    session.events().addAll(firstPass);
+    ImmutableList<Event> secondPass =
+        resumedEventsWithApprover(
+            agent, session, runConfig, ConfirmationApprover.REJECT_UNAUTHENTICATED);
+
+    assertThat(firstPass).hasSize(1);
+    assertThat(secondPass).isEmpty();
+  }
+
+  /**
+   * Asserts that {@code events} is a refusal for the pending call rather than the tool's result.
+   */
+  private static void assertRefusal(ImmutableList<Event> events) {
+    assertThat(events).hasSize(1);
+    FunctionResponse response = events.get(0).functionResponses().get(0);
+    assertThat(response.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
+    assertThat(response.response().get()).containsKey("error");
+  }
+
+  private static ImmutableList<Event> resumedEventsWithApprover(
+      LlmAgent agent, Session session, RunConfig runConfig, ConfirmationApprover approver) {
+    InvocationContext context =
+        InvocationContext.builder()
+            .pluginManager(new PluginManager())
+            .invocationId(InvocationContext.newInvocationContextId())
+            .agent(agent)
+            .session(session)
+            .sessionService(sessionService)
+            .runConfig(runConfig)
+            .confirmationApprover(approver)
+            .build();
+    return ImmutableList.copyOf(
+        processor.processRequest(context, LlmRequest.builder().build()).blockingGet().events());
+  }
+
   private static InvocationContext buildInvocationContext(LlmAgent agent, Session session) {
     return InvocationContext.builder()
         .pluginManager(new PluginManager())
@@ -430,6 +607,44 @@ public class RequestConfirmationLlmRequestProcessorTest {
         .session(session)
         .sessionService(sessionService)
         .build();
+  }
+
+  private static InvocationContext buildInvocationContext(
+      LlmAgent agent, Session session, String branch) {
+    return InvocationContext.builder()
+        .pluginManager(new PluginManager())
+        .invocationId(InvocationContext.newInvocationContextId())
+        .branch(branch)
+        .agent(agent)
+        .session(session)
+        .sessionService(sessionService)
+        .build();
+  }
+
+  /**
+   * Returns the legitimate lead-up with the agent's events on {@code agentBranch} and the user's
+   * approval on {@code approvalBranch}.
+   */
+  private static Session sessionWithApprovalOn(String agentBranch, String approvalBranch) {
+    ImmutableList<Event> events =
+        CONFIRMED_CALL_EVENTS.stream()
+            .map(
+                event ->
+                    event.toBuilder()
+                        .branch(event.author().equals("user") ? approvalBranch : agentBranch)
+                        .build())
+            .collect(toImmutableList());
+    return Session.builder("session_id").events(events).build();
+  }
+
+  private static ImmutableList<Event> resumedEventsOnBranch(
+      LlmAgent agent, Session session, String branch) {
+    return ImmutableList.copyOf(
+        processor
+            .processRequest(
+                buildInvocationContext(agent, session, branch), LlmRequest.builder().build())
+            .blockingGet()
+            .events());
   }
 
   private static LlmAgent createAgentWithEchoTool() {

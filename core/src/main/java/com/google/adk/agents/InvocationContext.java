@@ -17,9 +17,12 @@
 package com.google.adk.agents;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
+import com.google.adk.events.Event;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
 import com.google.adk.plugins.Plugin;
@@ -27,8 +30,13 @@ import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -40,6 +48,8 @@ import org.jspecify.annotations.Nullable;
 /** The context for an agent invocation. */
 @SuppressWarnings("deprecation") // Plumbs the deprecated ResumabilityConfig.
 public class InvocationContext {
+
+  private static final String USER_AUTHOR = "user";
 
   private final BaseSessionService sessionService;
   private final BaseArtifactService artifactService;
@@ -54,6 +64,7 @@ public class InvocationContext {
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
   private final @Nullable ResumabilityConfig resumabilityConfig;
+  private final ConfirmationApprover confirmationApprover;
   private final InvocationCostManager invocationCostManager;
   private final Map<String, Object> callbackContextData;
 
@@ -78,6 +89,7 @@ public class InvocationContext {
     this.eventsCompactionConfig = builder.eventsCompactionConfig;
     this.contextCacheConfig = builder.contextCacheConfig;
     this.resumabilityConfig = builder.resumabilityConfig;
+    this.confirmationApprover = builder.confirmationApprover;
     this.invocationCostManager = builder.invocationCostManager;
     // Don't copy the callback context data.  This should be the same instance for the full
     // invocation invocation so that Plugins can access the same data it during the invocation
@@ -151,9 +163,92 @@ public class InvocationContext {
     return agent;
   }
 
+  /**
+   * Returns the policy deciding whether a request's sender may satisfy a tool confirmation.
+   *
+   * <p>Deployment policy, so it comes from the app rather than the per-request run config.
+   */
+  public ConfirmationApprover confirmationApprover() {
+    return confirmationApprover;
+  }
+
   /** Returns the session associated with this invocation. */
   public Session session() {
     return session;
+  }
+
+  /**
+   * Returns a snapshot of the session's events, keeping only those on the branch this invocation is
+   * running on.
+   *
+   * <p>The rule is author-asymmetric on purpose, so a confirmation the user answered on a
+   * sub-branch stays visible while a descendant agent's own events do not.
+   */
+  public ImmutableList<Event> eventsOnCurrentBranch() {
+    ImmutableList<Event> events;
+    synchronized (session.events()) {
+      events = ImmutableList.copyOf(session.events());
+    }
+    // Snapshot the mutable branch too, so it cannot change between the id set and the filter.
+    @Nullable String scopeBranch = branch;
+    // Only the user-response cross-check needs these, and a null or empty branch skips it.
+    ImmutableSet<String> branchFunctionCallIds =
+        isNullOrEmpty(scopeBranch) ? ImmutableSet.of() : branchFunctionCallIds(events, scopeBranch);
+    return events.stream()
+        .filter(event -> isOnCurrentBranch(event, scopeBranch, branchFunctionCallIds))
+        .collect(toImmutableList());
+  }
+
+  /**
+   * Returns whether {@code event} belongs to this invocation's branch.
+   *
+   * <p>A user event matches this branch, a descendant sub-branch, or no branch at all; one carrying
+   * function responses must additionally answer a call issued on this branch or below, which is
+   * what stops a reply leaking in from a parallel tree. Any other event must sit on exactly this
+   * branch, so a descendant's own events stay hidden.
+   */
+  private boolean isOnCurrentBranch(
+      Event event, @Nullable String scopeBranch, ImmutableSet<String> branchFunctionCallIds) {
+    @Nullable String eventBranch = event.branch().orElse(null);
+    if (!Objects.equals(event.author(), USER_AUTHOR)) {
+      return Objects.equals(eventBranch, scopeBranch);
+    }
+    if (!isNullOrEmpty(scopeBranch)) {
+      ImmutableSet<String> responseIds =
+          event.functionResponses().stream()
+              .map(FunctionResponse::id)
+              .flatMap(Optional::stream)
+              .collect(toImmutableSet());
+      if (!responseIds.isEmpty() && Collections.disjoint(responseIds, branchFunctionCallIds)) {
+        return false;
+      }
+    }
+    // Mirrors Python's `self.branch` guard: an empty branch has no descendants.
+    return eventBranch == null
+        || scopeBranch == null
+        || eventBranch.equals(scopeBranch)
+        || (!scopeBranch.isEmpty() && eventBranch.startsWith(scopeBranch + "."));
+  }
+
+  /**
+   * Returns the IDs of function calls issued on this branch or on a descendant sub-branch.
+   *
+   * <p>Branches are dot-joined, so the trailing dot keeps the prefix test on a segment boundary.
+   */
+  private ImmutableSet<String> branchFunctionCallIds(
+      ImmutableList<Event> events, String scopeBranch) {
+    String descendantPrefix = scopeBranch + ".";
+    return events.stream()
+        .filter(
+            event -> {
+              @Nullable String eventBranch = event.branch().orElse(null);
+              return !isNullOrEmpty(eventBranch)
+                  && (eventBranch.equals(scopeBranch) || eventBranch.startsWith(descendantPrefix));
+            })
+        .flatMap(event -> event.functionCalls().stream())
+        .map(FunctionCall::id)
+        .flatMap(Optional::stream)
+        .collect(toImmutableSet());
   }
 
   /** Returns the user content that triggered this invocation, if any. */
@@ -284,6 +379,7 @@ public class InvocationContext {
       this.eventsCompactionConfig = context.eventsCompactionConfig;
       this.contextCacheConfig = context.contextCacheConfig;
       this.resumabilityConfig = context.resumabilityConfig;
+      this.confirmationApprover = context.confirmationApprover;
       this.invocationCostManager = context.invocationCostManager;
       // Don't copy the callback context data.  This should be the same instance for the full
       // invocation invocation so that Plugins can access the same data it during the invocation
@@ -307,6 +403,7 @@ public class InvocationContext {
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
     @Nullable private ContextCacheConfig contextCacheConfig;
     private @Nullable ResumabilityConfig resumabilityConfig;
+    private ConfirmationApprover confirmationApprover = ConfirmationApprover.REJECT_UNAUTHENTICATED;
     private InvocationCostManager invocationCostManager = new InvocationCostManager();
     private Map<String, Object> callbackContextData = new ConcurrentHashMap<>();
 
@@ -379,6 +476,13 @@ public class InvocationContext {
     @CanIgnoreReturnValue
     public Builder branch(@Nullable String branch) {
       this.branch = branch;
+      return this;
+    }
+
+    /** Sets the policy deciding whether a sender may satisfy a tool confirmation. */
+    @CanIgnoreReturnValue
+    public Builder confirmationApprover(ConfirmationApprover confirmationApprover) {
+      this.confirmationApprover = confirmationApprover;
       return this;
     }
 

@@ -20,6 +20,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.ConfirmationApprover;
 import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
@@ -88,6 +89,7 @@ public class Runner {
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
   private final @Nullable ResumabilityConfig resumabilityConfig;
+  private final ConfirmationApprover confirmationApprover;
   private final ConcurrentMap<String, Completable> activeSessionCompletables =
       new MapMaker().weakValues().makeMap();
 
@@ -161,6 +163,7 @@ public class Runner {
       EventsCompactionConfig buildEventsCompactionConfig;
       ContextCacheConfig buildContextCacheConfig;
       ResumabilityConfig buildResumabilityConfig;
+      ConfirmationApprover buildConfirmationApprover = ConfirmationApprover.REJECT_UNAUTHENTICATED;
 
       if (this.app != null) {
         if (this.agent != null) {
@@ -175,6 +178,7 @@ public class Runner {
         buildEventsCompactionConfig = this.app.eventsCompactionConfig();
         buildContextCacheConfig = this.app.contextCacheConfig();
         buildResumabilityConfig = this.app.resumabilityConfig();
+        buildConfirmationApprover = this.app.confirmationApprover();
       } else {
         buildAgent = this.agent;
         buildAppName = this.appName;
@@ -205,7 +209,8 @@ public class Runner {
           buildPlugins,
           buildEventsCompactionConfig,
           buildContextCacheConfig,
-          buildResumabilityConfig);
+          buildResumabilityConfig,
+          buildConfirmationApprover);
     }
   }
 
@@ -287,6 +292,30 @@ public class Runner {
       @Nullable EventsCompactionConfig eventsCompactionConfig,
       @Nullable ContextCacheConfig contextCacheConfig,
       @Nullable ResumabilityConfig resumabilityConfig) {
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        plugins,
+        eventsCompactionConfig,
+        contextCacheConfig,
+        resumabilityConfig,
+        ConfirmationApprover.REJECT_UNAUTHENTICATED);
+  }
+
+  private Runner(
+      BaseAgent agent,
+      String appName,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService,
+      @Nullable BaseMemoryService memoryService,
+      List<? extends Plugin> plugins,
+      @Nullable EventsCompactionConfig eventsCompactionConfig,
+      @Nullable ContextCacheConfig contextCacheConfig,
+      @Nullable ResumabilityConfig resumabilityConfig,
+      ConfirmationApprover confirmationApprover) {
     this.agent = agent;
     this.appName = appName;
     this.artifactService = artifactService;
@@ -296,6 +325,7 @@ public class Runner {
     this.eventsCompactionConfig = createEventsCompactionConfig(agent, eventsCompactionConfig);
     this.contextCacheConfig = contextCacheConfig;
     this.resumabilityConfig = resumabilityConfig;
+    this.confirmationApprover = confirmationApprover;
   }
 
   /**
@@ -745,6 +775,7 @@ public class Runner {
         .eventsCompactionConfig(this.eventsCompactionConfig)
         .contextCacheConfig(this.contextCacheConfig)
         .resumabilityConfig(this.resumabilityConfig)
+        .confirmationApprover(this.confirmationApprover)
         .agent(this.findAgentToRun(session, rootAgent));
   }
 

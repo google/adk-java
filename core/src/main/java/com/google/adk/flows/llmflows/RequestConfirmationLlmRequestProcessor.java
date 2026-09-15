@@ -24,6 +24,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.CallerIdentity;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.Role;
@@ -42,9 +43,11 @@ import com.google.genai.types.Part;
 import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -57,11 +60,14 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       LoggerFactory.getLogger(RequestConfirmationLlmRequestProcessor.class);
   private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
   private static final String ORIGINAL_FUNCTION_CALL = "originalFunctionCall";
+  private static final String CONFIRMATION_REFUSED_ERROR =
+      "Tool confirmation refused: the sender of this request may not approve this tool call.";
 
   @Override
   public Single<RequestProcessor.RequestProcessingResult> processRequest(
       InvocationContext invocationContext, LlmRequest llmRequest) {
-    ImmutableList<Event> events = ImmutableList.copyOf(invocationContext.session().events());
+    // A confirmation is answered on the branch that asked for it; a parallel tree's is not ours.
+    ImmutableList<Event> events = invocationContext.eventsOnCurrentBranch();
     if (events.isEmpty()) {
       logger.trace(
           "No events are present in the session. Skipping request confirmation processing.");
@@ -117,6 +123,7 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
 
       Map<String, ToolConfirmation> toolsToResumeWithConfirmation = new HashMap<>();
       Map<String, FunctionCall> toolsToResumeWithArgs = new HashMap<>();
+      List<FunctionCall> refusedCalls = new ArrayList<>();
 
       event.functionCalls().stream()
           .filter(
@@ -133,16 +140,31 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
                                   ofc, functionCallsById, confirmationRequestedIds, agentName))
                       .ifPresent(
                           ofc -> {
+                            if (!senderMayApprove(invocationContext, ofc)) {
+                              refusedCalls.add(ofc);
+                              return;
+                            }
                             toolsToResumeWithConfirmation.put(
                                 ofc.id().get(),
                                 requestConfirmationFunctionResponses.get(fc.id().get()));
                             toolsToResumeWithArgs.put(ofc.id().get(), ofc);
                           }));
 
+      // A refusal answers the pending call, so it settles like any other outcome: the response
+      // lands in alreadyResumedIds and the next pass skips this confirmation instead of re-judging
+      // it for the rest of the session.
+      ImmutableList<Event> refusalEvents =
+          refusedCalls.isEmpty()
+              ? ImmutableList.of()
+              : ImmutableList.of(buildRefusalEvent(invocationContext, refusedCalls));
+
       // If all confirmed tools in this event have already been processed, continue
       // searching in older events.
       if (toolsToResumeWithConfirmation.isEmpty()) {
-        continue;
+        if (refusalEvents.isEmpty()) {
+          continue;
+        }
+        return Single.just(RequestProcessingResult.create(llmRequest, refusalEvents));
       }
 
       // If we found tools that were confirmed but not yet executed, execute them now.
@@ -152,12 +174,17 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
               ImmutableMap.copyOf(toolsToResumeWithConfirmation))
           .map(
               assembledEvent ->
-                  RequestProcessingResult.create(llmRequest, ImmutableList.of(assembledEvent)))
+                  RequestProcessingResult.create(
+                      llmRequest,
+                      ImmutableList.<Event>builder()
+                          .addAll(refusalEvents)
+                          .add(assembledEvent)
+                          .build()))
           .toSingle()
           .onErrorReturn(
               e -> {
                 logger.error("Error processing request confirmation", e);
-                return RequestProcessingResult.create(llmRequest, ImmutableList.of());
+                return RequestProcessingResult.create(llmRequest, refusalEvents);
               });
     }
 
@@ -310,6 +337,57 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       return false;
     }
     return true;
+  }
+
+  /**
+   * Returns whether the sender of this request may approve {@code originalCall}.
+   *
+   * <p>A confirmation stands in for a human's consent, but every transport records its sender under
+   * the same {@code user} role, so the sender's identity is the only thing separating an operator
+   * from a peer that drove the agent here.
+   */
+  private static boolean senderMayApprove(
+      InvocationContext invocationContext, FunctionCall originalCall) {
+    CallerIdentity caller =
+        invocationContext.runConfig().callerIdentity().orElseGet(CallerIdentity::absent);
+    if (invocationContext.confirmationApprover().canApprove(caller, originalCall)) {
+      return true;
+    }
+    logger.warn(
+        "Ignoring a tool confirmation: the sender is not permitted to approve one"
+            + " (authenticated={}).",
+        caller.authenticated());
+    return false;
+  }
+
+  /**
+   * Builds the function responses that report a refused confirmation back to the model and caller.
+   *
+   * <p>Without one the tool silently never runs, so a legitimate operator sees the agent hang. The
+   * response carries the call id and a fixed reason only, never the sender or the call's arguments.
+   */
+  private static Event buildRefusalEvent(
+      InvocationContext invocationContext, List<FunctionCall> refusedCalls) {
+    ImmutableList<Part> parts =
+        refusedCalls.stream()
+            .map(
+                call ->
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .id(call.id().get())
+                                .name(call.name().orElse(""))
+                                .response(ImmutableMap.of("error", CONFIRMATION_REFUSED_ERROR))
+                                .build())
+                        .build())
+            .collect(toImmutableList());
+    return Event.builder()
+        .id(Event.generateEventId())
+        .invocationId(invocationContext.invocationId())
+        .author(invocationContext.agent().name())
+        .branch(invocationContext.branch().orElse(null))
+        .content(Content.builder().role("user").parts(parts).build())
+        .build();
   }
 
   private Optional<FunctionCall> getOriginalFunctionCall(FunctionCall functionCall) {
