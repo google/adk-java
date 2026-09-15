@@ -57,6 +57,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.processors.PublishProcessor;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.Comparator;
 import java.util.List;
@@ -804,6 +805,175 @@ public class ContextPropagationTest {
     assertParent(agentASpan, agentBSpan);
     //         └── call_llm 2
     assertParent(agentBSpan, agentBCallLlm);
+  }
+
+  @Test
+  public void
+      traceFlowable_andTraceTransformer_doNotLeakContextOnCallingThreadDuringAsyncExecution() {
+    Span callerSpan = tracer.spanBuilder("caller_rpc").startSpan();
+    PublishProcessor<Integer> asyncStream1 = PublishProcessor.create();
+    PublishProcessor<Integer> asyncStream2 = PublishProcessor.create();
+
+    try (Scope callerScope = callerSpan.makeCurrent()) {
+      Span flowableSpan =
+          tracer.spanBuilder("async_flowable").setParent(Context.current()).startSpan();
+      Flowable<Integer> tracedFlowable =
+          Tracing.traceFlowable(
+              Context.current().with(flowableSpan), flowableSpan, () -> asyncStream1);
+      Flowable<Integer> tracedTransformer =
+          asyncStream2.compose(Tracing.trace("async_transformer"));
+
+      // Subscribe while streams are still pending (not completed)
+      var sub1 = tracedFlowable.test();
+      var sub2 = tracedTransformer.test();
+
+      // Calling thread's active span must remain caller_rpc, not async_flowable or
+      // async_transformer
+      assertEquals(
+          callerSpan.getSpanContext().getSpanId(), Span.current().getSpanContext().getSpanId());
+
+      asyncStream1.onNext(1);
+      asyncStream1.onComplete();
+      asyncStream2.onNext(2);
+      asyncStream2.onComplete();
+
+      sub1.assertComplete();
+      sub2.assertComplete();
+
+      assertEquals(
+          callerSpan.getSpanContext().getSpanId(), Span.current().getSpanContext().getSpanId());
+    } finally {
+      callerSpan.end();
+    }
+  }
+
+  @Test
+  public void withContext_propagatesContextToDeferredUpstreamAcrossAsyncSubscription()
+      throws InterruptedException {
+    ContextKey<String> testKey = ContextKey.named("async-defer-key");
+    Context testContext = Context.root().with(testKey, "expected-value");
+
+    AtomicReference<String> flowableObserved = new AtomicReference<>();
+    AtomicReference<String> singleObserved = new AtomicReference<>();
+    AtomicReference<String> maybeObserved = new AtomicReference<>();
+    AtomicReference<String> completableObserved = new AtomicReference<>();
+
+    Flowable.defer(
+            () -> {
+              flowableObserved.set(Context.current().get(testKey));
+              return Flowable.just(1);
+            })
+        .compose(Tracing.withContext(testContext))
+        .subscribeOn(Schedulers.computation())
+        .test()
+        .await()
+        .assertComplete();
+
+    Single.defer(
+            () -> {
+              singleObserved.set(Context.current().get(testKey));
+              return Single.just(1);
+            })
+        .compose(Tracing.withContext(testContext))
+        .subscribeOn(Schedulers.computation())
+        .test()
+        .await()
+        .assertComplete();
+
+    Maybe.defer(
+            () -> {
+              maybeObserved.set(Context.current().get(testKey));
+              return Maybe.just(1);
+            })
+        .compose(Tracing.withContext(testContext))
+        .subscribeOn(Schedulers.computation())
+        .test()
+        .await()
+        .assertComplete();
+
+    Completable.defer(
+            () -> {
+              completableObserved.set(Context.current().get(testKey));
+              return Completable.complete();
+            })
+        .compose(Tracing.withContext(testContext))
+        .subscribeOn(Schedulers.computation())
+        .test()
+        .await()
+        .assertComplete();
+
+    assertEquals("expected-value", flowableObserved.get());
+    assertEquals("expected-value", singleObserved.get());
+    assertEquals("expected-value", maybeObserved.get());
+    assertEquals("expected-value", completableObserved.get());
+  }
+
+  @Test
+  public void agentAndToolCallbacks_preserveSpanContextAcrossAsyncBoundaries()
+      throws InterruptedException {
+    AtomicReference<String> beforeAgentSpanId = new AtomicReference<>();
+    AtomicReference<String> afterAgentSpanId = new AtomicReference<>();
+    AtomicReference<String> beforeToolSpanId = new AtomicReference<>();
+    AtomicReference<String> afterToolSpanId = new AtomicReference<>();
+
+    BaseTool asyncTool =
+        new SearchFlightsTool() {
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext context) {
+            return Single.<Map<String, Object>>fromCallable(() -> ImmutableMap.of("result", args))
+                .subscribeOn(Schedulers.computation());
+          }
+        };
+
+    TestLlm testLlm =
+        TestUtils.createTestLlm(
+            TestUtils.createLlmResponse(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.fromFunctionCall(
+                            "search_flights", ImmutableMap.of("destination", "NYC")))
+                    .build()),
+            TestUtils.createLlmResponse(Content.fromParts(Part.fromText("flight found"))));
+
+    LlmAgent callbackAgent =
+        LlmAgent.builder()
+            .name("callback_agent")
+            .description("agent with callbacks")
+            .model(testLlm)
+            .tools(ImmutableList.of(asyncTool))
+            .beforeAgentCallbackSync(
+                ctx -> {
+                  beforeAgentSpanId.set(Span.current().getSpanContext().getSpanId());
+                  return Optional.empty();
+                })
+            .afterAgentCallbackSync(
+                ctx -> {
+                  afterAgentSpanId.set(Span.current().getSpanContext().getSpanId());
+                  return Optional.empty();
+                })
+            .beforeToolCallbackSync(
+                (invCtx, tool, input, toolCtx) -> {
+                  beforeToolSpanId.set(Span.current().getSpanContext().getSpanId());
+                  return Optional.empty();
+                })
+            .afterToolCallbackSync(
+                (invCtx, tool, input, toolCtx, response) -> {
+                  afterToolSpanId.set(Span.current().getSpanContext().getSpanId());
+                  return Optional.empty();
+                })
+            .build();
+
+    runAgent(callbackAgent);
+
+    SpanData invokeAgentSpan = findSpanByName("invoke_agent callback_agent");
+    SpanData executeToolSpan = findSpanByName("execute_tool search_flights");
+
+    assertEquals(invokeAgentSpan.getSpanContext().getSpanId(), beforeAgentSpanId.get());
+    assertEquals(invokeAgentSpan.getSpanContext().getSpanId(), afterAgentSpanId.get());
+    assertEquals(executeToolSpan.getSpanContext().getSpanId(), beforeToolSpanId.get());
+    assertEquals(executeToolSpan.getSpanContext().getSpanId(), afterToolSpanId.get());
   }
 
   private void runAgent(BaseAgent agent) throws InterruptedException {

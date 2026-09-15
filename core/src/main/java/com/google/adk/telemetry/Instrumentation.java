@@ -23,7 +23,6 @@ import com.google.adk.tools.BaseTool;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.context.Context;
-import io.opentelemetry.context.Scope;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -91,9 +90,6 @@ public final class Instrumentation {
     /** The OpenTelemetry span associated with this scope. */
     protected final Span span;
 
-    /** The OpenTelemetry scope associated with this span. */
-    protected final Scope scope;
-
     /** The telemetry context for this scope. */
     protected final TelemetryContext telemetryContext;
 
@@ -104,16 +100,15 @@ public final class Instrumentation {
     protected final AtomicBoolean closed = new AtomicBoolean(false);
 
     /**
-     * Constructs a new {@code ClosableTelemetryScope} with the given span.
+     * Constructs a new {@code ClosableTelemetryScope} with the given span and parent context.
      *
      * @param span The OpenTelemetry span to manage.
+     * @param parentContext The OpenTelemetry parent context.
      */
-    @SuppressWarnings("MustBeClosedChecker")
-    ClosableTelemetryScope(Span span) {
+    ClosableTelemetryScope(Span span, Context parentContext) {
       this.startTimeNanos = System.nanoTime();
       this.span = span;
-      this.scope = span.makeCurrent();
-      this.telemetryContext = new TelemetryContext(Context.current());
+      this.telemetryContext = new TelemetryContext(parentContext.with(span));
     }
 
     /**
@@ -136,7 +131,7 @@ public final class Instrumentation {
       span.setStatus(StatusCode.ERROR, caughtError.getMessage());
     }
 
-    /** Closes the scope and ends the underlying span, recording any applicable metrics. */
+    /** Ends the underlying span and records any applicable metrics. */
     @Override
     public final void close() {
       if (closed.getAndSet(true)) {
@@ -144,6 +139,7 @@ public final class Instrumentation {
       }
       try {
         beforeSpanEnd();
+      } finally {
         span.end();
         Duration elapsed = Duration.ofNanos(System.nanoTime() - startTimeNanos);
         try {
@@ -151,8 +147,6 @@ public final class Instrumentation {
         } catch (RuntimeException e) {
           handleMetricsError(e);
         }
-      } finally {
-        scope.close();
       }
     }
 
@@ -184,7 +178,8 @@ public final class Instrumentation {
           Tracing.getTracer()
               .spanBuilder("invoke_agent " + agent.name())
               .setParent(parentContext)
-              .startSpan());
+              .startSpan(),
+          parentContext);
       this.agent = agent;
       this.ctx = ctx;
       Tracing.traceAgentInvocation(span, agent.name(), agent.description(), ctx);
@@ -254,7 +249,8 @@ public final class Instrumentation {
           Tracing.getTracer()
               .spanBuilder("execute_tool " + tool.name())
               .setParent(parentContext)
-              .startSpan());
+              .startSpan(),
+          parentContext);
       this.tool = tool;
       this.agent = agent;
       this.functionArgs = functionArgs;
