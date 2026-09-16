@@ -65,20 +65,29 @@ public class McpToolset implements BaseToolset {
    * google_maps, ...) only append to the request's config tools and never occupy their name in the
    * tool map, so a server advertising one of these would be dispatched in place of the framework's
    * own tool. Such names are refused at registration.
+   *
+   * <p>Every name here is one this codebase defines. An earlier revision carried the Go list over,
+   * which included two names Java does not define anywhere — {@code finish_task} and {@code
+   * task_completed} — so they were refused as collisions against tools this framework does not
+   * have.
+   *
+   * <p>The memory tool is spelled {@code loadMemory}, not the {@code load_memory} used by the other
+   * ports: {@link com.google.adk.tools.FunctionTool} takes a tool's name from the method name when
+   * the method carries no {@code @Annotations.Schema}, and {@link
+   * com.google.adk.tools.LoadMemoryTool#loadMemory} annotates only its parameter. Both spellings
+   * would be wrong to assume, so the derived one is used and this note is the citation.
    */
   private static final Set<String> RESERVED_TOOL_NAMES =
       Set.of(
           "set_model_response",
           "transfer_to_agent",
-          "finish_task",
-          "task_completed",
           "google_search",
           "google_maps",
           "url_context",
           "vertex_ai_search",
           "code_execution",
           "load_artifacts",
-          "load_memory");
+          "loadMemory");
 
   private static final long RETRY_DELAY_MILLIS = 100;
   protected static final Class<? extends McpToolsetConfig> CONFIG_TYPE = McpToolsetConfig.class;
