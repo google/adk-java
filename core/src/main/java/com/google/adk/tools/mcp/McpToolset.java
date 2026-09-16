@@ -87,7 +87,11 @@ public class McpToolset implements BaseToolset {
           "vertex_ai_search",
           "code_execution",
           "load_artifacts",
-          "loadMemory");
+          "loadMemory",
+          "exit_loop",
+          "list_skills",
+          "load_skill",
+          "load_skill_resource");
 
   private static final long RETRY_DELAY_MILLIS = 100;
   protected static final Class<? extends McpToolsetConfig> CONFIG_TYPE = McpToolsetConfig.class;
