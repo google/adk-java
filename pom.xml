@@ -74,7 +74,7 @@
     <!-- ADK Kotlin engine interop (google-adk-tokt module). -->
     <kotlin.version>2.1.20</kotlin.version>
     <kotlinx-coroutines.version>1.11.0</kotlinx-coroutines.version>
-    <adk-kotlin.version>1.0.0</adk-kotlin.version>
+    <adk-kotlin.version>1.1.0</adk-kotlin.version>
     <reactor-core.version>3.7.0</reactor-core.version>
     <wiremock.version>2.35.1</wiremock.version>
     <assertj.version>3.27.7</assertj.version>
