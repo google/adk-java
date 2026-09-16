@@ -35,6 +35,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +59,27 @@ public class McpToolset implements BaseToolset {
   private final @Nullable Object toolFilter;
 
   private static final int MAX_RETRIES = 3;
+
+  /**
+   * Tool names the framework itself puts on the wire. In-model built-ins (google_search,
+   * google_maps, ...) only append to the request's config tools and never occupy their name in the
+   * tool map, so a server advertising one of these would be dispatched in place of the framework's
+   * own tool. Such names are refused at registration.
+   */
+  private static final Set<String> RESERVED_TOOL_NAMES =
+      Set.of(
+          "set_model_response",
+          "transfer_to_agent",
+          "finish_task",
+          "task_completed",
+          "google_search",
+          "google_maps",
+          "url_context",
+          "vertex_ai_search",
+          "code_execution",
+          "load_artifacts",
+          "load_memory");
+
   private static final long RETRY_DELAY_MILLIS = 100;
   protected static final Class<? extends McpToolsetConfig> CONFIG_TYPE = McpToolsetConfig.class;
 
@@ -272,9 +294,16 @@ public class McpToolset implements BaseToolset {
               return Flowable.fromStream(
                   toolsResponse.tools().stream()
                       .map(
-                          tool ->
-                              new McpTool(
-                                  tool, this.mcpSession, this.mcpSessionManager, this.objectMapper))
+                          tool -> {
+                            if (RESERVED_TOOL_NAMES.contains(tool.name())) {
+                              // Invalid registration arguments: fatal, not a transient error, so
+                              // this is an IllegalArgumentException and is not retried.
+                              throw new IllegalArgumentException(
+                                  "MCP server advertised a reserved tool name: " + tool.name());
+                            }
+                            return new McpTool(
+                                tool, this.mcpSession, this.mcpSessionManager, this.objectMapper);
+                          })
                       .filter(tool -> isToolSelected(tool, toolFilter, readonlyContext)));
             })
         .retryWhen(
