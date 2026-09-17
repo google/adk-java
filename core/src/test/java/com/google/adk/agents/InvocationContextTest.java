@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
@@ -65,6 +66,44 @@ public final class InvocationContextTest {
     testInvocationId = "test-invocation-id";
     activeStreamingTools = new HashMap<>();
     activeStreamingTools.put("test-tool", new ActiveStreamingTool(new LiveRequestQueue()));
+  }
+
+  // The deprecated shim selects the same resumption behavior as resumable(true), so every
+  // resumability branch keyed on isResumable() must treat it identically.
+  @Test
+  public void isResumable_shimOnly_reportsResumable() {
+    InvocationContext shimContext = contextWith(resumabilityConfigWithShim());
+    InvocationContext resumableContext = contextWith(resumabilityConfigResumable());
+    InvocationContext neitherContext = contextWith(null);
+
+    assertThat(shimContext.isResumable()).isTrue();
+    assertThat(resumableContext.isResumable()).isTrue();
+    assertThat(neitherContext.isResumable()).isFalse();
+  }
+
+  @SuppressWarnings("deprecation") // Exercises the deprecated shim.
+  private static ResumabilityConfig resumabilityConfigWithShim() {
+    return ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build();
+  }
+
+  @SuppressWarnings("deprecation") // ResumabilityConfig is deprecated until durable resumability.
+  private static ResumabilityConfig resumabilityConfigResumable() {
+    return ResumabilityConfig.builder().resumable(true).build();
+  }
+
+  @SuppressWarnings("deprecation") // ResumabilityConfig is deprecated until durable resumability.
+  private InvocationContext contextWith(ResumabilityConfig resumabilityConfig) {
+    return InvocationContext.builder()
+        .sessionService(mockSessionService)
+        .artifactService(mockArtifactService)
+        .pluginManager(pluginManager)
+        .invocationId(testInvocationId)
+        .agent(mockAgent)
+        .session(session)
+        .userContent(userContent)
+        .runConfig(runConfig)
+        .resumabilityConfig(resumabilityConfig)
+        .build();
   }
 
   @Test
