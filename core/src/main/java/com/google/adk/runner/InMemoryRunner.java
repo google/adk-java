@@ -28,8 +28,6 @@ import java.util.List;
 public class InMemoryRunner extends Runner {
 
   public InMemoryRunner(BaseAgent agent) {
-    // TODO: Change the default appName to InMemoryRunner to align with adk python.
-    // Check the dev UI in case we break something there.
     this(agent, /* appName= */ agent.name(), ImmutableList.of());
   }
 
