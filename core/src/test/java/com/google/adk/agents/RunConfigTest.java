@@ -23,6 +23,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.genai.types.AudioTranscriptionConfig;
 import com.google.genai.types.AvatarConfig;
 import com.google.genai.types.CustomizedAvatar;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Modality;
 import com.google.genai.types.SpeechConfig;
 import java.util.Optional;
@@ -186,5 +187,46 @@ public final class RunConfigTest {
     assertThat(runConfig.avatarConfig().customizedAvatar()).hasValue(customizedAvatar);
     assertThat(runConfig.avatarConfig().customizedAvatar().get().imageMimeType())
         .hasValue("image/jpeg");
+  }
+
+  @Test
+  public void callerIdentity_default_isAbsent() {
+    assertThat(RunConfig.builder().build().callerIdentity()).isEmpty();
+  }
+
+  @Test
+  public void authenticatedOnlyApprover_rejectsUnauthenticatedSender() {
+    ConfirmationApprover approver = ConfirmationApprover.AUTHENTICATED_ONLY;
+    FunctionCall call = FunctionCall.builder().id("id").name("tool").build();
+
+    assertThat(approver.canApprove(CallerIdentity.unauthenticated(), call)).isFalse();
+    assertThat(approver.canApprove(CallerIdentity.authenticatedAs("operator"), call)).isTrue();
+    assertThat(ConfirmationApprover.ALLOW_ALL.canApprove(CallerIdentity.unauthenticated(), call))
+        .isTrue();
+    // The default: a sender the transport saw and did not authenticate is refused, one it never
+    // saw is not.
+    ConfirmationApprover byDefault = ConfirmationApprover.REJECT_UNAUTHENTICATED;
+    assertThat(byDefault.canApprove(CallerIdentity.absent(), call)).isTrue();
+    assertThat(byDefault.canApprove(CallerIdentity.unauthenticated(), call)).isFalse();
+    assertThat(byDefault.canApprove(CallerIdentity.authenticatedAs("operator"), call)).isTrue();
+  }
+
+  @Test
+  public void callerIdentity_of_withoutAuthentication_discardsTheName() {
+    // A name the transport did not authenticate is not evidence of anything.
+    assertThat(CallerIdentity.of(false, "spoofed").name()).isEmpty();
+    assertThat(CallerIdentity.of(false, "spoofed").authenticated()).isFalse();
+    assertThat(CallerIdentity.of(true, "operator").name()).hasValue("operator");
+  }
+
+  @Test
+  public void copyBuilder_preservesCallerIdentity() {
+    // RunConfig.builder(RunConfig) is hand-written, so a new field is dropped unless added there.
+    RunConfig original =
+        RunConfig.builder().callerIdentity(CallerIdentity.authenticatedAs("operator")).build();
+
+    RunConfig copy = RunConfig.builder(original).build();
+
+    assertThat(copy.callerIdentity()).hasValue(CallerIdentity.authenticatedAs("operator"));
   }
 }
