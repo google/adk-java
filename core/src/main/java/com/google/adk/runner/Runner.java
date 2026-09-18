@@ -17,6 +17,9 @@
 package com.google.adk.runner;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.util.stream.Collectors.toCollection;
 
 import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.BaseAgent;
@@ -24,9 +27,12 @@ import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.LoopAgent;
+import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
+import com.google.adk.annotations.Experimental;
 import com.google.adk.apps.App;
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.BaseArtifactService;
@@ -56,6 +62,8 @@ import com.google.common.collect.MapMaker;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Modality;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Span;
@@ -69,15 +77,17 @@ import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
 
 /** The main class for the GenAI Agents runner. */
-@SuppressWarnings("deprecation") // Plumbs the deprecated ResumabilityConfig.
 public class Runner {
   private final BaseAgent agent;
   private final String appName;
@@ -360,6 +370,22 @@ public class Runner {
       InvocationContext invocationContext,
       boolean saveInputBlobsAsArtifacts,
       @Nullable Map<String, Object> stateDelta) {
+    return appendNewMessageToSession(
+        session,
+        newMessage,
+        invocationContext,
+        saveInputBlobsAsArtifacts,
+        stateDelta,
+        /* branch= */ null);
+  }
+
+  private Single<Event> appendNewMessageToSession(
+      Session session,
+      Content newMessage,
+      InvocationContext invocationContext,
+      boolean saveInputBlobsAsArtifacts,
+      @Nullable Map<String, Object> stateDelta,
+      @Nullable String branch) {
     checkArgument(newMessage.parts().isPresent(), "No parts in the new_message.");
 
     Content messageToAppend = newMessage;
@@ -393,6 +419,7 @@ public class Runner {
             .id(Event.generateEventId())
             .invocationId(invocationContext.invocationId())
             .author(Role.USER)
+            .branch(branch)
             .content(messageToAppend);
 
     // Add state delta if provided
@@ -505,6 +532,52 @@ public class Runner {
   }
 
   /**
+   * Runs the agent, resuming an existing invocation instead of starting a new one. The invocation
+   * is resolved from {@code invocationId}, or from a function response carried by {@code
+   * newMessage}. Agent checkpoints are rehydrated from history and an invocation whose active agent
+   * already finished resolves to a no-op.
+   *
+   * @param userId the user id of the session.
+   * @param sessionId the session id.
+   * @param invocationId the invocation to resume; may be {@code null} when it can be inferred from
+   *     {@code newMessage}.
+   * @param newMessage an optional message (typically a function response) to append before running.
+   * @param runConfig the run configuration.
+   * @param stateDelta optional state updates to merge into the session for this run.
+   * @return the events generated while resuming, or an empty stream when there is nothing to
+   *     resume.
+   * @throws IllegalStateException if the app is not resumable.
+   * @throws IllegalArgumentException if the invocation cannot be resolved.
+   */
+  @Experimental
+  public Flowable<Event> runAsync(
+      String userId,
+      String sessionId,
+      @Nullable String invocationId,
+      @Nullable Content newMessage,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta) {
+    checkState(
+        isResumable(),
+        "Resuming an invocation requires an App configured with a resumable ResumabilityConfig.");
+    return Flowable.defer(
+            () ->
+                this.sessionService
+                    .getSession(appName, userId, sessionId, Optional.empty())
+                    .switchIfEmpty(
+                        Single.error(
+                            () ->
+                                new IllegalArgumentException(
+                                    String.format(
+                                        "Session not found: %s for user %s", sessionId, userId))))
+                    .flatMapPublisher(
+                        session ->
+                            runResumableFromSession(
+                                session, invocationId, newMessage, runConfig, stateDelta)))
+        .compose(Tracing.trace("invocation"));
+  }
+
+  /**
    * Runs the agent asynchronously using a provided Session object.
    *
    * @param session The session to run the agent in.
@@ -521,6 +594,19 @@ public class Runner {
     Preconditions.checkNotNull(session, "session cannot be null");
     Preconditions.checkNotNull(newMessage, "newMessage cannot be null");
     Preconditions.checkNotNull(runConfig, "runConfig cannot be null");
+    if (isResumable()) {
+      return runResumableFromSession(
+          session, /* providedInvocationId= */ null, newMessage, runConfig, stateDelta);
+    }
+    return runNewInvocation(session, newMessage, runConfig, stateDelta);
+  }
+
+  /** Starts a brand-new invocation for {@code newMessage} (the default, non-resume flow). */
+  private Flowable<Event> runNewInvocation(
+      Session session,
+      Content newMessage,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta) {
     return Flowable.defer(
             () -> {
               Context capturedContext = Context.current();
@@ -558,12 +644,7 @@ public class Runner {
                       userEvent ->
                           runAgentForUserEvent(initialContext, session, userEvent, rootAgent)
                               .compose(Tracing.<Event>withContext(capturedContext)))
-                  .doOnError(
-                      throwable ->
-                          this.pluginManager
-                              .runOnRunErrorCallback(initialContext, throwable)
-                              .onErrorComplete()
-                              .subscribe());
+                  .doOnError(throwable -> runOnRunError(initialContext, throwable));
             })
         .doOnError(
             throwable -> {
@@ -621,27 +702,36 @@ public class Runner {
             .userContent(event.content().orElseGet(Content::fromParts))
             .build();
 
-    // Call beforeRunCallback with updated session
-    Maybe<Event> beforeRunEvent =
-        this.pluginManager
-            .beforeRunCallback(contextWithUpdatedSession)
-            .map(
-                content ->
-                    Event.builder()
-                        .id(Event.generateEventId())
-                        .invocationId(contextWithUpdatedSession.invocationId())
-                        .author("model")
-                        .content(content)
-                        .build());
+    // If beforeRunCallback returns content, emit it and skip agent.
+    Maybe<Event> beforeRunEvent = beforeRunEventFor(contextWithUpdatedSession);
+    Context capturedContext = Context.current();
+    return executeAgentPipeline(
+            contextWithUpdatedSession,
+            updatedSession,
+            beforeRunEvent,
+            // TODO: remove this hack after deprecating runAsync with Session.
+            () -> copySessionStates(updatedSession, initialContext.session()))
+        .compose(Tracing.withContext(capturedContext));
+  }
 
+  /**
+   * Runs {@code context.agent()} and drives the shared event pipeline both invocation paths use:
+   * persist each non-partial event (releasing the {@link PersistBarrier} step), run {@code
+   * onEachPersisted} if given, fire the {@code onEvent} plugin callback, then run the after-run and
+   * compaction brackets; a {@code beforeRunEvent} short-circuits the agent run.
+   */
+  private Flowable<Event> executeAgentPipeline(
+      InvocationContext context,
+      Session sessionToPersist,
+      Maybe<Event> beforeRunEvent,
+      @Nullable Runnable onEachPersisted) {
     // Let BaseLlmFlow block each step until this Runner has persisted the prior step's events.
-    PersistBarrier.enable(contextWithUpdatedSession);
+    PersistBarrier.enable(context);
 
-    // Agent execution
     Flowable<Event> agentEvents =
-        contextWithUpdatedSession
+        context
             .agent()
-            .runAsync(contextWithUpdatedSession)
+            .runAsync(context)
             .concatMap(
                 agentEvent -> {
                   // Mirror ADK Python (runners.py): partial events are streamed to the caller but
@@ -651,39 +741,32 @@ public class Runner {
                   Single<Event> persistStep =
                       agentEvent.partial().orElse(false)
                           ? Single.just(agentEvent)
-                          : this.sessionService.appendEvent(updatedSession, agentEvent);
+                          : this.sessionService.appendEvent(sessionToPersist, agentEvent);
                   return persistStep
                       // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
                       // sole appendEvent caller (see PersistBarrier).
                       .doOnSuccess(
-                          unusedEvent ->
-                              PersistBarrier.markPersisted(
-                                  contextWithUpdatedSession, agentEvent.id()))
+                          unusedEvent -> PersistBarrier.markPersisted(context, agentEvent.id()))
                       .doOnError(
-                          error ->
-                              PersistBarrier.markFailed(
-                                  contextWithUpdatedSession, agentEvent.id(), error))
+                          error -> PersistBarrier.markFailed(context, agentEvent.id(), error))
                       .flatMap(
                           registeredEvent -> {
-                            // TODO: remove this hack after deprecating runAsync with Session.
-                            copySessionStates(updatedSession, initialContext.session());
-                            return contextWithUpdatedSession
+                            if (onEachPersisted != null) {
+                              onEachPersisted.run();
+                            }
+                            return context
                                 .pluginManager()
-                                .onEventCallback(contextWithUpdatedSession, registeredEvent)
+                                .onEventCallback(context, registeredEvent)
                                 .defaultIfEmpty(registeredEvent);
                           })
                       .toFlowable();
                 });
 
-    // If beforeRunCallback returns content, emit it and skip agent
-    Context capturedContext = Context.current();
     return beforeRunEvent
         .toFlowable()
         .switchIfEmpty(agentEvents)
-        .concatWith(
-            Completable.defer(() -> pluginManager.afterRunCallback(contextWithUpdatedSession)))
-        .concatWith(Completable.defer(() -> compactEvents(updatedSession)))
-        .compose(Tracing.withContext(capturedContext));
+        .concatWith(Completable.defer(() -> pluginManager.afterRunCallback(context)))
+        .concatWith(Completable.defer(() -> compactEvents(sessionToPersist)));
   }
 
   private Completable compactEvents(Session session) {
@@ -692,6 +775,353 @@ public class Runner {
         .map(SlidingWindowEventCompactor::new)
         .map(c -> c.compact(session, sessionService))
         .orElseGet(Completable::complete);
+  }
+
+  /**
+   * The optional before-run event: when a before-run callback returns content, wrap it as a model
+   * event that short-circuits the agent run. Both invocation paths use this.
+   */
+  private Maybe<Event> beforeRunEventFor(InvocationContext context) {
+    return this.pluginManager
+        .beforeRunCallback(context)
+        .map(
+            content ->
+                Event.builder()
+                    .id(Event.generateEventId())
+                    .invocationId(context.invocationId())
+                    .author("model")
+                    .content(content)
+                    .build());
+  }
+
+  /** Fires the on-run-error plugin callback; the run paths share this error handler. */
+  private void runOnRunError(InvocationContext context, Throwable throwable) {
+    this.pluginManager.runOnRunErrorCallback(context, throwable).onErrorComplete().subscribe();
+  }
+
+  /**
+   * Resumes an existing invocation when one resolves from {@code providedInvocationId} or a
+   * function response in {@code newMessage}; otherwise starts a new invocation. Requires
+   * resumability.
+   */
+  private Flowable<Event> runResumableFromSession(
+      Session session,
+      @Nullable String providedInvocationId,
+      @Nullable Content newMessage,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta) {
+    return Flowable.defer(
+        () -> {
+          // Reject a message no invocation can be resumed from before any invocation-id fallback
+          // or auto-resume. Flowable.defer turns the thrown IAE into an error signal.
+          if (newMessage != null) {
+            validateResumeMessage(session, newMessage);
+          }
+          String resolvedInvocationId =
+              resolveInvocationId(session, newMessage, providedInvocationId);
+          if (resolvedInvocationId == null) {
+            if (newMessage == null) {
+              return Flowable.<Event>error(
+                  new IllegalArgumentException(
+                      "No new message provided and no resumable invocation to resume."));
+            }
+            return runNewInvocation(session, newMessage, runConfig, stateDelta);
+          }
+          if (!sessionHasEventsForInvocation(session, resolvedInvocationId)) {
+            // Resume was requested for an invocation the session has no events for.
+            return Flowable.<Event>error(
+                new IllegalArgumentException("No events to resume for the requested invocation."));
+          }
+          return resumeCore(session, resolvedInvocationId, newMessage, runConfig, stateDelta);
+        });
+  }
+
+  /**
+   * Runs an existing invocation on the given session: optionally appends {@code newMessage},
+   * rehydrates agent checkpoints, skips a completed invocation, and runs the resolved agent under
+   * the resumed invocation id.
+   */
+  private Flowable<Event> resumeCore(
+      Session session,
+      String resolvedInvocationId,
+      @Nullable Content newMessage,
+      RunConfig runConfig,
+      @Nullable Map<String, Object> stateDelta) {
+    return Flowable.defer(
+        () -> {
+          Context capturedContext = Context.current();
+          if (stateDelta != null && !stateDelta.isEmpty()) {
+            stateDelta.forEach((key, value) -> session.state().put(key, value));
+          }
+
+          // Context for the pre-run plugin callbacks; the agent to run is (re)resolved after any
+          // append in runResumedAgent.
+          InvocationContext initialContext =
+              newInvocationContextBuilder(session)
+                  .invocationId(resolvedInvocationId)
+                  .runConfig(runConfig)
+                  .userContent(
+                      newMessage != null
+                          ? newMessage
+                          : originalUserMessage(session, resolvedInvocationId))
+                  .build();
+
+          Flowable<Event> events;
+          if (newMessage != null) {
+            // Run the same on-user-message plugin callback as the new-invocation path, then append
+            // the function-response message under the resumed invocation first, inheriting the
+            // branch of the call it answers, so routing and rehydration see it.
+            String branch =
+                matchingFunctionCallEvent(session, newMessage).flatMap(Event::branch).orElse(null);
+            events =
+                this.pluginManager
+                    .onUserMessageCallback(initialContext, newMessage)
+                    .compose(Tracing.<Content>withContext(capturedContext))
+                    .defaultIfEmpty(newMessage)
+                    .flatMap(
+                        content ->
+                            appendNewMessageToSession(
+                                session,
+                                content,
+                                initialContext,
+                                runConfig.saveInputBlobsAsArtifacts(),
+                                stateDelta,
+                                branch))
+                    // Persist before running: rehydration and agent resolution read session
+                    // history, so an unpersisted response leaves the call looking unanswered.
+                    .flatMap(userEvent -> this.sessionService.appendEvent(session, userEvent))
+                    .flatMapPublisher(
+                        userEvent ->
+                            runResumedAgent(
+                                session,
+                                resolvedInvocationId,
+                                userEvent.content().orElse(null),
+                                runConfig));
+          } else if (stateDelta != null && !stateDelta.isEmpty()) {
+            // No message to carry the delta, so persist it as a content-less event rather than
+            // leaving it in memory only, matching Python ADK.
+            Event stateDeltaEvent =
+                Event.builder()
+                    .id(Event.generateEventId())
+                    .invocationId(resolvedInvocationId)
+                    .author(Role.USER)
+                    .actions(
+                        EventActions.builder()
+                            .stateDelta(new ConcurrentHashMap<>(stateDelta))
+                            .build())
+                    .build();
+            events =
+                this.sessionService
+                    .appendEvent(session, stateDeltaEvent)
+                    .ignoreElement()
+                    .andThen(
+                        runResumedAgent(
+                            session, resolvedInvocationId, /* userContent= */ null, runConfig));
+          } else {
+            events =
+                runResumedAgent(session, resolvedInvocationId, /* userContent= */ null, runConfig);
+          }
+
+          return events
+              .doOnError(throwable -> runOnRunError(initialContext, throwable))
+              .compose(Tracing.<Event>withContext(capturedContext));
+        });
+  }
+
+  /**
+   * Runs the resolved agent for a resumed invocation with the same before-run / after-run plugin
+   * bracket as the new-invocation path. Rehydrates checkpoints, skips a completed invocation, and
+   * persists each event.
+   */
+  private Flowable<Event> runResumedAgent(
+      Session session,
+      String resolvedInvocationId,
+      @Nullable Content userContent,
+      RunConfig runConfig) {
+    return Flowable.defer(
+        () -> {
+          // Build the resumed context on the resolved agent's parent branch (see
+          // resumeParentBranch).
+          BaseAgent resumeAgent = findAgentToRun(session, this.agent);
+          InvocationContext context =
+              newInvocationContextBuilder(session)
+                  .invocationId(resolvedInvocationId)
+                  .branch(resumeParentBranch(session, resolvedInvocationId, resumeAgent))
+                  .runConfig(runConfig)
+                  .userContent(
+                      userContent != null
+                          ? userContent
+                          : originalUserMessage(session, resolvedInvocationId))
+                  .build();
+          context.populateInvocationAgentStates();
+
+          // No-op guard: a completed invocation (its active agent already finished) is not re-run.
+          if (context.endOfAgents().getOrDefault(context.agent().name(), false)) {
+            return Flowable.<Event>empty();
+          }
+
+          // before_run may short-circuit the run with a model event, as on the new-invocation path.
+          Maybe<Event> beforeRunEvent = beforeRunEventFor(context);
+
+          return executeAgentPipeline(
+              context, session, beforeRunEvent, /* onEachPersisted= */ null);
+        });
+  }
+
+  /**
+   * Branch to seed a resumed context with so {@code resumeAgent} runs under the same branch it
+   * originally did. Returns the parent branch (the resolved agent's most recent event branch minus
+   * its own trailing name segment, which {@link BaseAgent#runAsync} re-appends), or {@code null}
+   * for the root branch. Non-null only for an agent nested under a {@link ParallelAgent}.
+   */
+  private static @Nullable String resumeParentBranch(
+      Session session, String invocationId, BaseAgent resumeAgent) {
+    List<Event> events = session.events();
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event event = events.get(i);
+      if (invocationId.equals(event.invocationId())
+          && resumeAgent.name().equals(event.author())
+          && event.branch().isPresent()) {
+        String branch = event.branch().get();
+        String ownSegment = "." + resumeAgent.name();
+        if (branch.endsWith(ownSegment)) {
+          String parent = branch.substring(0, branch.length() - ownSegment.length());
+          return parent.isEmpty() ? null : parent;
+        }
+        return branch.equals(resumeAgent.name()) ? null : branch;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Resolves which invocation a request targets: the invocation that issued the function call
+   * matching {@code newMessage}'s function response, else the caller-supplied {@code invocationId}.
+   * Returns {@code null} when neither applies (a fresh message starts a new invocation).
+   */
+  private static @Nullable String resolveInvocationId(
+      Session session, @Nullable Content newMessage, @Nullable String invocationId) {
+    if (newMessage != null) {
+      return matchingFunctionCallEvent(session, newMessage)
+          .map(Event::invocationId)
+          .orElse(invocationId);
+    }
+    return invocationId;
+  }
+
+  /**
+   * Returns the session event whose function call matches a function response id carried by {@code
+   * newMessage}, searching newest-first. Both the resumed invocation id and the branch of the
+   * appended function-response event are derived from it.
+   */
+  private static Optional<Event> matchingFunctionCallEvent(Session session, Content newMessage) {
+    Set<String> responseIds = functionResponseIds(newMessage);
+    if (responseIds.isEmpty()) {
+      return Optional.empty();
+    }
+    List<Event> events = session.events();
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event event = events.get(i);
+      for (FunctionCall call : event.functionCalls()) {
+        if (call.id().filter(responseIds::contains).isPresent()) {
+          return Optional.of(event);
+        }
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Rejects a resume message no invocation can be resumed from, matching Python ADK: one mixing
+   * text with function responses, one whose function response carries no id, one whose response ids
+   * match no call in session history (it would feed the model an orphan response), and one whose
+   * responses span more than one invocation. Counts rather than ids are reported, since the ids
+   * come from the caller.
+   *
+   * @throws IllegalArgumentException if {@code newMessage} is not resumable.
+   */
+  private static void validateResumeMessage(Session session, Content newMessage) {
+    ImmutableList<FunctionResponse> responses =
+        newMessage.parts().stream()
+            .flatMap(List::stream)
+            .map(Part::functionResponse)
+            .flatMap(Optional::stream)
+            .collect(toImmutableList());
+    if (responses.isEmpty()) {
+      return;
+    }
+    checkArgument(
+        newMessage.parts().stream()
+            .flatMap(List::stream)
+            .noneMatch(part -> part.text().isPresent()),
+        "A resume message cannot carry both function responses and text: function responses resume"
+            + " an existing invocation while text starts a new one.");
+    checkArgument(
+        responses.stream().allMatch(response -> response.id().isPresent()),
+        "A function response id is required to resume an invocation.");
+    Set<String> unmatched = functionResponseIds(newMessage);
+    Set<String> invocationIds = new HashSet<>();
+    List<Event> events = session.events();
+    for (int i = events.size() - 1; i >= 0 && !unmatched.isEmpty(); i--) {
+      Event event = events.get(i);
+      for (FunctionCall call : event.functionCalls()) {
+        if (call.id().filter(unmatched::remove).isPresent()) {
+          invocationIds.add(event.invocationId());
+        }
+      }
+    }
+    checkArgument(
+        unmatched.isEmpty(),
+        "No matching function call for %s of the resume message's function responses.",
+        unmatched.size());
+    checkArgument(
+        invocationIds.size() <= 1,
+        "The resume message's function responses span %s invocations; all of them must answer the"
+            + " same one.",
+        invocationIds.size());
+  }
+
+  /** Returns the ids of every function response part {@code message} carries. */
+  private static Set<String> functionResponseIds(Content message) {
+    return message.parts().stream()
+        .flatMap(List::stream)
+        .map(Part::functionResponse)
+        .flatMap(Optional::stream)
+        .map(FunctionResponse::id)
+        .flatMap(Optional::stream)
+        .collect(toCollection(HashSet::new));
+  }
+
+  /**
+   * Returns the user message that started {@code invocationId}, so a resume that carries no message
+   * of its own still shows plugins, callbacks and the model the original prompt instead of empty
+   * content. A function-response message does not qualify: it answers an invocation rather than
+   * starting one.
+   *
+   * @throws IllegalArgumentException if the invocation has no such message, as in Python ADK.
+   */
+  private static Content originalUserMessage(Session session, String invocationId) {
+    return session.events().stream()
+        .filter(event -> invocationId.equals(event.invocationId()))
+        .filter(event -> Objects.equals(event.author(), Role.USER))
+        .map(event -> event.content().orElse(null))
+        .filter(Objects::nonNull)
+        .filter(content -> content.parts().stream().flatMap(List::stream).findAny().isPresent())
+        .filter(
+            content ->
+                content.parts().stream()
+                    .flatMap(List::stream)
+                    .noneMatch(part -> part.functionResponse().isPresent()))
+        .findFirst()
+        .orElseThrow(
+            () ->
+                new IllegalArgumentException(
+                    "No user message to resume the requested invocation from."));
+  }
+
+  /** Returns whether the session holds at least one event belonging to {@code invocationId}. */
+  private static boolean sessionHasEventsForInvocation(Session session, String invocationId) {
+    return session.events().stream().anyMatch(event -> invocationId.equals(event.invocationId()));
   }
 
   private void copySessionStates(Session source, Session target) {
@@ -728,6 +1158,10 @@ public class Runner {
         newInvocationContextBuilder(session)
             .runConfig(runConfigBuilder.build())
             .userContent(Content.fromParts())
+            // A live run has no pause to resume, so route to the function call's author as before
+            // resumability: re-entering the workflow would hand the turn to a LoopAgent or
+            // ParallelAgent, neither of which implements runLive.
+            .agent(findAgentToRun(session, this.agent, /* reEnterWorkflow= */ false))
             .liveRequestQueue(liveRequestQueue);
 
     return builder.build();
@@ -740,7 +1174,6 @@ public class Runner {
         .artifactService(this.artifactService)
         .memoryService(this.memoryService)
         .pluginManager(this.pluginManager)
-        .agent(rootAgent)
         .session(session)
         .eventsCompactionConfig(this.eventsCompactionConfig)
         .contextCacheConfig(this.contextCacheConfig)
@@ -832,10 +1265,7 @@ public class Runner {
                     Span span = Span.current();
                     span.setStatus(StatusCode.ERROR, "Error in runLive Flowable execution");
                     span.recordException(throwable);
-                    this.pluginManager
-                        .runOnRunErrorCallback(invocationContext, throwable)
-                        .onErrorComplete()
-                        .subscribe();
+                    runOnRunError(invocationContext, throwable);
                   })
               .compose(Tracing.<Event>withContext(capturedContext));
         });
@@ -868,19 +1298,44 @@ public class Runner {
     return resumabilityConfig != null && resumabilityConfig.isResumable();
   }
 
+  /**
+   * Returns whether this runner's app runs the legacy resumption flow. A separate flow from {@link
+   * #isResumable()}, so a caller wanting either has to ask for both.
+   */
+  @SuppressWarnings("deprecation") // The shim it reads is deprecated by design.
+  private boolean isLegacyResumability() {
+    return resumabilityConfig != null && resumabilityConfig.isPlainTextContinuationAutoResume();
+  }
+
   /** Returns the agent that should handle the next request based on session history. */
   private BaseAgent findAgentToRun(Session session, BaseAgent rootAgent) {
-    // Route a function response to its call's author; when resumable, re-enter via the author's
-    // top-most SequentialAgent ancestor so the sequence can advance past it (else route straight to
-    // it, matching Python ADK v1 with resumability off). Temporary, event-based.
+    return findAgentToRun(session, rootAgent, /* reEnterWorkflow= */ true);
+  }
+
+  /**
+   * Returns the agent that should handle the next request based on session history. {@code
+   * reEnterWorkflow} selects the resume-aware routing: false routes to the function call's author
+   * itself, as Python always does, for a caller with no resume semantics to serve.
+   */
+  private BaseAgent findAgentToRun(Session session, BaseAgent rootAgent, boolean reEnterWorkflow) {
+    // Route a function response to its call's author, re-entering via the top-most workflow
+    // ancestor each mode treats as resume-aware so that workflow can advance past it.
     Optional<BaseAgent> functionCallAuthor =
         Functions.findMatchingFunctionCallEvent(session.events())
             .filter(event -> event.author() != null)
             .flatMap(event -> rootAgent.findAgent(event.author()));
     if (functionCallAuthor.isPresent()) {
-      return isResumable()
-          ? topmostSequentialAncestor(functionCallAuthor.get())
-          : functionCallAuthor.get();
+      BaseAgent author = functionCallAuthor.get();
+      if (!reEnterWorkflow) {
+        return author;
+      }
+      if (isResumable()) {
+        return topmostResumableWorkflowAncestor(author);
+      }
+      if (isLegacyResumability()) {
+        return topmostSequentialAncestor(author);
+      }
+      return author;
     }
 
     List<Event> events = new ArrayList<>(session.events());
@@ -892,6 +1347,16 @@ public class Runner {
         continue;
       }
       if (author.equals(Role.USER)) {
+        continue;
+      }
+
+      // Skip resumability checkpoint markers (end_of_agent / agent_state): they carry no model
+      // turn, so a turn after a transfer resumes at the transferred-to sub-agent rather than the
+      // finished root. Only when resumable: endOfAgent shares a field with endInvocation, which
+      // any callback or tool can set, so skipping it unconditionally would change routing for
+      // apps that never enabled resumability.
+      if (isResumable()
+          && (event.actions().endOfAgent() || event.actions().agentState().isPresent())) {
         continue;
       }
 
@@ -914,10 +1379,30 @@ public class Runner {
   }
 
   /**
+   * Returns the top-most ancestor reachable from {@code agent} through resume-aware workflow
+   * parents ({@link SequentialAgent}, {@link LoopAgent} or {@link ParallelAgent}), or {@code agent}
+   * itself otherwise, so a sub-agent resumed from a long-running pause re-enters the workflow that
+   * sequences it and the workflow can advance past it. Each of the three skips sub-agents already
+   * marked end-of-agent, so re-entering replays no completed work. Deliberately stricter than
+   * Python ADK, which routes to the author itself.
+   */
+  private static BaseAgent topmostResumableWorkflowAncestor(BaseAgent agent) {
+    BaseAgent result = agent;
+    BaseAgent parent = agent.parentAgent();
+    while (parent instanceof SequentialAgent
+        || parent instanceof LoopAgent
+        || parent instanceof ParallelAgent) {
+      result = parent;
+      parent = parent.parentAgent();
+    }
+    return result;
+  }
+
+  /**
    * Returns the top-most ancestor reachable from {@code agent} through {@link SequentialAgent}
-   * parents, or {@code agent} itself otherwise. Only SequentialAgent is resume-aware; other
-   * workflow agents are left to resume their paused sub-agent directly (via the function-call
-   * author).
+   * parents, or {@code agent} itself otherwise. Used by the deprecated legacy flow, whose only
+   * resume-aware workflow agent is SequentialAgent; the resumable flow routes to the author itself,
+   * as Python does.
    */
   private static BaseAgent topmostSequentialAncestor(BaseAgent agent) {
     BaseAgent result = agent;
