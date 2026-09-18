@@ -73,6 +73,7 @@
     <rxjava.version>3.1.12</rxjava.version>
     <!-- ADK Kotlin engine interop (google-adk-tokt module). -->
     <kotlin.version>2.1.20</kotlin.version>
+    <dokka.version>2.2.0</dokka.version>
     <kotlinx-coroutines.version>1.11.0</kotlinx-coroutines.version>
     <adk-kotlin.version>1.1.0</adk-kotlin.version>
     <reactor-core.version>3.7.0</reactor-core.version>

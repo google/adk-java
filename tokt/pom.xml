@@ -99,6 +99,7 @@
   </dependencies>
 
   <build>
+    <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
     <plugins>
       <!-- Kotlin sources live under src/main/kotlin; Java test sources stay under src/test/java,
            compiled by the default compiler plugin. -->
@@ -119,11 +120,6 @@
             <goals>
               <goal>compile</goal>
             </goals>
-            <configuration>
-              <sourceDirs>
-                <sourceDir>${project.basedir}/src/main/kotlin</sourceDir>
-              </sourceDirs>
-            </configuration>
           </execution>
           <execution>
             <id>test-compile</id>
@@ -144,4 +140,40 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <!-- maven-javadoc-plugin ignores .kt files; skip it here and generate
+               the Maven Central -javadoc.jar from KDoc via Dokka instead. -->
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <configuration>
+              <skip>true</skip>
+            </configuration>
+          </plugin>
+          <plugin>
+            <groupId>org.jetbrains.dokka</groupId>
+            <artifactId>dokka-maven-plugin</artifactId>
+            <version>${dokka.version}</version>
+            <configuration>
+              <outputDir>${project.build.directory}/dokkaJavadocJar</outputDir>
+            </configuration>
+            <executions>
+              <execution>
+                <id>attach-dokka-javadocs</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>javadocJar</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
