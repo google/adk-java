@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/google/adk-java/compare/v1.10.0...v1.10.1) (2026-09-18)
+
+
+### Documentation
+
+* remove TODO regarding default InMemoryRunner.appName ([99adf57](https://github.com/google/adk-java/commit/99adf57fb4f58327e7132d91bd0d6d25476e32cb))
+
 ## [1.10.0](https://github.com/google/adk-java/compare/v1.9.0...v1.10.0) (2026-09-16)
 
 
