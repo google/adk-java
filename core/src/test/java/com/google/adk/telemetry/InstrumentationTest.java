@@ -17,6 +17,7 @@
 package com.google.adk.telemetry;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
@@ -32,6 +33,7 @@ import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.Meter;
+import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.sdk.metrics.data.HistogramPointData;
@@ -40,8 +42,11 @@ import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.jspecify.annotations.Nullable;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -191,6 +196,36 @@ public final class InstrumentationTest {
     point = metric.getHistogramData().getPoints().iterator().next();
     assertThat(point.getAttributes().get(AttributeKey.stringKey("gen_ai.tool.name")))
         .isEqualTo("my-tool");
+  }
+
+  @Test
+  public void close_whenBeforeSpanEndThrows_stillEndsSpanAndRecordsMetrics() {
+    AtomicBoolean metricsRecorded = new AtomicBoolean(false);
+    Span testSpan = Tracing.getTracer().spanBuilder("test_failing_before_span_end").startSpan();
+    Instrumentation.ClosableTelemetryScope scope =
+        new Instrumentation.ClosableTelemetryScope(testSpan, Context.current()) {
+          @Override
+          protected void beforeSpanEnd() {
+            throw new IllegalStateException("simulated serialization failure in beforeSpanEnd");
+          }
+
+          @Override
+          protected void recordMetrics(Duration elapsed, @Nullable Throwable error) {
+            metricsRecorded.set(true);
+          }
+
+          @Override
+          protected void handleMetricsError(RuntimeException e) {}
+        };
+
+    IllegalStateException thrown = assertThrows(IllegalStateException.class, scope::close);
+    assertThat(thrown).hasMessageThat().contains("simulated serialization failure");
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    assertThat(spans.get(0).getName()).isEqualTo("test_failing_before_span_end");
+    assertThat(spans.get(0).hasEnded()).isTrue();
+    assertThat(metricsRecorded.get()).isTrue();
   }
 
   private MetricData findMetricByName(String name) {

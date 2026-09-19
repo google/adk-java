@@ -427,37 +427,23 @@ public class Tracing {
   }
 
   /**
-   * Executes a Flowable with an OpenTelemetry Scope active for its entire lifecycle.
-   *
-   * <p>This helper manages the OpenTelemetry Scope lifecycle for RxJava Flowables to ensure proper
-   * context propagation across async boundaries. The scope remains active from when the Flowable is
-   * returned through all operators until stream completion (onComplete, onError, or cancel).
-   *
-   * <p><b>Why not try-with-resources?</b> RxJava Flowables execute lazily - operators run at
-   * subscription time, not at chain construction time. Using try-with-resources would close the
-   * scope before the Flowable subscribes, causing Context.current() to return ROOT in nested
-   * operations and breaking parent-child span relationships (fragmenting traces).
-   *
-   * <p>The scope is properly closed via doFinally when the stream terminates, ensuring no resource
-   * leaks regardless of completion mode (success, error, or cancellation).
+   * Executes a {@link Flowable} supplier within {@code spanContext} and propagates that context
+   * across subscription and stream emissions via {@link #withContext(Context)}. Ends {@code span}
+   * when the stream terminates or is cancelled.
    *
    * @param spanContext The context containing the span to activate
    * @param span The span to end when the stream completes
    * @param flowableSupplier Supplier that creates the Flowable to execute with active scope
    * @param <T> The type of items emitted by the Flowable
-   * @return Flowable with OpenTelemetry scope lifecycle management
+   * @return Flowable with OpenTelemetry context propagation and span lifecycle management
    */
-  @SuppressWarnings("MustBeClosedChecker") // Scope lifecycle managed by RxJava doFinally
   public static <T> Flowable<T> traceFlowable(
       Context spanContext, Span span, Supplier<Flowable<T>> flowableSupplier) {
-    Scope scope = spanContext.makeCurrent();
-    return flowableSupplier
-        .get()
-        .doFinally(
-            () -> {
-              scope.close();
-              span.end();
-            });
+    final Flowable<T> upstream;
+    try (Scope scope = spanContext.makeCurrent()) {
+      upstream = flowableSupplier.get();
+    }
+    return upstream.compose(withContext(spanContext)).doFinally(span::end);
   }
 
   /**
@@ -541,19 +527,16 @@ public class Tracing {
 
     private final class TracingLifecycle {
       private Span span;
-      private Scope scope;
+      private Context spanContext;
 
-      @SuppressWarnings("MustBeClosedChecker")
       void start() {
-        span = tracer.spanBuilder(spanName).setParent(getParentContext()).startSpan();
+        Context parentContext = getParentContext();
+        span = tracer.spanBuilder(spanName).setParent(parentContext).startSpan();
         spanConfigurers.forEach(c -> c.accept(span));
-        scope = span.makeCurrent();
+        spanContext = parentContext.with(span);
       }
 
       void end() {
-        if (scope != null) {
-          scope.close();
-        }
         if (span != null) {
           span.end();
         }
@@ -572,7 +555,7 @@ public class Tracing {
           () -> {
             TracingLifecycle lifecycle = new TracingLifecycle();
             lifecycle.start();
-            Flowable<T> pipeline = upstream;
+            Flowable<T> pipeline = upstream.compose(withContext(lifecycle.spanContext));
             if (onSuccessConsumer != null) {
               pipeline = pipeline.doOnNext(t -> onSuccessConsumer.accept(lifecycle.span, t));
             }
@@ -592,7 +575,7 @@ public class Tracing {
           () -> {
             TracingLifecycle lifecycle = new TracingLifecycle();
             lifecycle.start();
-            Single<T> pipeline = upstream;
+            Single<T> pipeline = upstream.compose(withContext(lifecycle.spanContext));
             if (onSuccessConsumer != null) {
               pipeline = pipeline.doOnSuccess(t -> onSuccessConsumer.accept(lifecycle.span, t));
             }
@@ -612,7 +595,7 @@ public class Tracing {
           () -> {
             TracingLifecycle lifecycle = new TracingLifecycle();
             lifecycle.start();
-            Maybe<T> pipeline = upstream;
+            Maybe<T> pipeline = upstream.compose(withContext(lifecycle.spanContext));
             if (onSuccessConsumer != null) {
               pipeline = pipeline.doOnSuccess(t -> onSuccessConsumer.accept(lifecycle.span, t));
             }
@@ -632,7 +615,7 @@ public class Tracing {
           () -> {
             TracingLifecycle lifecycle = new TracingLifecycle();
             lifecycle.start();
-            return upstream.doFinally(lifecycle::end);
+            return upstream.compose(withContext(lifecycle.spanContext)).doFinally(lifecycle::end);
           });
     }
   }
@@ -673,7 +656,14 @@ public class Tracing {
      */
     @Override
     public Publisher<T> apply(Flowable<T> upstream) {
-      return upstream.lift(subscriber -> TracingObserver.wrap(context, subscriber));
+      return new Flowable<T>() {
+        @Override
+        protected void subscribeActual(Subscriber<? super T> subscriber) {
+          try (Scope scope = context.makeCurrent()) {
+            upstream.subscribe(TracingObserver.wrap(context, subscriber));
+          }
+        }
+      };
     }
 
     /**
@@ -684,7 +674,14 @@ public class Tracing {
      */
     @Override
     public SingleSource<T> apply(Single<T> upstream) {
-      return upstream.lift(observer -> TracingObserver.wrap(context, observer));
+      return new Single<T>() {
+        @Override
+        protected void subscribeActual(SingleObserver<? super T> observer) {
+          try (Scope scope = context.makeCurrent()) {
+            upstream.subscribe(TracingObserver.wrap(context, observer));
+          }
+        }
+      };
     }
 
     /**
@@ -695,7 +692,14 @@ public class Tracing {
      */
     @Override
     public MaybeSource<T> apply(Maybe<T> upstream) {
-      return upstream.lift(observer -> TracingObserver.wrap(context, observer));
+      return new Maybe<T>() {
+        @Override
+        protected void subscribeActual(MaybeObserver<? super T> observer) {
+          try (Scope scope = context.makeCurrent()) {
+            upstream.subscribe(TracingObserver.wrap(context, observer));
+          }
+        }
+      };
     }
 
     /**
@@ -706,36 +710,39 @@ public class Tracing {
      */
     @Override
     public CompletableSource apply(Completable upstream) {
-      return upstream.lift(observer -> TracingObserver.wrap(context, observer));
+      return new Completable() {
+        @Override
+        protected void subscribeActual(CompletableObserver observer) {
+          try (Scope scope = context.makeCurrent()) {
+            upstream.subscribe(TracingObserver.wrap(context, observer));
+          }
+        }
+      };
     }
   }
 
   /**
-   * An observer that wraps another observer and ensures that the OpenTelemetry context is active
-   * during all callback methods.
-   *
-   * <p>This implementation only wraps the data-flow callbacks (`onNext`, `onSuccess`, etc.). The
-   * `Subscription.request/cancel` and `Disposable.dispose` calls are not wrapped in the context. If
-   * the upstream logic depends on the context during these signals, they might lose trace
-   * information. Given this is a manual `withContext` utility, this might be an acceptable
-   * trade-off for simplicity/performance, but worth keeping in mind.
+   * Observer wrapper that activates an OpenTelemetry {@link Context} during downstream callbacks
+   * ({@code onSubscribe}, {@code onNext}, {@code onSuccess}, {@code onError}, {@code onComplete}).
+   * Upstream flow-control signals ({@code request}, {@code cancel}, {@code dispose}) are not
+   * wrapped.
    *
    * @param <T> The type of the items emitted by the stream.
    */
   private static final class TracingObserver<T>
       implements Subscriber<T>, SingleObserver<T>, MaybeObserver<T>, CompletableObserver {
     private final Context context;
-    private final Subscriber<? super T> subscriber;
-    private final SingleObserver<? super T> singleObserver;
-    private final MaybeObserver<? super T> maybeObserver;
-    private final CompletableObserver completableObserver;
+    private final @Nullable Subscriber<? super T> subscriber;
+    private final @Nullable SingleObserver<? super T> singleObserver;
+    private final @Nullable MaybeObserver<? super T> maybeObserver;
+    private final @Nullable CompletableObserver completableObserver;
 
     private TracingObserver(
         Context context,
-        Subscriber<? super T> subscriber,
-        SingleObserver<? super T> singleObserver,
-        MaybeObserver<? super T> maybeObserver,
-        CompletableObserver completableObserver) {
+        @Nullable Subscriber<? super T> subscriber,
+        @Nullable SingleObserver<? super T> singleObserver,
+        @Nullable MaybeObserver<? super T> maybeObserver,
+        @Nullable CompletableObserver completableObserver) {
       this.context = context;
       this.subscriber = subscriber;
       this.singleObserver = singleObserver;
