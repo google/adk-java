@@ -20,6 +20,7 @@ import static com.google.adk.flows.llmflows.Functions.REQUEST_CONFIRMATION_FUNCT
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.agents.InvocationContext;
@@ -398,6 +399,29 @@ public class RequestConfirmationLlmRequestProcessorTest {
     assertThat(createAgentWithEchoTool().name()).isEqualTo(AGENT_NAME);
   }
 
+  @Test
+  public void runAsync_approvalOnParallelBranch_doesNotCallOriginalFunction() {
+    // An approval answered in a parallel tree is not this branch's, though it names the call.
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = sessionWithApprovalOn("agent_1", "agent_2");
+
+    assertThat(resumedEventsOnBranch(agent, session, "agent_1")).isEmpty();
+  }
+
+  @Test
+  public void runAsync_approvalOnSubBranch_callsOriginalFunction() {
+    // The user may answer on a descendant sub-branch, so scoping must not break the normal path.
+    LlmAgent agent = createAgentWithEchoTool();
+    Session session = sessionWithApprovalOn("agent_1", "agent_1.child");
+
+    ImmutableList<Event> resumed = resumedEventsOnBranch(agent, session, "agent_1");
+
+    assertThat(resumed).hasSize(1);
+    FunctionResponse response = resumed.get(0).functionResponses().get(0);
+    assertThat(response.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
+    assertThat(response.name()).hasValue(ECHO_TOOL_NAME);
+  }
+
   private static ImmutableList<Event> resumedEvents(LlmAgent agent, Session session) {
     return ImmutableList.copyOf(
         processor
@@ -430,6 +454,44 @@ public class RequestConfirmationLlmRequestProcessorTest {
         .session(session)
         .sessionService(sessionService)
         .build();
+  }
+
+  private static InvocationContext buildInvocationContext(
+      LlmAgent agent, Session session, String branch) {
+    return InvocationContext.builder()
+        .pluginManager(new PluginManager())
+        .invocationId(InvocationContext.newInvocationContextId())
+        .branch(branch)
+        .agent(agent)
+        .session(session)
+        .sessionService(sessionService)
+        .build();
+  }
+
+  /**
+   * Returns the legitimate lead-up with the agent's events on {@code agentBranch} and the user's
+   * approval on {@code approvalBranch}.
+   */
+  private static Session sessionWithApprovalOn(String agentBranch, String approvalBranch) {
+    ImmutableList<Event> events =
+        CONFIRMED_CALL_EVENTS.stream()
+            .map(
+                event ->
+                    event.toBuilder()
+                        .branch(event.author().equals("user") ? approvalBranch : agentBranch)
+                        .build())
+            .collect(toImmutableList());
+    return Session.builder("session_id").events(events).build();
+  }
+
+  private static ImmutableList<Event> resumedEventsOnBranch(
+      LlmAgent agent, Session session, String branch) {
+    return ImmutableList.copyOf(
+        processor
+            .processRequest(
+                buildInvocationContext(agent, session, branch), LlmRequest.builder().build())
+            .blockingGet()
+            .events());
   }
 
   private static LlmAgent createAgentWithEchoTool() {
