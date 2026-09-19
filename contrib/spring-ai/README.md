@@ -329,6 +329,103 @@ adk:
       metrics-enabled: true
 ```
 
+## Tool / MCP Bridge — Spring AI `ToolCallback` as ADK `BaseTool`
+
+In addition to wrapping Spring AI `ChatModel`s as ADK `BaseLlm`s, this library can wrap **any Spring AI `ToolCallback`** as an ADK `BaseTool` via `SpringAiToolCallbackBackedAdkTool`. This unlocks the full Spring AI tool ecosystem for ADK agents:
+
+- **MCP tools** — `SyncMcpToolCallback` / `AsyncMcpToolCallback` produced by `spring-ai-starter-mcp-client` from `spring.ai.mcp.client.*` properties
+- **`@Tool`-annotated methods** — Spring AI's annotation-driven function calling
+- **`FunctionToolCallback`** — programmatically declared tools
+- Any other implementation of `org.springframework.ai.tool.ToolCallback`
+
+The bridge is the **reverse direction** of the existing `ToolConverter` (which goes ADK → Spring AI). Together they make ADK and Spring AI tool ecosystems fully interoperable.
+
+### How it works
+
+`SpringAiToolCallbackBackedAdkTool` reads `ToolCallback.getToolDefinition()` to extract the tool name, description, and JSON Schema. The schema is converted to ADK's `Schema` type via `Schema.fromJson(...)`; if parsing fails the bridge falls back to the `parametersJsonSchema(Object)` escape hatch (no hard failure). At invocation time the bridge serializes the `Map<String, Object>` arguments to JSON, dispatches to `ToolCallback.call(String)`, and parses the JSON response back to `Map<String, Object>`. Non-object responses (primitives / arrays / arbitrary strings) are wrapped under a `"result"` key for structural consistency.
+
+### Usage — MCP tools via Spring AI
+
+`application.yaml`:
+
+```yaml
+spring:
+  ai:
+    mcp:
+      client:
+        sse:
+          connections:
+            filesystem:
+              url: http://localhost:3000
+```
+
+Java:
+
+```java
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.models.springai.SpringAI;
+import com.google.adk.models.springai.bridge.SpringAiToolCallbackBackedAdkTool;
+import org.springframework.ai.tool.ToolCallback;
+
+@Configuration
+class AgentConfig {
+
+  @Bean
+  public LlmAgent rootAgent(SpringAI springAI, List<ToolCallback> mcpToolCallbacks) {
+    return LlmAgent.builder()
+        .name("root_agent")
+        .model(springAI)
+        .tools(SpringAiToolCallbackBackedAdkTool.wrapAll(mcpToolCallbacks))
+        .instruction("Use the available tools to answer the user.")
+        .build();
+  }
+}
+```
+
+That's it. The `List<ToolCallback>` is auto-injected by `spring-ai-starter-mcp-client`'s `McpToolCallbackAutoConfiguration`. The bridge converts every callback into a `BaseTool`. The agent uses them transparently.
+
+### Usage — single tool
+
+When you only need to wrap one callback:
+
+```java
+ToolCallback callback = /* obtained from any Spring AI source */;
+BaseTool adkTool = new SpringAiToolCallbackBackedAdkTool(callback);
+
+LlmAgent agent = LlmAgent.builder()
+    .name("my_agent")
+    .model(springAI)
+    .tools(List.of(adkTool))
+    .build();
+```
+
+### Automatic discovery via `SpringAiToolBridgeAutoConfiguration`
+
+The library also ships `SpringAiToolBridgeAutoConfiguration` which auto-discovers **every** `ToolCallback` bean in the Spring context and exposes them as a single `@Bean("springAiTools") List<BaseTool>`. Wiring becomes:
+
+```java
+@Bean
+public LlmAgent rootAgent(
+    SpringAI llm,
+    @Qualifier("springAiTools") List<BaseTool> springAiTools) {
+  return LlmAgent.builder().name("root").model(llm).tools(springAiTools).build();
+}
+```
+
+Active only when at least one `ToolCallback` bean exists (from `spring-ai-starter-mcp-client`, `@Tool` methods, `FunctionToolCallback` beans, etc.).
+
+### Error handling
+
+If the underlying `ToolCallback.call(...)` throws, the bridge catches the exception and returns a structured `Map.of("error", "<message>")` result — matching ADK's native `AbstractMcpTool.wrapCallResult(...)` shape. The agent sees a tool result with an `error` key rather than aborting the invocation. Falls back to the exception's simple class name when the message is null.
+
+### Schema fidelity
+
+The bridge sets `FunctionDeclaration.parametersJsonSchema(Map)` from the parsed JSON schema, **not** `parameters(Schema.fromJson(...))`. This routes through the faithful branch of Spring AI's `ToolConverter` and preserves `items`, `enum`, `format`, `anyOf`/`oneOf`, `additionalProperties`, `$defs` and `$ref`. Unparseable schemas leave the field unset (with a logged warning) rather than emit a degraded or double-encoded schema.
+
+### Coexistence with ADK's native MCP
+
+ADK ships its own MCP client in `com.google.adk.tools.mcp.*` (CLI / non-Spring-Boot scenarios). The two paths can be mixed at the `.tools(...)` boundary — both produce `BaseTool` instances — but it is strongly recommended to **pick one** in any given application. The Spring AI MCP route is the natural choice for Spring Boot apps because everything is property-driven; ADK's native `McpToolset` remains the right choice for non-Spring usage.
+
 ## Architecture
 
 ### Core Components
