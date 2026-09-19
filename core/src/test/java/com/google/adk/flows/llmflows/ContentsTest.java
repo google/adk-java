@@ -65,7 +65,9 @@ public final class ContentsTest {
   private static final String OTHER_AGENT = "other_agent";
 
   private static final Contents contentsProcessor = new Contents();
-  private static final InMemorySessionService sessionService = new InMemorySessionService();
+
+  // Per-test: every helper creates the same session id, so a shared service would reject it.
+  private final InMemorySessionService sessionService = new InMemorySessionService();
 
   @Test
   public void rearrangeLatest_emptyList_returnsEmptyList() {
