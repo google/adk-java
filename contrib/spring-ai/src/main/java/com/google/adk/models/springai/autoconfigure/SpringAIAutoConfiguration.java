@@ -58,7 +58,28 @@ import org.springframework.context.annotation.Primary;
  * adk.spring-ai.validation.enabled=true
  * </pre>
  */
-@AutoConfiguration
+@AutoConfiguration(
+    afterName = {
+      // --- Spring AI 2.0.1 chat model auto-configurations (verified against published jars) ---
+      "org.springframework.ai.model.anthropic.autoconfigure.AnthropicChatAutoConfiguration",
+      "org.springframework.ai.model.bedrock.converse.autoconfigure.BedrockConverseProxyChatAutoConfiguration",
+      "org.springframework.ai.model.deepseek.autoconfigure.DeepSeekChatAutoConfiguration",
+      "org.springframework.ai.model.google.genai.autoconfigure.chat.GoogleGenAiChatAutoConfiguration",
+      "org.springframework.ai.model.mistralai.autoconfigure.MistralAiChatAutoConfiguration",
+      "org.springframework.ai.model.ollama.autoconfigure.OllamaChatAutoConfiguration",
+      "org.springframework.ai.model.openai.autoconfigure.OpenAiChatAutoConfiguration",
+      // --- embedding model auto-configurations (required for springAIEmbedding,
+      //     which silently fails to register without these) ---
+      "org.springframework.ai.model.bedrock.cohere.autoconfigure.BedrockCohereEmbeddingAutoConfiguration",
+      "org.springframework.ai.model.bedrock.titan.autoconfigure.BedrockTitanEmbeddingAutoConfiguration",
+      "org.springframework.ai.model.google.genai.autoconfigure.embedding.GoogleGenAiTextEmbeddingAutoConfiguration",
+      "org.springframework.ai.model.mistralai.autoconfigure.MistralAiEmbeddingAutoConfiguration",
+      "org.springframework.ai.model.ollama.autoconfigure.OllamaEmbeddingAutoConfiguration",
+      "org.springframework.ai.model.openai.autoconfigure.OpenAiEmbeddingAutoConfiguration",
+      "org.springframework.ai.model.postgresml.autoconfigure.PostgresMlEmbeddingAutoConfiguration",
+      "org.springframework.ai.model.transformers.autoconfigure.TransformersEmbeddingModelAutoConfiguration",
+      "org.springframework.ai.model.vertexai.autoconfigure.embedding.VertexAiTextEmbeddingAutoConfiguration"
+    })
 @ConditionalOnClass({SpringAI.class, ChatModel.class})
 @ConditionalOnProperty(
     prefix = "adk.spring-ai.auto-configuration",
