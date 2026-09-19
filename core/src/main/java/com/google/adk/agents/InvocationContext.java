@@ -306,10 +306,14 @@ public class InvocationContext {
 
   /**
    * Returns whether the current invocation is resumable. Mirrors Python ADK v1's {@code
-   * InvocationContext.is_resumable}.
+   * InvocationContext.is_resumable}. The deprecated plain-text continuation shim selects the same
+   * resumption behavior, so it reports resumable too; the two are mutually exclusive.
    */
+  @SuppressWarnings("deprecation") // The shim it reads is deprecated by design.
   public boolean isResumable() {
-    return resumabilityConfig != null && resumabilityConfig.isResumable();
+    return resumabilityConfig != null
+        && (resumabilityConfig.isResumable()
+            || resumabilityConfig.isPlainTextContinuationAutoResume());
   }
 
   private static class InvocationCostManager {
