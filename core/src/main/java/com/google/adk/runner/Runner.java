@@ -863,9 +863,15 @@ public class Runner {
     return true;
   }
 
-  /** Returns whether resumability is enabled for this runner's app. */
+  /**
+   * Returns whether resumability is enabled for this runner's app, by either the supported flag or
+   * the deprecated plain-text continuation shim, which selects the same behavior.
+   */
+  @SuppressWarnings("deprecation") // The shim it reads is deprecated by design.
   private boolean isResumable() {
-    return resumabilityConfig != null && resumabilityConfig.isResumable();
+    return resumabilityConfig != null
+        && (resumabilityConfig.isResumable()
+            || resumabilityConfig.isPlainTextContinuationAutoResume());
   }
 
   /** Returns the agent that should handle the next request based on session history. */
