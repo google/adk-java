@@ -33,7 +33,7 @@ import io.reactivex.rxjava3.core.Flowable
  * [runAsyncImpl] and [runLiveImpl] throw. A plugin must not run the agent it is given. The agent's
  * own callbacks are intentionally not exposed (they are lifecycle hooks, not inspection data).
  */
-internal class KtAgentToJava(ktAgent: KtBaseAgent) :
+internal class KtAgentToJava(internal val ktAgent: KtBaseAgent) :
   JavaBaseAgent(
     ktAgent.name,
     ktAgent.description,
