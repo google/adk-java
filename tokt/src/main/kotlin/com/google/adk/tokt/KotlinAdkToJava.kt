@@ -18,6 +18,7 @@ package com.google.adk.tokt
 
 import com.google.adk.kt.runners.Runner as KtRunner
 import com.google.adk.runner.Runner as JavaRunner
+import kotlinx.coroutines.CoroutineDispatcher
 
 /**
  * Reverse interop entry point: exposes an ADK Kotlin-engine [KtRunner] through the ADK Java
@@ -28,7 +29,16 @@ import com.google.adk.runner.Runner as JavaRunner
  */
 object KotlinAdkToJava {
 
-  /** Exposes a Kotlin-engine [runner] as an ADK Java [JavaRunner]. */
+  /**
+   * Exposes a Kotlin-engine [runner] as an ADK Java [JavaRunner]. Its reverse service adapters
+   * bridge the Java RxJava calls onto the Kotlin engine via `dispatcher` (default
+   * `Dispatchers.IO`), which must be able to run nested bridged calls concurrently, so a
+   * single-threaded or tightly bounded dispatcher can deadlock.
+   */
   @JvmStatic
-  fun asJavaRunner(runner: KtRunner): JavaRunner = KtRunnerToJava(runner)
+  @JvmOverloads
+  fun asJavaRunner(
+    runner: KtRunner,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): JavaRunner = KtRunnerToJava(runner, dispatcher)
 }

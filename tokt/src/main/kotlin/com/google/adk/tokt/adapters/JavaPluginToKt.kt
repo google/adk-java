@@ -28,7 +28,6 @@ import com.google.adk.kt.tools.BaseTool as KtBaseTool
 import com.google.adk.kt.tools.ToolContext as KtToolContext
 import com.google.adk.kt.types.Content as KtContent
 import com.google.adk.plugins.Plugin as JavaPlugin
-import com.google.adk.tokt.InteropDispatcher
 import com.google.adk.tokt.codecs.ContentCodec
 import com.google.adk.tokt.codecs.EventCodec
 import com.google.adk.tokt.codecs.LlmRequestCodec
@@ -39,6 +38,7 @@ import com.google.adk.tokt.context.ktCallbackContextToJava
 import com.google.adk.tokt.context.ktToolContextToJava
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Maybe
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.rx3.await
 import kotlinx.coroutines.rx3.awaitSingleOrNull
 import kotlinx.coroutines.withContext
@@ -51,22 +51,25 @@ import kotlinx.coroutines.withContext
  * instance, and a native Kotlin tool is presented through an inspection-only [KtToolToJava] view
  * (see [ktToolAsJava]) -- so the plugin can read the tool and write actions, but must not run it.
  */
-internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
+internal class JavaPluginToKt(
+  internal val plugin: JavaPlugin,
+  private val dispatcher: CoroutineDispatcher,
+) : KtPlugin {
 
   override val name: String
     get() = plugin.name
 
   /**
-   * Runs a Java plugin callback off the engine dispatcher. Plugin callbacks may do blocking I/O
-   * (logging, metrics, network); RxJava is synchronous by default, so running them on the coroutine
-   * that drives the agent loop could stall it.
+   * Runs a Java plugin callback off the engine dispatcher (`dispatcher`). Plugin callbacks may do
+   * blocking I/O (logging, metrics, network); RxJava is synchronous by default, so running them on
+   * the coroutine that drives the agent loop could stall it.
    */
-  private suspend fun <T : Any> onIo(source: () -> Maybe<T>): T? =
-    withContext(InteropDispatcher) { source().awaitSingleOrNull() }
+  private suspend fun <T : Any> onDispatcher(source: () -> Maybe<T>): T? =
+    withContext(dispatcher) { source().awaitSingleOrNull() }
 
-  /** As [onIo], for the two callbacks that report completion rather than a value. */
-  private suspend fun completeOnIo(source: () -> Completable) {
-    withContext(InteropDispatcher) { source().await() }
+  /** As [onDispatcher], for the two callbacks that report completion rather than a value. */
+  private suspend fun completeOnDispatcher(source: () -> Completable) {
+    withContext(dispatcher) { source().await() }
   }
 
   // Run-level callbacks.
@@ -75,8 +78,8 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     invocationContext: KtInvocationContext,
     userMessage: KtContent,
   ): KtContent {
-    val javaContext = KtInvocationContextToJavaView(invocationContext)
-    val replacement = onIo {
+    val javaContext = KtInvocationContextToJavaView(invocationContext, dispatcher)
+    val replacement = onDispatcher {
       plugin.onUserMessageCallback(javaContext, ContentCodec.toJava(userMessage))
     }
     return replacement?.let { ContentCodec.fromJava(it) } ?: userMessage
@@ -85,26 +88,26 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
   override suspend fun beforeRun(
     invocationContext: KtInvocationContext
   ): CallbackChoice<Unit, KtContent> {
-    val javaContext = KtInvocationContextToJavaView(invocationContext)
-    val halt = onIo { plugin.beforeRunCallback(javaContext) }
+    val javaContext = KtInvocationContextToJavaView(invocationContext, dispatcher)
+    val halt = onDispatcher { plugin.beforeRunCallback(javaContext) }
     return if (halt != null) CallbackChoice.Break(ContentCodec.fromJava(halt))
     else CallbackChoice.Continue(Unit)
   }
 
   override suspend fun onEvent(invocationContext: KtInvocationContext, event: KtEvent): KtEvent {
-    val javaContext = KtInvocationContextToJavaView(invocationContext)
-    val replacement = onIo { plugin.onEventCallback(javaContext, EventCodec.toJava(event)) }
+    val javaContext = KtInvocationContextToJavaView(invocationContext, dispatcher)
+    val replacement = onDispatcher { plugin.onEventCallback(javaContext, EventCodec.toJava(event)) }
     return replacement?.let { EventCodec.fromJava(it) } ?: event
   }
 
   override suspend fun afterRun(invocationContext: KtInvocationContext) {
-    val javaContext = KtInvocationContextToJavaView(invocationContext)
-    completeOnIo { plugin.afterRunCallback(javaContext) }
+    val javaContext = KtInvocationContextToJavaView(invocationContext, dispatcher)
+    completeOnDispatcher { plugin.afterRunCallback(javaContext) }
   }
 
   override suspend fun onRunError(invocationContext: KtInvocationContext, error: Throwable) {
-    val javaContext = KtInvocationContextToJavaView(invocationContext)
-    completeOnIo { plugin.onRunErrorCallback(javaContext, error) }
+    val javaContext = KtInvocationContextToJavaView(invocationContext, dispatcher)
+    completeOnDispatcher { plugin.onRunErrorCallback(javaContext, error) }
   }
 
   // Agent-level callbacks.
@@ -113,8 +116,8 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     context: KtCallbackContext
   ): CallbackChoice<KtEventActions, KtContent> {
     val javaAgent = javaAgentView(context)
-    val javaContext = ktCallbackContextToJava(context, javaAgent)
-    val override = onIo { plugin.beforeAgentCallback(javaAgent, javaContext) }
+    val javaContext = ktCallbackContextToJava(context, javaAgent, dispatcher)
+    val override = onDispatcher { plugin.beforeAgentCallback(javaAgent, javaContext) }
     reconcileActionsToKt(javaContext.eventActions(), context.eventActions)
     return if (override != null) CallbackChoice.Break(ContentCodec.fromJava(override))
     else CallbackChoice.Continue(KtEventActions())
@@ -122,8 +125,8 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
 
   override suspend fun afterAgent(context: KtCallbackContext): CallbackChoice<Unit, KtContent> {
     val javaAgent = javaAgentView(context)
-    val javaContext = ktCallbackContextToJava(context, javaAgent)
-    val override = onIo { plugin.afterAgentCallback(javaAgent, javaContext) }
+    val javaContext = ktCallbackContextToJava(context, javaAgent, dispatcher)
+    val override = onDispatcher { plugin.afterAgentCallback(javaAgent, javaContext) }
     reconcileActionsToKt(javaContext.eventActions(), context.eventActions)
     return if (override != null) CallbackChoice.Break(ContentCodec.fromJava(override))
     else CallbackChoice.Continue(Unit)
@@ -135,9 +138,9 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     context: KtCallbackContext,
     request: KtLlmRequest,
   ): CallbackChoice<KtLlmRequest, KtLlmResponse> {
-    val javaContext = ktCallbackContextToJava(context, javaAgentView(context))
+    val javaContext = ktCallbackContextToJava(context, javaAgentView(context), dispatcher)
     val builder = LlmRequestCodec.toJava(request).toBuilder()
-    val override = onIo { plugin.beforeModelCallback(javaContext, builder) }
+    val override = onDispatcher { plugin.beforeModelCallback(javaContext, builder) }
     reconcileActionsToKt(javaContext.eventActions(), context.eventActions)
     return if (override != null) CallbackChoice.Break(LlmResponseCodec.fromJava(override))
     // Re-apply onto the original request to preserve Kotlin-only fields (toolsDict, cache config);
@@ -149,8 +152,8 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     context: KtCallbackContext,
     response: KtLlmResponse,
   ): KtLlmResponse {
-    val javaContext = ktCallbackContextToJava(context, javaAgentView(context))
-    val override = onIo {
+    val javaContext = ktCallbackContextToJava(context, javaAgentView(context), dispatcher)
+    val override = onDispatcher {
       plugin.afterModelCallback(javaContext, LlmResponseCodec.toJava(response))
     }
     reconcileActionsToKt(javaContext.eventActions(), context.eventActions)
@@ -162,9 +165,9 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     request: KtLlmRequest,
     error: Throwable,
   ): CallbackChoice<Unit, KtLlmResponse> {
-    val javaContext = ktCallbackContextToJava(context, javaAgentView(context))
+    val javaContext = ktCallbackContextToJava(context, javaAgentView(context), dispatcher)
     val builder = LlmRequestCodec.toJava(request).toBuilder()
-    val fallback = onIo { plugin.onModelErrorCallback(javaContext, builder, error) }
+    val fallback = onDispatcher { plugin.onModelErrorCallback(javaContext, builder, error) }
     reconcileActionsToKt(javaContext.eventActions(), context.eventActions)
     return if (fallback != null) CallbackChoice.Break(LlmResponseCodec.fromJava(fallback))
     else CallbackChoice.Continue(Unit)
@@ -179,9 +182,9 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     args: Map<String, Any?>,
   ): CallbackChoice<Map<String, Any?>, Map<String, Any?>> {
     val javaTool = ktToolAsJava(tool)
-    val javaContext = ktToolContextToJava(context)
+    val javaContext = ktToolContextToJava(context, dispatcher)
     val mutableArgs = args.toMutableMap()
-    val override = onIo { plugin.beforeToolCallback(javaTool, mutableArgs, javaContext) }
+    val override = onDispatcher { plugin.beforeToolCallback(javaTool, mutableArgs, javaContext) }
     reconcileActionsToKt(javaContext.actions(), context.actions)
     return if (override != null) CallbackChoice.Break(override)
     else CallbackChoice.Continue(mutableArgs)
@@ -194,8 +197,8 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     result: Map<String, Any?>,
   ): Map<String, Any?> {
     val javaTool = ktToolAsJava(tool)
-    val javaContext = ktToolContextToJava(context)
-    val override = onIo { plugin.afterToolCallback(javaTool, args, javaContext, result) }
+    val javaContext = ktToolContextToJava(context, dispatcher)
+    val override = onDispatcher { plugin.afterToolCallback(javaTool, args, javaContext, result) }
     reconcileActionsToKt(javaContext.actions(), context.actions)
     return override ?: result
   }
@@ -207,8 +210,8 @@ internal class JavaPluginToKt(internal val plugin: JavaPlugin) : KtPlugin {
     error: Throwable,
   ): CallbackChoice<Unit, Map<String, Any?>> {
     val javaTool = ktToolAsJava(tool)
-    val javaContext = ktToolContextToJava(context)
-    val fallback = onIo { plugin.onToolErrorCallback(javaTool, args, javaContext, error) }
+    val javaContext = ktToolContextToJava(context, dispatcher)
+    val fallback = onDispatcher { plugin.onToolErrorCallback(javaTool, args, javaContext, error) }
     reconcileActionsToKt(javaContext.actions(), context.actions)
     return if (fallback != null) CallbackChoice.Break(fallback) else CallbackChoice.Continue(Unit)
   }

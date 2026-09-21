@@ -25,7 +25,6 @@ import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.SessionService as KtSessionService
 import com.google.adk.sessions.BaseSessionService as JavaBaseSessionService
 import com.google.adk.sessions.GetSessionConfig as JavaGetSessionConfig
-import com.google.adk.tokt.InteropDispatcher
 import com.google.adk.tokt.codecs.EventCodec
 import com.google.adk.tokt.codecs.SessionCodec
 import com.google.adk.tokt.codecs.ktSessionToJava
@@ -33,6 +32,7 @@ import com.google.adk.tokt.codecs.sessionId
 import java.util.Optional
 import kotlin.time.toJavaInstant
 import kotlin.time.toKotlinInstant
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.rx3.await
 import kotlinx.coroutines.rx3.awaitSingleOrNull
 import kotlinx.coroutines.withContext
@@ -46,20 +46,22 @@ import kotlinx.coroutines.withContext
  * `appendEvent` persists through the Java service (keyed by appName/userId/id) and then keeps the
  * in-memory Kotlin [session] the runner holds in sync via the default implementation.
  */
-internal class JavaSessionServiceToKt(internal val service: JavaBaseSessionService) :
-  KtSessionService {
+internal class JavaSessionServiceToKt(
+  internal val service: JavaBaseSessionService,
+  private val dispatcher: CoroutineDispatcher,
+) : KtSessionService {
 
-  // All Java-service calls are awaited on InteropDispatcher: a user's Java service (in-memory,
-  // Vertex, custom) may be blocking-on-subscribe, so it must not run on the coroutine driving the
-  // agent loop.
+  // All Java-service calls are awaited on dispatcher: a user's Java service (in-memory, Vertex,
+  // custom) may be blocking-on-subscribe, so it must not run on the coroutine driving the agent
+  // loop.
 
   override suspend fun createSession(key: SessionKey, state: Map<String, Any>?): KtSession =
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       SessionCodec.fromJava(service.createSession(key.appName, key.userId, state, key.id).await())
     }
 
   override suspend fun getSession(key: SessionKey, config: KtGetSessionConfig?): KtSession? =
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       service
         .getSession(key.appName, key.userId, sessionId(key), Optional.ofNullable(config?.toJava()))
         .awaitSingleOrNull()
@@ -67,7 +69,7 @@ internal class JavaSessionServiceToKt(internal val service: JavaBaseSessionServi
     }
 
   override suspend fun listSessions(appName: String, userId: String): KtListSessionsResponse =
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       KtListSessionsResponse(
         sessions =
           service.listSessions(appName, userId).await().sessions().map { SessionCodec.fromJava(it) }
@@ -75,11 +77,11 @@ internal class JavaSessionServiceToKt(internal val service: JavaBaseSessionServi
     }
 
   override suspend fun closeSession(session: KtSession) {
-    withContext(InteropDispatcher) { service.closeSession(ktSessionToJava(session)).await() }
+    withContext(dispatcher) { service.closeSession(ktSessionToJava(session)).await() }
   }
 
   override suspend fun deleteSession(key: SessionKey) {
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       service.deleteSession(key.appName, key.userId, sessionId(key)).await()
     }
   }
@@ -88,7 +90,7 @@ internal class JavaSessionServiceToKt(internal val service: JavaBaseSessionServi
     // A well-behaved Java service always returns a response; tolerate a null Single/response (e.g.
     // an unstubbed test double) as "no events" rather than crashing the Kotlin run.
     val response =
-      withContext(InteropDispatcher) {
+      withContext(dispatcher) {
         service.listEvents(key.appName, key.userId, sessionId(key))?.await()
       }
     return KtListEventsResponse(
@@ -101,9 +103,7 @@ internal class JavaSessionServiceToKt(internal val service: JavaBaseSessionServi
     // Persist through the Java service first: the converted Java session carries the prior events,
     // so the service appends and persists this event (keyed by appName/userId/id).
     val javaSession = ktSessionToJava(session)
-    withContext(InteropDispatcher) {
-      service.appendEvent(javaSession, EventCodec.toJava(event)).await()
-    }
+    withContext(dispatcher) { service.appendEvent(javaSession, EventCodec.toJava(event)).await() }
     // Keep the in-memory Kotlin session the runner holds in sync (state delta + event list); this
     // also advances lastUpdateTime to the event timestamp.
     val appended = super.appendEvent(session, event)

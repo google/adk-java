@@ -38,6 +38,7 @@ import com.google.genai.types.Content as GenaiContent
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
 import java.util.Optional
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.rx3.asFlowable
 
@@ -50,20 +51,22 @@ import kotlinx.coroutines.rx3.asFlowable
  * bridged, so [runLive] returns a failed stream. [agent], [sessionService], [memoryService],
  * [artifactService] and [pluginManager] read the Kotlin runner's own components back through the
  * reverse adapters ([memoryService] / [artifactService] return `null` when absent; [pluginManager]
- * is read-only and throws on registration).
+ * is read-only and throws on registration). The reverse service adapters bridge Java RxJava calls
+ * onto the Kotlin engine via `dispatcher`.
  */
 // Subclassing Runner via its @Deprecated 8-arg super-constructor is intended here.
 @Suppress("DEPRECATION")
-internal class KtRunnerToJava(private val ktRunner: KtRunner) :
+internal class KtRunnerToJava(private val ktRunner: KtRunner, dispatcher: CoroutineDispatcher) :
   JavaRunner(
     // A Java view of the Kotlin runner's agent so agent() reads back; never run (see runAsync).
     ktAgentAsJava(ktRunner.agent),
     ktRunner.appName,
     // Non-null for the Java Runner field; artifactService() returns this bridge when present and
     // null when the Kotlin runner has none (the run then uses no artifact service).
-    ktRunner.artifactService?.let { ktArtifactServiceAsJava(it) } ?: JavaInMemoryArtifactService(),
-    ktSessionServiceAsJava(ktRunner.sessionService),
-    ktRunner.memoryService?.let { ktMemoryServiceAsJava(it) },
+    ktRunner.artifactService?.let { ktArtifactServiceAsJava(it, dispatcher) }
+      ?: JavaInMemoryArtifactService(),
+    ktSessionServiceAsJava(ktRunner.sessionService, dispatcher),
+    ktRunner.memoryService?.let { ktMemoryServiceAsJava(it, dispatcher) },
     emptyList(),
     null,
     null,

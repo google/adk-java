@@ -20,9 +20,9 @@ import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
 import com.google.adk.models.BaseLlm as JavaBaseLlm
-import com.google.adk.tokt.InteropDispatcher
 import com.google.adk.tokt.codecs.LlmRequestCodec
 import com.google.adk.tokt.codecs.LlmResponseCodec
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -37,15 +37,18 @@ import kotlinx.coroutines.reactive.asFlow
  *
  * The Kotlin `LlmRequest` is converted to a Java `LlmRequest` ([LlmRequestCodec]), the Java model's
  * RxJava `Flowable<LlmResponse>` is consumed as a coroutine [Flow] (via
- * kotlinx-coroutines-reactive) and each response is converted back ([LlmResponseCodec]).
+ * kotlinx-coroutines-reactive) on `dispatcher` and each response is converted back
+ * ([LlmResponseCodec]).
  */
-internal class JavaModelToKt(private val javaLlm: JavaBaseLlm) : Model {
+internal class JavaModelToKt(
+  private val javaLlm: JavaBaseLlm,
+  private val dispatcher: CoroutineDispatcher,
+) : Model {
 
   override val name: String = javaLlm.model()
 
-  // Deferred into `flow {}` and dispatched on IO: the Java model's request build + generation run
-  // off the engine dispatcher (RxJava is synchronous by default), and a synchronous throw is routed
-  // through the Flow's error channel rather than escaping at collection time.
+  // Deferred into `flow {}` and run on dispatcher so the Java model's synchronous RxJava generation
+  // (and any synchronous throw, routed through the Flow's error channel) stays off the engine loop.
   override fun generateContent(request: LlmRequest, stream: Boolean): Flow<LlmResponse> =
     flow {
         emitAll(
@@ -54,5 +57,5 @@ internal class JavaModelToKt(private val javaLlm: JavaBaseLlm) : Model {
           }
         )
       }
-      .flowOn(InteropDispatcher)
+      .flowOn(dispatcher)
 }

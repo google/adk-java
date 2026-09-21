@@ -40,7 +40,10 @@ import com.google.adk.kt.models.LlmResponse as KtLlmResponse
 import com.google.adk.kt.runners.InMemoryRunner as KtInMemoryRunner
 import com.google.adk.kt.runners.Runner as KtRunner
 import com.google.adk.kt.sessions.GetSessionConfig as KtGetSessionConfig
+import com.google.adk.kt.sessions.InMemorySessionService as KtInMemorySessionService
+import com.google.adk.kt.sessions.Session as KtSession
 import com.google.adk.kt.sessions.SessionKey as KtSessionKey
+import com.google.adk.kt.sessions.SessionService as KtSessionService
 import com.google.adk.kt.sessions.State as KtState
 import com.google.adk.kt.tools.BaseTool as KtBaseTool
 import com.google.adk.kt.tools.ToolContext as KtToolContext
@@ -137,6 +140,7 @@ import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.jvm.optionals.getOrNull
@@ -151,6 +155,7 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
@@ -708,6 +713,125 @@ class KtRunnerInteropTest {
 
     // Empty collections convert to empty.
     assertTrue(JavaAdkToKt.asKtTools(emptyList()).isEmpty())
+  }
+
+  @Test
+  fun javaAdkToKt_customDispatcher_runsAdaptedComponentsOnIt() = runBlocking {
+    // A custom dispatcher passed to the forward entry points must actually carry the adapted Java
+    // component's (possibly blocking) calls, rather than the default Dispatchers.IO.
+    val dispatcher =
+      Executors.newSingleThreadExecutor { r -> Thread(r, "tokt-custom-dispatcher") }
+        .asCoroutineDispatcher()
+    try {
+      val modelThread = AtomicReference<String>()
+      val toolThread = AtomicReference<String>()
+      val model =
+        object : JavaBaseLlm("java-model") {
+          private var step = 0
+
+          override fun generateContent(
+            llmRequest: JavaLlmRequest,
+            stream: Boolean,
+          ): Flowable<JavaLlmResponse> {
+            modelThread.set(Thread.currentThread().name)
+            val content =
+              if (step++ == 0) modelFunctionCall("java_echo", mapOf("text" to "hi"))
+              else modelText("done")
+            return Flowable.just(JavaLlmResponse.builder().content(content).build())
+          }
+
+          override fun connect(llmRequest: JavaLlmRequest): JavaBaseLlmConnection =
+            throw UnsupportedOperationException()
+        }
+      val tool =
+        object : JavaBaseTool("java_echo", "echoes") {
+          override fun declaration(): Optional<GenaiFunctionDeclaration> =
+            Optional.of(GenaiFunctionDeclaration.builder().name("java_echo").build())
+
+          @JvmSuppressWildcards
+          override fun runAsync(
+            args: Map<String, Any>,
+            toolContext: JavaToolContext,
+          ): Single<Map<String, Any>> {
+            toolThread.set(Thread.currentThread().name)
+            return Single.just(mapOf("echoed" to (args["text"] ?: "")))
+          }
+        }
+      val agent =
+        KtLlmAgent(
+          name = "a",
+          model = JavaAdkToKt.asKtModel(model, dispatcher),
+          tools = listOf(JavaAdkToKt.asKtTool(tool, dispatcher)),
+        )
+      val runner = KtInMemoryRunner(agent, appName = "app")
+
+      runner.turn()
+
+      // Coroutines may append " @coroutine#N" to the thread name, so match the pool thread's
+      // prefix.
+      assertTrue(
+        modelThread.get().orEmpty().startsWith("tokt-custom-dispatcher"),
+        "the adapted Java model should run on the supplied dispatcher, not Dispatchers.IO; ran on " +
+          modelThread.get(),
+      )
+      assertTrue(
+        toolThread.get().orEmpty().startsWith("tokt-custom-dispatcher"),
+        "the adapted Java tool should run on the supplied dispatcher, not Dispatchers.IO; ran on " +
+          toolThread.get(),
+      )
+    } finally {
+      dispatcher.close()
+    }
+  }
+
+  @Test
+  fun asJavaRunner_customDispatcher_runsReverseServiceAdaptersOnIt() {
+    // The reverse direction (asJavaRunner) bridges Java RxJava calls back onto the Kotlin engine; a
+    // reverse service adapter must run on the supplied dispatcher, not the default Dispatchers.IO.
+    val dispatcher =
+      Executors.newSingleThreadExecutor { r -> Thread(r, "tokt-reverse-dispatcher") }
+        .asCoroutineDispatcher()
+    try {
+      val sessionThread = AtomicReference<String>()
+      // A native Kotlin session service that records the thread its getSession runs on.
+      val recording =
+        object : KtSessionService by KtInMemorySessionService() {
+          override suspend fun getSession(
+            key: KtSessionKey,
+            config: KtGetSessionConfig?,
+          ): KtSession? {
+            sessionThread.set(Thread.currentThread().name)
+            return null
+          }
+        }
+      val ktRunner =
+        KtInMemoryRunner(
+          app =
+            KtApp(
+              appName = "app",
+              rootAgent =
+                KtLlmAgent(
+                  name = "a",
+                  model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList())),
+                ),
+            ),
+          sessionService = recording,
+        )
+      val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner, dispatcher)
+
+      // Route through the Java-facing reverse session-service adapter (KtSessionServiceToJava
+      // .getSession = rxMaybe(dispatcher) { service.getSession(...) }).
+      val unused =
+        javaRunner.sessionService().getSession("app", "u", "s", Optional.empty()).blockingGet()
+
+      assertTrue(
+        sessionThread.get().orEmpty().startsWith("tokt-reverse-dispatcher"),
+        "the reverse session-service adapter should run on the supplied dispatcher; ran on " +
+          sessionThread.get(),
+      )
+    } finally {
+      dispatcher.close()
+    }
   }
 
   @Test

@@ -20,9 +20,9 @@ import com.google.adk.artifacts.BaseArtifactService as JavaBaseArtifactService
 import com.google.adk.kt.artifacts.ArtifactService as KtArtifactService
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.types.Part as KtPart
-import com.google.adk.tokt.InteropDispatcher
 import com.google.adk.tokt.codecs.PartCodec
 import com.google.adk.tokt.codecs.sessionId
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.rx3.await
 import kotlinx.coroutines.rx3.awaitSingleOrNull
 import kotlinx.coroutines.withContext
@@ -31,17 +31,19 @@ import kotlinx.coroutines.withContext
  * A Kotlin [KtArtifactService] backed by an ADK Java [JavaBaseArtifactService] - the reverse of
  * [KtArtifactServiceToJava] - so the Kotlin runner can drive a Java app's own artifact service when
  * a Java `Runner` runs on the Kotlin engine. Parts are converted with [PartCodec]. All Java-service
- * calls run on InteropDispatcher since a user's artifact service may block on subscribe.
+ * calls run on `dispatcher` since a user's artifact service may block on subscribe.
  */
-internal class JavaArtifactServiceToKt(internal val service: JavaBaseArtifactService) :
-  KtArtifactService {
+internal class JavaArtifactServiceToKt(
+  internal val service: JavaBaseArtifactService,
+  private val dispatcher: CoroutineDispatcher,
+) : KtArtifactService {
 
   override suspend fun saveArtifact(
     sessionKey: SessionKey,
     filename: String,
     artifact: KtPart,
   ): Int =
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       service
         .saveArtifact(
           sessionKey.appName,
@@ -58,7 +60,7 @@ internal class JavaArtifactServiceToKt(internal val service: JavaBaseArtifactSer
     filename: String,
     artifact: KtPart,
   ): KtPart =
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       PartCodec.fromJavaOrThrow(
         service
           .saveAndReloadArtifact(
@@ -77,7 +79,7 @@ internal class JavaArtifactServiceToKt(internal val service: JavaBaseArtifactSer
     filename: String,
     version: Int?,
   ): KtPart? =
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       service
         .loadArtifact(
           sessionKey.appName,
@@ -93,7 +95,7 @@ internal class JavaArtifactServiceToKt(internal val service: JavaBaseArtifactSer
     }
 
   override suspend fun listArtifactKeys(sessionKey: SessionKey): List<String> =
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       service
         .listArtifactKeys(sessionKey.appName, sessionKey.userId, sessionId(sessionKey))
         .await()
@@ -101,7 +103,7 @@ internal class JavaArtifactServiceToKt(internal val service: JavaBaseArtifactSer
     }
 
   override suspend fun deleteArtifact(sessionKey: SessionKey, filename: String) {
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       service
         .deleteArtifact(sessionKey.appName, sessionKey.userId, sessionId(sessionKey), filename)
         .await()
@@ -109,7 +111,7 @@ internal class JavaArtifactServiceToKt(internal val service: JavaBaseArtifactSer
   }
 
   override suspend fun listVersions(sessionKey: SessionKey, filename: String): List<Int> =
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       service
         .listVersions(sessionKey.appName, sessionKey.userId, sessionId(sessionKey), filename)
         .await()

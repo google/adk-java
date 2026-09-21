@@ -20,13 +20,13 @@ import com.google.adk.artifacts.BaseArtifactService as JavaBaseArtifactService
 import com.google.adk.artifacts.ListArtifactsResponse as JavaListArtifactsResponse
 import com.google.adk.kt.artifacts.ArtifactService as KtArtifactService
 import com.google.adk.kt.sessions.SessionKey
-import com.google.adk.tokt.InteropDispatcher
 import com.google.adk.tokt.codecs.PartCodec
 import com.google.common.collect.ImmutableList
 import com.google.genai.types.Part as GenaiPart
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Single
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.rx3.rxCompletable
 import kotlinx.coroutines.rx3.rxMaybe
 import kotlinx.coroutines.rx3.rxSingle
@@ -34,10 +34,12 @@ import kotlinx.coroutines.rx3.rxSingle
 /**
  * A Java [JavaBaseArtifactService] backed by a Kotlin [KtArtifactService] - the reverse of the Java
  * service wrappers - so a Java agent running under the Kotlin runner sees a Java artifact service
- * backed by the Kotlin service. Artifacts are converted with [PartCodec].
+ * backed by the Kotlin service, bridged on `dispatcher`. Artifacts are converted with [PartCodec].
  */
-internal class KtArtifactServiceToJava(internal val service: KtArtifactService) :
-  JavaBaseArtifactService {
+internal class KtArtifactServiceToJava(
+  internal val service: KtArtifactService,
+  private val dispatcher: CoroutineDispatcher,
+) : JavaBaseArtifactService {
 
   override fun saveArtifact(
     appName: String,
@@ -46,7 +48,7 @@ internal class KtArtifactServiceToJava(internal val service: KtArtifactService) 
     filename: String,
     artifact: GenaiPart,
   ): Single<Int> =
-    rxSingle(InteropDispatcher) {
+    rxSingle(dispatcher) {
       service.saveArtifact(
         SessionKey(appName, userId, sessionId),
         filename,
@@ -63,7 +65,7 @@ internal class KtArtifactServiceToJava(internal val service: KtArtifactService) 
     filename: String,
     artifact: GenaiPart,
   ): Single<GenaiPart> =
-    rxSingle(InteropDispatcher) {
+    rxSingle(dispatcher) {
       PartCodec.toJavaOrThrow(
         service.saveAndReloadArtifact(
           SessionKey(appName, userId, sessionId),
@@ -80,7 +82,7 @@ internal class KtArtifactServiceToJava(internal val service: KtArtifactService) 
     filename: String,
     version: Int?,
   ): Maybe<GenaiPart> =
-    rxMaybe(InteropDispatcher) {
+    rxMaybe(dispatcher) {
       // toJavaOrThrow, not toJava: an artifact that exists but cannot be converted must be
       // rejected, not reported as absent.
       service.loadArtifact(SessionKey(appName, userId, sessionId), filename, version)?.let {
@@ -96,7 +98,7 @@ internal class KtArtifactServiceToJava(internal val service: KtArtifactService) 
     userId: String,
     sessionId: String,
   ): Single<JavaListArtifactsResponse> =
-    rxSingle(InteropDispatcher) {
+    rxSingle(dispatcher) {
       JavaListArtifactsResponse.builder()
         .filenames(
           ImmutableList.copyOf(service.listArtifactKeys(SessionKey(appName, userId, sessionId)))
@@ -110,7 +112,7 @@ internal class KtArtifactServiceToJava(internal val service: KtArtifactService) 
     sessionId: String,
     filename: String,
   ): Completable =
-    rxCompletable(InteropDispatcher) {
+    rxCompletable(dispatcher) {
       service.deleteArtifact(SessionKey(appName, userId, sessionId), filename)
     }
 
@@ -121,7 +123,7 @@ internal class KtArtifactServiceToJava(internal val service: KtArtifactService) 
     sessionId: String,
     filename: String,
   ): Single<ImmutableList<Int>> =
-    rxSingle(InteropDispatcher) {
+    rxSingle(dispatcher) {
       ImmutableList.copyOf(service.listVersions(SessionKey(appName, userId, sessionId), filename))
     }
 }

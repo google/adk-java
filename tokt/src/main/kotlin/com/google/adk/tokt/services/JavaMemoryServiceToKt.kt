@@ -20,23 +20,25 @@ import com.google.adk.kt.memory.MemoryService as KtMemoryService
 import com.google.adk.kt.memory.SearchMemoryResponse as KtSearchMemoryResponse
 import com.google.adk.kt.sessions.Session as KtSession
 import com.google.adk.memory.BaseMemoryService as JavaBaseMemoryService
-import com.google.adk.tokt.InteropDispatcher
 import com.google.adk.tokt.codecs.MemoryEntryCodec
 import com.google.adk.tokt.codecs.ktSessionToJava
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.rx3.await
 import kotlinx.coroutines.withContext
 
 /**
  * A Kotlin [KtMemoryService] backed by an ADK Java [JavaBaseMemoryService] - the reverse of
  * [KtMemoryServiceToJava] - so the Kotlin runner can drive a Java app's own memory service when a
- * Java `Runner` runs on the Kotlin engine.
+ * Java `Runner` runs on the Kotlin engine. All Java-service calls run on `dispatcher`.
  */
-internal class JavaMemoryServiceToKt(internal val service: JavaBaseMemoryService) :
-  KtMemoryService {
+internal class JavaMemoryServiceToKt(
+  internal val service: JavaBaseMemoryService,
+  private val dispatcher: CoroutineDispatcher,
+) : KtMemoryService {
 
   override suspend fun addSessionToMemory(session: KtSession) {
-    // On InteropDispatcher: a user's Java memory service may block on subscribe.
-    withContext(InteropDispatcher) { service.addSessionToMemory(ktSessionToJava(session)).await() }
+    // On dispatcher: a user's Java memory service may block on subscribe.
+    withContext(dispatcher) { service.addSessionToMemory(ktSessionToJava(session)).await() }
   }
 
   override suspend fun searchMemory(
@@ -44,7 +46,7 @@ internal class JavaMemoryServiceToKt(internal val service: JavaBaseMemoryService
     userId: String,
     query: String,
   ): KtSearchMemoryResponse =
-    withContext(InteropDispatcher) {
+    withContext(dispatcher) {
       MemoryEntryCodec.fromJava(service.searchMemory(appName, userId, query).await())
     }
 }

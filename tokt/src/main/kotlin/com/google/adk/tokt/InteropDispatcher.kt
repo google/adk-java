@@ -20,10 +20,10 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 
 /**
- * The dispatcher every crossing in this module hops to.
+ * The default dispatcher a crossing in this module hops to when the caller supplies none.
  *
- * ADK Java's SPI is RxJava, which is synchronous unless the implementation says otherwise, so a
- * user-authored Java tool, plugin or service may block. Running it on the engine's dispatcher would
- * stall the coroutine driving the agent loop, so each adapter moves the call here.
+ * ADK Java's SPI is synchronous RxJava, so a user-authored Java tool, plugin or service may block;
+ * running it on the coroutine driving the agent loop would stall it, so each adapter moves the call
+ * off. The [JavaAdkToKt] and [KotlinAdkToJava] entry points accept a `dispatcher` to override this.
  */
 internal val InteropDispatcher: CoroutineDispatcher = Dispatchers.IO

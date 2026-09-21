@@ -30,6 +30,7 @@ import com.google.adk.tokt.codecs.ktSessionToJavaLive
 import com.google.adk.tokt.services.ktArtifactServiceAsJava
 import com.google.adk.tokt.services.ktMemoryServiceAsJava
 import java.util.Optional
+import kotlinx.coroutines.CoroutineDispatcher
 
 /**
  * A Java [JavaInvocationContext] backed by a Kotlin [KtCallbackContext]'s readonly view. The
@@ -40,7 +41,8 @@ import java.util.Optional
 private class KtCallbackContextToJavaView(
   private val context: KtCallbackContext,
   private val agent: JavaBaseAgent,
-) : JavaInvocationContext(callbackContextJavaBuilder(context)) {
+  dispatcher: CoroutineDispatcher,
+) : JavaInvocationContext(callbackContextJavaBuilder(context, dispatcher)) {
 
   override fun invocationId(): String = context.invocationId
 
@@ -80,12 +82,16 @@ private class KtCallbackContextToJavaView(
 
 /**
  * Builds the base builder for [KtCallbackContextToJavaView], wiring the artifact / memory services
- * (unwrapped where possible) and user content the readonly [KtCallbackContext] exposes. A Kotlin
- * callback context does not expose its session service, so the view throws for it rather than
- * leaving the field null: this builder bypasses `build()`, so `validate()` never runs and the unset
- * field would otherwise surface as an NPE at the plugin's own call site.
+ * (unwrapped where possible, bridged on `dispatcher`) and user content the readonly
+ * [KtCallbackContext] exposes. A Kotlin callback context does not expose its session service, so
+ * the view throws for it rather than leaving the field null: this builder bypasses `build()`, so
+ * `validate()` never runs and the unset field would otherwise surface as an NPE at the plugin's own
+ * call site.
  */
-private fun callbackContextJavaBuilder(context: KtCallbackContext): JavaInvocationContext.Builder {
+private fun callbackContextJavaBuilder(
+  context: KtCallbackContext,
+  dispatcher: CoroutineDispatcher,
+): JavaInvocationContext.Builder {
   val builder =
     JavaInvocationContext.builder()
       .invocationId(context.invocationId)
@@ -93,8 +99,8 @@ private fun callbackContextJavaBuilder(context: KtCallbackContext): JavaInvocati
       .session(ktSessionToJavaLive(context.session))
   // Carry the run's RunConfig so a callback reading it does not see a default.
   context.runConfig?.let { builder.runConfig(RunConfigCodec.toJava(it)) }
-  context.artifactService?.let { builder.artifactService(ktArtifactServiceAsJava(it)) }
-  context.memoryService?.let { builder.memoryService(ktMemoryServiceAsJava(it)) }
+  context.artifactService?.let { builder.artifactService(ktArtifactServiceAsJava(it, dispatcher)) }
+  context.memoryService?.let { builder.memoryService(ktMemoryServiceAsJava(it, dispatcher)) }
   context.userContent?.let { builder.userContent(ContentCodec.toJava(it)) }
   return builder
 }
@@ -102,13 +108,15 @@ private fun callbackContextJavaBuilder(context: KtCallbackContext): JavaInvocati
 /**
  * Presents the Kotlin [context] as a Java [JavaCallbackContext] (reusing [KtEventActionsToJavaView]
  * so a callback's state / artifact deltas write straight through to the Kotlin context). [agent] is
- * the Java agent the callback belongs to, so a callback sees the correct `context.agent()`.
+ * the Java agent the callback belongs to, so a callback sees the correct `context.agent()`. Bridged
+ * service calls run on `dispatcher`.
  */
 internal fun ktCallbackContextToJava(
   context: KtCallbackContext,
   agent: JavaBaseAgent,
+  dispatcher: CoroutineDispatcher,
 ): JavaCallbackContext =
   JavaCallbackContext(
-    KtCallbackContextToJavaView(context, agent),
+    KtCallbackContextToJavaView(context, agent, dispatcher),
     KtEventActionsToJavaView(context.eventActions),
   )

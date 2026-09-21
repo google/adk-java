@@ -20,22 +20,25 @@ import com.google.adk.kt.models.LlmRequest as KtLlmRequest
 import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionDeclaration
-import com.google.adk.tokt.InteropDispatcher
 import com.google.adk.tokt.codecs.FunctionDeclarationCodec
 import com.google.adk.tokt.context.ktToolContextToJava
 import com.google.adk.tools.BaseTool as JavaBaseTool
 import kotlin.jvm.optionals.getOrNull
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.reactive.awaitFirstOrNull
 import kotlinx.coroutines.reactive.awaitSingle
 import kotlinx.coroutines.withContext
 
 /**
  * Exposes a Java [JavaBaseTool] as a Kotlin [BaseTool] so the Kotlin engine can invoke it. [run]
- * awaits the tool's RxJava result off the engine dispatcher, with actions delegating live to the
- * Kotlin context. [processLlmRequest] re-applies a tool's request edits while preserving
- * Kotlin-only fields (model, toolsDict).
+ * awaits the tool's RxJava result off the engine dispatcher (`dispatcher`), with actions delegating
+ * live to the Kotlin context. [processLlmRequest] re-applies a tool's request edits while
+ * preserving Kotlin-only fields (model, toolsDict).
  */
-internal class JavaToolToKt(internal val javaTool: JavaBaseTool) :
+internal class JavaToolToKt(
+  internal val javaTool: JavaBaseTool,
+  private val dispatcher: CoroutineDispatcher,
+) :
   BaseTool(
     javaTool.name(),
     javaTool.description(),
@@ -47,13 +50,11 @@ internal class JavaToolToKt(internal val javaTool: JavaBaseTool) :
     javaTool.declaration().map { FunctionDeclarationCodec.fromJava(it) }.getOrNull()
 
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
-    val javaContext = ktToolContextToJava(context)
+    val javaContext = ktToolContextToJava(context, dispatcher)
     // Run off the engine dispatcher so synchronous RxJava or blocking tool I/O cannot stall the
     // agent loop; the live actions view is backed by concurrent maps, so another thread is safe.
     val result =
-      withContext(InteropDispatcher) {
-        javaTool.runAsync(args, javaContext).toFlowable().awaitSingle()
-      }
+      withContext(dispatcher) { javaTool.runAsync(args, javaContext).toFlowable().awaitSingle() }
     // Carry back what the live view cannot (a setActions replacement, confirmations, skip-summary).
     reconcileActionsToKt(javaContext.actions(), context.actions)
     return result
@@ -63,9 +64,9 @@ internal class JavaToolToKt(internal val javaTool: JavaBaseTool) :
     toolContext: ToolContext,
     llmRequest: KtLlmRequest,
   ): KtLlmRequest {
-    val javaToolContext = ktToolContextToJava(toolContext)
+    val javaToolContext = ktToolContextToJava(toolContext, dispatcher)
     return bridgeProcessLlmRequest(llmRequest) { builder ->
-      withContext(InteropDispatcher) {
+      withContext(dispatcher) {
         javaTool.processLlmRequest(builder, javaToolContext).toFlowable<Any>().awaitFirstOrNull()
       }
     }

@@ -20,31 +20,31 @@ import com.google.adk.kt.memory.MemoryService as KtMemoryService
 import com.google.adk.memory.BaseMemoryService as JavaBaseMemoryService
 import com.google.adk.memory.SearchMemoryResponse as JavaSearchMemoryResponse
 import com.google.adk.sessions.Session as JavaSession
-import com.google.adk.tokt.InteropDispatcher
 import com.google.adk.tokt.codecs.MemoryEntryCodec
 import com.google.adk.tokt.codecs.SessionCodec
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Single
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.rx3.rxCompletable
 import kotlinx.coroutines.rx3.rxSingle
 
 /**
  * A Java [JavaBaseMemoryService] backed by a Kotlin [KtMemoryService] - the reverse of the Java
  * service wrappers - so a Java agent running under the Kotlin runner sees a Java memory service
- * backed by the Kotlin service.
+ * backed by the Kotlin service, bridged on `dispatcher`.
  */
-internal class KtMemoryServiceToJava(internal val service: KtMemoryService) :
-  JavaBaseMemoryService {
+internal class KtMemoryServiceToJava(
+  internal val service: KtMemoryService,
+  private val dispatcher: CoroutineDispatcher,
+) : JavaBaseMemoryService {
 
   override fun addSessionToMemory(session: JavaSession): Completable =
-    rxCompletable(InteropDispatcher) { service.addSessionToMemory(SessionCodec.fromJava(session)) }
+    rxCompletable(dispatcher) { service.addSessionToMemory(SessionCodec.fromJava(session)) }
 
   override fun searchMemory(
     appName: String,
     userId: String,
     query: String,
   ): Single<JavaSearchMemoryResponse> =
-    rxSingle(InteropDispatcher) {
-      MemoryEntryCodec.toJava(service.searchMemory(appName, userId, query))
-    }
+    rxSingle(dispatcher) { MemoryEntryCodec.toJava(service.searchMemory(appName, userId, query)) }
 }

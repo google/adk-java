@@ -37,6 +37,7 @@ import com.google.adk.tokt.services.javaMemoryServiceAsKt
 import com.google.adk.tokt.services.javaSessionServiceAsKt
 import com.google.adk.tools.BaseTool as JavaBaseTool
 import com.google.adk.tools.BaseToolset as JavaBaseToolset
+import kotlinx.coroutines.CoroutineDispatcher
 
 /**
  * Forward interop entry point: adapts ADK Java tools, toolsets, plugins, services, and models so
@@ -46,7 +47,11 @@ import com.google.adk.tools.BaseToolset as JavaBaseToolset
  * An adapted component behaves as it does on ADK Java. It sees the session as it currently stands,
  * including events and state written earlier in the same turn, and its state, artifact and
  * control-flow writes reach the engine. Blocking work is fine: calls are dispatched off the thread
- * driving the agent.
+ * driving the agent, onto the optional `dispatcher` (default `Dispatchers.IO`) each conversion
+ * accepts. That dispatcher must be able to run nested bridged calls concurrently -- a bridged tool
+ * or plugin that itself makes a blocking bridged call (e.g. one that blocks on a bridged service)
+ * holds its thread until that call returns, so a single-threaded or tightly bounded dispatcher can
+ * deadlock; the default `Dispatchers.IO` grows its pool and avoids this.
  *
  * A bridged plugin's error callbacks fire: `onRunErrorCallback` is notification-only -- the engine
  * re-raises the run's error to the caller afterwards regardless, so it cannot recover the run (it
@@ -65,59 +70,104 @@ import com.google.adk.tools.BaseToolset as JavaBaseToolset
  */
 object JavaAdkToKt {
 
-  /** Adapts an ADK Java tool. */
-  @JvmStatic fun asKtTool(javaTool: JavaBaseTool): KtBaseTool = JavaToolToKt(javaTool)
+  /** Adapts an ADK Java tool, hopping to `dispatcher` for its (possibly blocking) calls. */
+  @JvmStatic
+  @JvmOverloads
+  fun asKtTool(
+    javaTool: JavaBaseTool,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): KtBaseTool = JavaToolToKt(javaTool, dispatcher)
 
   /**
-   * Adapts a whole collection of ADK Java tools (e.g. an `LlmAgent`'s `tools`). Kept alongside
-   * [asKtTool] for Java callers, who would otherwise write `stream().map(...).toList()`.
+   * Adapts a whole collection of ADK Java tools (e.g. an `LlmAgent`'s `tools`), each on
+   * `dispatcher`. Kept alongside [asKtTool] for Java callers, who would otherwise write
+   * `stream().map(...).toList()`.
    */
   @JvmStatic
-  fun asKtTools(javaTools: List<JavaBaseTool>): List<KtBaseTool> = javaTools.map { asKtTool(it) }
+  @JvmOverloads
+  fun asKtTools(
+    javaTools: List<JavaBaseTool>,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): List<KtBaseTool> = javaTools.map { asKtTool(it, dispatcher) }
 
-  /** Adapts an ADK Java toolset. */
-  @JvmStatic fun asKtToolset(javaToolset: JavaBaseToolset): KtToolset = JavaToolsetToKt(javaToolset)
-
-  /** Adapts a whole collection of ADK Java toolsets. */
+  /** Adapts an ADK Java toolset, hopping to `dispatcher` for its (possibly blocking) calls. */
   @JvmStatic
-  fun asKtToolsets(javaToolsets: List<JavaBaseToolset>): List<KtToolset> = javaToolsets.map {
-    asKtToolset(it)
-  }
+  @JvmOverloads
+  fun asKtToolset(
+    javaToolset: JavaBaseToolset,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): KtToolset = JavaToolsetToKt(javaToolset, dispatcher)
 
-  /** Adapts an ADK Java plugin. */
-  @JvmStatic fun asKtPlugin(javaPlugin: JavaPlugin): KtPlugin = JavaPluginToKt(javaPlugin)
-
-  /** Adapts a whole collection of ADK Java plugins (e.g. a `Runner`'s `plugins`). */
+  /** Adapts a whole collection of ADK Java toolsets, each on `dispatcher`. */
   @JvmStatic
-  fun asKtPlugins(javaPlugins: List<JavaPlugin>): List<KtPlugin> = javaPlugins.map {
-    asKtPlugin(it)
-  }
+  @JvmOverloads
+  fun asKtToolsets(
+    javaToolsets: List<JavaBaseToolset>,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): List<KtToolset> = javaToolsets.map { asKtToolset(it, dispatcher) }
 
-  /** Adapts an ADK Java model so the Kotlin engine can call it. */
-  @JvmStatic fun asKtModel(javaLlm: JavaBaseLlm): KtModel = JavaModelToKt(javaLlm)
+  /** Adapts an ADK Java plugin, hopping to `dispatcher` for its (possibly blocking) callbacks. */
+  @JvmStatic
+  @JvmOverloads
+  fun asKtPlugin(
+    javaPlugin: JavaPlugin,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): KtPlugin = JavaPluginToKt(javaPlugin, dispatcher)
+
+  /**
+   * Adapts a whole collection of ADK Java plugins (e.g. a `Runner`'s `plugins`), each on
+   * `dispatcher`.
+   */
+  @JvmStatic
+  @JvmOverloads
+  fun asKtPlugins(
+    javaPlugins: List<JavaPlugin>,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): List<KtPlugin> = javaPlugins.map { asKtPlugin(it, dispatcher) }
+
+  /**
+   * Adapts an ADK Java model so the Kotlin engine can call it, running its generation on
+   * `dispatcher`.
+   */
+  @JvmStatic
+  @JvmOverloads
+  fun asKtModel(
+    javaLlm: JavaBaseLlm,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): KtModel = JavaModelToKt(javaLlm, dispatcher)
 
   /**
    * Adapts an ADK Java session service for the Kotlin engine, unwrapping a round-tripped Kotlin one
-   * rather than stacking a second adapter. A `rewindBeforeInvocationId` does not survive, since ADK
-   * Java has no such field.
+   * rather than stacking a second adapter. Its calls run on `dispatcher`. A
+   * `rewindBeforeInvocationId` does not survive, since ADK Java has no such field.
    */
   @JvmStatic
-  fun asKtSessionService(service: JavaSessionService): KtSessionService =
-    javaSessionServiceAsKt(service)
+  @JvmOverloads
+  fun asKtSessionService(
+    service: JavaSessionService,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): KtSessionService = javaSessionServiceAsKt(service, dispatcher)
 
   /**
    * Adapts an ADK Java artifact service for the Kotlin engine, unwrapping a round-tripped Kotlin
-   * one rather than stacking adapters. An empty or unmapped artifact part is rejected outright.
+   * one rather than stacking adapters. Its calls run on `dispatcher`. An empty or unmapped artifact
+   * part is rejected outright.
    */
   @JvmStatic
-  fun asKtArtifactService(service: JavaArtifactService): KtArtifactService =
-    javaArtifactServiceAsKt(service)
+  @JvmOverloads
+  fun asKtArtifactService(
+    service: JavaArtifactService,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): KtArtifactService = javaArtifactServiceAsKt(service, dispatcher)
 
   /**
    * Adapts an ADK Java memory service for the Kotlin engine, unwrapping a round-tripped Kotlin one
-   * rather than stacking adapters.
+   * rather than stacking adapters. Its calls run on `dispatcher`.
    */
   @JvmStatic
-  fun asKtMemoryService(service: JavaMemoryService): KtMemoryService =
-    javaMemoryServiceAsKt(service)
+  @JvmOverloads
+  fun asKtMemoryService(
+    service: JavaMemoryService,
+    dispatcher: CoroutineDispatcher = InteropDispatcher,
+  ): KtMemoryService = javaMemoryServiceAsKt(service, dispatcher)
 }

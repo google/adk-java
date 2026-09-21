@@ -25,7 +25,6 @@ import com.google.adk.sessions.GetSessionConfig as JavaGetSessionConfig
 import com.google.adk.sessions.ListEventsResponse as JavaListEventsResponse
 import com.google.adk.sessions.ListSessionsResponse as JavaListSessionsResponse
 import com.google.adk.sessions.Session as JavaSession
-import com.google.adk.tokt.InteropDispatcher
 import com.google.adk.tokt.codecs.EventCodec
 import com.google.adk.tokt.codecs.KtBackedEventsView
 import com.google.adk.tokt.codecs.SessionCodec
@@ -38,6 +37,7 @@ import java.util.concurrent.ConcurrentMap
 import kotlin.jvm.optionals.getOrNull
 import kotlin.time.toJavaInstant
 import kotlin.time.toKotlinInstant
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.rx3.rxCompletable
 import kotlinx.coroutines.rx3.rxMaybe
 import kotlinx.coroutines.rx3.rxSingle
@@ -45,10 +45,12 @@ import kotlinx.coroutines.rx3.rxSingle
 /**
  * A Java [JavaBaseSessionService] backed by a Kotlin [KtSessionService] (reverse of the Java
  * service wrappers): a Java agent running on the Kotlin runner sees a Java session service whose
- * operations run on the Kotlin service.
+ * operations run on the Kotlin service, bridged on `dispatcher`.
  */
-internal class KtSessionServiceToJava(internal val service: KtSessionService) :
-  JavaBaseSessionService {
+internal class KtSessionServiceToJava(
+  internal val service: KtSessionService,
+  private val dispatcher: CoroutineDispatcher,
+) : JavaBaseSessionService {
 
   @Deprecated("Deprecated in BaseSessionService")
   override fun createSession(
@@ -57,7 +59,7 @@ internal class KtSessionServiceToJava(internal val service: KtSessionService) :
     state: ConcurrentMap<String, Any>?,
     sessionId: String?,
   ): Single<JavaSession> =
-    rxSingle(InteropDispatcher) {
+    rxSingle(dispatcher) {
       ktSessionToJava(service.createSession(SessionKey(appName, userId, sessionId), state))
     }
 
@@ -67,14 +69,14 @@ internal class KtSessionServiceToJava(internal val service: KtSessionService) :
     sessionId: String,
     config: Optional<JavaGetSessionConfig>,
   ): Maybe<JavaSession> =
-    rxMaybe(InteropDispatcher) {
+    rxMaybe(dispatcher) {
       service
         .getSession(SessionKey(appName, userId, sessionId), config.getOrNull()?.toKotlin())
         ?.let { ktSessionToJava(it) }
     }
 
   override fun listSessions(appName: String, userId: String): Single<JavaListSessionsResponse> =
-    rxSingle(InteropDispatcher) {
+    rxSingle(dispatcher) {
       val response = service.listSessions(appName, userId)
       JavaListSessionsResponse.builder()
         .sessions(response.sessions.map { ktSessionToJava(it) })
@@ -82,19 +84,17 @@ internal class KtSessionServiceToJava(internal val service: KtSessionService) :
     }
 
   override fun closeSession(session: JavaSession): Completable =
-    rxCompletable(InteropDispatcher) { service.closeSession(SessionCodec.fromJava(session)) }
+    rxCompletable(dispatcher) { service.closeSession(SessionCodec.fromJava(session)) }
 
   override fun deleteSession(appName: String, userId: String, sessionId: String): Completable =
-    rxCompletable(InteropDispatcher) {
-      service.deleteSession(SessionKey(appName, userId, sessionId))
-    }
+    rxCompletable(dispatcher) { service.deleteSession(SessionKey(appName, userId, sessionId)) }
 
   override fun listEvents(
     appName: String,
     userId: String,
     sessionId: String,
   ): Single<JavaListEventsResponse> =
-    rxSingle(InteropDispatcher) {
+    rxSingle(dispatcher) {
       val response = service.listEvents(SessionKey(appName, userId, sessionId))
       val builder =
         JavaListEventsResponse.builder().events(response.events.map { EventCodec.toJava(it) })
@@ -108,7 +108,7 @@ internal class KtSessionServiceToJava(internal val service: KtSessionService) :
    * `Runner` keeps observing the appended state in place.
    */
   override fun appendEvent(session: JavaSession, event: JavaEvent): Single<JavaEvent> =
-    rxSingle(InteropDispatcher) {
+    rxSingle(dispatcher) {
       val key = SessionKey(session.appName(), session.userId(), session.id())
       service.appendEvent(SessionCodec.fromJava(session), EventCodec.fromJava(event))
       service.getSession(key)?.let { stored ->

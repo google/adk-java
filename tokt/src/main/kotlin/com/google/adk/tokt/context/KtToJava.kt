@@ -44,6 +44,7 @@ import com.google.genai.types.Content as GenaiContent
 import java.util.Collections
 import java.util.Optional
 import java.util.concurrent.ConcurrentMap
+import kotlinx.coroutines.CoroutineDispatcher
 
 /**
  * Kt -> Java context views used when the ADK Kotlin calls back into ADK Java code (a Java tool) or
@@ -119,10 +120,14 @@ internal fun javaAgentView(ic: KtInvocationContext): JavaBaseAgent =
 
 /**
  * Builds the base builder for [KtInvocationContextToJavaView], wiring the Kotlin services as Java
- * views (unwrapped to the original Java service where possible to avoid extra hops).
+ * views (unwrapped to the original Java service where possible to avoid extra hops). A wrapped
+ * service bridges its calls on `dispatcher`.
  */
 @OptIn(FrameworkInternalApi::class)
-private fun ktInvocationContextJavaBuilder(ic: KtInvocationContext): JavaInvocationContext.Builder {
+private fun ktInvocationContextJavaBuilder(
+  ic: KtInvocationContext,
+  dispatcher: CoroutineDispatcher,
+): JavaInvocationContext.Builder {
   val builder =
     JavaInvocationContext.builder()
       .invocationId(ic.invocationId)
@@ -132,9 +137,9 @@ private fun ktInvocationContextJavaBuilder(ic: KtInvocationContext): JavaInvocat
       .agent(javaAgentView(ic.agent, ic.frameworkData.callbackContextData))
   // Carry the run's RunConfig so a component does not fall back to a default streaming mode.
   ic.runConfig?.let { builder.runConfig(RunConfigCodec.toJava(it)) }
-  ic.sessionService?.let { builder.sessionService(ktSessionServiceAsJava(it)) }
-  ic.artifactService?.let { builder.artifactService(ktArtifactServiceAsJava(it)) }
-  ic.memoryService?.let { builder.memoryService(ktMemoryServiceAsJava(it)) }
+  ic.sessionService?.let { builder.sessionService(ktSessionServiceAsJava(it, dispatcher)) }
+  ic.artifactService?.let { builder.artifactService(ktArtifactServiceAsJava(it, dispatcher)) }
+  ic.memoryService?.let { builder.memoryService(ktMemoryServiceAsJava(it, dispatcher)) }
   // ReadonlyContext.userContent() delegates here, so tools and plugins read the turn's content.
   ic.userContent?.let { builder.userContent(ContentCodec.toJava(it)) }
   return builder
@@ -144,10 +149,12 @@ private fun ktInvocationContextJavaBuilder(ic: KtInvocationContext): JavaInvocat
  * A Java [JavaInvocationContext] backed live by a Kotlin [KtInvocationContext]: it subclasses the
  * Java type so casts keep working, and its accessors read and write through to the Kotlin context.
  * Tools and plugin run-level callbacks share it, so a Java component sees the same context wherever
- * it runs.
+ * it runs. Bridged service calls run on `dispatcher`.
  */
-internal class KtInvocationContextToJavaView(private val ic: KtInvocationContext) :
-  JavaInvocationContext(ktInvocationContextJavaBuilder(ic)) {
+internal class KtInvocationContextToJavaView(
+  private val ic: KtInvocationContext,
+  dispatcher: CoroutineDispatcher,
+) : JavaInvocationContext(ktInvocationContextJavaBuilder(ic, dispatcher)) {
 
   override fun invocationId(): String = ic.invocationId
 
@@ -175,11 +182,15 @@ internal class KtInvocationContextToJavaView(private val ic: KtInvocationContext
 
 /**
  * Converts a Kotlin [KtToolContext] to a Java [JavaToolContext]. The tool's side effects stay live
- * because the invocation context and actions delegate to the Kotlin context by reference.
+ * because the invocation context and actions delegate to the Kotlin context by reference. Bridged
+ * service calls run on `dispatcher`.
  */
-internal fun ktToolContextToJava(context: KtToolContext): JavaToolContext {
+internal fun ktToolContextToJava(
+  context: KtToolContext,
+  dispatcher: CoroutineDispatcher,
+): JavaToolContext {
   val builder =
-    JavaToolContext.builder(KtInvocationContextToJavaView(context.invocationContext))
+    JavaToolContext.builder(KtInvocationContextToJavaView(context.invocationContext, dispatcher))
       .actions(KtEventActionsToJavaView(context.actions))
       .functionCallId(context.functionCallId)
       .eventId(context.eventId)
