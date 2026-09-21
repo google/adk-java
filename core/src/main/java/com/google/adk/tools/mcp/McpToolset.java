@@ -62,6 +62,18 @@ public class McpToolset implements BaseToolset {
   protected static final Class<? extends McpToolsetConfig> CONFIG_TYPE = McpToolsetConfig.class;
 
   /**
+   * Environment variable that opts an operator in to launching local MCP servers declared in an
+   * agent config. Any value other than {@code 1} or {@code true} leaves the rejection in place.
+   */
+  private static final String ALLOW_CONFIG_STDIO_ENV_VAR = "ADK_ALLOW_CONFIG_STDIO_MCP_SERVERS";
+
+  /**
+   * Programmatic override for {@link #ALLOW_CONFIG_STDIO_ENV_VAR}. {@code null} defers to the
+   * environment variable; a non-null value wins over it.
+   */
+  private static volatile @Nullable Boolean allowConfigStdioServers;
+
+  /**
    * Initializes the McpToolset with SSE server parameters.
    *
    * @param connectionParams The SSE connection parameters to the MCP server.
@@ -416,6 +428,19 @@ public class McpToolset implements BaseToolset {
                 + " for McpToolset");
       }
 
+      if ((mcpToolsetConfig.stdioServerParams() != null
+              || mcpToolsetConfig.stdioConnectionParams() != null)
+          && !configStdioServersAllowed()) {
+        throw new ConfigurationException(
+            "Refusing to start a local MCP server declared in an agent config. "
+                + "stdioServerParams and stdioConnectionParams launch the config-supplied command"
+                + " as a local process while tools are resolved, before the model is contacted."
+                + " Set "
+                + ALLOW_CONFIG_STDIO_ENV_VAR
+                + "=1, or call McpToolset.setAllowConfigStdioServers(true), to opt in. Remote"
+                + " transports (sseServerParams) are unaffected.");
+      }
+
       List<String> toolNames = mcpToolsetConfig.toolFilter();
       Object connectionParameters = resolveConnectionParameters(mcpToolsetConfig);
 
@@ -428,6 +453,24 @@ public class McpToolset implements BaseToolset {
     } catch (IllegalArgumentException e) {
       throw new ConfigurationException("Failed to parse McpToolsetConfig from ToolArgsConfig", e);
     }
+  }
+
+  /**
+   * Allows or forbids agent configs to declare local (stdio) MCP servers. Embedding applications
+   * that legitimately launch local servers from config call this with {@code true} at startup;
+   * {@code null} restores the {@link #ALLOW_CONFIG_STDIO_ENV_VAR} default.
+   */
+  public static void setAllowConfigStdioServers(@Nullable Boolean allow) {
+    allowConfigStdioServers = allow;
+  }
+
+  private static boolean configStdioServersAllowed() {
+    Boolean override = allowConfigStdioServers;
+    if (override != null) {
+      return override;
+    }
+    String value = System.getenv(ALLOW_CONFIG_STDIO_ENV_VAR);
+    return "1".equals(value) || "true".equalsIgnoreCase(value);
   }
 
   /**
