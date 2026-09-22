@@ -209,6 +209,61 @@ public class RequestConfirmationLlmRequestProcessorTest {
   }
 
   @Test
+  public void runAsync_userTextTurnAfterApproval_doesNotCallOriginalFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    // The approved call never produced a function response (its execution was aborted) and the
+    // user has since sent a plain text turn. ADK Python stops the scan at that turn, so the stale
+    // approval must not be applied again on this later LLM call.
+    Event laterUserTextEvent =
+        Event.builder()
+            .author("user")
+            .content(Content.fromParts(Part.fromText("unrelated follow-up question")))
+            .build();
+    Session session =
+        Session.builder("session_id")
+            .events(
+                ImmutableList.<Event>builder()
+                    .addAll(CONFIRMED_CALL_EVENTS)
+                    .add(laterUserTextEvent)
+                    .build())
+            .build();
+
+    assertThat(resumedEvents(agent, session)).isEmpty();
+  }
+
+  @Test
+  public void runAsync_laterUserTurnAnswersOtherFunctionCall_doesNotCallOriginalFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    // The most recent user event answers some other function call, not a confirmation request.
+    // Only that latest user turn is consulted, as in ADK Python, so the earlier approval is not
+    // re-applied either.
+    Event otherFunctionResponseEvent =
+        Event.builder()
+            .author("user")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .id("other_fc_id")
+                                .name("other_tool")
+                                .response(ImmutableMap.of("result", "done"))
+                                .build())
+                        .build()))
+            .build();
+    Session session =
+        Session.builder("session_id")
+            .events(
+                ImmutableList.<Event>builder()
+                    .addAll(CONFIRMED_CALL_EVENTS)
+                    .add(otherFunctionResponseEvent)
+                    .build())
+            .build();
+
+    assertThat(resumedEvents(agent, session)).isEmpty();
+  }
+
+  @Test
   public void runAsync_noUserConfirmationEvent_empty() {
     LlmAgent agent = createAgentWithEchoTool();
     Session session =
