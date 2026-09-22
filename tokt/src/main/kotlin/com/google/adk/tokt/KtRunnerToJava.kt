@@ -18,6 +18,7 @@ package com.google.adk.tokt
 
 import com.google.adk.agents.LiveRequestQueue
 import com.google.adk.agents.RunConfig as JavaRunConfig
+import com.google.adk.annotations.Experimental
 import com.google.adk.artifacts.BaseArtifactService as JavaArtifactService
 import com.google.adk.artifacts.InMemoryArtifactService as JavaInMemoryArtifactService
 import com.google.adk.events.Event as JavaEvent
@@ -78,6 +79,29 @@ internal class KtRunnerToJava(private val ktRunner: KtRunner, dispatcher: Corout
     newMessage: GenaiContent,
     runConfig: JavaRunConfig,
     stateDelta: MutableMap<String, Any>?,
+  ): Flowable<JavaEvent> =
+    runAsync(
+      userId,
+      sessionId,
+      invocationId = null,
+      newMessage = newMessage,
+      runConfig = runConfig,
+      stateDelta = stateDelta,
+    )
+
+  /**
+   * Resumes on the Kotlin engine, with its semantics rather than the Java runner's: a non-resumable
+   * app runs [newMessage] as a new invocation under [invocationId] instead of throwing, as Python
+   * does, and a text message sent with a resolvable invocation id is appended as a new user turn.
+   */
+  @Experimental
+  override fun runAsync(
+    userId: String,
+    sessionId: String,
+    invocationId: String?,
+    newMessage: GenaiContent?,
+    runConfig: JavaRunConfig,
+    stateDelta: MutableMap<String, Any>?,
   ): Flowable<JavaEvent> {
     // Defer so a request-conversion or RunConfig rejection surfaces via onError, not at the call
     // site - matching the base Runner and this class's own runLive.
@@ -87,7 +111,8 @@ internal class KtRunnerToJava(private val ktRunner: KtRunner, dispatcher: Corout
           .runAsync(
             userId = userId,
             sessionId = sessionId,
-            newMessage = ContentCodec.fromJava(newMessage),
+            invocationId = invocationId,
+            newMessage = newMessage?.let { ContentCodec.fromJava(it) },
             // Translate the Java REMOVED sentinel so a caller-passed deletion deletes the key
             // rather than storing it as a value (identity-matched by the engine).
             stateDelta = stateDelta?.let { stateDeltaFromJava(it) },

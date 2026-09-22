@@ -29,6 +29,7 @@ import com.google.adk.events.EventCompaction as JavaEventCompaction
 import com.google.adk.kt.agents.BaseAgent as KtBaseAgent
 import com.google.adk.kt.agents.InvocationContext as KtInvocationContext
 import com.google.adk.kt.agents.LlmAgent as KtLlmAgent
+import com.google.adk.kt.agents.ResumabilityConfig as KtResumabilityConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
 import com.google.adk.kt.agents.TypedData
@@ -89,6 +90,7 @@ import com.google.adk.sessions.GetSessionConfig as JavaGetSessionConfig
 import com.google.adk.sessions.InMemorySessionService as JavaInMemorySessionService
 import com.google.adk.sessions.ListEventsResponse as JavaListEventsResponse
 import com.google.adk.sessions.Session as JavaSession
+import com.google.adk.sessions.SessionKey as JavaSessionKey
 import com.google.adk.sessions.State as JavaState
 import com.google.adk.tokt.adapters.reconcileActionsToKt
 import com.google.adk.tokt.codecs.EventCodec
@@ -113,6 +115,7 @@ import com.google.genai.types.ExecutableCode as GenaiExecutableCode
 import com.google.genai.types.FinishReason as GenaiFinishReason
 import com.google.genai.types.FunctionCall as GenaiFunctionCall
 import com.google.genai.types.FunctionDeclaration as GenaiFunctionDeclaration
+import com.google.genai.types.FunctionResponse as GenaiFunctionResponse
 import com.google.genai.types.GenerateContentResponseUsageMetadata as GenaiUsageMetadata
 import com.google.genai.types.GroundingChunk as GenaiGroundingChunk
 import com.google.genai.types.GroundingChunkMaps as GenaiGroundingChunkMaps
@@ -701,6 +704,29 @@ class KtRunnerInteropTest {
     }
   }
 
+  /** A Kotlin runner that records each runAsync call once its stream is collected. */
+  private class RecordingKtRunner(private val delegate: KtRunner) : KtRunner by delegate {
+    data class RunAsyncCall(
+      val userId: String,
+      val sessionId: String,
+      val invocationId: String?,
+      val newMessage: KtContent?,
+    )
+
+    val runAsyncCalls = mutableListOf<RunAsyncCall>()
+
+    override fun runAsync(
+      userId: String,
+      sessionId: String,
+      invocationId: String?,
+      newMessage: KtContent?,
+      stateDelta: Map<String, Any>?,
+      runConfig: KtRunConfig?,
+    ): Flow<KtEvent> = flow {
+      runAsyncCalls.add(RunAsyncCall(userId, sessionId, invocationId, newMessage))
+    }
+  }
+
   @Test
   fun javaAdkToKt_convertsEntireCollections() {
     // Tools: order preserved, each Java tool wrapped as a Kotlin tool.
@@ -1160,6 +1186,231 @@ class KtRunnerInteropTest {
   }
 
   @Test
+  fun asJavaRunner_resumeOverload_resumesThePausedInvocation() {
+    // A resumable app pauses on a confirmation; the resume overload continues that invocation.
+    val ktRunner =
+      KtInMemoryRunner(
+        app =
+          KtApp(
+            appName = "app",
+            rootAgent =
+              KtLlmAgent(
+                name = "a",
+                model =
+                  JavaAdkToKt.asKtModel(
+                    SequentialJavaModel(
+                      listOf(
+                        modelFunctionCall("java_confirm", emptyMap()),
+                        modelText("confirmed done"),
+                      )
+                    )
+                  ),
+                tools = listOf(JavaAdkToKt.asKtTool(JavaConfirmTool())),
+              ),
+            resumabilityConfig = KtResumabilityConfig(isResumable = true),
+          )
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+    val autoCreate = JavaRunConfig.builder().autoCreateSession(true).build()
+
+    val turn1 =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("go")).build(),
+          autoCreate,
+        )
+        .toList()
+        .blockingGet()
+    val (pausedEvent, confirmationCall) =
+      turn1
+        .flatMap { event -> event.functionCalls().map { event to it } }
+        .first { (_, call) -> call.name().getOrNull() == "adk_request_confirmation" }
+    val pausedInvocationId = pausedEvent.invocationId()
+    val approval =
+      GenaiContent.builder()
+        .role("user")
+        .parts(
+          GenaiPart.builder()
+            .functionResponse(
+              GenaiFunctionResponse.builder()
+                .name("adk_request_confirmation")
+                .id(confirmationCall.id().get())
+                .response(mapOf("confirmed" to true))
+                .build()
+            )
+            .build()
+        )
+        .build()
+
+    val turn2 =
+      javaRunner
+        .runAsync("u", "s", pausedInvocationId, approval, autoCreate, /* stateDelta= */ null)
+        .toList()
+        .blockingGet()
+
+    val (resultEvent, toolResponse) =
+      turn2
+        .flatMap { event -> event.functionResponses().map { event to it } }
+        .first { (_, response) -> response.name().getOrNull() == "java_confirm" }
+    assertEquals(
+      "confirmed",
+      toolResponse.response().getOrNull()?.get("status"),
+      "the resumed run should deliver the approval to the tool",
+    )
+    assertEquals(
+      pausedInvocationId,
+      resultEvent.invocationId(),
+      "turn 2 should continue the paused invocation, not start a new one",
+    )
+
+    // Resuming the finished invocation by id alone is a no-op rather than an error.
+    val turn3 =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          pausedInvocationId,
+          /* newMessage= */ null,
+          autoCreate,
+          /* stateDelta= */ null,
+        )
+        .toList()
+        .blockingGet()
+    assertTrue(turn3.isEmpty(), "resuming a finished invocation should emit nothing")
+  }
+
+  @Test
+  fun asJavaRunner_resumeOverload_nonResumableApp_startsNewInvocationWithCallerId() {
+    // The Java Runner throws for a non-resumable app; the Kotlin engine, like Python, runs it.
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(
+              name = "a",
+              model = JavaAdkToKt.asKtModel(SequentialJavaModel(listOf(modelText("done")))),
+            ),
+          appName = "app",
+        )
+      )
+
+    val events =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          "caller-id",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+          JavaRunConfig.builder().autoCreateSession(true).build(),
+          /* stateDelta= */ null,
+        )
+        .toList()
+        .blockingGet()
+
+    assertTrue(events.isNotEmpty(), "the run should start a new invocation instead of throwing")
+    assertTrue(
+      events.all { it.invocationId() == "caller-id" },
+      "the new invocation should use the caller's invocation id",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_resumeOverload_nonResumableApp_nullMessage_throws() {
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+          appName = "app",
+        )
+      )
+
+    assertFailsWith<IllegalArgumentException> {
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          "caller-id",
+          /* newMessage= */ null,
+          JavaRunConfig.builder().autoCreateSession(true).build(),
+          /* stateDelta= */ null,
+        )
+        .toList()
+        .blockingGet()
+    }
+  }
+
+  @Test
+  fun asJavaRunner_everyRunAsyncOverload_routesToKotlinEngine() {
+    // Every public runAsync overload must reach the Kotlin engine, not the base Runner.
+    val recording =
+      RecordingKtRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+          appName = "app",
+        )
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(recording)
+    val key = JavaSessionKey("app", "u", "s")
+    // Pre-create the session for overloads whose default RunConfig disables autoCreateSession.
+    javaRunner.sessionService().createSession(key).ignoreElement().blockingAwait()
+
+    val msg = GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build()
+    val autoCreate = JavaRunConfig.builder().autoCreateSession(true).build()
+
+    javaRunner.runAsync("u", "s", msg, autoCreate).ignoreElements().blockingAwait()
+    javaRunner
+      .runAsync("u", "s", msg, autoCreate, /* stateDelta= */ null)
+      .ignoreElements()
+      .blockingAwait()
+    javaRunner.runAsync("u", "s", msg).ignoreElements().blockingAwait()
+    javaRunner
+      .runAsync(key, msg, autoCreate, /* stateDelta= */ null)
+      .ignoreElements()
+      .blockingAwait()
+    javaRunner.runAsync(key, msg, autoCreate).ignoreElements().blockingAwait()
+    javaRunner.runAsync(key, msg).ignoreElements().blockingAwait()
+    javaRunner
+      .runAsync("u", "s", "invocation-xyz", msg, autoCreate, /* stateDelta= */ null)
+      .ignoreElements()
+      .blockingAwait()
+    javaRunner
+      .runAsync(
+        "u",
+        "s",
+        "invocation-xyz",
+        /* newMessage= */ null,
+        autoCreate,
+        /* stateDelta= */ null,
+      )
+      .ignoreElements()
+      .blockingAwait()
+
+    assertEquals(
+      8,
+      recording.runAsyncCalls.size,
+      "each runAsync call should reach the Kotlin engine exactly once",
+    )
+    assertTrue(
+      recording.runAsyncCalls.all { it.userId == "u" && it.sessionId == "s" },
+      "every overload should pass userId and sessionId through",
+    )
+    assertEquals(
+      listOf<String?>(null, null, null, null, null, null, "invocation-xyz", "invocation-xyz"),
+      recording.runAsyncCalls.map { it.invocationId },
+      "only the resume overload should carry an invocationId, unchanged",
+    )
+    assertEquals(
+      listOf(true, true, true, true, true, true, true, false),
+      recording.runAsyncCalls.map { it.newMessage != null },
+      "a null message on the resume overload should reach the engine as null",
+    )
+  }
+
+  @Test
   fun asJavaRunner_nonDefaultRunConfig_reachesTheKotlinEngine() {
     // A Java RunConfig set through the Java API must map onto the Kotlin engine; the plugin reads
     // the config the engine actually received.
@@ -1209,25 +1460,28 @@ class KtRunnerInteropTest {
         appName = "app",
       )
     val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+    // Checks the adapter's own error, not the one the inspection-only agent view would raise.
+    fun assertLiveUnsupported(run: () -> Flowable<JavaEvent>) {
+      val error = assertFailsWith<UnsupportedOperationException> { run().toList().blockingGet() }
+      assertEquals("Live mode is not supported when running on the Kotlin engine.", error.message)
+    }
 
     // Live mode is not bridged; it must fail loudly through the stream (like the base Runner), not
     // throw eagerly at the call site.
-    assertFailsWith<UnsupportedOperationException> {
-      javaRunner
-        .runLive("u", "s", LiveRequestQueue(), JavaRunConfig.builder().build())
-        .toList()
-        .blockingGet()
+    assertLiveUnsupported {
+      javaRunner.runLive("u", "s", LiveRequestQueue(), JavaRunConfig.builder().build())
     }
     // agent() returns an inspection-only view of the Kotlin agent - readable, but not runnable.
     assertEquals("a", javaRunner.agent().name(), "agent() should expose the Kotlin agent's name")
 
-    // The session-based runLive overload must fail the same way, through the stream.
-    val session = javaRunner.sessionService().createSession("app", "u", null, "s").blockingGet()
-    assertFailsWith<UnsupportedOperationException> {
-      javaRunner
-        .runLive(session, LiveRequestQueue(), JavaRunConfig.builder().build())
-        .toList()
-        .blockingGet()
+    // The session-based and SessionKey runLive overloads must fail the same way.
+    val key = JavaSessionKey("app", "u", "s")
+    val session = javaRunner.sessionService().createSession(key).blockingGet()
+    assertLiveUnsupported {
+      javaRunner.runLive(session, LiveRequestQueue(), JavaRunConfig.builder().build())
+    }
+    assertLiveUnsupported {
+      javaRunner.runLive(key, LiveRequestQueue(), JavaRunConfig.builder().build())
     }
   }
 
