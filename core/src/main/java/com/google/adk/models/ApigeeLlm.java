@@ -19,6 +19,7 @@ import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.google.adk.Version;
+import com.google.adk.config.AdkConfiguration;
 import com.google.adk.models.chat.ChatCompletionsClient;
 import com.google.adk.models.chat.ChatCompletionsHttpClient;
 import com.google.common.annotations.VisibleForTesting;
@@ -100,7 +101,7 @@ public class ApigeeLlm extends BaseLlm {
 
     String effectiveProxyUrl = proxyUrl;
     if (isNullOrEmpty(effectiveProxyUrl)) {
-      effectiveProxyUrl = System.getenv(APIGEE_PROXY_URL_ENV_VARIABLE_NAME);
+      effectiveProxyUrl = AdkConfiguration.get(APIGEE_PROXY_URL_ENV_VARIABLE_NAME).orElse(null);
     }
     if (isNullOrEmpty(effectiveProxyUrl)) {
       throw new IllegalArgumentException(
@@ -395,7 +396,7 @@ public class ApigeeLlm extends BaseLlm {
   }
 
   private static boolean isEnvEnabled(String envVarName) {
-    String value = System.getenv(envVarName);
+    String value = AdkConfiguration.get(envVarName).orElse(null);
     return Boolean.parseBoolean(value) || Objects.equals(value, "1");
   }
 
