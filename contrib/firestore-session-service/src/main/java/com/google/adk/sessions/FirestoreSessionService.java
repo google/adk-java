@@ -50,7 +50,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -351,7 +351,9 @@ public class FirestoreSessionService implements BaseSessionService {
    * @return A Part containing the file data.
    */
   private Part fileDataPartFromMap(Map<String, Object> fdMap) {
-    if (fdMap == null) return null;
+    if (fdMap == null) {
+      return null;
+    }
     String fileUri = (String) fdMap.get("fileUri");
     String mimeType = (String) fdMap.get("mimeType");
     return Part.fromUri(fileUri, mimeType);
@@ -658,7 +660,7 @@ public class FirestoreSessionService implements BaseSessionService {
           }
 
           // Manually add the event to the session's internal list.
-          session.events().add(event);
+          session.addEvent(event);
           session.lastUpdateTime(getInstantFromEvent(event));
 
           // --- Persist event to Firestore ---

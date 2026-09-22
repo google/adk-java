@@ -938,11 +938,11 @@ public final class RunnerTest {
                   .firstOrError()
                   .doOnSuccess(
                       event -> {
-                        s.events().add(e);
+                        s.addEvent(e);
                         if (e.actions() != null && e.actions().stateDelta() != null) {
                           s.state().putAll(e.actions().stateDelta());
                         }
-                        List<Event> newEvents = new ArrayList<>(s.events());
+                        List<Event> newEvents = new ArrayList<>(s.immutableEvents());
                         Session updated =
                             Session.builder(s.id())
                                 .appName(s.appName())
