@@ -18,10 +18,16 @@ package com.google.adk.tokt.codecs
 
 import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.types.Blob as KtBlob
+import com.google.adk.kt.types.CodeExecutionResult as KtCodeExecutionResult
+import com.google.adk.kt.types.ExecutableCode as KtExecutableCode
 import com.google.adk.kt.types.FileData as KtFileData
 import com.google.adk.kt.types.FunctionCall as KtFunctionCall
 import com.google.adk.kt.types.FunctionResponse as KtFunctionResponse
+import com.google.adk.kt.types.Language as KtLanguage
+import com.google.adk.kt.types.Outcome as KtOutcome
 import com.google.adk.kt.types.Part as KtPart
+import com.google.adk.kt.types.PartMediaResolution as KtPartMediaResolution
+import com.google.adk.kt.types.PartMediaResolutionLevel as KtPartMediaResolutionLevel
 import com.google.adk.kt.types.PartialArg as KtPartialArg
 import com.google.adk.kt.types.PartialArgValue as KtPartialArgValue
 import com.google.adk.kt.types.ToolCall as KtToolCall
@@ -29,16 +35,22 @@ import com.google.adk.kt.types.ToolResponse as KtToolResponse
 import com.google.adk.kt.types.ToolType as KtToolType
 import com.google.adk.kt.types.VideoMetadata as KtVideoMetadata
 import com.google.genai.types.Blob as GenaiBlob
+import com.google.genai.types.CodeExecutionResult as GenaiCodeExecutionResult
+import com.google.genai.types.ExecutableCode as GenaiExecutableCode
 import com.google.genai.types.FileData as GenaiFileData
 import com.google.genai.types.FunctionCall as GenaiFunctionCall
 import com.google.genai.types.FunctionResponse as GenaiFunctionResponse
+import com.google.genai.types.Language as GenaiLanguage
 import com.google.genai.types.NullValue as GenaiNullValue
+import com.google.genai.types.Outcome as GenaiOutcome
 import com.google.genai.types.Part as GenaiPart
+import com.google.genai.types.PartMediaResolution as GenaiPartMediaResolution
+import com.google.genai.types.PartMediaResolutionLevel as GenaiPartMediaResolutionLevel
 import com.google.genai.types.PartialArg as GenaiPartialArg
 import com.google.genai.types.ToolCall as GenaiToolCall
 import com.google.genai.types.ToolResponse as GenaiToolResponse
 import com.google.genai.types.VideoMetadata as GenaiVideoMetadata
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.jvm.optionals.getOrNull
 import kotlin.time.toJavaDuration
 import kotlin.time.toKotlinDuration
@@ -46,33 +58,35 @@ import kotlin.time.toKotlinDuration
 /**
  * Converts a [Part][KtPart] between the genai type ADK Java exposes and the ADK Kotlin type.
  * Carries text, inline binary data ([KtBlob]), file references ([KtFileData]), function
- * call/response parts, server-side tool call/response parts ([KtToolCall] / [KtToolResponse]), the
- * model "thought" marker/signature, video metadata, and part metadata. Shared by [ContentCodec] and
- * the artifact service.
+ * call/response parts, server-side tool call/response parts ([KtToolCall] / [KtToolResponse]),
+ * code-execution parts ([KtExecutableCode] / [KtCodeExecutionResult]), the model "thought"
+ * marker/signature, video metadata, media resolution ([KtPartMediaResolution]), and part metadata.
+ * Shared by [ContentCodec] and the artifact service.
  *
- * Returns null for an empty part and for one carrying only a field the Kotlin [KtPart] has no
- * counterpart for - `executableCode`, `codeExecutionResult` - which [ContentCodec] then drops from
- * the content. The loss is forced, so it is logged once per kind rather than silent; see
- * [com.google.adk.tokt.JavaAdkToKt].
+ * Returns null for an empty part and for one carrying only fields the Kotlin [KtPart] has no
+ * counterpart for (such as `audioTranscription`, `mediaProcessing` or `speechMetadata`), which
+ * [ContentCodec] then drops from the content. The loss is forced, so it is logged rather than
+ * silent; see [com.google.adk.tokt.JavaAdkToKt].
  */
 internal object PartCodec {
 
   private val logger = LoggerFactory.getLogger(PartCodec::class)
 
-  /** Kinds already reported: a code-execution turn emits many parts, and one warning is enough. */
-  private val warnedUnmappedKinds = ConcurrentHashMap.newKeySet<String>()
+  /** An empty part, to tell a genuinely empty part from one carrying only an unmapped field. */
+  private val emptyGenaiPart = GenaiPart.builder().build()
 
-  private fun warnUnmappedKind(part: GenaiPart) {
-    val kind =
-      when {
-        part.executableCode().isPresent -> "executableCode"
-        part.codeExecutionResult().isPresent -> "codeExecutionResult"
-        else -> return // A genuinely empty part carries no information to lose.
-      }
-    if (warnedUnmappedKinds.add(kind)) {
+  /** One dropped-part warning per interop session is enough to flag the loss without spamming. */
+  private val unmappedPartWarned = AtomicBoolean(false)
+
+  private fun warnUnmappedPart(part: GenaiPart) {
+    // Detect an unmapped-but-non-empty part by value rather than by naming each accessor, so this
+    // stays correct as the genai Part gains fields and does not depend on any one field existing.
+    if (part == emptyGenaiPart) return // A genuinely empty part carries no information to lose.
+    if (unmappedPartWarned.compareAndSet(false, true)) {
       logger.warn {
-        "Dropping a genai Part that carries only $kind: the ADK Kotlin Part has no equivalent, so" +
-          " it cannot cross the Java -> Kotlin interop and will be missing from the event stream."
+        "Dropping a genai Part that carries only fields the ADK Kotlin Part has no equivalent for" +
+          " (such as audioTranscription, mediaProcessing or speechMetadata): it cannot cross the" +
+          " Java -> Kotlin interop and will be missing from the event stream."
       }
     }
   }
@@ -101,6 +115,9 @@ internal object PartCodec {
     val thoughtSignature = part.thoughtSignature().getOrNull()
     val partMetadata = part.partMetadata().getOrNull()
     val videoMetadata = part.videoMetadata().getOrNull()?.let { videoMetadataFromJava(it) }
+    val mediaResolution = part.mediaResolution().getOrNull()?.let { mediaResolutionFromJava(it) }
+    val executableCode = part.executableCode().getOrNull()
+    val codeExecutionResult = part.codeExecutionResult().getOrNull()
     val base =
       when {
         functionCall != null -> KtPart(functionCall = functionCallFromJava(functionCall))
@@ -108,6 +125,9 @@ internal object PartCodec {
           KtPart(functionResponse = functionResponseFromJava(functionResponse))
         toolCall != null -> KtPart(toolCall = toolCallFromJava(toolCall))
         toolResponse != null -> KtPart(toolResponse = toolResponseFromJava(toolResponse))
+        executableCode != null -> KtPart(executableCode = executableCodeFromJava(executableCode))
+        codeExecutionResult != null ->
+          KtPart(codeExecutionResult = codeExecutionResultFromJava(codeExecutionResult))
         inlineData != null -> KtPart(inlineData = blobFromJava(inlineData))
         fileData != null -> KtPart(fileData = fileDataFromJava(fileData))
         text != null -> KtPart(text = text)
@@ -116,9 +136,10 @@ internal object PartCodec {
         thought != null ||
           thoughtSignature != null ||
           partMetadata != null ||
-          videoMetadata != null -> KtPart()
+          videoMetadata != null ||
+          mediaResolution != null -> KtPart()
         else -> {
-          warnUnmappedKind(part)
+          warnUnmappedPart(part)
           return null
         }
       }
@@ -127,6 +148,7 @@ internal object PartCodec {
       thoughtSignature = thoughtSignature,
       partMetadata = partMetadata,
       videoMetadata = videoMetadata,
+      mediaResolution = mediaResolution,
     )
   }
 
@@ -139,6 +161,8 @@ internal object PartCodec {
     val inlineData = part.inlineData
     val fileData = part.fileData
     val text = part.text
+    val executableCode = part.executableCode
+    val codeExecutionResult = part.codeExecutionResult
     val builder =
       when {
         functionCall != null -> GenaiPart.builder().functionCall(functionCallToJava(functionCall))
@@ -146,6 +170,10 @@ internal object PartCodec {
           GenaiPart.builder().functionResponse(functionResponseToJava(functionResponse))
         toolCall != null -> GenaiPart.builder().toolCall(toolCallToJava(toolCall))
         toolResponse != null -> GenaiPart.builder().toolResponse(toolResponseToJava(toolResponse))
+        executableCode != null ->
+          GenaiPart.builder().executableCode(executableCodeToJava(executableCode))
+        codeExecutionResult != null ->
+          GenaiPart.builder().codeExecutionResult(codeExecutionResultToJava(codeExecutionResult))
         inlineData != null -> GenaiPart.builder().inlineData(blobToJava(inlineData))
         fileData != null -> GenaiPart.builder().fileData(fileDataToJava(fileData))
         text != null -> GenaiPart.builder().text(text)
@@ -154,13 +182,15 @@ internal object PartCodec {
         part.thought != null ||
           part.thoughtSignature != null ||
           part.partMetadata != null ||
-          part.videoMetadata != null -> GenaiPart.builder()
+          part.videoMetadata != null ||
+          part.mediaResolution != null -> GenaiPart.builder()
         else -> return null
       }
     part.thought?.let { builder.thought(it) }
     part.thoughtSignature?.let { builder.thoughtSignature(it) }
     part.partMetadata?.let { builder.partMetadata(it) }
     part.videoMetadata?.let { builder.videoMetadata(videoMetadataToJava(it)) }
+    part.mediaResolution?.let { builder.mediaResolution(mediaResolutionToJava(it)) }
     return builder.build()
   }
 
@@ -176,6 +206,23 @@ internal object PartCodec {
     metadata.startOffset?.let { builder.startOffset(it.toJavaDuration()) }
     metadata.endOffset?.let { builder.endOffset(it.toJavaDuration()) }
     metadata.fps?.let { builder.fps(it) }
+    return builder.build()
+  }
+
+  // A level this build does not know about has no Kotlin enum constant and is dropped.
+  private fun mediaResolutionFromJava(resolution: GenaiPartMediaResolution): KtPartMediaResolution =
+    KtPartMediaResolution(
+      level =
+        enumByNameOrNull<KtPartMediaResolutionLevel>(
+          resolution.level().getOrNull()?.knownEnum()?.name
+        ),
+      numTokens = resolution.numTokens().getOrNull(),
+    )
+
+  private fun mediaResolutionToJava(resolution: KtPartMediaResolution): GenaiPartMediaResolution {
+    val builder = GenaiPartMediaResolution.builder()
+    resolution.level?.let { builder.level(GenaiPartMediaResolutionLevel(it.name)) }
+    resolution.numTokens?.let { builder.numTokens(it) }
     return builder.build()
   }
 
@@ -251,6 +298,8 @@ internal object PartCodec {
     return builder.build()
   }
 
+  // genai FunctionResponse.willContinue/scheduling/parts have no Kotlin counterpart and are
+  // dropped.
   private fun functionResponseFromJava(response: GenaiFunctionResponse): KtFunctionResponse =
     KtFunctionResponse(
       name = response.name().getOrNull() ?: "",
@@ -261,6 +310,36 @@ internal object PartCodec {
   private fun functionResponseToJava(response: KtFunctionResponse): GenaiFunctionResponse {
     val builder = GenaiFunctionResponse.builder().name(response.name).response(response.response)
     response.id?.let { builder.id(it) }
+    return builder.build()
+  }
+
+  private fun executableCodeFromJava(code: GenaiExecutableCode): KtExecutableCode =
+    KtExecutableCode(
+      code = code.code().getOrNull(),
+      language = enumByNameOrNull<KtLanguage>(code.language().getOrNull()?.knownEnum()?.name),
+      id = code.id().getOrNull(),
+    )
+
+  private fun executableCodeToJava(code: KtExecutableCode): GenaiExecutableCode {
+    val builder = GenaiExecutableCode.builder()
+    code.code?.let { builder.code(it) }
+    code.language?.let { builder.language(GenaiLanguage(it.name)) }
+    code.id?.let { builder.id(it) }
+    return builder.build()
+  }
+
+  private fun codeExecutionResultFromJava(result: GenaiCodeExecutionResult): KtCodeExecutionResult =
+    KtCodeExecutionResult(
+      outcome = enumByNameOrNull<KtOutcome>(result.outcome().getOrNull()?.knownEnum()?.name),
+      output = result.output().getOrNull(),
+      id = result.id().getOrNull(),
+    )
+
+  private fun codeExecutionResultToJava(result: KtCodeExecutionResult): GenaiCodeExecutionResult {
+    val builder = GenaiCodeExecutionResult.builder()
+    result.outcome?.let { builder.outcome(GenaiOutcome(it.name)) }
+    result.output?.let { builder.output(it) }
+    result.id?.let { builder.id(it) }
     return builder.build()
   }
 
