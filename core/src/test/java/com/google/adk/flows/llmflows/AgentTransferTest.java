@@ -20,9 +20,11 @@ import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequest;
 import com.google.adk.agents.LiveRequestQueue;
@@ -84,6 +86,78 @@ public final class AgentTransferTest {
       toolContext.setActions(toolContext.actions().toBuilder().escalate(true).build());
       return Single.just(ImmutableMap.of());
     }
+  }
+
+  // Order is load-bearing: this list is rendered into the model's transfer instruction.
+  @Test
+  public void transferTargets_ordersSubAgentsThenParentThenPeers() {
+    LlmAgent child =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .name("child")
+            .build();
+    LlmAgent peerA =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .name("peer_a")
+            .build();
+    LlmAgent subject =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .name("subject")
+            .subAgents(child)
+            .build();
+    LlmAgent peerB =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .name("peer_b")
+            .build();
+    LlmAgent unused =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .name("parent")
+            .subAgents(peerA, subject, peerB)
+            .build();
+
+    assertThat(AgentTransfer.transferTargets(subject).stream().map(BaseAgent::name))
+        .containsExactly("child", "parent", "peer_a", "peer_b")
+        .inOrder();
+  }
+
+  @Test
+  public void transferTargets_disallowedParentAndPeers_returnsOnlySubAgents() {
+    LlmAgent child =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .name("child")
+            .build();
+    LlmAgent peer =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused"))).name("peer").build();
+    LlmAgent subject =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .name("subject")
+            .subAgents(child)
+            .disallowTransferToParent(true)
+            .disallowTransferToPeers(true)
+            .build();
+    LlmAgent unused =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .name("parent")
+            .subAgents(subject, peer)
+            .build();
+
+    assertThat(AgentTransfer.transferTargets(subject).stream().map(BaseAgent::name))
+        .containsExactly("child");
+  }
+
+  @Test
+  public void transferTargets_noLlmAgentParent_returnsOnlySubAgents() {
+    LlmAgent child =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .name("child")
+            .build();
+    LlmAgent subject =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .name("subject")
+            .subAgents(child)
+            .build();
+
+    assertThat(AgentTransfer.transferTargets(subject).stream().map(BaseAgent::name))
+        .containsExactly("child");
   }
 
   @Test
