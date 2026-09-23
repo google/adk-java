@@ -55,6 +55,7 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentConfig;
@@ -70,6 +71,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -79,6 +81,9 @@ import org.slf4j.LoggerFactory;
 public class LlmAgent extends BaseAgent {
 
   private static final Logger logger = LoggerFactory.getLogger(LlmAgent.class);
+
+  /** Name of the built-in tool whose response records an agent transfer. */
+  private static final String TRANSFER_TO_AGENT_TOOL = "transfer_to_agent";
 
   /**
    * Enum to define if contents of previous events should be included in requests to the underlying
@@ -660,7 +665,135 @@ public class LlmAgent extends BaseAgent {
 
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    return llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    if (!invocationContext.isResumable()) {
+      return llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    }
+    return Flowable.defer(
+        () -> {
+          // Resumed after a transfer: continue the sub-agent instead of re-invoking the model.
+          if (invocationContext.agentStates().containsKey(name())) {
+            Optional<BaseAgent> resumeTarget = findSubAgentToResume(invocationContext);
+            if (resumeTarget.isPresent()) {
+              AtomicBoolean resumePaused = new AtomicBoolean(false);
+              return resumeTarget
+                  .get()
+                  .runAsync(invocationContext)
+                  .doOnNext(
+                      event -> {
+                        if (invocationContext.shouldPauseInvocation(event)) {
+                          resumePaused.set(true);
+                        }
+                      })
+                  .concatWith(
+                      Flowable.defer(
+                          () -> {
+                            if (resumePaused.get()) {
+                              return Flowable.<Event>empty();
+                            }
+                            return endOfAgentAndRecord(invocationContext);
+                          }));
+            }
+          }
+          // Normal path: emit an end-of-agent checkpoint so a later run can skip this agent.
+          Flowable<Event> events =
+              llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+          AtomicBoolean paused = new AtomicBoolean(false);
+          return events
+              .doOnNext(
+                  event -> {
+                    if (invocationContext.shouldPauseInvocation(event)) {
+                      paused.set(true);
+                    }
+                  })
+              .concatWith(
+                  Flowable.defer(
+                      () -> {
+                        // Only the checkpoint is withheld, as in Python; the flow still runs. A
+                        // transferring agent stays open so a resume re-enters it and reaches the
+                        // sub-agent it handed off to.
+                        if (paused.get() || invocationContext.lastEventsPauseInvocation()) {
+                          return Flowable.empty();
+                        }
+                        return endOfAgentAndRecord(invocationContext);
+                      }));
+        });
+  }
+
+  /**
+   * Returns the name of the agent this agent transferred to in {@code event}, or empty when {@code
+   * event} is not such a transfer. A {@code transfer_to_agent} function response is required, as in
+   * Python ADK, so a callback that sets the action on an unrelated event does not read as one.
+   */
+  private Optional<String> transferTargetNameFrom(Event event) {
+    if (!name().equals(event.author())
+        || event.functionResponses().stream()
+            .noneMatch(
+                response -> response.name().filter(TRANSFER_TO_AGENT_TOOL::equals).isPresent())) {
+      return Optional.empty();
+    }
+    return event.actions().transferToAgent().filter(target -> !target.equals(name()));
+  }
+
+  /**
+   * Resolves a transfer target recorded in history back to its agent. A live transfer fails in
+   * {@code BaseLlmFlow} when the target is gone; a resumed one has no such check, and returning
+   * empty here would silently re-run this agent instead of the sub-agent it handed off to.
+   */
+  private BaseAgent resolveTransferTarget(String targetName) {
+    // Declared targets first, as in Python, so a same-named agent on an unrelated branch is not
+    // resumed into; then the same tree-wide search the live transfer path uses.
+    for (BaseAgent target : transferTargets()) {
+      if (target.name().equals(targetName)) {
+        return target;
+      }
+    }
+    return rootAgent()
+        .findAgent(targetName)
+        .orElseThrow(
+            () ->
+                new IllegalStateException(
+                    "Cannot resume agent "
+                        + name()
+                        + ": the agent it transferred to is no longer in the agent tree."));
+  }
+
+  /**
+   * When this agent is being resumed, returns the sub-agent it had transferred to (so the resume
+   * continues that sub-agent), or empty when this agent should continue itself.
+   */
+  private Optional<BaseAgent> findSubAgentToResume(InvocationContext context) {
+    ImmutableList<Event> events =
+        context.events(/* currentInvocation= */ true, /* currentBranch= */ true);
+    if (events.isEmpty()) {
+      return Optional.empty();
+    }
+    Event lastEvent = Iterables.getLast(events);
+    if (name().equals(lastEvent.author())) {
+      return transferTargetNameFrom(lastEvent).map(this::resolveTransferTarget);
+    }
+    if (Objects.equals(lastEvent.author(), Role.USER) && !lastEvent.functionResponses().isEmpty()) {
+      // IAE (not ISE): an unresolvable resume surfaces through Runner.runAsync's IAE contract.
+      Event functionCallEvent =
+          context
+              .findMatchingFunctionCall(lastEvent)
+              .orElseThrow(
+                  () ->
+                      new IllegalArgumentException(
+                          "No matching function call to resume agent "
+                              + name()
+                              + " from a function response."));
+      if (name().equals(functionCallEvent.author())) {
+        return Optional.empty();
+      }
+    }
+    // A user event answering no call falls through; Python fails the resume instead.
+    for (int i = events.size() - 2; i >= 0; i--) {
+      Optional<String> targetName = transferTargetNameFrom(events.get(i));
+      if (targetName.isPresent()) {
+        return Optional.of(resolveTransferTarget(targetName.get()));
+      }
+    }
+    return Optional.empty();
   }
 
   @Override
@@ -787,6 +920,30 @@ public class LlmAgent extends BaseAgent {
 
   public boolean disallowTransferToPeers() {
     return disallowTransferToPeers;
+  }
+
+  /**
+   * Returns the agents this one may transfer to: its sub-agents, plus its parent and peers unless
+   * disallowed. Transfer to a parent or peer needs an {@link LlmAgent} parent. Package-private
+   * because {@code AgentTransfer} cannot reach it and keeps its own copy of the same rule.
+   */
+  ImmutableList<BaseAgent> transferTargets() {
+    List<BaseAgent> targets = new ArrayList<>(subAgents());
+    BaseAgent parent = parentAgent();
+    if (!(parent instanceof LlmAgent)) {
+      return ImmutableList.copyOf(targets);
+    }
+    if (!disallowTransferToParent()) {
+      targets.add(parent);
+    }
+    if (!disallowTransferToPeers()) {
+      for (BaseAgent peer : parent.subAgents()) {
+        if (!peer.name().equals(name())) {
+          targets.add(peer);
+        }
+      }
+    }
+    return ImmutableList.copyOf(targets);
   }
 
   public List<? extends BeforeModelCallback> beforeModelCallback() {
