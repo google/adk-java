@@ -349,6 +349,34 @@ public final class RunnerTest {
   }
 
   @Test
+  public void beforeRunCallback_earlyExit_passesThroughOnEventThenPersists() {
+    when(plugin.beforeRunCallback(any())).thenReturn(Maybe.just(pluginContent));
+    when(plugin.onEventCallback(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              Event event = invocation.getArgument(1);
+              return Maybe.just(event.toBuilder().content(createContent("from onEvent")).build());
+            });
+
+    List<Event> events =
+        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
+    Session persisted =
+        runner
+            .sessionService()
+            .getSession(session.appName(), session.userId(), session.id(), Optional.empty())
+            .blockingGet();
+
+    assertThat(simplifyEvents(events)).containsExactly("model: from onEvent");
+    assertThat(simplifyEvents(persisted.events()))
+        .containsExactly("user: from user", "model: from onEvent")
+        .inOrder();
+    assertThat(events).containsExactly(Iterables.getLast(persisted.events()));
+    ArgumentCaptor<Event> eventCaptor = ArgumentCaptor.forClass(Event.class);
+    verify(plugin).onEventCallback(any(), eventCaptor.capture());
+    assertThat(eventCaptor.getValue().content()).hasValue(pluginContent);
+  }
+
+  @Test
   public void afterRunCallback_success() {
     when(plugin.afterRunCallback(any())).thenReturn(Completable.complete());
 
