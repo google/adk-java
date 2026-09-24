@@ -23,6 +23,7 @@ import static com.google.adk.skills.SkillSourceException.SKILL_NOT_FOUND;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.nio.file.Files.isDirectory;
 
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -71,7 +72,9 @@ public final class LocalSkillSource extends AbstractSkillSource<Path> {
                 return paths
                     .filter(Files::isRegularFile)
                     .map(skillDir::relativize)
-                    .map(Path::toString)
+                    // Join the path's name elements with '/' on every OS, not the platform
+                    // separator, to match ClassPathSkillSource and InMemorySkillSource.
+                    .map(relativePath -> Joiner.on('/').join(relativePath))
                     .collect(toImmutableList());
               }
             })
