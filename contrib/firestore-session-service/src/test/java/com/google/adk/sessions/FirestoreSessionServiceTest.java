@@ -31,6 +31,10 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.utils.Constants;
 import com.google.api.core.ApiFutures;
+import com.google.api.gax.grpc.GrpcStatusCode;
+import com.google.api.gax.rpc.AlreadyExistsException;
+import com.google.api.gax.rpc.PermissionDeniedException;
+import com.google.api.gax.rpc.UnavailableException;
 import com.google.cloud.firestore.CollectionReference;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
@@ -45,6 +49,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import io.grpc.Status;
 import io.reactivex.rxjava3.observers.TestObserver;
 import java.time.Instant;
 import java.util.Collections;
@@ -52,10 +57,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -89,6 +96,7 @@ public class FirestoreSessionServiceTest {
   @Mock private QuerySnapshot mockQuerySnapshot;
   @Mock private WriteResult mockWriteResult;
   @Mock private WriteBatch mockWriteBatch;
+  @Captor private ArgumentCaptor<Map<String, Object>> sessionDataCaptor;
 
   private FirestoreSessionService sessionService;
 
@@ -130,7 +138,7 @@ public class FirestoreSessionServiceTest {
 
     // Default mock for writes
     lenient()
-        .when(mockSessionDocRef.set(anyMap()))
+        .when(mockSessionDocRef.create(anyMap()))
         .thenReturn(ApiFutures.immediateFuture(mockWriteResult));
     lenient()
         .when(mockSessionDocRef.update(anyMap()))
@@ -307,7 +315,7 @@ public class FirestoreSessionServiceTest {
           assertThat(session.id()).isEqualTo(SESSION_ID);
           return true;
         });
-    verify(mockSessionDocRef).set(anyMap());
+    verify(mockSessionDocRef).create(anyMap());
   }
 
   /** Tests that createSession creates a new session with a generated session ID. */
@@ -334,7 +342,7 @@ public class FirestoreSessionServiceTest {
           assertThat(session.id()).isNotEmpty();
           return true;
         });
-    verify(mockSessionDocRef).set(anyMap());
+    verify(mockSessionDocRef).create(anyMap());
   }
 
   /** Tests that createSession creates a new session with an empty session ID. */
@@ -358,7 +366,7 @@ public class FirestoreSessionServiceTest {
           assertThat(session.id()).isNotEqualTo("  ");
           return true;
         });
-    verify(mockSessionDocRef).set(anyMap());
+    verify(mockSessionDocRef).create(anyMap());
   }
 
   /** Tests that createSession creates a new session with an empty state when null state is */
@@ -389,6 +397,114 @@ public class FirestoreSessionServiceTest {
         .createSession(null, USER_ID, null, SESSION_ID)
         .test()
         .assertError(NullPointerException.class);
+  }
+
+  /** Tests that createSession rejects a session ID that is already taken. */
+  @Test
+  void createSession_withSessionIdAlreadyTaken_failsWithSessionException() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.create(anyMap()))
+        .thenReturn(ApiFutures.immediateFailedFuture(alreadyExists()));
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    // Another caller's session, or one written before sessions carried a token.
+    when(mockSessionSnapshot.getString(FirestoreSessionService.CREATE_TOKEN_KEY)).thenReturn(null);
+
+    // Act
+    TestObserver<Session> testObserver =
+        sessionService.createSession(APP_NAME, USER_ID, null, SESSION_ID).test();
+
+    // Assert
+    testObserver.assertError(
+        e -> {
+          assertThat(e).isInstanceOf(SessionException.class);
+          assertThat(e).hasMessageThat().isEqualTo(SessionException.SESSION_ALREADY_EXISTS);
+          assertThat(e).hasCauseThat().isInstanceOf(AlreadyExistsException.class);
+          return true;
+        });
+  }
+
+  /** Tests that createSession succeeds when a client retry fails on the session's own write. */
+  @Test
+  void createSession_whenRetryHitsItsOwnWrite_returnsSession() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.create(sessionDataCaptor.capture()))
+        .thenReturn(ApiFutures.immediateFailedFuture(alreadyExists()));
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    when(mockSessionSnapshot.getString(FirestoreSessionService.CREATE_TOKEN_KEY))
+        .thenAnswer(
+            unused -> sessionDataCaptor.getValue().get(FirestoreSessionService.CREATE_TOKEN_KEY));
+
+    // Act
+    TestObserver<Session> testObserver =
+        sessionService.createSession(APP_NAME, USER_ID, null, SESSION_ID).test();
+
+    // Assert
+    testObserver.assertComplete();
+    testObserver.assertValue(session -> session.id().equals(SESSION_ID));
+  }
+
+  /**
+   * Tests that a failed read-back after a duplicate is propagated, since it cannot tell whose
+   * session exists.
+   */
+  @Test
+  void createSession_whenReadBackFails_propagatesFailure() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.create(anyMap()))
+        .thenReturn(ApiFutures.immediateFailedFuture(alreadyExists()));
+    when(mockSessionDocRef.get())
+        .thenReturn(
+            ApiFutures.immediateFailedFuture(
+                new UnavailableException(
+                    "Service unavailable",
+                    /* cause= */ null,
+                    GrpcStatusCode.of(Status.Code.UNAVAILABLE),
+                    /* retryable= */ true)));
+
+    // Act
+    TestObserver<Session> testObserver =
+        sessionService.createSession(APP_NAME, USER_ID, null, SESSION_ID).test();
+
+    // Assert
+    testObserver.assertError(
+        e -> {
+          assertThat(e).isInstanceOf(ExecutionException.class);
+          assertThat(e).hasCauseThat().isInstanceOf(UnavailableException.class);
+          return true;
+        });
+  }
+
+  /**
+   * Tests that a write failure unrelated to a duplicate session ID is propagated rather than
+   * reported as one.
+   */
+  @Test
+  void createSession_whenWriteFailsForAnotherReason_propagatesFailure() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.create(anyMap()))
+        .thenReturn(
+            ApiFutures.immediateFailedFuture(
+                new PermissionDeniedException(
+                    "Missing or insufficient permissions",
+                    /* cause= */ null,
+                    GrpcStatusCode.of(Status.Code.PERMISSION_DENIED),
+                    /* retryable= */ false)));
+
+    // Act
+    TestObserver<Session> testObserver =
+        sessionService.createSession(APP_NAME, USER_ID, null, SESSION_ID).test();
+
+    // Assert
+    testObserver.assertError(
+        e -> {
+          assertThat(e).isInstanceOf(ExecutionException.class);
+          assertThat(e).hasCauseThat().isInstanceOf(PermissionDeniedException.class);
+          return true;
+        });
   }
 
   // --- appendEvent Tests ---
@@ -977,5 +1093,13 @@ public class FirestoreSessionServiceTest {
     // Assert: the session (belonging to another app) must be left intact.
     verify(mockSessionDocRef, never()).delete();
     verify(mockWriteBatch, never()).commit();
+  }
+
+  private static AlreadyExistsException alreadyExists() {
+    return new AlreadyExistsException(
+        "Document already exists",
+        /* cause= */ null,
+        GrpcStatusCode.of(Status.Code.ALREADY_EXISTS),
+        /* retryable= */ false);
   }
 }
