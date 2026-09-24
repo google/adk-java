@@ -152,7 +152,7 @@ public class AdkWebServer implements WebMvcConfigurer {
     log.info("AdkWebServer application started successfully.");
   }
 
-  // TODO(vorburger): #later return Closeable, which can stop the server (and resets static)
+  // TODO: return a Closeable that stops the server and resets the static state.
   public static void start(BaseAgent... agents) {
     // Disable CompiledAgentLoader by setting property to prevent its creation
     System.setProperty("adk.agents.loader", "static");
