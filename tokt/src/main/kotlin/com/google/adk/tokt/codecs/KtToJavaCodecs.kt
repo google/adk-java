@@ -25,6 +25,7 @@ import com.google.adk.kt.sessions.SessionKey as KtSessionKey
 import com.google.adk.kt.sessions.State as KtState
 import com.google.adk.sessions.Session as JavaSession
 import com.google.adk.sessions.State as JavaState
+import java.util.AbstractList
 import java.util.AbstractMap
 import java.util.Optional
 import java.util.concurrent.ConcurrentMap
@@ -232,9 +233,9 @@ private class KtStateAsJavaConcurrentMap(private val state: KtState) : Concurren
 /**
  * Like [ktSessionToJava] but backs the session with live views: `events()` and `state()` convert on
  * access, so an adapted Java flow always reads the current session, including changes made earlier
- * this turn. `events()` is read-only (the Kotlin runner owns the list) and re-converts each element
- * on access, since a Kotlin event's actions are mutable; copy the list once rather than indexing it
- * in a loop. `lastUpdateTime` is a snapshot, not live.
+ * this turn. `events()` allows appending but no other mutation, and it re-converts each element on
+ * access because a Kotlin event's actions are mutable; copy the list once instead of indexing it in
+ * a loop. `lastUpdateTime` is a snapshot, not live.
  */
 // eventsView is deprecated for application code, but an interop adapter is its intended caller.
 @Suppress("DEPRECATION")
@@ -248,13 +249,15 @@ internal fun ktSessionToJavaLive(session: KtSession): JavaSession =
     .build()
 
 /**
- * The read-only, converting `events()` of [ktSessionToJavaLive]. Named rather than anonymous so a
- * caller holding a Java [JavaSession] can tell a live view from a snapshot: this one is already
- * backed by the Kotlin session, so it must not be mirrored into (and would throw if tried).
+ * The converting `events()` list for [ktSessionToJavaLive]. Its `add` method appends to the Kotlin
+ * [session] so in-place updates from an ADK Java session service reach the running session, while
+ * `KtSessionServiceToJava.appendEvent` unwraps this view to append there directly.
  */
-internal class KtBackedEventsView(private val session: KtSession) : AbstractList<JavaEvent>() {
+internal class KtBackedEventsView(internal val session: KtSession) : AbstractList<JavaEvent>() {
   override val size: Int
     get() = session.events.size
 
   override fun get(index: Int): JavaEvent = EventCodec.toJava(session.events[index])
+
+  override fun add(element: JavaEvent): Boolean = session.events.add(EventCodec.fromJava(element))
 }

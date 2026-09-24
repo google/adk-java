@@ -277,6 +277,107 @@ public final class SessionJsonConverterTest {
   }
 
   @Test
+  public void convertEventToJson_agentState_success() throws JsonProcessingException {
+    EventActions actions =
+        EventActions.builder()
+            .agentState(ImmutableMap.of("current_sub_agent", "b_agent", "times_looped", 2))
+            .build();
+    Event event =
+        Event.builder()
+            .author("agent")
+            .invocationId("inv-1")
+            .timestamp(Instant.parse("2023-01-01T00:00:00.123Z").toEpochMilli())
+            .actions(actions)
+            .build();
+
+    String json = SessionJsonConverter.convertEventToJson(event, true);
+    JsonNode actionsNode = objectMapper.readTree(json).get("actions");
+
+    assertThat(actionsNode.get("agentState").get("current_sub_agent").asText())
+        .isEqualTo("b_agent");
+    assertThat(actionsNode.get("agentState").get("times_looped").asInt()).isEqualTo(2);
+  }
+
+  // rawEvent supplies only the keys "actions" lacks: a rawEvent carrying endOfAgent alone must not
+  // shadow an agentState that actions does carry.
+  @Test
+  public void fromApiEvent_rawEventMissingAgentState_doesNotShadowActions() {
+    Map<String, Object> apiEvent = new HashMap<>();
+    apiEvent.put("name", "sessions/123/events/456");
+    apiEvent.put("invocationId", "inv-1");
+    apiEvent.put("author", "agent");
+    apiEvent.put("timestamp", "2023-01-01T00:00:00.123Z");
+    Map<String, Object> actions = new HashMap<>();
+    actions.put("agentState", ImmutableMap.of("current_sub_agent", "b_agent"));
+    apiEvent.put("actions", actions);
+    apiEvent.put("rawEvent", ImmutableMap.of("actions", ImmutableMap.of("endOfAgent", true)));
+
+    Event event = SessionJsonConverter.fromApiEvent(apiEvent);
+
+    assertThat(event.actions().agentState()).isPresent();
+    assertThat(event.actions().agentState().get()).containsEntry("current_sub_agent", "b_agent");
+    assertThat(event.actions().endOfAgent()).isTrue();
+  }
+
+  // Python's Vertex session service keeps agentState and endOfAgent only under rawEvent, so a
+  // session it wrote must still load with its checkpoints.
+  @Test
+  public void fromApiEvent_agentStateOnlyUnderRawEvent_readsCheckpoint() {
+    Map<String, Object> apiEvent = new HashMap<>();
+    apiEvent.put("name", "sessions/123/events/456");
+    apiEvent.put("invocationId", "inv-1");
+    apiEvent.put("author", "agent");
+    apiEvent.put("timestamp", "2023-01-01T00:00:00.123Z");
+    // The six-key actions block Python writes, with no agentState and no endOfAgent.
+    apiEvent.put("actions", new HashMap<>(ImmutableMap.of("stateDelta", new HashMap<>())));
+    Map<String, Object> rawActions = new HashMap<>();
+    rawActions.put("agentState", ImmutableMap.of("current_sub_agent", "b_agent"));
+    rawActions.put("endOfAgent", true);
+    apiEvent.put("rawEvent", ImmutableMap.of("actions", rawActions));
+
+    Event event = SessionJsonConverter.fromApiEvent(apiEvent);
+
+    assertThat(event.actions().agentState()).isPresent();
+    assertThat(event.actions().agentState().get()).containsEntry("current_sub_agent", "b_agent");
+    assertThat(event.actions().endOfAgent()).isTrue();
+  }
+
+  @Test
+  public void fromApiEvent_agentState_success() {
+    Map<String, Object> apiEvent = new HashMap<>();
+    apiEvent.put("name", "sessions/123/events/456");
+    apiEvent.put("invocationId", "inv-1");
+    apiEvent.put("author", "agent");
+    apiEvent.put("timestamp", "2023-01-01T00:00:00.123Z");
+    Map<String, Object> actions = new HashMap<>();
+    actions.put("agentState", ImmutableMap.of("current_sub_agent", "b_agent", "times_looped", 2));
+    apiEvent.put("actions", actions);
+
+    Event event = SessionJsonConverter.fromApiEvent(apiEvent);
+
+    assertThat(event.actions().agentState()).isPresent();
+    assertThat(event.actions().agentState().get()).containsEntry("current_sub_agent", "b_agent");
+    assertThat(event.actions().agentState().get()).containsEntry("times_looped", 2);
+  }
+
+  @Test
+  public void fromApiEvent_agentStateNotAMap_isIgnored() {
+    // Another runtime may write a non-map agentState; dropping it keeps the session loadable.
+    Map<String, Object> apiEvent = new HashMap<>();
+    apiEvent.put("name", "sessions/123/events/456");
+    apiEvent.put("invocationId", "inv-1");
+    apiEvent.put("author", "agent");
+    apiEvent.put("timestamp", "2023-01-01T00:00:00.123Z");
+    Map<String, Object> actions = new HashMap<>();
+    actions.put("agentState", "not-a-map");
+    apiEvent.put("actions", actions);
+
+    Event event = SessionJsonConverter.fromApiEvent(apiEvent);
+
+    assertThat(event.actions().agentState()).isEmpty();
+  }
+
+  @Test
   public void fromApiEvent_minimalEvent_success() {
     Map<String, Object> apiEvent = new HashMap<>();
     apiEvent.put("name", "sessions/123/events/456");

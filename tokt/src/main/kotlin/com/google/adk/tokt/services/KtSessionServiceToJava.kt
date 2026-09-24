@@ -103,36 +103,20 @@ internal class KtSessionServiceToJava(
     }
 
   /**
-   * Appends [event] to [session] on the Kotlin service, then mirrors its stored session (merged
-   * state, events, and last-update time) back into the caller's Java [session] so ADK Java's
-   * `Runner` keeps observing the appended state in place.
+   * Appends [event] on the Kotlin service. For a live view ([KtBackedEventsView]), the service
+   * appends to the running Kotlin session itself so the invocation sees the event; any other
+   * [session] is then updated in place by [JavaBaseSessionService.appendEvent]. In both cases,
+   * [session]'s `lastUpdateTime` is refreshed from the Kotlin session the service updated.
    */
   override fun appendEvent(session: JavaSession, event: JavaEvent): Single<JavaEvent> =
     rxSingle(dispatcher) {
-      val key = SessionKey(session.appName(), session.userId(), session.id())
-      service.appendEvent(SessionCodec.fromJava(session), EventCodec.fromJava(event))
-      service.getSession(key)?.let { stored ->
-        // Convert before touching the caller's session, then refill under the list's monitor so a
-        // concurrent reader never observes a transiently-empty event list. Session.events() is a
-        // Collections.synchronizedList, so its own monitor is the correct lock to hold here.
-        // Mirror only into a session we can actually write. The live view this module hands out
-        // (ktSessionToJavaLive, e.g. invocationContext.session()) is already backed by the Kotlin
-        // session: its events() is a read-only converting view that throws on clear/addAll, and
-        // its state() writes straight through, so it needs no mirroring and must not be mutated
-        // here. A plain snapshot session (ktSessionToJava) does.
-        if (session.events() is MutableList<*> && session.events() !is KtBackedEventsView) {
-          val storedEvents = stored.events.map { EventCodec.toJava(it) }
-          synchronized(session.events()) {
-            session.events().clear()
-            session.events().addAll(storedEvents)
-          }
-          // No lock: State is a ConcurrentMap, so readers never take this monitor. Drop stale keys
-          // and overwrite in place, leaving no transiently-empty window.
-          session.state().keys.retainAll(stored.state.keys)
-          session.state().putAll(stored.state)
-        }
-        session.lastUpdateTime(stored.lastUpdateTime.toJavaInstant())
+      val backing = (session.events() as? KtBackedEventsView)?.session
+      val ktSession = backing ?: SessionCodec.fromJava(session)
+      service.appendEvent(ktSession, EventCodec.fromJava(event))
+      if (backing == null) {
+        super.appendEvent(session, event)
       }
+      session.lastUpdateTime(ktSession.lastUpdateTime.toJavaInstant())
       event
     }
 
