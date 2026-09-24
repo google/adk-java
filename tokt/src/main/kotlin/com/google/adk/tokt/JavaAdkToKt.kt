@@ -41,32 +41,32 @@ import kotlinx.coroutines.CoroutineDispatcher
 
 /**
  * Forward interop entry point: adapts ADK Java tools, toolsets, plugins, services, and models so
- * they can run on the ADK Kotlin engine. Wrap the adapted pieces in a Kotlin `LlmAgent`; this does
- * not convert a whole Java agent.
+ * they can run on the ADK Kotlin engine. Assemble the adapted pieces into a Kotlin `LlmAgent`,
+ * `App`, and `Runner`; this does not convert a whole Java agent.
  *
  * An adapted component behaves as it does on ADK Java. It sees the session as it currently stands,
  * including events and state written earlier in the same turn, and its state, artifact and
- * control-flow writes reach the engine. Blocking work is fine: calls are dispatched off the thread
- * driving the agent, onto the optional `dispatcher` (default `Dispatchers.IO`) each conversion
- * accepts. That dispatcher must be able to run nested bridged calls concurrently -- a bridged tool
- * or plugin that itself makes a blocking bridged call (e.g. one that blocks on a bridged service)
- * holds its thread until that call returns, so a single-threaded or tightly bounded dispatcher can
- * deadlock; the default `Dispatchers.IO` grows its pool and avoids this.
+ * control-flow writes reach the engine. Blocking work is fine because calls run on the optional
+ * `dispatcher` (default `Dispatchers.IO`) that each conversion accepts. That dispatcher must be
+ * able to run nested bridged calls in parallel: a bridged tool or plugin that blocks on another
+ * bridged call, such as a service call, holds its thread until that call returns, so a
+ * single-threaded or tightly bounded dispatcher can deadlock. `Dispatchers.IO` deadlocks only if
+ * all of its threads (at least 64 by default) block at once.
  *
  * A bridged plugin's error callbacks fire: `onRunErrorCallback` is notification-only -- the engine
  * re-raises the run's error to the caller afterwards regardless, so it cannot recover the run (it
  * is for logging, telemetry, or cleanup) -- while the `onModelErrorCallback` and
  * `onToolErrorCallback` recovery hooks fire and can recover.
  *
- * The interop surfaces a signal the engine cannot honor rather than silently dropping it:
- * - Setting `branch` on a bridged context throws. The branch is the engine's to set.
- * - A bridged tool's or plugin's `requestedAuthConfigs` or `deletedArtifactIds` write throws - the
- *   engine's event actions have no equivalent. Its `skipSummarization`,
- *   `requestedToolConfirmations` and `agentState` writes do cross, from a tool and a plugin alike.
- * - Behind an adapted Java session service ([asKtSessionService]), a resumable workflow's engine
- *   state (`EventActions.agentState`) crosses and is restored, so it resumes rather than restarts.
- *   A rewind request (`rewindBeforeInvocationId`) still does not cross - ADK Java's `EventActions`
- *   has no such field.
+ * When a bridged tool call or plugin callback writes one of the following signals to its context,
+ * the interop throws rather than silently dropping it:
+ * - Setting `branch` on the invocation context throws. The branch is the engine's to set.
+ * - If Java code writes `requestedAuthConfigs` or `deletedArtifactIds` to the context's
+ *   `EventActions`, the adapter throws once the Java call returns - the engine's event actions have
+ *   no equivalent.
+ *
+ * Writes to the context's `skipSummarization`, `requestedToolConfirmations`, `agentState`, and
+ * `rewindBeforeInvocationId` do cross to the engine.
  */
 object JavaAdkToKt {
 
@@ -79,7 +79,7 @@ object JavaAdkToKt {
   ): KtBaseTool = JavaToolToKt(javaTool, dispatcher)
 
   /**
-   * Adapts a whole collection of ADK Java tools (e.g. an `LlmAgent`'s `tools`), each on
+   * Adapts a whole collection of ADK Java tools (such as an `LlmAgent`'s `tools`), each on
    * `dispatcher`. Kept alongside [asKtTool] for Java callers, who would otherwise write
    * `stream().map(...).toList()`.
    */
@@ -115,7 +115,7 @@ object JavaAdkToKt {
   ): KtPlugin = JavaPluginToKt(javaPlugin, dispatcher)
 
   /**
-   * Adapts a whole collection of ADK Java plugins (e.g. a `Runner`'s `plugins`), each on
+   * Adapts a whole collection of ADK Java plugins (such as an `App`'s `plugins()`), each on
    * `dispatcher`.
    */
   @JvmStatic
@@ -137,9 +137,11 @@ object JavaAdkToKt {
   ): KtModel = JavaModelToKt(javaLlm, dispatcher)
 
   /**
-   * Adapts an ADK Java session service for the Kotlin engine, unwrapping a round-tripped Kotlin one
-   * rather than stacking a second adapter. Its calls run on `dispatcher`. A
-   * `rewindBeforeInvocationId` does not survive, since ADK Java has no such field.
+   * Adapts an ADK Java session service for the Kotlin engine, running its calls on `dispatcher`. A
+   * Java view of a Kotlin service is unwrapped to that Kotlin service, with no `dispatcher` hop.
+   * Resumption works across the adapter (`EventActions.agentState` crosses);
+   * `rewindBeforeInvocationId` crosses too, but a rewind drops the rewound turns only if the Java
+   * service stores it, which ADK Java's `VertexAiSessionService` does not.
    */
   @JvmStatic
   @JvmOverloads
@@ -149,9 +151,9 @@ object JavaAdkToKt {
   ): KtSessionService = javaSessionServiceAsKt(service, dispatcher)
 
   /**
-   * Adapts an ADK Java artifact service for the Kotlin engine, unwrapping a round-tripped Kotlin
-   * one rather than stacking adapters. Its calls run on `dispatcher`. An empty or unmapped artifact
-   * part is rejected outright.
+   * Adapts an ADK Java artifact service for the Kotlin engine, running its calls on `dispatcher`. A
+   * Java view of a Kotlin service is unwrapped to that Kotlin service, with no `dispatcher` hop.
+   * The adapter throws on an empty artifact part or one it cannot convert.
    */
   @JvmStatic
   @JvmOverloads
@@ -161,8 +163,8 @@ object JavaAdkToKt {
   ): KtArtifactService = javaArtifactServiceAsKt(service, dispatcher)
 
   /**
-   * Adapts an ADK Java memory service for the Kotlin engine, unwrapping a round-tripped Kotlin one
-   * rather than stacking adapters. Its calls run on `dispatcher`.
+   * Adapts an ADK Java memory service for the Kotlin engine, running its calls on `dispatcher`. A
+   * Java view of a Kotlin service is unwrapped to that Kotlin service, with no `dispatcher` hop.
    */
   @JvmStatic
   @JvmOverloads

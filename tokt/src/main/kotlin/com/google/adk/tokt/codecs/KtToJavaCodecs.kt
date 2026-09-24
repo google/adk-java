@@ -73,6 +73,13 @@ internal class KtEventActionsToJavaView(private val actions: KtEventActions) : J
     actions.compaction = compaction?.let { EventCompactionCodec.fromJava(it) }
   }
 
+  override fun rewindBeforeInvocationId(): Optional<String> =
+    Optional.ofNullable(actions.rewindBeforeInvocationId)
+
+  override fun setRewindBeforeInvocationId(rewindBeforeInvocationId: String?) {
+    actions.rewindBeforeInvocationId = rewindBeforeInvocationId
+  }
+
   // Overridden so the write reaches the Kotlin side; the base setters write private fields the
   // overridden getters never read.
 
@@ -104,12 +111,10 @@ internal class KtEventActionsToJavaView(private val actions: KtEventActions) : J
 /**
  * Builds a read-only Java [JavaEventActions] snapshot from a Kotlin [KtEventActions], carrying the
  * deltas, the control-flow signals (skip-summarization, transfer, escalate, end-of-agent), the
- * requested tool confirmations, and the resumable-run `agentState` ([agentStateToJava]). Used when
- * exposing an existing Kotlin event to a Java runner ([EventCodec.toJava]); unlike
- * [KtEventActionsToJavaView] (a live write sink) nothing writes back through it.
- *
- * Does not carry `rewindBeforeInvocationId`: ADK Java's `EventActions` has no such field, so a
- * rewind request does not survive a round trip through a Java session service.
+ * requested tool confirmations, the compaction summary, the resumable-run `agentState`
+ * ([agentStateToJava]), and the rewind marker (`rewindBeforeInvocationId`). Used when exposing an
+ * existing Kotlin event to a Java runner ([EventCodec.toJava]); unlike [KtEventActionsToJavaView]
+ * (a live write sink), nothing writes back through it.
  */
 internal fun eventActionsToJava(actions: KtEventActions): JavaEventActions =
   JavaEventActions.builder()
@@ -124,6 +129,7 @@ internal fun eventActionsToJava(actions: KtEventActions): JavaEventActions =
     .endOfAgent(actions.endOfAgent)
     .compaction(actions.compaction?.let { EventCompactionCodec.toJava(it) })
     .agentState(agentStateToJava(actions.agentState))
+    .rewindBeforeInvocationId(actions.rewindBeforeInvocationId)
     .build()
 
 /** Copies a Kotlin state delta to Java, mapping the Kotlin [KtState.REMOVED] deletion sentinel. */
