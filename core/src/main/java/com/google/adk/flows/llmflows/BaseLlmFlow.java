@@ -60,6 +60,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import org.slf4j.Logger;
@@ -432,7 +433,14 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
     return Flowable.defer(
         () -> {
+          AtomicBoolean preprocessAnswered = new AtomicBoolean(false);
           return preprocess(context, llmRequestRef)
+              .doOnNext(
+                  event -> {
+                    if (!event.functionResponses().isEmpty() && event.finalResponse()) {
+                      preprocessAnswered.set(true);
+                    }
+                  })
               .concatWith(
                   Flowable.defer(
                       () -> {
@@ -440,6 +448,30 @@ public abstract class BaseLlmFlow implements BaseFlow {
                         if (context.endInvocation()) {
                           logger.debug("End invocation requested during preprocessing.");
                           return Flowable.empty();
+                        }
+                        // A tool answered during preprocessing would be replayed below.
+                        if (context.isResumable() && preprocessAnswered.get()) {
+                          logger.debug("Preprocessing produced a final response; ending the step.");
+                          return Flowable.empty();
+                        }
+
+                        // As in Python, decide before the model call: the branch may owe work.
+                        StepResume.Decision resume =
+                            StepResume.decide(context, llmRequestAfterPreprocess.tools());
+                        if (resume.action == StepResume.Action.PAUSE) {
+                          logger.debug("Pausing the flow: a call is still unanswered.");
+                          return Flowable.empty();
+                        }
+                        if (resume.action == StepResume.Action.REPLAY_CALLS) {
+                          logger.debug("Replaying function calls a previous run did not execute.");
+                          // Re-id as Python's replay does; PersistBarrier skips an id-less event.
+                          return runFunctionCalls(
+                                  context,
+                                  resume.replayEvent(),
+                                  llmRequestAfterPreprocess,
+                                  spanContext)
+                              .map(event -> event.toBuilder().id(Event.generateEventId()).build())
+                              .concatMap(event -> followTransfer(event, context, spanContext));
                         }
 
                         try {
@@ -477,27 +509,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                   String newId = Event.generateEventId();
                                   logger.debug("Resetting event ID from {} to {}", oldId, newId);
                                   event = event.toBuilder().id(newId).build();
-                                  Flowable<Event> postProcessedEvents = Flowable.just(event);
-                                  if (event.actions().transferToAgent().isPresent()) {
-                                    String agentToTransfer =
-                                        event.actions().transferToAgent().get();
-                                    BaseAgent rootAgent = context.agent().rootAgent();
-                                    Optional<BaseAgent> nextAgent =
-                                        rootAgent.findAgent(agentToTransfer);
-                                    if (nextAgent.isEmpty()) {
-                                      logger.error("Agent not found: {}", agentToTransfer);
-                                      return postProcessedEvents.concatWith(
-                                          Flowable.error(
-                                              new IllegalStateException(
-                                                  "Agent not found: " + agentToTransfer)));
-                                    }
-                                    return postProcessedEvents.concatWith(
-                                        nextAgent
-                                            .get()
-                                            .runAsync(context)
-                                            .compose(Tracing.withContext(spanContext)));
-                                  }
-                                  return postProcessedEvents;
+                                  return followTransfer(event, context, spanContext);
                                 });
                       }));
         });
@@ -521,6 +533,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
       logger.debug("Ending flow execution because max steps reached.");
       return currentStepEvents;
     }
+    @SuppressWarnings("deprecation") // The shim it reports is deprecated by design.
+    boolean legacyResumption = invocationContext.isLegacyResumability();
 
     return currentStepEvents.concatWith(
         currentStepEvents
@@ -534,11 +548,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
                         "Ending flow execution based on final response, endInvocation action or"
                             + " empty event list.");
                     return Flowable.empty();
-                  } else if (invocationContext.isResumable()
-                      && Functions.hasPendingLongRunningCall(eventList)) {
-                    // When resumable, a pending long-running call (e.g. HITL) pauses the flow
-                    // instead of calling the model again, matching Python ADK v1 and avoiding a
-                    // runaway re-issue loop. The disabled path is unchanged.
+                  } else if (legacyResumption && Functions.hasPendingLongRunningCall(eventList)) {
+                    // The resumable flow decides before the model call instead, in StepResume.
                     logger.debug("Pausing flow execution on a pending long-running call.");
                     return Flowable.empty();
                   } else {
@@ -758,30 +769,86 @@ public abstract class BaseLlmFlow implements BaseFlow {
       return processorEvents.concatWith(Flowable.just(modelResponseEvent));
     }
 
-    Flowable<Event> functionEvents;
+    Flowable<Event> functionEvents =
+        runFunctionCalls(context, modelResponseEvent, llmRequest, parentContext);
+
+    return processorEvents.concatWith(Flowable.just(modelResponseEvent)).concatWith(functionEvents);
+  }
+
+  /**
+   * Emits {@code event}, followed by the transferred-to agent's run when it carries a transfer.
+   * Shared so a replayed transfer continues into its target the way a fresh one does.
+   */
+  private Flowable<Event> followTransfer(
+      Event event, InvocationContext context, Context spanContext) {
+    Flowable<Event> self = Flowable.just(event);
+    if (event.actions().transferToAgent().isEmpty()) {
+      return self;
+    }
+    String agentToTransfer = event.actions().transferToAgent().get();
+    Optional<BaseAgent> nextAgent = context.agent().rootAgent().findAgent(agentToTransfer);
+    if (nextAgent.isEmpty()) {
+      logger.error("Agent not found: {}", agentToTransfer);
+      return self.concatWith(
+          Flowable.error(new IllegalStateException("Agent not found: " + agentToTransfer)));
+    }
+    BaseAgent target = nextAgent.get();
+    // Resumable only: restricting the default flow too would move behavior for existing callers.
+    if (context.isResumable() && context.agent() instanceof LlmAgent llmAgent) {
+      Optional<BaseAgent> declared = declaredTransferTarget(llmAgent, agentToTransfer);
+      if (declared.isEmpty()) {
+        return self.concatWith(
+            Flowable.error(
+                new IllegalStateException(
+                    "Agent "
+                        + llmAgent.name()
+                        + " is not allowed to transfer to the requested agent.")));
+      }
+      target = declared.get();
+    }
+    return self.concatWith(target.runAsync(context).compose(Tracing.withContext(spanContext)));
+  }
+
+  /**
+   * Returns the agent {@code from} may transfer to under {@code name}, or empty when the transfer
+   * is not allowed. Resolves through the declared targets rather than the tree, as Python does, so
+   * a same-named agent on an unrelated branch cannot stand in for the declared one.
+   */
+  private static Optional<BaseAgent> declaredTransferTarget(LlmAgent from, String name) {
+    if (name.equals(from.name())) {
+      return Optional.of(from);
+    }
+    return AgentTransfer.transferTargets(from).stream()
+        .filter(candidate -> candidate.name().equals(name))
+        .findFirst();
+  }
+
+  /**
+   * Runs {@code callEvent}'s function calls and emits what follows from them: the tool-confirmation
+   * request, the function response, and any structured final response. Shared by the normal
+   * postprocessing path and by replaying calls a previous run never executed.
+   */
+  private Flowable<Event> runFunctionCalls(
+      InvocationContext context, Event callEvent, LlmRequest llmRequest, Context parentContext) {
     try (Scope scope = parentContext.makeCurrent()) {
       Maybe<Event> maybeFunctionResponseEvent =
           context.runConfig().streamingMode() == StreamingMode.BIDI
-              ? Functions.handleFunctionCallsLive(context, modelResponseEvent, llmRequest.tools())
-              : Functions.handleFunctionCalls(context, modelResponseEvent, llmRequest.tools());
-      functionEvents =
-          maybeFunctionResponseEvent.flatMapPublisher(
-              functionResponseEvent -> {
-                Optional<Event> toolConfirmationEvent =
-                    Functions.generateRequestConfirmationEvent(
-                        context, modelResponseEvent, functionResponseEvent);
-                List<Event> events = new ArrayList<>();
-                toolConfirmationEvent.ifPresent(events::add);
-                events.add(functionResponseEvent);
-                OutputSchema.getStructuredModelResponse(functionResponseEvent)
-                    .ifPresent(
-                        json ->
-                            events.add(OutputSchema.createFinalModelResponseEvent(context, json)));
-                return Flowable.fromIterable(events);
-              });
+              ? Functions.handleFunctionCallsLive(context, callEvent, llmRequest.tools())
+              : Functions.handleFunctionCalls(context, callEvent, llmRequest.tools());
+      return maybeFunctionResponseEvent.flatMapPublisher(
+          functionResponseEvent -> {
+            Optional<Event> toolConfirmationEvent =
+                Functions.generateRequestConfirmationEvent(
+                    context, callEvent, functionResponseEvent);
+            List<Event> events = new ArrayList<>();
+            toolConfirmationEvent.ifPresent(events::add);
+            events.add(functionResponseEvent);
+            OutputSchema.getStructuredModelResponse(functionResponseEvent)
+                .ifPresent(
+                    json -> events.add(OutputSchema.createFinalModelResponseEvent(context, json)));
+            return Flowable.fromIterable(events);
+          });
     }
-
-    return processorEvents.concatWith(Flowable.just(modelResponseEvent)).concatWith(functionEvents);
   }
 
   /**
