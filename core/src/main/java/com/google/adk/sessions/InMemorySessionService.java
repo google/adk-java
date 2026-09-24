@@ -36,6 +36,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * An in-memory implementation of {@link BaseSessionService} assuming {@link Session} objects are
@@ -49,6 +51,24 @@ import org.jspecify.annotations.Nullable;
  * during retrieval operations ({@code getSession}, {@code createSession}).
  */
 public final class InMemorySessionService implements BaseSessionService {
+
+  private static final Logger logger = LoggerFactory.getLogger(InMemorySessionService.class);
+
+  /** What {@code createSession} does when {@code sessionId} is already in use. */
+  public enum DuplicateSessionIdBehavior {
+    /**
+     * Replaces the stored session, discarding its events and state.
+     *
+     * @deprecated Construct the service with {@link #REJECT} instead, which becomes the default in
+     *     a future release.
+     */
+    @Deprecated
+    OVERWRITE,
+
+    /** Rejects the call with {@link SessionException}. Becomes the default in a future release. */
+    REJECT;
+  }
+
   // Structure: appName -> userId -> sessionId -> Session
   private final ConcurrentMap<String, ConcurrentMap<String, ConcurrentMap<String, Session>>>
       sessions;
@@ -58,8 +78,26 @@ public final class InMemorySessionService implements BaseSessionService {
   // Structure: appName -> stateKey -> stateValue
   private final ConcurrentMap<String, ConcurrentMap<String, Object>> appState;
 
-  /** Creates a new instance of the in-memory session service with empty storage. */
+  private final DuplicateSessionIdBehavior duplicateSessionIdBehavior;
+
+  /**
+   * Creates a new instance of the in-memory session service with empty storage. A duplicate session
+   * ID overwrites the stored session, which stays the default until callers have migrated.
+   */
   public InMemorySessionService() {
+    this(DuplicateSessionIdBehavior.OVERWRITE);
+  }
+
+  /**
+   * Creates a new instance of the in-memory session service with empty storage.
+   *
+   * @param duplicateSessionIdBehavior What {@code createSession} does when the session ID is
+   *     already in use.
+   */
+  public InMemorySessionService(DuplicateSessionIdBehavior duplicateSessionIdBehavior) {
+    this.duplicateSessionIdBehavior =
+        Objects.requireNonNull(
+            duplicateSessionIdBehavior, "duplicateSessionIdBehavior cannot be null");
     this.sessions = new ConcurrentHashMap<>();
     this.userState = new ConcurrentHashMap<>();
     this.appState = new ConcurrentHashMap<>();
@@ -102,10 +140,22 @@ public final class InMemorySessionService implements BaseSessionService {
             .lastUpdateTime(Instant.now())
             .build();
 
-    sessions
-        .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
-        .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>())
-        .put(resolvedSessionId, newSession);
+    ConcurrentMap<String, Session> userSessions =
+        sessions
+            .computeIfAbsent(appName, unused -> new ConcurrentHashMap<>())
+            .computeIfAbsent(userId, unused -> new ConcurrentHashMap<>());
+    if (duplicateSessionIdBehavior == DuplicateSessionIdBehavior.REJECT) {
+      if (userSessions.putIfAbsent(resolvedSessionId, newSession) != null) {
+        return Single.error(new SessionException(SessionException.SESSION_ALREADY_EXISTS));
+      }
+    } else {
+      Session previous = userSessions.put(resolvedSessionId, newSession);
+      if (previous != null) {
+        logger.info(
+            "Replaced an existing session because its ID was reused; its events and state are"
+                + " discarded.");
+      }
+    }
 
     // Create a mutable copy for the return value
     Session returnCopy = copySession(newSession);

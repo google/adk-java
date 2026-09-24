@@ -31,6 +31,9 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.utils.Constants;
 import com.google.api.core.ApiFutures;
+import com.google.api.gax.grpc.GrpcStatusCode;
+import com.google.api.gax.rpc.AlreadyExistsException;
+import com.google.api.gax.rpc.PermissionDeniedException;
 import com.google.cloud.firestore.CollectionReference;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
@@ -45,6 +48,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
+import io.grpc.Status;
 import io.reactivex.rxjava3.observers.TestObserver;
 import java.time.Instant;
 import java.util.Collections;
@@ -52,6 +56,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -130,7 +135,7 @@ public class FirestoreSessionServiceTest {
 
     // Default mock for writes
     lenient()
-        .when(mockSessionDocRef.set(anyMap()))
+        .when(mockSessionDocRef.create(anyMap()))
         .thenReturn(ApiFutures.immediateFuture(mockWriteResult));
     lenient()
         .when(mockSessionDocRef.update(anyMap()))
@@ -307,7 +312,7 @@ public class FirestoreSessionServiceTest {
           assertThat(session.id()).isEqualTo(SESSION_ID);
           return true;
         });
-    verify(mockSessionDocRef).set(anyMap());
+    verify(mockSessionDocRef).create(anyMap());
   }
 
   /** Tests that createSession creates a new session with a generated session ID. */
@@ -334,7 +339,7 @@ public class FirestoreSessionServiceTest {
           assertThat(session.id()).isNotEmpty();
           return true;
         });
-    verify(mockSessionDocRef).set(anyMap());
+    verify(mockSessionDocRef).create(anyMap());
   }
 
   /** Tests that createSession creates a new session with an empty session ID. */
@@ -358,7 +363,7 @@ public class FirestoreSessionServiceTest {
           assertThat(session.id()).isNotEqualTo("  ");
           return true;
         });
-    verify(mockSessionDocRef).set(anyMap());
+    verify(mockSessionDocRef).create(anyMap());
   }
 
   /** Tests that createSession creates a new session with an empty state when null state is */
@@ -389,6 +394,64 @@ public class FirestoreSessionServiceTest {
         .createSession(null, USER_ID, null, SESSION_ID)
         .test()
         .assertError(NullPointerException.class);
+  }
+
+  /** Tests that createSession rejects a session ID that is already taken. */
+  @Test
+  void createSession_withSessionIdAlreadyTaken_failsWithSessionException() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.create(anyMap()))
+        .thenReturn(
+            ApiFutures.immediateFailedFuture(
+                new AlreadyExistsException(
+                    "Document already exists",
+                    /* cause= */ null,
+                    GrpcStatusCode.of(Status.Code.ALREADY_EXISTS),
+                    /* retryable= */ false)));
+
+    // Act
+    TestObserver<Session> testObserver =
+        sessionService.createSession(APP_NAME, USER_ID, null, SESSION_ID).test();
+
+    // Assert
+    testObserver.assertError(
+        e -> {
+          assertThat(e).isInstanceOf(SessionException.class);
+          assertThat(e).hasMessageThat().isEqualTo(SessionException.SESSION_ALREADY_EXISTS);
+          assertThat(e).hasCauseThat().isInstanceOf(AlreadyExistsException.class);
+          return true;
+        });
+  }
+
+  /**
+   * Tests that a write failure unrelated to a duplicate session ID is propagated rather than
+   * reported as one.
+   */
+  @Test
+  void createSession_whenWriteFailsForAnotherReason_propagatesFailure() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.create(anyMap()))
+        .thenReturn(
+            ApiFutures.immediateFailedFuture(
+                new PermissionDeniedException(
+                    "Missing or insufficient permissions",
+                    /* cause= */ null,
+                    GrpcStatusCode.of(Status.Code.PERMISSION_DENIED),
+                    /* retryable= */ false)));
+
+    // Act
+    TestObserver<Session> testObserver =
+        sessionService.createSession(APP_NAME, USER_ID, null, SESSION_ID).test();
+
+    // Assert
+    testObserver.assertError(
+        e -> {
+          assertThat(e).isInstanceOf(ExecutionException.class);
+          assertThat(e).hasCauseThat().isInstanceOf(PermissionDeniedException.class);
+          return true;
+        });
   }
 
   // --- appendEvent Tests ---
