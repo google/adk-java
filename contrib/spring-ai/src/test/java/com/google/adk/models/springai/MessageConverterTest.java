@@ -818,7 +818,7 @@ class MessageConverterTest {
 
   @Test
   void testToolOptionsPreserveProviderSpecificTypeToAvoidClassCastException() {
-    // Regression test for b/527041291 (GitHub adk-java #1295): Spring AI OpenAI 2.0.0 casts
+    // Regression test for GitHub adk-java #1295: Spring AI OpenAI 2.0.0 casts
     // Prompt.getOptions() directly to OpenAiChatOptions in createRequest(). When ADK passed a
     // provider-neutral DefaultToolCallingChatOptions, that cast threw a ClassCastException. Basing
     // the prompt options on the model's own options must keep the concrete provider type.
