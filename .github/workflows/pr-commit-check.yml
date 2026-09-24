@@ -13,8 +13,8 @@ on:
 # Defines the jobs that will run as part of the workflow.
 jobs:
   check-commit-count:
-    # The type of runner that the job will run on. 'ubuntu-latest' is a good default.
-    runs-on: ubuntu-latest
+    # The type of runner that the job will run on, pinned to a fixed Ubuntu release.
+    runs-on: ubuntu-24.04
 
     # The steps that will be executed as part of the job.
     steps:

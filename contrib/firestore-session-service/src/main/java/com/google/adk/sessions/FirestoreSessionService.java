@@ -21,7 +21,9 @@ import com.google.adk.utils.ApiFutureUtils;
 import com.google.adk.utils.Constants;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
+import com.google.api.gax.rpc.AlreadyExistsException;
 import com.google.cloud.firestore.CollectionReference;
+import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
@@ -48,9 +50,10 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,6 +75,9 @@ public class FirestoreSessionService implements BaseSessionService {
   private static final String ID_KEY = Constants.KEY_ID;
   private static final String UPDATE_TIME_KEY = Constants.KEY_UPDATE_TIME;
   private static final String TIMESTAMP_KEY = Constants.KEY_TIMESTAMP;
+
+  /** Random token each create stores, so a retried create can detect its own write. */
+  static final String CREATE_TOKEN_KEY = "createToken";
 
   /** Constructor for FirestoreSessionService. */
   public FirestoreSessionService(Firestore firestore) {
@@ -96,7 +102,10 @@ public class FirestoreSessionService implements BaseSessionService {
     return createSession(appName, userId, (Map<String, Object>) state, sessionId);
   }
 
-  /** Creates a new session in Firestore. */
+  /**
+   * Creates a new session in Firestore. Session IDs are unique per user across apps, so creating
+   * one the user already has under any app fails with {@link SessionException}.
+   */
   @Override
   public Single<Session> createSession(
       String appName,
@@ -139,11 +148,22 @@ public class FirestoreSessionService implements BaseSessionService {
           sessionData.put(USER_ID_KEY, newSession.userId());
           sessionData.put(UPDATE_TIME_KEY, newSession.lastUpdateTime().toString());
           sessionData.put(STATE_KEY, newSession.state());
+          String createToken = UUID.randomUUID().toString();
+          sessionData.put(CREATE_TOKEN_KEY, createToken);
 
-          // Asynchronously write to Firestore and wait for the result
-          ApiFuture<WriteResult> future =
-              getSessionsCollection(userId).document(resolvedSessionId).set(sessionData);
-          future.get(); // Block until the write is complete
+          // Unlike set(), create() fails if the session already exists instead of replacing it.
+          DocumentReference sessionDoc = getSessionsCollection(userId).document(resolvedSessionId);
+          try {
+            sessionDoc.create(sessionData).get();
+          } catch (ExecutionException e) {
+            if (!(e.getCause() instanceof AlreadyExistsException)) {
+              throw e;
+            }
+            // A retry after a lost reply fails on this call's own write; its token means success.
+            if (!createToken.equals(sessionDoc.get().get().getString(CREATE_TOKEN_KEY))) {
+              throw new SessionException(SessionException.SESSION_ALREADY_EXISTS, e.getCause());
+            }
+          }
 
           return newSession;
         });
