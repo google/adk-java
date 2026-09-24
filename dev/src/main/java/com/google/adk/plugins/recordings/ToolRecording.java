@@ -21,7 +21,7 @@ import com.google.auto.value.AutoValue;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Paired tool call and response for replay. */
 @AutoValue

@@ -15,10 +15,10 @@
  */
 package com.google.adk.models.springai.properties;
 
-import jakarta.annotation.Nullable;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
+import org.jspecify.annotations.Nullable;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -41,7 +41,7 @@ import org.springframework.validation.annotation.Validated;
 @Validated
 public class SpringAIProperties {
 
-  @Nullable private String model;
+  private @Nullable String model;
 
   /** Default temperature for controlling randomness in responses. Must be between 0.0 and 2.0. */
   @DecimalMin(value = "0.0", message = "Temperature must be at least 0.0")
