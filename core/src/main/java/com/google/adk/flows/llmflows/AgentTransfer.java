@@ -44,16 +44,15 @@ public final class AgentTransfer implements RequestProcessor {
           "Base agent in InvocationContext is not an instance of Agent.");
     }
 
-    List<BaseAgent> transferTargets = getTransferTargets(agent);
-    if (transferTargets.isEmpty()) {
+    List<BaseAgent> targets = transferTargets(agent);
+    if (targets.isEmpty()) {
       return Single.just(
           RequestProcessor.RequestProcessingResult.create(request, ImmutableList.of()));
     }
 
     LlmRequest.Builder builder =
         request.toBuilder()
-            .appendInstructions(
-                ImmutableList.of(buildTargetAgentsInstructions(agent, transferTargets)));
+            .appendInstructions(ImmutableList.of(buildTargetAgentsInstructions(agent, targets)));
 
     FunctionTool agentTransferTool = createTransferToAgentTool();
     agentTransferTool.processLlmRequest(builder, ToolContext.builder(context).build());
@@ -119,30 +118,29 @@ public final class AgentTransfer implements RequestProcessor {
     return sb.toString();
   }
 
-  /** Returns valid transfer targets: sub-agents, parent, and peers (if allowed). */
-  private List<BaseAgent> getTransferTargets(LlmAgent agent) {
-    List<BaseAgent> transferTargets = new ArrayList<>();
-    transferTargets.addAll(agent.subAgents()); // Add all sub-agents
-
+  /**
+   * Returns the agents {@code agent} may transfer to: its sub-agents, plus its parent and peers
+   * unless disallowed. Transfer to a parent or peer needs an {@link LlmAgent} parent. Order is
+   * load-bearing: it is the order the target list is rendered to the model in. {@code LlmAgent}
+   * keeps the same rule for its own use, since it cannot reach this one.
+   */
+  static ImmutableList<BaseAgent> transferTargets(LlmAgent agent) {
+    List<BaseAgent> targets = new ArrayList<>(agent.subAgents());
     BaseAgent parent = agent.parentAgent();
-    // Agents eligible to transfer must have an LLM-based agent parent.
     if (!(parent instanceof LlmAgent)) {
-      return transferTargets;
+      return ImmutableList.copyOf(targets);
     }
-
     if (!agent.disallowTransferToParent()) {
-      transferTargets.add(parent);
+      targets.add(parent);
     }
-
     if (!agent.disallowTransferToPeers()) {
-      for (BaseAgent peerAgent : parent.subAgents()) {
-        if (!peerAgent.name().equals(agent.name())) {
-          transferTargets.add(peerAgent);
+      for (BaseAgent peer : parent.subAgents()) {
+        if (!peer.name().equals(agent.name())) {
+          targets.add(peer);
         }
       }
     }
-
-    return transferTargets;
+    return ImmutableList.copyOf(targets);
   }
 
   @Schema(

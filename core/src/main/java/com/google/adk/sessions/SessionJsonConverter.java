@@ -114,6 +114,7 @@ final class SessionJsonConverter {
       putIfNotEmpty(actionsJson, "requestedAuthConfigs", actions.requestedAuthConfigs());
       putIfNotEmpty(
           actionsJson, "requestedToolConfirmations", actions.requestedToolConfirmations());
+      actions.agentState().ifPresent(v -> actionsJson.put("agentState", v));
       eventJson.put("actions", actionsJson);
     }
     event.content().ifPresent(c -> eventJson.put("content", SessionUtils.encodeContent(c)));
@@ -151,6 +152,15 @@ final class SessionJsonConverter {
     }
   }
 
+  /** Returns {@code key} from {@code actions}, falling back to the copy under {@code rawEvent}. */
+  private static @Nullable Object checkpointValue(
+      @Nullable Map<String, Object> actions, @Nullable Map<String, Object> rawActions, String key) {
+    if (actions != null && actions.get(key) != null) {
+      return actions.get(key);
+    }
+    return rawActions == null ? null : rawActions.get(key);
+  }
+
   /**
    * Converts raw API event data into an {@link Event} object.
    *
@@ -180,10 +190,6 @@ final class SessionJsonConverter {
       if (escalate != null) {
         eventActionsBuilder.escalate(escalate);
       }
-      Boolean endOfAgent = (Boolean) actionsMap.get("endOfAgent");
-      if (endOfAgent != null) {
-        eventActionsBuilder.endOfAgent(endOfAgent);
-      }
       eventActionsBuilder.requestedAuthConfigs(
           Optional.ofNullable(actionsMap.get("requestedAuthConfigs"))
               .map(SessionJsonConverter::asConcurrentMapOfConcurrentMaps)
@@ -192,6 +198,32 @@ final class SessionJsonConverter {
           Optional.ofNullable(actionsMap.get("requestedToolConfirmations"))
               .map(SessionJsonConverter::asConcurrentMapOfToolConfirmations)
               .orElse(new ConcurrentHashMap<>()));
+    }
+
+    // Python's Vertex session service leaves agentState and endOfAgent out of "actions" and keeps
+    // them only under "rawEvent", so a session it wrote would otherwise load with no checkpoints.
+    Map<String, Object> rawActions = null;
+    Object rawEvent = apiEvent.get("rawEvent");
+    if (rawEvent instanceof Map) {
+      Object actions = ((Map<String, Object>) rawEvent).get("actions");
+      if (actions instanceof Map) {
+        rawActions = (Map<String, Object>) actions;
+      }
+    }
+    // Resolved per key, not as a whole map: a rawEvent carrying only one of the two must not
+    // shadow the other where "actions" does carry it.
+    Object endOfAgent = checkpointValue(actionsMap, rawActions, "endOfAgent");
+    if (endOfAgent instanceof Boolean value) {
+      eventActionsBuilder.endOfAgent(value);
+    } else if (endOfAgent != null) {
+      logger.warn("Ignoring 'endOfAgent' of unexpected type {}", endOfAgent.getClass().getName());
+    }
+    Object agentState = checkpointValue(actionsMap, rawActions, "agentState");
+    if (agentState instanceof Map) {
+      eventActionsBuilder.agentState((Map<String, Object>) agentState);
+    } else if (agentState != null) {
+      // Drop a foreign agentState rather than fail the whole session load on a bad cast.
+      logger.warn("Ignoring 'agentState' of unexpected type {}", agentState.getClass().getName());
     }
 
     Event event =
