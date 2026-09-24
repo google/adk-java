@@ -37,10 +37,7 @@ import java.util.Optional;
 public class SetModelResponseTool extends BaseTool {
   public static final String NAME = "set_model_response";
 
-  // Prefix of the SchemaUtils validation message after which the full schema is appended. Used to
-  // strip the schema dump from feedback on a best-effort basis; if SchemaUtils changes its wording
-  // the feedback simply stays unstripped. runAsync_unknownArg_feedbackOmitsSchemaDump pins the
-  // current format.
+  // Marker after which SchemaUtils appends the schema dump; stripped from feedback best-effort.
   private static final String OUTPUT_SCHEMA_DUMP_MARKER = " does not match agent output schema: ";
 
   private final Schema outputSchema;
@@ -92,21 +89,22 @@ public class SetModelResponseTool extends BaseTool {
     for (Map.Entry<String, Object> entry : values.entrySet()) {
       Object value = entry.getValue();
       if (value != null) {
-        result.put(entry.getKey(), excludeNullFields(value));
+        result.put(entry.getKey(), excludeNullsFromValue(value));
       }
     }
     return result;
   }
 
-  @SuppressWarnings("unchecked")
-  private static Object excludeNullFields(Object value) {
+  private static Object excludeNullsFromValue(Object value) {
     if (value instanceof Map<?, ?>) {
-      return excludeNullFields((Map<String, Object>) value);
+      @SuppressWarnings("unchecked") // Function-call args always have String keys.
+      Map<String, Object> map = (Map<String, Object>) value;
+      return excludeNullFields(map);
     }
     if (value instanceof List<?>) {
       List<Object> result = new ArrayList<>();
       for (Object item : (List<?>) value) {
-        result.add(excludeNullFields(item));
+        result.add(excludeNullsFromValue(item));
       }
       return result;
     }

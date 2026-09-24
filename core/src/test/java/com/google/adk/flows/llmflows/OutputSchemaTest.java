@@ -183,7 +183,8 @@ public final class OutputSchemaTest {
             .response(
                 ImmutableMap.of(
                     "error",
-                    "Validation Error found: field1 is required. Fix the errors and call it again."))
+                    "Validation Error found: field1 is required. Fix the errors and call it"
+                        + " again."))
             .build();
     Event event =
         Event.builder()
@@ -365,19 +366,19 @@ public final class OutputSchemaTest {
     // The retry request must carry the validation feedback from the first call back to the model:
     // the feedback names the missing required field, tying it to the first call's failure.
     assertThat(scriptedLlm.getRequests()).hasSize(2);
-    boolean feedbackSentBack =
+    Optional<String> feedbackError =
         scriptedLlm.getRequests().get(1).contents().stream()
             .flatMap(content -> content.parts().orElse(ImmutableList.of()).stream())
             .map(Part::functionResponse)
             .flatMap(Optional::stream)
-            .anyMatch(
-                fr ->
-                    Objects.equals(fr.name().orElse(""), SetModelResponseTool.NAME)
-                        && fr.response().orElse(ImmutableMap.of()).get("error")
-                            instanceof String error
-                        && error.contains("Validation Error found")
-                        && error.contains("field1"));
-    assertThat(feedbackSentBack).isTrue();
+            .filter(fr -> Objects.equals(fr.name().orElse(""), SetModelResponseTool.NAME))
+            .map(fr -> fr.response().orElse(ImmutableMap.of()).get("error"))
+            .filter(String.class::isInstance)
+            .map(String.class::cast)
+            .findFirst();
+    assertThat(feedbackError).isPresent();
+    assertThat(feedbackError.get()).contains("Validation Error found");
+    assertThat(feedbackError.get()).contains("field1");
 
     // Only the corrected, validated response becomes the final structured output.
     Event finalEvent = events.get(events.size() - 1);
