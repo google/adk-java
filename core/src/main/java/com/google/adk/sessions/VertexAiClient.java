@@ -147,8 +147,8 @@ final class VertexAiClient {
   }
 
   /**
-   * Wraps a value in an AIP-160 double-quoted string literal. Per go/aip/160, only backslashes and
-   * double quotes need escaping inside the quotes.
+   * Wraps a value in an AIP-160 double-quoted string literal. Per https://google.aip.dev/160, only
+   * backslashes and double quotes need escaping inside the quotes.
    */
   private static String quoteFilterLiteral(String value) {
     return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";

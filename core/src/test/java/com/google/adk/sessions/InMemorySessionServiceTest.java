@@ -16,13 +16,16 @@
 package com.google.adk.sessions;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.sessions.InMemorySessionService.DuplicateSessionIdBehavior;
 import io.reactivex.rxjava3.core.Single;
 import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -339,5 +342,89 @@ public final class InMemorySessionServiceTest {
     assertThat(retrieved.events().stream().map(Event::timestamp))
         .containsExactly(300L, 400L, 500L)
         .inOrder();
+  }
+
+  @Test
+  public void createSession_duplicateSessionId_byDefaultReplacesExistingSession() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Map<String, Object> state = new HashMap<>();
+    state.put("sessionKey", "sessionValue");
+    Session session = sessionService.createSession("app", "user", state, "session1").blockingGet();
+    var unused =
+        sessionService.appendEvent(session, Event.builder().timestamp(100).build()).blockingGet();
+
+    Session replacement =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+
+    assertThat(replacement.events()).isEmpty();
+    assertThat(replacement.state()).doesNotContainKey("sessionKey");
+    Session retrieved =
+        sessionService.getSession("app", "user", "session1", Optional.empty()).blockingGet();
+    assertThat(retrieved.events()).isEmpty();
+    assertThat(retrieved.state()).doesNotContainKey("sessionKey");
+  }
+
+  @Test
+  public void createSession_duplicateSessionId_whenRejecting_errorsAndKeepsExistingSession() {
+    InMemorySessionService sessionService =
+        new InMemorySessionService(DuplicateSessionIdBehavior.REJECT);
+    Map<String, Object> state = new HashMap<>();
+    state.put("sessionKey", "sessionValue");
+    Session session = sessionService.createSession("app", "user", state, "session1").blockingGet();
+    var unused =
+        sessionService.appendEvent(session, Event.builder().timestamp(100).build()).blockingGet();
+
+    Single<Session> duplicate =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1");
+
+    SessionException exception = assertThrows(SessionException.class, duplicate::blockingGet);
+    assertThat(exception).hasMessageThat().isEqualTo(SessionException.SESSION_ALREADY_EXISTS);
+    Session retrieved =
+        sessionService.getSession("app", "user", "session1", Optional.empty()).blockingGet();
+    assertThat(retrieved.events().stream().map(Event::timestamp)).containsExactly(100L);
+    assertThat(retrieved.state()).containsEntry("sessionKey", "sessionValue");
+  }
+
+  @Test
+  public void createSession_distinctSessionIds_whenRejecting_createsBoth() {
+    InMemorySessionService sessionService =
+        new InMemorySessionService(DuplicateSessionIdBehavior.REJECT);
+
+    Session first =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+    Session second =
+        sessionService.createSession("app", "user", new HashMap<>(), "session2").blockingGet();
+
+    assertThat(first.id()).isEqualTo("session1");
+    assertThat(second.id()).isEqualTo("session2");
+    assertThat(sessionService.listSessions("app", "user").blockingGet().sessions()).hasSize(2);
+  }
+
+  @Test
+  public void createSession_afterDelete_whenRejecting_reusesTheSameId() {
+    InMemorySessionService sessionService =
+        new InMemorySessionService(DuplicateSessionIdBehavior.REJECT);
+    var unused =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+    sessionService.deleteSession("app", "user", "session1").blockingAwait();
+
+    Session recreated =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+
+    assertThat(recreated.id()).isEqualTo("session1");
+  }
+
+  @Test
+  public void createSession_sameSessionIdDifferentUser_whenRejecting_isAllowed() {
+    InMemorySessionService sessionService =
+        new InMemorySessionService(DuplicateSessionIdBehavior.REJECT);
+    var unused =
+        sessionService.createSession("app", "user-a", new HashMap<>(), "session1").blockingGet();
+
+    Session other =
+        sessionService.createSession("app", "user-b", new HashMap<>(), "session1").blockingGet();
+
+    assertThat(other.id()).isEqualTo("session1");
+    assertThat(other.userId()).isEqualTo("user-b");
   }
 }
