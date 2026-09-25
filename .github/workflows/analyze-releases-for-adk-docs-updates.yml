@@ -23,7 +23,7 @@ on:
 
 jobs:
   analyze-new-release-for-adk-docs-updates:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Dry-run reads only (this repo + the public docs repo) and skips writes, so
     # the built-in GITHUB_TOKEN suffices. For --no-dry-run, use a PAT with write
     # access to the docs repo.

@@ -42,8 +42,6 @@ import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
-// TODO - b/413761119 update Agent.java when resolved.
-
 /** Represents an event in a session. */
 @JsonDeserialize(builder = Event.Builder.class)
 public class Event extends JsonBaseModel {
@@ -174,6 +172,12 @@ public class Event extends JsonBaseModel {
     this.errorCode = errorCode;
   }
 
+  /**
+   * Sets the finish reason from an {@link Optional}.
+   *
+   * @deprecated Use {@link #setFinishReason(FinishReason)} with {@code finishReason.orElse(null)}
+   *     instead.
+   */
   @Deprecated
   @SuppressWarnings("checkstyle:IllegalType")
   public void setFinishReason(Optional<FinishReason> finishReason) {
