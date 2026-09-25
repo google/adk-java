@@ -42,4 +42,10 @@ final class DevUiAssetsTest {
   public void assetRoot_windowsSeparators_areNormalized() {
     assertThat(DevUiAssets.assetRoot("C:\\srv\\ui")).isEqualTo("file:C:/srv/ui/");
   }
+
+  @Test
+  public void assetLocation_appendsToTheRoot() {
+    assertThat(DevUiAssets.assetLocation(null, DevUiAssets.RUNTIME_CONFIG_PATH))
+        .isEqualTo("classpath:/browser/assets/config/runtime-config.json");
+  }
 }
