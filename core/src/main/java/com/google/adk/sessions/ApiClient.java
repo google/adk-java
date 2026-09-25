@@ -154,7 +154,6 @@ abstract class ApiClient {
   private Optional<Map<String, String>> getTimeoutHeader(HttpOptions httpOptionsToApply) {
     if (httpOptionsToApply.timeout().isPresent()) {
       int timeoutInSeconds = (int) Math.ceil((double) httpOptionsToApply.timeout().get() / 1000.0);
-      // TODO(b/329147724): Document the usage of X-Server-Timeout header.
       return Optional.of(ImmutableMap.of("X-Server-Timeout", Integer.toString(timeoutInSeconds)));
     }
     return Optional.empty();

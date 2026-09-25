@@ -317,8 +317,6 @@ public class RemoteA2AAgent extends BaseAgent {
       emitter.tryOnError(new A2AClientError(message, e));
     }
 
-    // TODO: b/483038527 - The synchronized block might block the thread, we should optimize for
-    // performance in the future.
     synchronized void handleEvent(ClientEvent clientEvent, AgentCard unused) {
       // Mark the flow as done if it is already cancelled.
       if (!done) {
