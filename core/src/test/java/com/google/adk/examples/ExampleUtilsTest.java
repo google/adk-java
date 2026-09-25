@@ -45,7 +45,6 @@ public final class ExampleUtilsTest {
     }
   }
 
-  // TODO: sduskis - Should this 0 examples use case actually return ""?
   @Test
   public void buildFewShotFewShot_noExamples() {
     TestExampleProvider exampleProvider = new TestExampleProvider(ImmutableList.of());

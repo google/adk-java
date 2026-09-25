@@ -36,7 +36,6 @@ import reactor.core.publisher.Mono;
  * <p>This class provides methods for creating and initializing MCP client sessions, handling
  * different connection parameters and transport builders.
  */
-// TODO(b/413489523): Implement this class.
 public class McpSessionManager {
 
   private final Object connectionParams; // ServerParameters or SseServerParameters
