@@ -41,7 +41,7 @@ concurrency:
 
 jobs:
   agent-scan-issues:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Only run on the upstream repo, for newly-opened issues, the scheduled
     # sweep, or a manual dispatch.
     if: >-

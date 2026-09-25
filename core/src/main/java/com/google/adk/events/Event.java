@@ -42,8 +42,6 @@ import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
-// TODO - b/413761119 update Agent.java when resolved.
-
 /** Represents an event in a session. */
 @JsonDeserialize(builder = Event.Builder.class)
 public class Event extends JsonBaseModel {
