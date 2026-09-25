@@ -35,6 +35,7 @@ import com.google.genai.types.ToolResponse;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.functions.Predicate;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -162,6 +163,158 @@ public final class GeminiTest {
     assertThat(partial2Id).isEqualTo(final2Id);
     // The two distinct calls have distinct IDs.
     assertThat(partial1Id).isNotEqualTo(partial2Id);
+  }
+
+  // Mirrors ADK Python's test_streaming_fc_generates_consistent_id_across_chunks
+  // (tests/unittests/utils/test_streaming_utils.py:468): a call streamed across several chunks with
+  // no model-provided ID gets one generated ID on its first chunk. That ID rides the first partial
+  // event and the final aggregated call; continuation chunks carry no fresh ID that matches
+  // nothing.
+  @Test
+  public void processRawResponses_functionCallStreamedOverThreeChunks_partialsShareFinalId() {
+    GenerateContentResponse chunk1 =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .name("my_tool")
+                    .partialArgs(PartialArg.builder().jsonPath("$.x").stringValue("hel").build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse chunk2 =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .partialArgs(PartialArg.builder().jsonPath("$.x").stringValue("lo ").build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse chunk3 =
+        toResponse(
+            Candidate.builder()
+                .content(
+                    Content.builder()
+                        .parts(
+                            functionCallPart(
+                                FunctionCall.builder()
+                                    .partialArgs(
+                                        PartialArg.builder()
+                                            .jsonPath("$.x")
+                                            .stringValue("world")
+                                            .build())
+                                    .willContinue(false)
+                                    .build()))
+                        .build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+
+    ImmutableList<LlmResponse> responses =
+        ImmutableList.copyOf(
+            Gemini.processRawResponses(Flowable.just(chunk1, chunk2, chunk3)).blockingIterable());
+
+    // Three partial events (one per chunk) plus the final aggregated response.
+    assertThat(responses).hasSize(4);
+    FunctionCall finalCall =
+        Iterables.getLast(responses).content().get().parts().get().get(0).functionCall().get();
+    assertThat(finalCall.args().get()).containsExactly("x", "hello world");
+    String finalId = finalCall.id().orElseThrow();
+    assertThat(finalId).startsWith("adk-");
+    // The first chunk's partial event carries the id; the two continuation chunks carry none, so no
+    // partial event introduces a fresh id that correlates with nothing.
+    assertThat(functionCallId(responses.get(0), 0)).isEqualTo(finalId);
+    assertThat(part0FunctionCallId(responses.get(1))).isEmpty();
+    assertThat(part0FunctionCallId(responses.get(2))).isEmpty();
+  }
+
+  // Mirrors ADK Python's test_multiple_streaming_fcs_get_different_ids
+  // (tests/unittests/utils/test_streaming_utils.py:546): two calls each streamed in their own chunk
+  // get distinct generated IDs; a completed call's ID state resets before the next one begins.
+  @Test
+  public void processRawResponses_twoStreamedFunctionCallsInSeparateChunks_getDifferentIds() {
+    GenerateContentResponse chunk1 =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .name("tool_a")
+                    .partialArgs(PartialArg.builder().jsonPath("$.a").stringValue("val_a").build())
+                    .willContinue(false)
+                    .build()));
+    GenerateContentResponse chunk2 =
+        toResponse(
+            Candidate.builder()
+                .content(
+                    Content.builder()
+                        .parts(
+                            functionCallPart(
+                                FunctionCall.builder()
+                                    .name("tool_b")
+                                    .partialArgs(
+                                        PartialArg.builder()
+                                            .jsonPath("$.b")
+                                            .stringValue("val_b")
+                                            .build())
+                                    .willContinue(false)
+                                    .build()))
+                        .build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+
+    LlmResponse finalResponse =
+        Iterables.getLast(
+            ImmutableList.copyOf(
+                Gemini.processRawResponses(Flowable.just(chunk1, chunk2)).blockingIterable()));
+
+    assertThat(finalResponse.content().get().parts().get()).hasSize(2);
+    String idA = functionCallId(finalResponse, 0);
+    String idB = functionCallId(finalResponse, 1);
+    assertThat(idA).startsWith("adk-");
+    assertThat(idB).startsWith("adk-");
+    assertThat(idA).isNotEqualTo(idB);
+  }
+
+  // A model-provided ID on the first chunk of a streamed call is kept (not replaced by a generated
+  // one) and shared by the first partial event and the final call; continuation chunks carry no ID.
+  @Test
+  public void processRawResponses_streamedFunctionCallWithModelId_keepsModelId() {
+    GenerateContentResponse chunk1 =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .id("model-fc-id")
+                    .name("my_tool")
+                    .partialArgs(PartialArg.builder().jsonPath("$.x").stringValue("hel").build())
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse chunk2 =
+        toResponse(
+            Candidate.builder()
+                .content(
+                    Content.builder()
+                        .parts(
+                            functionCallPart(
+                                FunctionCall.builder()
+                                    .partialArgs(
+                                        PartialArg.builder()
+                                            .jsonPath("$.x")
+                                            .stringValue("lo")
+                                            .build())
+                                    .willContinue(false)
+                                    .build()))
+                        .build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+
+    ImmutableList<LlmResponse> responses =
+        ImmutableList.copyOf(
+            Gemini.processRawResponses(Flowable.just(chunk1, chunk2)).blockingIterable());
+
+    // partial(chunk1) + partial(chunk2) + final aggregated.
+    assertThat(responses).hasSize(3);
+    FunctionCall finalCall =
+        Iterables.getLast(responses).content().get().parts().get().get(0).functionCall().get();
+    assertThat(finalCall.args().get()).containsExactly("x", "hello");
+    assertThat(finalCall.id()).hasValue("model-fc-id");
+    // The model id rides the first partial event; the continuation chunk carries none.
+    assertThat(functionCallId(responses.get(0), 0)).isEqualTo("model-fc-id");
+    assertThat(part0FunctionCallId(responses.get(1))).isEmpty();
   }
 
   // Mirrors ADK Python's test_non_streaming_fc_generates_id_when_empty: a function call without an
@@ -1792,6 +1945,13 @@ public final class GeminiTest {
         .flatMap(Part::functionCall)
         .flatMap(FunctionCall::id)
         .orElseThrow();
+  }
+
+  /** Returns part 0's function-call ID, or empty when it has no function call or no ID. */
+  private static Optional<String> part0FunctionCallId(LlmResponse response) {
+    return GeminiUtil.getPart0FromLlmResponse(response)
+        .flatMap(Part::functionCall)
+        .flatMap(FunctionCall::id);
   }
 
   private static Predicate<LlmResponse> isPartialTextResponse(String expectedText) {

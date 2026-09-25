@@ -18,40 +18,40 @@ package com.google.adk.apps;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import com.google.adk.annotations.Experimental;
 import com.google.auto.value.AutoValue;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 
 /**
- * App resumability config, mirroring Python ADK v1's {@code ResumabilityConfig}: pause on a
- * long-running call and resume from the last event. Applies to all agents in the app.
+ * Resumability config for every agent in an app: pause on a long-running call and resume from the
+ * last event.
  *
- * <p>The two flags select the same resumption behavior and are mutually exclusive: set {@link
- * #isResumable()}, or the deprecated shim, but not both.
+ * <p>The two flags select different resumption flows and are mutually exclusive: {@link
+ * #isResumable()} checkpoints agent state and resumes from it, {@link
+ * #isPlainTextContinuationAutoResume()} selects the deprecated legacy flow, and with neither set
+ * the app never pauses.
  *
- * @deprecated Partial feature: only event-reconstruction-based pause/resume for {@code
- *     SequentialAgent} is implemented. Full session resumability (persisted agent state, durable
- *     resume, other workflow agents) is not yet available. Forward-compatible: the same config will
- *     drive full resumability once it lands.
+ * <p>Experimental: resume is best-effort and at-least-once, so a resuming tool must be idempotent
+ * and in-memory state is lost on resumption.
  */
-@Deprecated
+@Experimental
 @AutoValue
 public abstract class ResumabilityConfig {
 
-  /** Whether the app supports agent resumption. */
+  /** Whether the app supports agent resumption, checkpointing agent state as it runs. */
   public abstract boolean isResumable();
 
   /**
    * Whether a plain-text {@code runAsync} continuation -- a user message that is not a function
-   * response -- resumes the last unfinished invocation instead of starting a new one. Off by
-   * default, matching Python ADK, where a plain-text {@code runAsync} always starts a new
-   * invocation and a paused invocation is resumed explicitly.
+   * response -- resumes the last unfinished invocation instead of starting a new one; off by
+   * default.
    *
-   * <p>Selects the same resumption behavior as {@link #isResumable()}, with which it is mutually
-   * exclusive; it differs only in also resuming on a plain-text continuation.
+   * <p>Selects the legacy resumption flow, which reconstructs the resume point from session events
+   * and never persists agent state; mutually exclusive with {@link #isResumable()}.
    *
-   * @deprecated Back-compat shim for callers that deliver a resume as a plain-text turn. Migrate to
-   *     {@code Runner.runAsync(userId, sessionId, invocationId, message, runConfig, stateDelta)}
-   *     (or send a function response to the paused call) and set {@link #isResumable()} instead;
+   * @deprecated Back-compat shim for callers that deliver a resume as a plain-text turn; migrate to
+   *     {@code Runner.runAsync(userId, sessionId, invocationId, message, runConfig, stateDelta)} or
+   *     answer the paused call with a function response, and set {@link #isResumable()} instead;
    *     this flag will be removed.
    */
   @Deprecated
@@ -83,16 +83,15 @@ public abstract class ResumabilityConfig {
     /**
      * Builds the config, rejecting a combination of flags that has no defined behavior.
      *
-     * @throws IllegalArgumentException if both resumability and the deprecated shim are set; they
-     *     select the same behavior, so exactly one may be enabled.
+     * @throws IllegalArgumentException if both resumability and the legacy shim are enabled; they
+     *     select different resumption flows, so exactly one may be set.
      */
-    @SuppressWarnings("deprecation") // Validating the deprecated shim against the supported flag.
     public ResumabilityConfig build() {
       ResumabilityConfig config = autoBuild();
       checkArgument(
           !(config.isResumable() && config.isPlainTextContinuationAutoResume()),
           "resumable and plainTextContinuationAutoResume are mutually exclusive: set resumable for"
-              + " the supported flag, or the deprecated shim, but not both.");
+              + " the supported flow, or the deprecated shim for the legacy one.");
       return config;
     }
   }

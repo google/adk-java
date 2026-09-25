@@ -31,7 +31,6 @@ import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
 
 /** Represents the actions attached to an event. */
-// TODO - b/414081262 make json wire camelCase
 @JsonDeserialize(builder = EventActions.Builder.class)
 public class EventActions extends JsonBaseModel {
 

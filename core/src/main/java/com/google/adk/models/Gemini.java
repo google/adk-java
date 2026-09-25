@@ -380,15 +380,13 @@ public class Gemini extends BaseLlm {
       List<Part> parts =
           currentProcessedLlmResponse.content().flatMap(Content::parts).orElse(ImmutableList.of());
 
-      // Assign an ID to every function-call part up front, mirroring ADK Python's
-      // StreamingResponseAggregator: the same ID is reused in the partial and final responses so
-      // consumers can correlate them.
-      List<Part> partsWithIds = ensureFunctionCallIds(parts);
+      // The returned parts carry stream-ordered function-call IDs for the partial event.
+      ImmutableList<Part> processedParts = accumulateParts(parts);
 
-      if (accumulateParts(partsWithIds)) {
-        // partsWithIds is non-empty here, so the chunk's content (and its role) is present. Rebuild
-        // the partial content from the parts-with-IDs so its FC ID matches the final event.
-        Content.Builder rebuilt = Content.builder().parts(partsWithIds);
+      if (!processedParts.isEmpty()) {
+        // The chunk had content (and thus a role); rebuild the partial content from the processed
+        // parts so their FC IDs match the final event.
+        Content.Builder rebuilt = Content.builder().parts(processedParts);
         currentProcessedLlmResponse.content().flatMap(Content::role).ifPresent(rebuilt::role);
         return Flowable.just(
             currentProcessedLlmResponse.toBuilder().content(rebuilt.build()).partial(true).build());
@@ -408,29 +406,15 @@ public class Gemini extends BaseLlm {
     }
 
     /**
-     * Returns a list of parts where every function-call part has a non-empty ID. If a part's
-     * function call already has an ID, the original part is preserved; otherwise a new part with a
-     * client-generated ID is substituted. Non-FC parts are passed through unchanged.
+     * Returns the call unchanged if it already has a non-empty ID, otherwise a copy with a
+     * client-generated ID. Mirrors ADK Python's per-call ID generation (see {@link
+     * #processFunctionCallPart}).
      */
-    private static List<Part> ensureFunctionCallIds(List<Part> parts) {
-      List<Part> result = new ArrayList<>(parts.size());
-      for (Part part : parts) {
-        if (part.functionCall().isPresent()) {
-          FunctionCall fc = part.functionCall().get();
-          if (fc.id().map(String::isEmpty).orElse(true)) {
-            FunctionCall withId = fc.toBuilder().id(generateClientFunctionCallId()).build();
-            result.add(part.toBuilder().functionCall(withId).build());
-            continue;
-          }
-        }
-        result.add(part);
+    private static FunctionCall ensureId(FunctionCall fc) {
+      if (fc.id().map(String::isEmpty).orElse(true)) {
+        return fc.toBuilder().id(FunctionCallIds.generateClientFunctionCallId()).build();
       }
-      return result;
-    }
-
-    /** Generates a unique client-side function-call ID. */
-    private static String generateClientFunctionCallId() {
-      return FunctionCallIds.generateClientFunctionCallId();
+      return fc;
     }
 
     /**
@@ -438,17 +422,16 @@ public class Gemini extends BaseLlm {
      * (inline image/audio data, file data, code execution, server-side tool calls/responses,
      * standalone thought signatures, and future part types), which are appended verbatim as ADK
      * Python does. The empty-text part that ends a Gemini 3 stream is the one thing dropped.
-     * Function-call parts passed to this method are expected to already have IDs (see {@link
-     * #ensureFunctionCallIds}).
      *
-     * @return true if any content part was present, false otherwise.
+     * @return the parts for the partial event, with function-call IDs assigned in stream order (see
+     *     {@link #processFunctionCallPart}); empty exactly when the chunk carried no content to
+     *     emit
      */
-    private boolean accumulateParts(List<Part> parts) {
-      boolean hasContent = false;
+    private ImmutableList<Part> accumulateParts(List<Part> parts) {
+      ImmutableList.Builder<Part> processed = ImmutableList.builderWithExpectedSize(parts.size());
       for (Part part : parts) {
         String text = part.text().orElse("");
         if (!text.isEmpty()) {
-          hasContent = true;
           boolean isThought = part.thought().orElse(false);
           // Flush before capturing this chunk's signature below, or the signature of the run
           // starting here lands on the run being flushed.
@@ -465,29 +448,30 @@ public class Gemini extends BaseLlm {
             currentTextThoughtSignature = part.thoughtSignature().get();
           }
           currentTextBuffer.append(text);
+          processed.add(part);
         } else if (part.functionCall().isPresent()) {
-          hasContent = true;
-          processFunctionCallPart(part);
+          processed.add(processFunctionCallPart(part));
         } else if (isStreamTerminator(part)) {
           // Gemini 3 ends a stream with a bare empty text part; it carries nothing to keep.
         } else {
           // Everything else is appended as the model sent it, signature included. Relocating a
           // signature onto a neighbouring part would hand it back on a part the model never signed.
-          hasContent = true;
           flushTextBufferToSequence();
           accumulatedSequence.add(part);
+          processed.add(part);
         }
       }
-      return hasContent;
+      return processed.build();
     }
 
     /**
      * Processes a function-call part, mirroring ADK Python's {@code _process_function_call_part}. A
      * function call whose arguments are streamed across chunks (it carries {@code partialArgs} or
      * {@code willContinue=true}) is accumulated and flushed as a single complete part once it
-     * finishes; a complete (non-streaming) function call is appended directly.
+     * finishes; a complete (non-streaming) function call is appended directly. Returns the part
+     * with any client-generated ID assigned, for the partial event.
      */
-    private void processFunctionCallPart(Part part) {
+    private Part processFunctionCallPart(Part part) {
       FunctionCall fc = part.functionCall().get();
       boolean hasName = fc.name().filter(name -> !name.isEmpty()).isPresent();
       // A streamed call: it has partialArgs or willContinue, or is the nameless terminal
@@ -503,16 +487,22 @@ public class Gemini extends BaseLlm {
             && part.thoughtSignature().map(sig -> sig.length > 0).orElse(false)) {
           currentThoughtSignature = part.thoughtSignature().get();
         }
-        processStreamingFunctionCall(fc);
+        // Assign an ID on the call's first chunk only (none in progress), so continuation chunks
+        // keep whatever the model sent and the first partial event and final call correlate.
+        FunctionCall call = currentFcId == null ? ensureId(fc) : fc;
+        processStreamingFunctionCall(call);
+        return part.toBuilder().functionCall(call).build();
       } else if (hasName) {
         // Complete (non-streamed) call. Safety guard: the model should terminate a streamed call
         // with willContinue=false before starting a new one; flush any still-in-progress call so it
-        // is neither dropped nor merged. The part already has an ID assigned by
-        // ensureFunctionCallIds.
+        // is neither dropped nor merged.
         flushTextBufferToSequence();
         flushFunctionCallToSequence();
-        accumulatedSequence.add(part);
+        Part withId = part.toBuilder().functionCall(ensureId(fc)).build();
+        accumulatedSequence.add(withId);
+        return withId;
       }
+      return part;
     }
 
     /**
@@ -523,12 +513,9 @@ public class Gemini extends BaseLlm {
      */
     private void processStreamingFunctionCall(FunctionCall fc) {
       fc.name().filter(name -> !name.isEmpty()).ifPresent(name -> currentFcName = name);
-      // Use the first ID seen (the model's, if provided, otherwise a generated one) for the whole
-      // call so the partial and final events correlate.
-      if (currentFcId == null) {
-        currentFcId =
-            fc.id().filter(id -> !id.isEmpty()).orElseGet(() -> generateClientFunctionCallId());
-      }
+      // Record the id this chunk carries. processFunctionCallPart assigned one on the first chunk;
+      // continuation chunks normally carry none, so the first chunk's id survives (as ADK Python).
+      fc.id().filter(id -> !id.isEmpty()).ifPresent(id -> currentFcId = id);
       for (PartialArg partialArg : fc.partialArgs().orElse(ImmutableList.of())) {
         String jsonPath = partialArg.jsonPath().orElse("");
         if (jsonPath.isEmpty()) {
