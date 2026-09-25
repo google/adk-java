@@ -35,7 +35,7 @@ What actually happened? Include error messages or crash stack traces here.
 
  - ADK Library Version (see maven dependency):
  - OS: [e.g., macOS, Linux, Windows]
- - TS Version (tsc --version):
+ - Java Version (java -version):
 
 **Model Information:**
 
