@@ -21,14 +21,17 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.events.Event;
+import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.jspecify.annotations.Nullable;
 
 /** A {@link Session} object that encapsulates the {@link State} and {@link Event}s of a session. */
 @JsonDeserialize(builder = Session.Builder.class)
@@ -122,8 +125,11 @@ public final class Session extends JsonBaseModel {
 
     @CanIgnoreReturnValue
     @JsonProperty("events")
-    public Builder events(List<Event> events) {
-      this.events = Collections.synchronizedList(new ArrayList<>(events));
+    public Builder events(@Nullable List<Event> events) {
+      this.events =
+          events == null
+              ? Collections.synchronizedList(new ArrayList<>())
+              : Collections.synchronizedList(new ArrayList<>(events));
       return this;
     }
 
@@ -183,9 +189,61 @@ public final class Session extends JsonBaseModel {
     return state;
   }
 
+  /**
+   * Returns the mutable list of events backing this session, which also serves as the monitor for
+   * all event-helper synchronization.
+   *
+   * <p>Prefer {@link #immutableEvents()} when reading or iterating over events (to avoid {@link
+   * java.util.ConcurrentModificationException}), and {@link #addEvent(Event)} or {@link
+   * #addEvents(Collection)} when appending events. Direct access to the mutable backing list is
+   * discouraged and may eventually be marked as {@code @Deprecated}.
+   */
   @JsonProperty("events")
   public List<Event> events() {
     return events;
+  }
+
+  /**
+   * Returns a thread-safe, immutable snapshot of the session's events, synchronizing on the backing
+   * {@link #events()} list. Use this method whenever reading, iterating, streaming, filtering, or
+   * slicing ({@link List#subList}) session events to avoid {@link
+   * java.util.ConcurrentModificationException} under concurrent modifications.
+   */
+  public ImmutableList<Event> immutableEvents() {
+    synchronized (this.events) {
+      return ImmutableList.copyOf(events);
+    }
+  }
+
+  /**
+   * Appends a single {@link Event} to the session's event list while synchronizing on the backing
+   * {@link #events()} list; prefer over {@code events().add(event)}.
+   */
+  public void addEvent(Event event) {
+    synchronized (this.events) {
+      events.add(event);
+    }
+  }
+
+  /**
+   * Appends all {@link Event}s in the given collection to the session's event list while
+   * synchronizing on the backing {@link #events()} list; prefer over {@code
+   * events().addAll(events)}.
+   */
+  public void addEvents(Collection<Event> events) {
+    synchronized (this.events) {
+      this.events.addAll(events);
+    }
+  }
+
+  /**
+   * Removes all {@link Event}s from the session's event list while synchronizing on the backing
+   * {@link #events()} list; prefer over {@code events().clear()}.
+   */
+  void clearEvents() {
+    synchronized (this.events) {
+      events.clear();
+    }
   }
 
   @JsonProperty("appName")
@@ -230,13 +288,13 @@ public final class Session extends JsonBaseModel {
       String userId,
       String id,
       State state,
-      List<Event> events,
+      @Nullable List<Event> events,
       Instant lastUpdateTime) {
     this.id = id;
     this.appName = appName;
     this.userId = userId;
     this.state = state;
-    this.events = events;
+    this.events = events != null ? events : Collections.synchronizedList(new ArrayList<>());
     this.lastUpdateTime = lastUpdateTime;
   }
 }

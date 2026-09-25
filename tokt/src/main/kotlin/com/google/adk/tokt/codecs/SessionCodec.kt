@@ -20,6 +20,7 @@ import com.google.adk.kt.sessions.Session as KtSession
 import com.google.adk.kt.sessions.SessionKey
 import com.google.adk.kt.sessions.State
 import com.google.adk.sessions.Session as JavaSession
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.time.toKotlinInstant
 
 /** Converts a Java session (key, state, and event history) to the Kotlin [KtSession]. */
@@ -30,7 +31,8 @@ internal object SessionCodec {
       key = SessionKey(appName = session.appName(), userId = session.userId(), id = session.id()),
       // Translate the Java removal sentinel so no foreign sentinel leaks into the Kotlin state.
       state = State(initialState = session.state().mapValues { stateValueFromJava(it.value) }),
-      events = session.events().map { EventCodec.fromJava(it) }.toMutableList(),
+      // Thread-safe like a Kotlin Session's default: parallel tool calls may append during reads.
+      events = CopyOnWriteArrayList(session.immutableEvents().map { EventCodec.fromJava(it) }),
       lastUpdateTime = (session.lastUpdateTime() ?: java.time.Instant.EPOCH).toKotlinInstant(),
     )
 }
