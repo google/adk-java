@@ -183,7 +183,7 @@ public final class BaseToolTest {
   }
 
   @Test
-  public void processLlmRequestWithLatestAliasAddsToolToConfig() {
+  public void processLlmRequestWithGoogleSearchToolAndLatestAliasAddsToolToConfig() {
     final GoogleSearchTool googleSearchTool = new GoogleSearchTool();
     LlmRequest.Builder builder =
         LlmRequest.builder().model("gemini-flash-latest").build().toBuilder();
@@ -194,19 +194,23 @@ public final class BaseToolTest {
   }
 
   @Test
-  public void processLlmRequestWithUnsupportedModelReturnsError() {
-    final GoogleSearchTool googleSearchTool = new GoogleSearchTool();
-    LlmRequest.Builder builder = LlmRequest.builder().model("text-bison-001").build().toBuilder();
-    Completable result = googleSearchTool.processLlmRequest(builder, null);
-    result.test().assertError(IllegalArgumentException.class);
+  public void processLlmRequestWithGoogleSearchToolAndNonGeminiModelAddsToolToConfig() {
+    GoogleSearchTool googleSearchTool = new GoogleSearchTool();
+    LlmRequest.Builder builder = LlmRequest.builder().model("text-bison-001");
+    Completable result = googleSearchTool.processLlmRequest(builder, /* toolContext= */ null);
+    result.test().assertComplete();
+    assertThat(builder.build().config().get().tools().get())
+        .containsExactly(Tool.builder().googleSearch(GoogleSearch.builder().build()).build());
   }
 
   @Test
-  public void processLlmRequest_WithNullModel_ReturnsError() {
-    final GoogleSearchTool googleSearchTool = new GoogleSearchTool();
-    LlmRequest.Builder builder = LlmRequest.builder().build().toBuilder();
-    Completable result = googleSearchTool.processLlmRequest(builder, null);
-    result.test().assertError(IllegalArgumentException.class);
+  public void processLlmRequestWithGoogleSearchToolAndNoModelAddsToolToConfig() {
+    GoogleSearchTool googleSearchTool = new GoogleSearchTool();
+    LlmRequest.Builder builder = LlmRequest.builder();
+    Completable result = googleSearchTool.processLlmRequest(builder, /* toolContext= */ null);
+    result.test().assertComplete();
+    assertThat(builder.build().config().get().tools().get())
+        .containsExactly(Tool.builder().googleSearch(GoogleSearch.builder().build()).build());
   }
 
   @Test
@@ -236,6 +240,48 @@ public final class BaseToolTest {
         .containsExactly(
             Tool.builder().functionDeclarations(ImmutableList.of(functionDeclaration)).build(),
             Tool.builder().urlContext(UrlContext.builder().build()).build());
+  }
+
+  @Test
+  public void processLlmRequestWithUrlContextToolAndLatestAliasAddsToolToConfig() {
+    UrlContextTool urlContextTool = new UrlContextTool();
+    LlmRequest.Builder builder = LlmRequest.builder().model("gemini-flash-latest");
+    Completable result = urlContextTool.processLlmRequest(builder, /* toolContext= */ null);
+    result.test().assertComplete();
+    assertThat(builder.build().config().get().tools().get())
+        .containsExactly(Tool.builder().urlContext(UrlContext.builder().build()).build());
+  }
+
+  @Test
+  public void processLlmRequestWithUrlContextToolAndResourcePathModelAddsToolToConfig() {
+    UrlContextTool urlContextTool = new UrlContextTool();
+    LlmRequest.Builder builder =
+        LlmRequest.builder()
+            .model("projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash");
+    Completable result = urlContextTool.processLlmRequest(builder, /* toolContext= */ null);
+    result.test().assertComplete();
+    assertThat(builder.build().config().get().tools().get())
+        .containsExactly(Tool.builder().urlContext(UrlContext.builder().build()).build());
+  }
+
+  @Test
+  public void processLlmRequestWithUrlContextToolAndNonGeminiModelAddsToolToConfig() {
+    UrlContextTool urlContextTool = new UrlContextTool();
+    LlmRequest.Builder builder = LlmRequest.builder().model("text-bison-001");
+    Completable result = urlContextTool.processLlmRequest(builder, /* toolContext= */ null);
+    result.test().assertComplete();
+    assertThat(builder.build().config().get().tools().get())
+        .containsExactly(Tool.builder().urlContext(UrlContext.builder().build()).build());
+  }
+
+  @Test
+  public void processLlmRequestWithUrlContextToolAndNoModelAddsToolToConfig() {
+    UrlContextTool urlContextTool = new UrlContextTool();
+    LlmRequest.Builder builder = LlmRequest.builder();
+    Completable result = urlContextTool.processLlmRequest(builder, /* toolContext= */ null);
+    result.test().assertComplete();
+    assertThat(builder.build().config().get().tools().get())
+        .containsExactly(Tool.builder().urlContext(UrlContext.builder().build()).build());
   }
 
   private static InvocationContext.Builder testInvocationContext() {
@@ -397,16 +443,6 @@ public final class BaseToolTest {
     testObserver.assertComplete();
     TestToolArgs expected = new TestToolArgs(42, "barbar");
     testObserver.assertValue(expected);
-  }
-
-  @Test
-  public void testProcessLlmRequest_WithNoModel_DoesNotThrowsException() {
-    GoogleSearchTool tool = GoogleSearchTool.INSTANCE;
-    LlmRequest.Builder requestBuilder = LlmRequest.builder();
-
-    tool.processLlmRequest(requestBuilder, null);
-
-    assertNotNull(requestBuilder);
   }
 
   public record TestToolArgs(int i, String s) {}
