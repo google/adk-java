@@ -31,7 +31,6 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-// TODO(b/413489523): Add support for auth. This is a TODO for Python as well.
 /**
  * Initializes a MCP tool.
  *
