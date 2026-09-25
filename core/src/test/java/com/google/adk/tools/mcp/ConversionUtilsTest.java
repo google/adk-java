@@ -58,7 +58,7 @@ public final class ConversionUtilsTest {
 
     assertThat(result.name()).isEqualTo("withParams");
     assertThat(result.description()).isEqualTo("has params");
-    assertThat(result.inputSchema()).isNotNull();
+    assertThat(result.inputSchema()).containsEntry("type", "OBJECT");
   }
 
   @Test

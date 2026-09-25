@@ -521,8 +521,6 @@ public final class Contents implements RequestProcessor {
       return events;
     }
 
-    // TODO: b/412663475 - Handle parallel function calls within the same event. Currently, this
-    // throws an error.
     if (events.isEmpty() || Iterables.getLast(events).functionResponses().isEmpty()) {
       // No need to process if the list is empty or the last event is not a function response
       return events;

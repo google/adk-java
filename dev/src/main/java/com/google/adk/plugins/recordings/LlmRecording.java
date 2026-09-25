@@ -22,7 +22,7 @@ import com.google.adk.models.LlmResponse;
 import com.google.auto.value.AutoValue;
 import java.util.List;
 import java.util.Optional;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /** Paired LLM request and response for replay. */
 @AutoValue

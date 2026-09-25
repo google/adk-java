@@ -702,8 +702,7 @@ public class BigQueryAgentAnalyticsPluginTest {
     // An empty author is not a usable fallback: withFallbackAgent guards on
     // `author != null && !author.isEmpty()`, so fallbackAgentName stays unset and resolveAgentName
     // yields the "unknown" sentinel rather than an empty agent name. Pins the `&&` against a
-    // `||`-mutation (go/mutation-testing), which would stamp "" as the agent for empty-author
-    // events.
+    // `||`-mutation, which would stamp "" as the agent for empty-author events.
     when(mockInvocationContext.agent()).thenReturn(null);
     Event event =
         Event.builder()
@@ -726,7 +725,7 @@ public class BigQueryAgentAnalyticsPluginTest {
     // A null author must be short-circuited by the `author != null` half of withFallbackAgent's
     // guard so `author.isEmpty()` is never dereferenced. Exercised via the AGENT_RESPONSE path
     // (whose extraAttributes tolerate a null author, unlike the STATE_DELTA map). Pins the `&&`
-    // against a `||`-mutation (go/mutation-testing), which would NPE on null authors.
+    // against a `||`-mutation, which would NPE on null authors.
     when(mockInvocationContext.agent()).thenReturn(null);
     Event event =
         Event.builder()
