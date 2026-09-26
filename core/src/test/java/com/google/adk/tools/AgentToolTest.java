@@ -16,6 +16,8 @@
 
 package com.google.adk.tools;
 
+import static com.google.adk.testing.TestUtils.createInvocationContext;
+import static com.google.adk.testing.TestUtils.createSubAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.truth.Truth.assertThat;
@@ -26,12 +28,16 @@ import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
+import com.google.adk.agents.RunConfig.StreamingMode;
+import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.utils.ComponentRegistry;
 import com.google.common.collect.ImmutableList;
@@ -869,6 +875,42 @@ public final class AgentToolTest {
         agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
 
     assertThat(callbackCalled.get()).isFalse();
+  }
+
+  @Test
+  public void call_propagatesCallerRunConfig() throws Exception {
+    TestBaseAgent testAgent = createSubAgent("agent_name");
+    AgentTool agentTool = AgentTool.create(testAgent);
+    RunConfig runConfig =
+        RunConfig.builder()
+            .toolExecutionMode(ToolExecutionMode.SEQUENTIAL)
+            .maxLlmCalls(7)
+            .customMetadata(ImmutableMap.of("tier", "x"))
+            .build();
+    ToolContext toolContext =
+        ToolContext.builder(createInvocationContext(testAgent, runConfig)).build();
+
+    Map<String, Object> unused =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(testAgent.getLastInvocationContext().runConfig()).isEqualTo(runConfig);
+  }
+
+  @Test
+  public void call_withStreamingRunConfig_runsAgentWithoutStreaming() throws Exception {
+    TestBaseAgent testAgent = createSubAgent("agent_name");
+    AgentTool agentTool = AgentTool.create(testAgent);
+    RunConfig runConfig =
+        RunConfig.builder().streamingMode(StreamingMode.SSE).maxLlmCalls(7).build();
+    ToolContext toolContext =
+        ToolContext.builder(createInvocationContext(testAgent, runConfig)).build();
+
+    Map<String, Object> unused =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    // Only the streaming mode changes; the other settings still come from the caller.
+    assertThat(testAgent.getLastInvocationContext().runConfig())
+        .isEqualTo(runConfig.toBuilder().streamingMode(StreamingMode.NONE).build());
   }
 
   private ToolContext createToolContext(BaseAgent agent) {

@@ -25,6 +25,8 @@ import com.google.adk.agents.BaseAgentConfig;
 import com.google.adk.agents.ConfigAgentUtils;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
+import com.google.adk.agents.RunConfig.StreamingMode;
 import com.google.adk.events.Event;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.runner.InMemoryRunner;
@@ -186,10 +188,20 @@ public class AgentTool extends BaseTool {
             ? ImmutableList.of(toolContext.invocationContext().pluginManager())
             : ImmutableList.of();
     Runner runner = new InMemoryRunner(this.agent, toolContext.agentName(), plugins);
+    // The agent runs as part of the caller's invocation, so it follows the caller's RunConfig
+    // instead of the defaults; maxLlmCalls still counts the nested run on its own. It always runs
+    // unary, though: its events are not forwarded and the result is read from the last one, which
+    // in a streamed run may hold only the final chunk.
+    RunConfig callerRunConfig = toolContext.invocationContext().runConfig();
+    RunConfig runConfig =
+        callerRunConfig.streamingMode() == StreamingMode.NONE
+            ? callerRunConfig
+            : callerRunConfig.toBuilder().streamingMode(StreamingMode.NONE).build();
     return runner
         .sessionService()
         .createSession(toolContext.agentName(), "tmp-user", toolContext.state(), null)
-        .flatMapPublisher(session -> runner.runAsync(session.userId(), session.id(), content))
+        .flatMapPublisher(
+            session -> runner.runAsync(session.userId(), session.id(), content, runConfig))
         .doOnNext(
             event -> {
               if (event.actions() != null
