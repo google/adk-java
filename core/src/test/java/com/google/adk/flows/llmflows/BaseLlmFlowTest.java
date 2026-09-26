@@ -35,6 +35,7 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
+import com.google.adk.models.LlmCallsLimitExceededException;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.testing.TestLlm;
@@ -59,6 +60,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -189,6 +191,32 @@ public final class BaseLlmFlowTest {
     assertEqualIgnoringFunctionIds(
         events.get(3).content().get(),
         Content.fromParts(Part.fromFunctionResponse("my_function", testResponse)));
+  }
+
+  @Test
+  public void run_modelRespondingOnSubscribingThread_reachesMaxLlmCallsWithoutStackOverflow() {
+    // The built-in models emit a non-streaming response on the subscribing thread, as
+    // Flowable.just does here. Running the steps must not nest one step's subscription inside the
+    // previous step's completion, or the stack overflows long before maxLlmCalls is reached.
+    int maxLlmCalls = 2_000;
+    Content contentWithFunctionCall =
+        Content.fromParts(Part.fromFunctionCall("my_function", ImmutableMap.of("arg1", "value1")));
+    TestLlm testLlm =
+        createTestLlm(() -> Flowable.just(createLlmResponse(contentWithFunctionCall)));
+    ImmutableMap<String, Object> testResponse =
+        ImmutableMap.<String, Object>of("response", "response for my_function");
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm)
+                .tools(ImmutableList.of(new TestTool("my_function", testResponse)))
+                .build(),
+            RunConfig.builder().maxLlmCalls(maxLlmCalls).build());
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    TestSubscriber<Event> subscriber = baseLlmFlow.run(invocationContext).test();
+
+    subscriber.assertError(LlmCallsLimitExceededException.class);
+    assertThat(testLlm.getRequests()).hasSize(maxLlmCalls);
   }
 
   @Test
