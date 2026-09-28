@@ -68,7 +68,6 @@ public final class BigQuerySchema {
                   "{\"encoding\": \"WKT\"}"));
 
   /** Returns the BigQuery schema for the events table. */
-  // TODO(b/491848381): Rely on the same schema defined for python plugin.
   public static Schema getEventsSchema() {
     return Schema.of(
         Field.newBuilder("timestamp", StandardSQLTypeName.TIMESTAMP)
