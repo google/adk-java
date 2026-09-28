@@ -31,7 +31,6 @@ import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
 
 /** Represents the actions attached to an event. */
-// TODO - b/414081262 make json wire camelCase
 @JsonDeserialize(builder = EventActions.Builder.class)
 public class EventActions extends JsonBaseModel {
 
@@ -47,6 +46,7 @@ public class EventActions extends JsonBaseModel {
   private @Nullable Map<String, Object> agentState;
   private @Nullable EventCompaction compaction;
   private @Nullable Object setModelResponse;
+  private @Nullable String rewindBeforeInvocationId;
 
   /** Default constructor for Jackson. */
   public EventActions() {
@@ -71,6 +71,7 @@ public class EventActions extends JsonBaseModel {
     this.agentState = builder.agentState;
     this.compaction = builder.compaction;
     this.setModelResponse = builder.setModelResponse;
+    this.rewindBeforeInvocationId = builder.rewindBeforeInvocationId;
   }
 
   @JsonProperty("skipSummarization")
@@ -231,6 +232,20 @@ public class EventActions extends JsonBaseModel {
     this.setModelResponse = setModelResponse;
   }
 
+  /**
+   * On a rewind event, the ID of the invocation to rewind before: the history from that invocation
+   * up to the rewind event is dropped. ADK Java does not apply rewinds itself; the field exists for
+   * runtimes that do, such as ADK Kotlin.
+   */
+  @JsonProperty("rewindBeforeInvocationId")
+  public Optional<String> rewindBeforeInvocationId() {
+    return Optional.ofNullable(rewindBeforeInvocationId);
+  }
+
+  public void setRewindBeforeInvocationId(@Nullable String rewindBeforeInvocationId) {
+    this.rewindBeforeInvocationId = rewindBeforeInvocationId;
+  }
+
   public static Builder builder() {
     return new Builder();
   }
@@ -258,7 +273,8 @@ public class EventActions extends JsonBaseModel {
         && (endOfAgent == that.endOfAgent)
         && Objects.equals(agentState, that.agentState)
         && Objects.equals(compaction, that.compaction)
-        && Objects.equals(setModelResponse, that.setModelResponse);
+        && Objects.equals(setModelResponse, that.setModelResponse)
+        && Objects.equals(rewindBeforeInvocationId, that.rewindBeforeInvocationId);
   }
 
   @Override
@@ -275,7 +291,8 @@ public class EventActions extends JsonBaseModel {
         endOfAgent,
         agentState,
         compaction,
-        setModelResponse);
+        setModelResponse,
+        rewindBeforeInvocationId);
   }
 
   /** Builder for {@link EventActions}. */
@@ -292,6 +309,7 @@ public class EventActions extends JsonBaseModel {
     private @Nullable Map<String, Object> agentState;
     private @Nullable EventCompaction compaction;
     private @Nullable Object setModelResponse;
+    private @Nullable String rewindBeforeInvocationId;
 
     public Builder() {
       this.stateDelta = new ConcurrentHashMap<>();
@@ -315,6 +333,7 @@ public class EventActions extends JsonBaseModel {
       this.agentState = eventActions.agentState;
       this.compaction = eventActions.compaction;
       this.setModelResponse = eventActions.setModelResponse;
+      this.rewindBeforeInvocationId = eventActions.rewindBeforeInvocationId;
     }
 
     @CanIgnoreReturnValue
@@ -436,6 +455,13 @@ public class EventActions extends JsonBaseModel {
     }
 
     @CanIgnoreReturnValue
+    @JsonProperty("rewindBeforeInvocationId")
+    public Builder rewindBeforeInvocationId(@Nullable String value) {
+      this.rewindBeforeInvocationId = value;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
     public Builder merge(EventActions other) {
       other.skipSummarization().ifPresent(this::skipSummarization);
       other.stateDelta().forEach((key, value) -> stateDelta.merge(key, value, Builder::deepMerge));
@@ -449,6 +475,7 @@ public class EventActions extends JsonBaseModel {
       other.agentState().ifPresent(this::agentState);
       other.compaction().ifPresent(this::compaction);
       other.setModelResponse().ifPresent(this::setModelResponse);
+      other.rewindBeforeInvocationId().ifPresent(this::rewindBeforeInvocationId);
       return this;
     }
 

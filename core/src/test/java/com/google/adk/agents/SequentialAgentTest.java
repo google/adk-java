@@ -19,12 +19,19 @@ package com.google.adk.agents;
 import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
+import static com.google.adk.testing.TestUtils.createResumableInvocationContext;
 import static com.google.adk.testing.TestUtils.createSubAgent;
 import static com.google.adk.testing.TestUtils.createTestAgent;
+import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.createTextLlmResponse;
+import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
+import com.google.adk.apps.ResumabilityConfig;
+import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
@@ -32,11 +39,14 @@ import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestLlm;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -340,5 +350,161 @@ public final class SequentialAgentTest {
     InvocationContext context = createInvocationContext(rootAgent, sessionService, session);
     context.branch(contextBranch);
     return context;
+  }
+
+  // ---- Resumability: durable checkpoint resume. ----
+
+  @Test
+  public void runAsync_resumingFromMiddle_startsFromCorrectAgent() {
+    LlmAgent agent1 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("a1 done")))
+            .name("agent1")
+            .build();
+    LlmAgent agent2 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("a2 done")))
+            .name("agent2")
+            .build();
+    LlmAgent agent3 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("a3 done")))
+            .name("agent3")
+            .build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder().name("seq").subAgents(agent1, agent2, agent3).build();
+    InvocationContext context = createResumableInvocationContext(sequentialAgent);
+    // Seed the checkpoint: resume at agent2.
+    context.setAgentState(
+        "seq", ImmutableMap.of("current_sub_agent", "agent2"), /* endOfAgent= */ false);
+
+    List<Event> events = sequentialAgent.runAsync(context).toList().blockingGet();
+
+    assertThat(simplifyEvents(events)).doesNotContain("agent1: a1 done");
+    assertThat(simplifyEvents(events)).contains("agent2: a2 done");
+    assertThat(simplifyEvents(events)).contains("agent3: a3 done");
+  }
+
+  // A null name is not "finished": Python's model rejects it, so a resume must not silently skip
+  // every sub-agent.
+  @Test
+  public void runAsync_resumingFromNullSubAgentName_throws() {
+    LlmAgent agent1 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("a1 done")))
+            .name("agent1")
+            .build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder().name("seq").subAgents(agent1).build();
+    InvocationContext context = createResumableInvocationContext(sequentialAgent);
+    Map<String, Object> checkpoint = new HashMap<>();
+    checkpoint.put("current_sub_agent", null);
+    context.setAgentState("seq", checkpoint, /* endOfAgent= */ false);
+
+    var resumed = sequentialAgent.runAsync(context).toList();
+
+    assertThrows(IllegalStateException.class, resumed::blockingGet);
+  }
+
+  @Test
+  public void runAsync_resumable_emitsEndOfAgent() {
+    LlmAgent agent1 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("done"))).name("agent1").build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder().name("seq").subAgents(agent1).build();
+    InvocationContext context = createResumableInvocationContext(sequentialAgent);
+
+    List<Event> events = sequentialAgent.runAsync(context).toList().blockingGet();
+
+    assertThat(
+            events.stream()
+                .anyMatch(event -> event.author().equals("seq") && event.actions().endOfAgent()))
+        .isTrue();
+  }
+
+  @Test
+  public void runAsync_notResumable_doesNotEmitEndOfAgent() {
+    LlmAgent agent1 =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("done"))).name("agent1").build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder().name("seq").subAgents(agent1).build();
+    InvocationContext context = createInvocationContext(sequentialAgent);
+
+    List<Event> events = sequentialAgent.runAsync(context).toList().blockingGet();
+
+    assertThat(events.stream().anyMatch(event -> event.actions().endOfAgent())).isFalse();
+  }
+
+  // Legacy resumption fast-forwards from history; the resumable flow uses its own checkpoints.
+  @Test
+  @SuppressWarnings("deprecation") // The legacy shim is deprecated by design.
+  public void runAsync_legacyResumption_doesNotRerunCompletedSubAgents() {
+    TestBaseAgent agent1 =
+        createSubAgent("agent1", createEvent("a1").toBuilder().author("agent1").build());
+    TestBaseAgent agent2 =
+        createSubAgent("agent2", createEvent("a2").toBuilder().author("agent2").build());
+    TestBaseAgent agent3 =
+        createSubAgent("agent3", createEvent("a3").toBuilder().author("agent3").build());
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder().name("seq").subAgents(agent1, agent2, agent3).build();
+
+    // A legacy paused session: agent2's long-running call, now answered, with no checkpoints.
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session = sessionService.createSession("app", "user").blockingGet();
+    var unusedCall =
+        sessionService
+            .appendEvent(
+                session,
+                Event.builder()
+                    .id("fc")
+                    .invocationId("inv")
+                    .author("agent2")
+                    .content(
+                        Content.fromParts(
+                            Part.builder()
+                                .functionCall(FunctionCall.builder().id("c1").name("tool").build())
+                                .build()))
+                    .longRunningToolIds(ImmutableSet.of("c1"))
+                    .build())
+            .blockingGet();
+    var unusedResponse =
+        sessionService
+            .appendEvent(
+                session,
+                Event.builder()
+                    .id("fr")
+                    .invocationId("inv")
+                    .author("user")
+                    .content(
+                        Content.fromParts(
+                            Part.builder()
+                                .functionResponse(
+                                    FunctionResponse.builder()
+                                        .id("c1")
+                                        .name("tool")
+                                        .response(ImmutableMap.of())
+                                        .build())
+                                .build()))
+                    .build())
+            .blockingGet();
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(sessionService)
+            .artifactService(new InMemoryArtifactService())
+            .invocationId("inv")
+            .agent(sequentialAgent)
+            .session(session)
+            .userContent(Content.fromParts(Part.fromText("resume")))
+            .runConfig(RunConfig.builder().build())
+            .resumabilityConfig(
+                ResumabilityConfig.builder()
+                    .resumable(false)
+                    .plainTextContinuationAutoResume(true)
+                    .build())
+            .build();
+    // No populate/checkpoint state seeded -- this is the legacy case.
+
+    var unused = sequentialAgent.runAsync(context).toList().blockingGet();
+
+    // agent1 (already completed before the pause) must not re-run; agent2 and agent3 do.
+    assertThat(agent1.getInvocationCount()).isEqualTo(0);
+    assertThat(agent2.getInvocationCount()).isEqualTo(1);
+    assertThat(agent3.getInvocationCount()).isEqualTo(1);
   }
 }

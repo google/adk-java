@@ -20,10 +20,14 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.core.io.ResourceLoader;
 
 /**
- * Where the dev UI's static assets live. Normalizes {@code adk.web.ui.dir} into a resource
- * location, so callers that need it do not each do it differently.
+ * Where the dev UI's static assets live. Shared so the resource handler and the runtime-config
+ * endpoint resolve the same location; normalizing {@code adk.web.ui.dir} separately in each would
+ * diverge silently.
  */
 public final class DevUiAssets {
+
+  /** The runtime config, relative to the asset root. */
+  public static final String RUNTIME_CONFIG_PATH = "assets/config/runtime-config.json";
 
   private static final String CLASSPATH_ROOT = ResourceLoader.CLASSPATH_URL_PREFIX + "/browser/";
 
@@ -40,6 +44,11 @@ public final class DevUiAssets {
       location = "file:" + location;
     }
     return location.endsWith("/") ? location : location + "/";
+  }
+
+  /** The location of a single asset, given relative to the asset root. */
+  public static String assetLocation(@Nullable String webUiDir, String relativePath) {
+    return assetRoot(webUiDir) + relativePath;
   }
 
   private DevUiAssets() {}

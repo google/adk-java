@@ -22,6 +22,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.events.Event;
+import com.google.common.collect.ImmutableSet;
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.time.Instant;
@@ -56,6 +57,27 @@ class MockApiAnswer implements Answer<ApiResponse> {
   private static final Pattern TIMESTAMP_FILTER_REGEX = Pattern.compile("timestamp>=\"(.*)\"");
   private static final MediaType JSON_MEDIA_TYPE =
       MediaType.parse("application/json; charset=utf-8");
+
+  // Like the real API, appendEvent keeps only these fields and drops any others without an error.
+  private static final ImmutableSet<String> STORED_ACTIONS_FIELDS =
+      ImmutableSet.of(
+          "skipSummarization",
+          "stateDelta",
+          "artifactDelta",
+          "escalate",
+          "requestedAuthConfigs",
+          "transferAgent");
+  private static final ImmutableSet<String> STORED_EVENT_METADATA_FIELDS =
+      ImmutableSet.of(
+          "groundingMetadata",
+          "partial",
+          "turnComplete",
+          "interrupted",
+          "longRunningToolIds",
+          "branch",
+          "customMetadata",
+          "inputTranscription",
+          "outputTranscription");
 
   /** The id this fake mints when the caller requests none. */
   static final String GENERATED_SESSION_ID = "4";
@@ -244,6 +266,10 @@ class MockApiAnswer implements Answer<ApiResponse> {
                 eventDataString, new TypeReference<List<ConcurrentMap<String, Object>>>() {}));
       }
 
+      extractObjectMap(newEventData, "actions")
+          .ifPresent(actions -> actions.keySet().retainAll(STORED_ACTIONS_FIELDS));
+      extractObjectMap(newEventData, "eventMetadata")
+          .ifPresent(metadata -> metadata.keySet().retainAll(STORED_EVENT_METADATA_FIELDS));
       newEventData.put(
           "name", path.replaceFirst(":appendEvent$", "/events/" + Event.generateEventId()));
 

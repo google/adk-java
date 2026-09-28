@@ -31,10 +31,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
@@ -461,6 +464,50 @@ public class VertexAiSessionServiceTest {
     assertThat(retrievedEvent.invocationId()).isEqualTo("456");
     assertThat(retrievedEvent.timestamp())
         .isEqualTo(Instant.parse("2024-12-12T12:12:12.123456Z").toEpochMilli());
+  }
+
+  @Test
+  public void appendEvent_thenListEvents_keepsEventFields() {
+    Session session = vertexAiSessionService.createSession("987", "userA").blockingGet();
+    Event event =
+        Event.builder()
+            .id("client-event-id")
+            .invocationId("inv-1")
+            .author("agent")
+            .timestamp(Instant.parse("2024-12-12T12:12:12.123Z").toEpochMilli())
+            .usageMetadata(
+                GenerateContentResponseUsageMetadata.builder().totalTokenCount(12).build())
+            .customMetadata(
+                ImmutableList.of(CustomMetadata.builder().key("k").stringValue("v").build()))
+            .actions(
+                EventActions.builder()
+                    .transferToAgent("other")
+                    .requestedToolConfirmations(
+                        new ConcurrentHashMap<>(
+                            ImmutableMap.of(
+                                "call-1", ToolConfirmation.builder().hint("ok?").build())))
+                    .endOfAgent(true)
+                    .agentState(ImmutableMap.of("step", "2"))
+                    .build())
+            .build();
+    var unused = vertexAiSessionService.appendEvent(session, event).blockingGet();
+
+    Event reloaded =
+        vertexAiSessionService
+            .listEvents(session.appName(), session.userId(), session.id())
+            .blockingGet()
+            .events()
+            .get(0);
+
+    assertThat(reloaded.id()).isEqualTo("client-event-id");
+    assertThat(reloaded.usageMetadata().get().totalTokenCount()).hasValue(12);
+    assertThat(reloaded.customMetadata().get())
+        .containsExactly(CustomMetadata.builder().key("k").stringValue("v").build());
+    assertThat(reloaded.actions().transferToAgent()).hasValue("other");
+    assertThat(reloaded.actions().requestedToolConfirmations().get("call-1").hint())
+        .isEqualTo("ok?");
+    assertThat(reloaded.actions().endOfAgent()).isTrue();
+    assertThat(reloaded.actions().agentState().get()).containsEntry("step", "2");
   }
 
   @Test
