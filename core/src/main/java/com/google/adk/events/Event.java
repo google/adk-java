@@ -353,6 +353,10 @@ public class Event extends JsonBaseModel {
     if (actions().skipSummarization().orElse(false) || hasPendingLongRunningToolCall()) {
       return true;
     }
+    // An error ends the turn unless the model still asked for tools; mirrors Python ADK.
+    if (errorCode().isPresent() && !partial().orElse(false) && functionCalls().isEmpty()) {
+      return true;
+    }
     return functionCalls().isEmpty()
         && functionResponses().isEmpty()
         && !partial().orElse(false)
