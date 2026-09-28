@@ -137,4 +137,96 @@ public final class InMemoryMemoryServiceTest {
     assertThat(response.memories().get(0).content())
         .isEqualTo(Content.fromParts(Part.fromText("weather in Seoul"), functionCall));
   }
+
+  @Test
+  public void searchMemory_queryWithPunctuation_matchesWord() {
+    InMemoryMemoryService service = new InMemoryMemoryService();
+    service
+        .addSessionToMemory(sessionWith(event(Part.fromText("weather in Seoul"))))
+        .blockingAwait();
+
+    SearchMemoryResponse response =
+        service.searchMemory(APP_NAME, USER_ID, "weather?").blockingGet();
+
+    assertThat(response.memories()).hasSize(1);
+  }
+
+  @Test
+  public void searchMemory_nonAsciiWord_matchesWholeWord() {
+    InMemoryMemoryService service = new InMemoryMemoryService();
+    service
+        .addSessionToMemory(sessionWith(event(Part.fromText("Meet me at the café"))))
+        .blockingAwait();
+
+    SearchMemoryResponse response = service.searchMemory(APP_NAME, USER_ID, "café").blockingGet();
+
+    assertThat(response.memories()).hasSize(1);
+    assertThat(service.searchMemory(APP_NAME, USER_ID, "caf").blockingGet().memories()).isEmpty();
+  }
+
+  @Test
+  public void searchMemory_decomposedText_matchesPrecomposedQuery() {
+    InMemoryMemoryService service = new InMemoryMemoryService();
+    service
+        .addSessionToMemory(sessionWith(event(Part.fromText("Meet me at the café"))))
+        .blockingAwait();
+
+    SearchMemoryResponse response = service.searchMemory(APP_NAME, USER_ID, "café").blockingGet();
+
+    assertThat(response.memories()).hasSize(1);
+  }
+
+  @Test
+  public void searchMemory_latinWordInUnspacedScript_matchesWholeWord() {
+    InMemoryMemoryService service = new InMemoryMemoryService();
+    service
+        .addSessionToMemory(sessionWith(event(Part.fromText("私はPythonでADKを使っています"))))
+        .blockingAwait();
+
+    assertThat(service.searchMemory(APP_NAME, USER_ID, "python").blockingGet().memories())
+        .hasSize(1);
+    assertThat(service.searchMemory(APP_NAME, USER_ID, "adk").blockingGet().memories()).hasSize(1);
+    assertThat(service.searchMemory(APP_NAME, USER_ID, "thon").blockingGet().memories()).isEmpty();
+    assertThat(service.searchMemory(APP_NAME, USER_ID, "java").blockingGet().memories()).isEmpty();
+  }
+
+  @Test
+  public void searchMemory_digits_matchWord() {
+    InMemoryMemoryService service = new InMemoryMemoryService();
+    service
+        .addSessionToMemory(sessionWith(event(Part.fromText("Order 12345 shipped"))))
+        .blockingAwait();
+
+    SearchMemoryResponse response = service.searchMemory(APP_NAME, USER_ID, "12345").blockingGet();
+
+    assertThat(response.memories()).hasSize(1);
+  }
+
+  @Test
+  public void searchMemory_nonAsciiQueryWord_matchesInsideUnspacedText() {
+    InMemoryMemoryService service = new InMemoryMemoryService();
+    service
+        .addSessionToMemory(
+            sessionWith(
+                event(Part.fromText("私の名前は太郎です")),
+                event(Part.fromText("我喜欢机器学习")),
+                event(Part.fromText("私はPythonでADKを使っています"))))
+        .blockingAwait();
+
+    assertThat(service.searchMemory(APP_NAME, USER_ID, "太郎").blockingGet().memories()).hasSize(1);
+    assertThat(service.searchMemory(APP_NAME, USER_ID, "天気").blockingGet().memories()).isEmpty();
+    assertThat(service.searchMemory(APP_NAME, USER_ID, "机器学习").blockingGet().memories()).hasSize(1);
+    assertThat(service.searchMemory(APP_NAME, USER_ID, "天气预报").blockingGet().memories()).isEmpty();
+    assertThat(service.searchMemory(APP_NAME, USER_ID, "使って").blockingGet().memories()).hasSize(1);
+  }
+
+  @Test
+  public void searchMemory_ordinalIndicatorBeforeDigits_matchesDigits() {
+    InMemoryMemoryService service = new InMemoryMemoryService();
+    service.addSessionToMemory(sessionWith(event(Part.fromText("Pedido nº12345")))).blockingAwait();
+
+    SearchMemoryResponse response = service.searchMemory(APP_NAME, USER_ID, "12345").blockingGet();
+
+    assertThat(response.memories()).hasSize(1);
+  }
 }
