@@ -68,13 +68,11 @@ public class ToolContext extends CallbackContext {
 
   @SuppressWarnings("unused")
   private void requestCredential() {
-    // TODO: b/414678311 - Implement credential request logic. Make this public.
     throw new UnsupportedOperationException("Credential request not implemented yet.");
   }
 
   @SuppressWarnings("unused")
   private void getAuthResponse() {
-    // TODO: b/414678311 - Implement auth response retrieval logic. Make this public.
     throw new UnsupportedOperationException("Auth response retrieval not implemented yet.");
   }
 
