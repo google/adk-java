@@ -25,6 +25,7 @@ import com.google.adk.kt.sessions.SessionKey as KtSessionKey
 import com.google.adk.kt.sessions.State as KtState
 import com.google.adk.sessions.Session as JavaSession
 import com.google.adk.sessions.State as JavaState
+import java.util.AbstractList
 import java.util.AbstractMap
 import java.util.Optional
 import java.util.concurrent.ConcurrentMap
@@ -73,6 +74,13 @@ internal class KtEventActionsToJavaView(private val actions: KtEventActions) : J
     actions.compaction = compaction?.let { EventCompactionCodec.fromJava(it) }
   }
 
+  override fun rewindBeforeInvocationId(): Optional<String> =
+    Optional.ofNullable(actions.rewindBeforeInvocationId)
+
+  override fun setRewindBeforeInvocationId(rewindBeforeInvocationId: String?) {
+    actions.rewindBeforeInvocationId = rewindBeforeInvocationId
+  }
+
   // Overridden so the write reaches the Kotlin side; the base setters write private fields the
   // overridden getters never read.
 
@@ -104,12 +112,10 @@ internal class KtEventActionsToJavaView(private val actions: KtEventActions) : J
 /**
  * Builds a read-only Java [JavaEventActions] snapshot from a Kotlin [KtEventActions], carrying the
  * deltas, the control-flow signals (skip-summarization, transfer, escalate, end-of-agent), the
- * requested tool confirmations, and the resumable-run `agentState` ([agentStateToJava]). Used when
- * exposing an existing Kotlin event to a Java runner ([EventCodec.toJava]); unlike
- * [KtEventActionsToJavaView] (a live write sink) nothing writes back through it.
- *
- * Does not carry `rewindBeforeInvocationId`: ADK Java's `EventActions` has no such field, so a
- * rewind request does not survive a round trip through a Java session service.
+ * requested tool confirmations, the compaction summary, the resumable-run `agentState`
+ * ([agentStateToJava]), and the rewind marker (`rewindBeforeInvocationId`). Used when exposing an
+ * existing Kotlin event to a Java runner ([EventCodec.toJava]); unlike [KtEventActionsToJavaView]
+ * (a live write sink), nothing writes back through it.
  */
 internal fun eventActionsToJava(actions: KtEventActions): JavaEventActions =
   JavaEventActions.builder()
@@ -124,6 +130,7 @@ internal fun eventActionsToJava(actions: KtEventActions): JavaEventActions =
     .endOfAgent(actions.endOfAgent)
     .compaction(actions.compaction?.let { EventCompactionCodec.toJava(it) })
     .agentState(agentStateToJava(actions.agentState))
+    .rewindBeforeInvocationId(actions.rewindBeforeInvocationId)
     .build()
 
 /** Copies a Kotlin state delta to Java, mapping the Kotlin [KtState.REMOVED] deletion sentinel. */
@@ -232,9 +239,9 @@ private class KtStateAsJavaConcurrentMap(private val state: KtState) : Concurren
 /**
  * Like [ktSessionToJava] but backs the session with live views: `events()` and `state()` convert on
  * access, so an adapted Java flow always reads the current session, including changes made earlier
- * this turn. `events()` is read-only (the Kotlin runner owns the list) and re-converts each element
- * on access, since a Kotlin event's actions are mutable; copy the list once rather than indexing it
- * in a loop. `lastUpdateTime` is a snapshot, not live.
+ * this turn. `events()` allows appending but no other mutation, and it re-converts each element on
+ * access because a Kotlin event's actions are mutable; copy the list once instead of indexing it in
+ * a loop. `lastUpdateTime` is a snapshot, not live.
  */
 // eventsView is deprecated for application code, but an interop adapter is its intended caller.
 @Suppress("DEPRECATION")
@@ -243,18 +250,22 @@ internal fun ktSessionToJavaLive(session: KtSession): JavaSession =
     .appName(session.key.appName)
     .userId(session.key.userId)
     .state(JavaState(KtStateAsJavaConcurrentMap(session.state)))
-    .eventsView(KtBackedEventsView(session))
+    .eventsView(KtBackedEventsMutableView(session))
     .lastUpdateTime(session.lastUpdateTime.toJavaInstant())
     .build()
 
 /**
- * The read-only, converting `events()` of [ktSessionToJavaLive]. Named rather than anonymous so a
- * caller holding a Java [JavaSession] can tell a live view from a snapshot: this one is already
- * backed by the Kotlin session, so it must not be mirrored into (and would throw if tried).
+ * The converting `events()` list for [ktSessionToJavaLive]. Its `add` method appends to the Kotlin
+ * [session] so in-place updates from an ADK Java session service reach the running session, while
+ * `KtSessionServiceToJava.appendEvent` unwraps this view to append there directly. Mutations other
+ * than appending throw [UnsupportedOperationException].
  */
-internal class KtBackedEventsView(private val session: KtSession) : AbstractList<JavaEvent>() {
+internal class KtBackedEventsMutableView(internal val session: KtSession) :
+  AbstractList<JavaEvent>() {
   override val size: Int
     get() = session.events.size
 
   override fun get(index: Int): JavaEvent = EventCodec.toJava(session.events[index])
+
+  override fun add(element: JavaEvent): Boolean = session.events.add(EventCodec.fromJava(element))
 }
