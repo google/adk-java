@@ -175,7 +175,8 @@ public class FirestoreDatabaseRunnerTest {
     when(mockUserDocRef.collection(anyString())).thenReturn(mockSessionsCollection);
     when(mockSessionsCollection.document(anyString())).thenReturn(mockSessionDocRef);
 
-    when(mockSessionDocRef.set(anyMap())).thenReturn(ApiFutures.immediateFuture(mockWriteResult));
+    when(mockSessionDocRef.create(anyMap()))
+        .thenReturn(ApiFutures.immediateFuture(mockWriteResult));
     when(mockSessionDocRef.update(anyMap()))
         .thenReturn(ApiFutures.immediateFuture(mockWriteResult));
     // Mock the event sub-collection chain
