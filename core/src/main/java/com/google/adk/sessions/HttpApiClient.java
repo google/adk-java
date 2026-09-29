@@ -65,7 +65,7 @@ public class HttpApiClient extends ApiClient {
     setHeaders(requestBuilder);
 
     if (Ascii.equalsIgnoreCase(httpMethod, "POST")) {
-      requestBuilder.post(RequestBody.create(MEDIA_TYPE_APPLICATION_JSON, requestJson));
+      requestBuilder.post(RequestBody.create(requestJson, MEDIA_TYPE_APPLICATION_JSON));
 
     } else if (Ascii.equalsIgnoreCase(httpMethod, "GET")) {
       requestBuilder.get();

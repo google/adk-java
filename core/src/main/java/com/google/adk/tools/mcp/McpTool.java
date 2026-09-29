@@ -31,7 +31,6 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-// TODO(b/413489523): Add support for auth. This is a TODO for Python as well.
 /**
  * Initializes a MCP tool.
  *
@@ -80,7 +79,9 @@ public final class McpTool extends AbstractMcpTool<McpSyncClient> {
     return Single.<Map<String, Object>>fromCallable(
             () -> {
               CallToolResult callResult =
-                  mcpSession.callTool(new CallToolRequest(this.name(), ImmutableMap.copyOf(args)));
+                  mcpSession.callTool(
+                      new CallToolRequest(
+                          this.name(), ImmutableMap.copyOf(args), /* meta= */ null));
               return wrapCallResult(this.objectMapper, this.name(), callResult);
             })
         .retryWhen(

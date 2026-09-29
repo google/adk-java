@@ -16,28 +16,36 @@
 
 package com.google.adk.runner;
 
+import static com.google.adk.testing.ResumabilityTestUtils.answerCall;
+import static com.google.adk.testing.ResumabilityTestUtils.newSession;
+import static com.google.adk.testing.ResumabilityTestUtils.pendingFunctionTool;
+import static com.google.adk.testing.ResumabilityTestUtils.runTurn;
+import static com.google.adk.testing.ResumabilityTestUtils.shimRunner;
 import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
+import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.ParallelAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
-import com.google.adk.apps.App;
-import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.sessions.Session;
 import com.google.adk.telemetry.Tracing;
+import com.google.adk.testing.ResumabilityTestUtils.Tools;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.tools.FunctionTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Streams;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -45,9 +53,9 @@ import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.reactivex.rxjava3.core.Flowable;
-import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.jspecify.annotations.Nullable;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -62,6 +70,7 @@ import org.junit.runners.JUnit4;
  * shim, so the shim keeps behaving exactly as resumability did before it was split in two.
  */
 @RunWith(JUnit4.class)
+@SuppressWarnings("deprecation") // The class exists to exercise the deprecated shim flag.
 public final class RunnerLegacyResumabilityTest {
   @Rule public final OpenTelemetryRule openTelemetryRule = OpenTelemetryRule.create();
 
@@ -79,33 +88,396 @@ public final class RunnerLegacyResumabilityTest {
     Tracing.setTracerForTesting(originalTracer);
   }
 
-  public static class Tools {
-    private Tools() {}
+  // Regression: after a transfer, a finished-check keyed on the root wedged later plain-text turns.
+  @Test
+  public void runAsync_resumableTransferWithPlainTextAutoResume_laterTurnsRunSubAgent() {
+    Content transferCall =
+        Content.fromParts(
+            Part.fromFunctionCall(
+                "transfer_to_agent", ImmutableMap.of("agent_name", "sub_agent_1")));
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(transferCall),
+            createTextLlmResponse("r1"),
+            createTextLlmResponse("r2"),
+            createTextLlmResponse("r3"),
+            createTextLlmResponse("r4"),
+            createTextLlmResponse("r5"));
+    LlmAgent subAgent1 = createTestAgentBuilder(testLlm).name("sub_agent_1").build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    Runner runner = shimRunner(rootAgent);
+    Session session = newSession(runner);
 
-    public static ImmutableMap<String, Object> echoTool(String message) {
-      return ImmutableMap.of("message", message);
-    }
-
-    // A long-running tool awaiting an external result has nothing to return yet; FunctionTool
-    // coerces the absent return into an empty response.
-    @SuppressWarnings("unused") // Invoked reflectively by FunctionTool.
-    public static @Nullable ImmutableMap<String, Object> pendingTool(String message) {
-      return null;
-    }
-
-    static final AtomicInteger pendingProgressToolCalls = new AtomicInteger(0);
-
-    // A long-running tool that reports progress: it returns a non-empty "pending" status on the
-    // initial call. Counts executions so a test can assert it runs exactly once across turns.
-    @SuppressWarnings("unused") // Invoked reflectively by FunctionTool.
-    public static ImmutableMap<String, Object> pendingProgressTool(String message) {
-      pendingProgressToolCalls.incrementAndGet();
-      return ImmutableMap.of("status", "pending");
+    // Turn 1 transfers; turns 2-5 must each be answered by the sub-agent, not an empty stream.
+    var unused = runTurn(runner, session, "m1");
+    for (String expected : new String[] {"r2", "r3", "r4", "r5"}) {
+      ImmutableList<Event> turn = runTurn(runner, session, "m");
+      assertThat(simplifyEvents(turn)).contains("sub_agent_1: " + expected);
     }
   }
 
+  // The shim must not re-attach to a checkpoint-less session: it starts a new invocation instead.
   @Test
-  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
+  public void runAsync_plainTextAutoResume_checkpointlessSession_startsNewInvocation() {
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("second answer")))
+            .name("agent")
+            .build();
+    Runner runner = shimRunner(agent);
+    Session session = newSession(runner);
+
+    // Seed a completed prior turn with no checkpoints, as a pre-checkpoint session looks.
+    String priorInvocationId = "pre_checkpoint_invocation";
+    Event unusedUserEvent =
+        runner
+            .sessionService()
+            .appendEvent(
+                session,
+                Event.builder()
+                    .id(Event.generateEventId())
+                    .invocationId(priorInvocationId)
+                    .author("user")
+                    .content(Content.fromParts(Part.fromText("first turn")))
+                    .build())
+            .blockingGet();
+    Event unusedModelEvent =
+        runner
+            .sessionService()
+            .appendEvent(
+                session,
+                Event.builder()
+                    .id(Event.generateEventId())
+                    .invocationId(priorInvocationId)
+                    .author("agent")
+                    .content(Content.fromParts(Part.fromText("first answer")))
+                    .build())
+            .blockingGet();
+
+    ImmutableList<Event> secondTurn = runTurn(runner, session, "second turn");
+
+    // The agent runs under a fresh invocation id, not the checkpoint-less prior one.
+    assertThat(simplifyEvents(secondTurn)).contains("agent: second answer");
+    assertThat(
+            secondTurn.stream()
+                .map(Event::invocationId)
+                .filter(priorInvocationId::equals)
+                .collect(toImmutableList()))
+        .isEmpty();
+  }
+
+  // The shim selects the legacy flow but does not resume on plain text; that starts a new one.
+  @Test
+  @SuppressWarnings(
+      "deprecation") // Resumability + the auto-resume shim are intentionally deprecated.
+  public void runAsync_plainTextContinuation_shimOn_startsNewInvocation() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "draft")),
+            createTextLlmResponse("continued"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).name("agent").tools(pendingFunctionTool()).build();
+    Runner runner = shimRunner(agent);
+    Session session = newSession(runner);
+
+    ImmutableList<Event> turn1 = runTurn(runner, session, "draft the note");
+    String invocationId = turn1.get(0).invocationId();
+    assertThat(testLlm.getRequests()).hasSize(1); // paused after a single model call
+
+    ImmutableList<Event> turn2 = runTurn(runner, session, "Proceed");
+
+    // The continuation opens a new invocation and the agent plans again.
+    assertThat(testLlm.getRequests()).hasSize(2);
+    assertThat(turn2).isNotEmpty();
+    Session reloaded =
+        runner
+            .sessionService()
+            .getSession("test", "user", session.id(), Optional.empty())
+            .blockingGet();
+    Event lastUserEvent =
+        Streams.findLast(
+                reloaded.events().stream().filter(event -> Objects.equals(event.author(), "user")))
+            .orElse(null);
+    assertThat(lastUserEvent).isNotNull();
+    assertThat(lastUserEvent.invocationId()).isNotEqualTo(invocationId);
+    assertThat(turn2.stream().noneMatch(event -> invocationId.equals(event.invocationId())))
+        .isTrue();
+  }
+
+  // The shim resumes only unfinished invocations, so text after a finished turn starts a new one.
+  @Test
+  @SuppressWarnings(
+      "deprecation") // Resumability + the auto-resume shim are intentionally deprecated.
+  public void runAsync_plainText_autoResumeFlagOn_afterCompletedTurn_startsNewInvocation() {
+    TestLlm testLlm =
+        createTestLlm(
+            createTextLlmResponse("first answer"), createTextLlmResponse("second answer"));
+    LlmAgent agent = createTestAgentBuilder(testLlm).name("agent").build();
+    Runner runner = shimRunner(agent);
+    Session session = newSession(runner);
+
+    ImmutableList<Event> turn1 = runTurn(runner, session, "hi");
+    String invocationId = turn1.get(0).invocationId();
+    assertThat(simplifyEvents(turn1)).contains("agent: first answer");
+
+    ImmutableList<Event> turn2 = runTurn(runner, session, "again");
+
+    assertThat(simplifyEvents(turn2)).contains("agent: second answer");
+    assertThat(turn2.get(0).invocationId()).isNotEqualTo(invocationId);
+  }
+
+  // A pause nested in a SequentialAgent is the flat case: the shim does not resume on plain text.
+  @Test
+  @SuppressWarnings(
+      "deprecation") // Resumability + the auto-resume shim are intentionally deprecated.
+  public void runAsync_plainTextContinuation_inSequentialAgent_shimOn_startsNewInvocation() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "draft")),
+            createTextLlmResponse("should not re-plan"));
+    LlmAgent childAgent =
+        createTestAgentBuilder(testLlm).name("child_agent").tools(pendingFunctionTool()).build();
+    SequentialAgent workflowAgent =
+        SequentialAgent.builder()
+            .name("workflow_agent")
+            .subAgents(ImmutableList.of(childAgent))
+            .build();
+    Runner runner = shimRunner(workflowAgent);
+    Session session = newSession(runner);
+
+    ImmutableList<Event> turn1 = runTurn(runner, session, "draft the note");
+    String invocationId = turn1.get(0).invocationId();
+    assertThat(testLlm.getRequests()).hasSize(1); // paused inside the workflow after one model call
+
+    Object unused = runTurn(runner, session, "Proceed");
+
+    // The plain-text turn opens a new invocation rather than resuming the paused one.
+    assertThat(testLlm.getRequests()).hasSize(2);
+    Session reloaded =
+        runner
+            .sessionService()
+            .getSession("test", "user", session.id(), Optional.empty())
+            .blockingGet();
+    Event lastUserEvent =
+        Streams.findLast(
+                reloaded.events().stream().filter(event -> Objects.equals(event.author(), "user")))
+            .orElse(null);
+    assertThat(lastUserEvent).isNotNull();
+    assertThat(lastUserEvent.invocationId()).isNotEqualTo(invocationId);
+  }
+
+  // Shim-only: a value-returning long-running tool still pauses BaseLlmFlow after one model call.
+  @Test
+  @SuppressWarnings(
+      "deprecation") // Resumability + the auto-resume shim are intentionally deprecated.
+  public void runAsync_shimOnly_valueReturningLongRunningCall_pausesAfterSingleModelCall() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "echoTool", ImmutableMap.of("message", "hi")),
+            createTextLlmResponse("should not be reached"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .name("agent")
+            .tools(
+                FunctionTool.create(
+                    Tools.class,
+                    "echoTool",
+                    /* requireConfirmation= */ false,
+                    /* isLongRunning= */ true))
+            .build();
+    Runner runner = shimRunner(agent);
+    Session session = newSession(runner);
+
+    ImmutableList<Event> events = runTurn(runner, session, "go");
+
+    // The tool answered in-turn, but the flow still pauses rather than summarizing.
+    assertThat(testLlm.getRequests()).hasSize(1);
+    assertThat(simplifyEvents(events)).doesNotContain("agent: should not be reached");
+  }
+
+  // Shim-only: the legacy LoopAgent body stops on a pending call and writes no checkpoint.
+  @Test
+  @SuppressWarnings(
+      "deprecation") // Resumability + the auto-resume shim are intentionally deprecated.
+  public void runAsync_shimOnlyInLoopAgent_stopsOnPendingCallAndWritesNoCheckpoints() {
+    TestLlm llm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "draft")),
+            createTextLlmResponse("second iteration"));
+    LlmAgent child =
+        createTestAgentBuilder(llm).name("looped_agent").tools(pendingFunctionTool()).build();
+    LoopAgent loopAgent =
+        LoopAgent.builder().name("loop").maxIterations(3).subAgents(child).build();
+    Runner runner = shimRunner(loopAgent);
+    Session session = newSession(runner);
+
+    var unused = runTurn(runner, session, "start");
+
+    // The pending call stops the loop after the first iteration, and nothing is checkpointed.
+    assertThat(llm.getRequests()).hasSize(1);
+    Session reloaded =
+        runner
+            .sessionService()
+            .getSession("test", "user", session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(
+            reloaded.events().stream()
+                .filter(
+                    event ->
+                        event.actions().endOfAgent() || event.actions().agentState().isPresent())
+                .collect(toImmutableList()))
+        .isEmpty();
+  }
+
+  // Shim-only: a mid-sequence pause restarts the sequence and persists no checkpoint.
+  @Test
+  @SuppressWarnings(
+      "deprecation") // Resumability + the auto-resume shim are intentionally deprecated.
+  public void runAsync_shimOnlyInSequentialAgent_restartsSequenceAndWritesNoCheckpoints() {
+    TestLlm llmA = createTestLlm(createTextLlmResponse("A ran"), createTextLlmResponse("A replay"));
+    TestLlm llmB =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "draft")),
+            createTextLlmResponse("B done"));
+    TestLlm llmC = createTestLlm(createTextLlmResponse("C ran"));
+    LlmAgent agentA = createTestAgentBuilder(llmA).name("agent_a").build();
+    LlmAgent agentB =
+        createTestAgentBuilder(llmB).name("agent_b").tools(pendingFunctionTool()).build();
+    LlmAgent agentC = createTestAgentBuilder(llmC).name("agent_c").build();
+    SequentialAgent workflowAgent =
+        SequentialAgent.builder()
+            .name("workflow_agent")
+            .subAgents(ImmutableList.of(agentA, agentB, agentC))
+            .build();
+    Runner runner = shimRunner(workflowAgent);
+    Session session = newSession(runner);
+
+    ImmutableList<Event> turn1 = runTurn(runner, session, "draft the note");
+
+    // Turn 1 pauses at agent_b: agent_c never runs.
+    assertThat(llmA.getRequests()).hasSize(1);
+    assertThat(llmB.getRequests()).hasSize(1);
+    assertThat(llmC.getRequests()).isEmpty();
+    assertThat(simplifyEvents(turn1)).doesNotContain("agent_c: C ran");
+
+    ImmutableList<Event> turn2 = runTurn(runner, session, "Proceed");
+
+    // No durable state to resume from, so the sequence restarts at agent_a and runs through.
+    assertThat(llmA.getRequests()).hasSize(2);
+    assertThat(llmB.getRequests()).hasSize(2);
+    assertThat(llmC.getRequests()).hasSize(1);
+    assertThat(simplifyEvents(turn2)).contains("agent_c: C ran");
+
+    // The shim never writes durable state: nothing was checkpointed into the session.
+    Session reloaded =
+        runner
+            .sessionService()
+            .getSession("test", "user", session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(
+            reloaded.events().stream()
+                .filter(
+                    event ->
+                        event.actions().endOfAgent() || event.actions().agentState().isPresent())
+                .collect(toImmutableList()))
+        .isEmpty();
+  }
+
+  // Shim-only: a grandchild-authored pause also restarts the sequence rather than resuming.
+  @Test
+  @SuppressWarnings(
+      "deprecation") // Resumability + the auto-resume shim are intentionally deprecated.
+  public void runAsync_shimOnlyInNestedSequentialAgent_restartsSequence() {
+    TestLlm llmA = createTestLlm(createTextLlmResponse("A ran"), createTextLlmResponse("A replay"));
+    TestLlm llmB =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "draft")),
+            createTextLlmResponse("B done"));
+    LlmAgent agentA = createTestAgentBuilder(llmA).name("agent_a").build();
+    LlmAgent agentB =
+        createTestAgentBuilder(llmB).name("agent_b").tools(pendingFunctionTool()).build();
+    SequentialAgent innerWorkflow =
+        SequentialAgent.builder()
+            .name("inner_workflow")
+            .subAgents(ImmutableList.of(agentB))
+            .build();
+    SequentialAgent workflowAgent =
+        SequentialAgent.builder()
+            .name("workflow_agent")
+            .subAgents(ImmutableList.of(agentA, innerWorkflow))
+            .build();
+    Runner runner = shimRunner(workflowAgent);
+    Session session = newSession(runner);
+
+    var unused = runTurn(runner, session, "draft the note");
+    ImmutableList<Event> turn2 = runTurn(runner, session, "Proceed");
+
+    assertThat(llmA.getRequests()).hasSize(2); // the sequence restarts at agent_a
+    assertThat(llmB.getRequests()).hasSize(2);
+    assertThat(simplifyEvents(turn2)).contains("agent_b: B done");
+  }
+
+  // With the shim, a plain-text continuation starts a new invocation and still merges stateDelta.
+  @Test
+  public void runAsync_plainTextWithShim_withStateDelta_mergesStateIntoSession() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("should not be reached"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).name("agent").tools(pendingFunctionTool()).build();
+    Runner runner = shimRunner(agent);
+    Session session = newSession(runner);
+
+    ImmutableList<Event> pausedTurn = runTurn(runner, session, "start");
+    String pausedInvocationId = pausedTurn.get(0).invocationId();
+    assertThat(testLlm.getRequests()).hasSize(1); // paused after a single model call
+
+    // Plain-text "Proceed" via the non-resume overload; the flag resumes the paused invocation.
+    ImmutableMap<String, Object> stateDelta = ImmutableMap.of("key1", "value1", "key2", 42);
+    ImmutableList<Event> resumed =
+        ImmutableList.copyOf(
+            runner
+                .runAsync(
+                    "user",
+                    session.id(),
+                    Content.fromParts(Part.fromText("Proceed")),
+                    RunConfig.builder().build(),
+                    stateDelta)
+                .toList()
+                .blockingGet());
+
+    // The shim starts a new invocation for the plain-text turn; the stateDelta still lands.
+    assertThat(testLlm.getRequests()).hasSize(2);
+    assertThat(resumed).isNotEmpty();
+    Session finalSession =
+        runner
+            .sessionService()
+            .getSession("test", "user", session.id(), Optional.empty())
+            .blockingGet();
+    Event continuation =
+        Streams.findLast(
+                finalSession.events().stream()
+                    .filter(event -> Objects.equals(event.author(), "user")))
+            .orElseThrow();
+    assertThat(continuation.invocationId()).isNotEqualTo(pausedInvocationId);
+    assertThat(continuation.actions().stateDelta()).containsAtLeastEntriesIn(stateDelta);
+    assertThat(finalSession.state()).containsAtLeastEntriesIn(stateDelta);
+  }
+
+  // ===== CL1-parity: every CL1 resumable(true) test, re-run under the text-only shim =====
+
+  @Test
   public void
       runAsync_withToolConfirmation_inSequentialAgent_runsLaterSubAgentsAfterResume_legacyShim() {
     LlmAgent agentA =
@@ -134,23 +506,10 @@ public final class RunnerLegacyResumabilityTest {
             .name("workflow_agent")
             .subAgents(ImmutableList.of(agentA, agentB, agentC))
             .build();
-    Runner runner =
-        Runner.builder()
-            .app(
-                App.builder()
-                    .name("test")
-                    .rootAgent(workflowAgent)
-                    .resumabilityConfig(
-                        ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build())
-                    .build())
-            .build();
-    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+    Runner runner = shimRunner(workflowAgent);
+    Session session = newSession(runner);
 
-    List<Event> eventsBeforeConfirmation =
-        runner
-            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
-            .toList()
-            .blockingGet();
+    ImmutableList<Event> eventsBeforeConfirmation = runTurn(runner, session, "from user");
 
     // Turn 1: A runs, B pauses for confirmation, and C must not run yet.
     assertThat(simplifyEvents(eventsBeforeConfirmation)).contains("a_agent: agent A done");
@@ -163,21 +522,22 @@ public final class RunnerLegacyResumabilityTest {
                 .filter(functionCalls -> !functionCalls.isEmpty())
                 .findFirst()
                 .get());
-    List<Event> eventsAfterConfirmation =
-        runner
-            .runAsync(
-                "user",
-                session.id(),
-                Content.fromParts(
-                    Part.builder()
-                        .functionResponse(
-                            FunctionResponse.builder()
-                                .id(askUserConfirmationFunctionCall.id().get())
-                                .name(askUserConfirmationFunctionCall.name().get())
-                                .response(ImmutableMap.of("confirmed", true)))
-                        .build()))
-            .toList()
-            .blockingGet();
+    ImmutableList<Event> eventsAfterConfirmation =
+        ImmutableList.copyOf(
+            runner
+                .runAsync(
+                    "user",
+                    session.id(),
+                    Content.fromParts(
+                        Part.builder()
+                            .functionResponse(
+                                FunctionResponse.builder()
+                                    .id(askUserConfirmationFunctionCall.id().get())
+                                    .name(askUserConfirmationFunctionCall.name().get())
+                                    .response(ImmutableMap.of("confirmed", true)))
+                            .build()))
+                .toList()
+                .blockingGet());
 
     // Turn 2: B resumes and executes the tool, then C runs. A is not re-run.
     assertThat(simplifyEvents(eventsAfterConfirmation))
@@ -189,7 +549,6 @@ public final class RunnerLegacyResumabilityTest {
   }
 
   @Test
-  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
   public void
       runAsync_withLongRunningCall_inSequentialAgent_runsLaterSubAgentsAfterResume_legacyShim() {
     LlmAgent agentA =
@@ -222,23 +581,10 @@ public final class RunnerLegacyResumabilityTest {
             .name("workflow_agent")
             .subAgents(ImmutableList.of(agentA, agentB, agentC))
             .build();
-    Runner runner =
-        Runner.builder()
-            .app(
-                App.builder()
-                    .name("test")
-                    .rootAgent(workflowAgent)
-                    .resumabilityConfig(
-                        ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build())
-                    .build())
-            .build();
-    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+    Runner runner = shimRunner(workflowAgent);
+    Session session = newSession(runner);
 
-    List<Event> eventsBeforeResume =
-        runner
-            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
-            .toList()
-            .blockingGet();
+    ImmutableList<Event> eventsBeforeResume = runTurn(runner, session, "from user");
 
     // Turn 1: A runs, B issues the long-running call and pauses; C must not run yet. B must not
     // make
@@ -247,21 +593,8 @@ public final class RunnerLegacyResumabilityTest {
     assertThat(simplifyEvents(eventsBeforeResume)).doesNotContain("b_agent: agent B resumed");
     assertThat(simplifyEvents(eventsBeforeResume)).doesNotContain("c_agent: agent C done");
 
-    List<Event> eventsAfterResume =
-        runner
-            .runAsync(
-                "user",
-                session.id(),
-                Content.fromParts(
-                    Part.builder()
-                        .functionResponse(
-                            FunctionResponse.builder()
-                                .id("lro_call_id")
-                                .name("echoTool")
-                                .response(ImmutableMap.of("message", "hello")))
-                        .build()))
-            .toList()
-            .blockingGet();
+    ImmutableList<Event> eventsAfterResume =
+        answerCall(runner, session, "lro_call_id", "echoTool", ImmutableMap.of("message", "hello"));
 
     // Turn 2: B resumes from the long-running response, then C runs. A is not re-run.
     assertThat(simplifyEvents(eventsAfterResume))
@@ -270,7 +603,6 @@ public final class RunnerLegacyResumabilityTest {
   }
 
   @Test
-  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
   public void runAsync_withLongRunningCall_resumable_pausesAfterSingleModelCall_legacyShim() {
     TestLlm testLlm =
         createTestLlm(
@@ -290,23 +622,10 @@ public final class RunnerLegacyResumabilityTest {
                     /* requireConfirmation= */ false,
                     /* isLongRunning= */ true))
             .build();
-    Runner runner =
-        Runner.builder()
-            .app(
-                App.builder()
-                    .name("test")
-                    .rootAgent(agent)
-                    .resumabilityConfig(
-                        ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build())
-                    .build())
-            .build();
-    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+    Runner runner = shimRunner(agent);
+    Session session = newSession(runner);
 
-    List<Event> events =
-        runner
-            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
-            .toList()
-            .blockingGet();
+    ImmutableList<Event> events = runTurn(runner, session, "from user");
 
     // The flow paused after the single long-running call instead of re-calling the model.
     assertThat(testLlm.getRequests()).hasSize(1);
@@ -314,7 +633,6 @@ public final class RunnerLegacyResumabilityTest {
   }
 
   @Test
-  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
   public void
       runAsync_loopAgentWithLongRunningSubAgent_resumable_stopsAfterFirstIteration_legacyShim() {
     AtomicInteger calls = new AtomicInteger();
@@ -342,30 +660,16 @@ public final class RunnerLegacyResumabilityTest {
             .subAgents(ImmutableList.of(inner))
             .maxIterations(3)
             .build();
-    Runner runner =
-        Runner.builder()
-            .app(
-                App.builder()
-                    .name("test")
-                    .rootAgent(loop)
-                    .resumabilityConfig(
-                        ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build())
-                    .build())
-            .build();
-    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+    Runner runner = shimRunner(loop);
+    Session session = newSession(runner);
 
-    List<Event> unused =
-        runner
-            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
-            .toList()
-            .blockingGet();
+    ImmutableList<Event> unused = runTurn(runner, session, "from user");
 
     // Paused after the first iteration: one model call, not maxIterations.
     assertThat(loopLlm.getRequests()).hasSize(1);
   }
 
   @Test
-  @SuppressWarnings("deprecation") // Resumability flag is intentionally deprecated (partial).
   public void
       runAsync_parallelAgentWithLongRunningBranch_resumable_otherBranchCompletes_legacyShim() {
     TestLlm longRunningLlm =
@@ -392,23 +696,10 @@ public final class RunnerLegacyResumabilityTest {
             .name("parallel")
             .subAgents(ImmutableList.of(longRunningBranch, plainBranch))
             .build();
-    Runner runner =
-        Runner.builder()
-            .app(
-                App.builder()
-                    .name("test")
-                    .rootAgent(parallel)
-                    .resumabilityConfig(
-                        ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build())
-                    .build())
-            .build();
-    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+    Runner runner = shimRunner(parallel);
+    Session session = newSession(runner);
 
-    List<Event> events =
-        runner
-            .runAsync("user", session.id(), Content.fromParts(Part.fromText("from user")))
-            .toList()
-            .blockingGet();
+    ImmutableList<Event> events = runTurn(runner, session, "from user");
 
     // The long-running branch paused after one model call; the other branch still completed.
     assertThat(longRunningLlm.getRequests()).hasSize(1);

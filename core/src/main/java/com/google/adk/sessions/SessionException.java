@@ -19,6 +19,9 @@ package com.google.adk.sessions;
 /** Represents a general error that occurred during session management operations. */
 public class SessionException extends RuntimeException {
 
+  /** Message used when {@code createSession} is given a session id that is already taken. */
+  public static final String SESSION_ALREADY_EXISTS = "Session already exists";
+
   public SessionException(String message) {
     super(message);
   }

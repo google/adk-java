@@ -31,7 +31,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -369,18 +368,14 @@ public class IntegrationClient {
     JsonNode rootNode = objectMapper.readTree(specNode.asText());
     JsonNode paths = rootNode.path("paths");
 
-    Iterator<Map.Entry<String, JsonNode>> pathsFields = paths.fields();
-    while (pathsFields.hasNext()) {
-      Map.Entry<String, JsonNode> pathEntry = pathsFields.next();
+    for (Map.Entry<String, JsonNode> pathEntry : paths.properties()) {
       String currentPath = pathEntry.getKey();
       if (!currentPath.equals(pathUrl)) {
         continue;
       }
       JsonNode pathItem = pathEntry.getValue();
 
-      Iterator<Map.Entry<String, JsonNode>> methods = pathItem.fields();
-      while (methods.hasNext()) {
-        Map.Entry<String, JsonNode> methodEntry = methods.next();
+      for (Map.Entry<String, JsonNode> methodEntry : pathItem.properties()) {
         JsonNode operationNode = methodEntry.getValue();
 
         if (operationNode.has("operationId")) {

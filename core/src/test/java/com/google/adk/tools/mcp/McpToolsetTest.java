@@ -301,25 +301,14 @@ public class McpToolsetTest {
   public void getTools_withToolFilter_returnsFilteredTools() {
     ImmutableList<String> toolFilter = ImmutableList.of("tool1", "tool3");
     McpSchema.Tool mockTool1 =
-        McpSchema.Tool.builder()
-            .name("tool1")
-            .description("desc1")
-            .inputSchema(jsonMapper, "{}")
-            .build();
+        McpSchema.Tool.builder("tool1", jsonMapper, "{}").description("desc1").build();
     McpSchema.Tool mockTool2 =
-        McpSchema.Tool.builder()
-            .name("tool2")
-            .description("desc2")
-            .inputSchema(jsonMapper, "{}")
-            .build();
+        McpSchema.Tool.builder("tool2", jsonMapper, "{}").description("desc2").build();
     McpSchema.Tool mockTool3 =
-        McpSchema.Tool.builder()
-            .name("tool3")
-            .description("desc3")
-            .inputSchema(jsonMapper, "{}")
-            .build();
+        McpSchema.Tool.builder("tool3", jsonMapper, "{}").description("desc3").build();
     McpSchema.ListToolsResult mockResult =
-        new McpSchema.ListToolsResult(ImmutableList.of(mockTool1, mockTool2, mockTool3), null);
+        McpSchema.ListToolsResult.builder(ImmutableList.of(mockTool1, mockTool2, mockTool3))
+            .build();
 
     when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
     when(mockMcpSyncClient.listTools()).thenReturn(mockResult);
@@ -355,7 +344,8 @@ public class McpToolsetTest {
 
   @Test
   public void getTools_succeedsOnLastRetryAttempt() {
-    McpSchema.ListToolsResult mockResult = new McpSchema.ListToolsResult(ImmutableList.of(), null);
+    McpSchema.ListToolsResult mockResult =
+        McpSchema.ListToolsResult.builder(ImmutableList.of()).build();
     when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
     when(mockMcpSyncClient.listTools())
         .thenThrow(new RuntimeException("Attempt 1 failed"))

@@ -29,6 +29,7 @@ import com.google.adk.events.EventCompaction as JavaEventCompaction
 import com.google.adk.kt.agents.BaseAgent as KtBaseAgent
 import com.google.adk.kt.agents.InvocationContext as KtInvocationContext
 import com.google.adk.kt.agents.LlmAgent as KtLlmAgent
+import com.google.adk.kt.agents.ResumabilityConfig as KtResumabilityConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
 import com.google.adk.kt.agents.TypedData
@@ -89,11 +90,13 @@ import com.google.adk.sessions.GetSessionConfig as JavaGetSessionConfig
 import com.google.adk.sessions.InMemorySessionService as JavaInMemorySessionService
 import com.google.adk.sessions.ListEventsResponse as JavaListEventsResponse
 import com.google.adk.sessions.Session as JavaSession
+import com.google.adk.sessions.SessionKey as JavaSessionKey
 import com.google.adk.sessions.State as JavaState
 import com.google.adk.tokt.adapters.reconcileActionsToKt
 import com.google.adk.tokt.codecs.EventCodec
 import com.google.adk.tokt.codecs.FunctionDeclarationCodec
 import com.google.adk.tokt.codecs.GroundingMetadataCodec
+import com.google.adk.tokt.codecs.KtBackedEventsMutableView
 import com.google.adk.tokt.codecs.KtEventActionsToJavaView
 import com.google.adk.tokt.codecs.PartCodec
 import com.google.adk.tokt.codecs.RunConfigCodec
@@ -113,6 +116,7 @@ import com.google.genai.types.ExecutableCode as GenaiExecutableCode
 import com.google.genai.types.FinishReason as GenaiFinishReason
 import com.google.genai.types.FunctionCall as GenaiFunctionCall
 import com.google.genai.types.FunctionDeclaration as GenaiFunctionDeclaration
+import com.google.genai.types.FunctionResponse as GenaiFunctionResponse
 import com.google.genai.types.GenerateContentResponseUsageMetadata as GenaiUsageMetadata
 import com.google.genai.types.GroundingChunk as GenaiGroundingChunk
 import com.google.genai.types.GroundingChunkMaps as GenaiGroundingChunkMaps
@@ -136,6 +140,7 @@ import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Single
+import java.time.Instant
 import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
@@ -145,6 +150,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.jvm.optionals.getOrNull
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -276,6 +282,19 @@ class KtRunnerInteropTest {
         mapOf("status" to if (confirmation.get().confirmed()) "confirmed" else "rejected")
       )
     }
+  }
+
+  /** A long-running Java tool that returns only a pending status. */
+  private class JavaPendingTool :
+    JavaBaseTool("java_pending", "long-running", /* isLongRunning= */ true) {
+    override fun declaration(): Optional<GenaiFunctionDeclaration> =
+      Optional.of(GenaiFunctionDeclaration.builder().name("java_pending").build())
+
+    @JvmSuppressWildcards
+    override fun runAsync(
+      args: Map<String, Any>,
+      toolContext: JavaToolContext,
+    ): Single<Map<String, Any>> = Single.just(mapOf("status" to "pending"))
   }
 
   /**
@@ -701,6 +720,29 @@ class KtRunnerInteropTest {
     }
   }
 
+  /** A Kotlin runner that records each runAsync call once its stream is collected. */
+  private class RecordingKtRunner(private val delegate: KtRunner) : KtRunner by delegate {
+    data class RunAsyncCall(
+      val userId: String,
+      val sessionId: String,
+      val invocationId: String?,
+      val newMessage: KtContent?,
+    )
+
+    val runAsyncCalls = mutableListOf<RunAsyncCall>()
+
+    override fun runAsync(
+      userId: String,
+      sessionId: String,
+      invocationId: String?,
+      newMessage: KtContent?,
+      stateDelta: Map<String, Any>?,
+      runConfig: KtRunConfig?,
+    ): Flow<KtEvent> = flow {
+      runAsyncCalls.add(RunAsyncCall(userId, sessionId, invocationId, newMessage))
+    }
+  }
+
   @Test
   fun javaAdkToKt_convertsEntireCollections() {
     // Tools: order preserved, each Java tool wrapped as a Kotlin tool.
@@ -879,6 +921,42 @@ class KtRunnerInteropTest {
         deltas.firstNotNullOfOrNull { it["gone3"] },
         "the Kotlin removal sentinel must be translated to the Java one",
       )
+    }
+
+  @Test
+  fun ktRunner_rewindThroughAnAdaptedJavaSessionService_dropsTheRewoundTurnFromTheNextPrompt() =
+    runBlocking {
+      // Without the marker surviving the Java store, the engine keeps sending the rewound turn.
+      val javaSessions = JavaInMemorySessionService()
+      val model = SequentialJavaModel(listOf(modelText("ok")))
+      val runner =
+        KtInMemoryRunner(
+          app =
+            KtApp(
+              appName = "app",
+              rootAgent = KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(model)),
+            ),
+          sessionService = JavaAdkToKt.asKtSessionService(javaSessions),
+        )
+      runner.turn("keep me")
+      val rewound = assertNotNull(runner.turn("forget me").first().invocationId)
+
+      runner.rewindAsync(userId = "u", sessionId = "s", rewindBeforeInvocationId = rewound)
+      runner.turn("after the rewind")
+
+      val stored =
+        javaSessions.getSession("app", "u", "s", Optional.empty()).blockingGet()
+          ?: fail("the adapted Java service should hold the session")
+      assertTrue(
+        stored.events().any { it.actions().rewindBeforeInvocationId().getOrNull() == rewound },
+        "the stored rewind event should keep its marker",
+      )
+      val lastPrompt =
+        model.requests.last().contents().flatMap { content ->
+          content.parts().getOrNull().orEmpty().mapNotNull { it.text().getOrNull() }
+        }
+      assertContains(lastPrompt, "keep me", "the turn before the rewind should stay in the prompt")
+      assertFalse("forget me" in lastPrompt, "the rewound turn must not reach the model")
     }
 
   @Test
@@ -1160,6 +1238,307 @@ class KtRunnerInteropTest {
   }
 
   @Test
+  fun asJavaRunner_resumeOverload_resumesThePausedInvocation() {
+    // A resumable app pauses on a confirmation; the resume overload continues that invocation.
+    val ktRunner =
+      KtInMemoryRunner(
+        app =
+          KtApp(
+            appName = "app",
+            rootAgent =
+              KtLlmAgent(
+                name = "a",
+                model =
+                  JavaAdkToKt.asKtModel(
+                    SequentialJavaModel(
+                      listOf(
+                        modelFunctionCall("java_confirm", emptyMap()),
+                        modelText("confirmed done"),
+                      )
+                    )
+                  ),
+                tools = listOf(JavaAdkToKt.asKtTool(JavaConfirmTool())),
+              ),
+            resumabilityConfig = KtResumabilityConfig(isResumable = true),
+          )
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+    val autoCreate = JavaRunConfig.builder().autoCreateSession(true).build()
+
+    val turn1 =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("go")).build(),
+          autoCreate,
+        )
+        .toList()
+        .blockingGet()
+    val (pausedEvent, confirmationCall) =
+      turn1
+        .flatMap { event -> event.functionCalls().map { event to it } }
+        .first { (_, call) -> call.name().getOrNull() == "adk_request_confirmation" }
+    val pausedInvocationId = pausedEvent.invocationId()
+    val approval =
+      GenaiContent.builder()
+        .role("user")
+        .parts(
+          GenaiPart.builder()
+            .functionResponse(
+              GenaiFunctionResponse.builder()
+                .name("adk_request_confirmation")
+                .id(confirmationCall.id().get())
+                .response(mapOf("confirmed" to true))
+                .build()
+            )
+            .build()
+        )
+        .build()
+
+    // The engine infers the paused invocation from the approval's function-response id.
+    val turn2 =
+      javaRunner
+        .runAsync("u", "s", /* invocationId= */ null, approval, autoCreate, /* stateDelta= */ null)
+        .toList()
+        .blockingGet()
+
+    val (resultEvent, toolResponse) =
+      turn2
+        .flatMap { event -> event.functionResponses().map { event to it } }
+        .first { (_, response) -> response.name().getOrNull() == "java_confirm" }
+    assertEquals(
+      "confirmed",
+      toolResponse.response().getOrNull()?.get("status"),
+      "the resumed run should deliver the approval to the tool",
+    )
+    assertEquals(
+      pausedInvocationId,
+      resultEvent.invocationId(),
+      "turn 2 should continue the paused invocation, not start a new one",
+    )
+
+    // Resuming the finished invocation by id alone is a no-op rather than an error.
+    val turn3 =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          pausedInvocationId,
+          /* newMessage= */ null,
+          autoCreate,
+          /* stateDelta= */ null,
+        )
+        .toList()
+        .blockingGet()
+    assertTrue(turn3.isEmpty(), "resuming a finished invocation should emit nothing")
+  }
+
+  @Test
+  fun asJavaRunner_resumeOverload_roleLessResponse_reachesTheModelAsAUserTurn() {
+    val model =
+      SequentialJavaModel(listOf(modelFunctionCall("java_pending", emptyMap()), modelText("done")))
+    val ktRunner =
+      KtInMemoryRunner(
+        app =
+          KtApp(
+            appName = "app",
+            rootAgent =
+              KtLlmAgent(
+                name = "a",
+                model = JavaAdkToKt.asKtModel(model),
+                tools = listOf(JavaAdkToKt.asKtTool(JavaPendingTool())),
+              ),
+            resumabilityConfig = KtResumabilityConfig(isResumable = true),
+          )
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+    val autoCreate = JavaRunConfig.builder().autoCreateSession(true).build()
+    val turn1 =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("go")).build(),
+          autoCreate,
+        )
+        .toList()
+        .blockingGet()
+    val call =
+      turn1.flatMap { it.functionCalls() }.first { it.name().getOrNull() == "java_pending" }
+    val roleLessResponse =
+      GenaiContent.builder()
+        .parts(
+          GenaiPart.builder()
+            .functionResponse(
+              GenaiFunctionResponse.builder()
+                .name("java_pending")
+                .id(call.id().get())
+                .response(mapOf("status" to "done"))
+                .build()
+            )
+            .build()
+        )
+        .build()
+
+    val unusedResumeEvents =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          turn1.first().invocationId(),
+          roleLessResponse,
+          autoCreate,
+          /* stateDelta= */ null,
+        )
+        .toList()
+        .blockingGet()
+
+    val sentResponses =
+      model.requests
+        .last()
+        .contents()
+        .filter { it.role().getOrNull() == "user" }
+        .flatMap { it.parts().getOrNull().orEmpty() }
+        .mapNotNull { it.functionResponse().getOrNull()?.response()?.getOrNull() }
+    assertTrue(
+      mapOf("status" to "done") in sentResponses,
+      "the role-less response should reach the model as a user turn",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_resumeOverload_nonResumableApp_startsNewInvocationWithCallerId() {
+    // The Java Runner throws for a non-resumable app; the Kotlin engine, like Python, runs it.
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(
+              name = "a",
+              model = JavaAdkToKt.asKtModel(SequentialJavaModel(listOf(modelText("done")))),
+            ),
+          appName = "app",
+        )
+      )
+
+    val events =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          "caller-id",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+          JavaRunConfig.builder().autoCreateSession(true).build(),
+          /* stateDelta= */ null,
+        )
+        .toList()
+        .blockingGet()
+
+    assertTrue(events.isNotEmpty(), "the run should start a new invocation instead of throwing")
+    assertTrue(
+      events.all { it.invocationId() == "caller-id" },
+      "the new invocation should use the caller's invocation id",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_resumeOverload_nonResumableApp_nullMessage_throws() {
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+          appName = "app",
+        )
+      )
+
+    val error =
+      assertFailsWith<IllegalArgumentException> {
+        javaRunner
+          .runAsync(
+            "u",
+            "s",
+            "caller-id",
+            /* newMessage= */ null,
+            JavaRunConfig.builder().autoCreateSession(true).build(),
+            /* stateDelta= */ null,
+          )
+          .toList()
+          .blockingGet()
+      }
+    assertContains(error.message.orEmpty(), "not resumable")
+  }
+
+  @Test
+  fun asJavaRunner_everyRunAsyncOverload_routesToKotlinEngine() {
+    // Every public runAsync overload must reach the Kotlin engine, not the base Runner.
+    val recording =
+      RecordingKtRunner(
+        KtInMemoryRunner(
+          agent =
+            KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+          appName = "app",
+        )
+      )
+    val javaRunner = KotlinAdkToJava.asJavaRunner(recording)
+    val key = JavaSessionKey("app", "u", "s")
+    // Pre-create the session for overloads whose default RunConfig disables autoCreateSession.
+    javaRunner.sessionService().createSession(key).ignoreElement().blockingAwait()
+
+    val msg = GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build()
+    val autoCreate = JavaRunConfig.builder().autoCreateSession(true).build()
+
+    javaRunner.runAsync("u", "s", msg, autoCreate).ignoreElements().blockingAwait()
+    javaRunner
+      .runAsync("u", "s", msg, autoCreate, /* stateDelta= */ null)
+      .ignoreElements()
+      .blockingAwait()
+    javaRunner.runAsync("u", "s", msg).ignoreElements().blockingAwait()
+    javaRunner
+      .runAsync(key, msg, autoCreate, /* stateDelta= */ null)
+      .ignoreElements()
+      .blockingAwait()
+    javaRunner.runAsync(key, msg, autoCreate).ignoreElements().blockingAwait()
+    javaRunner.runAsync(key, msg).ignoreElements().blockingAwait()
+    javaRunner
+      .runAsync("u", "s", "invocation-xyz", msg, autoCreate, /* stateDelta= */ null)
+      .ignoreElements()
+      .blockingAwait()
+    javaRunner
+      .runAsync(
+        "u",
+        "s",
+        "invocation-xyz",
+        /* newMessage= */ null,
+        autoCreate,
+        /* stateDelta= */ null,
+      )
+      .ignoreElements()
+      .blockingAwait()
+
+    assertEquals(
+      8,
+      recording.runAsyncCalls.size,
+      "each runAsync call should reach the Kotlin engine exactly once",
+    )
+    assertTrue(
+      recording.runAsyncCalls.all { it.userId == "u" && it.sessionId == "s" },
+      "every overload should pass userId and sessionId through",
+    )
+    assertEquals(
+      listOf<String?>(null, null, null, null, null, null, "invocation-xyz", "invocation-xyz"),
+      recording.runAsyncCalls.map { it.invocationId },
+      "only the resume overload should carry an invocationId, unchanged",
+    )
+    assertEquals(
+      listOf(true, true, true, true, true, true, true, false),
+      recording.runAsyncCalls.map { it.newMessage != null },
+      "a null message on the resume overload should reach the engine as null",
+    )
+  }
+
+  @Test
   fun asJavaRunner_nonDefaultRunConfig_reachesTheKotlinEngine() {
     // A Java RunConfig set through the Java API must map onto the Kotlin engine; the plugin reads
     // the config the engine actually received.
@@ -1209,25 +1588,28 @@ class KtRunnerInteropTest {
         appName = "app",
       )
     val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
+    // Checks the adapter's own error, not the one the inspection-only agent view would raise.
+    fun assertLiveUnsupported(run: () -> Flowable<JavaEvent>) {
+      val error = assertFailsWith<UnsupportedOperationException> { run().toList().blockingGet() }
+      assertEquals("Live mode is not supported when running on the Kotlin engine.", error.message)
+    }
 
     // Live mode is not bridged; it must fail loudly through the stream (like the base Runner), not
     // throw eagerly at the call site.
-    assertFailsWith<UnsupportedOperationException> {
-      javaRunner
-        .runLive("u", "s", LiveRequestQueue(), JavaRunConfig.builder().build())
-        .toList()
-        .blockingGet()
+    assertLiveUnsupported {
+      javaRunner.runLive("u", "s", LiveRequestQueue(), JavaRunConfig.builder().build())
     }
     // agent() returns an inspection-only view of the Kotlin agent - readable, but not runnable.
     assertEquals("a", javaRunner.agent().name(), "agent() should expose the Kotlin agent's name")
 
-    // The session-based runLive overload must fail the same way, through the stream.
-    val session = javaRunner.sessionService().createSession("app", "u", null, "s").blockingGet()
-    assertFailsWith<UnsupportedOperationException> {
-      javaRunner
-        .runLive(session, LiveRequestQueue(), JavaRunConfig.builder().build())
-        .toList()
-        .blockingGet()
+    // The session-based and SessionKey runLive overloads must fail the same way.
+    val key = JavaSessionKey("app", "u", "s")
+    val session = javaRunner.sessionService().createSession(key).blockingGet()
+    assertLiveUnsupported {
+      javaRunner.runLive(session, LiveRequestQueue(), JavaRunConfig.builder().build())
+    }
+    assertLiveUnsupported {
+      javaRunner.runLive(key, LiveRequestQueue(), JavaRunConfig.builder().build())
     }
   }
 
@@ -2873,8 +3255,7 @@ class KtRunnerInteropTest {
           observed["keys"] = artifacts.listArtifactKeys("app", "u", "s").blockingGet().filenames()
           observed["versions"] = artifacts.listVersions("app", "u", "s", "note.txt").blockingGet()
 
-          // KtSessionServiceToJava: getSession, then appendEvent, whose store-mirroring is the
-          // most intricate method in the module.
+          // KtSessionServiceToJava: getSession, then appendEvent on that snapshot.
           val javaSession = sessions.getSession("app", "u", "s", Optional.empty()).blockingGet()!!
           val eventsBefore = javaSession.events().size
           val appended =
@@ -2890,7 +3271,7 @@ class KtRunnerInteropTest {
               )
               .blockingGet()
           observed["appended_author"] = appended.author()
-          // appendEvent mirrors the Kotlin store back into this very Java session object.
+          // appendEvent mutates the caller's Java session in place.
           observed["events_grew"] = javaSession.events().size > eventsBefore
           observed["sessions"] = sessions.listSessions("app", "u").blockingGet().sessions().size
 
@@ -2922,13 +3303,398 @@ class KtRunnerInteropTest {
     assertEquals("v1", observed["loaded"], "load must return what save stored")
     assertEquals(listOf("note.txt"), observed["keys"], "listArtifactKeys")
     assertEquals(listOf(0), observed["versions"], "listVersions")
-    assertEquals(
-      true,
-      observed["events_grew"],
-      "appendEvent must mirror the store into the session",
-    )
+    assertEquals(true, observed["events_grew"], "appendEvent must update the session in place")
     assertEquals(1, observed["sessions"], "listSessions")
     assertEquals(1, observed["memories"], "searchMemory should hit the appended text")
+  }
+
+  /**
+   * Java tool that appends a note through `ic.sessionService()` with `ic.session()` and records
+   * what that live session reflects immediately after the append.
+   */
+  private class AppendNoteJavaTool(name: String = "append_note") :
+    JavaBaseTool(name, "appends a note through the live session") {
+    val observed = ConcurrentHashMap<String, Any>()
+
+    override fun declaration(): Optional<GenaiFunctionDeclaration> =
+      Optional.of(GenaiFunctionDeclaration.builder().name(name()).build())
+
+    @JvmSuppressWildcards
+    override fun runAsync(
+      args: Map<String, Any>,
+      toolContext: JavaToolContext,
+    ): Single<Map<String, Any>> {
+      val ic = toolContext.invocationContext()
+      val live = ic.session()
+      val before = live.events().size
+      // Pick a time after anything in the session, so a lastUpdateTime refresh is observable.
+      val eventTime = live.lastUpdateTime().plusSeconds(1)
+      val unused =
+        ic
+          .sessionService()
+          .appendEvent(
+            live,
+            JavaEvent.builder()
+              .id(JavaEvent.generateEventId())
+              .invocationId(ic.invocationId())
+              .author(name())
+              .timestamp(eventTime.toEpochMilli())
+              .content(GenaiContent.fromParts(GenaiPart.fromText("appended note")))
+              .actions(
+                JavaEventActions.builder()
+                  .stateDelta(mutableMapOf<String, Any>("note" to "kept", "temp:scratch" to "t"))
+                  .build()
+              )
+              .build(),
+          )
+          .blockingGet()
+      observed["grew_by"] = live.events().size - before
+      observed["note"] = live.state()["note"] ?: "MISSING"
+      observed["temp"] = live.state()["temp:scratch"] ?: "MISSING"
+      observed["event_time"] = eventTime
+      observed["last_update_time"] = live.lastUpdateTime()
+      return Single.just(mapOf("ok" to true))
+    }
+  }
+
+  private fun appendNoteAgent(tool: AppendNoteJavaTool) =
+    KtLlmAgent(
+      name = "a",
+      model =
+        JavaAdkToKt.asKtModel(
+          SequentialJavaModel(listOf(modelFunctionCall(tool.name(), emptyMap()), modelText("done")))
+        ),
+      tools = listOf(JavaAdkToKt.asKtTool(tool)),
+    )
+
+  @Test
+  fun ktRunner_javaToolAppendsThroughItsLiveSession_invocationSeesTheEvent() = runBlocking {
+    // The append must reach the running session itself, not a converted copy of it.
+    val tool = AppendNoteJavaTool()
+    val runner = KtInMemoryRunner(appendNoteAgent(tool), appName = "app")
+
+    runner.turn()
+
+    assertEquals(1, tool.observed["grew_by"], "the live session's events() must include the event")
+    assertEquals("kept", tool.observed["note"], "the live session's state() must include its delta")
+    assertEquals(
+      tool.observed["event_time"],
+      tool.observed["last_update_time"],
+      "the live session's lastUpdateTime must follow the append",
+    )
+    // Older Kotlin releases drop temp: keys, so expect what a Kotlin caller gets.
+    val kotlinCaller = runner.sessionService.createSession(KtSessionKey("app", "u", "kotlin"))
+    val unused =
+      runner.sessionService.appendEvent(
+        kotlinCaller,
+        KtEvent(
+          author = "a",
+          actions = KtEventActions(stateDelta = mutableMapOf<String, Any>("temp:scratch" to "t")),
+        ),
+      )
+    assertEquals(
+      kotlinCaller.state["temp:scratch"] ?: "MISSING",
+      tool.observed["temp"],
+      "the live session's state() must match what the Kotlin service gives a Kotlin caller",
+    )
+    val stored = runner.sessionService.getSession(KtSessionKey("app", "u", "s"))!!
+    assertEquals(1, stored.events.count { it.author == "append_note" }, "stored exactly once")
+  }
+
+  @Test
+  fun ktRunner_onAJavaSessionService_liveSessionAppend_reachesRunningSessionAndStore() =
+    runBlocking {
+      // A Java session service appends to the live view in place, so the view must support add.
+      val javaSessions = JavaInMemorySessionService()
+      val tool = AppendNoteJavaTool()
+      val runner =
+        KtInMemoryRunner(
+          appendNoteAgent(tool),
+          appName = "app",
+          sessionService = JavaAdkToKt.asKtSessionService(javaSessions),
+        )
+
+      runner.turn()
+
+      assertEquals(
+        1,
+        tool.observed["grew_by"],
+        "the live session's events() must include the event",
+      )
+      assertEquals(
+        "kept",
+        tool.observed["note"],
+        "the live session's state() must include its delta",
+      )
+      val stored = javaSessions.getSession("app", "u", "s", Optional.empty()).blockingGet()!!
+      assertEquals(1, stored.events().count { it.author() == "append_note" }, "stored exactly once")
+      assertEquals("kept", stored.state()["note"], "the delta is persisted")
+    }
+
+  @Test
+  fun ktRunner_staleCheckingKtService_javaToolLiveAppend_runnerAppendsStillAccepted() =
+    runBlocking {
+      // Appending through the view alone would leave the running session's lastUpdateTime stale.
+      val delegate = KtInMemorySessionService()
+      val rejected = AtomicInteger()
+      val staleChecking =
+        object : KtSessionService by delegate {
+          override suspend fun appendEvent(session: KtSession, event: KtEvent): KtEvent {
+            if (!event.partial) {
+              val stored = delegate.getSession(session.key)
+              if (stored != null && stored.lastUpdateTime != session.lastUpdateTime) {
+                rejected.incrementAndGet()
+                error("stale session")
+              }
+            }
+            return delegate.appendEvent(session, event)
+          }
+        }
+      val tool = AppendNoteJavaTool()
+      val runner =
+        KtInMemoryRunner(appendNoteAgent(tool), appName = "app", sessionService = staleChecking)
+
+      runner.turn()
+
+      assertEquals(0, rejected.get(), "no append may be rejected as stale")
+      assertEquals(
+        1,
+        tool.observed["grew_by"],
+        "the live session's events() must include the event",
+      )
+      val stored = delegate.getSession(KtSessionKey("app", "u", "s"))!!
+      assertEquals(1, stored.events.count { it.author == "append_note" }, "stored exactly once")
+    }
+
+  /**
+   * Runs two turns of parallel and repeated Java tool appends on [sessionService], then asserts
+   * that each append lands exactly once in the live session and the store, with no doubled events.
+   */
+  private suspend fun assertJavaAppendsLandOnce(sessionService: KtSessionService) {
+    data class EventIdAndAuthor(val id: String, val author: String)
+    val liveEvents = CopyOnWriteArrayList<List<EventIdAndAuthor>>()
+    val probe =
+      object : JavaBaseTool("probe", "records the live session's events") {
+        override fun declaration(): Optional<GenaiFunctionDeclaration> =
+          Optional.of(GenaiFunctionDeclaration.builder().name("probe").build())
+
+        @JvmSuppressWildcards
+        override fun runAsync(
+          args: Map<String, Any>,
+          toolContext: JavaToolContext,
+        ): Single<Map<String, Any>> {
+          liveEvents.add(
+            toolContext.invocationContext().session().events().map {
+              EventIdAndAuthor(it.id(), it.author())
+            }
+          )
+          return Single.just(mapOf("ok" to true))
+        }
+      }
+    val parallelNotes =
+      GenaiContent.builder()
+        .role("model")
+        .parts(
+          GenaiPart.fromFunctionCall("note_a", emptyMap()),
+          GenaiPart.fromFunctionCall("note_b", emptyMap()),
+        )
+        .build()
+    val agent =
+      KtLlmAgent(
+        name = "a",
+        model =
+          JavaAdkToKt.asKtModel(
+            SequentialJavaModel(
+              listOf(
+                parallelNotes,
+                modelFunctionCall("note_a", emptyMap()),
+                modelFunctionCall("probe", emptyMap()),
+                modelText("done"),
+                modelFunctionCall("note_b", emptyMap()),
+                modelFunctionCall("probe", emptyMap()),
+                modelText("done"),
+              )
+            )
+          ),
+        tools =
+          JavaAdkToKt.asKtTools(
+            listOf(AppendNoteJavaTool("note_a"), AppendNoteJavaTool("note_b"), probe)
+          ),
+      )
+    val runner = KtInMemoryRunner(agent, appName = "app", sessionService = sessionService)
+
+    runner.turn()
+    runner.turn()
+
+    fun assertEachNoteOnce(where: String, events: List<EventIdAndAuthor>, notes: Map<String, Int>) {
+      assertEquals(events.size, events.map { it.id }.toSet().size, "$where: no event is doubled")
+      assertEquals(
+        notes,
+        events.map { it.author }.filter { it.startsWith("note_") }.groupingBy { it }.eachCount(),
+        "$where: one note per append",
+      )
+    }
+    assertEachNoteOnce("turn 1 live session", liveEvents[0], mapOf("note_a" to 2, "note_b" to 1))
+    assertEachNoteOnce("turn 2 live session", liveEvents[1], mapOf("note_a" to 2, "note_b" to 2))
+    val stored = sessionService.getSession(KtSessionKey("app", "u", "s"))!!
+    assertEachNoteOnce(
+      "store",
+      stored.events.map { EventIdAndAuthor(it.id, it.author) },
+      mapOf("note_a" to 2, "note_b" to 2),
+    )
+  }
+
+  @Test
+  fun ktRunner_parallelAndRepeatedJavaAppends_eachLandOnce() = runBlocking {
+    // Parallel tool calls append through one shared live session; none may be lost or doubled.
+    assertJavaAppendsLandOnce(KtInMemorySessionService())
+  }
+
+  @Test
+  fun ktRunner_onAJavaSessionService_parallelAndRepeatedJavaAppends_eachLandOnce() = runBlocking {
+    // Tools append through the view's add and the runner through a copy; neither may double.
+    assertJavaAppendsLandOnce(JavaAdkToKt.asKtSessionService(JavaInMemorySessionService()))
+  }
+
+  @Test
+  fun ktRunner_onADecoratedJavaSessionService_parallelAndRepeatedJavaAppends_eachLandOnce() =
+    runBlocking {
+      // A decorator blocks unwrapping the adapter, so tool appends cross both adapters.
+      val adapted = JavaAdkToKt.asKtSessionService(JavaInMemorySessionService())
+      assertJavaAppendsLandOnce(object : KtSessionService by adapted {})
+    }
+
+  @Test
+  fun liveEventsView_add_appendsToKotlinSession() {
+    val session = KtSession(key = KtSessionKey("app", "u", "s"))
+    val event = JavaEvent.builder().id(JavaEvent.generateEventId()).author("a").build()
+
+    assertTrue(KtBackedEventsMutableView(session).add(event), "add must report the change")
+
+    assertEquals(listOf(event.id()), session.events.map { it.id }, "add must reach the session")
+  }
+
+  @Test
+  fun liveEventsView_otherMutations_throwUnsupportedOperation() {
+    val session = KtSession(key = KtSessionKey("app", "u", "s"))
+    val event = JavaEvent.builder().id(JavaEvent.generateEventId()).author("a").build()
+    session.events.add(EventCodec.fromJava(event))
+    val events = KtBackedEventsMutableView(session)
+
+    assertFailsWith<UnsupportedOperationException> { events[0] = event }
+    assertFailsWith<UnsupportedOperationException> { events.removeAt(0) }
+    assertFailsWith<UnsupportedOperationException> { events.add(0, event) }
+  }
+
+  @Test
+  fun sessionCodec_fromJava_eventListToleratesAppendDuringIteration() {
+    val javaEvent = JavaEvent.builder().id(JavaEvent.generateEventId()).author("a").build()
+    val events =
+      SessionCodec.fromJava(
+          JavaSession.builder("s").appName("app").userId("u").events(listOf(javaEvent)).build()
+        )
+        .events
+    val iterator = events.iterator()
+
+    events.add(KtEvent(author = "b"))
+
+    assertEquals(javaEvent.id(), iterator.next().id, "an append must not break an open iterator")
+  }
+
+  /** Returns a runner after one text-only turn so session "s" exists in its store. */
+  private suspend fun ktRunnerAfterOneTurn(): KtInMemoryRunner {
+    val runner =
+      KtInMemoryRunner(
+        KtLlmAgent(
+          name = "a",
+          model = JavaAdkToKt.asKtModel(SequentialJavaModel(listOf(modelText("done")))),
+        ),
+        appName = "app",
+      )
+    runner.turn()
+    return runner
+  }
+
+  @Test
+  fun asJavaRunner_appendEventOnASnapshot_updatesItInPlace() = runBlocking {
+    // Snapshot appends follow ADK Java's in-place contract, window included, plus temp: state.
+    val ktRunner = ktRunnerAfterOneTurn()
+    val sessions = KotlinAdkToJava.asJavaRunner(ktRunner).sessionService()
+    val windowed =
+      sessions
+        .getSession(
+          "app",
+          "u",
+          "s",
+          Optional.of(JavaGetSessionConfig.builder().numRecentEvents(1).build()),
+        )
+        .blockingGet()!!
+    assertEquals(1, windowed.events().size, "precondition: a one-event window")
+    windowed.state()["local_only"] = "kept"
+    windowed.state()["temp:stale"] = "x"
+    val event =
+      JavaEvent.builder()
+        .id(JavaEvent.generateEventId())
+        .invocationId("app-code")
+        .author("app_code")
+        .timestamp(windowed.lastUpdateTime().plusSeconds(1).toEpochMilli())
+        .content(GenaiContent.fromParts(GenaiPart.fromText("from app code")))
+        .actions(
+          JavaEventActions.builder()
+            .stateDelta(
+              mutableMapOf<String, Any>(
+                "color" to "teal",
+                "temp:scratch" to "t",
+                "temp:stale" to JavaState.REMOVED,
+              )
+            )
+            .build()
+        )
+        .build()
+
+    val unused = sessions.appendEvent(windowed, event).blockingGet()
+
+    assertEquals(2, windowed.events().size, "the window plus the appended event")
+    assertSame(event, windowed.events().last(), "the caller's own event instance is appended")
+    assertEquals("teal", windowed.state()["color"], "the delta is applied in place")
+    assertEquals("t", windowed.state()["temp:scratch"], "temp: state is applied in place too")
+    assertNull(windowed.state()["temp:stale"], "temp: removals are applied in place")
+    assertEquals("kept", windowed.state()["local_only"], "unstored state keys survive the append")
+    val stored = ktRunner.sessionService.getSession(KtSessionKey("app", "u", "s"))!!
+    assertEquals(3, stored.events.size, "the event is persisted once")
+    assertEquals("teal", stored.state["color"], "the delta is persisted")
+    assertNull(stored.state["local_only"], "only the event's delta is persisted")
+    assertEquals(
+      Instant.ofEpochMilli(event.timestamp()),
+      windowed.lastUpdateTime(),
+      "lastUpdateTime follows the append",
+    )
+  }
+
+  @Test
+  fun asJavaRunner_appendPartialEventOnASnapshot_leavesItUnchanged() = runBlocking {
+    val ktRunner = ktRunnerAfterOneTurn()
+    val sessions = KotlinAdkToJava.asJavaRunner(ktRunner).sessionService()
+    val snapshot = sessions.getSession("app", "u", "s", Optional.empty()).blockingGet()!!
+    val eventsBefore = snapshot.events().size
+    val partial =
+      JavaEvent.builder()
+        .id(JavaEvent.generateEventId())
+        .author("app_code")
+        .partial(true)
+        .actions(
+          JavaEventActions.builder()
+            .stateDelta(mutableMapOf<String, Any>("temp:scratch" to "t"))
+            .build()
+        )
+        .build()
+
+    val unused = sessions.appendEvent(snapshot, partial).blockingGet()
+
+    assertEquals(eventsBefore, snapshot.events().size, "a partial event is not appended")
+    assertNull(snapshot.state()["temp:scratch"], "a partial event's temp: state is not applied")
+    val stored = ktRunner.sessionService.getSession(KtSessionKey("app", "u", "s"))!!
+    assertEquals(eventsBefore, stored.events.size, "a partial event is not stored")
   }
 
   @Test
@@ -3144,6 +3910,19 @@ class KtRunnerInteropTest {
       agentState,
       EventCodec.fromJava(EventCodec.toJava(ktEvent)).actions.agentState,
       "agentState must survive EventCodec.toJava -> fromJava",
+    )
+  }
+
+  @Test
+  fun eventCodec_rewindBeforeInvocationId_roundTripsThroughTheJavaEvent() {
+    // Wiring check: without both directions, a Java session service drops the rewind marker.
+    val ktEvent =
+      KtEvent(author = "user", actions = KtEventActions(rewindBeforeInvocationId = "inv1"))
+
+    assertEquals(
+      "inv1",
+      EventCodec.fromJava(EventCodec.toJava(ktEvent)).actions.rewindBeforeInvocationId,
+      "rewindBeforeInvocationId must survive EventCodec.toJava -> fromJava",
     )
   }
 
@@ -3571,6 +4350,31 @@ class KtRunnerInteropTest {
 
     assertEquals("v", kt.stateDelta["k"], "setStateDelta should reach the Kotlin delta")
     assertTrue(kt.endOfAgent, "setEndInvocation should reach the Kotlin actions")
+  }
+
+  @Test
+  fun ktEventActionsView_rewindBeforeInvocationId_readsAndWritesThrough() {
+    // A marker set in place by a Java tool must reach the engine's actions.
+    val kt = KtEventActions(rewindBeforeInvocationId = "inv1")
+    val view = KtEventActionsToJavaView(kt)
+
+    assertEquals(
+      "inv1",
+      view.rewindBeforeInvocationId().getOrNull(),
+      "the view should read through",
+    )
+    view.setRewindBeforeInvocationId("inv2")
+    assertEquals("inv2", kt.rewindBeforeInvocationId, "the view should write through")
+  }
+
+  @Test
+  fun reconcileActions_carriesRewindBeforeInvocationId() {
+    // A Java tool that replaces its actions (setActions) must still carry the marker.
+    val kt = KtEventActions()
+
+    reconcileActionsToKt(JavaEventActions.builder().rewindBeforeInvocationId("inv1").build(), kt)
+
+    assertEquals("inv1", kt.rewindBeforeInvocationId)
   }
 
   @Test

@@ -17,6 +17,7 @@
 package com.google.adk.tools.mcp;
 
 import com.google.adk.tools.BaseTool;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
 import io.modelcontextprotocol.json.McpJsonDefaults;
@@ -32,12 +33,12 @@ public final class ConversionUtils {
   public static McpSchema.Tool adkToMcpToolType(BaseTool tool) {
     Optional<Schema> parameters = tool.declaration().flatMap(FunctionDeclaration::parameters);
     if (parameters.isEmpty()) {
-      return McpSchema.Tool.builder().name(tool.name()).description(tool.description()).build();
+      return McpSchema.Tool.builder(tool.name(), ImmutableMap.of("type", "object"))
+          .description(tool.description())
+          .build();
     }
-    return McpSchema.Tool.builder()
-        .name(tool.name())
+    return McpSchema.Tool.builder(tool.name(), jsonMapper, parameters.get().toJson())
         .description(tool.description())
-        .inputSchema(jsonMapper, parameters.get().toJson())
         .build();
   }
 
