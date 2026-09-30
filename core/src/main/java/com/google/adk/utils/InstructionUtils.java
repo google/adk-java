@@ -17,6 +17,7 @@
 package com.google.adk.utils;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.sessions.Session;
 import com.google.adk.sessions.State;
 import com.google.common.collect.ImmutableSet;
@@ -34,6 +35,11 @@ public final class InstructionUtils {
 
   private static final Pattern INSTRUCTION_PLACEHOLDER_PATTERN =
       Pattern.compile("\\{+[^\\{\\}]*\\}+");
+
+  // Also skips braces preceded by '$', '{' or '\', so ${key}, ${{key}} and \{key} are left as
+  // written. The '{' keeps the inner braces of ${{key}} and \{{key}} from matching on their own.
+  private static final Pattern ESCAPE_PRESERVING_PLACEHOLDER_PATTERN =
+      Pattern.compile("(?<![\\$\\{\\\\])\\{+[^\\{\\}]*\\}+");
 
   private InstructionUtils() {}
 
@@ -74,9 +80,20 @@ public final class InstructionUtils {
    *         <li>If an optional placeholder cannot be resolved (e.g., variable not found, artifact
    *             not found), it is replaced with an empty string.
    *       </ul>
+   *   <li><b>Escaped Placeholders:</b> A placeholder right after {@code $} or {@code \}, such as
+   *       {@code ${key}}, {@code ${{key}}} or {@code \{key}}.
+   *       <ul>
+   *         <li>When {@code preserveEscapedPlaceholders} is {@code true}, it is left as written,
+   *             backslash included.
+   *         <li>When it is {@code false}, it is resolved like any other placeholder and the {@code
+   *             $} or {@code \} before it is kept, so {@code ${key}} with {@code key} set to {@code
+   *             9.99} becomes {@code $9.99}.
+   *         <li>This method uses the {@link LlmAgent#preserveEscapedPlaceholders()} setting of the
+   *             context's agent when it is an {@link LlmAgent}, and {@code false} otherwise.
+   *       </ul>
    * </ul>
    *
-   * <b>Example Usage:</b>
+   * <p><b>Example Usage:</b>
    *
    * <pre>{@code
    * InvocationContext context = ...; // Assume this is initialized with session and artifact service
@@ -107,13 +124,36 @@ public final class InstructionUtils {
    * @throws IllegalArgumentException if a non-optional variable or artifact is not found.
    */
   public static Single<String> injectSessionState(InvocationContext context, String template) {
+    return injectSessionState(context, template, preservesEscapedPlaceholders(context));
+  }
+
+  /**
+   * Populates placeholders in an instruction template string with values from the session state or
+   * loaded artifacts, as {@link #injectSessionState(InvocationContext, String)} does, with the
+   * handling of escaped placeholders given explicitly instead of taken from the context's agent.
+   *
+   * @param context The invocation context providing access to session state and artifact services.
+   * @param template The instruction template string containing placeholders to be populated.
+   * @param preserveEscapedPlaceholders Whether a placeholder right after {@code $} or {@code \} is
+   *     left as written, backslash included, instead of being resolved.
+   * @return A {@link Single} that will emit the populated instruction string upon successful
+   *     resolution of all non-optional placeholders.
+   * @throws NullPointerException if the template or context is null.
+   * @throws IllegalArgumentException if a non-optional variable or artifact is not found.
+   */
+  public static Single<String> injectSessionState(
+      InvocationContext context, String template, boolean preserveEscapedPlaceholders) {
     if (template == null) {
       return Single.error(new NullPointerException("template cannot be null"));
     }
     if (context == null) {
       return Single.error(new NullPointerException("context cannot be null"));
     }
-    Matcher matcher = INSTRUCTION_PLACEHOLDER_PATTERN.matcher(template);
+    Pattern placeholderPattern =
+        preserveEscapedPlaceholders
+            ? ESCAPE_PRESERVING_PLACEHOLDER_PATTERN
+            : INSTRUCTION_PLACEHOLDER_PATTERN;
+    Matcher matcher = placeholderPattern.matcher(template);
     List<Single<String>> parts = new ArrayList<>();
     int lastEnd = 0;
 
@@ -142,6 +182,12 @@ public final class InstructionUtils {
           }
           return sb.toString();
         });
+  }
+
+  private static boolean preservesEscapedPlaceholders(InvocationContext context) {
+    return context != null
+        && context.agent() instanceof LlmAgent llmAgent
+        && llmAgent.preserveEscapedPlaceholders();
   }
 
   private static Single<String> resolveMatchAsync(InvocationContext context, MatchResult match) {

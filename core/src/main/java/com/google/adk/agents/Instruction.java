@@ -29,7 +29,10 @@ import java.util.function.Function;
  * {artifact.artifact_name}}. These are replaced with values from the agent's session state or
  * loaded artifacts, respectively. For example, an instruction like {@code "Translate the following
  * text to {language}: {user_query}"} would substitute {@code {language}} and {@code {user_query}}
- * with their corresponding values from the session state.
+ * with their corresponding values from the session state. A placeholder right after {@code $} or
+ * {@code \}, such as {@code ${language}}, is resolved in the same way unless the agent is built
+ * with {@link LlmAgent.Builder#preserveEscapedPlaceholders(boolean)} set to {@code true}, in which
+ * case it is left as written, backslash included.
  *
  * <p>Instructions can also be dynamically constructed using {@link Instruction.Provider}. This
  * allows for more complex logic where the instruction text is generated based on the current {@link

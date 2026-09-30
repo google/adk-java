@@ -39,19 +39,23 @@ import java.util.function.Function;
  * <p>The plugin operates through the before_model_callback, allowing it to modify LLM requests
  * before they are sent to the model by prepending the global instruction to any existing system
  * instructions provided by the agent.
+ *
+ * <p>A string global instruction is templated like an agent instruction. A placeholder right after
+ * {@code $} or {@code \} is resolved unless the plugin is created with {@code
+ * preserveEscapedPlaceholders} set to {@code true}, whatever the setting of the current agent.
  */
 public class GlobalInstructionPlugin extends BasePlugin {
 
   private final Function<CallbackContext, Maybe<String>> instructionProvider;
 
   private static Function<CallbackContext, Maybe<String>> createInstructionProvider(
-      String globalInstruction) {
+      String globalInstruction, boolean preserveEscapedPlaceholders) {
     return callbackContext -> {
       if (globalInstruction == null) {
         return Maybe.empty();
       }
       return InstructionUtils.injectSessionState(
-              callbackContext.invocationContext(), globalInstruction)
+              callbackContext.invocationContext(), globalInstruction, preserveEscapedPlaceholders)
           .toMaybe();
     };
   }
@@ -61,7 +65,21 @@ public class GlobalInstructionPlugin extends BasePlugin {
   }
 
   public GlobalInstructionPlugin(String globalInstruction, String name) {
-    this(createInstructionProvider(globalInstruction), name);
+    this(globalInstruction, name, false);
+  }
+
+  /**
+   * Creates a plugin with a string global instruction.
+   *
+   * @param globalInstruction The global instruction, templated with values from the session state
+   *     or artifacts.
+   * @param name The name of the plugin.
+   * @param preserveEscapedPlaceholders Whether a placeholder right after {@code $} or {@code \} in
+   *     the global instruction is left as written, backslash included, instead of being resolved.
+   */
+  public GlobalInstructionPlugin(
+      String globalInstruction, String name, boolean preserveEscapedPlaceholders) {
+    this(createInstructionProvider(globalInstruction, preserveEscapedPlaceholders), name);
   }
 
   public GlobalInstructionPlugin(Function<CallbackContext, Maybe<String>> instructionProvider) {

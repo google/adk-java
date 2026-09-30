@@ -20,6 +20,7 @@ import static org.mockito.Mockito.when;
 
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.sessions.Session;
@@ -151,5 +152,74 @@ public class GlobalInstructionPluginTest {
     assertThat(parts.get(0).text()).hasValue("global instruction\n\n");
     assertThat(parts.get(1).text()).hasValue("existing instruction");
     assertThat(systemInstruction.role()).hasValue("system");
+  }
+
+  @Test
+  public void beforeModelCallback_preservingEscapedPlaceholders_keepsEscapedPlaceholders() {
+    state.put("price", 9.99);
+    LlmRequest.Builder llmRequestBuilder = LlmRequest.builder();
+    GlobalInstructionPlugin plugin =
+        new GlobalInstructionPlugin(
+            "{price}, ${price} and \\{price}",
+            "global_instruction",
+            /* preserveEscapedPlaceholders= */ true);
+    plugin.beforeModelCallback(mockCallbackContext, llmRequestBuilder).test().assertComplete();
+    List<Part> parts =
+        llmRequestBuilder.build().config().get().systemInstruction().get().parts().get();
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).text()).hasValue("9.99, ${price} and \\{price}");
+  }
+
+  @Test
+  public void beforeModelCallback_notPreservingEscapedPlaceholders_resolvesEscapedPlaceholders() {
+    state.put("price", 9.99);
+    LlmRequest.Builder llmRequestBuilder = LlmRequest.builder();
+    GlobalInstructionPlugin plugin =
+        new GlobalInstructionPlugin(
+            "{price}, ${price} and \\{price}",
+            "global_instruction",
+            /* preserveEscapedPlaceholders= */ false);
+    plugin.beforeModelCallback(mockCallbackContext, llmRequestBuilder).test().assertComplete();
+    List<Part> parts =
+        llmRequestBuilder.build().config().get().systemInstruction().get().parts().get();
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).text()).hasValue("9.99, $9.99 and \\9.99");
+  }
+
+  @Test
+  public void beforeModelCallback_preservingEscapedPlaceholders_usesGivenName() {
+    GlobalInstructionPlugin plugin =
+        new GlobalInstructionPlugin(
+            "global instruction", "custom_name", /* preserveEscapedPlaceholders= */ true);
+    assertThat(plugin.getName()).isEqualTo("custom_name");
+  }
+
+  @Test
+  public void beforeModelCallback_stringInstruction_ignoresAgentPreservingEscapedPlaceholders() {
+    state.put("price", 9.99);
+    when(mockInvocationContext.agent())
+        .thenReturn(LlmAgent.builder().name("agent").preserveEscapedPlaceholders(true).build());
+    LlmRequest.Builder llmRequestBuilder = LlmRequest.builder();
+    GlobalInstructionPlugin plugin = new GlobalInstructionPlugin("Price: ${price}");
+    plugin.beforeModelCallback(mockCallbackContext, llmRequestBuilder).test().assertComplete();
+    List<Part> parts =
+        llmRequestBuilder.build().config().get().systemInstruction().get().parts().get();
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).text()).hasValue("Price: $9.99");
+  }
+
+  @Test
+  public void
+      beforeModelCallback_stringInstructionWithName_ignoresAgentPreservingEscapedPlaceholders() {
+    state.put("price", 9.99);
+    when(mockInvocationContext.agent())
+        .thenReturn(LlmAgent.builder().name("agent").preserveEscapedPlaceholders(true).build());
+    LlmRequest.Builder llmRequestBuilder = LlmRequest.builder();
+    GlobalInstructionPlugin plugin = new GlobalInstructionPlugin("Price: ${price}", "custom_name");
+    plugin.beforeModelCallback(mockCallbackContext, llmRequestBuilder).test().assertComplete();
+    List<Part> parts =
+        llmRequestBuilder.build().config().get().systemInstruction().get().parts().get();
+    assertThat(parts).hasSize(1);
+    assertThat(parts.get(0).text()).hasValue("Price: $9.99");
   }
 }

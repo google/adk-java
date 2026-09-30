@@ -18,6 +18,7 @@ package com.google.adk.tools;
 
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
@@ -899,5 +900,58 @@ public final class AgentToolTest {
     assertThat(declaration.get().name()).hasValue("TestAgent");
     // Matches the Python, Go, and Kotlin ports: a missing description becomes an empty string.
     assertThat(declaration.get().description()).hasValue("");
+  }
+
+  @Test
+  public void call_withAgentPreservingEscapedPlaceholders_keepsEscapedPlaceholders()
+      throws Exception {
+    TestLlm testLlm =
+        createTestLlm(
+            LlmResponse.builder()
+                .content(Content.fromParts(Part.fromText("test response")))
+                .build());
+    LlmAgent testAgent =
+        createTestAgentBuilder(testLlm)
+            .name("agent_name")
+            .description("agent description")
+            .instruction("{name} shows ${price}.")
+            .preserveEscapedPlaceholders(true)
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent);
+    ToolContext toolContext = createToolContext(testAgent);
+    toolContext.state().put("name", "TestBot");
+    toolContext.state().put("price", 9.99);
+
+    Map<String, Object> unused =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(getOnlyElement(testLlm.getLastRequest().getSystemInstructions()))
+        .startsWith("TestBot shows ${price}.\n\n");
+  }
+
+  @Test
+  public void call_withAgentNotPreservingEscapedPlaceholders_resolvesEscapedPlaceholders()
+      throws Exception {
+    TestLlm testLlm =
+        createTestLlm(
+            LlmResponse.builder()
+                .content(Content.fromParts(Part.fromText("test response")))
+                .build());
+    LlmAgent testAgent =
+        createTestAgentBuilder(testLlm)
+            .name("agent_name")
+            .description("agent description")
+            .instruction("{name} shows ${price}.")
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent);
+    ToolContext toolContext = createToolContext(testAgent);
+    toolContext.state().put("name", "TestBot");
+    toolContext.state().put("price", 9.99);
+
+    Map<String, Object> unused =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(getOnlyElement(testLlm.getLastRequest().getSystemInstructions()))
+        .startsWith("TestBot shows $9.99.\n\n");
   }
 }
