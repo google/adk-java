@@ -943,7 +943,7 @@ public final class ChatCompletionsResponseTest {
     // future fix (propagating the signature to the text Part, mirroring streaming) flips
     // this test from passing to failing -- forcing an intentional, documented update.
     //
-    // TODO(b/...): consider attaching message.extraContent.google.thought_signature to the
+    // TODO: consider attaching message.extraContent.google.thought_signature to the
     // output text Part to match the streaming-path contract. If/when that fix lands, this
     // test should be updated to assert that textPart.thoughtSignature() has the decoded
     // bytes (compare with

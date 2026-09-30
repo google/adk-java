@@ -21,12 +21,13 @@ import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.mock;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.JsonBaseModel;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
-import io.modelcontextprotocol.spec.McpSchema.TextContent;
-import java.util.List;
+import io.modelcontextprotocol.spec.McpSchema.ImageContent;
 import java.util.Map;
 import org.junit.Before;
 import org.junit.Test;
@@ -36,29 +37,123 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public final class AbstractMcpToolTest {
 
+  private static final ImageContent IMAGE = ImageContent.builder("aW1hZ2U=", "image/png").build();
+  private static final ImmutableMap<String, Object> IMAGE_JSON =
+      ImmutableMap.of("type", "image", "data", "aW1hZ2U=", "mimeType", "image/png");
+
   private ObjectMapper objectMapper;
 
   @Before
   public void setUp() {
-    objectMapper = new ObjectMapper();
+    // The mapper McpTool uses by default, so tests see the production serialization.
+    objectMapper = JsonBaseModel.getMapper();
   }
 
   @Test
-  public void testWrapCallResult_success() {
+  public void wrapCallResult_textOnly_returnsOnlyTextOutput() {
+    CallToolResult result =
+        CallToolResult.builder().addTextContent("first").addTextContent("{\"a\":1}").build();
+
+    Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
+
+    assertThat(map)
+        .containsExactly(
+            "text_output",
+            ImmutableList.of(ImmutableMap.of("text", "first"), ImmutableMap.of("a", 1)));
+  }
+
+  @Test
+  public void wrapCallResult_mixedContent_keepsTextOutputAndAddsContentAndStructuredContent() {
     CallToolResult result =
         CallToolResult.builder()
-            .content(ImmutableList.of(new TextContent("success")))
+            .addTextContent("first")
+            .addTextContent("second")
+            .addContent(IMAGE)
+            .structuredContent(ImmutableMap.of("count", 2))
             .isError(false)
             .build();
 
     Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
 
-    assertThat(map).containsKey("text_output");
-    List<?> content = (List<?>) map.get("text_output");
-    assertThat(content).hasSize(1);
+    assertThat(map)
+        .containsExactly(
+            "text_output",
+            ImmutableList.of(ImmutableMap.of("text", "first"), ImmutableMap.of("text", "second")),
+            "content",
+            ImmutableList.of(
+                ImmutableMap.of("type", "text", "text", "first"),
+                ImmutableMap.of("type", "text", "text", "second"),
+                IMAGE_JSON),
+            "structuredContent",
+            ImmutableMap.of("count", 2));
+  }
 
-    Map<?, ?> contentItem = (Map<?, ?>) content.get(0);
-    assertThat(contentItem).containsEntry("text", "success");
+  @Test
+  public void wrapCallResult_textWithStructuredContent_keepsTextOutputAndAddsStructuredContent() {
+    CallToolResult result =
+        CallToolResult.builder()
+            .addTextContent("{\"count\":2}")
+            .structuredContent(ImmutableMap.of("count", 2))
+            .build();
+
+    Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
+
+    assertThat(map)
+        .containsExactly(
+            "text_output",
+            ImmutableList.of(ImmutableMap.of("count", 2)),
+            "structuredContent",
+            ImmutableMap.of("count", 2));
+  }
+
+  @Test
+  public void wrapCallResult_nonTextOnly_returnsContentWithoutError() {
+    CallToolResult result = CallToolResult.builder().addContent(IMAGE).build();
+
+    Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
+
+    assertThat(map).containsExactly("content", ImmutableList.of(IMAGE_JSON));
+  }
+
+  @Test
+  public void wrapCallResult_emptyContent_returnsEmptyMap() {
+    CallToolResult result = CallToolResult.builder().build();
+
+    Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
+
+    assertThat(map).isEmpty();
+  }
+
+  @Test
+  public void wrapCallResult_emptyContentWithStructuredContentAndMeta_returnsBoth() {
+    CallToolResult result =
+        CallToolResult.builder()
+            .structuredContent(ImmutableMap.of("count", 2))
+            .meta(ImmutableMap.of("trace", "abc"))
+            .build();
+
+    Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
+
+    assertThat(map)
+        .containsExactly(
+            "structuredContent",
+            ImmutableMap.of("count", 2),
+            "_meta",
+            ImmutableMap.of("trace", "abc"));
+  }
+
+  @Test
+  public void wrapCallResult_error_returnsOnlyError() {
+    CallToolResult result =
+        CallToolResult.builder()
+            .addTextContent("boom")
+            .structuredContent(ImmutableMap.of("count", 2))
+            .isError(true)
+            .build();
+
+    Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
+
+    assertThat(map).containsExactly("error", "Tool execution failed. Details: boom");
   }
 
   @Test
