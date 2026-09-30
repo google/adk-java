@@ -25,8 +25,8 @@ import io.reactivex.rxjava3.core.Completable;
 import java.util.List;
 
 /**
- * A built-in tool that is automatically invoked by Gemini 2 and 3 models to retrieve information
- * from the given URLs.
+ * A built-in tool that is automatically invoked by Gemini models to retrieve information from the
+ * given URLs.
  *
  * <p>This tool operates internally within the model and does not require or perform local code
  * execution.
@@ -60,15 +60,8 @@ public final class UrlContextTool extends BaseTool {
     List<Tool> existingTools = configBuilder.build().tools().orElse(ImmutableList.of());
     ImmutableList.Builder<Tool> updatedToolsBuilder = ImmutableList.builder();
     updatedToolsBuilder.addAll(existingTools);
-
-    String model = llmRequestBuilder.build().model().get();
-    if (model != null && (model.startsWith("gemini-2") || model.startsWith("gemini-3"))) {
-      updatedToolsBuilder.add(Tool.builder().urlContext(UrlContext.builder().build()).build());
-      configBuilder.tools(updatedToolsBuilder.build());
-    } else {
-      return Completable.error(
-          new IllegalArgumentException("Url context tool is not supported for model " + model));
-    }
+    updatedToolsBuilder.add(Tool.builder().urlContext(UrlContext.builder().build()).build());
+    configBuilder.tools(updatedToolsBuilder.build());
 
     llmRequestBuilder.config(configBuilder.build());
     return Completable.complete();

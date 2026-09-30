@@ -21,19 +21,19 @@ import com.google.adk.runner.Runner as JavaRunner
 import kotlinx.coroutines.CoroutineDispatcher
 
 /**
- * Reverse interop entry point: exposes an ADK Kotlin-engine [KtRunner] through the ADK Java
- * [JavaRunner] surface, so it can be injected into code written against the Java runner. The
- * returned runner is a real [JavaRunner] whose `runAsync` streams `Event`s backed by the Kotlin
- * engine; live mode is not bridged. The forward direction (Java components onto the Kotlin engine)
- * lives in [com.google.adk.tokt.JavaAdkToKt].
+ * Reverse interop entry point: [asJavaRunner] wraps an ADK Kotlin-engine `Runner` in a real ADK
+ * Java `Runner`, so it can be injected into code written against the Java runner. The wrapper's
+ * `runAsync` streams `Event`s backed by the Kotlin engine; live mode is not bridged. The forward
+ * direction (Java components onto the Kotlin engine) lives in [com.google.adk.tokt.JavaAdkToKt].
  */
 object KotlinAdkToJava {
 
   /**
-   * Exposes a Kotlin-engine [runner] as an ADK Java [JavaRunner]. Its reverse service adapters
-   * bridge the Java RxJava calls onto the Kotlin engine via `dispatcher` (default
-   * `Dispatchers.IO`), which must be able to run nested bridged calls concurrently, so a
-   * single-threaded or tightly bounded dispatcher can deadlock.
+   * Exposes a Kotlin-engine [runner] as an ADK Java `Runner`. Its reverse service adapters bridge
+   * RxJava calls onto the Kotlin engine via `dispatcher` (default `Dispatchers.IO`). That
+   * dispatcher must be able to run nested bridged calls in parallel: if code on one of its threads
+   * (such as a bridged call's RxJava callback) blocks on another bridged call, it holds that thread
+   * until the second call returns, so a single-threaded or tightly bounded dispatcher can deadlock.
    */
   @JvmStatic
   @JvmOverloads

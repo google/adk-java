@@ -17,12 +17,14 @@
 package com.google.adk.tokt.codecs
 
 import com.google.adk.kt.types.FunctionCallingConfig as KtFunctionCallingConfig
+import com.google.adk.kt.types.FunctionCallingConfigMode as KtFunctionCallingConfigMode
 import com.google.adk.kt.types.GenerateContentConfig as KtConfig
 import com.google.adk.kt.types.GenerationConfigRoutingConfig as KtRoutingConfig
 import com.google.adk.kt.types.GenerationConfigRoutingConfigAutoRoutingMode as KtAutoRoutingMode
 import com.google.adk.kt.types.GenerationConfigRoutingConfigManualRoutingMode as KtManualRoutingMode
 import com.google.adk.kt.types.GoogleMaps as KtGoogleMaps
 import com.google.adk.kt.types.GoogleSearch as KtGoogleSearch
+import com.google.adk.kt.types.HarmBlockMethod as KtHarmBlockMethod
 import com.google.adk.kt.types.HarmBlockThreshold as KtHarmBlockThreshold
 import com.google.adk.kt.types.HarmCategory as KtHarmCategory
 import com.google.adk.kt.types.MediaResolution as KtMediaResolution
@@ -40,12 +42,14 @@ import com.google.adk.kt.types.VertexAISearchDataStoreSpec as KtVertexAISearchDa
 import com.google.adk.kt.types.VertexRagStore as KtVertexRagStore
 import com.google.adk.kt.types.VertexRagStoreRagResource as KtVertexRagStoreRagResource
 import com.google.genai.types.FunctionCallingConfig as GenaiFunctionCallingConfig
+import com.google.genai.types.FunctionCallingConfigMode as GenaiFunctionCallingConfigMode
 import com.google.genai.types.GenerateContentConfig as GenaiConfig
 import com.google.genai.types.GenerationConfigRoutingConfig as GenaiRoutingConfig
 import com.google.genai.types.GenerationConfigRoutingConfigAutoRoutingMode as GenaiAutoRoutingMode
 import com.google.genai.types.GenerationConfigRoutingConfigManualRoutingMode as GenaiManualRoutingMode
 import com.google.genai.types.GoogleMaps as GenaiGoogleMaps
 import com.google.genai.types.GoogleSearch as GenaiGoogleSearch
+import com.google.genai.types.HarmBlockMethod as GenaiHarmBlockMethod
 import com.google.genai.types.HarmBlockThreshold as GenaiHarmBlockThreshold
 import com.google.genai.types.HarmCategory as GenaiHarmCategory
 import com.google.genai.types.MediaResolution as GenaiMediaResolution
@@ -69,9 +73,9 @@ import kotlin.jvm.optionals.getOrNull
  *
  * Carries the system instruction, cached content name, tools (function declarations, Google Search,
  * Google Maps, and both the Vertex AI Search and Vertex RAG store retrieval kinds), the common
- * generation parameters, thinking config, model routing config, tool config, and safety settings.
- * genai fields the Kotlin types cannot represent (`FunctionCallingConfig.mode`,
- * `SafetySetting.method`) are not mapped.
+ * generation parameters (including seed and response modalities), thinking config, model routing
+ * config, tool config (with the function-calling mode), and safety settings (with the block
+ * method).
  */
 internal object GenerateContentConfigCodec {
 
@@ -89,6 +93,8 @@ internal object GenerateContentConfigCodec {
     config.stopSequences?.let { builder.stopSequences(it) }
     config.responseMimeType?.let { builder.responseMimeType(it) }
     config.responseSchema?.let { builder.responseSchema(SchemaCodec.toJava(it)) }
+    config.responseModalities?.let { builder.responseModalities(it) }
+    config.seed?.let { builder.seed(it) }
     config.thinkingConfig?.let { builder.thinkingConfig(thinkingConfigToJava(it)) }
     config.labels?.let { builder.labels(it) }
     config.presencePenalty?.let { builder.presencePenalty(it) }
@@ -124,6 +130,8 @@ internal object GenerateContentConfigCodec {
       stopSequences = config.stopSequences().getOrNull(),
       responseMimeType = config.responseMimeType().getOrNull(),
       responseSchema = config.responseSchema().getOrNull()?.let { SchemaCodec.fromJava(it) },
+      responseModalities = config.responseModalities().getOrNull(),
+      seed = config.seed().getOrNull(),
       thinkingConfig = config.thinkingConfig().getOrNull()?.let { thinkingConfigFromJava(it) },
       labels = config.labels().getOrNull(),
       presencePenalty = config.presencePenalty().getOrNull(),
@@ -321,8 +329,8 @@ internal object GenerateContentConfigCodec {
         enumByNameOrNull<KtThinkingLevel>(config.thinkingLevel().getOrNull()?.knownEnum()?.name),
     )
 
-  // The Kotlin FunctionCallingConfig models allowedFunctionNames and streamFunctionCallArguments;
-  // genai's `mode` has no Kotlin field and is dropped.
+  // genai ToolConfig.retrievalConfig and includeServerSideToolInvocations have no Kotlin
+  // counterpart and are dropped.
   private fun toolConfigToJava(config: KtToolConfig): GenaiToolConfig {
     val builder = GenaiToolConfig.builder()
     config.functionCallingConfig?.let {
@@ -342,6 +350,7 @@ internal object GenerateContentConfigCodec {
   ): GenaiFunctionCallingConfig {
     val builder = GenaiFunctionCallingConfig.builder()
     config.allowedFunctionNames?.let { builder.allowedFunctionNames(it) }
+    config.mode?.let { builder.mode(GenaiFunctionCallingConfigMode(it.name)) }
     config.streamFunctionCallArguments?.let { builder.streamFunctionCallArguments(it) }
     return builder.build()
   }
@@ -351,15 +360,22 @@ internal object GenerateContentConfigCodec {
   ): KtFunctionCallingConfig =
     KtFunctionCallingConfig(
       allowedFunctionNames = config.allowedFunctionNames().getOrNull(),
+      // genai falls back to FUNCTION_CALLING_CONFIG_MODE_UNSPECIFIED for an unrecognized mode, a
+      // name the Kotlin enum lacks; map a present-but-unknown mode to MODE_UNSPECIFIED rather than
+      // dropping it, while an absent mode stays null.
+      mode =
+        config.mode().getOrNull()?.let {
+          enumByNameOrNull<KtFunctionCallingConfigMode>(it.knownEnum()?.name)
+            ?: KtFunctionCallingConfigMode.MODE_UNSPECIFIED
+        },
       streamFunctionCallArguments = config.streamFunctionCallArguments().getOrNull(),
     )
 
-  // The Kotlin SafetySetting models category + threshold; genai's `method` has no Kotlin field and
-  // is dropped (a Kotlin gap, not a bridge one).
   private fun safetySettingToJava(setting: KtSafetySetting): GenaiSafetySetting {
     val builder = GenaiSafetySetting.builder()
     setting.category?.let { builder.category(GenaiHarmCategory(it.name)) }
     setting.threshold?.let { builder.threshold(GenaiHarmBlockThreshold(it.name)) }
+    setting.method?.let { builder.method(GenaiHarmBlockMethod(it.name)) }
     return builder.build()
   }
 
@@ -369,5 +385,6 @@ internal object GenerateContentConfigCodec {
         enumByNameOrNull<KtHarmCategory>(setting.category().getOrNull()?.knownEnum()?.name),
       threshold =
         enumByNameOrNull<KtHarmBlockThreshold>(setting.threshold().getOrNull()?.knownEnum()?.name),
+      method = enumByNameOrNull<KtHarmBlockMethod>(setting.method().getOrNull()?.knownEnum()?.name),
     )
 }
