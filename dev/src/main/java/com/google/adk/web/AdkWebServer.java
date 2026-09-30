@@ -25,6 +25,7 @@ import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.web.config.BackendUrl;
 import com.google.adk.web.config.DevUiAssets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,6 +52,15 @@ public class AdkWebServer implements WebMvcConfigurer {
 
   @Value("${adk.web.ui.dir:#{null}}")
   private String webUiDir;
+
+  @Value("${adk.web.backend-url:}")
+  private String backendUrlProperty;
+
+  /** One bean, so this and the runtime-config endpoint cannot read the property differently. */
+  @Bean
+  public BackendUrl backendUrl() {
+    return BackendUrl.from(backendUrlProperty);
+  }
 
   @Bean
   public BaseSessionService sessionService() {
@@ -125,17 +135,25 @@ public class AdkWebServer implements WebMvcConfigurer {
   }
 
   /**
-   * Configures simple automated controllers: "/" and "/dev-ui" both redirect to "/dev-ui/", which
-   * forwards to the UI's index.html. The trailing slash is required: index.html declares a {@code
-   * <base href="./">}, so served from "/dev-ui" the app resolves its own router path to "dev-ui"
-   * and matches none of its routes. The query string is carried across because the UI selects its
-   * agent from {@code ?app=} and the sample READMEs send users to the slashless "/dev-ui", so a
-   * redirect that dropped it would silently ignore the selection.
+   * Configures simple automated controllers: "/" and "/dev-ui" both redirect to the UI, at {@code
+   * adk.web.backend-url}'s path when a usable value is set, and it forwards to index.html. The
+   * trailing slash is required: index.html declares a {@code <base href="./">}, so served from
+   * "/dev-ui" the app resolves its own router path to "dev-ui" and matches none of its routes. The
+   * query string is carried across because the UI selects its agent from {@code ?app=}.
    */
   @Override
   public void addViewControllers(ViewControllerRegistry registry) {
-    registry.addRedirectViewController("/", "/dev-ui/").setKeepQueryParams(true);
-    registry.addRedirectViewController("/dev-ui", "/dev-ui/").setKeepQueryParams(true);
+    String prefix = backendUrl().pathPrefix();
+    // The configured value is the public base, so do not stack the context path on it.
+    boolean contextRelative = prefix.isEmpty();
+    registry
+        .addRedirectViewController("/", prefix + "/dev-ui/")
+        .setKeepQueryParams(true)
+        .setContextRelative(contextRelative);
+    registry
+        .addRedirectViewController("/dev-ui", prefix + "/dev-ui/")
+        .setKeepQueryParams(true)
+        .setContextRelative(contextRelative);
     registry.addViewController("/dev-ui/").setViewName("forward:/dev-ui/index.html");
   }
 
@@ -152,7 +170,7 @@ public class AdkWebServer implements WebMvcConfigurer {
     log.info("AdkWebServer application started successfully.");
   }
 
-  // TODO(vorburger): #later return Closeable, which can stop the server (and resets static)
+  // TODO: return a Closeable that stops the server and resets the static state.
   public static void start(BaseAgent... agents) {
     // Disable CompiledAgentLoader by setting property to prevent its creation
     System.setProperty("adk.agents.loader", "static");

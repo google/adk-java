@@ -20,7 +20,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.adk.JsonBaseModel;
 import com.google.genai.types.Content;
 import java.util.Map;
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Data Transfer Object (DTO) for POST /run and POST /run-sse requests. Contains information needed
@@ -48,8 +48,7 @@ public class AgentRunRequest {
    * replay mode settings) without modifying the stored session.
    */
   @JsonProperty("stateDelta")
-  @Nullable
-  public Map<String, Object> stateDelta;
+  public @Nullable Map<String, Object> stateDelta;
 
   public AgentRunRequest() {}
 
@@ -83,8 +82,7 @@ public class AgentRunRequest {
     return streaming;
   }
 
-  @Nullable
-  public Map<String, Object> getStateDelta() {
+  public @Nullable Map<String, Object> getStateDelta() {
     return stateDelta;
   }
 }

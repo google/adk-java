@@ -18,10 +18,13 @@ package com.google.adk.tokt
 
 import com.google.adk.agents.LiveRequestQueue
 import com.google.adk.agents.RunConfig as JavaRunConfig
+import com.google.adk.annotations.Experimental
 import com.google.adk.artifacts.BaseArtifactService as JavaArtifactService
 import com.google.adk.artifacts.InMemoryArtifactService as JavaInMemoryArtifactService
 import com.google.adk.events.Event as JavaEvent
 import com.google.adk.kt.runners.Runner as KtRunner
+import com.google.adk.kt.types.Content as KtContent
+import com.google.adk.kt.types.Role as KtRole
 import com.google.adk.plugins.PluginManager as JavaPluginManager
 import com.google.adk.runner.Runner as JavaRunner
 import com.google.adk.sessions.Session as JavaSession
@@ -78,6 +81,29 @@ internal class KtRunnerToJava(private val ktRunner: KtRunner, dispatcher: Corout
     newMessage: GenaiContent,
     runConfig: JavaRunConfig,
     stateDelta: MutableMap<String, Any>?,
+  ): Flowable<JavaEvent> =
+    runAsync(
+      userId,
+      sessionId,
+      invocationId = null,
+      newMessage = newMessage,
+      runConfig = runConfig,
+      stateDelta = stateDelta,
+    )
+
+  /**
+   * Resumes on the Kotlin engine with its semantics instead of the Java runner's. A non-resumable
+   * app runs [newMessage] as a new invocation under [invocationId], as Python 2.x does, instead of
+   * throwing. ADK Kotlin 1.1.0 and earlier drop [stateDelta] when [newMessage] is null.
+   */
+  @Experimental
+  override fun runAsync(
+    userId: String,
+    sessionId: String,
+    invocationId: String?,
+    newMessage: GenaiContent?,
+    runConfig: JavaRunConfig,
+    stateDelta: MutableMap<String, Any>?,
   ): Flowable<JavaEvent> {
     // Defer so a request-conversion or RunConfig rejection surfaces via onError, not at the call
     // site - matching the base Runner and this class's own runLive.
@@ -87,7 +113,8 @@ internal class KtRunnerToJava(private val ktRunner: KtRunner, dispatcher: Corout
           .runAsync(
             userId = userId,
             sessionId = sessionId,
-            newMessage = ContentCodec.fromJava(newMessage),
+            invocationId = invocationId,
+            newMessage = newMessage?.let { withUserRole(ContentCodec.fromJava(it)) },
             // Translate the Java REMOVED sentinel so a caller-passed deletion deletes the key
             // rather than storing it as a value (identity-matched by the engine).
             stateDelta = stateDelta?.let { stateDeltaFromJava(it) },
@@ -146,4 +173,11 @@ internal class KtRunnerToJava(private val ktRunner: KtRunner, dispatcher: Corout
 
   private fun liveUnsupported() =
     UnsupportedOperationException("Live mode is not supported when running on the Kotlin engine.")
+
+  /**
+   * Defaults a role-less message to the user role, as Python does, since model requests omit
+   * role-less content.
+   */
+  private fun withUserRole(content: KtContent): KtContent =
+    if (content.role.isNullOrEmpty()) content.copy(role = KtRole.USER) else content
 }

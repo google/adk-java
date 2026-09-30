@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Base class for MCP tools.
@@ -109,9 +110,15 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
     }
   }
 
+  /**
+   * Converts a {@link CallToolResult} into a tool response map; a null or error result becomes a
+   * single {@code error} entry. Text items go under {@code text_output}, each parsed as a JSON
+   * object or else wrapped as {@code {"text": ...}}. {@code structuredContent} and {@code _meta}
+   * are added when present, and the full ordered {@code content} list when any item is not text.
+   */
   @SuppressWarnings("PreferredInterfaceType") // BaseTool.runAsync() returns Map<String, Object>
   protected static Map<String, Object> wrapCallResult(
-      ObjectMapper objectMapper, String mcpToolName, CallToolResult callResult) {
+      ObjectMapper objectMapper, String mcpToolName, @Nullable CallToolResult callResult) {
     if (callResult == null) {
       return ImmutableMap.of("error", "MCP framework error: CallToolResult was null");
     }
@@ -130,36 +137,42 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
       return ImmutableMap.of("error", errorMessage);
     }
 
-    if (contents == null || contents.isEmpty()) {
-      return ImmutableMap.of();
-    }
-
-    List<String> textOutputs = new ArrayList<>();
+    List<Map<String, Object>> textOutputs = new ArrayList<>();
+    boolean hasNonTextContent = false;
     for (Content content : contents) {
       if (content instanceof TextContent textContent) {
-        if (textContent.text() != null) {
-          textOutputs.add(textContent.text());
-        }
+        textOutputs.add(parseTextOutput(objectMapper, textContent.text()));
+      } else {
+        hasNonTextContent = true;
       }
     }
 
-    if (textOutputs.isEmpty()) {
-      return ImmutableMap.of(
-          "error",
-          "Tool '" + mcpToolName + "' returned content that is not TextContent.",
-          "content_details",
-          contents.toString());
+    ImmutableMap.Builder<String, Object> result = ImmutableMap.builder();
+    if (!textOutputs.isEmpty()) {
+      result.put("text_output", textOutputs);
     }
+    // Skipped for text-only results, which would otherwise send their text twice.
+    if (hasNonTextContent) {
+      // Converted through the record so each item keeps its polymorphic "type" property.
+      Map<String, Object> wireResult =
+          objectMapper.convertValue(callResult, new TypeReference<Map<String, Object>>() {});
+      result.put("content", wireResult.get("content"));
+    }
+    if (callResult.structuredContent() != null) {
+      result.put("structuredContent", callResult.structuredContent());
+    }
+    if (callResult.meta() != null) {
+      result.put("_meta", callResult.meta());
+    }
+    return result.buildOrThrow();
+  }
 
-    List<Map<String, Object>> resultMaps = new ArrayList<>();
-    for (String textOutput : textOutputs) {
-      try {
-        resultMaps.add(
-            objectMapper.readValue(textOutput, new TypeReference<Map<String, Object>>() {}));
-      } catch (JsonProcessingException e) {
-        resultMaps.add(ImmutableMap.of("text", textOutput));
-      }
+  private static @Nullable Map<String, Object> parseTextOutput(
+      ObjectMapper objectMapper, String text) {
+    try {
+      return objectMapper.readValue(text, new TypeReference<Map<String, Object>>() {});
+    } catch (JsonProcessingException e) {
+      return ImmutableMap.of("text", text);
     }
-    return ImmutableMap.of("text_output", resultMaps);
   }
 }

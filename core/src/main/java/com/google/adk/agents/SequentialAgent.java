@@ -17,9 +17,12 @@ package com.google.adk.agents;
 
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.events.Event;
+import com.google.common.collect.ImmutableMap;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -77,7 +80,6 @@ public class SequentialAgent extends BaseAgent {
 
     @Override
     public SequentialAgent build() {
-      // TODO(b/410859954): Add validation for required fields like name.
       return new SequentialAgent(
           name, description, subAgents, beforeAgentCallback, afterAgentCallback);
     }
@@ -90,24 +92,38 @@ public class SequentialAgent extends BaseAgent {
   /**
    * Runs sub-agents sequentially.
    *
-   * <p>When resumability is enabled, on resume execution fast-forwards to the sub-agent being
-   * resumed (completed ones are not re-run) and pauses on a pending long-running call; when
-   * disabled, sub-agents simply run in order (matches Python ADK v1 with resumability off).
-   * Temporary, event-based.
+   * <p>Three modes: with resumability on, a resume fast-forwards to the checkpointed sub-agent and
+   * pauses on a long-running call; with the deprecated shim on, the same happens but the resume
+   * point is reconstructed from history and nothing is checkpointed; with neither, sub-agents just
+   * run in order.
    *
    * @param invocationContext Invocation context.
    * @return Flowable emitting events from sub-agents.
    */
   @Override
+  @SuppressWarnings("deprecation") // The shim it dispatches on is deprecated by design.
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
     List<? extends BaseAgent> subAgents = subAgents();
     if (subAgents.isEmpty()) {
       return Flowable.empty();
     }
-    if (!invocationContext.isResumable()) {
-      return Flowable.fromIterable(subAgents)
-          .concatMap(subAgent -> subAgent.runAsync(invocationContext));
+    if (invocationContext.isResumable()) {
+      return runAsyncResumable(invocationContext, subAgents);
     }
+    if (invocationContext.isLegacyResumability()) {
+      return runAsyncLegacyResumption(invocationContext, subAgents);
+    }
+    return Flowable.fromIterable(subAgents)
+        .concatMap(subAgent -> subAgent.runAsync(invocationContext));
+  }
+
+  /**
+   * Runs sub-agents under the deprecated legacy resumption flow, reconstructing the resume point
+   * from session events. Frozen copy of the behavior resumability had before durable checkpoints:
+   * no state is read or written, so only history decides where the sequence restarts.
+   */
+  private Flowable<Event> runAsyncLegacyResumption(
+      InvocationContext invocationContext, List<? extends BaseAgent> subAgents) {
     int startIndex =
         WorkflowAgentResumption.resumeSubAgentIndex(invocationContext, subAgents).orElse(0);
     AtomicBoolean paused = new AtomicBoolean(false);
@@ -124,6 +140,76 @@ public class SequentialAgent extends BaseAgent {
                                 paused.set(true);
                               }
                             }));
+  }
+
+  /**
+   * Runs sub-agents under durable resumability, matching Python ADK: checkpoint each sub-agent
+   * before it runs, fast-forward to the checkpoint on resume, and pause (without ending) on a
+   * long-running call.
+   *
+   * <p>Only the previous sub-agent is checked for a silent pause: a call still unanswered inside
+   * the sub-agent about to run is what the resume is for, and must not stall it. The first
+   * sub-agent this run enters is re-entered unchecked, so one that pauses without emitting an event
+   * must be idempotent on re-entry.
+   */
+  private Flowable<Event> runAsyncResumable(
+      InvocationContext invocationContext, List<? extends BaseAgent> subAgents) {
+    // Deferred so each subscription reads the checkpoint and builds its own mutable state.
+    return Flowable.defer(
+        () -> {
+          Map<String, Object> state = invocationContext.agentStates().get(name());
+          int resumeIndex = WorkflowAgentStates.resumeIndex(state, subAgents, logger);
+          // A checkpoint naming no sub-agent means the sequence already finished.
+          int startIndex =
+              resumeIndex == WorkflowAgentStates.NO_SUB_AGENT_NAMED
+                  ? subAgents.size()
+                  : resumeIndex;
+          AtomicBoolean paused = new AtomicBoolean(false);
+          AtomicBoolean resuming = new AtomicBoolean(state != null);
+          AtomicReference<BaseAgent> ranLast = new AtomicReference<>(null);
+          return Flowable.fromIterable(subAgents.subList(startIndex, subAgents.size()))
+              .concatMap(
+                  subAgent ->
+                      Flowable.defer(
+                          () -> {
+                            // Catches a previous sub-agent that paused without emitting an event.
+                            BaseAgent previous = ranLast.get();
+                            if (paused.get()
+                                || (previous != null
+                                    && invocationContext.hasUnansweredLongRunningCallIn(
+                                        previous))) {
+                              paused.set(true);
+                              return Flowable.<Event>empty();
+                            }
+                            ranLast.set(subAgent);
+                            Flowable<Event> checkpoint = Flowable.empty();
+                            if (!resuming.getAndSet(false)) {
+                              ImmutableMap<String, Object> subState =
+                                  ImmutableMap.of(
+                                      WorkflowAgentStates.CURRENT_SUB_AGENT, subAgent.name());
+                              checkpoint = checkpointAndRecord(invocationContext, subState);
+                            }
+                            Flowable<Event> run =
+                                subAgent
+                                    .runAsync(invocationContext)
+                                    .doOnNext(
+                                        event -> {
+                                          if (invocationContext.shouldPauseInvocation(event)) {
+                                            paused.set(true);
+                                          }
+                                        });
+                            return checkpoint.concatWith(run);
+                          }))
+              .concatWith(
+                  Flowable.defer(
+                      () -> {
+                        if (paused.get()
+                            || invocationContext.hasUnansweredLongRunningCallIn(this)) {
+                          return Flowable.<Event>empty();
+                        }
+                        return endOfAgentAndRecord(invocationContext);
+                      }));
+        });
   }
 
   /**

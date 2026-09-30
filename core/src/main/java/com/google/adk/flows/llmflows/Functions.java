@@ -130,8 +130,6 @@ public final class Functions {
     }
   }
 
-  // TODO - b/413761119 add the remaining methods for function call id.
-
   /** Handles standard, non-streaming function calls. */
   public static Maybe<Event> handleFunctionCalls(
       InvocationContext invocationContext, Event functionCallEvent, Map<String, BaseTool> tools) {
@@ -457,9 +455,11 @@ public final class Functions {
   }
 
   /**
-   * Returns whether the last one or two events hold a pending long-running call, meaning a
-   * resumable flow should pause instead of calling the model again. Mirrors Python ADK v1's
-   * flow-level pause check on {@code events[-1]} and {@code events[-2]}.
+   * Returns whether either of the last two events emits a long-running call, meaning the legacy
+   * resumption flow should pause instead of calling the model again. Responses are not matched
+   * against calls: a long-running tool that returns a value in the same turn still pauses, because
+   * its call event is inside the window. The resumable flow does not use this -- it decides in
+   * {@code StepResume}, which does match responses.
    */
   static boolean hasPendingLongRunningCall(List<Event> events) {
     int from = Math.max(0, events.size() - 2);
