@@ -35,10 +35,7 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.StringJoiner;
 
-/**
- * A toolset for managing and interacting with agent skills. Provides tools to list, load, and run
- * skills.
- */
+/** A toolset for listing skills and loading their instructions and resources. */
 public class SkillToolset implements BaseToolset {
 
   private static final String DEFAULT_SKILL_SYSTEM_INSTRUCTION =
@@ -49,21 +46,20 @@ public class SkillToolset implements BaseToolset {
       - **SKILL.md** (required): The main instruction file with skill metadata and detailed markdown instructions.
       - **references/** (Optional): Additional documentation or examples for skill usage.
       - **assets/** (Optional): Templates, scripts or other resources used by the skill.
-      - **scripts/** (Optional): Executable scripts that can be run via bash.
+      - **scripts/** (Optional): Scripts bundled with the skill. You cannot run them; use `load_skill_resource` to read one and follow it yourself.
 
       This is very important:
 
       1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `skill_name="<SKILL_NAME>"` to read its full instructions before proceeding.
       2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.
       3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.
-      4. Use `run_skill_script` to run scripts from a skill's `scripts/` directory. Use `load_skill_resource` to view script content first if needed.
       """;
 
   private final SkillSource skillSource;
   private final ImmutableList<BaseTool> coreTools;
   private final String systemInstruction;
 
-  /** Initializes the SkillToolset with a SkillSource and default execution settings. */
+  /** Initializes the SkillToolset with a SkillSource and default system instructions. */
   public SkillToolset(SkillSource skillSource) {
     this(skillSource, DEFAULT_SKILL_SYSTEM_INSTRUCTION);
   }
