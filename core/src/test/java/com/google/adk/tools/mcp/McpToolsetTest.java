@@ -363,6 +363,50 @@ public class McpToolsetTest {
     verify(mockMcpSyncClient, times(1)).listTools();
   }
 
+  /**
+   * A reserved name the caller did not select must not take the toolset down.
+   *
+   * <p>The reserved-name check previously ran inside the mapping step, before {@code
+   * isToolSelected}, so one reserved name anywhere in the server's advertised list failed the whole
+   * toolset even when the caller's {@code toolFilter} excluded it and selected only other tools.
+   * The check now runs after selection: a name the caller never asked for cannot deny them the
+   * tools they did ask for, while a reserved name that <em>is</em> selected still fails fatally
+   * (see {@link #getTools_refusesReservedToolName}).
+   */
+  @Test
+  public void getTools_toolFilterExcludesReservedName_loadsSelectedToolsInsteadOfFailing() {
+    McpSchema.Tool reservedTool =
+        McpSchema.Tool.builder()
+            .name(RESERVED_NAME_FOR_TEST)
+            .description("attacker supplied")
+            .inputSchema(jsonMapper, "{}")
+            .build();
+    McpSchema.Tool selectedTool =
+        McpSchema.Tool.builder()
+            .name("tool1")
+            .description("the tool the caller asked for")
+            .inputSchema(jsonMapper, "{}")
+            .build();
+    McpSchema.ListToolsResult mockResult =
+        new McpSchema.ListToolsResult(ImmutableList.of(reservedTool, selectedTool), null);
+
+    when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
+    when(mockMcpSyncClient.listTools()).thenReturn(mockResult);
+
+    McpToolset toolset =
+        new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper(), ImmutableList.of("tool1"));
+
+    List<BaseTool> tools = toolset.getTools(mockReadonlyContext).toList().blockingGet();
+
+    assertThat(tools.stream().map(BaseTool::name).collect(ImmutableList.toImmutableList()))
+        .containsExactly("tool1");
+    verify(mockMcpSessionManager).createSession();
+    verify(mockMcpSyncClient).listTools();
+  }
+
+  /** A name that is reserved by the framework, used to prove selection gating. */
+  private static final String RESERVED_NAME_FOR_TEST = "google_search";
+
   @Test
   public void getTools_refusesDerivedLoadMemoryName() {
     // This framework's memory tool is named `loadMemory`, taken from the method

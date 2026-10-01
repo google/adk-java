@@ -307,6 +307,11 @@ public class McpToolset implements BaseToolset {
               return Flowable.fromStream(
                   toolsResponse.tools().stream()
                       .map(
+                          tool ->
+                              new McpTool(
+                                  tool, this.mcpSession, this.mcpSessionManager, this.objectMapper))
+                      .filter(tool -> isToolSelected(tool, toolFilter, readonlyContext))
+                      .map(
                           tool -> {
                             if (RESERVED_TOOL_NAMES.contains(tool.name())) {
                               // Invalid registration arguments: fatal, not a transient error, so
@@ -314,10 +319,8 @@ public class McpToolset implements BaseToolset {
                               throw new IllegalArgumentException(
                                   "MCP server advertised a reserved tool name: " + tool.name());
                             }
-                            return new McpTool(
-                                tool, this.mcpSession, this.mcpSessionManager, this.objectMapper);
-                          })
-                      .filter(tool -> isToolSelected(tool, toolFilter, readonlyContext)));
+                            return tool;
+                          }));
             })
         .retryWhen(
             errorObservable ->
