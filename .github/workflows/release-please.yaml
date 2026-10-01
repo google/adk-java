@@ -6,12 +6,19 @@ on:
       - main
   workflow_dispatch: {}
 
+# Don't cancel a run partway through creating a release; a newer push waits for it.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 # The action authenticates with RELEASE_PLEASE_TOKEN, not GITHUB_TOKEN.
 permissions: {}
 
 jobs:
   release-please:
     runs-on: ubuntu-24.04
+    # A hung run would otherwise block the queued runs for GitHub's 6-hour default.
+    timeout-minutes: 10
     steps:
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:

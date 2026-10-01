@@ -6,8 +6,9 @@ on:
     branches:
       - main
 
+# A newer run for the same pull request supersedes this one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 # Read-only: no step in this workflow writes to the repository.
