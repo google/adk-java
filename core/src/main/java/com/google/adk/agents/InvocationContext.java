@@ -39,6 +39,8 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
+import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -74,6 +76,7 @@ public class InvocationContext {
   // Shared by reference so a sub-agent's checkpoint is visible to its parent and the runner.
   private final Map<String, Map<String, Object>> agentStates;
   private final Map<String, Boolean> endOfAgents;
+  @Nullable private final Scheduler scheduler;
 
   @Nullable private String branch;
   private BaseAgent agent;
@@ -103,6 +106,7 @@ public class InvocationContext {
     this.callbackContextData = builder.callbackContextData;
     this.agentStates = builder.agentStates;
     this.endOfAgents = builder.endOfAgents;
+    this.scheduler = builder.scheduler;
   }
 
   /** Returns a new {@link Builder} for creating {@link InvocationContext} instances. */
@@ -286,6 +290,17 @@ public class InvocationContext {
   /** Returns the user ID associated with the session. */
   public String userId() {
     return session.userId();
+  }
+
+  /**
+   * Returns the {@link Scheduler} on which this invocation runs the work ADK hands to worker
+   * threads: the sub-agents of a {@code ParallelAgent}, tool calls in {@code
+   * ToolExecutionMode.PARALLEL_SUBSCRIBE} mode, and the hop that starts the live send loop. An
+   * agent-level setting ({@code ParallelAgent.Builder#scheduler}, {@code
+   * LlmAgent.Builder#executor}) takes precedence over it. Defaults to {@link Schedulers#io()}.
+   */
+  public Scheduler scheduler() {
+    return scheduler != null ? scheduler : Schedulers.io();
   }
 
   /** Generates a new unique ID for an invocation context. */
@@ -620,6 +635,7 @@ public class InvocationContext {
       // Shared by reference, not copied: the checkpoints belong to the invocation, not a context.
       this.agentStates = context.agentStates;
       this.endOfAgents = context.endOfAgents;
+      this.scheduler = context.scheduler;
     }
 
     private BaseSessionService sessionService;
@@ -642,6 +658,7 @@ public class InvocationContext {
     private Map<String, Object> callbackContextData = new ConcurrentHashMap<>();
     private Map<String, Map<String, Object>> agentStates = new ConcurrentHashMap<>();
     private Map<String, Boolean> endOfAgents = new ConcurrentHashMap<>();
+    @Nullable private Scheduler scheduler = null;
 
     /**
      * Sets the session service for managing session state.
@@ -824,6 +841,19 @@ public class InvocationContext {
     }
 
     /**
+     * Sets the scheduler for the invocation's internal fan-out; see {@link
+     * InvocationContext#scheduler()}. {@code null} (the default) selects {@link Schedulers#io()}.
+     *
+     * @param scheduler the scheduler, or {@code null} for the default.
+     * @return this builder instance for chaining.
+     */
+    @CanIgnoreReturnValue
+    public Builder scheduler(@Nullable Scheduler scheduler) {
+      this.scheduler = scheduler;
+      return this;
+    }
+
+    /**
      * Sets the callback context data for the invocation.
      *
      * @param callbackContextData the callback context data.
@@ -892,7 +922,9 @@ public class InvocationContext {
         && Objects.equals(contextCacheConfig, that.contextCacheConfig)
         && Objects.equals(resumabilityConfig, that.resumabilityConfig)
         && Objects.equals(invocationCostManager, that.invocationCostManager)
-        && Objects.equals(callbackContextData, that.callbackContextData);
+        && Objects.equals(callbackContextData, that.callbackContextData)
+        // Compared as resolved, so an unset scheduler equals an explicit Schedulers.io().
+        && Objects.equals(scheduler(), that.scheduler());
   }
 
   @Override
@@ -915,6 +947,7 @@ public class InvocationContext {
         contextCacheConfig,
         resumabilityConfig,
         invocationCostManager,
-        callbackContextData);
+        callbackContextData,
+        scheduler());
   }
 }

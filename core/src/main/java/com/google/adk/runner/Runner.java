@@ -71,6 +71,7 @@ import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
@@ -96,6 +97,7 @@ public class Runner {
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
   private final @Nullable ResumabilityConfig resumabilityConfig;
+  @Nullable private final Scheduler scheduler;
   private final ConcurrentMap<String, Completable> activeSessionCompletables =
       new MapMaker().weakValues().makeMap();
 
@@ -108,6 +110,7 @@ public class Runner {
     private BaseSessionService sessionService = new InMemorySessionService();
     @Nullable private BaseMemoryService memoryService = null;
     private List<? extends Plugin> plugins = ImmutableList.of();
+    @Nullable private Scheduler scheduler = null;
 
     @CanIgnoreReturnValue
     public Builder app(App app) {
@@ -162,6 +165,24 @@ public class Runner {
       return this;
     }
 
+    /**
+     * Sets the {@link Scheduler} for the work ADK hands off to worker threads in this runner's
+     * invocations: the sub-agents of a {@code ParallelAgent}, tool calls in {@link
+     * RunConfig.ToolExecutionMode#PARALLEL_SUBSCRIBE} mode, and the hop that starts the live send
+     * loop. An agent-level {@code ParallelAgent.Builder#scheduler} or {@code
+     * LlmAgent.Builder#executor} takes precedence. Defaults to {@code Schedulers.io()}.
+     *
+     * <p>Only these hand-offs are affected; work that completes asynchronously elsewhere (model
+     * clients, session services, MCP, plugins, the runners {@code AgentTool} nests) stays on its
+     * own threads. {@code Schedulers.trampoline()} runs the hand-offs inline, so sub-agents and
+     * tools are subscribed sequentially, but anything they start asynchronously can still overlap.
+     */
+    @CanIgnoreReturnValue
+    public Builder scheduler(Scheduler scheduler) {
+      this.scheduler = Objects.requireNonNull(scheduler, "scheduler cannot be null");
+      return this;
+    }
+
     public Runner build() {
       BaseAgent buildAgent;
       String buildAppName;
@@ -213,7 +234,8 @@ public class Runner {
           buildPlugins,
           buildEventsCompactionConfig,
           buildContextCacheConfig,
-          buildResumabilityConfig);
+          buildResumabilityConfig,
+          scheduler);
     }
   }
 
@@ -295,6 +317,30 @@ public class Runner {
       @Nullable EventsCompactionConfig eventsCompactionConfig,
       @Nullable ContextCacheConfig contextCacheConfig,
       @Nullable ResumabilityConfig resumabilityConfig) {
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        plugins,
+        eventsCompactionConfig,
+        contextCacheConfig,
+        resumabilityConfig,
+        /* scheduler= */ null);
+  }
+
+  private Runner(
+      BaseAgent agent,
+      String appName,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService,
+      @Nullable BaseMemoryService memoryService,
+      List<? extends Plugin> plugins,
+      @Nullable EventsCompactionConfig eventsCompactionConfig,
+      @Nullable ContextCacheConfig contextCacheConfig,
+      @Nullable ResumabilityConfig resumabilityConfig,
+      @Nullable Scheduler scheduler) {
     this.agent = agent;
     this.appName = appName;
     this.artifactService = artifactService;
@@ -304,6 +350,7 @@ public class Runner {
     this.eventsCompactionConfig = createEventsCompactionConfig(agent, eventsCompactionConfig);
     this.contextCacheConfig = contextCacheConfig;
     this.resumabilityConfig = resumabilityConfig;
+    this.scheduler = scheduler;
   }
 
   /**
@@ -1217,6 +1264,7 @@ public class Runner {
         .eventsCompactionConfig(this.eventsCompactionConfig)
         .contextCacheConfig(this.contextCacheConfig)
         .resumabilityConfig(this.resumabilityConfig)
+        .scheduler(this.scheduler)
         .agent(agent);
   }
 

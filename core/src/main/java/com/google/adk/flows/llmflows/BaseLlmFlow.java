@@ -636,7 +636,11 @@ public abstract class BaseLlmFlow implements BaseFlow {
                           });
               Disposable sendTask =
                   historySent
-                      .observeOn(agent.executor().map(Schedulers::from).orElse(Schedulers.io()))
+                      .observeOn(
+                          agent
+                              .executor()
+                              .map(Schedulers::from)
+                              .orElseGet(invocationContext::scheduler))
                       .andThen(
                           liveRequests
                               .onBackpressureBuffer()
