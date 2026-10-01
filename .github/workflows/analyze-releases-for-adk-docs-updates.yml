@@ -40,14 +40,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Cache Maven packages
-        uses: actions/cache@v5
-        with:
-          path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: |
-            ${{ runner.os }}-maven-
-
+      # No Maven cache: a poisoned entry would run with the token and API key below.
       - name: Run the ADK Docs Release Analyzer
         env:
           # Built-in token is enough for dry-run (read-only). For --no-dry-run, use a
