@@ -86,7 +86,8 @@
     <!-- Prepended to the surefire JVM args. Empty by default; any module whose tests resolve
          mockito-core (directly or transitively) must set it to
          "-javaagent:${org.mockito:mockito-core:jar}" so the inline mock maker loads as a
-         startup agent instead of self-attaching at runtime, which newer JDKs block. -->
+         startup agent instead of self-attaching at runtime, which newer JDKs block. Keep the
+         quotes: they make a jar path with spaces a single JVM argument. -->
     <mockito.javaagent.arg/>
     <surefire.argLine>${mockito.javaagent.arg} @{jacoco.agent.argLine} --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED -Dio.netty.tryReflectionSetAccessible=true</surefire.argLine>
   </properties>
