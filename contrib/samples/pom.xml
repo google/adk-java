@@ -21,5 +21,6 @@
     <module>configagent</module>
     <module>helloworld</module>
     <module>mcpfilesystem</module>
+    <module>reasoningbank</module>
   </modules>
 </project>
