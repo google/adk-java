@@ -82,12 +82,12 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
     ImmutableMap<String, AuthoredFunctionCall> functionCallsById =
         functionCallsById(events, agentName);
     ImmutableSet<String> confirmationRequestedIds = confirmationRequestedIds(events);
-    // A tool has been confirmed, but it might already have been executed by a subsequent processor
-    // or in a subsequent turn: such calls have a function response after the user confirmation
+    // A tool has been confirmed, but it might already have been executed in an earlier LLM step
+    // of this invocation: such calls have a function response after the user confirmation
     // event. This is applied before the resumability check rather than after, because
-    // findMostRecentConfirmations re-matches the same stale user event on every later LLM call, so
-    // a settled confirmation would otherwise be re-examined - and re-logged - for the rest of the
-    // session.
+    // findMostRecentConfirmations re-matches the same user event on every later LLM call of the
+    // invocation that answered it, so a settled confirmation would otherwise be re-examined - and
+    // re-logged - until the next user turn.
     //
     // Only responses this agent produced count. A peer event landing after the approval that
     // reuses the pending call's ID would otherwise convince this scan the tool had already run,
@@ -167,11 +167,13 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
 
   private static Optional<ConfirmationResult> findMostRecentConfirmations(
       ImmutableList<Event> events) {
-    // Search backwards for the most recent user event that contains request confirmation
-    // function responses.
+    // Only the most recent user message can answer a pending confirmation. Scanning past a later
+    // user message without confirmation responses would re-apply a stale approval. User-authored
+    // compaction or state-only events carry no content and do not represent a new user turn.
+    // Skipping these contentless user events intentionally differs from ADK Python.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
-      if (!Objects.equals(event.author(), Role.USER) || event.functionResponses().isEmpty()) {
+      if (!Objects.equals(event.author(), Role.USER) || event.content().isEmpty()) {
         continue;
       }
 
@@ -186,9 +188,9 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
               .map(RequestConfirmationLlmRequestProcessor::maybeCreateToolConfirmationEntry)
               .flatMap(Optional::stream)
               .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
-      if (!confirmationsInEvent.isEmpty()) {
-        return Optional.of(new ConfirmationResult(confirmationsInEvent, i));
-      }
+      return confirmationsInEvent.isEmpty()
+          ? Optional.empty()
+          : Optional.of(new ConfirmationResult(confirmationsInEvent, i));
     }
     return Optional.empty();
   }
