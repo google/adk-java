@@ -44,12 +44,19 @@ public final class Instructions implements RequestProcessor {
     if (agent.rootAgent() instanceof LlmAgent rootAgent) {
       builderSingle =
           appendInstruction(
-              builderSingle, context, rootAgent.canonicalGlobalInstruction(readonlyContext));
+              builderSingle,
+              context,
+              rootAgent.canonicalGlobalInstruction(readonlyContext),
+              rootAgent.preserveEscapedPlaceholders());
     }
 
     // Process agent-specific instruction
     builderSingle =
-        appendInstruction(builderSingle, context, agent.canonicalInstruction(readonlyContext));
+        appendInstruction(
+            builderSingle,
+            context,
+            agent.canonicalInstruction(readonlyContext),
+            agent.preserveEscapedPlaceholders());
 
     return builderSingle.map(
         finalBuilder ->
@@ -60,7 +67,8 @@ public final class Instructions implements RequestProcessor {
   private Single<LlmRequest.Builder> appendInstruction(
       Single<LlmRequest.Builder> builderSingle,
       InvocationContext context,
-      Single<Map.Entry<String, Boolean>> instructionEntrySingle) {
+      Single<Map.Entry<String, Boolean>> instructionEntrySingle,
+      boolean preserveEscapedPlaceholders) {
     return builderSingle.flatMap(
         builder ->
             instructionEntrySingle.flatMap(
@@ -73,7 +81,8 @@ public final class Instructions implements RequestProcessor {
                   if (bypassStateInjection) {
                     return Single.just(builder.appendInstructions(ImmutableList.of(instruction)));
                   }
-                  return InstructionUtils.injectSessionState(context, instruction)
+                  return InstructionUtils.injectSessionState(
+                          context, instruction, preserveEscapedPlaceholders)
                       .map(
                           resolvedInstr ->
                               builder.appendInstructions(ImmutableList.of(resolvedInstr)));
