@@ -25,6 +25,7 @@ import com.google.common.collect.ImmutableList;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
+import io.modelcontextprotocol.spec.McpSchema.ImageContent;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import java.util.List;
 import java.util.Map;
@@ -53,12 +54,59 @@ public final class AbstractMcpToolTest {
 
     Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
 
+    assertThat(map).containsEntry("isError", false);
     assertThat(map).containsKey("text_output");
-    List<?> content = (List<?>) map.get("text_output");
-    assertThat(content).hasSize(1);
+    List<?> textOutput = (List<?>) map.get("text_output");
+    assertThat(textOutput).hasSize(1);
 
-    Map<?, ?> contentItem = (Map<?, ?>) content.get(0);
+    Map<?, ?> contentItem = (Map<?, ?>) textOutput.get(0);
     assertThat(contentItem).containsEntry("text", "success");
+  }
+
+  @Test
+  public void testWrapCallResult_mixedContent_success() {
+    CallToolResult result =
+        new CallToolResult(
+            ImmutableList.of(
+                new TextContent("first"), new ImageContent(null, "aW1hZ2U=", "image/png", null)),
+            false,
+            Map.of("count", 2),
+            Map.of("traceId", "trace-123"));
+
+    Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
+
+    assertThat(map).containsEntry("isError", false);
+    assertThat(map).containsEntry("structuredContent", Map.of("count", 2));
+    assertThat(map).containsEntry("_meta", Map.of("traceId", "trace-123"));
+
+    List<?> content = (List<?>) map.get("content");
+    assertThat(content).hasSize(2);
+    Map<?, ?> textContent = (Map<?, ?>) content.get(0);
+    assertThat(textContent).containsEntry("type", "text");
+    assertThat(textContent).containsEntry("text", "first");
+    Map<?, ?> imageContent = (Map<?, ?>) content.get(1);
+    assertThat(imageContent).containsEntry("type", "image");
+    assertThat(imageContent).containsEntry("data", "aW1hZ2U=");
+    assertThat(imageContent).containsEntry("mimeType", "image/png");
+
+    List<?> textOutput = (List<?>) map.get("text_output");
+    assertThat(textOutput).containsExactly(Map.of("text", "first"));
+  }
+
+  @Test
+  public void testWrapCallResult_nonTextContent_success() {
+    CallToolResult result =
+        new CallToolResult(
+            ImmutableList.of(new ImageContent(null, "aW1hZ2U=", "image/png", null)),
+            false,
+            null,
+            null);
+
+    Map<String, Object> map = AbstractMcpTool.wrapCallResult(objectMapper, "my_tool", result);
+
+    assertThat(map).doesNotContainKey("error");
+    assertThat(map).containsEntry("isError", false);
+    assertThat((List<?>) map.get("content")).hasSize(1);
   }
 
   @Test
