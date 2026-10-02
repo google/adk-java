@@ -274,12 +274,12 @@ public final class Functions {
         .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
   }
 
-  /** Agent executor if set, otherwise the IO scheduler. */
+  /** Agent executor if set, otherwise the invocation's scheduler. */
   private static Scheduler resolveToolExecutionScheduler(InvocationContext invocationContext) {
     if (invocationContext.agent() instanceof LlmAgent llmAgent) {
-      return llmAgent.executor().map(Schedulers::from).orElse(Schedulers.io());
+      return llmAgent.executor().map(Schedulers::from).orElseGet(invocationContext::scheduler);
     }
-    return Schedulers.io();
+    return invocationContext.scheduler();
   }
 
   private static Function<FunctionCall, Maybe<Event>> getFunctionCallMapper(

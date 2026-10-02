@@ -58,7 +58,8 @@ public abstract class RunConfig {
    *
    * <p>PARALLEL_SUBSCRIBE: like {@code PARALLEL}, but every tool is additionally subscribed on a
    * worker thread, so blocking tools also run concurrently. Tool implementations must be
-   * thread-safe. The worker is the agent's executor when set, otherwise the RxJava IO scheduler.
+   * thread-safe. The worker is the agent's executor when set, otherwise the invocation's scheduler
+   * ({@code Runner.Builder#scheduler}; the RxJava IO scheduler by default).
    */
   public enum ToolExecutionMode {
     NONE,
