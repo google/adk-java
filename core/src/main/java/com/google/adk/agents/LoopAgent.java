@@ -91,6 +91,10 @@ public class LoopAgent extends BaseAgent {
   public static class Builder extends BaseAgent.Builder<Builder> {
     private @Nullable Integer maxIterations;
 
+    /**
+     * Sets the maximum number of loop iterations. If not set, the loop runs until a sub-agent
+     * escalates. A value of zero or less runs the sub-agents no times at all.
+     */
     @CanIgnoreReturnValue
     public Builder maxIterations(@Nullable Integer maxIterations) {
       this.maxIterations = maxIterations;
@@ -142,6 +146,12 @@ public class LoopAgent extends BaseAgent {
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
     List<? extends BaseAgent> subAgents = subAgents();
     if (subAgents == null || subAgents.isEmpty()) {
+      return Flowable.empty();
+    }
+
+    // Flowable.repeat rejects a negative count, and the legacy flow checks the cap only after a
+    // pass. The resumable path checks it first and records end-of-agent, so it is left to it.
+    if (!invocationContext.isResumable() && maxIterations != null && maxIterations <= 0) {
       return Flowable.empty();
     }
 
