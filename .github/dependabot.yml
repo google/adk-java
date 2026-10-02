@@ -1,0 +1,24 @@
+# Keep the SHA-pinned actions in .github/workflows current: each week Dependabot
+# bumps a pin and its "# vX.Y.Z" comment. SHA pins get no Dependabot security
+# alerts, so bump urgent fixes by hand.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Hold each release 7 days so a regressed or compromised one can surface first.
+    cooldown:
+      default-days: 7
+    commit-message:
+      # Produces "chore(deps): ..." titles (satisfies pr-title-check.yml).
+      prefix: "chore"
+      include: "scope"
+    # Majors match no group, so each gets its own pull request.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
