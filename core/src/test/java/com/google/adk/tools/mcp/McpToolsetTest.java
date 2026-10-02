@@ -36,6 +36,7 @@ import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.List;
+import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -51,6 +52,11 @@ public class McpToolsetTest {
   @Mock private McpSessionManager mockMcpSessionManager;
   @Mock private McpSyncClient mockMcpSyncClient;
   @Mock private ReadonlyContext mockReadonlyContext;
+
+  @After
+  public void restoreConfigStdioDefault() {
+    McpToolset.setAllowConfigStdioServers(null);
+  }
 
   private static final McpJsonMapper jsonMapper = McpJsonDefaults.getMapper();
 
@@ -169,6 +175,7 @@ public class McpToolsetTest {
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
+    McpToolset.setAllowConfigStdioServers(true);
 
     McpToolset toolset = McpToolset.fromConfig(config, configPath);
 
@@ -202,6 +209,68 @@ public class McpToolsetTest {
     args.put(
         "stdioConnectionParams",
         ImmutableMap.of("timeout", 10f, "serverParams", STDIO_SERVER_PARAMS));
+
+    BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
+    String configPath = "/path/to/config.yaml";
+    McpToolset.setAllowConfigStdioServers(true);
+
+    McpToolset toolset = McpToolset.fromConfig(config, configPath);
+
+    assertThat(toolset).isNotNull();
+  }
+
+  @Test
+  public void testFromConfig_stdioServerParams_rejectedByDefault() {
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.put("stdioServerParams", STDIO_SERVER_PARAMS);
+
+    BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
+    String configPath = "/path/to/config.yaml";
+
+    ConfigurationException exception =
+        assertThrows(ConfigurationException.class, () -> McpToolset.fromConfig(config, configPath));
+
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("Refusing to start a local MCP server declared in an agent config");
+  }
+
+  @Test
+  public void testFromConfig_stdioConnectionParams_rejectedByDefault() {
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.put(
+        "stdioConnectionParams",
+        ImmutableMap.of("timeout", 10f, "serverParams", STDIO_SERVER_PARAMS));
+
+    BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
+    String configPath = "/path/to/config.yaml";
+
+    ConfigurationException exception =
+        assertThrows(ConfigurationException.class, () -> McpToolset.fromConfig(config, configPath));
+
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("Refusing to start a local MCP server declared in an agent config");
+  }
+
+  @Test
+  public void testFromConfig_stdioServerParams_allowedWhenOptedIn() throws ConfigurationException {
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.put("stdioServerParams", STDIO_SERVER_PARAMS);
+
+    BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
+    String configPath = "/path/to/config.yaml";
+    McpToolset.setAllowConfigStdioServers(true);
+
+    McpToolset toolset = McpToolset.fromConfig(config, configPath);
+
+    assertThat(toolset).isNotNull();
+  }
+
+  @Test
+  public void testFromConfig_sseParams_unaffectedByStdioRejection() throws ConfigurationException {
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.put("sseServerParams", ImmutableMap.of("url", "http://localhost:8080"));
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
@@ -242,6 +311,7 @@ public class McpToolsetTest {
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
+    McpToolset.setAllowConfigStdioServers(true);
 
     // This should succeed and use the stdio constructor
     McpToolset toolset = McpToolset.fromConfig(config, configPath);
@@ -275,6 +345,7 @@ public class McpToolsetTest {
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
+    McpToolset.setAllowConfigStdioServers(true);
 
     McpToolset toolset = McpToolset.fromConfig(config, configPath);
 
@@ -290,6 +361,7 @@ public class McpToolsetTest {
 
     BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
     String configPath = "/path/to/config.yaml";
+    McpToolset.setAllowConfigStdioServers(true);
 
     McpToolset toolset = McpToolset.fromConfig(config, configPath);
 
