@@ -58,6 +58,7 @@ import io.reactivex.rxjava3.observers.DisposableCompletableObserver;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -160,10 +161,55 @@ public abstract class BaseLlmFlow implements BaseFlow {
       ToolContext toolContext = ToolContext.builder(context).build();
       return Flowable.fromIterable(processors)
           .concatMapCompletable(f -> f.apply(builder, toolContext))
+          .andThen(rejectDeclarationlessNameCollisions(agent, builder, readonlyContext))
           .andThen(
               Single.fromCallable(
                   () -> RequestProcessingResult.create(builder.build(), ImmutableList.of())));
     };
+  }
+
+  /**
+   * Fails when a tool without a function declaration shares a name with a function tool in the
+   * request.
+   *
+   * <p>Tools without a declaration (the in-model tools such as {@code google_search}) never enter
+   * {@link LlmRequest#tools()}: {@link BaseTool#processLlmRequest} returns before appending them.
+   * They are written into the request's config tools instead, so a server or function tool of the
+   * same name sits beside them rather than replacing them, and the model chooses between two things
+   * answering to one name. That is worth an error, and this is the one path every tool passes
+   * through, including each tool unwrapped from a toolset.
+   *
+   * <p>Only that direction is rejected. Two tools without declarations may share a name, which
+   * keeps setups like two default-named {@code ExampleTool}s working.
+   */
+  private Completable rejectDeclarationlessNameCollisions(
+      LlmAgent agent, LlmRequest.Builder builder, ReadonlyContext readonlyContext) {
+    return Flowable.fromIterable(agent.toolsUnion())
+        .concatMap(
+            toolOrToolset -> {
+              if (toolOrToolset instanceof BaseTool baseTool) {
+                return Flowable.just(baseTool);
+              }
+              if (toolOrToolset instanceof BaseToolset baseToolset) {
+                return baseToolset.getTools(readonlyContext);
+              }
+              return Flowable.empty();
+            })
+        .filter(tool -> tool.declaration().isEmpty())
+        .map(BaseTool::name)
+        .distinct()
+        .toList()
+        .flatMapCompletable(
+            declarationlessNames -> {
+              Map<String, BaseTool> declared = builder.build().tools();
+              for (String name : declarationlessNames) {
+                if (declared.containsKey(name)) {
+                  return Completable.error(
+                      new IllegalArgumentException("Duplicate tool name: " + name));
+                }
+              }
+              return Completable.complete();
+            });
   }
 
   /**
