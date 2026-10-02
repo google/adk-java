@@ -38,6 +38,7 @@ import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Tool;
 import com.google.genai.types.ToolConfig;
+import io.modelcontextprotocol.spec.McpSchema.JsonSchema;
 import java.util.AbstractMap;
 import java.util.Arrays;
 import java.util.Base64;
@@ -602,6 +603,73 @@ public final class ChatCompletionsRequestTest {
     LlmRequest llmRequest =
         LlmRequest.builder()
             .model("gemini-1.5-pro")
+            .config(config)
+            .contents(ImmutableList.of())
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.tools).hasSize(1);
+    Map<String, Object> params = (Map<String, Object>) request.tools.get(0).function.parameters;
+    assertThat(params.get("type")).isEqualTo("object");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> props = (Map<String, Object>) params.get("properties");
+    assertThat(props).isEmpty();
+  }
+
+  @Test
+  public void testFromLlmRequest_withParametersJsonSchema() throws Exception {
+    Map<String, Object> properties =
+        ImmutableMap.of("jobId", ImmutableMap.of("$ref", "#/$defs/jobId"));
+    Map<String, Object> defs = ImmutableMap.of("jobId", ImmutableMap.of("type", "string"));
+    JsonSchema jsonSchema =
+        new JsonSchema("object", properties, ImmutableList.of("jobId"), null, defs, null);
+    FunctionDeclaration function =
+        FunctionDeclaration.builder()
+            .name("analyze_premerge_failures_by_job")
+            .parametersJsonSchema(jsonSchema)
+            .build();
+
+    Tool tool = Tool.builder().functionDeclarations(ImmutableList.of(function)).build();
+    GenerateContentConfig config =
+        GenerateContentConfig.builder().tools(ImmutableList.of(tool)).build();
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("openai-compatible-model")
+            .config(config)
+            .contents(ImmutableList.of())
+            .build();
+
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+
+    assertThat(request.tools).hasSize(1);
+    assertThat(request.tools.get(0).function.parameters)
+        .isEqualTo(
+            ImmutableMap.of(
+                "type",
+                "object",
+                "properties",
+                properties,
+                "required",
+                ImmutableList.of("jobId"),
+                "$defs",
+                defs));
+  }
+
+  @Test
+  public void testFromLlmRequest_withZeroArgumentParametersJsonSchema() throws Exception {
+    JsonSchema jsonSchema = new JsonSchema("object", null, null, null, null, null);
+    FunctionDeclaration function =
+        FunctionDeclaration.builder()
+            .name("zero_argument_tool")
+            .parametersJsonSchema(jsonSchema)
+            .build();
+    Tool tool = Tool.builder().functionDeclarations(ImmutableList.of(function)).build();
+    GenerateContentConfig config =
+        GenerateContentConfig.builder().tools(ImmutableList.of(tool)).build();
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("openai-compatible-model")
             .config(config)
             .contents(ImmutableList.of())
             .build();
