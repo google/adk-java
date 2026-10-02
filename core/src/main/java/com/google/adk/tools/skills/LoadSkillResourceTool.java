@@ -178,19 +178,17 @@ final class LoadSkillResourceTool extends BaseTool {
    *
    * <p>If the part is a function response from this tool containing binary data, it returns a
    * stream containing the updated function response part (with a placeholder message) and a new
-   * part containing the raw binary data. Otherwise, it returns an empty stream.
+   * part containing the raw binary data. Otherwise, it returns the original part.
    *
    * @param part the {@link Part} to process
-   * @return a stream containing the processed parts, or an empty stream if the part does not
-   *     contain a binary function response from this tool
+   * @return a stream containing the processed parts, or the original part if it does not contain a
+   *     binary function response from this tool
    */
   private Stream<Part> processPart(Part part) {
-    return part
-        .functionResponse()
+    return part.functionResponse()
         .filter(funcResp -> funcResp.name().orElse("").equals(name()))
         .filter(this::hasBinaryContentResponse)
-        .stream()
-        .flatMap(
+        .map(
             funcResp ->
                 funcResp.response().stream()
                     .flatMap(
@@ -208,7 +206,8 @@ final class LoadSkillResourceTool extends BaseTool {
                           Part binaryPart = Part.fromBytes(binaryContent, mimeType);
 
                           return Stream.of(updatedPart, binaryPart);
-                        }));
+                        }))
+        .orElseGet(() -> Stream.of(part));
   }
 
   private ImmutableMap<String, Object> createResult(
