@@ -32,12 +32,15 @@ jobs:
       - name: Count Commits
         id: count_commits
         # We use `git rev-list --count` to count the commits.
-        # ${{ github.event.pull_request.base.sha }} is the commit SHA of the base branch.
-        # ${{ github.event.pull_request.head.sha }} is the commit SHA of the head branch (the PR branch).
+        # BASE_SHA is the commit SHA of the base branch.
+        # HEAD_SHA is the commit SHA of the head branch (the PR branch).
         # The '..' syntax gives us the list of commits in the head branch that are not in the base branch.
-        # The output of the command (the count) is stored in a step output variable named 'count'.
+        # The output of the command (the count) is stored in a step output variable named 'commit_count'.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          count=$(git rev-list --count ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+          count=$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}")
           echo "commit_count=$count" >> $GITHUB_OUTPUT
 
       # Step 3: Check if the commit count is greater than 1
@@ -45,9 +48,11 @@ jobs:
       - name: Check Commit Count
         # This step only runs if the 'commit_count' output from the 'count_commits' step is greater than 1.
         if: steps.count_commits.outputs.commit_count > 1
+        env:
+          COMMIT_COUNT: ${{ steps.count_commits.outputs.commit_count }}
         # If the condition is met, the workflow will exit with a failure status.
         run: |
-          echo "This pull request has ${{ steps.count_commits.outputs.commit_count }} commits."
+          echo "This pull request has ${COMMIT_COUNT} commits."
           echo "Please squash them into a single commit before merging."
           echo "You can use git rebase -i HEAD~N"
           echo "...where N is the number of commits you want to squash together. The PR check conveniently tells you this number! For example, if the check says you have 3 commits, you would run: git rebase -i HEAD~3."
