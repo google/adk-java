@@ -305,7 +305,7 @@
               <goal>test</goal>
             </goals>
             <configuration>
-              <test>ApigeeLlmTest#build_withoutProxyUrl_readsFromEnvironment</test>
+              <test>ApigeeLlmTest#build_withoutProxyUrlAndEnvVarSet_readsFromEnvironment</test>
               <environmentVariables>
                 <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
                 <!-- runs a second variant of the test method -->
