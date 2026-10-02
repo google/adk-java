@@ -984,6 +984,67 @@ public final class BaseLlmFlowTest {
   }
 
   @Test
+  public void getRequestProcessorFromTools_rejectsDeclarationlessNameCollision() {
+    // Order must not matter: in-model tool before the clashing function tool, and after.
+    assertDeclarationlessCollisionRejected(/* declarationlessFirst= */ true);
+    assertDeclarationlessCollisionRejected(/* declarationlessFirst= */ false);
+  }
+
+  private void assertDeclarationlessCollisionRejected(boolean declarationlessFirst) {
+    // Stands in for an in-model tool: it declares nothing, so it never enters the request's tool
+    // map, exactly like GoogleSearchTool.
+    BaseTool inModel = new BaseTool("google_search", "in-model search") {};
+
+    BaseTool functionTool =
+        new BaseTool("google_search", "function search") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(FunctionDeclaration.builder().name("google_search").build());
+          }
+        };
+
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .tools(
+                declarationlessFirst
+                    ? ImmutableList.of(inModel, functionTool)
+                    : ImmutableList.of(functionTool, inModel))
+            .build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    RequestProcessor requestProcessor = baseLlmFlow.getRequestProcessorFromTools(agent);
+
+    IllegalArgumentException thrown =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                requestProcessor
+                    .processRequest(invocationContext, LlmRequest.builder().build())
+                    .blockingGet());
+    assertThat(thrown).hasMessageThat().isEqualTo("Duplicate tool name: google_search");
+  }
+
+  @Test
+  public void getRequestProcessorFromTools_allowsTwoDeclarationlessToolsSharingAName() {
+    // Both are declaration-less, so nothing is dispatched by name and no name is taken. Two
+    // default-named ExampleTools must keep working.
+    BaseTool first = new BaseTool("same_name", "first") {};
+    BaseTool second = new BaseTool("same_name", "second") {};
+
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .tools(ImmutableList.of(first, second))
+            .build();
+
+    InvocationContext invocationContext = createInvocationContext(agent);
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+    RequestProcessor requestProcessor = baseLlmFlow.getRequestProcessorFromTools(agent);
+
+    requestProcessor.processRequest(invocationContext, LlmRequest.builder().build()).blockingGet();
+  }
+
+  @Test
   public void getRequestProcessorFromTools_throwsOnUnsupportedType() {
     LlmAgent agent =
         createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
