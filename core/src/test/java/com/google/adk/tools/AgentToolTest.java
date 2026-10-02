@@ -42,9 +42,11 @@ import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -346,6 +348,48 @@ public final class AgentToolTest {
         agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
 
     assertThat(result).containsExactly("result", "First text part. Second text part.");
+  }
+
+  @Test
+  public void call_nestedRunner_inheritsParentInvocationProviders() throws Exception {
+    LlmAgent testAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    LlmResponse.builder()
+                        .content(Content.fromParts(Part.fromText("nested response")))
+                        .build()))
+            .name("agent_name")
+            .description("agent description")
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent);
+    AtomicInteger uuidDraws = new AtomicInteger();
+    AtomicInteger clockReads = new AtomicInteger();
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    ToolContext toolContext =
+        ToolContext.builder(
+                InvocationContext.builder()
+                    .invocationId("parent-invocation")
+                    .agent(testAgent)
+                    .session(session)
+                    .sessionService(sessionService)
+                    .timeProvider(
+                        () -> {
+                          clockReads.incrementAndGet();
+                          return Instant.ofEpochMilli(1234L);
+                        })
+                    .uuidProvider(() -> "uuid-" + uuidDraws.incrementAndGet())
+                    .build())
+            .build();
+
+    Map<String, Object> result =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("result", "nested response");
+    // The nested runner's session id, invocation id and event ids/timestamps all came from the
+    // parent invocation's providers rather than from UUID.randomUUID() / the wall clock.
+    assertThat(uuidDraws.get()).isAtLeast(3);
+    assertThat(clockReads.get()).isAtLeast(1);
   }
 
   @Test

@@ -26,6 +26,8 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -34,6 +36,7 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /** An LLM-based event summarizer for sliding window compaction. */
@@ -52,14 +55,38 @@ public final class LlmEventSummarizer implements BaseEventSummarizer {
 
   private final BaseLlm baseLlm;
   private final String promptTemplate;
+  private final TimeProvider timeProvider;
+  private final UuidProvider uuidProvider;
 
   public LlmEventSummarizer(BaseLlm baseLlm) {
-    this(baseLlm, DEFAULT_PROMPT_TEMPLATE);
+    this(baseLlm, DEFAULT_PROMPT_TEMPLATE, TimeProvider.SYSTEM, UuidProvider.SYSTEM);
   }
 
   public LlmEventSummarizer(BaseLlm baseLlm, String promptTemplate) {
+    this(baseLlm, promptTemplate, TimeProvider.SYSTEM, UuidProvider.SYSTEM);
+  }
+
+  /**
+   * Creates a summarizer whose compaction events draw their id, invocation id, and timestamp from
+   * the given providers.
+   */
+  public LlmEventSummarizer(BaseLlm baseLlm, TimeProvider timeProvider, UuidProvider uuidProvider) {
+    this(baseLlm, DEFAULT_PROMPT_TEMPLATE, timeProvider, uuidProvider);
+  }
+
+  /**
+   * Creates a summarizer with a custom prompt template whose compaction events draw their id,
+   * invocation id, and timestamp from the given providers.
+   */
+  public LlmEventSummarizer(
+      BaseLlm baseLlm,
+      String promptTemplate,
+      TimeProvider timeProvider,
+      UuidProvider uuidProvider) {
     this.baseLlm = baseLlm;
     this.promptTemplate = promptTemplate;
+    this.timeProvider = Objects.requireNonNull(timeProvider, "timeProvider cannot be null");
+    this.uuidProvider = Objects.requireNonNull(uuidProvider, "uuidProvider cannot be null");
   }
 
   @Override
@@ -101,10 +128,11 @@ public final class LlmEventSummarizer implements BaseEventSummarizer {
                         .map(
                             compaction ->
                                 Event.builder()
-                                    .id(Event.generateEventId())
+                                    .id(uuidProvider.newUuid())
+                                    .timestamp(timeProvider.now().toEpochMilli())
                                     .author(Role.USER)
                                     .actions(EventActions.builder().compaction(compaction).build())
-                                    .invocationId(Event.generateEventId())
+                                    .invocationId(uuidProvider.newUuid())
                                     .build())));
   }
 

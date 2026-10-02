@@ -24,10 +24,12 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.BaseAgentConfig;
 import com.google.adk.agents.ConfigAgentUtils;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
+import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
+import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.plugins.Plugin;
-import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.State;
 import com.google.common.annotations.VisibleForTesting;
@@ -181,11 +183,22 @@ public class AgentTool extends BaseTool {
       content = Content.fromParts(Part.fromText(input.toString()));
     }
 
+    InvocationContext parentContext = toolContext.invocationContext();
     ImmutableList<Plugin> plugins =
-        this.includePlugins
-            ? ImmutableList.of(toolContext.invocationContext().pluginManager())
-            : ImmutableList.of();
-    Runner runner = new InMemoryRunner(this.agent, toolContext.agentName(), plugins);
+        this.includePlugins ? ImmutableList.of(parentContext.pluginManager()) : ImmutableList.of();
+    // The nested run inherits the parent invocation's time and UUID providers, so the ids and
+    // timestamps it mints (session id, invocation id, events) stay under the caller's control. The
+    // builder's default session service is an in-memory one wired to those providers.
+    Runner runner =
+        Runner.builder()
+            .agent(this.agent)
+            .appName(toolContext.agentName())
+            .plugins(plugins)
+            .artifactService(new InMemoryArtifactService())
+            .memoryService(new InMemoryMemoryService())
+            .timeProvider(parentContext.timeProvider())
+            .uuidProvider(parentContext.uuidProvider())
+            .build();
     return runner
         .sessionService()
         .createSession(toolContext.agentName(), "tmp-user", toolContext.state(), null)

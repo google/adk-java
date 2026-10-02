@@ -17,6 +17,8 @@ package com.google.adk.sessions;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.utils.ApiFutureUtils;
 import com.google.adk.utils.Constants;
 import com.google.api.core.ApiFuture;
@@ -64,6 +66,8 @@ import org.slf4j.LoggerFactory;
 public class FirestoreSessionService implements BaseSessionService {
   private static final Logger logger = LoggerFactory.getLogger(FirestoreSessionService.class);
   private final Firestore firestore;
+  private final TimeProvider timeProvider;
+  private final UuidProvider uuidProvider;
   private static final String ROOT_COLLECTION_NAME = Constants.ROOT_COLLECTION_NAME;
   private static final String EVENTS_SUBCOLLECTION_NAME = Constants.EVENTS_SUBCOLLECTION_NAME;
   private static final String APP_STATE_COLLECTION = Constants.APP_STATE_COLLECTION;
@@ -81,7 +85,22 @@ public class FirestoreSessionService implements BaseSessionService {
 
   /** Constructor for FirestoreSessionService. */
   public FirestoreSessionService(Firestore firestore) {
-    this.firestore = firestore;
+    this(firestore, TimeProvider.SYSTEM, UuidProvider.SYSTEM);
+  }
+
+  /**
+   * Creates a session service whose generated session IDs and {@code lastUpdateTime} values come
+   * from the given providers instead of {@link java.util.UUID#randomUUID()} and the wall clock.
+   *
+   * @param firestore The Firestore client.
+   * @param timeProvider Supplies the {@code lastUpdateTime} of a newly created session.
+   * @param uuidProvider Supplies the session ID when {@code createSession} is not given one.
+   */
+  public FirestoreSessionService(
+      Firestore firestore, TimeProvider timeProvider, UuidProvider uuidProvider) {
+    this.firestore = Objects.requireNonNull(firestore, "firestore cannot be null");
+    this.timeProvider = Objects.requireNonNull(timeProvider, "timeProvider cannot be null");
+    this.uuidProvider = Objects.requireNonNull(uuidProvider, "uuidProvider cannot be null");
   }
 
   /** Gets the sessions collection reference for a given userId. */
@@ -121,7 +140,7 @@ public class FirestoreSessionService implements BaseSessionService {
               Optional.ofNullable(sessionId)
                   .map(String::trim)
                   .filter(s -> !s.isEmpty())
-                  .orElseGet(() -> UUID.randomUUID().toString());
+                  .orElseGet(uuidProvider::newUuid);
 
           ConcurrentMap<String, Object> initialState =
               (state == null) ? new ConcurrentHashMap<>() : new ConcurrentHashMap<>(state);
@@ -131,7 +150,7 @@ public class FirestoreSessionService implements BaseSessionService {
               resolvedSessionId,
               initialState);
           List<Event> initialEvents = new ArrayList<>();
-          Instant now = Instant.now();
+          Instant now = timeProvider.now();
           Session newSession =
               Session.builder(resolvedSessionId)
                   .appName(appName)

@@ -429,7 +429,8 @@ public abstract class BaseAgent {
                       content -> {
                         invocationContext.setEndInvocation(true);
                         return Event.builder()
-                            .id(Event.generateEventId())
+                            .id(invocationContext.newUuid())
+                            .timestamp(invocationContext.now().toEpochMilli())
                             .invocationId(invocationContext.invocationId())
                             .author(name())
                             .branch(invocationContext.branch().orElse(null))
@@ -446,7 +447,8 @@ public abstract class BaseAgent {
                   if (callbackContext.state().hasDelta()) {
                     Event.Builder eventBuilder =
                         Event.builder()
-                            .id(Event.generateEventId())
+                            .id(invocationContext.newUuid())
+                            .timestamp(invocationContext.now().toEpochMilli())
                             .invocationId(invocationContext.invocationId())
                             .author(name())
                             .branch(invocationContext.branch().orElse(null))
@@ -499,7 +501,8 @@ public abstract class BaseAgent {
   /** Builds a resumability checkpoint event authored by this agent carrying {@code actions}. */
   private Event checkpointEvent(InvocationContext context, EventActions actions) {
     return Event.builder()
-        .id(Event.generateEventId())
+        .id(context.newUuid())
+        .timestamp(context.now().toEpochMilli())
         .invocationId(context.invocationId())
         .author(name())
         .branch(context.branch().orElse(null))

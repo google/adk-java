@@ -47,6 +47,7 @@ import io.a2a.spec.TaskStatus;
 import io.a2a.spec.TaskStatusUpdateEvent;
 import io.a2a.spec.TextPart;
 import io.reactivex.rxjava3.core.Flowable;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.junit.Before;
@@ -125,6 +126,41 @@ public final class ResponseConverterTest {
     assertThat(content.role()).hasValue("model");
     assertThat(content.parts().get()).hasSize(1);
     assertThat(content.parts().get().get(0).text()).hasValue("test-message");
+  }
+
+  @Test
+  public void messageToEvent_usesInvocationProvidersForIdAndTimestamp() {
+    InvocationContext providerContext =
+        invocationContext.toBuilder()
+            .timeProvider(() -> Instant.ofEpochMilli(1234L))
+            .uuidProvider(() -> "fixed-uuid")
+            .build();
+    Message a2aMessage =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.USER)
+            .parts(ImmutableList.of(new TextPart("test-message")))
+            .build();
+
+    Event event = ResponseConverter.messageToEvent(a2aMessage, providerContext);
+
+    assertThat(event.id()).isEqualTo("fixed-uuid");
+    assertThat(event.timestamp()).isEqualTo(1234L);
+  }
+
+  @Test
+  public void taskToEvent_withNoMessage_emptyEventUsesInvocationProviders() {
+    InvocationContext providerContext =
+        invocationContext.toBuilder()
+            .timeProvider(() -> Instant.ofEpochMilli(1234L))
+            .uuidProvider(() -> "fixed-uuid")
+            .build();
+    Task task = testTask().status(new TaskStatus(TaskState.WORKING, null, null)).build();
+
+    Event event = ResponseConverter.taskToEvent(task, providerContext);
+
+    assertThat(event.id()).isEqualTo("fixed-uuid");
+    assertThat(event.timestamp()).isEqualTo(1234L);
   }
 
   @Test

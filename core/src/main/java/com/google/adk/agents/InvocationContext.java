@@ -27,6 +27,8 @@ import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
+import com.google.adk.platform.TimeProvider;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
@@ -39,6 +41,7 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -48,7 +51,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.jspecify.annotations.Nullable;
@@ -74,6 +76,8 @@ public class InvocationContext {
   // Shared by reference so a sub-agent's checkpoint is visible to its parent and the runner.
   private final Map<String, Map<String, Object>> agentStates;
   private final Map<String, Boolean> endOfAgents;
+  private final TimeProvider timeProvider;
+  private final UuidProvider uuidProvider;
 
   @Nullable private String branch;
   private BaseAgent agent;
@@ -87,7 +91,12 @@ public class InvocationContext {
     this.liveRequestQueue = builder.liveRequestQueue;
     this.activeStreamingTools = builder.activeStreamingTools;
     this.branch = builder.branch;
-    this.invocationId = builder.invocationId;
+    // Minted here, not at builder creation, so a default id comes from the configured provider
+    // (and so subclasses that construct from a builder without build() still get one).
+    this.invocationId =
+        builder.invocationIdSet
+            ? builder.invocationId
+            : newInvocationContextId(builder.uuidProvider);
     this.agent = builder.agent;
     this.session = builder.session;
     this.userContent = builder.userContent;
@@ -103,6 +112,8 @@ public class InvocationContext {
     this.callbackContextData = builder.callbackContextData;
     this.agentStates = builder.agentStates;
     this.endOfAgents = builder.endOfAgents;
+    this.timeProvider = builder.timeProvider;
+    this.uuidProvider = builder.uuidProvider;
   }
 
   /** Returns a new {@link Builder} for creating {@link InvocationContext} instances. */
@@ -288,9 +299,34 @@ public class InvocationContext {
     return session.userId();
   }
 
+  /** Returns the {@link TimeProvider} for this invocation. */
+  public TimeProvider timeProvider() {
+    return timeProvider;
+  }
+
+  /** Returns the {@link UuidProvider} for this invocation. */
+  public UuidProvider uuidProvider() {
+    return uuidProvider;
+  }
+
+  /** Returns the current time from this invocation's {@link TimeProvider}. */
+  public Instant now() {
+    return timeProvider.now();
+  }
+
+  /** Returns a new unique identifier from this invocation's {@link UuidProvider}. */
+  public String newUuid() {
+    return uuidProvider.newUuid();
+  }
+
   /** Generates a new unique ID for an invocation context. */
   public static String newInvocationContextId() {
-    return "e-" + UUID.randomUUID();
+    return newInvocationContextId(UuidProvider.SYSTEM);
+  }
+
+  /** Generates a new unique ID for an invocation context using the given {@link UuidProvider}. */
+  public static String newInvocationContextId(UuidProvider uuidProvider) {
+    return "e-" + uuidProvider.newUuid();
   }
 
   /**
@@ -604,6 +640,7 @@ public class InvocationContext {
       this.activeStreamingTools = new ConcurrentHashMap<>(context.activeStreamingTools);
       this.branch = context.branch;
       this.invocationId = context.invocationId;
+      this.invocationIdSet = true;
       this.agent = context.agent;
       this.session = context.session;
       this.userContent = context.userContent;
@@ -620,6 +657,8 @@ public class InvocationContext {
       // Shared by reference, not copied: the checkpoints belong to the invocation, not a context.
       this.agentStates = context.agentStates;
       this.endOfAgents = context.endOfAgents;
+      this.timeProvider = context.timeProvider;
+      this.uuidProvider = context.uuidProvider;
     }
 
     private BaseSessionService sessionService;
@@ -629,7 +668,9 @@ public class InvocationContext {
     @Nullable private LiveRequestQueue liveRequestQueue = null;
     private Map<String, ActiveStreamingTool> activeStreamingTools = new ConcurrentHashMap<>();
     @Nullable private String branch = null;
-    private String invocationId = newInvocationContextId();
+    private @Nullable String invocationId;
+    // Distinguishes "never set" (an id is minted from the UuidProvider) from an explicit null.
+    private boolean invocationIdSet;
     private BaseAgent agent;
     private Session session;
     @Nullable private Content userContent = null;
@@ -642,6 +683,8 @@ public class InvocationContext {
     private Map<String, Object> callbackContextData = new ConcurrentHashMap<>();
     private Map<String, Map<String, Object>> agentStates = new ConcurrentHashMap<>();
     private Map<String, Boolean> endOfAgents = new ConcurrentHashMap<>();
+    private TimeProvider timeProvider = TimeProvider.SYSTEM;
+    private UuidProvider uuidProvider = UuidProvider.SYSTEM;
 
     /**
      * Sets the session service for managing session state.
@@ -724,6 +767,7 @@ public class InvocationContext {
     @CanIgnoreReturnValue
     public Builder invocationId(String invocationId) {
       this.invocationId = invocationId;
+      this.invocationIdSet = true;
       return this;
     }
 
@@ -836,6 +880,30 @@ public class InvocationContext {
     }
 
     /**
+     * Sets the time provider for the invocation. Defaults to {@link TimeProvider#SYSTEM}.
+     *
+     * @param timeProvider the provider for the current time.
+     * @return this builder instance for chaining.
+     */
+    @CanIgnoreReturnValue
+    public Builder timeProvider(TimeProvider timeProvider) {
+      this.timeProvider = Objects.requireNonNull(timeProvider, "timeProvider cannot be null");
+      return this;
+    }
+
+    /**
+     * Sets the UUID provider for the invocation. Defaults to {@link UuidProvider#SYSTEM}.
+     *
+     * @param uuidProvider the provider for new unique identifiers.
+     * @return this builder instance for chaining.
+     */
+    @CanIgnoreReturnValue
+    public Builder uuidProvider(UuidProvider uuidProvider) {
+      this.uuidProvider = Objects.requireNonNull(uuidProvider, "uuidProvider cannot be null");
+      return this;
+    }
+
+    /**
      * Builds the {@link InvocationContext} instance.
      *
      * @throws IllegalStateException if any required parameters are missing.
@@ -853,7 +921,8 @@ public class InvocationContext {
    * @throws IllegalStateException if any required parameters are missing.
    */
   private static void validate(Builder builder) {
-    if (isNullOrEmpty(builder.invocationId)) {
+    // An unset id is minted from the UuidProvider; an explicitly empty one is a caller error.
+    if (builder.invocationIdSet && isNullOrEmpty(builder.invocationId)) {
       throw new IllegalStateException("Invocation ID must be non-empty.");
     }
     if (builder.agent == null) {
@@ -892,7 +961,9 @@ public class InvocationContext {
         && Objects.equals(contextCacheConfig, that.contextCacheConfig)
         && Objects.equals(resumabilityConfig, that.resumabilityConfig)
         && Objects.equals(invocationCostManager, that.invocationCostManager)
-        && Objects.equals(callbackContextData, that.callbackContextData);
+        && Objects.equals(callbackContextData, that.callbackContextData)
+        && Objects.equals(timeProvider, that.timeProvider)
+        && Objects.equals(uuidProvider, that.uuidProvider);
   }
 
   @Override
@@ -915,6 +986,8 @@ public class InvocationContext {
         contextCacheConfig,
         resumabilityConfig,
         invocationCostManager,
-        callbackContextData);
+        callbackContextData,
+        timeProvider,
+        uuidProvider);
   }
 }
