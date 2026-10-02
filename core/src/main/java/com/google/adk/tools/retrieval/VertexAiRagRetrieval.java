@@ -23,6 +23,7 @@ import com.google.adk.tools.ToolContext;
 import com.google.adk.utils.ModelNameUtils;
 import com.google.cloud.aiplatform.v1.RagContexts;
 import com.google.cloud.aiplatform.v1.RagQuery;
+import com.google.cloud.aiplatform.v1.RagRetrievalConfig;
 import com.google.cloud.aiplatform.v1.RetrieveContextsRequest;
 import com.google.cloud.aiplatform.v1.RetrieveContextsRequest.VertexRagStore.RagResource;
 import com.google.cloud.aiplatform.v1.RetrieveContextsResponse;
@@ -47,7 +48,8 @@ import org.slf4j.LoggerFactory;
  * A retrieval tool that fetches context from Vertex AI RAG.
  *
  * <p>This tool allows to retrieve relevant information based on a query using Vertex AI RAG
- * service. It supports configuration of rag resources and a vector distance threshold.
+ * service. It supports configuration of rag resources, a vector distance threshold, and similarity
+ * top-k.
  */
 public class VertexAiRagRetrieval extends BaseRetrievalTool {
   private static final Logger logger = LoggerFactory.getLogger(VertexAiRagRetrieval.class);
@@ -55,6 +57,7 @@ public class VertexAiRagRetrieval extends BaseRetrievalTool {
   private final String parent;
   private final List<RagResource> ragResources;
   private final Double vectorDistanceThreshold;
+  private final Integer similarityTopK;
   private final VertexRagStore vertexRagStore;
   private final RetrieveContextsRequest.VertexRagStore apiVertexRagStore;
 
@@ -65,11 +68,30 @@ public class VertexAiRagRetrieval extends BaseRetrievalTool {
       String parent,
       @Nullable List<RagResource> ragResources,
       @Nullable Double vectorDistanceThreshold) {
+    this(
+        name,
+        description,
+        vertexRagServiceClient,
+        parent,
+        ragResources,
+        vectorDistanceThreshold,
+        null);
+  }
+
+  public VertexAiRagRetrieval(
+      String name,
+      String description,
+      VertexRagServiceClient vertexRagServiceClient,
+      String parent,
+      @Nullable List<RagResource> ragResources,
+      @Nullable Double vectorDistanceThreshold,
+      @Nullable Integer similarityTopK) {
     super(name, description);
     this.vertexRagServiceClient = vertexRagServiceClient;
     this.parent = parent;
     this.ragResources = ragResources;
     this.vectorDistanceThreshold = vectorDistanceThreshold;
+    this.similarityTopK = similarityTopK;
 
     // For Gemini 2
     VertexRagStore.Builder vertexRagStoreBuilder = VertexRagStore.builder();
@@ -85,6 +107,9 @@ public class VertexAiRagRetrieval extends BaseRetrievalTool {
     }
     if (this.vectorDistanceThreshold != null) {
       vertexRagStoreBuilder.vectorDistanceThreshold(this.vectorDistanceThreshold);
+    }
+    if (this.similarityTopK != null) {
+      vertexRagStoreBuilder.similarityTopK(this.similarityTopK);
     }
     this.vertexRagStore = vertexRagStoreBuilder.build();
 
@@ -135,10 +160,18 @@ public class VertexAiRagRetrieval extends BaseRetrievalTool {
     return Single.fromCallable(
         () -> {
           logger.info("Retrieving context for query: {}", query);
+
+          RagQuery.Builder queryBuilder = RagQuery.newBuilder().setText(query);
+
+          if (similarityTopK != null) {
+            queryBuilder.setRagRetrievalConfig(
+                RagRetrievalConfig.newBuilder().setTopK(similarityTopK).build());
+          }
+
           RetrieveContextsRequest retrieveContextsRequest =
               RetrieveContextsRequest.newBuilder()
                   .setParent(this.parent)
-                  .setQuery(RagQuery.newBuilder().setText(query))
+                  .setQuery(queryBuilder.build())
                   .setVertexRagStore(this.apiVertexRagStore)
                   .build();
           logger.info("Request to VertexRagService: {}", retrieveContextsRequest);
