@@ -19,6 +19,7 @@ package com.google.adk.tools.mcp;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,6 +37,7 @@ import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.List;
+import java.util.Map;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -334,6 +336,53 @@ public class McpToolsetTest {
         .inOrder();
     verify(mockMcpSessionManager).createSession();
     verify(mockMcpSyncClient).listTools();
+  }
+
+  @Test
+  public void getTools_withPropagateStructuredContent_toolsReturnStructuredContent() {
+    stubToolReturningStructuredContent();
+    McpToolset toolset =
+        new McpToolset(
+            mockMcpSessionManager,
+            JsonBaseModel.getMapper(),
+            /* toolPredicate= */ null,
+            /* propagateStructuredContent= */ true);
+
+    Map<String, Object> response = callOnlyTool(toolset);
+
+    assertThat(response).containsEntry("structuredContent", ImmutableMap.of("count", 2));
+  }
+
+  @Test
+  public void getTools_byDefault_toolsOmitStructuredContent() {
+    stubToolReturningStructuredContent();
+    McpToolset toolset = new McpToolset(mockMcpSessionManager, JsonBaseModel.getMapper());
+
+    Map<String, Object> response = callOnlyTool(toolset);
+
+    assertThat(response).doesNotContainKey("structuredContent");
+  }
+
+  private void stubToolReturningStructuredContent() {
+    McpSchema.Tool tool =
+        McpSchema.Tool.builder().name("tool1").inputSchema(jsonMapper, "{}").build();
+    when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
+    when(mockMcpSyncClient.listTools())
+        .thenReturn(new McpSchema.ListToolsResult(ImmutableList.of(tool), null));
+    when(mockMcpSyncClient.callTool(any()))
+        .thenReturn(
+            McpSchema.CallToolResult.builder()
+                .addTextContent("{\"count\": 2}")
+                .structuredContent(ImmutableMap.of("count", 2))
+                .build());
+  }
+
+  private Map<String, Object> callOnlyTool(McpToolset toolset) {
+    return toolset
+        .getTools(mockReadonlyContext)
+        .blockingFirst()
+        .runAsync(ImmutableMap.of(), /* toolContext= */ null)
+        .blockingGet();
   }
 
   @Test

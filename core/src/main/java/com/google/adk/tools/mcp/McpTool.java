@@ -67,7 +67,26 @@ public final class McpTool extends AbstractMcpTool<McpSyncClient> {
       McpSyncClient mcpSession,
       McpSessionManager mcpSessionManager,
       ObjectMapper objectMapper) {
-    super(mcpTool, mcpSession, mcpSessionManager, objectMapper);
+    this(
+        mcpTool,
+        mcpSession,
+        mcpSessionManager,
+        objectMapper,
+        /* propagateStructuredContent= */ false);
+  }
+
+  /**
+   * Same as {@link #McpTool(Tool, McpSyncClient, McpSessionManager, ObjectMapper)}, but tool
+   * responses include the result's {@code structuredContent} if {@code propagateStructuredContent}
+   * is true.
+   */
+  public McpTool(
+      Tool mcpTool,
+      McpSyncClient mcpSession,
+      McpSessionManager mcpSessionManager,
+      ObjectMapper objectMapper,
+      boolean propagateStructuredContent) {
+    super(mcpTool, mcpSession, mcpSessionManager, objectMapper, propagateStructuredContent);
   }
 
   private void reinitializeSession() {
@@ -80,7 +99,7 @@ public final class McpTool extends AbstractMcpTool<McpSyncClient> {
             () -> {
               CallToolResult callResult =
                   mcpSession.callTool(new CallToolRequest(this.name(), ImmutableMap.copyOf(args)));
-              return wrapCallResult(this.objectMapper, this.name(), callResult);
+              return wrapCallResult(this.objectMapper, callResult, this.propagateStructuredContent);
             })
         .retryWhen(
             errors ->

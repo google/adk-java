@@ -63,6 +63,7 @@ public class McpAsyncToolset implements BaseToolset {
   private final McpSessionManager mcpSessionManager;
   private final ObjectMapper objectMapper;
   private final @Nullable Object toolFilter;
+  private final boolean propagateStructuredContent;
   private final AtomicReference<Mono<List<McpAsyncTool>>> mcpTools = new AtomicReference<>();
 
   public static Builder builder() {
@@ -74,6 +75,7 @@ public class McpAsyncToolset implements BaseToolset {
     private McpSessionManager mcpSessionManager = null;
     private ObjectMapper objectMapper = null;
     private @Nullable Object toolFilter = null;
+    private boolean propagateStructuredContent = false;
 
     @CanIgnoreReturnValue
     public Builder connectionParams(ServerParameters connectionParams) {
@@ -111,29 +113,45 @@ public class McpAsyncToolset implements BaseToolset {
       return this;
     }
 
+    /**
+     * Sets whether tool responses include the result's {@code structuredContent}; off by default.
+     */
+    @CanIgnoreReturnValue
+    public Builder propagateStructuredContent(boolean propagateStructuredContent) {
+      this.propagateStructuredContent = propagateStructuredContent;
+      return this;
+    }
+
     public McpAsyncToolset build() {
       if (objectMapper == null) {
         objectMapper = JsonBaseModel.getMapper();
       }
       checkNotNull(mcpSessionManager, "Connection params must be set");
-      return new McpAsyncToolset(mcpSessionManager, objectMapper, toolFilter);
+      return new McpAsyncToolset(
+          mcpSessionManager, objectMapper, toolFilter, propagateStructuredContent);
     }
   }
 
   /**
-   * Initializes the McpAsyncToolset with SSE server parameters.
+   * Initializes the McpAsyncToolset with a provided McpSessionManager.
    *
-   * @param connectionParams The SSE connection parameters to the MCP server.
+   * @param mcpSessionManager The session manager for MCP connections.
    * @param objectMapper An ObjectMapper instance for parsing schemas.
    * @param toolFilter Either a ToolPredicate or a List of tool names.
+   * @param propagateStructuredContent Whether tool responses include the result's {@code
+   *     structuredContent}.
    */
   McpAsyncToolset(
-      McpSessionManager mcpSessionManager, ObjectMapper objectMapper, @Nullable Object toolFilter) {
+      McpSessionManager mcpSessionManager,
+      ObjectMapper objectMapper,
+      @Nullable Object toolFilter,
+      boolean propagateStructuredContent) {
     Objects.requireNonNull(mcpSessionManager);
     Objects.requireNonNull(objectMapper);
     this.objectMapper = objectMapper;
     this.mcpSessionManager = mcpSessionManager;
     this.toolFilter = toolFilter;
+    this.propagateStructuredContent = propagateStructuredContent;
   }
 
   @Override
@@ -195,7 +213,8 @@ public class McpAsyncToolset implements BaseToolset {
                                             tool,
                                             mcpSession, // move mcpSession to McpAsyncTool
                                             this.mcpSessionManager,
-                                            this.objectMapper))
+                                            this.objectMapper,
+                                            this.propagateStructuredContent))
                                 .toList()))
         .retryWhen(
             RetrySpec.from(
