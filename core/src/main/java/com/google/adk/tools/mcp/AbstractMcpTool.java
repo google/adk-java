@@ -19,8 +19,11 @@ package com.google.adk.tools.mcp;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.mcp.McpToolException.McpToolDeclarationException;
+import com.google.common.base.CharMatcher;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
@@ -33,6 +36,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Base class for MCP tools.
@@ -44,12 +48,31 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
   protected final Tool mcpTool;
   protected final McpSessionManager mcpSessionManager;
   protected final ObjectMapper objectMapper;
+  protected final boolean propagateStructuredContent;
 
   // Volatile ensures write visibility in the asynchronous chain for McpAsyncTool.
   protected volatile T mcpSession;
 
   protected AbstractMcpTool(
       Tool mcpTool, T mcpSession, McpSessionManager mcpSessionManager, ObjectMapper objectMapper) {
+    this(
+        mcpTool,
+        mcpSession,
+        mcpSessionManager,
+        objectMapper,
+        /* propagateStructuredContent= */ false);
+  }
+
+  /**
+   * Creates a tool whose responses include the result's {@code structuredContent} if {@code
+   * propagateStructuredContent} is true.
+   */
+  protected AbstractMcpTool(
+      Tool mcpTool,
+      T mcpSession,
+      McpSessionManager mcpSessionManager,
+      ObjectMapper objectMapper,
+      boolean propagateStructuredContent) {
     super(
         mcpTool == null ? "" : mcpTool.name(),
         mcpTool == null ? "" : (Strings.nullToEmpty(mcpTool.description())));
@@ -70,6 +93,7 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
     this.mcpSession = mcpSession;
     this.mcpSessionManager = mcpSessionManager;
     this.objectMapper = objectMapper;
+    this.propagateStructuredContent = propagateStructuredContent;
   }
 
   public ToolAnnotations annotations() {
@@ -109,9 +133,33 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
     }
   }
 
+  /**
+   * Converts a {@link CallToolResult} into a tool response map without its {@code
+   * structuredContent}.
+   *
+   * @deprecated Use {@link #wrapCallResult(ObjectMapper, CallToolResult, boolean)} with {@code
+   *     false}; {@code mcpToolName} is unused.
+   */
+  @Deprecated
   @SuppressWarnings("PreferredInterfaceType") // BaseTool.runAsync() returns Map<String, Object>
   protected static Map<String, Object> wrapCallResult(
-      ObjectMapper objectMapper, String mcpToolName, CallToolResult callResult) {
+      ObjectMapper objectMapper, String mcpToolName, @Nullable CallToolResult callResult) {
+    return wrapCallResult(objectMapper, callResult, /* propagateStructuredContent= */ false);
+  }
+
+  /**
+   * Converts a {@link CallToolResult} into a tool response map; a null or error result becomes a
+   * single {@code error} entry. Text items go under {@code text_output}, each parsed as a JSON
+   * object or else wrapped as {@code {"text": ...}}, and the other items go under {@code content}
+   * with base64 {@code data} and {@code blob} replaced by their decoded byte {@code size}. {@code
+   * structuredContent} is added only if {@code propagateStructuredContent} is set, since servers
+   * usually repeat it as JSON text.
+   */
+  @SuppressWarnings("PreferredInterfaceType") // BaseTool.runAsync() returns Map<String, Object>
+  protected static Map<String, Object> wrapCallResult(
+      ObjectMapper objectMapper,
+      @Nullable CallToolResult callResult,
+      boolean propagateStructuredContent) {
     if (callResult == null) {
       return ImmutableMap.of("error", "MCP framework error: CallToolResult was null");
     }
@@ -130,36 +178,60 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
       return ImmutableMap.of("error", errorMessage);
     }
 
-    if (contents == null || contents.isEmpty()) {
-      return ImmutableMap.of();
-    }
-
-    List<String> textOutputs = new ArrayList<>();
+    List<@Nullable Map<String, Object>> textOutputs = new ArrayList<>();
+    List<Content> nonTextContents = new ArrayList<>();
     for (Content content : contents) {
       if (content instanceof TextContent textContent) {
-        if (textContent.text() != null) {
-          textOutputs.add(textContent.text());
-        }
+        textOutputs.add(parseTextOutput(objectMapper, textContent.text()));
+      } else if (content != null) {
+        nonTextContents.add(content);
       }
     }
 
-    if (textOutputs.isEmpty()) {
-      return ImmutableMap.of(
-          "error",
-          "Tool '" + mcpToolName + "' returned content that is not TextContent.",
-          "content_details",
-          contents.toString());
+    ImmutableMap.Builder<String, Object> result = ImmutableMap.builder();
+    if (!textOutputs.isEmpty()) {
+      result.put("text_output", textOutputs);
     }
+    if (!nonTextContents.isEmpty()) {
+      result.put(
+          "content",
+          nonTextContents.stream().map(item -> toContentMap(objectMapper, item)).toList());
+    }
+    if (propagateStructuredContent && callResult.structuredContent() != null) {
+      result.put("structuredContent", callResult.structuredContent());
+    }
+    return result.buildOrThrow();
+  }
 
-    List<Map<String, Object>> resultMaps = new ArrayList<>();
-    for (String textOutput : textOutputs) {
-      try {
-        resultMaps.add(
-            objectMapper.readValue(textOutput, new TypeReference<Map<String, Object>>() {}));
-      } catch (JsonProcessingException e) {
-        resultMaps.add(ImmutableMap.of("text", textOutput));
-      }
+  private static @Nullable Map<String, Object> parseTextOutput(
+      ObjectMapper objectMapper, String text) {
+    try {
+      return objectMapper.readValue(text, new TypeReference<Map<String, Object>>() {});
+    } catch (JsonProcessingException e) {
+      return ImmutableMap.of("text", text);
     }
-    return ImmutableMap.of("text_output", resultMaps);
+  }
+
+  private static Map<String, Object> toContentMap(ObjectMapper objectMapper, Content item) {
+    ObjectNode node = objectMapper.valueToTree(item);
+    // As text, base64 media costs the model far more tokens than the media itself.
+    replaceBase64WithSize(node, "data");
+    if (node.get("resource") instanceof ObjectNode resource) {
+      replaceBase64WithSize(resource, "blob");
+    }
+    return objectMapper.convertValue(node, new TypeReference<Map<String, Object>>() {});
+  }
+
+  private static void replaceBase64WithSize(ObjectNode node, String field) {
+    if (node.get(field) instanceof TextNode base64) {
+      node.remove(field);
+      node.put("size", decodedSize(base64.textValue()));
+    }
+  }
+
+  private static int decodedSize(String base64) {
+    String encoded = CharMatcher.whitespace().removeFrom(base64);
+    int padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+    return (int) ((encoded.length() - padding) * 3L / 4);
   }
 }

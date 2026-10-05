@@ -56,6 +56,7 @@ public class McpToolset implements BaseToolset {
   private McpSyncClient mcpSession;
   private final ObjectMapper objectMapper;
   private final @Nullable Object toolFilter;
+  private final boolean propagateStructuredContent;
 
   private static final int MAX_RETRIES = 3;
   private static final long RETRY_DELAY_MILLIS = 100;
@@ -75,6 +76,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = Objects.requireNonNull(toolPredicate);
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -89,6 +91,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = ImmutableList.copyOf(toolNames);
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -101,6 +104,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = null;
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -115,6 +119,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = Objects.requireNonNull(toolPredicate);
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -129,6 +134,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = ImmutableList.copyOf(toolNames);
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -141,6 +147,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = null;
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -175,6 +182,7 @@ public class McpToolset implements BaseToolset {
     this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.toolFilter = Objects.requireNonNull(toolPredicate);
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -189,6 +197,7 @@ public class McpToolset implements BaseToolset {
     this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.toolFilter = ImmutableList.copyOf(toolNames);
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -201,6 +210,27 @@ public class McpToolset implements BaseToolset {
     this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.toolFilter = null;
+    this.propagateStructuredContent = false;
+  }
+
+  /**
+   * Initializes the McpToolset with an McpSessionManager.
+   *
+   * @param mcpSessionManager A McpSessionManager instance.
+   * @param objectMapper An ObjectMapper instance for parsing schemas.
+   * @param toolPredicate A {@link ToolPredicate}, or null to load every tool.
+   * @param propagateStructuredContent Whether tool responses include the result's {@code
+   *     structuredContent}, which the other constructors leave out.
+   */
+  public McpToolset(
+      McpSessionManager mcpSessionManager,
+      ObjectMapper objectMapper,
+      @Nullable ToolPredicate toolPredicate,
+      boolean propagateStructuredContent) {
+    this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.toolFilter = toolPredicate;
+    this.propagateStructuredContent = propagateStructuredContent;
   }
 
   /**
@@ -217,6 +247,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = Objects.requireNonNull(toolPredicate);
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -233,6 +264,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = ImmutableList.copyOf(toolNames);
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -245,6 +277,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = null;
+    this.propagateStructuredContent = false;
   }
 
   /**
@@ -274,7 +307,11 @@ public class McpToolset implements BaseToolset {
                       .map(
                           tool ->
                               new McpTool(
-                                  tool, this.mcpSession, this.mcpSessionManager, this.objectMapper))
+                                  tool,
+                                  this.mcpSession,
+                                  this.mcpSessionManager,
+                                  this.objectMapper,
+                                  this.propagateStructuredContent))
                       .filter(tool -> isToolSelected(tool, toolFilter, readonlyContext)));
             })
         .retryWhen(

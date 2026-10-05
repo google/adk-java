@@ -69,7 +69,26 @@ public final class McpAsyncTool extends AbstractMcpTool<McpAsyncClient> {
       McpAsyncClient mcpSession,
       McpSessionManager mcpSessionManager,
       ObjectMapper objectMapper) {
-    super(mcpTool, mcpSession, mcpSessionManager, objectMapper);
+    this(
+        mcpTool,
+        mcpSession,
+        mcpSessionManager,
+        objectMapper,
+        /* propagateStructuredContent= */ false);
+  }
+
+  /**
+   * Same as {@link #McpAsyncTool(Tool, McpAsyncClient, McpSessionManager, ObjectMapper)}, but tool
+   * responses include the result's {@code structuredContent} if {@code propagateStructuredContent}
+   * is true.
+   */
+  public McpAsyncTool(
+      Tool mcpTool,
+      McpAsyncClient mcpSession,
+      McpSessionManager mcpSessionManager,
+      ObjectMapper objectMapper,
+      boolean propagateStructuredContent) {
+    super(mcpTool, mcpSession, mcpSessionManager, objectMapper, propagateStructuredContent);
   }
 
   private Single<McpSchema.InitializeResult> reinitializeSession() {
@@ -100,10 +119,15 @@ public final class McpAsyncTool extends AbstractMcpTool<McpAsyncClient> {
                         this.mcpSession
                             .callTool(new CallToolRequest(this.name(), ImmutableMap.copyOf(args)))
                             .toFuture())
-                    .map(callResult -> wrapCallResult(this.objectMapper, this.name(), callResult))
+                    .map(
+                        callResult ->
+                            wrapCallResult(
+                                this.objectMapper, callResult, this.propagateStructuredContent))
                     .switchIfEmpty(
                         Single.fromCallable(
-                            () -> wrapCallResult(this.objectMapper, this.name(), null))))
+                            () ->
+                                wrapCallResult(
+                                    this.objectMapper, null, this.propagateStructuredContent))))
         .retryWhen(
             errors ->
                 errors
