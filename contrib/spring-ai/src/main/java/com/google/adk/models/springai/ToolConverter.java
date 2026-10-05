@@ -71,7 +71,10 @@ public class ToolConverter {
   /**
    * Converts ADK Schema to Spring AI compatible parameter schema.
    *
-   * <p>This provides basic schema conversion for tool parameters.
+   * <p>Maps the {@code type}, {@code description}, {@code properties}, {@code required}, {@code
+   * enum} and {@code items} keywords ({@code properties} values and {@code items} recursively).
+   * Other JSON-Schema keywords (e.g. {@code nullable}, {@code anyOf}, {@code format}) are not
+   * carried over yet.
    *
    * @param schema The ADK schema to convert
    * @return A Map representing the Spring AI compatible schema
@@ -96,6 +99,15 @@ public class ToolConverter {
     }
 
     schema.required().ifPresent(required -> springAiSchema.put("required", required));
+
+    // Preserve enum constraints and array item schemas; skip empty enums (unsatisfiable).
+    schema
+        .enum_()
+        .filter(values -> !values.isEmpty())
+        .ifPresent(values -> springAiSchema.put("enum", values));
+    schema
+        .items()
+        .ifPresent(itemSchema -> springAiSchema.put("items", convertSchemaToSpringAi(itemSchema)));
 
     return springAiSchema;
   }
