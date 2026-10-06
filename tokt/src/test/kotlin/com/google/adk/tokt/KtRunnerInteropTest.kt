@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalLiveApi::class)
+
 package com.google.adk.tokt
 
 import com.google.adk.agents.BaseAgent as JavaBaseAgent
@@ -27,16 +29,22 @@ import com.google.adk.events.Event as JavaEvent
 import com.google.adk.events.EventActions as JavaEventActions
 import com.google.adk.events.EventCompaction as JavaEventCompaction
 import com.google.adk.kt.agents.BaseAgent as KtBaseAgent
+import com.google.adk.kt.agents.CallbackContext as KtCallbackContext
 import com.google.adk.kt.agents.InvocationContext as KtInvocationContext
+import com.google.adk.kt.agents.LiveRunConfig as KtLiveRunConfig
 import com.google.adk.kt.agents.LlmAgent as KtLlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig as KtResumabilityConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
 import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.apps.App as KtApp
 import com.google.adk.kt.callbacks.AfterModelCallback as KtAfterModelCallback
 import com.google.adk.kt.events.Event as KtEvent
 import com.google.adk.kt.events.EventActions as KtEventActions
+import com.google.adk.kt.events.EventCompaction as KtEventCompaction
+import com.google.adk.kt.models.CacheMetadata as KtCacheMetadata
+import com.google.adk.kt.models.LlmRequest as KtLlmRequest
 import com.google.adk.kt.models.LlmResponse as KtLlmResponse
 import com.google.adk.kt.runners.InMemoryRunner as KtInMemoryRunner
 import com.google.adk.kt.runners.Runner as KtRunner
@@ -48,7 +56,11 @@ import com.google.adk.kt.sessions.SessionService as KtSessionService
 import com.google.adk.kt.sessions.State as KtState
 import com.google.adk.kt.tools.BaseTool as KtBaseTool
 import com.google.adk.kt.tools.ToolContext as KtToolContext
+import com.google.adk.kt.types.AudioTranscriptionConfig as KtAudioTranscriptionConfig
+import com.google.adk.kt.types.AudioTranscriptionConfigMode as KtAudioTranscriptionConfigMode
 import com.google.adk.kt.types.Blob as KtBlob
+import com.google.adk.kt.types.Citation as KtCitation
+import com.google.adk.kt.types.CitationMetadata as KtCitationMetadata
 import com.google.adk.kt.types.Content as KtContent
 import com.google.adk.kt.types.FileData as KtFileData
 import com.google.adk.kt.types.FinishReason as KtFinishReason
@@ -60,26 +72,46 @@ import com.google.adk.kt.types.GenerationConfigRoutingConfig as KtRoutingConfig
 import com.google.adk.kt.types.GenerationConfigRoutingConfigManualRoutingMode as KtManualRoutingMode
 import com.google.adk.kt.types.GoogleMaps as KtGoogleMaps
 import com.google.adk.kt.types.GoogleSearch as KtGoogleSearch
+import com.google.adk.kt.types.GroundingMetadata as KtGroundingMetadata
 import com.google.adk.kt.types.HarmBlockMethod as KtHarmBlockMethod
 import com.google.adk.kt.types.HarmBlockThreshold as KtHarmBlockThreshold
 import com.google.adk.kt.types.HarmCategory as KtHarmCategory
+import com.google.adk.kt.types.InteractionStatus as KtInteractionStatus
+import com.google.adk.kt.types.LiveServerGoAway as KtLiveServerGoAway
+import com.google.adk.kt.types.LiveServerSessionResumptionUpdate as KtLiveServerSessionResumptionUpdate
+import com.google.adk.kt.types.LogprobsResult as KtLogprobsResult
 import com.google.adk.kt.types.MediaResolution as KtMediaResolution
+import com.google.adk.kt.types.Modality as KtModality
+import com.google.adk.kt.types.MultiSpeakerVoiceConfig as KtMultiSpeakerVoiceConfig
 import com.google.adk.kt.types.Part as KtPart
 import com.google.adk.kt.types.PartialArgValue as KtPartialArgValue
+import com.google.adk.kt.types.PrebuiltVoiceConfig as KtPrebuiltVoiceConfig
+import com.google.adk.kt.types.ReplicatedVoiceConfig as KtReplicatedVoiceConfig
 import com.google.adk.kt.types.Retrieval as KtRetrieval
 import com.google.adk.kt.types.SafetySetting as KtSafetySetting
 import com.google.adk.kt.types.Schema as KtSchema
 import com.google.adk.kt.types.ServiceTier as KtServiceTier
+import com.google.adk.kt.types.SpeakerVoiceConfig as KtSpeakerVoiceConfig
+import com.google.adk.kt.types.SpeechConfig as KtSpeechConfig
 import com.google.adk.kt.types.ThinkingConfig as KtThinkingConfig
 import com.google.adk.kt.types.ThinkingLevel as KtThinkingLevel
 import com.google.adk.kt.types.Tool as KtTool
 import com.google.adk.kt.types.ToolConfig as KtToolConfig
+import com.google.adk.kt.types.Transcription as KtTranscription
+import com.google.adk.kt.types.TurnCompleteReason as KtTurnCompleteReason
 import com.google.adk.kt.types.Type as KtType
 import com.google.adk.kt.types.UrlContext as KtUrlContext
+import com.google.adk.kt.types.UsageMetadata as KtUsageMetadata
 import com.google.adk.kt.types.VertexAISearch as KtVertexAISearch
 import com.google.adk.kt.types.VertexAISearchDataStoreSpec as KtVertexAISearchDataStoreSpec
 import com.google.adk.kt.types.VertexRagStore as KtVertexRagStore
 import com.google.adk.kt.types.VertexRagStoreRagResource as KtVertexRagStoreRagResource
+import com.google.adk.kt.types.VoiceActivity as KtVoiceActivity
+import com.google.adk.kt.types.VoiceConfig as KtVoiceConfig
+import com.google.adk.kt.types.VoiceConsentSignature as KtVoiceConsentSignature
+import com.google.adk.kt.types.WordInfo as KtWordInfo
+import com.google.adk.kt.workflow.NodeInfo as KtNodeInfo
+import com.google.adk.kt.workflow.Route as KtRoute
 import com.google.adk.memory.InMemoryMemoryService as JavaInMemoryMemoryService
 import com.google.adk.models.BaseLlm as JavaBaseLlm
 import com.google.adk.models.BaseLlmConnection as JavaBaseLlmConnection
@@ -96,6 +128,8 @@ import com.google.adk.sessions.Session as JavaSession
 import com.google.adk.sessions.SessionKey as JavaSessionKey
 import com.google.adk.sessions.State as JavaState
 import com.google.adk.tokt.adapters.reconcileActionsToKt
+import com.google.adk.tokt.codecs.AudioTranscriptionConfigCodec
+import com.google.adk.tokt.codecs.ContentCodec
 import com.google.adk.tokt.codecs.EventCodec
 import com.google.adk.tokt.codecs.FunctionDeclarationCodec
 import com.google.adk.tokt.codecs.GenerateContentConfigCodec
@@ -107,14 +141,20 @@ import com.google.adk.tokt.codecs.PartCodec
 import com.google.adk.tokt.codecs.RunConfigCodec
 import com.google.adk.tokt.codecs.SchemaCodec
 import com.google.adk.tokt.codecs.SessionCodec
+import com.google.adk.tokt.codecs.SpeechConfigCodec
+import com.google.adk.tokt.codecs.TranscriptionCodec
 import com.google.adk.tokt.codecs.agentStateFromJava
 import com.google.adk.tokt.codecs.agentStateToJava
+import com.google.adk.tokt.codecs.reapplyJavaEvent
+import com.google.adk.tokt.codecs.reapplyJavaResponse
 import com.google.adk.tokt.codecs.stateValueFromJava
 import com.google.adk.tokt.codecs.typedDataFromJava
 import com.google.adk.tools.BaseTool as JavaBaseTool
 import com.google.adk.tools.BaseToolset as JavaBaseToolset
 import com.google.adk.tools.ToolContext as JavaToolContext
 import com.google.errorprone.annotations.CanIgnoreReturnValue
+import com.google.genai.types.AudioTranscriptionConfig as GenaiAudioTranscriptionConfig
+import com.google.genai.types.AudioTranscriptionConfigMode as GenaiAudioTranscriptionConfigMode
 import com.google.genai.types.CodeExecutionResult as GenaiCodeExecutionResult
 import com.google.genai.types.Content as GenaiContent
 import com.google.genai.types.CustomMetadata as GenaiCustomMetadata
@@ -132,24 +172,37 @@ import com.google.genai.types.GroundingChunkRetrievedContext as GenaiGroundingCh
 import com.google.genai.types.GroundingChunkWeb as GenaiGroundingChunkWeb
 import com.google.genai.types.GroundingMetadata as GenaiGroundingMetadata
 import com.google.genai.types.GroundingSupport as GenaiGroundingSupport
+import com.google.genai.types.LanguageAuto as GenaiLanguageAuto
+import com.google.genai.types.LanguageHints as GenaiLanguageHints
 import com.google.genai.types.MediaModality as GenaiMediaModality
+import com.google.genai.types.Modality as GenaiModality
 import com.google.genai.types.ModalityTokenCount as GenaiModalityTokenCount
+import com.google.genai.types.MultiSpeakerVoiceConfig as GenaiMultiSpeakerVoiceConfig
 import com.google.genai.types.Part as GenaiPart
 import com.google.genai.types.PartMediaResolution as GenaiPartMediaResolution
 import com.google.genai.types.PartialArg as GenaiPartialArg
+import com.google.genai.types.PrebuiltVoiceConfig as GenaiPrebuiltVoiceConfig
+import com.google.genai.types.ReplicatedVoiceConfig as GenaiReplicatedVoiceConfig
 import com.google.genai.types.RetrievalMetadata as GenaiRetrievalMetadata
 import com.google.genai.types.Schema as GenaiSchema
 import com.google.genai.types.SearchEntryPoint as GenaiSearchEntryPoint
 import com.google.genai.types.Segment as GenaiSegment
+import com.google.genai.types.SpeakerVoiceConfig as GenaiSpeakerVoiceConfig
+import com.google.genai.types.SpeechConfig as GenaiSpeechConfig
 import com.google.genai.types.ToolCall as GenaiToolCall
 import com.google.genai.types.ToolConfig as GenaiToolConfig
 import com.google.genai.types.ToolResponse as GenaiToolResponse
 import com.google.genai.types.TrafficType as GenaiTrafficType
+import com.google.genai.types.Transcription as GenaiTranscription
 import com.google.genai.types.VideoMetadata as GenaiVideoMetadata
+import com.google.genai.types.VoiceConfig as GenaiVoiceConfig
+import com.google.genai.types.VoiceConsentSignature as GenaiVoiceConsentSignature
+import com.google.genai.types.WordInfo as GenaiWordInfo
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Single
+import java.lang.reflect.Modifier
 import java.time.Instant
 import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
@@ -503,6 +556,19 @@ class KtRunnerInteropTest {
   private class FailingKtAgent : KtBaseAgent(name = "failing") {
     override fun runAsyncImpl(context: KtInvocationContext): Flow<KtEvent> = flow {
       throw RuntimeException("boom")
+    }
+  }
+
+  /** A native Kotlin agent emitting grounding metadata that has no image search queries. */
+  private class GroundedKtAgent : KtBaseAgent(name = "grounded") {
+    override fun runAsyncImpl(context: KtInvocationContext): Flow<KtEvent> = flow {
+      emit(
+        KtEvent(
+          invocationId = context.invocationId,
+          author = name,
+          groundingMetadata = KtGroundingMetadata(webSearchQueries = listOf("q")),
+        )
+      )
     }
   }
 
@@ -1726,6 +1792,101 @@ class KtRunnerInteropTest {
     assertLiveUnsupported {
       javaRunner.runLive(key, LiveRequestQueue(), JavaRunConfig.builder().build())
     }
+  }
+
+  @Test
+  fun runConfigToJava_bidiLiveSettings_convert() {
+    val kt =
+      KtRunConfig(
+        streamingMode = KtStreamingMode.BIDI,
+        live =
+          KtLiveRunConfig(
+            responseModalities = listOf(KtModality.AUDIO),
+            speechConfig = ktSpeechConfig(),
+            outputAudioTranscription = ktTranscriptionConfig(),
+            inputAudioTranscription = KtAudioTranscriptionConfig(languageCodes = listOf("de-DE")),
+          ),
+      )
+
+    val java = RunConfigCodec.toJava(kt)
+
+    assertEquals(JavaRunConfig.StreamingMode.BIDI, java.streamingMode())
+    assertEquals(listOf(GenaiModality(GenaiModality.Known.AUDIO)), java.responseModalities())
+    assertEquals(genaiSpeechConfig().toJson(), java.speechConfig()?.toJson())
+    assertEquals(genaiTranscriptionConfig(), java.outputAudioTranscription())
+    assertEquals(
+      GenaiAudioTranscriptionConfig.builder().languageCodes(listOf("de-DE")).build(),
+      java.inputAudioTranscription(),
+    )
+  }
+
+  @Test
+  fun runConfigToJava_bidiWithoutModalities_showsAudio() {
+    // Plugins and tools see AUDIO when no modality is set, as in ADK Java and Python.
+    val java = RunConfigCodec.toJava(KtRunConfig(streamingMode = KtStreamingMode.BIDI))
+
+    assertEquals(listOf(GenaiModality(GenaiModality.Known.AUDIO)), java.responseModalities())
+  }
+
+  @Test
+  fun runConfigToJava_turnBasedConfig_showsNoLiveSettingsAndReadsBack() {
+    // Kotlin enables transcription by default; a turn-based Java view hides it and reads back.
+    val defaults = RunConfigCodec.toJava(KtRunConfig())
+    val sse =
+      RunConfigCodec.toJava(
+        KtRunConfig(
+          streamingMode = KtStreamingMode.SSE,
+          live =
+            KtLiveRunConfig(
+              responseModalities = listOf(KtModality.AUDIO),
+              speechConfig = ktSpeechConfig(),
+            ),
+        )
+      )
+
+    for (java in listOf(defaults, sse)) {
+      assertEquals(emptyList(), java.responseModalities())
+      assertNull(java.speechConfig())
+      assertNull(java.outputAudioTranscription())
+      assertNull(java.inputAudioTranscription())
+    }
+    assertEquals(KtRunConfig(), RunConfigCodec.fromJava(defaults))
+  }
+
+  @Test
+  fun audioTranscriptionConfigCodec_namesTheGenaiOnlyFieldsSet() {
+    val transcription =
+      GenaiAudioTranscriptionConfig.builder()
+        .languageAuto(GenaiLanguageAuto.builder().build())
+        .languageHints(GenaiLanguageHints.builder().languageCodes(listOf("pl-PL")).build())
+        .adaptationPhrases(listOf("ADK"))
+        .mode(GenaiAudioTranscriptionConfigMode("m"))
+        .build()
+
+    assertEquals(
+      listOf("languageAuto", "languageHints", "adaptationPhrases", "mode"),
+      AudioTranscriptionConfigCodec.unsupportedFields(transcription),
+    )
+    // Every field the Kotlin type models crosses, so a fully mapped config names nothing.
+    assertEquals(
+      emptyList(),
+      AudioTranscriptionConfigCodec.unsupportedFields(genaiTranscriptionConfig()),
+    )
+  }
+
+  @Test
+  fun speechAndTranscriptionConfigCodecs_convertEveryFieldInBothDirections() {
+    // As JSON: genai's equals compares the voice sample byte arrays by reference.
+    assertEquals(genaiSpeechConfig().toJson(), SpeechConfigCodec.toJava(ktSpeechConfig()).toJson())
+    assertEquals(ktSpeechConfig(), SpeechConfigCodec.fromJava(genaiSpeechConfig()))
+    assertEquals(
+      genaiTranscriptionConfig(),
+      AudioTranscriptionConfigCodec.toJava(ktTranscriptionConfig()),
+    )
+    assertEquals(
+      ktTranscriptionConfig(),
+      AudioTranscriptionConfigCodec.fromJava(genaiTranscriptionConfig()),
+    )
   }
 
   @Test
@@ -4042,6 +4203,499 @@ class KtRunnerInteropTest {
   }
 
   @Test
+  fun transcriptionCodec_everyField_convertsInBothDirections() {
+    // Built independently on each side, so the codec cannot agree with itself by accident.
+    assertEquals(genaiTranscription("in"), TranscriptionCodec.toJava(ktTranscription("in")))
+    assertEquals(ktTranscription("in"), TranscriptionCodec.fromJava(genaiTranscription("in")))
+  }
+
+  @Test
+  fun eventCodec_liveTranscriptions_crossToTheJavaEventAndBack() {
+    // Wiring check: each slot crosses as itself, so a swap or a dropped slot fails.
+    val ktEvent =
+      KtEvent(
+        author = "model",
+        inputTranscription = ktTranscription("in"),
+        outputTranscription = ktTranscription("out"),
+      )
+
+    val javaEvent = EventCodec.toJava(ktEvent)
+
+    assertEquals(Optional.of(genaiTranscription("in")), javaEvent.inputTranscription())
+    assertEquals(Optional.of(genaiTranscription("out")), javaEvent.outputTranscription())
+    val back = EventCodec.fromJava(javaEvent)
+    assertEquals(ktTranscription("in"), back.inputTranscription)
+    assertEquals(ktTranscription("out"), back.outputTranscription)
+  }
+
+  @Test
+  fun eventCodec_fieldsAdkJavaLacks_leaveNoTraceOnTheJavaEvent() {
+    val base = KtEvent(author = "model")
+    val ktEvent =
+      base.copy(
+        citationMetadata =
+          KtCitationMetadata(citationSources = listOf(KtCitation(title = "t", uri = "u"))),
+        turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = KtInteractionStatus.IDLE,
+        liveSessionId = "live-1",
+        liveSessionResumptionUpdate =
+          KtLiveServerSessionResumptionUpdate(newHandle = "handle", resumable = true),
+        voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+      )
+
+    // A Kotlin-only field must not leak into a field ADK Java has.
+    assertEquals(EventCodec.toJava(base), EventCodec.toJava(ktEvent))
+  }
+
+  @Test
+  fun eventCodec_absentTranscriptions_stayAbsent() {
+    val javaEvent = EventCodec.toJava(KtEvent(author = "model"))
+
+    assertEquals(Optional.empty(), javaEvent.inputTranscription())
+    assertEquals(Optional.empty(), javaEvent.outputTranscription())
+    assertNull(EventCodec.fromJava(javaEvent).inputTranscription)
+    assertNull(EventCodec.fromJava(javaEvent).outputTranscription)
+  }
+
+  @Test
+  fun llmResponseCodec_turnCompleteAndTranscriptions_crossToTheJavaResponseAndBack() {
+    val ktResponse =
+      KtLlmResponse(
+        turnComplete = true,
+        inputTranscription = ktTranscription("in"),
+        outputTranscription = ktTranscription("out"),
+      )
+
+    val javaResponse = LlmResponseCodec.toJava(ktResponse)
+
+    assertEquals(Optional.of(true), javaResponse.turnComplete())
+    assertEquals(Optional.of(genaiTranscription("in")), javaResponse.inputTranscription())
+    assertEquals(Optional.of(genaiTranscription("out")), javaResponse.outputTranscription())
+    val back = LlmResponseCodec.fromJava(javaResponse)
+    assertEquals(true, back.turnComplete)
+    assertEquals(ktTranscription("in"), back.inputTranscription)
+    assertEquals(ktTranscription("out"), back.outputTranscription)
+  }
+
+  @Test
+  fun llmResponseCodec_turnComplete_keepsFalseApartFromAbsent() {
+    assertEquals(
+      false,
+      LlmResponseCodec.fromJava(JavaLlmResponse.builder().turnComplete(false).build()).turnComplete,
+    )
+    assertNull(LlmResponseCodec.fromJava(JavaLlmResponse.builder().build()).turnComplete)
+    assertEquals(
+      Optional.of(false),
+      LlmResponseCodec.toJava(KtLlmResponse(turnComplete = false)).turnComplete(),
+    )
+    assertEquals(Optional.empty(), LlmResponseCodec.toJava(KtLlmResponse()).turnComplete())
+  }
+
+  @Test
+  fun llmResponseCodec_fieldsAdkJavaLacks_areDropped() {
+    val ktResponse =
+      KtLlmResponse(
+        turnComplete = true,
+        turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = KtInteractionStatus.IDLE,
+        liveSessionId = "live-1",
+        liveSessionResumptionUpdate = KtLiveServerSessionResumptionUpdate(newHandle = "handle"),
+        goAway = KtLiveServerGoAway(timeLeft = 5.seconds),
+        voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+      )
+
+    val back = LlmResponseCodec.fromJava(LlmResponseCodec.toJava(ktResponse))
+
+    assertEquals(KtLlmResponse(turnComplete = true), back)
+  }
+
+  @Test
+  fun asKtModel_javaResponseWithTurnComplete_reachesTheKotlinEngine() = runBlocking {
+    // ADK Java sets turnComplete on live responses; a non-live Java model may set it too.
+    val javaModel =
+      object : JavaBaseLlm("turn-complete-model") {
+        override fun generateContent(
+          llmRequest: JavaLlmRequest,
+          stream: Boolean,
+        ): Flowable<JavaLlmResponse> =
+          Flowable.just(
+            JavaLlmResponse.builder().content(modelText("done")).turnComplete(true).build()
+          )
+
+        override fun connect(llmRequest: JavaLlmRequest): JavaBaseLlmConnection =
+          throw UnsupportedOperationException()
+      }
+
+    val responses = JavaAdkToKt.asKtModel(javaModel).generateContent(KtLlmRequest(), false).toList()
+
+    assertEquals(true, responses.single().turnComplete)
+  }
+
+  @Test
+  fun asKtSessionService_appendedTranscriptionEvent_isStoredWithItsTranscriptions() = runBlocking {
+    // Wiring check: a live run stores its transcription events through the adapted service.
+    val javaSessions = JavaInMemorySessionService()
+    val sessions = JavaAdkToKt.asKtSessionService(javaSessions)
+    val session = sessions.createSession(KtSessionKey("app", "u", "s"))
+
+    val unused =
+      sessions.appendEvent(
+        session,
+        KtEvent(
+          author = "model",
+          inputTranscription = ktTranscription("in"),
+          outputTranscription = ktTranscription("out"),
+        ),
+      )
+
+    val stored =
+      javaSessions.getSession("app", "u", "s", Optional.empty()).blockingGet()
+        ?: fail("the adapted Java service should hold the session")
+    val event = stored.immutableEvents().single()
+    assertEquals(Optional.of(genaiTranscription("in")), event.inputTranscription())
+    assertEquals(Optional.of(genaiTranscription("out")), event.outputTranscription())
+  }
+
+  @Test
+  fun reapplyJavaEvent_unchangedJavaEvent_restoresEveryUnconvertedField() {
+    val original =
+      KtEvent(
+        author = "model",
+        invocationId = "inv-1",
+        turnComplete = true,
+        content = KtContent(role = "model", parts = listOf(KtPart(text = "hi"))),
+        actions =
+          KtEventActions(
+            transferToAgent = "child",
+            rewindBeforeInvocationId = "inv-0",
+            route = listOf(KtRoute.Tag("next")),
+            agentState = TypedData.MapValue(mapOf("phase" to TypedData.IntValue(2))),
+            compaction =
+              KtEventCompaction(
+                startTimestamp = 1_000L,
+                endTimestamp = 2_000L,
+                compactedContent =
+                  KtContent(role = "model", parts = listOf(KtPart(text = "summary"))),
+              ),
+          ),
+        errorCode = "MAX_TOKENS",
+        errorMessage = "cut short",
+        finishReason = KtFinishReason.STOP,
+        usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+        avgLogProbs = -0.5,
+        branch = "root.child",
+        groundingMetadata =
+          KtGroundingMetadata(webSearchQueries = listOf("q"), imageSearchQueries = listOf("i")),
+        modelVersion = "model-1",
+        customMetadata = mapOf("k" to "v"),
+        inputTranscription = ktTranscription("in"),
+        outputTranscription = ktTranscription("out"),
+        citationMetadata =
+          KtCitationMetadata(citationSources = listOf(KtCitation(title = "t", uri = "u"))),
+        cacheMetadata = KtCacheMetadata(fingerprint = "f", contentsCount = 2),
+        output = "the node's output",
+        nodeInfo = KtNodeInfo(path = "root/child"),
+        turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = KtInteractionStatus.IDLE,
+        liveSessionId = "live-1",
+        liveSessionResumptionUpdate = KtLiveServerSessionResumptionUpdate(newHandle = "handle"),
+        voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+      )
+
+    // Every nullable field is set, so a field the re-apply forgets fails the last assertion.
+    assertEquals(emptyList(), unsetFieldsOf(original), "set every nullable KtEvent field")
+    assertEquals(
+      emptyList(),
+      unsetFieldsOf(original.actions),
+      "set every nullable KtEventActions field",
+    )
+    assertEquals(original, reapplyJavaEvent(original, EventCodec.toJava(original)))
+  }
+
+  @Test
+  fun reapplyJavaResponse_unchangedJavaResponse_restoresEveryUnconvertedField() {
+    val original =
+      KtLlmResponse(
+        content = KtContent(role = "model", parts = listOf(KtPart(text = "hi"))),
+        usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+        finishReason = KtFinishReason.STOP,
+        errorMessage = "cut short",
+        modelVersion = "model-1",
+        groundingMetadata =
+          KtGroundingMetadata(webSearchQueries = listOf("q"), imageSearchQueries = listOf("i")),
+        errorCode = "MAX_TOKENS",
+        customMetadata = mapOf("k" to "v"),
+        avgLogprobs = -0.5,
+        turnComplete = true,
+        inputTranscription = ktTranscription("in"),
+        outputTranscription = ktTranscription("out"),
+        citationMetadata =
+          KtCitationMetadata(citationSources = listOf(KtCitation(title = "t", uri = "u"))),
+        logprobsResult = KtLogprobsResult(logProbabilitySum = -1.5),
+        cacheMetadata = KtCacheMetadata(fingerprint = "f", contentsCount = 2),
+        turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = KtInteractionStatus.IDLE,
+        liveSessionId = "live-1",
+        liveSessionResumptionUpdate = KtLiveServerSessionResumptionUpdate(newHandle = "handle"),
+        goAway = KtLiveServerGoAway(timeLeft = 5.seconds),
+        voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+      )
+
+    assertEquals(emptyList(), unsetFieldsOf(original), "set every nullable KtLlmResponse field")
+    assertEquals(original, reapplyJavaResponse(original, LlmResponseCodec.toJava(original)))
+  }
+
+  /** The names of [value]'s null fields, so a fixture can prove it sets every nullable one. */
+  private fun unsetFieldsOf(value: Any): List<String> =
+    value.javaClass.declaredFields
+      .filterNot { Modifier.isStatic(it.modifiers) }
+      .onEach { it.isAccessible = true }
+      .filter { it.get(value) == null }
+      .map { it.name }
+
+  @Test
+  fun javaPluginAfterModel_override_keepsTheUnconvertedFields() = runBlocking {
+    val plugin = ResponseOverridingJavaPlugin {
+      it.toBuilder().content(modelText("replaced")).build()
+    }
+    val response =
+      KtLlmResponse(
+        content = ContentCodec.fromJava(modelText("original")),
+        goAway = KtLiveServerGoAway(timeLeft = 5.seconds),
+        liveSessionResumptionUpdate = KtLiveServerSessionResumptionUpdate(newHandle = "handle"),
+      )
+
+    val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+    assertEquals(ContentCodec.fromJava(modelText("replaced")), result.content)
+    assertEquals(response.goAway, result.goAway)
+    assertEquals(response.liveSessionResumptionUpdate, result.liveSessionResumptionUpdate)
+  }
+
+  @Test
+  fun javaPluginAfterModel_override_takesTheValuesJavaChanged() = runBlocking {
+    val plugin = ResponseOverridingJavaPlugin {
+      it
+        .toBuilder()
+        .content(modelText("replaced"))
+        .partial(false)
+        .turnComplete(false)
+        .usageMetadata(GenaiUsageMetadata.builder().promptTokenCount(7).build())
+        .build()
+    }
+    val response =
+      KtLlmResponse(
+        content = ContentCodec.fromJava(modelText("original")),
+        partial = true,
+        turnComplete = true,
+        usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+      )
+
+    val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+    assertEquals(ContentCodec.fromJava(modelText("replaced")), result.content)
+    assertEquals(false, result.partial)
+    assertEquals(false, result.turnComplete)
+    assertEquals(KtUsageMetadata(promptTokenCount = 7), result.usageMetadata)
+  }
+
+  @Test
+  fun javaPluginAfterModel_freshResponse_inheritsPartialTurnCompleteAndUsage() = runBlocking {
+    val plugin = ResponseOverridingJavaPlugin {
+      JavaLlmResponse.builder().content(modelText("replaced")).build()
+    }
+    val response =
+      KtLlmResponse(
+        content = ContentCodec.fromJava(modelText("original")),
+        partial = true,
+        turnComplete = true,
+        usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+      )
+
+    val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+    assertEquals(ContentCodec.fromJava(modelText("replaced")), result.content)
+    assertEquals(true, result.partial)
+    assertEquals(true, result.turnComplete)
+    assertEquals(response.usageMetadata, result.usageMetadata)
+  }
+
+  @Test
+  fun javaPluginAfterModel_overrideThatReopensTheTurn_keepsTheReasonAndDropsTheStatus() =
+    runBlocking {
+      val plugin = ResponseOverridingJavaPlugin { it.toBuilder().turnComplete(false).build() }
+      val response =
+        KtLlmResponse(
+          turnComplete = true,
+          turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+          interactionStatus = KtInteractionStatus.IDLE,
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+      assertEquals(false, result.turnComplete)
+      assertEquals(KtTurnCompleteReason.NEED_MORE_INPUT, result.turnCompleteReason)
+      assertNull(result.interactionStatus)
+    }
+
+  @Test
+  fun javaPluginAfterModel_unchangedContentResponse_keepsTheTurnCompleteReason() = runBlocking {
+    // Core puts the reason on content responses whose turnComplete is unset.
+    val plugin = ResponseOverridingJavaPlugin { it }
+    val response =
+      KtLlmResponse(
+        content = ContentCodec.fromJava(modelText("original")),
+        turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+      )
+
+    val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+    assertNull(result.turnComplete)
+    assertEquals(KtTurnCompleteReason.NEED_MORE_INPUT, result.turnCompleteReason)
+  }
+
+  @Test
+  fun javaPluginOnEvent_replacementThatReopensTheTurn_keepsTheReasonAndDropsTheStatus() =
+    runBlocking {
+      val plugin = EventOverridingJavaPlugin { it.toBuilder().turnComplete(false).build() }
+      val event =
+        KtEvent(
+          author = "model",
+          turnComplete = true,
+          turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+          interactionStatus = KtInteractionStatus.IDLE,
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+      assertEquals(false, result.turnComplete)
+      assertEquals(KtTurnCompleteReason.NEED_MORE_INPUT, result.turnCompleteReason)
+      assertNull(result.interactionStatus)
+    }
+
+  @Test
+  fun javaPluginOnEvent_replacement_takesItsContentAndKeepsTheVoiceActivity() = runBlocking {
+    val plugin = EventOverridingJavaPlugin { it.toBuilder().content(modelText("replaced")).build() }
+    val event =
+      KtEvent(
+        author = "model",
+        content = ContentCodec.fromJava(modelText("original")),
+        voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+      )
+
+    val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+    assertEquals(ContentCodec.fromJava(modelText("replaced")), result.content)
+    assertEquals(event.voiceActivity, result.voiceActivity)
+  }
+
+  @Test
+  fun javaPluginOnEvent_newEvent_keepsTheUnconvertedFields() = runBlocking {
+    // EventCodec doesn't convert output or route, so a new event keeps the original's.
+    val plugin = EventOverridingJavaPlugin {
+      JavaEvent.builder().id("other").author("model").content(modelText("replaced")).build()
+    }
+    val event =
+      KtEvent(
+        author = "model",
+        content = ContentCodec.fromJava(modelText("original")),
+        actions = KtEventActions(route = listOf(KtRoute.Tag("next"))),
+        output = "the node's output",
+      )
+
+    val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+    assertEquals(ContentCodec.fromJava(modelText("replaced")), result.content)
+    assertEquals("the node's output", result.output)
+    assertEquals(listOf(KtRoute.Tag("next")), result.actions.route)
+  }
+
+  @Test
+  fun javaPluginOnEvent_freshEvent_inheritsTheUnsetFlagsAndUsage() = runBlocking {
+    val plugin = EventOverridingJavaPlugin {
+      JavaEvent.builder().author("model").content(modelText("replaced")).build()
+    }
+    val event =
+      KtEvent(
+        author = "model",
+        content = ContentCodec.fromJava(modelText("original")),
+        partial = true,
+        turnComplete = true,
+        interrupted = true,
+        usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+      )
+
+    val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+    assertEquals(ContentCodec.fromJava(modelText("replaced")), result.content)
+    assertTrue(result.partial)
+    assertTrue(result.turnComplete)
+    assertTrue(result.interrupted)
+    assertEquals(event.usageMetadata, result.usageMetadata)
+  }
+
+  @Test
+  fun javaPluginOnEvent_replacement_takesTheValuesJavaChanged() = runBlocking {
+    val plugin = EventOverridingJavaPlugin {
+      it
+        .toBuilder()
+        .partial(false)
+        .interrupted(false)
+        .usageMetadata(GenaiUsageMetadata.builder().promptTokenCount(7).build())
+        .build()
+    }
+    val event =
+      KtEvent(
+        author = "model",
+        partial = true,
+        interrupted = true,
+        usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+      )
+
+    val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+    assertFalse(result.partial)
+    assertFalse(result.interrupted)
+    assertEquals(KtUsageMetadata(promptTokenCount = 7), result.usageMetadata)
+  }
+
+  @Test
+  fun ktRunner_javaPluginReplacingAnEvent_keepsTheUnconvertedFields() = runBlocking {
+    val plugin = EventOverridingJavaPlugin { it.toBuilder().content(modelText("replaced")).build() }
+    val runner =
+      KtInMemoryRunner(
+        app =
+          KtApp(
+            appName = "app",
+            rootAgent = VoiceActivityKtAgent(),
+            plugins = listOf(JavaAdkToKt.asKtPlugin(plugin)),
+          )
+      )
+
+    val emitted = runner.turn().single { it.author == "voice" }
+    val stored =
+      runner.sessionService.getSession(KtSessionKey("app", "u", "s"))!!.events.single {
+        it.author == "voice"
+      }
+
+    for (event in listOf(emitted, stored)) {
+      assertEquals(ContentCodec.fromJava(modelText("replaced")), event.content)
+      assertEquals(KtVoiceActivity(audioOffset = 1.seconds), event.voiceActivity)
+      assertEquals("the agent's output", event.output)
+    }
+  }
+
+  @Test
+  fun javaPlugin_withoutAnOverride_leavesTheOriginalUntouched() = runBlocking {
+    val plugin = JavaAdkToKt.asKtPlugin(ResponseOverridingJavaPlugin { null })
+    val response = KtLlmResponse(goAway = KtLiveServerGoAway(timeLeft = 5.seconds))
+    val event = KtEvent(author = "model", voiceActivity = KtVoiceActivity(audioOffset = 1.seconds))
+
+    assertSame(response, plugin.afterModel(ktCallbackContext(), response))
+    assertSame(event, plugin.onEvent(ktInvocationContext(), event))
+  }
+
+  @Test
   fun schemaCodec_carriesEveryFacet_roundTrips() {
     // Every facet the Kotlin Schema models must survive Java -> Kotlin -> Java, or structured
     // output (responseSchema) and tool parameter constraints are silently lost.
@@ -4132,6 +4786,42 @@ class KtRunnerInteropTest {
     val response = assertNotNull(rt.response().getOrNull(), "response schema should round-trip")
     assertEquals("STRING", response.type().getOrNull()?.knownEnum()?.name, "response type")
     assertEquals("the forecast", response.description().getOrNull(), "response description")
+  }
+
+  @Test
+  fun groundingMetadataCodec_withoutImageSearchQueries_leavesThemUnset() {
+    // The Kotlin list is nullable, but the genai builder's setter rejects a null argument.
+    val kt =
+      GroundingMetadataCodec.fromJava(
+        GenaiGroundingMetadata.builder().webSearchQueries(listOf("q")).build()
+      )
+    val java = GroundingMetadataCodec.toJava(KtGroundingMetadata(webSearchQueries = listOf("q")))
+
+    assertNull(kt.imageSearchQueries)
+    assertEquals(Optional.of(listOf("q")), java.webSearchQueries())
+    assertEquals(Optional.empty(), java.imageSearchQueries())
+  }
+
+  @Test
+  fun asJavaRunner_groundingMetadataWithoutImageSearchQueries_streamsTheEvent() {
+    // The same metadata through the Java runAsync API, which converts every engine event.
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(KtInMemoryRunner(agent = GroundedKtAgent(), appName = "app"))
+
+    val events =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+          JavaRunConfig.builder().autoCreateSession(true).build(),
+        )
+        .toList()
+        .blockingGet()
+
+    val metadata = assertNotNull(events.firstNotNullOfOrNull { it.groundingMetadata().getOrNull() })
+    assertEquals(Optional.of(listOf("q")), metadata.webSearchQueries())
+    assertEquals(Optional.empty(), metadata.imageSearchQueries())
   }
 
   @Test
@@ -4816,5 +5506,185 @@ class KtRunnerInteropTest {
 
     fun modelText(text: String): GenaiContent =
       GenaiContent.builder().role("model").parts(GenaiPart.builder().text(text).build()).build()
+
+    /** A transcription with every field set and two words, distinct per [text]. */
+    fun ktTranscription(text: String) =
+      KtTranscription(
+        text = text,
+        finished = true,
+        languageCode = "en-US",
+        speakerLabel = "speaker-$text",
+        words =
+          listOf(
+            KtWordInfo(word = "$text-1", startOffset = "0.1s", endOffset = "0.4s"),
+            KtWordInfo(word = "$text-2", startOffset = "0.5s", endOffset = "0.9s"),
+          ),
+      )
+
+    /** The genai twin of [ktTranscription], built without the codec. */
+    fun genaiTranscription(text: String): GenaiTranscription =
+      GenaiTranscription.builder()
+        .text(text)
+        .finished(true)
+        .languageCode("en-US")
+        .speakerLabel("speaker-$text")
+        .words(
+          listOf(
+            GenaiWordInfo.builder().word("$text-1").startOffset("0.1s").endOffset("0.4s").build(),
+            GenaiWordInfo.builder().word("$text-2").startOffset("0.5s").endOffset("0.9s").build(),
+          )
+        )
+        .build()
+
+    /** A Kotlin invocation context on a fresh session, for driving a plugin adapter directly. */
+    fun ktInvocationContext() =
+      KtInvocationContext(
+        session = KtSession(KtSessionKey("app", "u", "s")),
+        agent =
+          KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+      )
+
+    /** A Kotlin callback context over [ktInvocationContext]. */
+    fun ktCallbackContext() = KtCallbackContext(ktInvocationContext())
+
+    /** A speech setting with every field set, including a replicated voice and two speakers. */
+    fun ktSpeechConfig() =
+      KtSpeechConfig(
+        voiceConfig =
+          KtVoiceConfig(
+            prebuiltVoiceConfig = KtPrebuiltVoiceConfig(voiceName = "Kore"),
+            voice = "voice-1",
+          ),
+        languageCode = "pl-PL",
+        multiSpeakerVoiceConfig =
+          KtMultiSpeakerVoiceConfig(
+            speakerVoiceConfigs =
+              listOf(
+                KtSpeakerVoiceConfig(
+                  speaker = "a",
+                  voiceConfig =
+                    KtVoiceConfig(
+                      prebuiltVoiceConfig = KtPrebuiltVoiceConfig(voiceName = "Puck"),
+                      voice = "voice-a",
+                    ),
+                ),
+                KtSpeakerVoiceConfig(
+                  speaker = "b",
+                  voiceConfig =
+                    KtVoiceConfig(
+                      replicatedVoiceConfig =
+                        KtReplicatedVoiceConfig(
+                          mimeType = "audio/wav",
+                          voiceSampleAudio = byteArrayOf(1),
+                          consentAudio = byteArrayOf(2),
+                          voiceConsentSignature = KtVoiceConsentSignature(signature = "sig"),
+                        )
+                    ),
+                ),
+              )
+          ),
+      )
+
+    /** The genai twin of [ktSpeechConfig], built without the codec. */
+    fun genaiSpeechConfig(): GenaiSpeechConfig =
+      GenaiSpeechConfig.builder()
+        .voiceConfig(
+          GenaiVoiceConfig.builder()
+            .prebuiltVoiceConfig(GenaiPrebuiltVoiceConfig.builder().voiceName("Kore").build())
+            .voice("voice-1")
+            .build()
+        )
+        .languageCode("pl-PL")
+        .multiSpeakerVoiceConfig(
+          GenaiMultiSpeakerVoiceConfig.builder()
+            .speakerVoiceConfigs(
+              listOf(
+                GenaiSpeakerVoiceConfig.builder()
+                  .speaker("a")
+                  .voiceConfig(
+                    GenaiVoiceConfig.builder()
+                      .prebuiltVoiceConfig(
+                        GenaiPrebuiltVoiceConfig.builder().voiceName("Puck").build()
+                      )
+                      .voice("voice-a")
+                      .build()
+                  )
+                  .build(),
+                GenaiSpeakerVoiceConfig.builder()
+                  .speaker("b")
+                  .voiceConfig(
+                    GenaiVoiceConfig.builder()
+                      .replicatedVoiceConfig(
+                        GenaiReplicatedVoiceConfig.builder()
+                          .mimeType("audio/wav")
+                          .voiceSampleAudio(byteArrayOf(1))
+                          .consentAudio(byteArrayOf(2))
+                          .voiceConsentSignature(
+                            GenaiVoiceConsentSignature.builder().signature("sig").build()
+                          )
+                          .build()
+                      )
+                      .build()
+                  )
+                  .build(),
+              )
+            )
+            .build()
+        )
+        .build()
+
+    /** A transcription setting with every Kotlin field set. */
+    fun ktTranscriptionConfig() =
+      KtAudioTranscriptionConfig(
+        languageCodes = listOf("pl-PL", "en-US"),
+        customVocabulary = listOf("ADK"),
+        diarization = true,
+        wordTimestamp = false,
+        mode = KtAudioTranscriptionConfigMode.VERBATIM,
+      )
+
+    /** The genai twin of [ktTranscriptionConfig], built without the codec. */
+    fun genaiTranscriptionConfig(): GenaiAudioTranscriptionConfig =
+      GenaiAudioTranscriptionConfig.builder()
+        .languageCodes(listOf("pl-PL", "en-US"))
+        .customVocabulary(listOf("ADK"))
+        .diarization(true)
+        .wordTimestamp(false)
+        .mode(GenaiAudioTranscriptionConfigMode(GenaiAudioTranscriptionConfigMode.Known.VERBATIM))
+        .build()
+  }
+
+  /** A Java plugin whose afterModel returns what [override] makes of the response, or nothing. */
+  private class ResponseOverridingJavaPlugin(
+    private val override: (JavaLlmResponse) -> JavaLlmResponse?
+  ) : JavaBasePlugin("response_overriding_plugin") {
+    override fun afterModelCallback(
+      callbackContext: JavaCallbackContext,
+      llmResponse: JavaLlmResponse,
+    ): Maybe<JavaLlmResponse> = override(llmResponse)?.let { Maybe.just(it) } ?: Maybe.empty()
+  }
+
+  /** A Java plugin whose onEvent returns what [override] makes of the event, or nothing. */
+  private class EventOverridingJavaPlugin(private val override: (JavaEvent) -> JavaEvent?) :
+    JavaBasePlugin("event_overriding_plugin") {
+    override fun onEventCallback(
+      invocationContext: JavaInvocationContext,
+      event: JavaEvent,
+    ): Maybe<JavaEvent> = override(event)?.let { Maybe.just(it) } ?: Maybe.empty()
+  }
+
+  /** A native Kotlin agent emitting one event with fields [EventCodec] doesn't convert. */
+  private class VoiceActivityKtAgent : KtBaseAgent(name = "voice") {
+    override fun runAsyncImpl(context: KtInvocationContext): Flow<KtEvent> = flow {
+      emit(
+        KtEvent(
+          invocationId = context.invocationId,
+          author = name,
+          content = ContentCodec.fromJava(modelText("original")),
+          output = "the agent's output",
+          voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+        )
+      )
+    }
   }
 }
