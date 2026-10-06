@@ -17,47 +17,69 @@
 package com.google.adk.tokt.codecs
 
 import com.google.adk.agents.RunConfig as JavaRunConfig
+import com.google.adk.kt.agents.LiveRunConfig as KtLiveRunConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
+import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.types.AudioTranscriptionConfig as KtAudioTranscriptionConfig
+import com.google.adk.kt.types.Modality as KtModality
+import com.google.genai.types.Modality as GenaiModality
 
 /**
  * Converts between the Kotlin `kt.agents.RunConfig` and the ADK Java [JavaRunConfig].
  *
- * Only three settings cross both ways: streaming mode, the LLM call budget, and custom metadata.
- * [toJava] leaves the Java-only settings at their defaults; [fromJava] instead rejects a Java
- * setting the engine cannot honor rather than dropping it silently.
+ * Streaming mode, the LLM call budget and custom metadata cross both ways; [toJava] also shows a
+ * BIDI run's live settings (modalities, speech, transcriptions), and [fromJavaLive] reads them for
+ * a live run. [fromJava] and [fromJavaLive] reject a Java setting the engine cannot honor rather
+ * than dropping it silently.
  */
 internal object RunConfigCodec {
 
-  /** Returns the Java [JavaRunConfig] view of the Kotlin [config]. */
-  fun toJava(config: KtRunConfig): JavaRunConfig =
-    JavaRunConfig.builder()
-      // Kotlin has no BIDI, so a by-name match always resolves; NONE is the shared default.
-      .streamingMode(
-        enumByNameOrNull<JavaRunConfig.StreamingMode>(config.streamingMode.name)
-          ?: JavaRunConfig.StreamingMode.NONE
-      )
-      .maxLlmCalls(config.maxLlmCalls)
-      .customMetadata(config.customMetadata.orEmpty())
-      .build()
+  /**
+   * Returns the Java [JavaRunConfig] view of the Kotlin [config]. Only a BIDI run shows live
+   * settings, since Kotlin turns transcription on for every run.
+   */
+  fun toJava(config: KtRunConfig): JavaRunConfig {
+    val builder =
+      JavaRunConfig.builder()
+        .streamingMode(
+          when (config.streamingMode) {
+            KtStreamingMode.NONE -> JavaRunConfig.StreamingMode.NONE
+            KtStreamingMode.SSE -> JavaRunConfig.StreamingMode.SSE
+            KtStreamingMode.BIDI -> JavaRunConfig.StreamingMode.BIDI
+          }
+        )
+        .maxLlmCalls(config.maxLlmCalls)
+        .customMetadata(config.customMetadata.orEmpty())
+    if (config.streamingMode == KtStreamingMode.BIDI) {
+      builder
+        // ADK Java and Python default a live run's response modalities to AUDIO.
+        .responseModalities(
+          config.live.responseModalities
+            .ifEmpty { listOf(KtModality.AUDIO) }
+            .map { GenaiModality(it.name) }
+        )
+        .speechConfig(config.live.speechConfig?.let { SpeechConfigCodec.toJava(it) })
+        .outputAudioTranscription(
+          config.live.outputAudioTranscription?.let { AudioTranscriptionConfigCodec.toJava(it) }
+        )
+        .inputAudioTranscription(
+          config.live.inputAudioTranscription?.let { AudioTranscriptionConfigCodec.toJava(it) }
+        )
+    }
+    return builder.build()
+  }
 
   /** Returns the Kotlin [KtRunConfig] view of the Java [config]. */
-  @Suppress(
-    "deprecation"
-  ) // Reads the deprecated groupFunctionResponsesInHistoryOverride to reject it.
   fun fromJava(config: JavaRunConfig): KtRunConfig {
     val unsupported = buildList {
       if (config.streamingMode() == JavaRunConfig.StreamingMode.BIDI) add("streamingMode=BIDI")
       if (config.saveInputBlobsAsArtifacts()) add("saveInputBlobsAsArtifacts")
-      if (config.toolExecutionMode() != JavaRunConfig.ToolExecutionMode.NONE)
-        add("toolExecutionMode")
+      addUnsupportedByEveryRun(config)
       if (config.responseModalities().isNotEmpty()) add("responseModalities")
       if (config.speechConfig() != null) add("speechConfig")
-      if (config.avatarConfig() != null) add("avatarConfig")
       if (config.outputAudioTranscription() != null) add("outputAudioTranscription")
       if (config.inputAudioTranscription() != null) add("inputAudioTranscription")
-      if (config.groupFunctionResponsesInHistoryOverride().isPresent)
-        add("groupFunctionResponsesInHistoryOverride")
     }
     require(unsupported.isEmpty()) {
       "RunConfig settings not supported by the ADK Kotlin engine: $unsupported"
@@ -69,5 +91,78 @@ internal object RunConfigCodec {
       maxLlmCalls = config.maxLlmCalls(),
       customMetadata = config.customMetadata().takeIf { it.isNotEmpty() },
     )
+  }
+
+  /**
+   * Returns the Kotlin [KtRunConfig] for a live run, applying the ADK Java runner's live defaults:
+   * no modality means AUDIO, and a missing transcription setting turns transcription on, except
+   * output transcription when the modalities include text. Rejects a Java setting the engine cannot
+   * honor, as [fromJava] does, but ignores `saveInputBlobsAsArtifacts`, which ADK Java's own live
+   * run never reads.
+   */
+  @OptIn(ExperimentalLiveApi::class)
+  fun fromJavaLive(config: JavaRunConfig): KtRunConfig {
+    val output = config.outputAudioTranscription()
+    val input = config.inputAudioTranscription()
+    val unsupported = buildList {
+      addUnsupportedByEveryRun(config)
+      output?.let {
+        addAll(
+          AudioTranscriptionConfigCodec.unsupportedFields(it).map { "outputAudioTranscription.$it" }
+        )
+      }
+      input?.let {
+        addAll(
+          AudioTranscriptionConfigCodec.unsupportedFields(it).map { "inputAudioTranscription.$it" }
+        )
+      }
+    }
+    require(unsupported.isEmpty()) {
+      "RunConfig settings not supported by the ADK Kotlin engine: $unsupported"
+    }
+    val modalities =
+      config.responseModalities().map { modality ->
+        // genai reads any name it does not know as MODALITY_UNSPECIFIED.
+        requireNotNull(
+          enumByNameOrNull<KtModality>(modality.knownEnum().name)?.takeIf {
+            it != KtModality.MODALITY_UNSPECIFIED
+          }
+        ) {
+          "Response modality not supported by the ADK Kotlin engine"
+        }
+      }
+    // The ADK Java runner's live defaults (Runner.newInvocationContextForLive).
+    val responseModalities = modalities.ifEmpty { listOf(KtModality.AUDIO) }
+    val textRequested = KtModality.TEXT in responseModalities
+    return KtRunConfig(
+      // ADK Java's runLive keeps the given mode; BIDI is what shows Java plugins the live settings.
+      streamingMode = KtStreamingMode.BIDI,
+      maxLlmCalls = config.maxLlmCalls(),
+      customMetadata = config.customMetadata().takeIf { it.isNotEmpty() },
+      live =
+        KtLiveRunConfig(
+          responseModalities = responseModalities,
+          speechConfig = config.speechConfig()?.let { SpeechConfigCodec.fromJava(it) },
+          outputAudioTranscription =
+            output?.let { AudioTranscriptionConfigCodec.fromJava(it) }
+              ?: if (textRequested) null else KtAudioTranscriptionConfig(),
+          inputAudioTranscription =
+            input?.let { AudioTranscriptionConfigCodec.fromJava(it) }
+              ?: KtAudioTranscriptionConfig(),
+        ),
+    )
+  }
+
+  /** Adds the Java settings that neither a turn-based nor a live run can honor. */
+  // Reads the deprecated groupFunctionResponsesInHistoryOverride to reject it.
+  @Suppress("deprecation")
+  private fun MutableList<String>.addUnsupportedByEveryRun(config: JavaRunConfig) {
+    if (config.toolExecutionMode() != JavaRunConfig.ToolExecutionMode.NONE) {
+      add("toolExecutionMode")
+    }
+    if (config.avatarConfig() != null) add("avatarConfig")
+    if (config.groupFunctionResponsesInHistoryOverride().isPresent) {
+      add("groupFunctionResponsesInHistoryOverride")
+    }
   }
 }
