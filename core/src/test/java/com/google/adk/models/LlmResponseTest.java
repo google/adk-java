@@ -145,6 +145,26 @@ public final class LlmResponseTest {
   }
 
   @Test
+  public void testSerializationAndDeserialization_withCacheMetadata()
+      throws JsonProcessingException {
+    CacheMetadata cacheMetadata =
+        CacheMetadata.builder().fingerprint("abc123").contentsCount(2).build();
+    LlmResponse originalResponse =
+        LlmResponse.builder()
+            .content(createSampleContent("hello"))
+            .cacheMetadata(cacheMetadata)
+            .build();
+
+    String json = originalResponse.toJson();
+
+    assertThat(objectMapper.readTree(json).get("cacheMetadata").get("fingerprint").asText())
+        .isEqualTo("abc123");
+    LlmResponse deserializedResponse = LlmResponse.fromJsonString(json, LlmResponse.class);
+    assertThat(deserializedResponse).isEqualTo(originalResponse);
+    assertThat(deserializedResponse.cacheMetadata()).hasValue(cacheMetadata);
+  }
+
+  @Test
   public void testSerializationAndDeserialization_withTranscriptions()
       throws JsonProcessingException {
     Transcription inputTranscription =

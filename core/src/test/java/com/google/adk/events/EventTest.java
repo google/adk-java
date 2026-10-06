@@ -18,6 +18,7 @@ package com.google.adk.events;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.models.CacheMetadata;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -281,6 +282,32 @@ public final class EventTest {
     assertThat(deserialized).isEqualTo(event);
     assertThat(deserialized.inputTranscription()).hasValue(inputTranscription);
     assertThat(deserialized.outputTranscription()).hasValue(outputTranscription);
+  }
+
+  @Test
+  public void event_cacheMetadata_survivesJsonAndToBuilder() {
+    CacheMetadata cacheMetadata =
+        CacheMetadata.builder()
+            .fingerprint("abc123")
+            .contentsCount(2)
+            .cacheName("cachedContents/42")
+            .expireTime(Instant.ofEpochSecond(2_000_000_000L, 500_000_000))
+            .invocationsUsed(3)
+            .createdAt(Instant.ofEpochSecond(1_999_998_200L))
+            .build();
+    Event event = EVENT.toBuilder().cacheMetadata(cacheMetadata).build();
+
+    assertThat(event.cacheMetadata()).hasValue(cacheMetadata);
+    assertThat(event.toBuilder().build()).isEqualTo(event);
+    assertThat(Event.fromJson(event.toJson()).cacheMetadata()).hasValue(cacheMetadata);
+    assertThat(event).isNotEqualTo(EVENT);
+    assertThat(event.hashCode()).isNotEqualTo(EVENT.hashCode());
+  }
+
+  @Test
+  public void event_cacheMetadata_emptyByDefault() {
+    assertThat(EVENT.cacheMetadata()).isEmpty();
+    assertThat(EVENT.toJson()).doesNotContain("cacheMetadata");
   }
 
   @Test
