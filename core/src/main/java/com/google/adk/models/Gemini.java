@@ -273,11 +273,26 @@ public class Gemini extends BaseLlm {
 
   @Override
   public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-    llmRequest =
+    LlmRequest preparedRequest =
         GeminiUtil.prepareGenenerateContentRequest(
             llmRequest, !apiClient.vertexAI(), /* stripThoughts= */ false);
+    String effectiveModelName = preparedRequest.model().orElse(model());
+    if (preparedRequest.cacheConfig().isEmpty()) {
+      return sendRequest(effectiveModelName, preparedRequest, stream, /* cacheMetadata= */ null);
+    }
+    return new GeminiContextCacheManager(apiClient, effectiveModelName)
+        .handleContextCaching(preparedRequest)
+        .flatMapPublisher(
+            cached -> sendRequest(effectiveModelName, cached.request(), stream, cached.metadata()));
+  }
+
+  /** Sends the request, and puts {@code cacheMetadata}, if any, on the final response. */
+  private Flowable<LlmResponse> sendRequest(
+      String effectiveModelName,
+      LlmRequest llmRequest,
+      boolean stream,
+      @Nullable CacheMetadata cacheMetadata) {
     GenerateContentConfig config = llmRequest.config().orElse(null);
-    String effectiveModelName = llmRequest.model().orElse(model());
 
     logger.trace("Request Contents: {}", llmRequest.contents());
     logger.trace("Request Config: {}", config);
@@ -290,16 +305,27 @@ public class Gemini extends BaseLlm {
       return Flowable.defer(
           () ->
               streamResumingPauses(
-                  effectiveModelName, new GeminiContinuation(contents, config), streamFuture));
+                  effectiveModelName,
+                  new GeminiContinuation(contents, config),
+                  streamFuture,
+                  cacheMetadata));
     } else {
       logger.debug("Sending generateContent request to model {}", effectiveModelName);
       CompletableFuture<GenerateContentResponse> responseFuture =
           apiClient.async.models.generateContent(effectiveModelName, contents, config);
       return Flowable.defer(
-          () ->
-              generateResumingPauses(
-                  effectiveModelName, new GeminiContinuation(contents, config), responseFuture));
+              () ->
+                  generateResumingPauses(
+                      effectiveModelName, new GeminiContinuation(contents, config), responseFuture))
+          .map(response -> withCacheMetadata(response, cacheMetadata));
     }
+  }
+
+  private static LlmResponse withCacheMetadata(
+      LlmResponse response, @Nullable CacheMetadata cacheMetadata) {
+    return cacheMetadata == null
+        ? response
+        : response.toBuilder().cacheMetadata(cacheMetadata).build();
   }
 
   @VisibleForTesting
@@ -353,7 +379,8 @@ public class Gemini extends BaseLlm {
   private Flowable<LlmResponse> streamResumingPauses(
       String modelName,
       GeminiContinuation continuation,
-      CompletableFuture<ResponseStream<GenerateContentResponse>> firstStream) {
+      CompletableFuture<ResponseStream<GenerateContentResponse>> firstStream,
+      @Nullable CacheMetadata cacheMetadata) {
     Deque<CompletableFuture<ResponseStream<GenerateContentResponse>>> streams = new ArrayDeque<>();
     streams.add(firstStream);
     StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
@@ -362,7 +389,11 @@ public class Gemini extends BaseLlm {
         .concatMap(aggregator::processRawResponse)
         .concatWith(
             Flowable.defer(
-                () -> aggregator.processFinalResponse().map(continuation::withSummedUsage)));
+                () ->
+                    aggregator
+                        .processFinalResponse()
+                        .map(continuation::withSummedUsage)
+                        .map(response -> withCacheMetadata(response, cacheMetadata))));
   }
 
   /**
