@@ -22,6 +22,7 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -116,7 +117,8 @@ public final class SlidingWindowEventCompactor implements EventCompactor {
     int targetSize = -1;
 
     // Scan the list of events backward so that timestamp are in decreasing fashion.
-    ListIterator<Event> iter = session.events().listIterator(session.events().size());
+    ImmutableList<Event> events = session.immutableEvents();
+    ListIterator<Event> iter = events.listIterator(events.size());
     while (iter.hasPrevious()) {
       Event event = iter.previous();
       String invocationId = event.invocationId();

@@ -20,6 +20,9 @@ import static com.google.common.base.StandardSystemProperty.JAVA_VERSION;
 
 import com.google.adk.Version;
 import com.google.adk.internal.http.HttpClientFactory;
+import com.google.adk.models.GeminiContinuation.ResumeRequest;
+import com.google.adk.models.GeminiContinuation.StreamedOutput;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -38,11 +41,14 @@ import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import io.reactivex.rxjava3.core.Flowable;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import okhttp3.OkHttpClient;
@@ -276,29 +282,119 @@ public class Gemini extends BaseLlm {
     logger.trace("Request Contents: {}", llmRequest.contents());
     logger.trace("Request Config: {}", config);
 
+    List<Content> contents = llmRequest.contents();
     if (stream) {
       logger.debug("Sending streaming generateContent request to model {}", effectiveModelName);
       CompletableFuture<ResponseStream<GenerateContentResponse>> streamFuture =
-          apiClient.async.models.generateContentStream(
-              effectiveModelName, llmRequest.contents(), config);
-
+          apiClient.async.models.generateContentStream(effectiveModelName, contents, config);
       return Flowable.defer(
           () ->
-              processRawResponses(
-                  Flowable.fromFuture(streamFuture).flatMapIterable(iterable -> iterable)));
+              streamResumingPauses(
+                  effectiveModelName, new GeminiContinuation(contents, config), streamFuture));
     } else {
       logger.debug("Sending generateContent request to model {}", effectiveModelName);
-      return Flowable.fromFuture(
-          apiClient
-              .async
-              .models
-              .generateContent(effectiveModelName, llmRequest.contents(), config)
-              .thenApplyAsync(LlmResponse::create));
+      CompletableFuture<GenerateContentResponse> responseFuture =
+          apiClient.async.models.generateContent(effectiveModelName, contents, config);
+      return Flowable.defer(
+          () ->
+              generateResumingPauses(
+                  effectiveModelName, new GeminiContinuation(contents, config), responseFuture));
     }
   }
 
+  @VisibleForTesting
   static Flowable<LlmResponse> processRawResponses(Flowable<GenerateContentResponse> rawResponses) {
     return Flowable.defer(() -> new StreamingResponseAggregator().process(rawResponses));
+  }
+
+  /**
+   * Returns the final response of a generation, sending another request each time the model pauses.
+   * Repeats instead of recursing, so a generation resumed many times keeps a flat stack.
+   */
+  private Flowable<LlmResponse> generateResumingPauses(
+      String modelName,
+      GeminiContinuation continuation,
+      CompletableFuture<GenerateContentResponse> firstResponse) {
+    Deque<CompletableFuture<GenerateContentResponse>> responses = new ArrayDeque<>();
+    responses.add(firstResponse);
+    return Flowable.defer(() -> Flowable.fromFuture(responses.remove()))
+        .mapOptional(response -> completeOrResume(modelName, continuation, response, responses))
+        .repeatUntil(responses::isEmpty);
+  }
+
+  /**
+   * Returns the final response of the generation, or empty after queueing the request to resume it.
+   */
+  private Optional<LlmResponse> completeOrResume(
+      String modelName,
+      GeminiContinuation continuation,
+      GenerateContentResponse response,
+      Deque<CompletableFuture<GenerateContentResponse>> responses) {
+    LlmResponse llmResponse = LlmResponse.create(response);
+    Optional<ResumeRequest> next =
+        continuation.advance(
+            GeminiContinuation.resumeToken(response),
+            llmResponse.content().flatMap(Content::parts).orElse(ImmutableList.of()),
+            llmResponse.usageMetadata().orElse(null));
+    if (next.isEmpty()) {
+      return Optional.of(continuation.complete(llmResponse));
+    }
+    responses.add(
+        apiClient.async.models.generateContent(
+            modelName, next.get().contents(), next.get().config()));
+    return Optional.empty();
+  }
+
+  /**
+   * Streams a generation, sending another request each time the model pauses, and sums the usage of
+   * all requests on the final response. Repeats instead of recursing, so a generation resumed many
+   * times keeps a flat stack.
+   */
+  private Flowable<LlmResponse> streamResumingPauses(
+      String modelName,
+      GeminiContinuation continuation,
+      CompletableFuture<ResponseStream<GenerateContentResponse>> firstStream) {
+    Deque<CompletableFuture<ResponseStream<GenerateContentResponse>>> streams = new ArrayDeque<>();
+    streams.add(firstStream);
+    StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+    return Flowable.defer(() -> streamRequest(modelName, continuation, streams))
+        .repeatUntil(streams::isEmpty)
+        .concatMap(aggregator::processRawResponse)
+        .concatWith(
+            Flowable.defer(
+                () -> aggregator.processFinalResponse().map(continuation::withSummedUsage)));
+  }
+
+  /**
+   * Streams the chunks of one request, then queues the request that resumes the generation, if any.
+   */
+  private Flowable<GenerateContentResponse> streamRequest(
+      String modelName,
+      GeminiContinuation continuation,
+      Deque<CompletableFuture<ResponseStream<GenerateContentResponse>>> streams) {
+    StreamedOutput output = new StreamedOutput(continuation);
+    return Flowable.fromFuture(streams.remove())
+        .flatMapIterable(stream -> stream)
+        .mapOptional(output::record)
+        .doOnComplete(() -> queueResume(modelName, continuation, output, streams));
+  }
+
+  /**
+   * Records {@code output} in {@code continuation} and queues the request that resumes the
+   * generation, if any.
+   */
+  private void queueResume(
+      String modelName,
+      GeminiContinuation continuation,
+      StreamedOutput output,
+      Deque<CompletableFuture<ResponseStream<GenerateContentResponse>>> streams) {
+    continuation
+        .advance(output.token(), output.parts(), output.usage())
+        .ifPresent(
+            next ->
+                streams.add(
+                    apiClient.async.models.generateContentStream(
+                        modelName, next.contents(), next.config())));
   }
 
   @Override
@@ -326,7 +422,7 @@ public class Gemini extends BaseLlm {
     return apiClient.async.live.connect(modelName, config).thenApply(GenAiLiveTransport::new);
   }
 
-  private static final class StreamingResponseAggregator {
+  static final class StreamingResponseAggregator {
     private final List<Part> accumulatedSequence = new ArrayList<>();
     private final StringBuilder currentTextBuffer = new StringBuilder();
     // Always reassigned in accumulateParts() before it is read; the initializer is never observed.
@@ -337,7 +433,7 @@ public class Gemini extends BaseLlm {
      * and nothing else worth keeping. Compared by rebuilding rather than against a single literal,
      * so a terminator that also carries an explicit {@code thought=false} is still recognised.
      */
-    private static boolean isStreamTerminator(Part part) {
+    static boolean isStreamTerminator(Part part) {
       if (!part.text().map(String::isEmpty).orElse(false)) {
         return false;
       }

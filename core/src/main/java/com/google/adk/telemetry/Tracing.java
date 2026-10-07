@@ -30,6 +30,7 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import com.google.genai.types.ThinkingConfig;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.Span;
@@ -110,6 +111,8 @@ public class Tracing {
       AttributeKey.doubleKey("gen_ai.request.top_p");
   private static final AttributeKey<Long> GEN_AI_REQUEST_MAX_TOKENS =
       AttributeKey.longKey("gen_ai.request.max_tokens");
+  private static final AttributeKey<String> GEN_AI_REQUEST_REASONING_LEVEL =
+      AttributeKey.stringKey("gen_ai.request.reasoning.level");
   private static final AttributeKey<Long> GEN_AI_USAGE_INPUT_TOKENS =
       AttributeKey.longKey("gen_ai.usage.input_tokens");
   private static final AttributeKey<Long> GEN_AI_USAGE_OUTPUT_TOKENS =
@@ -118,6 +121,8 @@ public class Tracing {
       AttributeKey.longKey("gen_ai.usage.cache_read.input_tokens");
   private static final AttributeKey<Long> GEN_AI_USAGE_REASONING_OUTPUT_TOKENS =
       AttributeKey.longKey("gen_ai.usage.reasoning.output_tokens");
+  private static final AttributeKey<Long> GEN_AI_USAGE_REASONING_TOKENS_LIMIT =
+      AttributeKey.longKey("gen_ai.usage.experimental.reasoning_tokens_limit");
 
   private static final AttributeKey<String> ADK_TOOL_CALL_ARGS =
       AttributeKey.stringKey("gcp.vertex.agent.tool_call_args");
@@ -331,6 +336,19 @@ public class Tracing {
                   .ifPresent(
                       maxTokens ->
                           span.setAttribute(GEN_AI_REQUEST_MAX_TOKENS, maxTokens.longValue()));
+              config
+                  .thinkingConfig()
+                  .flatMap(ThinkingConfig::thinkingBudget)
+                  .ifPresent(
+                      budget ->
+                          span.setAttribute(
+                              GEN_AI_USAGE_REASONING_TOKENS_LIMIT, budget.longValue()));
+              // OTel wants the exact string sent to the provider, which toString() returns.
+              config
+                  .thinkingConfig()
+                  .flatMap(ThinkingConfig::thinkingLevel)
+                  .ifPresent(
+                      level -> span.setAttribute(GEN_AI_REQUEST_REASONING_LEVEL, level.toString()));
             });
     llmResponse
         .usageMetadata()

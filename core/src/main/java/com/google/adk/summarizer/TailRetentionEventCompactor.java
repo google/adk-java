@@ -72,7 +72,7 @@ public final class TailRetentionEventCompactor implements EventCompactor {
     checkArgument(summarizer != null, "Missing BaseEventSummarizer for event compaction");
     logger.debug("Running tail retention event compaction for session {}", session.id());
 
-    return Maybe.just(session.events())
+    return Maybe.just(session.immutableEvents())
         .flatMap(this::getCompactionEvents)
         .flatMap(summarizer::summarizeEvents)
         .flatMapSingle(e -> sessionService.appendEvent(session, e))

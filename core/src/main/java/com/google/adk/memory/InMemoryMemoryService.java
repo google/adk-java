@@ -66,7 +66,7 @@ public final class InMemoryMemoryService implements BaseMemoryService {
           Map<String, List<Event>> userSessions =
               sessionEvents.computeIfAbsent(key, k -> new ConcurrentHashMap<>());
           ImmutableList<Event> nonEmptyEvents =
-              session.events().stream()
+              session.immutableEvents().stream()
                   .filter(
                       event ->
                           event

@@ -16,6 +16,8 @@
 
 package com.google.adk.sessions;
 
+import static com.google.common.base.Preconditions.checkArgument;
+
 import com.google.auto.value.AutoValue;
 import java.time.Instant;
 import java.util.Optional;
@@ -36,7 +38,22 @@ public abstract class GetSessionConfig {
 
     public abstract Builder afterTimestamp(Instant afterTimestamp);
 
-    public abstract GetSessionConfig build();
+    abstract GetSessionConfig autoBuild();
+
+    /**
+     * Builds the config.
+     *
+     * @throws IllegalArgumentException if {@code numRecentEvents} is negative
+     */
+    public GetSessionConfig build() {
+      GetSessionConfig config = autoBuild();
+      config
+          .numRecentEvents()
+          .ifPresent(
+              num ->
+                  checkArgument(num >= 0, "numRecentEvents must be greater than or equal to 0."));
+      return config;
+    }
   }
 
   public static Builder builder() {

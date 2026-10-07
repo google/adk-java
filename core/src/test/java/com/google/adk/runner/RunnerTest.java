@@ -16,8 +16,18 @@
 
 package com.google.adk.runner;
 
+import static com.google.adk.testing.ResumabilityTestUtils.approveConfirmation;
+import static com.google.adk.testing.ResumabilityTestUtils.confirmingEchoFunctionTool;
+import static com.google.adk.testing.ResumabilityTestUtils.functionResponseContent;
+import static com.google.adk.testing.ResumabilityTestUtils.newSession;
+import static com.google.adk.testing.ResumabilityTestUtils.reloadSession;
+import static com.google.adk.testing.ResumabilityTestUtils.runTurn;
+import static com.google.adk.testing.ResumabilityTestUtils.runTurnAskingConfirmation;
+import static com.google.adk.testing.ResumabilityTestUtils.textAgent;
+import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
+import static com.google.adk.testing.TestUtils.createSubAgent;
 import static com.google.adk.testing.TestUtils.createTestAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
@@ -45,6 +55,7 @@ import com.google.adk.agents.Callbacks.AfterModelCallback;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
@@ -65,6 +76,7 @@ import com.google.adk.sessions.Session;
 import com.google.adk.sessions.SessionKey;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.telemetry.Tracing;
+import com.google.adk.testing.RecordingScheduler;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.testing.TestUtils.EchoTool;
@@ -75,6 +87,7 @@ import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import com.google.common.truth.Correspondence;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
@@ -91,6 +104,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Instant;
@@ -938,11 +952,11 @@ public final class RunnerTest {
                   .firstOrError()
                   .doOnSuccess(
                       event -> {
-                        s.events().add(e);
+                        s.addEvent(e);
                         if (e.actions() != null && e.actions().stateDelta() != null) {
                           s.state().putAll(e.actions().stateDelta());
                         }
-                        List<Event> newEvents = new ArrayList<>(s.events());
+                        List<Event> newEvents = new ArrayList<>(s.immutableEvents());
                         Session updated =
                             Session.builder(s.id())
                                 .appName(s.appName())
@@ -1086,6 +1100,109 @@ public final class RunnerTest {
             .flatMap(c -> c.parts().stream().flatMap(List::stream))
             .anyMatch(part -> part.functionResponse().isPresent());
     assertThat(foundToolResponse).isTrue();
+  }
+
+  /**
+   * Ensures a slow appendEvent does not let a transfer target build its request from a stale
+   * session, in either direction: the sub-agent must see the root's transfer, and after the
+   * transfer back the root must see its own transfer response.
+   */
+  @Test
+  public void runAsync_slowAppendEvent_doesNotCauseStaleSessionInTransferTarget() throws Exception {
+    TestLlm subTestLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "call_sub", "transfer_to_agent", ImmutableMap.of("agent_name", "test agent")));
+    LlmAgent subAgent = createTestAgentBuilder(subTestLlm).name("sub_agent").build();
+
+    TestLlm rootTestLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "call_root", "transfer_to_agent", ImmutableMap.of("agent_name", "sub_agent")),
+            createTextLlmResponse("done"));
+
+    LlmAgent rootAgent = createTestAgentBuilder(rootTestLlm).subAgents(subAgent).build();
+
+    Runner runnerForRace =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(rootAgent).build())
+            .sessionService(new AppendDelayingSessionService(new InMemorySessionService(), 50))
+            .build();
+    Session raceSession =
+        runnerForRace.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        runnerForRace
+            .runAsync("user", raceSession.id(), createContent("start"))
+            .toList()
+            .blockingGet();
+
+    // The root's transfer reaches the sub-agent as relayed text, since another agent authored it.
+    ImmutableList<LlmRequest> subRequests = subTestLlm.getRequests();
+    assertThat(subRequests).hasSize(1);
+    assertThat(
+            subRequests.get(0).contents().stream()
+                .flatMap(c -> c.parts().stream().flatMap(List::stream))
+                .flatMap(part -> part.text().stream())
+                .collect(toImmutableList()))
+        .comparingElementsUsing(
+            Correspondence.<String, String>from(String::startsWith, "starts with"))
+        .contains("[test agent] `transfer_to_agent` tool returned result:");
+
+    // After the transfer back, the root must see its own transfer response.
+    ImmutableList<LlmRequest> rootRequests = rootTestLlm.getRequests();
+    assertThat(rootRequests).hasSize(2);
+    assertThat(
+            rootRequests.get(1).contents().stream()
+                .flatMap(c -> c.parts().stream().flatMap(List::stream))
+                .flatMap(part -> part.functionResponse().flatMap(FunctionResponse::id).stream())
+                .collect(toImmutableList()))
+        .contains("call_root");
+    assertThat(Iterables.getLast(rootRequests.get(1).contents()).role()).hasValue("user");
+  }
+
+  /**
+   * With a slow appendEvent, the append's thread releases the transfer target; the target's {@code
+   * invoke_agent} span must still be a child of the transferring agent's, not start a new trace.
+   */
+  @Test
+  public void runAsync_slowAppendEvent_transferTargetSpanIsChildOfParentAgentSpan() {
+    LlmAgent subAgent =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub response")))
+            .name("sub_agent")
+            .build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "call_root",
+                        "transfer_to_agent",
+                        ImmutableMap.of("agent_name", "sub_agent"))))
+            .subAgents(subAgent)
+            .build();
+    Runner runnerForRace =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(rootAgent).build())
+            .sessionService(new AppendDelayingSessionService(new InMemorySessionService(), 50))
+            .build();
+    Session raceSession =
+        runnerForRace.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        runnerForRace
+            .runAsync("user", raceSession.id(), createContent("start"))
+            .toList()
+            .blockingGet();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    Optional<SpanData> parentSpan =
+        spans.stream().filter(s -> s.getName().equals("invoke_agent test agent")).findFirst();
+    Optional<SpanData> targetSpan =
+        spans.stream().filter(s -> s.getName().equals("invoke_agent sub_agent")).findFirst();
+    assertThat(parentSpan).isPresent();
+    assertThat(targetSpan).isPresent();
+    assertThat(targetSpan.get().getParentSpanContext().getSpanId())
+        .isEqualTo(parentSpan.get().getSpanContext().getSpanId());
   }
 
   /**
@@ -1841,6 +1958,116 @@ public final class RunnerTest {
         .inOrder();
   }
 
+  @Test
+  public void runAsync_parallelAgent_usesRunnerScheduler() {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    Runner schedulerRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(parallelAgentWithTwoSubAgents()).build())
+            .scheduler(recordingScheduler)
+            .build();
+    Session schedulerSession =
+        schedulerRunner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        schedulerRunner
+            .runAsync("user", schedulerSession.id(), createContent("hi"))
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(2);
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(2);
+  }
+
+  @Test
+  public void builder_scheduler_null_usesDefaultScheduler() {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    Runner schedulerRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(parallelAgentWithTwoSubAgents()).build())
+            .scheduler(recordingScheduler)
+            .scheduler(null)
+            .build();
+    Session schedulerSession =
+        schedulerRunner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        schedulerRunner
+            .runAsync("user", schedulerSession.id(), createContent("hi"))
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(2);
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(0);
+  }
+
+  @Test
+  public void runLive_usesRunnerScheduler() throws Exception {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    Runner schedulerRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .scheduler(recordingScheduler)
+            .build();
+    Session liveSession =
+        schedulerRunner.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        schedulerRunner.runLive(liveSession, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+    assertThat(liveRequestTexts(testLlm)).contains("from user");
+    // The hop that starts the live send loop went through the runner's scheduler.
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(1);
+  }
+
+  @Test
+  public void runLive_agentExecutorTakesPrecedenceOverRunnerScheduler() throws Exception {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    TestLlm liveTestLlm = createTestLlm(createLlmResponse(createContent("from llm")));
+    LlmAgent agentWithExecutor =
+        createTestAgentBuilder(liveTestLlm).executor(Runnable::run).build();
+    Runner schedulerRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agentWithExecutor).build())
+            .scheduler(recordingScheduler)
+            .build();
+    Session liveSession =
+        schedulerRunner.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        schedulerRunner.runLive(liveSession, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+    assertThat(liveRequestTexts(liveTestLlm)).contains("from user");
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(0);
+  }
+
+  private static ParallelAgent parallelAgentWithTwoSubAgents() {
+    return ParallelAgent.builder()
+        .name("parallel")
+        .subAgents(createSubAgent("a", createEvent("ea")), createSubAgent("b", createEvent("eb")))
+        .build();
+  }
+
+  /** Returns the text of each content request that the live connection of {@code llm} received. */
+  private static ImmutableList<String> liveRequestTexts(TestLlm llm) {
+    return llm.getLiveRequestHistory().stream()
+        .map(request -> request.content().map(Content::text))
+        .flatMap(Optional::stream)
+        .collect(toImmutableList());
+  }
+
   private Content createContent(String text) {
     return Content.builder().parts(Part.builder().text(text).build()).build();
   }
@@ -2356,6 +2583,205 @@ public final class RunnerTest {
             "child_agent: FunctionResponse(name=echoTool, response={message=hello})",
             "child_agent: Response after user confirmed.")
         .inOrder();
+  }
+
+  // The approval's new invocation must run the child on its parallel branch, where its request is.
+  @Test
+  public void runAsync_withToolConfirmation_inParallelAgentSubAgent_callsOriginalFunction() {
+    TestLlm childTestLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("Response after observing tool needs confirmation."),
+            createTextLlmResponse("Response after user confirmed."));
+    LlmAgent childAgent =
+        createTestAgentBuilder(childTestLlm)
+            .name("child_agent")
+            .tools(confirmingEchoFunctionTool())
+            .build();
+    ParallelAgent rootAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(ImmutableList.of(childAgent, textAgent("sibling_agent", "Sibling done.")))
+            .build();
+
+    ImmutableList<Event> eventsAfterConfirmation = approveToolConfirmation(rootAgent, "from user");
+
+    assertThat(simplifyEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "child_agent: FunctionResponse(name=echoTool, response={message=hello})",
+            "child_agent: Response after user confirmed.")
+        .inOrder();
+    assertThat(eventsAfterConfirmation.stream().map(event -> event.branch().orElse(null)))
+        .containsExactly("parallel_agent.child_agent", "parallel_agent.child_agent");
+    // As on the first turn, the sibling branch stays out of the child's prompt.
+    assertThat(childTestLlm.getLastRequest().contents().stream().map(TestUtils::formatContent))
+        .containsExactly(
+            "from user",
+            "FunctionCall(name=echoTool, args={message=hello})",
+            "FunctionResponse(name=echoTool, response={message=hello})")
+        .inOrder();
+  }
+
+  // A SequentialAgent between the ParallelAgent and the child makes the restored branch deeper.
+  @Test
+  public void runAsync_withToolConfirmation_inNestedParallelBranch_callsOriginalFunction() {
+    LlmAgent childAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+                    createTextLlmResponse("Response after observing tool needs confirmation."),
+                    createTextLlmResponse("Response after user confirmed.")))
+            .name("child_agent")
+            .tools(confirmingEchoFunctionTool())
+            .build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder()
+            .name("sequential_agent")
+            .subAgents(ImmutableList.of(childAgent))
+            .build();
+    ParallelAgent rootAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(
+                ImmutableList.of(sequentialAgent, textAgent("sibling_agent", "Sibling done.")))
+            .build();
+
+    ImmutableList<Event> eventsAfterConfirmation = approveToolConfirmation(rootAgent, "from user");
+
+    assertThat(simplifyEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "child_agent: FunctionResponse(name=echoTool, response={message=hello})",
+            "child_agent: Response after user confirmed.")
+        .inOrder();
+    assertThat(eventsAfterConfirmation.stream().map(event -> event.branch().orElse(null)))
+        .containsExactly(
+            "parallel_agent.sequential_agent.child_agent",
+            "parallel_agent.sequential_agent.child_agent");
+  }
+
+  // The approval must restore the branch of the call it answers, not the agent's latest branch.
+  @Test
+  public void runAsync_withToolConfirmation_afterAgentRanOnAnotherBranch_callsOriginalFunction() {
+    LlmAgent agentB =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+                    createTextLlmResponse("Response after observing tool needs confirmation."),
+                    createTextLlmResponse("Response to the second message."),
+                    createTextLlmResponse("Response after user confirmed.")))
+            .name("agent_b")
+            .tools(confirmingEchoFunctionTool())
+            .build();
+    LlmAgent agentA =
+        createTestAgentBuilder(createTestLlm(createTransferToAgentResponse("agent_b")))
+            .name("agent_a")
+            .build();
+    LlmAgent leadAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createTransferToAgentResponse("agent_a"),
+                    createTransferToAgentResponse("agent_b")))
+            .name("lead_agent")
+            .subAgents(ImmutableList.of(agentA, agentB))
+            .build();
+    ParallelAgent rootAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(
+                ImmutableList.of(
+                    leadAgent, textAgent("sibling_agent", "Sibling done.", "Sibling done again.")))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(rootAgent).build()).build();
+    Session session = newSession(runner);
+    // agent_b asks for confirmation after a transfer from its peer agent_a.
+    FunctionCall askUserConfirmationFunctionCall =
+        runTurnAskingConfirmation(runner, session, "from user");
+    // lead_agent then transfers to agent_b directly, which runs it on a shorter branch.
+    var unused = runTurn(runner, session, "second message");
+
+    ImmutableList<Event> eventsAfterConfirmation =
+        approveConfirmation(runner, session, askUserConfirmationFunctionCall);
+
+    assertThat(simplifyEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "agent_b: FunctionResponse(name=echoTool, response={message=hello})",
+            "agent_b: Response after user confirmed.")
+        .inOrder();
+    assertThat(eventsAfterConfirmation.stream().map(event -> event.branch().orElse(null)))
+        .containsExactly(
+            "parallel_agent.lead_agent.agent_a.agent_b",
+            "parallel_agent.lead_agent.agent_a.agent_b");
+  }
+
+  private static LlmResponse createTransferToAgentResponse(String agentName) {
+    return createLlmResponse(
+        Content.fromParts(
+            Part.fromFunctionCall("transfer_to_agent", ImmutableMap.of("agent_name", agentName))));
+  }
+
+  // runLive restores the child's branch too, so an approval already in the session is honored.
+  @Test
+  public void runLive_withToolConfirmationApproved_inParallelAgentSubAgent_callsOriginalFunction()
+      throws Exception {
+    LlmAgent childAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+                    createTextLlmResponse("Response after observing tool needs confirmation.")))
+            .name("child_agent")
+            .tools(confirmingEchoFunctionTool())
+            .build();
+    ParallelAgent rootAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(ImmutableList.of(childAgent, textAgent("sibling_agent", "Sibling done.")))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(rootAgent).build()).build();
+    Session session = newSession(runner);
+    FunctionCall askUserConfirmationFunctionCall =
+        runTurnAskingConfirmation(runner, session, "from user");
+    Session updatedSession = reloadSession(runner, session);
+    var unused =
+        runner
+            .sessionService()
+            .appendEvent(
+                updatedSession,
+                Event.builder()
+                    .id(Event.generateEventId())
+                    .invocationId(InvocationContext.newInvocationContextId())
+                    .author("user")
+                    .content(
+                        functionResponseContent(
+                            askUserConfirmationFunctionCall.id().orElseThrow(),
+                            askUserConfirmationFunctionCall.name().orElseThrow(),
+                            ImmutableMap.of("confirmed", true)))
+                    .build())
+            .blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(updatedSession, liveRequestQueue, RunConfig.builder().build()).test();
+    liveRequestQueue.close();
+    testSubscriber.await();
+
+    Event firstEvent = testSubscriber.values().get(0);
+    assertThat(simplifyEvents(ImmutableList.of(firstEvent)))
+        .containsExactly("child_agent: FunctionResponse(name=echoTool, response={message=hello})");
+    assertThat(firstEvent.branch()).hasValue("parallel_agent.child_agent");
+  }
+
+  /** Approves, on a default runner, the confirmation a first turn of {@code text} asks for. */
+  private static ImmutableList<Event> approveToolConfirmation(BaseAgent rootAgent, String text) {
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(rootAgent).build()).build();
+    Session session = newSession(runner);
+    return approveConfirmation(runner, session, runTurnAskingConfirmation(runner, session, text));
   }
 
   // Gating: with resumability OFF (default) the flow does NOT pause on a long-running call; it

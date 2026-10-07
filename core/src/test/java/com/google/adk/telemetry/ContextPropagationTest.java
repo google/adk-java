@@ -44,6 +44,7 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import com.google.genai.types.ThinkingConfig;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.trace.Span;
@@ -531,6 +532,69 @@ public class ContextPropagationTest {
     Attributes attrs = spanData.getAttributes();
     assertEquals(8L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.input_tokens")));
     assertEquals(20L, (long) attrs.get(AttributeKey.longKey("gen_ai.usage.output_tokens")));
+  }
+
+  @Test
+  public void testTraceCallLlm_withThinkingBudget() {
+    Span span = tracer.spanBuilder("test-thinking-budget").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      LlmRequest llmRequest =
+          LlmRequest.builder()
+              .model("gemini-pro")
+              .contents(ImmutableList.of(Content.fromParts(Part.fromText("hello"))))
+              .config(
+                  GenerateContentConfig.builder()
+                      .thinkingConfig(ThinkingConfig.builder().thinkingBudget(2048).build())
+                      .build())
+              .build();
+      Tracing.traceCallLlm(
+          span,
+          buildInvocationContext(),
+          "event-1",
+          llmRequest,
+          LlmResponse.builder().build(),
+          null);
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    Attributes attrs = spans.get(0).getAttributes();
+    assertThat(attrs.get(AttributeKey.longKey("gen_ai.usage.experimental.reasoning_tokens_limit")))
+        .isEqualTo(2048L);
+    assertThat(attrs.get(AttributeKey.stringKey("gen_ai.request.reasoning.level"))).isNull();
+  }
+
+  @Test
+  public void testTraceCallLlm_withThinkingLevel_recordsValueSentToProvider() {
+    Span span = tracer.spanBuilder("test-thinking-level").startSpan();
+    try (Scope scope = span.makeCurrent()) {
+      LlmRequest llmRequest =
+          LlmRequest.builder()
+              .model("gemini-pro")
+              .contents(ImmutableList.of(Content.fromParts(Part.fromText("hello"))))
+              .config(
+                  GenerateContentConfig.builder()
+                      .thinkingConfig(ThinkingConfig.builder().thinkingLevel("low").build())
+                      .build())
+              .build();
+      Tracing.traceCallLlm(
+          span,
+          buildInvocationContext(),
+          "event-1",
+          llmRequest,
+          LlmResponse.builder().build(),
+          null);
+    } finally {
+      span.end();
+    }
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    assertThat(spans).hasSize(1);
+    Attributes attrs = spans.get(0).getAttributes();
+    assertThat(attrs.get(AttributeKey.stringKey("gen_ai.request.reasoning.level")))
+        .isEqualTo("low");
+    assertThat(attrs.get(AttributeKey.longKey("gen_ai.usage.experimental.reasoning_tokens_limit")))
+        .isNull();
   }
 
   @Test

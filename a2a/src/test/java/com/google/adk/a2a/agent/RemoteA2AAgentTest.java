@@ -67,6 +67,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -151,6 +152,44 @@ public final class RemoteA2AAgentTest {
     // With streaming true, the agent should support streaming if the AgentCard supports streaming.
     RemoteA2AAgent agent = getAgentBuilder().streaming(true).build();
     assertThat(agent.isStreaming()).isTrue();
+  }
+
+  @Test
+  public void runAsync_withUnconvertiblePartInStream_skipsItAndCompletes() {
+    RemoteA2AAgent agent = createAgent();
+    mockStreamResponse(
+        consumer -> {
+          consumer.accept(createPartialEvent("Hello", true, false), agentCard);
+          TaskStatus working =
+              new TaskStatus(
+                  TaskState.WORKING,
+                  new Message.Builder()
+                      .role(Message.Role.AGENT)
+                      .parts(
+                          ImmutableList.of(
+                              new FilePart(new FileWithBytes("text/plain", "bad.txt", "!!!"))))
+                      .build(),
+                  null);
+          consumer.accept(
+              new TaskUpdateEvent(
+                  new Task.Builder().id("task-1").contextId("context-1").status(working).build(),
+                  new TaskStatusUpdateEvent.Builder()
+                      .taskId("task-1")
+                      .contextId("context-1")
+                      .status(working)
+                      .isFinal(false)
+                      .build()),
+              agentCard);
+          consumer.accept(createFinalEvent("Done"), agentCard);
+        });
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(3);
+    assertText(events.get(0), "Hello");
+    assertText(events.get(1), "Hello");
+    assertAggregated(events.get(1));
+    assertText(events.get(2), "Done");
   }
 
   @Test
@@ -1060,13 +1099,25 @@ public final class RemoteA2AAgentTest {
     return getAgentBuilder().streaming(true).build();
   }
 
-  /** An event whose file part carries invalid base64, so {@code PartConverter} cannot decode it. */
+  /**
+   * An event whose conversion throws. Conversion skips malformed peer parts and metadata, so the
+   * failure is injected through a parts list that throws when read.
+   */
   private ClientEvent unconvertibleEvent() {
-    return createTestEvent(
-        new FilePart(new FileWithBytes("text/plain", "bad.txt", "!!!")),
-        TaskState.WORKING,
-        true,
-        false);
+    List<io.a2a.spec.Part<?>> unreadableParts =
+        new AbstractList<>() {
+          @Override
+          public io.a2a.spec.Part<?> get(int index) {
+            throw new IllegalArgumentException("injected");
+          }
+
+          @Override
+          public int size() {
+            return 1;
+          }
+        };
+    return new MessageEvent(
+        new Message.Builder().role(Message.Role.AGENT).parts(unreadableParts).build());
   }
 
   @SuppressWarnings("unchecked") // cast for Mockito

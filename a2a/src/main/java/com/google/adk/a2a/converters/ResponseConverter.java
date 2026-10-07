@@ -16,8 +16,6 @@
 package com.google.adk.a2a.converters;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static com.google.common.collect.Streams.zip;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JavaType;
@@ -31,6 +29,7 @@ import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.FinishReason;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.GroundingMetadata;
 import com.google.genai.types.Part;
@@ -55,7 +54,12 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Utility for converting ADK events to A2A spec messages (and back). */
+/**
+ * Utility for converting ADK events to A2A spec messages (and back).
+ *
+ * <p>Unparseable ADK metadata and unconvertible parts from a remote agent are logged and dropped;
+ * the rest of the event is still converted.
+ */
 public final class ResponseConverter {
   private static final ObjectMapper objectMapper = new ObjectMapper();
   private static final Logger logger = LoggerFactory.getLogger(ResponseConverter.class);
@@ -69,16 +73,16 @@ public final class ResponseConverter {
   /**
    * Converts a A2A {@link ClientEvent} to an ADK {@link Event}, based on the event type. Returns an
    * empty optional if the event should be ignored (e.g. if the event is not a final update for
-   * TaskArtifactUpdateEvent or if the message is empty for TaskStatusUpdateEvent).
-   *
-   * <p>Unparseable ADK metadata is logged and dropped; the rest of the event is still converted.
+   * TaskArtifactUpdateEvent, if the message is empty for TaskStatusUpdateEvent, or if no part could
+   * be converted from a message or from the message of a status update that does not end the turn).
    *
    * @throws IllegalArgumentException if the event type is not supported.
    */
   public static Optional<Event> clientEventToEvent(
       ClientEvent event, InvocationContext invocationContext) {
     if (event instanceof MessageEvent messageEvent) {
-      return Optional.of(messageToEvent(messageEvent.getMessage(), invocationContext));
+      return Optional.of(messageToEvent(messageEvent.getMessage(), invocationContext))
+          .filter(ResponseConverter::hasParts);
     } else if (event instanceof TaskEvent taskEvent) {
       return Optional.of(taskToEvent(taskEvent.getTask(), invocationContext));
     } else if (event instanceof TaskUpdateEvent updateEvent) {
@@ -101,9 +105,10 @@ public final class ResponseConverter {
   }
 
   /**
-   * Converts a A2A {@link TaskUpdateEvent} to an ADK {@link Event}, if applicable. Returns null if
-   * the event is not a final update for TaskArtifactUpdateEvent or if the message is empty for
-   * TaskStatusUpdateEvent.
+   * Converts a A2A {@link TaskUpdateEvent} to an ADK {@link Event}, if applicable. Returns empty if
+   * the event is not a final update for TaskArtifactUpdateEvent, if the message is empty for
+   * TaskStatusUpdateEvent, or if no part could be converted from the message of a status update
+   * that does not end the turn.
    *
    * @throws IllegalArgumentException if the task update type is not supported.
    */
@@ -120,7 +125,7 @@ public final class ResponseConverter {
       }
 
       Event eventPart = artifactToEvent(artifactEvent.getArtifact(), context);
-      if (eventPart.content().flatMap(Content::parts).orElse(ImmutableList.of()).isEmpty()) {
+      if (!hasParts(eventPart)) {
         return Optional.empty();
       }
       eventPart.setPartial(isAppend || !isLastChunk);
@@ -148,7 +153,8 @@ public final class ResponseConverter {
                       return messageToFailedEvent(value, context);
                     }
                     return messageToEvent(value, context, PENDING_STATES.contains(taskState));
-                  });
+                  })
+              .filter(converted -> taskState == TaskState.FAILED || hasParts(converted));
 
       if (statusEvent.isFinal()
           || taskState == TaskState.INPUT_REQUIRED
@@ -176,10 +182,10 @@ public final class ResponseConverter {
   /** Converts an artifact to an ADK event. */
   public static Event artifactToEvent(Artifact artifact, InvocationContext invocationContext) {
     Event.Builder eventBuilder = remoteAgentEventBuilder(invocationContext);
-    ImmutableList<Part> genaiParts = PartConverter.toGenaiParts(artifact.parts());
+    ConvertedParts converted = convertParts(artifact.parts());
     eventBuilder
-        .content(fromModelParts(genaiParts))
-        .longRunningToolIds(getLongRunningToolIds(artifact.parts(), genaiParts));
+        .content(fromModelParts(converted.parts()))
+        .longRunningToolIds(converted.longRunningToolIds());
     return eventBuilder.build();
   }
 
@@ -193,15 +199,11 @@ public final class ResponseConverter {
     return builder.build();
   }
 
-  /**
-   * Converts an A2A message back to ADK events.
-   *
-   * <p>Unparseable ADK metadata is logged and dropped; the rest of the event is still converted.
-   */
+  /** Converts an A2A message back to ADK events. */
   public static Event messageToEvent(Message message, InvocationContext invocationContext) {
     return updateEventMetadata(
         remoteAgentEventBuilder(invocationContext)
-            .content(fromModelParts(PartConverter.toGenaiParts(message.getParts())))
+            .content(fromModelParts(convertParts(message.getParts()).parts()))
             .build(),
         message.getMetadata(),
         message.getTaskId(),
@@ -216,7 +218,7 @@ public final class ResponseConverter {
       Message message, InvocationContext invocationContext, boolean isPending) {
 
     ImmutableList<Part> genaiParts =
-        PartConverter.toGenaiParts(message.getParts()).stream()
+        convertParts(message.getParts()).parts().stream()
             .map(part -> part.toBuilder().thought(isPending).build())
             .collect(toImmutableList());
 
@@ -227,26 +229,23 @@ public final class ResponseConverter {
    * Converts an A2A {@link Task} to an ADK {@link Event}. If the artifacts are present, the last
    * artifact is used. If not, the status message is used. If not, the last history message is used.
    * If none of these are present, an empty event is returned.
-   *
-   * <p>Unparseable ADK metadata is logged and dropped; the rest of the event is still converted.
    */
   public static Event taskToEvent(Task task, InvocationContext invocationContext) {
     ImmutableList.Builder<Part> genaiParts = ImmutableList.builder();
     ImmutableSet.Builder<String> longRunningToolIds = ImmutableSet.builder();
 
     for (Artifact artifact : task.getArtifacts()) {
-      ImmutableList<Part> converted = PartConverter.toGenaiParts(artifact.parts());
-      longRunningToolIds.addAll(getLongRunningToolIds(artifact.parts(), converted));
-      genaiParts.addAll(converted);
+      ConvertedParts converted = convertParts(artifact.parts());
+      longRunningToolIds.addAll(converted.longRunningToolIds());
+      genaiParts.addAll(converted.parts());
     }
 
     Event.Builder eventBuilder = remoteAgentEventBuilder(invocationContext);
 
     if (task.getStatus().message() != null) {
-      ImmutableList<Part> msgParts =
-          PartConverter.toGenaiParts(task.getStatus().message().getParts());
-      longRunningToolIds.addAll(
-          getLongRunningToolIds(task.getStatus().message().getParts(), msgParts));
+      ConvertedParts convertedMessage = convertParts(task.getStatus().message().getParts());
+      ImmutableList<Part> msgParts = convertedMessage.parts();
+      longRunningToolIds.addAll(convertedMessage.longRunningToolIds());
       if (task.getStatus().state() == TaskState.FAILED
           && msgParts.size() == 1
           && msgParts.get(0).text().isPresent()) {
@@ -277,26 +276,36 @@ public final class ResponseConverter {
         eventBuilder.build(), task.getMetadata(), task.getId(), task.getContextId());
   }
 
-  private static ImmutableSet<String> getLongRunningToolIds(
-      List<io.a2a.spec.Part<?>> parts, List<Part> convertedParts) {
-    return zip(
-            parts.stream(),
-            convertedParts.stream(),
-            (part, convertedPart) -> {
-              if (!(part instanceof DataPart dataPart)) {
-                return Optional.<String>empty();
-              }
-              // A2A peers may omit metadata entirely, which deserializes to null.
-              if (!isLongRunning(dataPart.getMetadata())) {
-                return Optional.<String>empty();
-              }
-              if (convertedPart.functionCall().isEmpty()) {
-                return Optional.<String>empty();
-              }
-              return convertedPart.functionCall().get().id();
-            })
-        .flatMap(Optional::stream)
-        .collect(toImmutableSet());
+  /** GenAI parts converted from A2A parts, and the ids of the long-running calls among them. */
+  private record ConvertedParts(
+      ImmutableList<Part> parts, ImmutableSet<String> longRunningToolIds) {}
+
+  /**
+   * Converts peer-supplied parts, skipping any part that cannot be converted so that one malformed
+   * part does not fail the whole event.
+   */
+  private static ConvertedParts convertParts(List<io.a2a.spec.Part<?>> a2aParts) {
+    ImmutableList.Builder<Part> parts = ImmutableList.builder();
+    ImmutableSet.Builder<String> longRunningToolIds = ImmutableSet.builder();
+    for (io.a2a.spec.Part<?> a2aPart : a2aParts) {
+      Part part;
+      try {
+        part = PartConverter.toGenaiPart(a2aPart);
+      } catch (RuntimeException e) {
+        // The exception message can quote the peer's bytes, so log only the types.
+        logger.warn(
+            "Skipping A2A part that could not be converted: {} ({})",
+            a2aPart == null ? "null" : a2aPart.getClass().getSimpleName(),
+            e.getClass().getSimpleName());
+        continue;
+      }
+      parts.add(part);
+      // A2A peers may omit metadata entirely, which deserializes to null.
+      if (a2aPart instanceof DataPart dataPart && isLongRunning(dataPart.getMetadata())) {
+        part.functionCall().flatMap(FunctionCall::id).ifPresent(longRunningToolIds::add);
+      }
+    }
+    return new ConvertedParts(parts.build(), longRunningToolIds.build());
   }
 
   private static Event updateEventMetadata(
@@ -404,6 +413,10 @@ public final class ResponseConverter {
 
   private static Content fromModelParts(List<Part> parts) {
     return Content.builder().role("model").parts(parts).build();
+  }
+
+  private static boolean hasParts(Event event) {
+    return !event.content().flatMap(Content::parts).orElse(ImmutableList.of()).isEmpty();
   }
 
   private static Event.Builder remoteAgentEventBuilder(InvocationContext invocationContext) {

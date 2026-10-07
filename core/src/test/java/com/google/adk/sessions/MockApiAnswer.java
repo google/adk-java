@@ -118,7 +118,7 @@ class MockApiAnswer implements Answer<ApiResponse> {
     return new ApiResponse() {
       @Override
       public ResponseBody getResponseBody() {
-        return body == null ? null : ResponseBody.create(JSON_MEDIA_TYPE, body);
+        return body == null ? null : ResponseBody.create(body, JSON_MEDIA_TYPE);
       }
 
       @Override

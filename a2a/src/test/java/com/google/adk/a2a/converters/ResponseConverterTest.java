@@ -39,6 +39,8 @@ import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskUpdateEvent;
 import io.a2a.spec.Artifact;
 import io.a2a.spec.DataPart;
+import io.a2a.spec.FilePart;
+import io.a2a.spec.FileWithBytes;
 import io.a2a.spec.Message;
 import io.a2a.spec.Task;
 import io.a2a.spec.TaskArtifactUpdateEvent;
@@ -47,6 +49,7 @@ import io.a2a.spec.TaskStatus;
 import io.a2a.spec.TaskStatusUpdateEvent;
 import io.a2a.spec.TextPart;
 import io.reactivex.rxjava3.core.Flowable;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import org.junit.Before;
@@ -87,6 +90,16 @@ public final class ResponseConverterTest {
 
   private static TaskStatusUpdateEvent.Builder testTaskStatusUpdateEvent() {
     return new TaskStatusUpdateEvent.Builder().taskId("task-1").contextId("context-1");
+  }
+
+  private TaskUpdateEvent statusUpdateEvent(
+      TaskState state, boolean isFinal, io.a2a.spec.Part<?>... parts) {
+    Message statusMessage =
+        new Message.Builder().role(Message.Role.AGENT).parts(ImmutableList.copyOf(parts)).build();
+    TaskStatus status = new TaskStatus(state, statusMessage, null);
+    return new TaskUpdateEvent(
+        testTask().status(status).build(),
+        testTaskStatusUpdateEvent().isFinal(isFinal).status(status).build());
   }
 
   @Test
@@ -486,6 +499,141 @@ public final class ResponseConverterTest {
   }
 
   @Test
+  public void messageToEvent_withUnconvertiblePart_skipsOnlyThatPart() {
+    Message a2aMessage =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.AGENT)
+            .parts(
+                ImmutableList.of(
+                    new TextPart("before"), invalidBase64Part(), new TextPart("after")))
+            .build();
+
+    Event event = ResponseConverter.messageToEvent(a2aMessage, invocationContext);
+
+    assertThat(event.content().get().parts().get().stream().map(p -> p.text().orElse(null)))
+        .containsExactly("before", "after")
+        .inOrder();
+  }
+
+  @Test
+  public void messageToEvent_withNullPart_skipsIt() {
+    // A peer can send a null element in "parts"; the v0.3 Message keeps the list as given.
+    Message a2aMessage =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.AGENT)
+            .parts(
+                Arrays.<io.a2a.spec.Part<?>>asList(
+                    new TextPart("before"), null, new TextPart("after")))
+            .build();
+
+    Event event = ResponseConverter.messageToEvent(a2aMessage, invocationContext);
+
+    assertThat(event.content().get().parts().get().stream().map(p -> p.text().orElse(null)))
+        .containsExactly("before", "after")
+        .inOrder();
+  }
+
+  @Test
+  public void clientEventToEvent_withUnconvertiblePartInStatusUpdate_skipsOnlyThatPart() {
+    TaskUpdateEvent event =
+        statusUpdateEvent(TaskState.WORKING, false, new TextPart("thought-1"), invalidBase64Part());
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+
+    assertThat(optionalEvent).isPresent();
+    assertThat(
+            optionalEvent.get().content().get().parts().get().stream()
+                .map(p -> p.text().orElse(null)))
+        .containsExactly("thought-1");
+  }
+
+  @Test
+  public void clientEventToEvent_withOnlyUnconvertibleMessagePart_returnsEmpty() {
+    Message a2aMessage =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(invalidBase64Part()))
+            .build();
+
+    Optional<Event> optionalEvent =
+        ResponseConverter.clientEventToEvent(new MessageEvent(a2aMessage), invocationContext);
+
+    assertThat(optionalEvent).isEmpty();
+  }
+
+  @Test
+  public void clientEventToEvent_withOnlyUnconvertiblePartsInWorkingStatusUpdate_returnsEmpty() {
+    TaskUpdateEvent event = statusUpdateEvent(TaskState.WORKING, false, invalidBase64Part());
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+
+    assertThat(optionalEvent).isEmpty();
+  }
+
+  @Test
+  public void
+      clientEventToEvent_withOnlyUnconvertiblePartsInFinalStatusUpdate_returnsTurnComplete() {
+    TaskUpdateEvent event = statusUpdateEvent(TaskState.COMPLETED, true, invalidBase64Part());
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+
+    assertThat(optionalEvent).isPresent();
+    Event result = optionalEvent.get();
+    assertThat(result.turnComplete()).hasValue(true);
+    assertThat(result.partial()).hasValue(false);
+    assertThat(result.content()).isEmpty();
+  }
+
+  @Test
+  public void taskToEvent_withUnconvertiblePartBeforeLongRunningCall_keepsLongRunningId() {
+    DataPart longRunningPart =
+        new DataPart(
+            ImmutableMap.of("name", "lrTool", "id", "call_lr", "args", ImmutableMap.of()),
+            ImmutableMap.of(
+                A2AMetadataKey.TYPE.getType(),
+                "function_call",
+                A2AMetadataKey.IS_LONG_RUNNING.getType(),
+                true));
+    Message statusMessage =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(invalidBase64Part(), longRunningPart))
+            .build();
+    Task task =
+        testTask().status(new TaskStatus(TaskState.INPUT_REQUIRED, statusMessage, null)).build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(event.longRunningToolIds().get()).containsExactly("call_lr");
+    assertThat(event.content().get().parts().get()).hasSize(1);
+  }
+
+  @Test
+  public void clientEventToEvent_withOnlyUnconvertibleArtifactPart_returnsEmpty() {
+    Artifact artifact =
+        new Artifact.Builder()
+            .artifactId("artifact-1")
+            .parts(ImmutableList.of(invalidBase64Part()))
+            .build();
+    TaskArtifactUpdateEvent updateEvent =
+        new TaskArtifactUpdateEvent.Builder()
+            .append(true)
+            .lastChunk(false)
+            .contextId("context-1")
+            .artifact(artifact)
+            .taskId("task-1")
+            .build();
+    TaskUpdateEvent event =
+        new TaskUpdateEvent(
+            testTask().status(new TaskStatus(TaskState.WORKING)).build(), updateEvent);
+
+    assertThat(ResponseConverter.clientEventToEvent(event, invocationContext)).isEmpty();
+  }
+
+  @Test
   public void taskToEvent_withFailedState_setsErrorCode() {
     Message statusMessage =
         new Message.Builder()
@@ -799,6 +947,11 @@ public final class ResponseConverterTest {
 
     Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
     assertThat(optionalEvent).isEmpty();
+  }
+
+  /** A file part whose bytes are not valid base64, so {@link PartConverter} cannot convert it. */
+  private static FilePart invalidBase64Part() {
+    return new FilePart(new FileWithBytes("text/plain", "bad.txt", "!!!"));
   }
 
   private static final class TestAgent extends BaseAgent {

@@ -19,12 +19,18 @@ package com.google.adk.flows.llmflows;
 import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createRootAgent;
+import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
+import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
+import com.google.adk.testing.RecordingScheduler;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
@@ -37,6 +43,7 @@ import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -399,6 +406,13 @@ public final class FunctionsTest {
     assertThat(result).containsExactly(confirmationCall1, confirmationCall2);
   }
 
+  @Test
+  public void hasPendingLongRunningCall_singleEventWithFunctionResponse_returnsFalse() {
+    // One event cannot hold both a paused call and its response, so nothing is pending.
+    assertThat(Functions.hasPendingLongRunningCall(ImmutableList.of(functionResponseEvent("c1"))))
+        .isFalse();
+  }
+
   // Default ToolExecutionMode.NONE behaves like PARALLEL: blocking tools still execute serially
   // on the caller thread (no worker scheduler is used), preserving the historical default.
   @Test
@@ -492,6 +506,85 @@ public final class FunctionsTest {
     runParallelSubscribeBlockingToolsTest(/* toolCount= */ 5);
   }
 
+  @Test
+  public void handleFunctionCalls_parallelSubscribe_usesInvocationScheduler() {
+    // Each tool was subscribed on the invocation's scheduler.
+    assertThat(workersCreatedForParallelSubscribe(createRootAgent())).isEqualTo(2);
+  }
+
+  @Test
+  public void
+      handleFunctionCalls_parallelSubscribe_llmAgentWithoutExecutor_usesInvocationScheduler() {
+    LlmAgent agentWithoutExecutor =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused"))).build();
+
+    assertThat(workersCreatedForParallelSubscribe(agentWithoutExecutor)).isEqualTo(2);
+  }
+
+  @Test
+  public void handleFunctionCalls_parallelSubscribe_agentExecutorTakesPrecedenceOverScheduler() {
+    LlmAgent agentWithExecutor =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .executor(Runnable::run)
+            .build();
+
+    assertThat(workersCreatedForParallelSubscribe(agentWithExecutor)).isEqualTo(0);
+  }
+
+  /**
+   * Runs two tool calls for {@code agent} in PARALLEL_SUBSCRIBE mode on an invocation whose
+   * scheduler records its use, asserts that both responses arrived, and returns how many workers
+   * that scheduler handed out.
+   */
+  private static int workersCreatedForParallelSubscribe(BaseAgent agent) {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    InvocationContext invocationContext =
+        createInvocationContext(
+                agent,
+                RunConfig.builder().toolExecutionMode(ToolExecutionMode.PARALLEL_SUBSCRIBE).build())
+            .toBuilder()
+            .scheduler(recordingScheduler)
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(
+                invocationContext,
+                twoToolCallsEvent(),
+                ImmutableMap.of(
+                    "tool_1",
+                    new SleepingTool("tool_1", 0L),
+                    "tool_2",
+                    new SleepingTool("tool_2", 0L)))
+            .blockingGet();
+
+    assertThat(functionResponseEvent).isNotNull();
+    assertThat(functionResponseEvent.functionResponses()).hasSize(2);
+    return recordingScheduler.workersCreated();
+  }
+
+  private static Event twoToolCallsEvent() {
+    return createEvent("event").toBuilder()
+        .content(
+            Content.fromParts(
+                Part.builder()
+                    .functionCall(
+                        FunctionCall.builder()
+                            .id("call_1")
+                            .name("tool_1")
+                            .args(ImmutableMap.of())
+                            .build())
+                    .build(),
+                Part.builder()
+                    .functionCall(
+                        FunctionCall.builder()
+                            .id("call_2")
+                            .name("tool_2")
+                            .args(ImmutableMap.of())
+                            .build())
+                    .build()))
+        .build();
+  }
+
   /** Single-tool case bypasses the parallel scheduler path; must still return the correct event. */
   @Test
   public void handleFunctionCalls_parallelSubscribe_blockingTool_singleTool() {
@@ -568,8 +661,34 @@ public final class FunctionsTest {
     assertThat(Functions.hasPendingLongRunningCall(ImmutableList.<Event>of())).isFalse();
   }
 
+  @Test
+  public void hasPendingLongRunningCall_list_matchingResponse_stillReturnsTrue() {
+    // This legacy predicate does not match responses to calls; StepResume does that when resumable.
+    ImmutableList<Event> events =
+        ImmutableList.of(longRunningCallEvent("call1"), functionResponseEvent("call1"));
+    assertThat(Functions.hasPendingLongRunningCall(events)).isTrue();
+  }
+
   private static Event longRunningCallEvent(String callId) {
     return functionCallEvent(callId, callId);
+  }
+
+  private static Event functionResponseEvent(String callId) {
+    return Event.builder()
+        .id("response_" + callId)
+        .invocationId("invocation1")
+        .author("user")
+        .content(
+            Content.fromParts(
+                Part.builder()
+                    .functionResponse(
+                        FunctionResponse.builder()
+                            .id(callId)
+                            .name("tool")
+                            .response(ImmutableMap.of())
+                            .build())
+                    .build()))
+        .build();
   }
 
   // Event with a function call; longRunningId, when non-null, is marked long-running.

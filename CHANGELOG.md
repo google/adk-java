@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.11.0](https://github.com/google/adk-java/compare/v1.10.1...v1.11.0) (2026-10-02)
+
+
+### Features
+
+* add rewindBeforeInvocationId to EventActions and carry it through the Kotlin interop ([4ff229b](https://github.com/google/adk-java/commit/4ff229bbade2191ba523a67800f28ccc739e4565))
+* add thread-safe immutableEvents, addEvent, and addEvents helpers to Session ([950b869](https://github.com/google/adk-java/commit/950b86968dc443fd7322072e193d5bfc349973c4))
+* carry code-execution, media resolution and more config across the Java/Kotlin interop ([4f3b02d](https://github.com/google/adk-java/commit/4f3b02da92d39c15ef3dbd081f3f0565efc227e5))
+* **dev:** add the /version and /health endpoints ([849e1f6](https://github.com/google/adk-java/commit/849e1f6f35c46074fd4e79b867351d0643785f8b))
+* drop model-name checks from GoogleSearchTool and UrlContextTool ([887da0e](https://github.com/google/adk-java/commit/887da0e2170811361b33c73ba416c2813c6fd185))
+* honor the plain-text continuation flag and allow only one resumability flag ([f5c7561](https://github.com/google/adk-java/commit/f5c75618992b8a3cfbc6aedf84bc4e0e7ddf11ba))
+* let the ADK Java &lt;-&gt; Kotlin interop run on a caller-supplied dispatcher ([29481a9](https://github.com/google/adk-java/commit/29481a98afc0c919998294562b67631d404829b5))
+* resume Gemini generations paused with a continuation token ([e8dfcb0](https://github.com/google/adk-java/commit/e8dfcb0e4d04c2973ec4be27299582a2ccb5e68d))
+* **sessions:** add an opt-in switch for rejecting a duplicate session id ([e6a46b1](https://github.com/google/adk-java/commit/e6a46b1a0fcb2298aee5e2c3aa151b7d6aa740e8))
+* support pausing and resuming a session invocation ([8361c5f](https://github.com/google/adk-java/commit/8361c5fcb8434b4b8017d80bd0e67146542b9804))
+* support the resume runAsync overload when adapting a Kotlin runner to the Java Runner API ([4e67b3d](https://github.com/google/adk-java/commit/4e67b3df7ecf31bb99e73fa9939e627b3a15d382))
+
+
+### Bug Fixes
+
+* **agents:** only stop ParallelAgent on direct sub-agent escalation ([fc3e352](https://github.com/google/adk-java/commit/fc3e3529e75695d36abdabe8d8dd2e667ff8c7a7))
+* **dev:** ignore an unusable adk.web.backend-url instead of serving it ([f7d7a7c](https://github.com/google/adk-java/commit/f7d7a7ca248070b2290b93802fe3242fae5198e0))
+* **dev:** let the dev UI's public address be configured ([2c5bd9e](https://github.com/google/adk-java/commit/2c5bd9e8c4da6b8f0002b0dd2d97cec73f857803))
+* keep structuredContent and non-text content in MCP tool results ([9b128df](https://github.com/google/adk-java/commit/9b128dfba2c2f256bfab927bda46d476b8032443))
+* make Java session appends on the Kotlin engine update the caller's session in place ([650e950](https://github.com/google/adk-java/commit/650e9509dda7384ee43c1d2f1fb475514d61aecf))
+* record the thinking budget and level on the call_llm telemetry span ([ed72ddb](https://github.com/google/adk-java/commit/ed72ddbf1c969ed466aad2e6d141a7013560f6d9))
+* respect OpenTelemetry LIFO scoping in reactive streams ([33e28e3](https://github.com/google/adk-java/commit/33e28e3483c62ac935c226bd34592c580cb89ff3))
+* scope the tool-confirmation resume scan to the current branch ([b00e25d](https://github.com/google/adk-java/commit/b00e25d3ddf3a20b46d1ded78f0cdc2601398316))
+* **sessions:** reject a duplicate session id in FirestoreSessionService ([9fe5830](https://github.com/google/adk-java/commit/9fe5830f8513833f541eced7fb3f579c9093f439))
+* **sessions:** reject negative numRecentEvents in GetSessionConfig ([3adb8cf](https://github.com/google/adk-java/commit/3adb8cf132d66ad56c119711784f1f808647a80c))
+* **tools:** run an AgentTool under the caller's RunConfig ([18560ba](https://github.com/google/adk-java/commit/18560badeaa6fc40cdb636ab112ec8c952e1b1c6))
+
+
+### Reverts
+
+* keeping structuredContent and non-text content in MCP tool results ([c897cdb](https://github.com/google/adk-java/commit/c897cdb1e027bd3aaf5350e2a063b7e8c30bb8c1))
+
+
+### Documentation
+
+* add [@deprecated](https://github.com/deprecated) guidance to two deprecated event setters ([a88b093](https://github.com/google/adk-java/commit/a88b093de854d8aceeace99563eccdbac1cf126d))
+* add placeholder AGENTS.md, CLAUDE.md, and .gemini styleguide ([e0d71c0](https://github.com/google/adk-java/commit/e0d71c049b3fb06a6a20eb3b87ad4b8dc7ea3245))
+* fix inaccuracies in the tokt interop KDoc ([1afd839](https://github.com/google/adk-java/commit/1afd839593f9d67552180fc7c5ce2deaf8d5d981))
+
 ## [1.10.1](https://github.com/google/adk-java/compare/v1.10.0...v1.10.1) (2026-09-18)
 
 

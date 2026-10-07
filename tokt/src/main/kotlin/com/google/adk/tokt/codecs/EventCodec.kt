@@ -21,7 +21,6 @@ import com.google.adk.events.EventActions as JavaEventActions
 import com.google.adk.kt.events.Event as KtEvent
 import com.google.adk.kt.events.EventActions as KtEventActions
 import com.google.adk.kt.ids.Uuid
-import com.google.adk.kt.types.FinishReason as KtFinishReason
 import com.google.genai.types.FinishReason as GenaiFinishReason
 import kotlin.jvm.optionals.getOrNull
 
@@ -31,20 +30,15 @@ import kotlin.jvm.optionals.getOrNull
  *
  * Carries the identity (`id`, `invocationId`, `author`, `branch`), the [content][ContentCodec], the
  * [actions][KtEventActions] (state/artifact deltas, the control-flow flags - transfer, escalate,
- * skipSummarization, endOfAgent - the requested tool confirmations, and the context-compaction
- * summary), the streaming/error signals (`partial`, `turnComplete`, `interrupted`, `errorMessage`,
- * `errorCode`, `finishReason`), the token `usageMetadata` ([UsageMetadataCodec]) and
- * `groundingMetadata` ([GroundingMetadataCodec]), long-running tool ids, and the timestamp.
+ * skipSummarization, endOfAgent - the requested tool confirmations, the context-compaction summary,
+ * the resumable-run `agentState`, and the rewind marker `rewindBeforeInvocationId`), the
+ * streaming/error signals (`partial`, `turnComplete`, `interrupted`, `errorMessage`, `errorCode`,
+ * `finishReason`), the token `usageMetadata` ([UsageMetadataCodec]) and `groundingMetadata`
+ * ([GroundingMetadataCodec]), long-running tool ids, and the timestamp.
  */
 internal object EventCodec {
 
-  /**
-   * Returns the Java [JavaEvent] view of the Kotlin [event].
-   *
-   * `EventActions.agentState` crosses (see [agentStateToJava]), so a resumable run's state survives
-   * a round trip through a Java session service. `rewindBeforeInvocationId` is still dropped: ADK
-   * Java's `EventActions` has no such field.
-   */
+  /** Returns the Java [JavaEvent] view of the Kotlin [event]. */
   fun toJava(event: KtEvent): JavaEvent {
     val builder =
       JavaEvent.builder()
@@ -98,6 +92,7 @@ internal object EventCodec {
           compaction =
             javaActions.compaction().getOrNull()?.let { EventCompactionCodec.fromJava(it) },
           agentState = agentStateFromJava(javaActions.agentState().getOrNull()),
+          rewindBeforeInvocationId = javaActions.rewindBeforeInvocationId().getOrNull(),
         ),
       branch = event.branch().getOrNull(),
       partial = event.partial().getOrNull() ?: false,
@@ -107,8 +102,7 @@ internal object EventCodec {
       // toString() preserves the raw value; knownEnum().name would collapse an unrecognized code to
       // FINISH_REASON_UNSPECIFIED (errorCode is a free-form String on the Kotlin side).
       errorCode = event.errorCode().getOrNull()?.toString(),
-      finishReason =
-        enumByNameOrNull<KtFinishReason>(event.finishReason().getOrNull()?.knownEnum()?.name),
+      finishReason = event.finishReason().getOrNull()?.toKt(),
       usageMetadata = event.usageMetadata().getOrNull()?.let { UsageMetadataCodec.fromJava(it) },
       avgLogProbs = event.avgLogprobs().getOrNull(),
       groundingMetadata =

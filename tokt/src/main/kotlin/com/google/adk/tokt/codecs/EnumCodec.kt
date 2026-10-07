@@ -29,3 +29,11 @@ internal inline fun <reified K : Enum<K>> enumByNameOrNull(name: String?): K? =
 
 /** The Kotlin finish reason as a genai finish reason (matched by name). */
 internal fun KtFinishReason.toGenai(): GenaiFinishReason = GenaiFinishReason(name)
+
+/**
+ * The genai finish reason as a Kotlin finish reason, matched case-insensitively by raw value like
+ * genai itself. Reasons absent from the Kotlin enum become [KtFinishReason.OTHER], matching ADK
+ * Kotlin's GenAI SDK converter.
+ */
+internal fun GenaiFinishReason.toKt(): KtFinishReason =
+  enumByNameOrNull<KtFinishReason>(toString().uppercase()) ?: KtFinishReason.OTHER

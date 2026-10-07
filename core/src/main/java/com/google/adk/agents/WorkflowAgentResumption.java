@@ -22,19 +22,20 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Helpers for resuming workflow agents from session events. Temporary until session resumption
- * (persisted agent state) is available.
+ * Legacy-resumption helper: reconstructs a workflow agent's resume point from session events. Used
+ * only by the legacy flow, which writes no durable agent state; the resumable flow resumes from its
+ * checkpoints instead, as Python ADK does.
  */
 final class WorkflowAgentResumption {
 
   /**
-   * Index of the direct sub-agent whose subtree authored the call the latest event resumes, or
-   * empty when not resuming into this workflow.
+   * Index of the direct sub-agent whose subtree authored the call being resumed, or empty when not
+   * resuming into this workflow.
    */
   static Optional<Integer> resumeSubAgentIndex(
       InvocationContext invocationContext, List<? extends BaseAgent> subAgents) {
     Optional<String> author =
-        Functions.findMatchingFunctionCallEvent(invocationContext.session().events())
+        Functions.findMatchingFunctionCallEvent(invocationContext.session().immutableEvents())
             .map(Event::author);
     if (author.isEmpty()) {
       return Optional.empty();
@@ -50,6 +51,8 @@ final class WorkflowAgentResumption {
 
   /**
    * Whether the event emits a long-running call still awaiting a response (e.g. a HITL request).
+   * The legacy flow pauses on this rather than on {@link InvocationContext#shouldPauseInvocation},
+   * which the resumable flow uses.
    */
   static boolean hasPendingLongRunningCall(Event event) {
     return Functions.hasPendingLongRunningCall(event);

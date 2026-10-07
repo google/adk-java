@@ -37,7 +37,8 @@ Calls to Large Language Models (LLMs) are traced within a `call_llm` span. The
 *   Model name (`gen_ai.request.model`).
 *   Token usage (`gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`).
 *   Configuration parameters (`gen_ai.request.top_p`,
-    `gen_ai.request.max_tokens`).
+    `gen_ai.request.max_tokens`, `gen_ai.request.reasoning.level`, and the
+    thinking budget as `gen_ai.usage.experimental.reasoning_tokens_limit`).
 *   Response finish reason (`gen_ai.response.finish_reasons`).
 
 ### Tool Calls and Responses

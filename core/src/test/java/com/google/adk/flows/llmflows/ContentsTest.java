@@ -1243,6 +1243,7 @@ public final class ContentsTest {
   }
 
   @Test
+  @SuppressWarnings("deprecation") // Testing internal Builder.eventsView seam.
   public void processRequest_concurrentReadAndWrite_noException() throws Exception {
     LlmAgent agent =
         LlmAgent.builder().name(AGENT).includeContents(LlmAgent.IncludeContents.DEFAULT).build();
@@ -1252,6 +1253,18 @@ public final class ContentsTest {
             if (!Thread.holdsLock(this)) {
               throw new ConcurrentModificationException("Unsynchronized iteration detected!");
             }
+          }
+
+          @Override
+          public Object[] toArray() {
+            checkLock();
+            return super.toArray();
+          }
+
+          @Override
+          public <T> T[] toArray(T[] a) {
+            checkLock();
+            return super.toArray(a);
           }
 
           @Override
@@ -1279,16 +1292,16 @@ public final class ContentsTest {
           }
         };
 
+    // The list must have at least one element so that operations interacting with events trigger
+    // copying/iteration.
+    customEvents.add(createUserEvent("dummy", "dummy"));
+
     Session session =
         Session.builder("test-session")
             .appName("test-app")
             .userId("test-user")
-            .events(customEvents)
+            .eventsView(customEvents)
             .build();
-
-    // The list must have at least one element so that operations interacting with events trigger
-    // iteration.
-    customEvents.add(createUserEvent("dummy", "dummy"));
 
     InvocationContext context =
         InvocationContext.builder()
@@ -1300,7 +1313,7 @@ public final class ContentsTest {
 
     LlmRequest initialRequest = LlmRequest.builder().build();
 
-    // This single call will throw the exception if the list is accessed insecurely.
+    // This single call will throw the exception if the list is accessed without holding its lock.
     var unused = contentsProcessor.processRequest(context, initialRequest).blockingGet();
   }
 
@@ -1570,7 +1583,7 @@ public final class ContentsTest {
     LlmAgent agent = LlmAgent.builder().name(agentName).includeContents(includeContents).build();
     Session session =
         sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
-    session.events().addAll(events);
+    session.addEvents(events);
     InvocationContext context =
         InvocationContext.builder()
             .invocationId("test-invocation")
@@ -1590,7 +1603,7 @@ public final class ContentsTest {
         LlmAgent.builder().name(AGENT).includeContents(LlmAgent.IncludeContents.DEFAULT).build();
     Session session =
         sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
-    session.events().addAll(events);
+    session.addEvents(events);
     InvocationContext context =
         InvocationContext.builder()
             .invocationId("test-invocation")
@@ -1615,7 +1628,7 @@ public final class ContentsTest {
             .build();
     Session session =
         sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
-    session.events().addAll(events);
+    session.addEvents(events);
     InvocationContext context =
         InvocationContext.builder()
             .invocationId("test-invocation")
@@ -1642,7 +1655,7 @@ public final class ContentsTest {
     Mockito.doReturn(Model.builder().modelName(modelName).build()).when(agent).resolvedModel();
     Session session =
         sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
-    session.events().addAll(events);
+    session.addEvents(events);
     InvocationContext context =
         InvocationContext.builder()
             .invocationId("test-invocation")

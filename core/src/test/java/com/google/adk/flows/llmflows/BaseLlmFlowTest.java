@@ -488,7 +488,7 @@ public final class BaseLlmFlowTest {
     List<Event> events =
         baseLlmFlow
             .run(invocationContext)
-            .doOnNext(event -> invocationContext.session().events().add(event))
+            .doOnNext(event -> invocationContext.session().addEvent(event))
             .toList()
             .blockingGet();
 

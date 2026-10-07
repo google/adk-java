@@ -82,12 +82,7 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
     ImmutableMap<String, AuthoredFunctionCall> functionCallsById =
         functionCallsById(events, agentName);
     ImmutableSet<String> confirmationRequestedIds = confirmationRequestedIds(events);
-    // A tool has been confirmed, but it might already have been executed by a subsequent processor
-    // or in a subsequent turn: such calls have a function response after the user confirmation
-    // event. This is applied before the resumability check rather than after, because
-    // findMostRecentConfirmations re-matches the same stale user event on every later LLM call, so
-    // a settled confirmation would otherwise be re-examined - and re-logged - for the rest of the
-    // session.
+    // Calls this agent already re-ran since the approval; skipped before validation, not re-logged.
     //
     // Only responses this agent produced count. A peer event landing after the approval that
     // reuses the pending call's ID would otherwise convince this scan the tool had already run,
@@ -167,11 +162,10 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
 
   private static Optional<ConfirmationResult> findMostRecentConfirmations(
       ImmutableList<Event> events) {
-    // Search backwards for the most recent user event that contains request confirmation
-    // function responses.
+    // As in ADK Python, only the most recent user event can answer a pending confirmation.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
-      if (!Objects.equals(event.author(), Role.USER) || event.functionResponses().isEmpty()) {
+      if (!Objects.equals(event.author(), Role.USER)) {
         continue;
       }
 
@@ -186,9 +180,9 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
               .map(RequestConfirmationLlmRequestProcessor::maybeCreateToolConfirmationEntry)
               .flatMap(Optional::stream)
               .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
-      if (!confirmationsInEvent.isEmpty()) {
-        return Optional.of(new ConfirmationResult(confirmationsInEvent, i));
-      }
+      return confirmationsInEvent.isEmpty()
+          ? Optional.empty()
+          : Optional.of(new ConfirmationResult(confirmationsInEvent, i));
     }
     return Optional.empty();
   }
