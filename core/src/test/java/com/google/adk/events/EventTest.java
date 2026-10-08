@@ -21,6 +21,7 @@ import static com.google.common.truth.Truth.assertThat;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.genai.types.CodeExecutionResult;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
@@ -342,6 +343,115 @@ public final class EventTest {
             .author("agent")
             .content(Content.fromParts(Part.fromFunctionCall("tool", ImmutableMap.of("k", "v"))))
             .actions(EventActions.builder().skipSummarization(true).build())
+            .build();
+    assertThat(event.finalResponse()).isTrue();
+  }
+
+  @Test
+  public void finalResponse_isTrueForErrorEvent() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromText("hello")))
+            .errorCode(new FinishReason("SOME_ERROR"))
+            .errorMessage("Something went wrong")
+            .build();
+    assertThat(event.finalResponse()).isTrue();
+  }
+
+  @Test
+  public void finalResponse_isTrueForErrorEventWithFunctionResponse() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(
+                Content.fromParts(Part.fromFunctionResponse("tool", ImmutableMap.of("k", "v"))))
+            .errorCode(new FinishReason("SOME_ERROR"))
+            .errorMessage("Something went wrong")
+            .build();
+    assertThat(event.finalResponse()).isTrue();
+  }
+
+  @Test
+  public void finalResponse_isFalseForErrorEventWithFunctionCall() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromFunctionCall("tool", ImmutableMap.of("k", "v"))))
+            .errorCode(new FinishReason("SOME_ERROR"))
+            .errorMessage("Something went wrong")
+            .build();
+    assertThat(event.finalResponse()).isFalse();
+  }
+
+  @Test
+  public void finalResponse_isFalseForPartialErrorEvent() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromText("hello")))
+            .errorCode(new FinishReason("SOME_ERROR"))
+            .errorMessage("Something went wrong")
+            .partial(true)
+            .build();
+    assertThat(event.finalResponse()).isFalse();
+  }
+
+  @Test
+  public void finalResponse_isFalseForFunctionResponse() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(
+                Content.fromParts(Part.fromFunctionResponse("tool", ImmutableMap.of("k", "v"))))
+            .build();
+    assertThat(event.finalResponse()).isFalse();
+  }
+
+  @Test
+  public void finalResponse_isFalseForTrailingCodeExecutionResult() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(
+                Content.fromParts(
+                    Part.fromText("hello"),
+                    Part.builder()
+                        .codeExecutionResult(
+                            CodeExecutionResult.builder().outcome("OK").output("42").build())
+                        .build()))
+            .build();
+    assertThat(event.finalResponse()).isFalse();
+  }
+
+  @Test
+  public void finalResponse_isTrueForErrorEventWithTrailingCodeExecutionResult() {
+    Event event =
+        Event.builder()
+            .id("e1")
+            .invocationId("i1")
+            .author("agent")
+            .content(
+                Content.fromParts(
+                    Part.fromText("hello"),
+                    Part.builder()
+                        .codeExecutionResult(
+                            CodeExecutionResult.builder().outcome("OK").output("42").build())
+                        .build()))
+            .errorCode(new FinishReason("SOME_ERROR"))
+            .errorMessage("Something went wrong")
             .build();
     assertThat(event.finalResponse()).isTrue();
   }
