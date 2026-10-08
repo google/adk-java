@@ -16,6 +16,8 @@
 
 package com.google.adk.models;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
@@ -23,7 +25,9 @@ import com.anthropic.models.messages.Message;
 import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.MessageParam;
 import com.anthropic.models.messages.MessageParam.Role;
+import com.anthropic.models.messages.RedactedThinkingBlockParam;
 import com.anthropic.models.messages.TextBlockParam;
+import com.anthropic.models.messages.ThinkingBlockParam;
 import com.anthropic.models.messages.Tool;
 import com.anthropic.models.messages.ToolChoice;
 import com.anthropic.models.messages.ToolChoiceAuto;
@@ -32,6 +36,7 @@ import com.anthropic.models.messages.ToolUnion;
 import com.anthropic.models.messages.ToolUseBlockParam;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
+import com.google.common.base.Utf8;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.*;
@@ -44,6 +49,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -173,7 +179,29 @@ public class Claude extends BaseLlm {
         .build();
   }
 
-  private ContentBlockParam partToAnthropicMessageBlock(Part part) {
+  private @Nullable ContentBlockParam partToAnthropicMessageBlock(Part part) {
+    if (part.thought().orElse(false)) {
+      // Signatures this class stores are UTF-8; a binary one (e.g. Gemini's) is not Claude's.
+      Optional<String> signature =
+          part.thoughtSignature()
+              .filter(bytes -> bytes.length > 0 && Utf8.isWellFormed(bytes))
+              .map(bytes -> new String(bytes, UTF_8));
+      if (signature.isPresent()) {
+        // Unlike ADK Python, empty text (display "omitted") stays thinking, not redacted_thinking.
+        return part.text().isPresent()
+            ? ContentBlockParam.ofThinking(
+                ThinkingBlockParam.builder()
+                    .thinking(part.text().get())
+                    .signature(signature.get())
+                    .build())
+            : ContentBlockParam.ofRedactedThinking(
+                RedactedThinkingBlockParam.builder().data(signature.get()).build());
+      }
+      // Other thoughts go out as text (ADK Python sends thinking), or not at all if empty.
+      if (part.text().map(String::isEmpty).orElse(false)) {
+        return null;
+      }
+    }
     if (part.text().isPresent()) {
       return ContentBlockParam.ofText(TextBlockParam.builder().text(part.text().get()).build());
     } else if (part.functionCall().isPresent()) {
@@ -386,6 +414,18 @@ public class Claude extends BaseLlm {
                           ._input()
                           .convert(new TypeReference<Map<String, Object>>() {}))
                   .build())
+          .build();
+    } else if (block.isThinking()) {
+      return Part.builder()
+          .text(block.asThinking().thinking())
+          .thought(true)
+          .thoughtSignature(block.asThinking().signature().getBytes(UTF_8))
+          .build();
+    } else if (block.isRedactedThinking()) {
+      // Keep the encrypted data in thoughtSignature so the block can be sent back unchanged.
+      return Part.builder()
+          .thought(true)
+          .thoughtSignature(block.asRedactedThinking().data().getBytes(UTF_8))
           .build();
     }
     throw new UnsupportedOperationException("Not supported yet.");
