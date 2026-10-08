@@ -25,6 +25,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.Role;
 import com.google.adk.tools.BaseTool;
 import com.google.auto.value.AutoValue;
@@ -40,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
+import org.jspecify.annotations.Nullable;
 
 /** Represents a request to be sent to the LLM. */
 @AutoValue
@@ -87,6 +89,18 @@ public abstract class LlmRequest extends JsonBaseModel {
    */
   @JsonIgnore
   public abstract Map<String, BaseTool> tools();
+
+  /** Context cache configuration for this request; empty when context caching is disabled. */
+  @JsonIgnore
+  public abstract Optional<ContextCacheConfig> cacheConfig();
+
+  /** Cache state from the agent's latest response, used to reuse or refresh the cache. */
+  @JsonIgnore
+  public abstract Optional<CacheMetadata> cacheMetadata();
+
+  /** Prompt token count of the agent's previous request, used to decide whether to cache. */
+  @JsonIgnore
+  public abstract Optional<Integer> cacheableContentsTokenCount();
 
   /** returns the first system instruction text from the request if present. */
   @JsonIgnore
@@ -154,6 +168,16 @@ public abstract class LlmRequest extends JsonBaseModel {
     public abstract Builder tools(Map<String, BaseTool> tools);
 
     abstract Map<String, BaseTool> tools();
+
+    @CanIgnoreReturnValue
+    public abstract Builder cacheConfig(@Nullable ContextCacheConfig cacheConfig);
+
+    @CanIgnoreReturnValue
+    public abstract Builder cacheMetadata(@Nullable CacheMetadata cacheMetadata);
+
+    @CanIgnoreReturnValue
+    public abstract Builder cacheableContentsTokenCount(
+        @Nullable Integer cacheableContentsTokenCount);
 
     @CanIgnoreReturnValue
     public final Builder appendInstructions(List<String> instructions) {
