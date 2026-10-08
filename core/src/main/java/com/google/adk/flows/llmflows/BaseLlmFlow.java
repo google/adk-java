@@ -885,7 +885,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
             .usageMetadata(llmResponse.usageMetadata().orElse(null))
             .modelVersion(llmResponse.modelVersion().orElse(null))
             .inputTranscription(llmResponse.inputTranscription().orElse(null))
-            .outputTranscription(llmResponse.outputTranscription().orElse(null));
+            .outputTranscription(llmResponse.outputTranscription().orElse(null))
+            .cacheMetadata(llmResponse.cacheMetadata().orElse(null));
 
     Event event = eventBuilder.build();
 
