@@ -75,6 +75,8 @@ public final class GeminiContinuationTest {
       Content.builder().role("user").parts(Part.fromText("What is the answer?")).build();
   private static final GenerateContentConfig CONFIG =
       GenerateContentConfig.builder().temperature(0.5f).build();
+  private static final GenerateContentConfig LIMITED_CONFIG =
+      CONFIG.toBuilder().maxOutputTokens(100).build();
 
   private final FakeGeminiApi api = new FakeGeminiApi();
   private final Gemini gemini = new Gemini("gemini-test-model", api.client());
@@ -203,6 +205,89 @@ public final class GeminiContinuationTest {
     JsonNode secondResume = api.requests().get(2);
     assertThat(contents(secondResume)).containsExactly(QUESTION, modelText("ab")).inOrder();
     assertThat(secondResume.get("continuationToken").asText()).isEqualTo(base64("second"));
+  }
+
+  @Test
+  public void generateContent_maxTokensWithoutOutputLimit_resumesUntilComplete() {
+    api.respond(
+        maxTokens("state", Part.fromText("The answer is")), finished(Part.fromText(" 42.")));
+
+    LlmResponse response = getOnlyElement(generate(CONFIG, /* stream= */ false));
+
+    assertThat(firstText(response)).isEqualTo("The answer is 42.");
+    assertThat(response.finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.STOP);
+    assertThat(api.requests()).hasSize(2);
+    JsonNode resumed = api.requests().get(1);
+    assertThat(contents(resumed)).containsExactly(QUESTION, modelText("The answer is")).inOrder();
+    assertThat(resumed.get("continuationToken").asText()).isEqualTo(base64("state"));
+  }
+
+  @Test
+  public void generateContent_streamMaxTokensWithoutOutputLimit_resumesInOneAggregatedStream() {
+    api.respondStream(chunk(Part.fromText("The answer")), maxTokens("state", Part.fromText(" is")));
+    api.respondStream(finished(Part.fromText(" 42.")));
+
+    List<LlmResponse> responses = generate(CONFIG, /* stream= */ true);
+
+    // The capped request does not end the generation, so no response reports MAX_TOKENS.
+    assertThat(responses.stream().map(r -> r.finishReason().map(FinishReason::knownEnum)))
+        .doesNotContain(Optional.of(FinishReason.Known.MAX_TOKENS));
+    assertThat(responses.stream().filter(r -> r.errorCode().isPresent())).isEmpty();
+    LlmResponse last = getLast(responses);
+    assertThat(firstText(last)).isEqualTo("The answer is 42.");
+    assertThat(last.finishReason().map(FinishReason::knownEnum)).hasValue(FinishReason.Known.STOP);
+    assertThat(api.requests()).hasSize(2);
+    assertThat(api.requests().get(1).get("continuationToken").asText()).isEqualTo(base64("state"));
+  }
+
+  @Test
+  public void generateContent_maxTokensAtOutputLimit_returnsOutput() {
+    api.respond(maxTokens("state", Part.fromText("a")));
+
+    LlmResponse response = getOnlyElement(generate(LIMITED_CONFIG, /* stream= */ false));
+
+    assertThat(api.requests()).hasSize(1);
+    assertThat(firstText(response)).isEqualTo("a");
+    assertThat(response.finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.MAX_TOKENS);
+  }
+
+  @Test
+  public void generateContent_streamMaxTokensAtOutputLimit_endsWithMaxTokens() {
+    api.respondStream(maxTokens("state", Part.fromText("a")));
+
+    List<LlmResponse> responses = generate(LIMITED_CONFIG, /* stream= */ true);
+
+    assertThat(api.requests()).hasSize(1);
+    LlmResponse last = getLast(responses);
+    assertThat(firstText(last)).isEqualTo("a");
+    assertThat(last.finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.MAX_TOKENS);
+  }
+
+  @Test
+  public void generateContent_pausedThenMaxTokensAtOutputLimit_returnsWholeOutput() {
+    api.respond(paused("first", Part.fromText("a")), maxTokens("second", Part.fromText("b")));
+
+    LlmResponse response = getOnlyElement(generate(LIMITED_CONFIG, /* stream= */ false));
+
+    assertThat(api.requests()).hasSize(2);
+    assertThat(firstText(response)).isEqualTo("ab");
+    assertThat(response.finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.MAX_TOKENS);
+  }
+
+  @Test
+  public void generateContent_maxTokensWithoutToken_returnsOutput() {
+    api.respond(response("MAX_TOKENS", /* token= */ null, Part.fromText("a")));
+
+    LlmResponse response = getOnlyElement(generate(CONFIG, /* stream= */ false));
+
+    assertThat(api.requests()).hasSize(1);
+    assertThat(firstText(response)).isEqualTo("a");
+    assertThat(response.finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.MAX_TOKENS);
   }
 
   @Test
@@ -573,6 +658,10 @@ public final class GeminiContinuationTest {
 
   private static GenerateContentResponse paused(String token, Part... parts) {
     return response("CONTINUATION", token.getBytes(UTF_8), parts);
+  }
+
+  private static GenerateContentResponse maxTokens(String token, Part... parts) {
+    return response("MAX_TOKENS", token.getBytes(UTF_8), parts);
   }
 
   private static GenerateContentResponse finished(Part... parts) {

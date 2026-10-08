@@ -333,7 +333,7 @@ public class Gemini extends BaseLlm {
     LlmResponse llmResponse = LlmResponse.create(response);
     Optional<ResumeRequest> next =
         continuation.advance(
-            GeminiContinuation.resumeToken(response),
+            continuation.resumeToken(response),
             llmResponse.content().flatMap(Content::parts).orElse(ImmutableList.of()),
             llmResponse.usageMetadata().orElse(null));
     if (next.isEmpty()) {
