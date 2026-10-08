@@ -29,6 +29,8 @@ import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.genai.types.Content;
@@ -41,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -176,7 +179,8 @@ public final class Contents implements RequestProcessor {
     }
 
     if (hasCompactEvent) {
-      filteredEvents = processCompactionEvent(filteredEvents, agentName);
+      List<Event> compactedEvents = processCompactionEvent(filteredEvents, agentName);
+      filteredEvents = recoverCompactedFunctionCalls(compactedEvents, filteredEvents);
     }
 
     // Merge after compaction, which may end mid-run, and before other agents are narrated.
@@ -529,6 +533,83 @@ public final class Contents implements RequestProcessor {
         .build();
   }
 
+  /**
+   * Re-injects function-call events from {@code sourceEvents} when compaction summarized away a
+   * call whose response arrived later. Restores the full call event to preserve first-part thought
+   * signatures on parallel calls, along with the latest compacted response for each sibling call so
+   * siblings do not appear pending. Resolves call ownership in {@code sourceEvents} order by event
+   * identity so reused call IDs bind to the latest preceding call.
+   */
+  private static List<Event> recoverCompactedFunctionCalls(
+      List<Event> events, List<Event> sourceEvents) {
+    Set<Event> presentEvents = Collections.newSetFromMap(new IdentityHashMap<>());
+    presentEvents.addAll(events);
+
+    Map<String, Event> latestCallById = new HashMap<>();
+    IdentityHashMap<Event, List<Event>> callsByResponse = new IdentityHashMap<>();
+    IdentityHashMap<Event, Map<String, Event>> responseByCall = new IdentityHashMap<>();
+    IdentityHashMap<Event, Set<String>> survivingResponses = new IdentityHashMap<>();
+
+    for (Event event : sourceEvents) {
+      for (FunctionCall functionCall : event.functionCalls()) {
+        functionCall
+            .id()
+            .filter(id -> !id.isEmpty())
+            .ifPresent(id -> latestCallById.put(id, event));
+      }
+      for (FunctionResponse functionResponse : event.functionResponses()) {
+        String responseId = functionResponse.id().orElse("");
+        Event callEvent = latestCallById.get(responseId);
+        if (callEvent == null) {
+          continue;
+        }
+        callsByResponse.computeIfAbsent(event, k -> new ArrayList<>()).add(callEvent);
+        if (presentEvents.contains(event)) {
+          survivingResponses.computeIfAbsent(callEvent, k -> new HashSet<>()).add(responseId);
+        }
+        // Keep the latest update for this call; equal timestamps retain source order.
+        Map<String, Event> responsesForCall =
+            responseByCall.computeIfAbsent(callEvent, k -> new HashMap<>());
+        Event existing = responsesForCall.get(responseId);
+        if (existing == null || event.timestamp() >= existing.timestamp()) {
+          responsesForCall.put(responseId, event);
+        }
+      }
+    }
+
+    List<Event> result = new ArrayList<>();
+    Set<Event> reinjectedCalls = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (Event event : events) {
+      for (Event callEvent : callsByResponse.getOrDefault(event, ImmutableList.of())) {
+        if (presentEvents.contains(callEvent) || !reinjectedCalls.add(callEvent)) {
+          continue;
+        }
+        result.add(callEvent);
+        Set<String> survivingForCall =
+            survivingResponses.getOrDefault(callEvent, ImmutableSet.of());
+        Map<String, Event> responsesForCall =
+            responseByCall.getOrDefault(callEvent, ImmutableMap.of());
+        Set<Event> siblingResponsesToAdd = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (FunctionCall siblingCall : callEvent.functionCalls()) {
+          String siblingId = siblingCall.id().orElse("");
+          if (!siblingId.isEmpty() && !survivingForCall.contains(siblingId)) {
+            Event siblingResponse = responsesForCall.get(siblingId);
+            if (siblingResponse != null) {
+              siblingResponsesToAdd.add(siblingResponse);
+            }
+          }
+        }
+        for (Event sourceEvent : sourceEvents) {
+          if (siblingResponsesToAdd.contains(sourceEvent)) {
+            result.add(sourceEvent);
+          }
+        }
+      }
+      result.add(event);
+    }
+    return result;
+  }
+
   /** Whether the event is a reply from another agent. */
   private static boolean isOtherAgentReply(String agentName, Event event) {
     return !agentName.isEmpty()
@@ -770,27 +851,25 @@ public final class Contents implements RequestProcessor {
 
   private static List<Event> rearrangeEventsForAsyncFunctionResponsesInHistory(
       List<Event> events, boolean groupFunctionResponses) {
-    Map<String, Integer> functionCallIdToResponseEventIndex = new HashMap<>();
+    // Pair each response with the latest preceding call of that ID, keeping the last update.
+    Map<String, Integer> latestCallIndexById = new HashMap<>();
+    Map<Integer, Map<String, Integer>> responseEventIndexByCall = new HashMap<>();
     for (int i = 0; i < events.size(); i++) {
-      final int index = i;
-      Event event = events.get(index);
-      event
-          .content()
-          .flatMap(Content::parts)
-          .ifPresent(
-              parts -> {
-                for (Part part : parts) {
-                  part.functionResponse()
-                      .ifPresent(
-                          response ->
-                              response
-                                  .id()
-                                  .ifPresent(
-                                      functionCallId ->
-                                          functionCallIdToResponseEventIndex.put(
-                                              functionCallId, index)));
-                }
-              });
+      final int eventIndex = i;
+      Event event = events.get(eventIndex);
+      for (FunctionCall call : event.functionCalls()) {
+        call.id().ifPresent(id -> latestCallIndexById.put(id, eventIndex));
+      }
+      for (FunctionResponse response : event.functionResponses()) {
+        response
+            .id()
+            .map(latestCallIndexById::get)
+            .ifPresent(
+                owningCallIndex ->
+                    responseEventIndexByCall
+                        .computeIfAbsent(owningCallIndex, k -> new HashMap<>())
+                        .put(response.id().get(), eventIndex));
+      }
     }
 
     List<Event> resultEvents = new ArrayList<>();
@@ -818,6 +897,8 @@ public final class Contents implements RequestProcessor {
               .orElse(false);
 
       if (hasFunctionCalls) {
+        Map<String, Integer> responsesForCall =
+            responseEventIndexByCall.getOrDefault(i, ImmutableMap.of());
         Set<Integer> responseEventIndices = new HashSet<>();
         // Iterate through parts again to get function call IDs
         partsOptional
@@ -830,11 +911,9 @@ public final class Contents implements RequestProcessor {
                                 call.id()
                                     .ifPresent(
                                         functionCallId -> {
-                                          if (functionCallIdToResponseEventIndex.containsKey(
-                                              functionCallId)) {
-                                            responseEventIndices.add(
-                                                functionCallIdToResponseEventIndex.get(
-                                                    functionCallId));
+                                          Integer respIdx = responsesForCall.get(functionCallId);
+                                          if (respIdx != null) {
+                                            responseEventIndices.add(respIdx);
                                           }
                                         })));
 

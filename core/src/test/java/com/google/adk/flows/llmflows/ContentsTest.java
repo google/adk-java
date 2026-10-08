@@ -743,6 +743,55 @@ public final class ContentsTest {
   }
 
   @Test
+  public void rearrangeHistory_reusedCallIdWithoutCompaction_pairsEachCallWithItsOwnResponse() {
+    Event fc1 = createFunctionCallEvent("fc1", "site_posture", "call_807");
+    Event fr1 =
+        createFunctionResponseEvent(
+            "fr1", "site_posture", "call_807", ImmutableMap.of("result", "site"));
+    Event fc2 = createFunctionCallEvent("fc2", "fleet_summary", "call_807");
+    Event fr2 =
+        createFunctionResponseEvent(
+            "fr2", "fleet_summary", "call_807", ImmutableMap.of("result", "fleet"));
+    Event u2 = createUserEvent("u2", "Follow-up question");
+    ImmutableList<Event> inputEvents = ImmutableList.of(fc1, fr1, fc2, fr2, u2);
+
+    List<Content> result = runContentsProcessor(inputEvents);
+
+    assertThat(result).hasSize(5);
+    assertThat(result.get(0)).isEqualTo(fc1.content().get());
+    assertThat(result.get(1)).isEqualTo(fr1.content().get());
+    assertThat(result.get(2)).isEqualTo(fc2.content().get());
+    assertThat(result.get(3)).isEqualTo(fr2.content().get());
+    assertThat(result.get(4)).isEqualTo(u2.content().get());
+  }
+
+  @Test
+  public void rearrangeHistory_reusedCallIdWithoutCompaction_keepsLastUpdatePerCall() {
+    Event fc1 = createFunctionCallEvent("fc1", "watch", "call_7");
+    Event fr1Progress =
+        createFunctionResponseEvent(
+            "fr1_progress", "watch", "call_7", ImmutableMap.of("result", "progress"));
+    Event fr1Done =
+        createFunctionResponseEvent(
+            "fr1_done", "watch", "call_7", ImmutableMap.of("result", "done"));
+    Event fc2 = createFunctionCallEvent("fc2", "watch", "call_7");
+    Event fr2 =
+        createFunctionResponseEvent(
+            "fr2", "watch", "call_7", ImmutableMap.of("result", "second_call"));
+    Event u2 = createUserEvent("u2", "Follow-up question");
+    ImmutableList<Event> inputEvents = ImmutableList.of(fc1, fr1Progress, fr1Done, fc2, fr2, u2);
+
+    List<Content> result = runContentsProcessor(inputEvents);
+
+    assertThat(result).hasSize(5);
+    assertThat(result.get(0)).isEqualTo(fc1.content().get());
+    assertThat(result.get(1)).isEqualTo(fr1Done.content().get());
+    assertThat(result.get(2)).isEqualTo(fc2.content().get());
+    assertThat(result.get(3)).isEqualTo(fr2.content().get());
+    assertThat(result.get(4)).isEqualTo(u2.content().get());
+  }
+
+  @Test
   public void processRequest_singleCompaction() {
     ImmutableList<Event> events =
         ImmutableList.of(
@@ -926,6 +975,439 @@ public final class ContentsTest {
         .comparingElementsUsing(
             transforming((Content c) -> c.parts().get().get(0).text().get(), "content text"))
         .containsExactly("C1", "C2", "E4", "E5");
+  }
+
+  @Test
+  public void processRequest_compaction_recoversCompactedFunctionCallForResumedResponse() {
+    Event u1 = createUserEvent("u1", "Start workflow", "inv1", 1);
+    Event fcEvent =
+        createFunctionCallEvent("fc1", "tool1", "call1").toBuilder().timestamp(2).build();
+    Event frPlaceholder =
+        createFunctionResponseEvent("fr1", "tool1", "call1", ImmutableMap.of("status", "pending"))
+            .toBuilder()
+            .timestamp(3)
+            .build();
+    Event compactionEvent = createCompactedEvent(1, 3, "Summary 1-3");
+    Event frResumed =
+        createFunctionResponseEvent("fr2", "tool1", "call1", ImmutableMap.of("result", "done"))
+            .toBuilder()
+            .timestamp(4)
+            .build();
+
+    ImmutableList<Event> events =
+        ImmutableList.of(u1, fcEvent, frPlaceholder, compactionEvent, frResumed);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(3);
+    assertThat(contents.get(0).parts().get().get(0).text()).hasValue("Summary 1-3");
+    assertThat(contents.get(1)).isEqualTo(fcEvent.content().get());
+    assertThat(contents.get(2)).isEqualTo(frResumed.content().get());
+  }
+
+  @Test
+  public void processRequest_compaction_recoversCompactedFunctionCallInHistory() {
+    Event u1 = createUserEvent("u1", "Start workflow", "inv1", 1);
+    Event fcEvent =
+        createFunctionCallEvent("fc1", "tool1", "call1").toBuilder().timestamp(2).build();
+    Event frPlaceholder =
+        createFunctionResponseEvent("fr1", "tool1", "call1", ImmutableMap.of("status", "pending"))
+            .toBuilder()
+            .timestamp(3)
+            .build();
+    Event compactionEvent = createCompactedEvent(1, 3, "Summary 1-3");
+    Event frResumed =
+        createFunctionResponseEvent("fr2", "tool1", "call1", ImmutableMap.of("result", "done"))
+            .toBuilder()
+            .timestamp(4)
+            .build();
+    Event u2 = createUserEvent("u2", "Follow up", "inv2", 5);
+
+    ImmutableList<Event> events =
+        ImmutableList.of(u1, fcEvent, frPlaceholder, compactionEvent, frResumed, u2);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(4);
+    assertThat(contents.get(0).parts().get().get(0).text()).hasValue("Summary 1-3");
+    assertThat(contents.get(1)).isEqualTo(fcEvent.content().get());
+    assertThat(contents.get(2)).isEqualTo(frResumed.content().get());
+    assertThat(contents.get(3)).isEqualTo(u2.content().get());
+  }
+
+  @Test
+  public void processRequest_compaction_recoversParallelFunctionCallWithLatestSiblingResponse() {
+    Event u1 = createUserEvent("u1", "Start parallel workflows", "inv1", 1);
+    Event parallelFc =
+        createParallelFunctionCallEvent("fc1", "tool1", "call1", "tool2", "call2").toBuilder()
+            .timestamp(2)
+            .build();
+    Event fr2Placeholder =
+        createFunctionResponseEvent(
+                "fr2_pending", "tool2", "call2", ImmutableMap.of("status", "pending"))
+            .toBuilder()
+            .timestamp(3)
+            .build();
+    Event fr2Done =
+        createFunctionResponseEvent(
+                "fr2_done", "tool2", "call2", ImmutableMap.of("result", "done-2"))
+            .toBuilder()
+            .timestamp(4)
+            .build();
+    Event compactionEvent = createCompactedEvent(1, 4, "Summary 1-4");
+    Event fr1Done =
+        createFunctionResponseEvent(
+                "fr1_done", "tool1", "call1", ImmutableMap.of("result", "done-1"))
+            .toBuilder()
+            .timestamp(5)
+            .build();
+
+    ImmutableList<Event> events =
+        ImmutableList.of(u1, parallelFc, fr2Placeholder, fr2Done, compactionEvent, fr1Done);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(3);
+    assertThat(contents.get(0).parts().get().get(0).text()).hasValue("Summary 1-4");
+    assertThat(contents.get(1)).isEqualTo(parallelFc.content().get());
+    Content mergedResponse = contents.get(2);
+    assertThat(mergedResponse.parts().get()).hasSize(2);
+    assertThat(mergedResponse.parts().get().get(0).functionResponse().get().response().get())
+        .containsExactly("result", "done-2");
+    assertThat(mergedResponse.parts().get().get(1).functionResponse().get().response().get())
+        .containsExactly("result", "done-1");
+  }
+
+  @Test
+  public void processRequest_compaction_reinjectsSharedParallelCallEventOnlyOnce() {
+    Event u1 = createUserEvent("u1", "Start parallel workflows", "inv1", 1);
+    Event parallelFc =
+        createParallelFunctionCallEvent("fc1", "tool1", "call1", "tool2", "call2").toBuilder()
+            .timestamp(2)
+            .build();
+    Event compactionEvent = createCompactedEvent(1, 2, "Summary 1-2");
+    Event fr1Done =
+        createFunctionResponseEvent(
+                "fr1_done", "tool1", "call1", ImmutableMap.of("result", "done-1"))
+            .toBuilder()
+            .timestamp(3)
+            .build();
+    Event fr2Done =
+        createFunctionResponseEvent(
+                "fr2_done", "tool2", "call2", ImmutableMap.of("result", "done-2"))
+            .toBuilder()
+            .timestamp(4)
+            .build();
+
+    ImmutableList<Event> events =
+        ImmutableList.of(u1, parallelFc, compactionEvent, fr1Done, fr2Done);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(3);
+    assertThat(contents.get(0).parts().get().get(0).text()).hasValue("Summary 1-2");
+    assertThat(contents.get(1)).isEqualTo(parallelFc.content().get());
+    Content mergedResponse = contents.get(2);
+    assertThat(mergedResponse.parts().get()).hasSize(2);
+    assertThat(mergedResponse.parts().get().get(0).functionResponse().get().response().get())
+        .containsExactly("result", "done-1");
+    assertThat(mergedResponse.parts().get().get(1).functionResponse().get().response().get())
+        .containsExactly("result", "done-2");
+  }
+
+  @Test
+  public void processRequest_compaction_deduplicatesAndOrdersMergedSiblingResponses() {
+    Event u1 = createUserEvent("u1", "Start three parallel calls", "inv1", 1);
+    Event parallelFc =
+        Event.builder()
+            .id("fc1")
+            .invocationId("inv1")
+            .author(AGENT)
+            .timestamp(2)
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder().name("tool1").id("call1").build())
+                                .build(),
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder().name("tool2").id("call2").build())
+                                .build(),
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder().name("tool3").id("call3").build())
+                                .build()))
+                    .build())
+            .build();
+    Event initialMergedResponse =
+        Event.builder()
+            .id("fr_init")
+            .invocationId("inv1")
+            .author(USER)
+            .timestamp(3)
+            .content(
+                Content.builder()
+                    .role(USER)
+                    .parts(
+                        ImmutableList.of(
+                            Part.builder()
+                                .functionResponse(
+                                    FunctionResponse.builder()
+                                        .name("tool1")
+                                        .id("call1")
+                                        .response(ImmutableMap.of("status", "pending"))
+                                        .build())
+                                .build(),
+                            Part.builder()
+                                .functionResponse(
+                                    FunctionResponse.builder()
+                                        .name("tool2")
+                                        .id("call2")
+                                        .response(ImmutableMap.of("result", "done-2"))
+                                        .build())
+                                .build(),
+                            Part.builder()
+                                .functionResponse(
+                                    FunctionResponse.builder()
+                                        .name("tool3")
+                                        .id("call3")
+                                        .response(ImmutableMap.of("status", "pending"))
+                                        .build())
+                                .build()))
+                    .build())
+            .build();
+    Event call1Done =
+        createFunctionResponseEvent(
+                "fr1_done", "tool1", "call1", ImmutableMap.of("result", "done-1"))
+            .toBuilder()
+            .timestamp(4)
+            .build();
+    Event compactionEvent = createCompactedEvent(1, 4, "Summary 1-4");
+    Event call3Done =
+        createFunctionResponseEvent(
+                "fr3_done", "tool3", "call3", ImmutableMap.of("result", "done-3"))
+            .toBuilder()
+            .timestamp(5)
+            .build();
+
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            u1, parallelFc, initialMergedResponse, call1Done, compactionEvent, call3Done);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(3);
+    assertThat(contents.get(0).parts().get().get(0).text()).hasValue("Summary 1-4");
+    assertThat(contents.get(1)).isEqualTo(parallelFc.content().get());
+    Content mergedResponse = contents.get(2);
+    assertThat(mergedResponse.parts().get()).hasSize(3);
+    assertThat(mergedResponse.parts().get().get(0).functionResponse().get().response().get())
+        .containsExactly("result", "done-1");
+    assertThat(mergedResponse.parts().get().get(1).functionResponse().get().response().get())
+        .containsExactly("result", "done-2");
+    assertThat(mergedResponse.parts().get().get(2).functionResponse().get().response().get())
+        .containsExactly("result", "done-3");
+  }
+
+  @Test
+  public void processRequest_compaction_reusedCallIdForMultipleResponsesOfSingleLongRunningTool() {
+    Event u1 = createUserEvent("u1", "Start long workflow", "inv1", 1);
+    Event fcEvent =
+        createFunctionCallEvent("fc1", "workflow_tool", "call1").toBuilder().timestamp(2).build();
+    Event frPending =
+        createFunctionResponseEvent(
+                "fr1", "workflow_tool", "call1", ImmutableMap.of("status", "pending"))
+            .toBuilder()
+            .timestamp(3)
+            .build();
+    Event compactionEvent = createCompactedEvent(1, 3, "Summary 1-3");
+    Event frProgress =
+        createFunctionResponseEvent(
+                "fr2", "workflow_tool", "call1", ImmutableMap.of("status", "running"))
+            .toBuilder()
+            .timestamp(4)
+            .build();
+    Event frFinal =
+        createFunctionResponseEvent(
+                "fr3", "workflow_tool", "call1", ImmutableMap.of("result", "completed"))
+            .toBuilder()
+            .timestamp(5)
+            .build();
+
+    ImmutableList<Event> events =
+        ImmutableList.of(u1, fcEvent, frPending, compactionEvent, frProgress, frFinal);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(3);
+    assertThat(contents.get(0).parts().get().get(0).text()).hasValue("Summary 1-3");
+    assertThat(contents.get(1)).isEqualTo(fcEvent.content().get());
+    assertThat(contents.get(2).parts().get()).hasSize(1);
+    assertThat(contents.get(2).parts().get().get(0).functionResponse().get().response().get())
+        .containsExactly("result", "completed");
+  }
+
+  @Test
+  public void processRequest_compaction_reusedCallIdAcrossTurns_pairsWithLatestPrecedingCall() {
+    Event oldCall =
+        createAgentEventWithTextAndFunctionCall(
+                AGENT, "fc_old", "Old call", "lookup", "shared", ImmutableMap.of("item", "old"))
+            .toBuilder()
+            .timestamp(1)
+            .build();
+    Event oldResponse =
+        createFunctionResponseEvent(
+                "fr_old", "lookup", "shared", ImmutableMap.of("result", "old-result"))
+            .toBuilder()
+            .timestamp(2)
+            .build();
+    Event currentCall =
+        createAgentEventWithTextAndFunctionCall(
+                AGENT,
+                "fc_current",
+                "Current call",
+                "lookup",
+                "shared",
+                ImmutableMap.of("item", "current"))
+            .toBuilder()
+            .timestamp(3)
+            .build();
+    Event pendingResponse =
+        createFunctionResponseEvent(
+                "fr_pending", "lookup", "shared", ImmutableMap.of("status", "pending"))
+            .toBuilder()
+            .timestamp(4)
+            .build();
+    Event compactionEvent = createCompactedEvent(3, 4, "Summary 3-4");
+    Event resumedResponse =
+        createFunctionResponseEvent(
+                "fr_resumed", "lookup", "shared", ImmutableMap.of("result", "current-result"))
+            .toBuilder()
+            .timestamp(5)
+            .build();
+
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            oldCall, oldResponse, currentCall, pendingResponse, compactionEvent, resumedResponse);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(5);
+    assertThat(contents.get(0)).isEqualTo(oldCall.content().get());
+    assertThat(contents.get(1)).isEqualTo(oldResponse.content().get());
+    assertThat(contents.get(2).parts().get().get(0).text()).hasValue("Summary 3-4");
+    assertThat(contents.get(3)).isEqualTo(currentCall.content().get());
+    assertThat(contents.get(4)).isEqualTo(resumedResponse.content().get());
+  }
+
+  @Test
+  public void
+      processRequest_compaction_recoveredParallelCallKeepsItsOwnSiblingResultWhenIdReused() {
+    Event parallelCall =
+        createParallelFunctionCallEvent("fc_parallel", "wait", "pending-1", "done", "reused")
+            .toBuilder()
+            .timestamp(1)
+            .build();
+    Event siblingResponse =
+        createFunctionResponseEvent(
+                "fr_sibling", "done", "reused", ImmutableMap.of("result", "first"))
+            .toBuilder()
+            .timestamp(2)
+            .build();
+    Event laterCall =
+        createFunctionCallEvent("fc_later", "done", "reused").toBuilder().timestamp(3).build();
+    Event laterResponse =
+        createFunctionResponseEvent(
+                "fr_later", "done", "reused", ImmutableMap.of("result", "second"))
+            .toBuilder()
+            .timestamp(4)
+            .build();
+    Event compactionEvent = createCompactedEvent(1, 4, "Summary 1-4");
+    Event resumedResponse =
+        createFunctionResponseEvent(
+                "fr_resumed", "wait", "pending-1", ImmutableMap.of("result", "finally"))
+            .toBuilder()
+            .timestamp(5)
+            .build();
+
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            parallelCall,
+            siblingResponse,
+            laterCall,
+            laterResponse,
+            compactionEvent,
+            resumedResponse);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(3);
+    assertThat(contents.get(0).parts().get().get(0).text()).hasValue("Summary 1-4");
+    assertThat(contents.get(1)).isEqualTo(parallelCall.content().get());
+    Content mergedResponse = contents.get(2);
+    assertThat(mergedResponse.parts().get()).hasSize(2);
+    assertThat(mergedResponse.parts().get().get(0).functionResponse().get().response().get())
+        .containsExactly("result", "first");
+    assertThat(mergedResponse.parts().get().get(1).functionResponse().get().response().get())
+        .containsExactly("result", "finally");
+  }
+
+  @Test
+  public void processRequest_compaction_ignoresResponsesWithoutMatchingCallOrId() {
+    Event fcEmptyId =
+        createFunctionCallEvent("fc_empty", "tool_empty", "").toBuilder().timestamp(1).build();
+    Event fcEvent =
+        createFunctionCallEvent("fc1", "tool1", "call1").toBuilder().timestamp(2).build();
+    Event compactionEvent = createCompactedEvent(1, 2, "Summary 1-2");
+    Event frMixed =
+        Event.builder()
+            .id("fr_mixed")
+            .invocationId("inv1")
+            .author(AGENT)
+            .timestamp(3)
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .name("tool_empty")
+                                .id("")
+                                .response(ImmutableMap.of("status", "ignored"))
+                                .build())
+                        .build(),
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .name("tool_orphan")
+                                .id("orphan")
+                                .response(ImmutableMap.of("status", "unmatched"))
+                                .build())
+                        .build(),
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .name("tool1")
+                                .id("call1")
+                                .response(ImmutableMap.of("result", "done"))
+                                .build())
+                        .build()))
+            .build();
+    Event u2 = createUserEvent("u2", "Follow up", "inv2", 4);
+
+    ImmutableList<Event> events =
+        ImmutableList.of(fcEmptyId, fcEvent, compactionEvent, frMixed, u2);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents).hasSize(4);
+    assertThat(contents.get(0).parts().get().get(0).text()).hasValue("Summary 1-2");
+    assertThat(contents.get(1)).isEqualTo(fcEvent.content().get());
+    assertThat(contents.get(2)).isEqualTo(frMixed.content().get());
+    assertThat(contents.get(3)).isEqualTo(u2.content().get());
   }
 
   @Test
@@ -1900,14 +2382,6 @@ public final class ContentsTest {
         .build();
   }
 
-  private static Part otherAgentPreamblePart() {
-    return Part.fromText(Fencing.OTHER_AGENT_CONTEXT_PREAMBLE);
-  }
-
-  private static Part otherAgentPart(String attribution, String payload) {
-    return Part.fromText(attribution + "\n" + Fencing.quoteUntrusted(payload));
-  }
-
   private static Event createUserEvent(
       String id, String text, String invocationId, long timestamp) {
     return Event.builder()
@@ -1917,6 +2391,14 @@ public final class ContentsTest {
         .invocationId(invocationId)
         .timestamp(timestamp)
         .build();
+  }
+
+  private static Part otherAgentPreamblePart() {
+    return Part.fromText(Fencing.OTHER_AGENT_CONTEXT_PREAMBLE);
+  }
+
+  private static Part otherAgentPart(String attribution, String payload) {
+    return Part.fromText(attribution + "\n" + Fencing.quoteUntrusted(payload));
   }
 
   private static Event createModelEvent(String id, Part part) {
