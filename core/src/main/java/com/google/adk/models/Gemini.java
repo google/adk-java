@@ -276,7 +276,15 @@ public class Gemini extends BaseLlm {
     llmRequest =
         GeminiUtil.prepareGenenerateContentRequest(
             llmRequest, !apiClient.vertexAI(), /* stripThoughts= */ false);
-    GenerateContentConfig config = llmRequest.config().orElse(null);
+    // GeminiContinuation resumes paused generations itself, so the SDK's own loop, on by default,
+    // is turned off for every request, resumed ones included.
+    GenerateContentConfig config =
+        llmRequest
+            .config()
+            .map(GenerateContentConfig::toBuilder)
+            .orElseGet(GenerateContentConfig::builder)
+            .automaticContinuation(false)
+            .build();
     String effectiveModelName = llmRequest.model().orElse(model());
 
     logger.trace("Request Contents: {}", llmRequest.contents());
