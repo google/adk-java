@@ -1,0 +1,43 @@
+name: MySQL session service integration
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "contrib/mysql-session-service/**"
+      - "core/**"
+      - "pom.xml"
+      - ".mvn/**"
+      - ".github/workflows/mysql-session-service-integration.yml"
+      - "mvnw"
+      - "mvnw.cmd"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mysql-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Install ADK core without tests
+        run: ./mvnw -pl core -am -DskipTests install
+
+      - name: Run MySQL unit and container integration tests
+        run: ./mvnw -pl contrib/mysql-session-service -Pintegration-tests verify
