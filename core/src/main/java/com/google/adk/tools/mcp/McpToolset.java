@@ -62,6 +62,22 @@ public class McpToolset implements BaseToolset {
   protected static final Class<? extends McpToolsetConfig> CONFIG_TYPE = McpToolsetConfig.class;
 
   /**
+   * System property that lets an operator forbid agent configs from declaring local (stdio) MCP
+   * servers without modifying the embedding application. Setting it to {@code false} turns the
+   * rejection on; any other value leaves the historical behaviour in place.
+   */
+  private static final String ALLOW_CONFIG_STDIO_PROPERTY = "adk.mcp.allowConfigStdioServers";
+
+  /**
+   * Whether an agent config may declare a local (stdio) MCP server. Defaults to {@code true}, the
+   * behaviour restored in #1360, so existing configs keep working unchanged. It can be turned off
+   * at launch with {@code -Dadk.mcp.allowConfigStdioServers=false}, or at runtime with {@link
+   * #setAllowConfigStdioServers}.
+   */
+  private static volatile boolean allowConfigStdioServers =
+      !"false".equalsIgnoreCase(System.getProperty(ALLOW_CONFIG_STDIO_PROPERTY));
+
+  /**
    * Initializes the McpToolset with SSE server parameters.
    *
    * @param connectionParams The SSE connection parameters to the MCP server.
@@ -416,6 +432,19 @@ public class McpToolset implements BaseToolset {
                 + " for McpToolset");
       }
 
+      if ((mcpToolsetConfig.stdioServerParams() != null
+              || mcpToolsetConfig.stdioConnectionParams() != null)
+          && !allowConfigStdioServers) {
+        throw new ConfigurationException(
+            "Refusing to start a local MCP server declared in an agent config."
+                + " stdioServerParams and stdioConnectionParams launch the config-supplied command"
+                + " as a local process while tools are resolved, before the model is contacted."
+                + " This rejection is disabled by default; it is active because"
+                + " McpToolset.setAllowConfigStdioServers(false) was called or -D"
+                + ALLOW_CONFIG_STDIO_PROPERTY
+                + "=false was set. Remote transports (sseServerParams) are unaffected.");
+      }
+
       List<String> toolNames = mcpToolsetConfig.toolFilter();
       Object connectionParameters = resolveConnectionParameters(mcpToolsetConfig);
 
@@ -428,6 +457,16 @@ public class McpToolset implements BaseToolset {
     } catch (IllegalArgumentException e) {
       throw new ConfigurationException("Failed to parse McpToolsetConfig from ToolArgsConfig", e);
     }
+  }
+
+  /**
+   * Allows or forbids agent configs to declare local (stdio) MCP servers. The default is {@code
+   * true}, matching the behaviour of previous releases. Applications that load agent configs they
+   * did not author call this with {@code false} at startup, so a config cannot launch a local
+   * process during tool resolution.
+   */
+  public static void setAllowConfigStdioServers(boolean allow) {
+    allowConfigStdioServers = allow;
   }
 
   /**
