@@ -26,6 +26,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.common.collect.ImmutableList;
@@ -380,5 +381,64 @@ public final class LoopAgentTest {
     // Paused on the long-running call: no end-of-agent, and the loop did not run 5 iterations.
     assertThat(events.stream().anyMatch(event -> event.actions().endOfAgent())).isFalse();
     assertThat(events.stream().filter(event -> event.author().equals("sub")).count()).isEqualTo(1L);
+  }
+
+  @Test
+  public void runAsync_nonPositiveMaxIterations_notResumable_runsNoIterations() {
+    for (int maxIterations : new int[] {0, -1}) {
+      LoopAgent loopAgent = createLoopAgent(maxIterations);
+
+      List<Event> events =
+          loopAgent.runAsync(createInvocationContext(loopAgent)).toList().blockingGet();
+
+      assertThat(events).isEmpty();
+    }
+  }
+
+  @Test
+  public void runAsync_nonPositiveMaxIterations_legacyResumption_runsNoIterations() {
+    for (int maxIterations : new int[] {0, -1}) {
+      LoopAgent loopAgent = createLoopAgent(maxIterations);
+
+      List<Event> events =
+          loopAgent
+              .runAsync(createLegacyResumableInvocationContext(loopAgent))
+              .toList()
+              .blockingGet();
+
+      assertThat(events).isEmpty();
+    }
+  }
+
+  @Test
+  public void runAsync_nonPositiveMaxIterations_resumable_onlyEmitsEndOfAgent() {
+    for (int maxIterations : new int[] {0, -1}) {
+      LoopAgent loopAgent = createLoopAgent(maxIterations);
+
+      List<Event> events =
+          loopAgent.runAsync(createResumableInvocationContext(loopAgent)).toList().blockingGet();
+
+      assertThat(events).hasSize(1);
+      assertThat(events.get(0).author()).isEqualTo("loop");
+      assertThat(events.get(0).actions().endOfAgent()).isTrue();
+    }
+  }
+
+  private static LoopAgent createLoopAgent(int maxIterations) {
+    TestBaseAgent subAgent =
+        createSubAgent("sub", createEvent("e").toBuilder().author("sub").build());
+    return LoopAgent.builder()
+        .name("loop")
+        .subAgents(subAgent)
+        .maxIterations(maxIterations)
+        .build();
+  }
+
+  @SuppressWarnings("deprecation") // The legacy resumption flow is deprecated by design.
+  private static InvocationContext createLegacyResumableInvocationContext(LoopAgent loopAgent) {
+    return createInvocationContext(loopAgent).toBuilder()
+        .resumabilityConfig(
+            ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build())
+        .build();
   }
 }
