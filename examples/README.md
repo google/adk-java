@@ -13,6 +13,8 @@ contains more complete end-to-end samples for customers to use or modify.
 -   [`a2a_server`](a2a_server/README.md): an ADK agent served over A2A with
     Quarkus.
 -   [`configagent`](configagent/README.md): agents defined in YAML config files.
+-   [`contextcaching`](contextcaching/README.md): Gemini context caching that
+    reuses and refreshes a cache across turns.
 -   [`helloworld`](helloworld/README.md): a minimal agent with dice-rolling and
     prime-checking tools.
 -   [`mcpfilesystem`](mcpfilesystem/README.md): an agent that uses the MCP

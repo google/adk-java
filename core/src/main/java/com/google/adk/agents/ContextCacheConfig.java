@@ -15,45 +15,90 @@
  */
 package com.google.adk.agents;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import com.google.errorprone.annotations.InlineMe;
+import com.google.genai.types.HttpOptions;
 import java.time.Duration;
+import org.jspecify.annotations.Nullable;
 
 /**
- * Configuration for context caching across all agents in an app.
+ * Configuration for context caching across all agents in an app; without it, nothing is cached.
+ * Gemini models cache the stable prefix of an agent's requests from its second request on, once
+ * that prefix reaches the model's minimum: 2048 tokens for Gemini 2.5, 4096 for Gemini 3. Other
+ * models ignore this config, and a cache carries over to the next invocation only with a session
+ * service that stores whole events, such as {@code InMemorySessionService}.
  *
- * <p>This configuration enables and controls context caching behavior for all LLM agents in an app.
- * When this config is present on an app, context caching is enabled for all agents. When absent
- * (null), context caching is disabled.
- *
- * <p>Context caching can significantly reduce costs and improve response times by reusing
- * previously processed context across multiple requests.
- *
- * @param maxInvocations Maximum number of invocations to reuse the same cache before refreshing it.
- *     Defaults to 10.
- * @param ttl Time-to-live for cache. Defaults to 1800 seconds (30 minutes).
- * @param minTokens Minimum estimated request tokens required to enable caching. This compares
- *     against the estimated total tokens of the request (system instruction + tools + contents).
- *     Context cache storage may have cost. Set higher to avoid caching small requests where
- *     overhead may exceed benefits. Defaults to 0.
+ * @param cacheIntervals Maximum number of invocations to reuse the same cache before refreshing it,
+ *     from 1 to 100. Defaults to 10.
+ * @param ttl Time-to-live for cache; a whole number of seconds, at least one. Defaults to 1800
+ *     seconds (30 minutes).
+ * @param minTokens Minimum prompt token count of the agent's previous request needed to create a
+ *     cache; raise it to skip small requests, where cache storage can cost more than it saves. Must
+ *     not be negative. Defaults to 0.
+ * @param createHttpOptions HTTP options, such as a timeout, for the call that creates a cache; null
+ *     uses the client's defaults. If that call fails, the request is sent without a cache. Defaults
+ *     to null.
  */
-public record ContextCacheConfig(int maxInvocations, Duration ttl, int minTokens) {
+public record ContextCacheConfig(
+    int cacheIntervals, Duration ttl, int minTokens, @Nullable HttpOptions createHttpOptions) {
 
-  public ContextCacheConfig() {
-    this(10, Duration.ofSeconds(1800), 0);
+  /**
+   * Validates the config as ADK Python does.
+   *
+   * @throws IllegalArgumentException if a value is out of range
+   * @throws NullPointerException if {@code ttl} is null
+   */
+  public ContextCacheConfig {
+    checkArgument(
+        cacheIntervals >= 1 && cacheIntervals <= 100,
+        "cacheIntervals must be between 1 and 100, but was %s.",
+        cacheIntervals);
+    checkNotNull(ttl, "ttl must not be null.");
+    checkArgument(
+        ttl.compareTo(Duration.ofSeconds(1)) >= 0 && ttl.toNanosPart() == 0,
+        "ttl must be a whole number of seconds, at least one, but was %s.",
+        ttl);
+    checkArgument(minTokens >= 0, "minTokens must not be negative, but was %s.", minTokens);
   }
 
-  /** Returns TTL as string format for cache creation. */
+  public ContextCacheConfig() {
+    this(10, Duration.ofMinutes(30), 0);
+  }
+
+  /** Creates a config that creates caches with the client's default HTTP options. */
+  public ContextCacheConfig(int cacheIntervals, Duration ttl, int minTokens) {
+    this(cacheIntervals, ttl, minTokens, /* createHttpOptions= */ null);
+  }
+
+  /**
+   * Returns {@link #cacheIntervals()}.
+   *
+   * @deprecated Use {@link #cacheIntervals()}, the name ADK Python and ADK Kotlin use.
+   */
+  @Deprecated
+  @InlineMe(replacement = "this.cacheIntervals()")
+  public int maxInvocations() {
+    return cacheIntervals();
+  }
+
+  /** Returns the TTL in the {@code "<seconds>s"} form that the Gemini API uses. */
   public String getTtlString() {
-    return ttl.getSeconds() + "s";
+    return ttl.toSeconds() + "s";
   }
 
   @Override
   public String toString() {
-    return "ContextCacheConfig(maxInvocations="
-        + maxInvocations
+    // Says only whether HTTP options are set, since their headers can carry credentials.
+    return "ContextCacheConfig(cacheIntervals="
+        + cacheIntervals
         + ", ttl="
-        + ttl.getSeconds()
+        + ttl.toSeconds()
         + "s, minTokens="
         + minTokens
+        + ", createHttpOptions="
+        + (createHttpOptions == null ? "null" : "set")
         + ")";
   }
 }
