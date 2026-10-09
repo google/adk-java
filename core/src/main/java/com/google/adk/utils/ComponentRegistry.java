@@ -296,12 +296,6 @@ public class ComponentRegistry {
   }
 
   /**
-   * Resolves the tool instance based on the tool name from the configuration.
-   *
-   * @param name the name of the tool from the config
-   * @return an Optional containing the tool instance if found, empty otherwise
-   */
-  /**
    * Resolves a toolset instance by name from the registry.
    *
    * @param name The name of the toolset instance to resolve.
@@ -311,6 +305,12 @@ public class ComponentRegistry {
     return resolveInstance(name, "tools", BaseToolset.class);
   }
 
+  /**
+   * Resolves the tool instance based on the tool name from the configuration.
+   *
+   * @param name the name of the tool from the config
+   * @return an Optional containing the tool instance if found, empty otherwise
+   */
   public static Optional<BaseTool> resolveToolInstance(String name) {
     return resolveInstance(name, "tools", BaseTool.class);
   }
