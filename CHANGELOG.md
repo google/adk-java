@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.12.0](https://github.com/google/adk-java/compare/v1.11.0...v1.12.0) (2026-10-09)
+
+
+### Features
+
+* add an injectable scheduler for ADK's internal fan-out ([1b89d23](https://github.com/google/adk-java/commit/1b89d23b78c09b87b0dd7d2d7daac866fd9fc5c0))
+* add Context as the common base of CallbackContext and ToolContext ([1309d38](https://github.com/google/adk-java/commit/1309d3841b5609943aa5c88b8b8d4b986646e9c6))
+* add injectable time and UUID providers for timestamps and ids ([caccc7c](https://github.com/google/adk-java/commit/caccc7cbbc3198b35bd769d20d72c1cd68a08d4c))
+* add the experimental Node and BaseNode workflow types ([189d463](https://github.com/google/adk-java/commit/189d463a9988d5235ccf34de6a6fab1aae779d20))
+* add the workflow fields Event.output, Event.nodeInfo and EventActions.route ([e823fba](https://github.com/google/adk-java/commit/e823fbac72f8ab2829a0a128686047fb1f3dc420))
+* carry the continuation token across the Kotlin engine interop ([b3f0665](https://github.com/google/adk-java/commit/b3f0665288a9a388ec5c323733df460be9aaeaa1))
+
+
+### Bug Fixes
+
+* **a2a:** skip an unconvertible remote A2A part instead of failing the turn ([9debe96](https://github.com/google/adk-java/commit/9debe96751165fbf63f41858f87ae8deddcff7e4))
+* run approved tool confirmations for agents under a ParallelAgent ([f866804](https://github.com/google/adk-java/commit/f866804518e6fd2bb2ebb206bcb11007f17dca98))
+* send MCP tool input schemas in chat completions requests ([ce88237](https://github.com/google/adk-java/commit/ce882374918a96ff1d306bab38cbdd3eb77c071d))
+* **spring-ai:** order SpringAIAutoConfiguration after Spring AI model auto-configurations ([d342a95](https://github.com/google/adk-java/commit/d342a959fee63723dc6a81e734a4c34eda674290))
+* stop losing event fields on Vertex AI session reloads ([887f9da](https://github.com/google/adk-java/commit/887f9da87e48b072cbf68936141294373d9f7c4e))
+* wait for the transfer event to be persisted before running the transfer target ([9f5d5ce](https://github.com/google/adk-java/commit/9f5d5ce736c9a9aff7f5ae5b4390c93507519e68))
+
 ## [1.11.0](https://github.com/google/adk-java/compare/v1.10.1...v1.11.0) (2026-10-02)
 
 
