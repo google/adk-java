@@ -201,9 +201,13 @@ public class WebMojo extends AbstractMojo {
    * <p>Example:
    *
    * <pre>{@code
-   * mvn google-adk:web -Dagents=... -DextraPlugins=com.google.adk.plugins.ReplayPlugin
+   * mvn google-adk:web -Dagents=... -DextraPlugins=com.google.adk.plugins.ReplayPlugin -Dadk.replay.root=/path/to/conformance
    * mvn google-adk:web -Dagents=... -DextraPlugins=com.google.adk.plugins.ReplayPlugin,com.example.CustomPlugin
    * }</pre>
+   *
+   * <p>{@code ReplayPlugin} takes its case directory from the request, so it only loads recordings
+   * from inside {@code -Dadk.replay.root} (the working directory when that is unset). Point it at
+   * the directory holding the conformance cases, otherwise every replay request is rejected.
    */
   @Parameter(property = "extraPlugins")
   private String extraPlugins;
