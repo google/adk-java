@@ -86,6 +86,8 @@ public abstract class RunConfig {
 
   public abstract int maxLlmCalls();
 
+  public abstract RetryConfig retryConfig();
+
   public abstract boolean autoCreateSession();
 
   /**
@@ -128,6 +130,7 @@ public abstract class RunConfig {
         .streamingMode(StreamingMode.NONE)
         .toolExecutionMode(ToolExecutionMode.NONE)
         .maxLlmCalls(500)
+        .retryConfig(RetryConfig.disabled())
         .autoCreateSession(false)
         .customMetadata(ImmutableMap.of());
   }
@@ -139,6 +142,7 @@ public abstract class RunConfig {
         .streamingMode(runConfig.streamingMode())
         .toolExecutionMode(runConfig.toolExecutionMode())
         .maxLlmCalls(runConfig.maxLlmCalls())
+        .retryConfig(runConfig.retryConfig())
         .responseModalities(runConfig.responseModalities())
         .speechConfig(runConfig.speechConfig())
         .avatarConfig(runConfig.avatarConfig())
@@ -232,6 +236,9 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder maxLlmCalls(int maxLlmCalls);
+
+    @CanIgnoreReturnValue
+    public abstract Builder retryConfig(RetryConfig retryConfig);
 
     @Deprecated
     @CanIgnoreReturnValue

@@ -31,10 +31,13 @@ import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.ReadonlyContext;
+import com.google.adk.agents.RetryConfig;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
+import com.google.adk.models.BaseLlm;
+import com.google.adk.models.BaseLlmConnection;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.testing.TestLlm;
@@ -59,11 +62,15 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
+import java.util.function.IntFunction;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -87,6 +94,185 @@ public final class BaseLlmFlowTest {
     assertThat(event.avgLogprobs()).isEmpty();
     assertThat(event.finishReason()).isEmpty();
     assertThat(event.usageMetadata()).isEmpty();
+  }
+
+  @Test
+  public void run_retryConfig_retriesRetryableFailure() {
+    Content content = Content.fromParts(Part.fromText("LLM response"));
+    RetryTestLlm testLlm =
+        new RetryTestLlm(
+            attempt ->
+                attempt == 1
+                    ? Flowable.error(new RuntimeException(new IOException("temporary")))
+                    : Flowable.just(createLlmResponse(content)));
+    RunConfig runConfig =
+        RunConfig.builder()
+            .retryConfig(
+                RetryConfig.builder()
+                    .maxAttempts(3)
+                    .initialBackoff(java.time.Duration.ZERO)
+                    .maxBackoff(java.time.Duration.ZERO)
+                    .build())
+            .build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(testLlm), runConfig);
+
+    List<Event> events =
+        createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).content()).hasValue(content);
+    assertThat(testLlm.attempts()).isEqualTo(2);
+  }
+
+  @Test
+  public void run_retryConfig_retriesConfiguredStatusCode() {
+    Content content = Content.fromParts(Part.fromText("LLM response"));
+    RetryTestLlm testLlm =
+        new RetryTestLlm(
+            attempt ->
+                attempt == 1
+                    ? Flowable.error(new StatusCodeException(429))
+                    : Flowable.just(createLlmResponse(content)));
+    RunConfig runConfig =
+        RunConfig.builder()
+            .retryConfig(
+                RetryConfig.builder()
+                    .maxAttempts(2)
+                    .initialBackoff(java.time.Duration.ZERO)
+                    .maxBackoff(java.time.Duration.ZERO)
+                    .retryableStatusCodes(Set.of(429))
+                    .build())
+            .build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(testLlm), runConfig);
+
+    List<Event> events =
+        createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(testLlm.attempts()).isEqualTo(2);
+  }
+
+  @Test
+  public void run_retryConfig_disabledByDefault_doesNotRetry() {
+    RetryTestLlm testLlm =
+        new RetryTestLlm(attempt -> Flowable.error(new IOException("temporary")));
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+
+    createBaseLlmFlowWithoutProcessors()
+        .run(invocationContext)
+        .test()
+        .awaitDone(5, TimeUnit.SECONDS)
+        .assertError(IOException.class);
+
+    assertThat(testLlm.attempts()).isEqualTo(1);
+  }
+
+  @Test
+  public void run_retryConfig_doesNotRetryNonRetryableFailure() {
+    RetryTestLlm testLlm =
+        new RetryTestLlm(
+            attempt -> Flowable.error(new IllegalArgumentException("invalid request")));
+    RunConfig runConfig =
+        RunConfig.builder()
+            .retryConfig(
+                RetryConfig.builder()
+                    .maxAttempts(3)
+                    .initialBackoff(java.time.Duration.ZERO)
+                    .maxBackoff(java.time.Duration.ZERO)
+                    .build())
+            .build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(testLlm), runConfig);
+
+    createBaseLlmFlowWithoutProcessors()
+        .run(invocationContext)
+        .test()
+        .assertError(IllegalArgumentException.class);
+
+    assertThat(testLlm.attempts()).isEqualTo(1);
+  }
+
+  @Test
+  public void run_retryConfig_stopsAfterMaxAttempts() {
+    RetryTestLlm testLlm =
+        new RetryTestLlm(attempt -> Flowable.error(new IOException("temporary")));
+    RunConfig runConfig =
+        RunConfig.builder()
+            .retryConfig(
+                RetryConfig.builder()
+                    .maxAttempts(3)
+                    .initialBackoff(java.time.Duration.ZERO)
+                    .maxBackoff(java.time.Duration.ZERO)
+                    .build())
+            .build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(testLlm), runConfig);
+
+    createBaseLlmFlowWithoutProcessors()
+        .run(invocationContext)
+        .test()
+        .awaitDone(5, TimeUnit.SECONDS)
+        .assertError(IOException.class);
+
+    assertThat(testLlm.attempts()).isEqualTo(3);
+  }
+
+  @Test
+  public void run_retryConfig_countsEachProviderAttemptAgainstLlmCallLimit() {
+    RetryTestLlm testLlm =
+        new RetryTestLlm(attempt -> Flowable.error(new IOException("temporary")));
+    RunConfig runConfig =
+        RunConfig.builder()
+            .maxLlmCalls(1)
+            .retryConfig(
+                RetryConfig.builder()
+                    .maxAttempts(3)
+                    .initialBackoff(java.time.Duration.ZERO)
+                    .maxBackoff(java.time.Duration.ZERO)
+                    .build())
+            .build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(testLlm), runConfig);
+
+    createBaseLlmFlowWithoutProcessors()
+        .run(invocationContext)
+        .test()
+        .awaitDone(5, TimeUnit.SECONDS)
+        .assertError(com.google.adk.models.LlmCallsLimitExceededException.class);
+
+    assertThat(testLlm.attempts()).isEqualTo(1);
+  }
+
+  @Test
+  public void run_retryConfig_doesNotRetryAfterStreamingResponseWasEmitted() {
+    Content partial = Content.fromParts(Part.fromText("partial"));
+    RetryTestLlm testLlm =
+        new RetryTestLlm(
+            attempt ->
+                Flowable.concat(
+                    Flowable.just(LlmResponse.builder().content(partial).partial(true).build()),
+                    Flowable.error(new IOException("stream interrupted"))));
+    RunConfig runConfig =
+        RunConfig.builder()
+            .streamingMode(RunConfig.StreamingMode.SSE)
+            .retryConfig(
+                RetryConfig.builder()
+                    .maxAttempts(3)
+                    .initialBackoff(java.time.Duration.ZERO)
+                    .maxBackoff(java.time.Duration.ZERO)
+                    .build())
+            .build();
+    InvocationContext invocationContext =
+        createInvocationContext(createTestAgent(testLlm), runConfig);
+
+    createBaseLlmFlowWithoutProcessors()
+        .run(invocationContext)
+        .test()
+        .assertError(IOException.class);
+
+    assertThat(testLlm.attempts()).isEqualTo(1);
   }
 
   @Test
@@ -679,6 +865,42 @@ public final class BaseLlmFlowTest {
     @Override
     public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
       return Single.just(response);
+    }
+  }
+
+  private static final class RetryTestLlm extends BaseLlm {
+    private final AtomicInteger attempts = new AtomicInteger();
+    private final IntFunction<Flowable<LlmResponse>> responseFactory;
+
+    RetryTestLlm(IntFunction<Flowable<LlmResponse>> responseFactory) {
+      super("retry-test-llm");
+      this.responseFactory = responseFactory;
+    }
+
+    @Override
+    public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+      return responseFactory.apply(attempts.incrementAndGet());
+    }
+
+    @Override
+    public BaseLlmConnection connect(LlmRequest llmRequest) {
+      throw new UnsupportedOperationException();
+    }
+
+    int attempts() {
+      return attempts.get();
+    }
+  }
+
+  public static final class StatusCodeException extends RuntimeException {
+    private final int code;
+
+    StatusCodeException(int code) {
+      this.code = code;
+    }
+
+    public int code() {
+      return code;
     }
   }
 
