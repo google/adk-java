@@ -15,7 +15,10 @@
  */
 package com.google.adk.agents;
 
+import com.google.errorprone.annotations.InlineMe;
+import com.google.genai.types.HttpOptions;
 import java.time.Duration;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Configuration for context caching across all agents in an app.
@@ -27,33 +30,55 @@ import java.time.Duration;
  * <p>Context caching can significantly reduce costs and improve response times by reusing
  * previously processed context across multiple requests.
  *
- * @param maxInvocations Maximum number of invocations to reuse the same cache before refreshing it.
+ * @param cacheIntervals Maximum number of invocations to reuse the same cache before refreshing it.
  *     Defaults to 10.
  * @param ttl Time-to-live for cache. Defaults to 1800 seconds (30 minutes).
  * @param minTokens Minimum estimated request tokens required to enable caching. This compares
  *     against the estimated total tokens of the request (system instruction + tools + contents).
  *     Context cache storage may have cost. Set higher to avoid caching small requests where
  *     overhead may exceed benefits. Defaults to 0.
+ * @param createHttpOptions HTTP options, such as a timeout, for the call that creates a cache; null
+ *     uses the client's defaults. Defaults to null.
  */
-public record ContextCacheConfig(int maxInvocations, Duration ttl, int minTokens) {
+public record ContextCacheConfig(
+    int cacheIntervals, Duration ttl, int minTokens, @Nullable HttpOptions createHttpOptions) {
 
   public ContextCacheConfig() {
-    this(10, Duration.ofSeconds(1800), 0);
+    this(10, Duration.ofMinutes(30), 0);
+  }
+
+  /** Creates a config that creates caches with the client's default HTTP options. */
+  public ContextCacheConfig(int cacheIntervals, Duration ttl, int minTokens) {
+    this(cacheIntervals, ttl, minTokens, /* createHttpOptions= */ null);
+  }
+
+  /**
+   * Returns {@link #cacheIntervals()}.
+   *
+   * @deprecated Use {@link #cacheIntervals()}, the name ADK Python and ADK Kotlin use.
+   */
+  @Deprecated
+  @InlineMe(replacement = "this.cacheIntervals()")
+  public int maxInvocations() {
+    return cacheIntervals();
   }
 
   /** Returns TTL as string format for cache creation. */
   public String getTtlString() {
-    return ttl.getSeconds() + "s";
+    return ttl.toSeconds() + "s";
   }
 
   @Override
   public String toString() {
-    return "ContextCacheConfig(maxInvocations="
-        + maxInvocations
+    // Says only whether HTTP options are set, since their headers can carry credentials.
+    return "ContextCacheConfig(cacheIntervals="
+        + cacheIntervals
         + ", ttl="
-        + ttl.getSeconds()
+        + ttl.toSeconds()
         + "s, minTokens="
         + minTokens
+        + ", createHttpOptions="
+        + (createHttpOptions == null ? "null" : "set")
         + ")";
   }
 }
