@@ -17,6 +17,7 @@ package com.google.adk.models.springai;
 
 import com.google.adk.models.LlmResponse;
 import com.google.genai.types.Content;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,6 +38,14 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 public class StreamingResponseAggregator {
 
   private final StringBuffer textAccumulator = new StringBuffer();
+
+  /**
+   * Latest non-empty usage metadata seen on the stream, carried on the final response. Visibility
+   * is guaranteed by {@code lock}: written in {@code processStreamingResponse} and read in {@code
+   * getFinalResponse()}, both under the write lock.
+   */
+  private GenerateContentResponseUsageMetadata usageMetadata;
+
   private final List<Part> toolCallParts = new CopyOnWriteArrayList<>();
   private final ReadWriteLock lock = new ReentrantReadWriteLock();
   private volatile boolean isFirstResponse = true;
@@ -59,6 +68,8 @@ public class StreamingResponseAggregator {
 
     lock.writeLock().lock();
     try {
+      response.usageMetadata().ifPresent(usage -> this.usageMetadata = usage);
+
       // Process each part in the response
       for (Part part : content.parts().get()) {
         if (part.text().isPresent()) {
@@ -113,10 +124,16 @@ public class StreamingResponseAggregator {
       Content finalContent = Content.builder().role("model").parts(finalParts).build();
 
       LlmResponse finalResponse =
-          LlmResponse.builder().content(finalContent).partial(false).turnComplete(true).build();
+          LlmResponse.builder()
+              .content(finalContent)
+              .partial(false)
+              .turnComplete(true)
+              .usageMetadata(usageMetadata)
+              .build();
 
       // Reset internal state without calling reset() to avoid nested locking
       textAccumulator.setLength(0);
+      usageMetadata = null;
       toolCallParts.clear();
       isFirstResponse = true;
 
