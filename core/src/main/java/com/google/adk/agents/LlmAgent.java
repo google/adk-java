@@ -101,6 +101,7 @@ public class LlmAgent extends BaseAgent {
   private final ImmutableList<BaseToolset> toolsets;
   private final Optional<GenerateContentConfig> generateContentConfig;
   private final IncludeContents includeContents;
+  private final boolean preserveEscapedPlaceholders;
 
   private final boolean planning;
   private final Optional<Integer> maxSteps;
@@ -134,6 +135,8 @@ public class LlmAgent extends BaseAgent {
         requireNonNullElse(builder.globalInstruction, new Instruction.Static(""));
     this.generateContentConfig = Optional.ofNullable(builder.generateContentConfig);
     this.includeContents = requireNonNullElse(builder.includeContents, IncludeContents.DEFAULT);
+    this.preserveEscapedPlaceholders =
+        requireNonNullElse(builder.preserveEscapedPlaceholders, false);
     this.planning = requireNonNullElse(builder.planning, false);
     this.maxSteps = Optional.ofNullable(builder.maxSteps);
     this.disallowTransferToParent = requireNonNullElse(builder.disallowTransferToParent, false);
@@ -181,6 +184,7 @@ public class LlmAgent extends BaseAgent {
     private ImmutableList<Object> toolsUnion;
     private GenerateContentConfig generateContentConfig;
     private IncludeContents includeContents;
+    private Boolean preserveEscapedPlaceholders;
     private Boolean planning;
     private Integer maxSteps;
     private Boolean disallowTransferToParent;
@@ -255,6 +259,20 @@ public class LlmAgent extends BaseAgent {
     @CanIgnoreReturnValue
     public Builder includeContents(IncludeContents includeContents) {
       this.includeContents = includeContents;
+      return this;
+    }
+
+    /**
+     * Sets whether a placeholder right after {@code $} or {@code \} in the instruction is left as
+     * written, backslash included: {@code ${key}}, {@code ${{key}}} and {@code \{key}} reach the
+     * model unchanged. Defaults to {@code false}, which resolves such a placeholder and keeps the
+     * {@code $} or {@code \} before it, so {@code ${price}} becomes {@code $9.99}. The global
+     * instruction follows the root agent's setting. An {@link Instruction.Provider} is not
+     * templated either way.
+     */
+    @CanIgnoreReturnValue
+    public Builder preserveEscapedPlaceholders(boolean preserveEscapedPlaceholders) {
+      this.preserveEscapedPlaceholders = preserveEscapedPlaceholders;
       return this;
     }
 
@@ -907,6 +925,14 @@ public class LlmAgent extends BaseAgent {
     return includeContents;
   }
 
+  /**
+   * Returns whether a placeholder right after {@code $} or {@code \} in the instruction is left as
+   * written. See {@link Builder#preserveEscapedPlaceholders(boolean)}.
+   */
+  public boolean preserveEscapedPlaceholders() {
+    return preserveEscapedPlaceholders;
+  }
+
   public Single<List<BaseTool>> tools() {
     return canonicalTools().toList();
   }
@@ -1148,6 +1174,11 @@ public class LlmAgent extends BaseAgent {
     // Set optional include_contents
     if (config.includeContents() != null) {
       builder.includeContents(config.includeContents());
+    }
+
+    // Set optional preserve_escaped_placeholders
+    if (config.preserveEscapedPlaceholders() != null) {
+      builder.preserveEscapedPlaceholders(config.preserveEscapedPlaceholders());
     }
 
     // Set optional generateContentConfig

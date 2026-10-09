@@ -21,6 +21,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.sessions.InMemorySessionService;
@@ -219,5 +220,253 @@ public final class InstructionUtilsTest {
     String result = InstructionUtils.injectSessionState(templateContext, template).blockingGet();
 
     assertThat(result).isEqualTo(template);
+  }
+
+  @Test
+  public void
+      injectSessionState_preserveEscapedPlaceholders_nullTemplate_throwsNullPointerException() {
+    assertThrows(
+        NullPointerException.class,
+        () ->
+            InstructionUtils.injectSessionState(
+                    templateContext, null, /* preserveEscapedPlaceholders= */ true)
+                .blockingGet());
+  }
+
+  @Test
+  public void
+      injectSessionState_preserveEscapedPlaceholders_nullContext_throwsNullPointerException() {
+    assertThrows(
+        NullPointerException.class,
+        () ->
+            InstructionUtils.injectSessionState(
+                    null, "test", /* preserveEscapedPlaceholders= */ true)
+                .blockingGet());
+  }
+
+  @Test
+  public void
+      injectSessionState_preserveEscapedPlaceholders_dollarBracePattern_returnsTemplateAsIs() {
+    String template = "The formatString supports interpolation via ${expression} syntax.";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                templateContext, template, /* preserveEscapedPlaceholders= */ true)
+            .blockingGet();
+
+    assertThat(result).isEqualTo(template);
+  }
+
+  @Test
+  public void
+      injectSessionState_preserveEscapedPlaceholders_dollarBraceWithStateVariable_replacesOnlyStateVariable() {
+    InvocationContext testContext = templateContext.toBuilder().build();
+    testContext.session().state().put("user_name", "Foo");
+    String template = "Hello {user_name}! Interpolation via ${expression} syntax.";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                testContext, template, /* preserveEscapedPlaceholders= */ true)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("Hello Foo! Interpolation via ${expression} syntax.");
+  }
+
+  @Test
+  public void
+      injectSessionState_preserveEscapedPlaceholders_escapedPlaceholder_returnsTemplateAsIs() {
+    InvocationContext testContext = templateContext.toBuilder().build();
+    testContext.session().state().put("user_name", "Foo");
+    String template = "Literal \\{user_name} syntax.";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                testContext, template, /* preserveEscapedPlaceholders= */ true)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("Literal \\{user_name} syntax.");
+  }
+
+  @Test
+  public void
+      injectSessionState_preserveEscapedPlaceholders_dollarDoubleBracePattern_returnsPatternAsIs() {
+    InvocationContext testContext = templateContext.toBuilder().build();
+    testContext.session().state().put("expression", "foo");
+    testContext.session().state().put("user_name", "bar");
+    String template = "Workflow syntax: ${{expression}} and {user_name}.";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                testContext, template, /* preserveEscapedPlaceholders= */ true)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("Workflow syntax: ${{expression}} and bar.");
+  }
+
+  @Test
+  public void
+      injectSessionState_preserveEscapedPlaceholders_escapedDoubleBracePattern_returnsPatternAsIs() {
+    InvocationContext testContext = templateContext.toBuilder().build();
+    testContext.session().state().put("user_name", "Foo");
+    String template = "Literal \\{{user_name}} syntax.";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                testContext, template, /* preserveEscapedPlaceholders= */ true)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("Literal \\{{user_name}} syntax.");
+  }
+
+  @Test
+  public void
+      injectSessionState_preserveEscapedPlaceholders_dollarBraceWithStateValue_keepsPlaceholder() {
+    InvocationContext testContext = templateContext.toBuilder().build();
+    testContext.session().state().put("price", 9.99);
+    String template = "Price: ${price}";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                testContext, template, /* preserveEscapedPlaceholders= */ true)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("Price: ${price}");
+  }
+
+  @Test
+  public void
+      injectSessionState_preserveEscapedPlaceholders_optionalDollarBraceMissing_keepsPlaceholder() {
+    String template = "A ${var?} B";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                templateContext, template, /* preserveEscapedPlaceholders= */ true)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("A ${var?} B");
+  }
+
+  @Test
+  public void
+      injectSessionState_preserveEscapedPlaceholders_unescapedPlaceholders_areStillReplaced() {
+    InvocationContext testContext = templateContext.toBuilder().build();
+    testContext.session().state().put("user_name", "Foo");
+    testContext.session().state().put("price", 9.99);
+    String template = "{user_name} pays $ {price}, {{user_name}} and {missing?}.";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                testContext, template, /* preserveEscapedPlaceholders= */ true)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("Foo pays $ 9.99, Foo and .");
+  }
+
+  @Test
+  public void injectSessionState_withoutPreservingEscapedPlaceholders_dollarBracePattern_throws() {
+    String template = "The formatString supports interpolation via ${expression} syntax.";
+
+    IllegalArgumentException exception =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                InstructionUtils.injectSessionState(
+                        templateContext, template, /* preserveEscapedPlaceholders= */ false)
+                    .blockingGet());
+
+    assertThat(exception).hasMessageThat().isEqualTo("Context variable not found: `expression`.");
+  }
+
+  @Test
+  public void
+      injectSessionState_withoutPreservingEscapedPlaceholders_dollarDoubleBracePattern_keepsDollar() {
+    InvocationContext testContext = templateContext.toBuilder().build();
+    testContext.session().state().put("expression", "foo");
+    String template = "Workflow syntax: ${{expression}}.";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                testContext, template, /* preserveEscapedPlaceholders= */ false)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("Workflow syntax: $foo.");
+  }
+
+  @Test
+  public void
+      injectSessionState_withoutPreservingEscapedPlaceholders_dollarBraceWithStateValue_keepsDollar() {
+    InvocationContext testContext = templateContext.toBuilder().build();
+    testContext.session().state().put("price", 9.99);
+    String template = "Price: ${price}";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                testContext, template, /* preserveEscapedPlaceholders= */ false)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("Price: $9.99");
+  }
+
+  @Test
+  public void
+      injectSessionState_withoutPreservingEscapedPlaceholders_optionalDollarBraceMissing_keepsDollar() {
+    String template = "A ${var?} B";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                templateContext, template, /* preserveEscapedPlaceholders= */ false)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("A $ B");
+  }
+
+  @Test
+  public void
+      injectSessionState_withoutPreservingEscapedPlaceholders_escapedPlaceholder_keepsBackslash() {
+    InvocationContext testContext = templateContext.toBuilder().build();
+    testContext.session().state().put("user_name", "Foo");
+    String template = "Literal \\{user_name} syntax.";
+
+    String result =
+        InstructionUtils.injectSessionState(
+                testContext, template, /* preserveEscapedPlaceholders= */ false)
+            .blockingGet();
+
+    assertThat(result).isEqualTo("Literal \\Foo syntax.");
+  }
+
+  @Test
+  public void injectSessionState_llmAgentPreservingEscapedPlaceholders_keepsPlaceholder() {
+    LlmAgent agent = LlmAgent.builder().name("agent").preserveEscapedPlaceholders(true).build();
+    InvocationContext testContext = templateContext.toBuilder().agent(agent).build();
+    testContext.session().state().put("price", 9.99);
+
+    String result =
+        InstructionUtils.injectSessionState(testContext, "Price: ${price}").blockingGet();
+
+    assertThat(result).isEqualTo("Price: ${price}");
+  }
+
+  @Test
+  public void injectSessionState_llmAgentWithDefaults_keepsDollar() {
+    LlmAgent agent = LlmAgent.builder().name("agent").build();
+    InvocationContext testContext = templateContext.toBuilder().agent(agent).build();
+    testContext.session().state().put("price", 9.99);
+
+    String result =
+        InstructionUtils.injectSessionState(testContext, "Price: ${price}").blockingGet();
+
+    assertThat(result).isEqualTo("Price: $9.99");
+  }
+
+  @Test
+  public void injectSessionState_nonLlmAgent_keepsDollar() {
+    InvocationContext testContext = templateContext.toBuilder().build();
+    testContext.session().state().put("price", 9.99);
+
+    String result =
+        InstructionUtils.injectSessionState(testContext, "Price: ${price}").blockingGet();
+
+    assertThat(result).isEqualTo("Price: $9.99");
   }
 }

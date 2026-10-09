@@ -1561,4 +1561,39 @@ public final class ConfigAgentUtilsTest {
     assertThat(agent).isNotNull();
     assertThat(agent).isInstanceOf(LoopAgent.class);
   }
+
+  @Test
+  public void fromConfig_withPreserveEscapedPlaceholders_setsFlagOnAgent()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("preserve_escaped_placeholders.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: preserving_agent
+        instruction: "Show ${expression} as written."
+        preserve_escaped_placeholders: true
+        """);
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configFile.getAbsolutePath());
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    assertThat(((LlmAgent) agent).preserveEscapedPlaceholders()).isTrue();
+  }
+
+  @Test
+  public void fromConfig_withoutPreserveEscapedPlaceholders_defaultsToFalse()
+      throws IOException, ConfigurationException {
+    File configFile = tempFolder.newFile("default_escaped_placeholders.yaml");
+    Files.writeString(
+        configFile.toPath(),
+        """
+        name: default_agent
+        instruction: Resolve {placeholders}.
+        """);
+
+    BaseAgent agent = ConfigAgentUtils.fromConfig(configFile.getAbsolutePath());
+
+    assertThat(agent).isInstanceOf(LlmAgent.class);
+    assertThat(((LlmAgent) agent).preserveEscapedPlaceholders()).isFalse();
+  }
 }
