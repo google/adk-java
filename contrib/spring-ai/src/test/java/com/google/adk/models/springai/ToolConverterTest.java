@@ -19,6 +19,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.genai.types.FunctionDeclaration;
@@ -156,6 +158,143 @@ class ToolConverterTest {
     assertThat(converted).containsEntry("description", "An object parameter");
     assertThat(converted).containsKey("properties");
     assertThat(converted).containsEntry("required", List.of("name"));
+  }
+
+  @Test
+  void testConvertSchemaToSpringAiPreservesEnumAndItems() {
+    // Regression: convertSchemaToSpringAi used to silently drop "enum" and "items",
+    // degrading enum parameters to free-form text and losing array element schemas.
+    Schema enumParam =
+        Schema.builder()
+            .type("STRING")
+            .description("Report detail level")
+            .enum_("basic", "detailed")
+            .build();
+    Schema itemsSchema = Schema.builder().type("STRING").enum_("cardio", "dental").build();
+    Schema arrayParam =
+        Schema.builder().type("ARRAY").description("Included services").items(itemsSchema).build();
+    Schema objectSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                Map.of(
+                    "level", enumParam,
+                    "services", arrayParam))
+            .required(List.of("level"))
+            .build();
+
+    Map<String, Object> converted = toolConverter.convertSchemaToSpringAi(objectSchema);
+
+    Map<String, Object> properties = asMap(converted.get("properties"));
+
+    Map<String, Object> convertedEnum = asMap(properties.get("level"));
+    assertThat(convertedEnum).containsEntry("type", "string");
+    assertThat(convertedEnum).containsEntry("enum", List.of("basic", "detailed"));
+
+    Map<String, Object> convertedArray = asMap(properties.get("services"));
+    assertThat(convertedArray).containsEntry("type", "array");
+    Map<String, Object> convertedItems = asMap(convertedArray.get("items"));
+    assertThat(convertedItems).containsEntry("type", "string");
+    assertThat(convertedItems).containsEntry("enum", List.of("cardio", "dental"));
+  }
+
+  @Test
+  void testConvertSchemaToSpringAiRecursesIntoObjectItemsProperties() {
+    // Array-of-objects parameters (the shape FunctionTool generates for List<>) must keep
+    // the properties of each item: recursion has to flow through properties inside items.
+    Schema itemObject =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                Map.of(
+                    "name", Schema.builder().type("STRING").build(),
+                    "level", Schema.builder().type("STRING").enum_("basic", "detailed").build()))
+            .required(List.of("name"))
+            .build();
+    Schema arrayOfObjects =
+        Schema.builder().type("ARRAY").description("Line items").items(itemObject).build();
+
+    Map<String, Object> converted = toolConverter.convertSchemaToSpringAi(arrayOfObjects);
+
+    assertThat(converted).containsEntry("type", "array");
+    Map<String, Object> items = asMap(converted.get("items"));
+    assertThat(items).containsEntry("type", "object");
+    Map<String, Object> itemProperties = asMap(items.get("properties"));
+    Map<String, Object> itemEnum = asMap(itemProperties.get("level"));
+    assertThat(itemEnum).containsEntry("enum", List.of("basic", "detailed"));
+    assertThat(items).containsEntry("required", List.of("name"));
+  }
+
+  @Test
+  void testConvertToSpringAiToolsOutputSchemaContainsEnumAndItems() throws Exception {
+    // End-to-end over the user-visible output (the repro from the issue): the serialized
+    // inputSchema JSON of a converted tool must contain enum and items.
+    FunctionDeclaration declaration =
+        FunctionDeclaration.builder()
+            .name("reportTool")
+            .description("Generates a report")
+            .parameters(
+                Schema.builder()
+                    .type("OBJECT")
+                    .properties(
+                        Map.of(
+                            "level",
+                            Schema.builder().type("STRING").enum_("basic", "detailed").build(),
+                            "services",
+                            Schema.builder()
+                                .type("ARRAY")
+                                .items(
+                                    Schema.builder()
+                                        .type("STRING")
+                                        .enum_("cardio", "dental")
+                                        .build())
+                                .build()))
+                    .required(List.of("level"))
+                    .build())
+            .build();
+    BaseTool tool =
+        new BaseTool("reportTool", "Generates a report") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(declaration);
+          }
+
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            return Single.just(Map.of());
+          }
+        };
+
+    List<ToolCallback> callbacks = toolConverter.convertToSpringAiTools(Map.of("reportTool", tool));
+
+    assertThat(callbacks).hasSize(1);
+    String inputSchema = callbacks.get(0).getToolDefinition().inputSchema();
+    Map<String, Object> schemaJson =
+        new ObjectMapper().readValue(inputSchema, new TypeReference<Map<String, Object>>() {});
+    Map<String, Object> properties = asMap(schemaJson.get("properties"));
+    assertThat(asMap(properties.get("level"))).containsEntry("enum", List.of("basic", "detailed"));
+    Map<String, Object> services = asMap(properties.get("services"));
+    assertThat(services).containsEntry("type", "array");
+    assertThat(asMap(services.get("items"))).containsEntry("enum", List.of("cardio", "dental"));
+  }
+
+  @Test
+  void testConvertSchemaToSpringAiSkipsEmptyEnum() {
+    // "enum": [] is unsatisfiable under JSON Schema semantics (no valid value exists);
+    // an empty enum must be skipped rather than forwarded.
+    Schema emptyEnumSchema = Schema.builder().type("STRING").enum_(List.of()).build();
+
+    Map<String, Object> converted = toolConverter.convertSchemaToSpringAi(emptyEnumSchema);
+
+    assertThat(converted).containsEntry("type", "string");
+    assertThat(converted).doesNotContainKey("enum");
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> asMap(Object value) {
+    assertThat(value).isInstanceOf(Map.class);
+    return (Map<String, Object>) value;
   }
 
   @Test
