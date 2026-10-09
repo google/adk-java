@@ -18,11 +18,13 @@ package com.google.adk.agents;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.String.format;
 
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
+import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.plugins.Plugin;
@@ -30,6 +32,7 @@ import com.google.adk.telemetry.Instrumentation;
 import com.google.adk.telemetry.Instrumentation.AgentInvocation;
 import com.google.adk.telemetry.Tracing;
 import com.google.adk.utils.AgentEnums.AgentOrigin;
+import com.google.adk.workflow.BaseNode;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.DoNotCall;
@@ -49,20 +52,11 @@ import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 
 /** Base class for all agents. */
-public abstract class BaseAgent {
+public abstract class BaseAgent extends BaseNode {
 
   // Pattern for valid agent names.
   private static final String IDENTIFIER_REGEX = "^_?[a-zA-Z0-9]*([. _-][a-zA-Z0-9]+)*$";
   private static final Pattern IDENTIFIER_PATTERN = Pattern.compile(IDENTIFIER_REGEX);
-
-  /** The agent's name. Must be a unique identifier within the agent tree. */
-  private final String name;
-
-  /**
-   * One line description about the agent's capability. The system can use this for decision-making
-   * when delegating control to different agents.
-   */
-  private final String description;
 
   /**
    * The parent agent in the agent tree. Note that one agent cannot be added to two different
@@ -79,7 +73,7 @@ public abstract class BaseAgent {
    * Creates a new BaseAgent.
    *
    * @param name Unique agent name. Cannot be "user" (reserved).
-   * @param description Agent purpose.
+   * @param description Agent purpose; null is treated as an empty string.
    * @param subAgents Agents managed by this agent.
    * @param beforeAgentCallback Callbacks before agent execution. Invoked in order until one doesn't
    *     return null.
@@ -88,16 +82,14 @@ public abstract class BaseAgent {
    */
   public BaseAgent(
       String name,
-      String description,
+      @Nullable String description,
       @Nullable List<? extends BaseAgent> subAgents,
       @Nullable List<? extends BeforeAgentCallback> beforeAgentCallback,
       @Nullable List<? extends AfterAgentCallback> afterAgentCallback) {
-    validateAgentName(name);
-    this.name = name;
-    this.description = description;
+    super(validateAgentName(name), nullToEmpty(description));
     this.parentAgent = null;
     this.subAgents = (subAgents != null) ? ImmutableList.copyOf(subAgents) : ImmutableList.of();
-    validateSubAgents(this.name, this.subAgents);
+    validateSubAgents(name, this.subAgents);
     this.beforeAgentCallback =
         (beforeAgentCallback != null)
             ? ImmutableList.copyOf(beforeAgentCallback)
@@ -128,10 +120,12 @@ public abstract class BaseAgent {
    * Validates the agent name.
    *
    * @param name The agent name to validate.
+   * @return the validated name.
    * @throws IllegalArgumentException if the agent name is null, empty, or does not match the
    *     identifier pattern.
    */
-  private static void validateAgentName(String name) {
+  @CanIgnoreReturnValue
+  private static String validateAgentName(String name) {
     if (isNullOrEmpty(name)) {
       throw new IllegalArgumentException("Agent name cannot be null or empty.");
     }
@@ -141,6 +135,7 @@ public abstract class BaseAgent {
     }
     checkArgument(
         !name.equals(Role.USER), "Agent name cannot be 'user'; reserved for end-user input.");
+    return name;
   }
 
   /**
@@ -171,24 +166,6 @@ public abstract class BaseAgent {
               "Agent named '%s' has sub-agents with duplicate names: %s. Sub-agents: %s",
               name, duplicateSubAgentNames, subAgents));
     }
-  }
-
-  /**
-   * Gets the agent's unique name.
-   *
-   * @return the unique name of the agent.
-   */
-  public final String name() {
-    return name;
-  }
-
-  /**
-   * Gets the one-line description of the agent's capability.
-   *
-   * @return the description of the agent.
-   */
-  public final String description() {
-    return description;
   }
 
   /**
@@ -312,7 +289,7 @@ public abstract class BaseAgent {
    * @return stream of agent-generated events.
    */
   public Flowable<Event> runAsync(InvocationContext parentContext) {
-    return run(parentContext, this::runAsyncImpl);
+    return runWithCallbacks(parentContext, this::runAsyncImpl);
   }
 
   /**
@@ -322,7 +299,7 @@ public abstract class BaseAgent {
    * @param runImplementation The agent-specific logic to run.
    * @return stream of agent-generated events.
    */
-  private Flowable<Event> run(
+  private Flowable<Event> runWithCallbacks(
       InvocationContext parentContext,
       Function<InvocationContext, Flowable<Event>> runImplementation) {
     return Flowable.using(
@@ -468,7 +445,7 @@ public abstract class BaseAgent {
    * @return stream of agent-generated events.
    */
   public Flowable<Event> runLive(InvocationContext parentContext) {
-    return run(parentContext, this::runLiveImpl);
+    return runWithCallbacks(parentContext, this::runLiveImpl);
   }
 
   /**
@@ -508,6 +485,17 @@ public abstract class BaseAgent {
         .branch(context.branch().orElse(null))
         .actions(actions)
         .build();
+  }
+
+  /**
+   * Runs this agent as a workflow node through its {@link #runAsync} lifecycle, including its
+   * callbacks. The node input is not used.
+   */
+  @Experimental
+  @Override
+  public Flowable<Event> runNode(
+      com.google.adk.agents.Context context, @Nullable Object nodeInput) {
+    return runAsync(context.invocationContext());
   }
 
   /**
