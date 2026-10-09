@@ -60,6 +60,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import org.slf4j.Logger;
@@ -515,11 +516,32 @@ public abstract class BaseLlmFlow implements BaseFlow {
    */
   @Override
   public Flowable<Event> run(InvocationContext invocationContext) {
-    return run(Context.current(), invocationContext, 0);
+    Context spanContext = Context.current();
+    return Flowable.defer(
+        () -> {
+          AtomicInteger stepsCompleted = new AtomicInteger(0);
+          AtomicBoolean continueFlow = new AtomicBoolean(false);
+          // Resubscribe without growing the stack when steps complete synchronously.
+          return Flowable.defer(
+                  () ->
+                      runStep(
+                          spanContext,
+                          invocationContext,
+                          stepsCompleted.getAndIncrement(),
+                          continueFlow))
+              .repeatUntil(() -> !continueFlow.getAndSet(false));
+        });
   }
 
-  private Flowable<Event> run(
-      Context spanContext, InvocationContext invocationContext, int stepsCompleted) {
+  /**
+   * Runs {@link #runOneStep} once. If the flow should run another step, sets {@code continueFlow}
+   * and waits until the Runner has persisted this step's events.
+   */
+  private Flowable<Event> runStep(
+      Context spanContext,
+      InvocationContext invocationContext,
+      int stepsCompleted,
+      AtomicBoolean continueFlow) {
     Flowable<Event> currentStepEvents = runOneStep(spanContext, invocationContext).cache();
     if (stepsCompleted + 1 >= maxSteps) {
       logger.debug("Ending flow execution because max steps reached.");
@@ -546,10 +568,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     return Flowable.empty();
                   } else {
                     logger.debug("Continuing to next step of the flow.");
+                    continueFlow.set(true);
                     // Wait until the Runner has persisted this step's events so the next step's
                     // request is not built from a stale session (see PersistBarrier).
-                    return PersistBarrier.awaitPersisted(invocationContext, eventList)
-                        .andThen(run(spanContext, invocationContext, stepsCompleted + 1));
+                    return PersistBarrier.awaitPersisted(invocationContext, eventList).toFlowable();
                   }
                 }));
   }
