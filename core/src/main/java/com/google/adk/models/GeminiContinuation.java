@@ -57,23 +57,27 @@ final class GeminiContinuation {
 
   /**
    * Returns the token that resumes {@code response}, or null if it did not pause or has no token.
+   * Without a {@code maxOutputTokens} limit, {@code MAX_TOKENS} is a pause too: the request reached
+   * its own output cap, not the caller's.
    */
-  static byte @Nullable [] resumeToken(GenerateContentResponse response) {
-    Optional<Candidate> paused =
-        response
-            .candidates()
-            .flatMap(candidates -> candidates.stream().findFirst())
-            .filter(
-                candidate ->
-                    candidate
-                        .finishReason()
-                        .map(reason -> reason.knownEnum() == FinishReason.Known.CONTINUATION)
-                        .orElse(false));
-    if (paused.isEmpty()) {
+  byte @Nullable [] resumeToken(GenerateContentResponse response) {
+    Optional<Candidate> candidate =
+        response.candidates().flatMap(candidates -> candidates.stream().findFirst());
+    FinishReason.Known reason =
+        candidate.flatMap(Candidate::finishReason).map(FinishReason::knownEnum).orElse(null);
+    boolean paused =
+        reason == FinishReason.Known.CONTINUATION
+            || (reason == FinishReason.Known.MAX_TOKENS
+                && (config == null || config.maxOutputTokens().isEmpty()));
+    if (!paused) {
       return null;
     }
-    byte[] token = paused.get().continuationToken().filter(bytes -> bytes.length > 0).orElse(null);
-    if (token == null) {
+    byte[] token =
+        candidate
+            .flatMap(Candidate::continuationToken)
+            .filter(bytes -> bytes.length > 0)
+            .orElse(null);
+    if (token == null && reason == FinishReason.Known.CONTINUATION) {
       logger.warn(
           "The model paused the generation for continuation, but the response carries no"
               + " continuation token, so the partial output is returned.");
@@ -307,7 +311,7 @@ final class GeminiContinuation {
               .filter(part -> !Gemini.StreamingResponseAggregator.isStreamTerminator(part))
               .collect(ImmutableList.toImmutableList());
       parts.addAll(chunkParts);
-      byte[] chunkToken = resumeToken(chunk);
+      byte[] chunkToken = continuation.resumeToken(chunk);
       if (chunkToken == null) {
         return Optional.of(chunk);
       }
