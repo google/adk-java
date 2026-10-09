@@ -45,7 +45,9 @@ public final class SessionUtils {
             byte[] dataBytes = dataOptional.get();
             byte[] encodedData = Base64.getEncoder().encode(dataBytes);
             encodedParts.add(
-                part.toBuilder().inlineData(Blob.builder().data(encodedData).build()).build());
+                part.toBuilder()
+                    .inlineData(inlineDataBlob.toBuilder().data(encodedData).build())
+                    .build());
             isInlineDataPresent = true;
           }
         }
@@ -71,7 +73,9 @@ public final class SessionUtils {
             byte[] dataBytes = dataOptional.get();
             byte[] decodedData = Base64.getDecoder().decode(dataBytes);
             decodedParts.add(
-                part.toBuilder().inlineData(Blob.builder().data(decodedData).build()).build());
+                part.toBuilder()
+                    .inlineData(inlineDataBlob.toBuilder().data(decodedData).build())
+                    .build());
             isInlineDataPresent = true;
           }
         }
