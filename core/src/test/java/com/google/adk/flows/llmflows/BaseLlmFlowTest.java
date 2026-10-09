@@ -35,6 +35,7 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.flows.llmflows.ResponseProcessor.ResponseProcessingResult;
+import com.google.adk.models.CacheMetadata;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.testing.TestLlm;
@@ -59,6 +60,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -120,6 +122,31 @@ public final class BaseLlmFlowTest {
                 .promptTokenCount(10)
                 .candidatesTokenCount(20)
                 .build());
+  }
+
+  @Test
+  public void run_responseWithCacheMetadata_copiesItToEvent() {
+    CacheMetadata cacheMetadata =
+        CacheMetadata.builder()
+            .fingerprint("abc123")
+            .contentsCount(2)
+            .cacheName("cachedContents/42")
+            .expireTime(Instant.ofEpochSecond(2_000_000_000L))
+            .invocationsUsed(1)
+            .createdAt(Instant.ofEpochSecond(1_999_998_200L))
+            .build();
+    TestLlm testLlm =
+        createTestLlm(
+            LlmResponse.builder()
+                .content(Content.fromParts(Part.fromText("LLM response")))
+                .cacheMetadata(cacheMetadata)
+                .build());
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+    BaseLlmFlow baseLlmFlow = createBaseLlmFlowWithoutProcessors();
+
+    List<Event> events = baseLlmFlow.run(invocationContext).toList().blockingGet();
+
+    assertThat(getOnlyElement(events).cacheMetadata()).hasValue(cacheMetadata);
   }
 
   @Test
