@@ -15,6 +15,8 @@
  */
 package com.google.adk.sessions;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.google.adk.JsonBaseModel;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.platform.UuidProvider;
@@ -31,6 +33,7 @@ import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
 import com.google.cloud.firestore.WriteBatch;
 import com.google.cloud.firestore.WriteResult;
+import com.google.common.base.Throwables;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
@@ -82,6 +85,9 @@ public class FirestoreSessionService implements BaseSessionService {
 
   /** Random token each create stores, so a retried create can detect its own write. */
   static final String CREATE_TOKEN_KEY = "createToken";
+
+  /** The event as a JSON string, not a map as in ADK Python, to avoid Firestore's map limits. */
+  static final String RAW_EVENT_KEY = "rawEvent";
 
   /** Constructor for FirestoreSessionService. */
   public FirestoreSessionService(Firestore firestore) {
@@ -280,6 +286,9 @@ public class FirestoreSessionService implements BaseSessionService {
   /**
    * Reconstructs an Event object from a Map retrieved from Firestore.
    *
+   * <p>A readable {@code rawEvent} takes precedence over the other fields, which remain the
+   * fallback when it is missing or unreadable.
+   *
    * @param data The map representation of the event.
    * @return An Event object, or null if the data is malformed.
    */
@@ -288,6 +297,15 @@ public class FirestoreSessionService implements BaseSessionService {
       return null;
     }
     try {
+      if (data.get(RAW_EVENT_KEY) instanceof String rawEvent) {
+        try {
+          return Event.fromJson(rawEvent);
+        } catch (IllegalStateException e) {
+          logger.warn(
+              "Ignoring unreadable rawEvent ({}), using the stored event fields",
+              Throwables.getRootCause(e).getClass().getSimpleName());
+        }
+      }
       String author = safeCast(data.get("author"), String.class, "author");
       String timestampStr = safeCast(data.get(TIMESTAMP_KEY), String.class, "timestamp");
       Map<String, Object> contentMap = safeCast(data.get("content"), Map.class, "content");
@@ -443,7 +461,7 @@ public class FirestoreSessionService implements BaseSessionService {
                         fc -> {
                           Map<String, Object> fcMap = new HashMap<>();
                           fc.name().ifPresent(name -> fcMap.put("name", name));
-                          fc.args().ifPresent(args -> fcMap.put("args", args));
+                          fc.args().ifPresent(args -> fcMap.put("args", toPlainValues(args)));
                           if (!fcMap.isEmpty()) {
                             partData.put("functionCall", fcMap);
                           }
@@ -453,7 +471,9 @@ public class FirestoreSessionService implements BaseSessionService {
                         fr -> {
                           Map<String, Object> frMap = new HashMap<>();
                           fr.name().ifPresent(name -> frMap.put("name", name));
-                          fr.response().ifPresent(response -> frMap.put("response", response));
+                          fr.response()
+                              .ifPresent(
+                                  response -> frMap.put("response", toPlainValues(response)));
                           if (!frMap.isEmpty()) {
                             partData.put("functionResponse", frMap);
                           }
@@ -483,8 +503,15 @@ public class FirestoreSessionService implements BaseSessionService {
     if (!keywords.isEmpty()) {
       data.put("keywords", new ArrayList<>(keywords)); // Firestore works well with Lists
     }
+    data.put(RAW_EVENT_KEY, event.toJson());
 
     return data;
+  }
+
+  /** Converts tool args or results to plain values, since Firestore cannot encode some objects. */
+  private static Map<String, Object> toPlainValues(Map<String, Object> value) {
+    return JsonBaseModel.getMapper()
+        .convertValue(value, new TypeReference<Map<String, Object>>() {});
   }
 
   /** Lists all sessions for a given appName and userId. */
