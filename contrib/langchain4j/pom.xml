@@ -31,7 +31,7 @@
     <properties>
         <!-- Load mockito-core as a startup -javaagent so the inline mock maker does not rely
              on runtime self-attachment, which newer JDKs block. -->
-        <mockito.javaagent.arg>-javaagent:${org.mockito:mockito-core:jar}</mockito.javaagent.arg>
+        <mockito.javaagent.arg>"-javaagent:${org.mockito:mockito-core:jar}"</mockito.javaagent.arg>
     </properties>
 
     <dependencyManagement>
