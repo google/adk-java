@@ -40,6 +40,7 @@ import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import io.reactivex.rxjava3.core.Flowable;
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -276,7 +277,26 @@ public class Gemini extends BaseLlm {
     llmRequest =
         GeminiUtil.prepareGenenerateContentRequest(
             llmRequest, !apiClient.vertexAI(), /* stripThoughts= */ false);
-    GenerateContentConfig config = llmRequest.config().orElse(null);
+    // TODO: Set automaticContinuation(false) directly once ADK depends on a
+    // google-genai release that includes it.
+    GenerateContentConfig.Builder configBuilder =
+        llmRequest.config().orElseGet(() -> GenerateContentConfig.builder().build()).toBuilder();
+    boolean continuationDisabled = false;
+    try {
+      Method method =
+          GenerateContentConfig.Builder.class.getMethod("automaticContinuation", boolean.class);
+      try {
+        method.setAccessible(true);
+      } catch (Exception ignored) {
+        // Ignore in case module system restricts setAccessible.
+      }
+      method.invoke(configBuilder, false);
+      continuationDisabled = true;
+    } catch (ReflectiveOperationException e) {
+      logger.trace("automaticContinuation method not found on GenerateContentConfig.Builder", e);
+    }
+    GenerateContentConfig config =
+        (continuationDisabled || llmRequest.config().isPresent()) ? configBuilder.build() : null;
     String effectiveModelName = llmRequest.model().orElse(model());
 
     logger.trace("Request Contents: {}", llmRequest.contents());
