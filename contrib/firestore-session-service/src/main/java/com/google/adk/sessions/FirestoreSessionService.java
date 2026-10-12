@@ -26,6 +26,7 @@ import com.google.api.gax.rpc.AlreadyExistsException;
 import com.google.cloud.firestore.CollectionReference;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
+import com.google.cloud.firestore.FieldValue;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
@@ -41,6 +42,7 @@ import io.reactivex.rxjava3.core.Single;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -132,60 +134,63 @@ public class FirestoreSessionService implements BaseSessionService {
       @Nullable Map<String, Object> state,
       @Nullable String sessionId) {
     return Single.fromCallable(
-        () -> {
-          Objects.requireNonNull(appName, "appName cannot be null");
-          Objects.requireNonNull(userId, "userId cannot be null");
+            () -> {
+              Objects.requireNonNull(appName, "appName cannot be null");
+              Objects.requireNonNull(userId, "userId cannot be null");
 
-          String resolvedSessionId =
-              Optional.ofNullable(sessionId)
-                  .map(String::trim)
-                  .filter(s -> !s.isEmpty())
-                  .orElseGet(uuidProvider::newUuid);
+              String resolvedSessionId =
+                  Optional.ofNullable(sessionId)
+                      .map(String::trim)
+                      .filter(s -> !s.isEmpty())
+                      .orElseGet(uuidProvider::newUuid);
 
-          ConcurrentMap<String, Object> initialState =
-              (state == null) ? new ConcurrentHashMap<>() : new ConcurrentHashMap<>(state);
-          logger.info(
-              "Creating session for userId: {} with sessionId: {} and initial state: {}",
-              userId,
-              resolvedSessionId,
-              initialState);
-          List<Event> initialEvents = new ArrayList<>();
-          Instant now = instantSource.instant();
-          Session newSession =
-              Session.builder(resolvedSessionId)
-                  .appName(appName)
-                  .userId(userId)
-                  .state(initialState)
-                  .events(initialEvents)
-                  .lastUpdateTime(now)
-                  .build();
+              ConcurrentMap<String, Object> initialState =
+                  (state == null) ? new ConcurrentHashMap<>() : new ConcurrentHashMap<>(state);
+              logger.info(
+                  "Creating session for userId: {} with sessionId: {} and initial state: {}",
+                  userId,
+                  resolvedSessionId,
+                  initialState);
+              List<Event> initialEvents = new ArrayList<>();
+              Instant now = instantSource.instant();
+              Session newSession =
+                  Session.builder(resolvedSessionId)
+                      .appName(appName)
+                      .userId(userId)
+                      .state(initialState)
+                      .events(initialEvents)
+                      .lastUpdateTime(now)
+                      .build();
 
-          // Convert Session to a Map for Firestore
-          Map<String, Object> sessionData = new HashMap<>();
-          sessionData.put(ID_KEY, newSession.id());
-          sessionData.put(APP_NAME_KEY, newSession.appName());
-          sessionData.put(USER_ID_KEY, newSession.userId());
-          sessionData.put(UPDATE_TIME_KEY, newSession.lastUpdateTime().toString());
-          sessionData.put(STATE_KEY, newSession.state());
-          String createToken = UUID.randomUUID().toString();
-          sessionData.put(CREATE_TOKEN_KEY, createToken);
+              // Convert Session to a Map for Firestore
+              Map<String, Object> sessionData = new HashMap<>();
+              sessionData.put(ID_KEY, newSession.id());
+              sessionData.put(APP_NAME_KEY, newSession.appName());
+              sessionData.put(USER_ID_KEY, newSession.userId());
+              sessionData.put(UPDATE_TIME_KEY, newSession.lastUpdateTime().toString());
+              sessionData.put(STATE_KEY, newSession.state());
+              String createToken = UUID.randomUUID().toString();
+              sessionData.put(CREATE_TOKEN_KEY, createToken);
 
-          // Unlike set(), create() fails if the session already exists instead of replacing it.
-          DocumentReference sessionDoc = getSessionsCollection(userId).document(resolvedSessionId);
-          try {
-            sessionDoc.create(sessionData).get();
-          } catch (ExecutionException e) {
-            if (!(e.getCause() instanceof AlreadyExistsException)) {
-              throw e;
-            }
-            // A retry after a lost reply fails on this call's own write; its token means success.
-            if (!createToken.equals(sessionDoc.get().get().getString(CREATE_TOKEN_KEY))) {
-              throw new SessionException(SessionException.SESSION_ALREADY_EXISTS, e.getCause());
-            }
-          }
+              // Unlike set(), create() fails if the session already exists instead of replacing it.
+              DocumentReference sessionDoc =
+                  getSessionsCollection(userId).document(resolvedSessionId);
+              try {
+                sessionDoc.create(sessionData).get();
+              } catch (ExecutionException e) {
+                if (!(e.getCause() instanceof AlreadyExistsException)) {
+                  throw e;
+                }
+                // A retry after a lost reply fails on this call's own write; its token means
+                // success.
+                if (!createToken.equals(sessionDoc.get().get().getString(CREATE_TOKEN_KEY))) {
+                  throw new SessionException(SessionException.SESSION_ALREADY_EXISTS, e.getCause());
+                }
+              }
 
-          return newSession;
-        });
+              return newSession;
+            })
+        .flatMap(session -> mergeWithGlobalState(appName, userId, session));
   }
 
   /***
@@ -273,6 +278,7 @@ public class FirestoreSessionService implements BaseSessionService {
                             .events(events)
                             .build();
                       })
+                  .flatMap(session -> mergeWithGlobalState(appName, userId, session))
                   .toMaybe();
             });
   }
@@ -491,40 +497,54 @@ public class FirestoreSessionService implements BaseSessionService {
   @Override
   public Single<ListSessionsResponse> listSessions(String appName, String userId) {
     return Single.fromCallable(
-        () -> {
-          Objects.requireNonNull(appName, "appName cannot be null");
-          Objects.requireNonNull(userId, "userId cannot be null");
+            () -> {
+              Objects.requireNonNull(appName, "appName cannot be null");
+              Objects.requireNonNull(userId, "userId cannot be null");
 
-          logger.info("Listing sessions for userId: {}", userId);
+              logger.info("Listing sessions for userId: {}", userId);
 
-          Query query = getSessionsCollection(userId).whereEqualTo(APP_NAME_KEY, appName);
+              Query query = getSessionsCollection(userId).whereEqualTo(APP_NAME_KEY, appName);
 
-          ApiFuture<List<QueryDocumentSnapshot>> querySnapshot =
-              ApiFutures.transform(
-                  query.get(), // Query is already scoped to the user
-                  snapshot -> snapshot.getDocuments(),
-                  MoreExecutors.directExecutor());
+              ApiFuture<List<QueryDocumentSnapshot>> querySnapshot =
+                  ApiFutures.transform(
+                      query.get(), // Query is already scoped to the user
+                      snapshot -> snapshot.getDocuments(),
+                      MoreExecutors.directExecutor());
 
-          List<Session> sessions = new ArrayList<>();
-          for (DocumentSnapshot document : querySnapshot.get()) {
-            Map<String, Object> data = document.getData();
-            if (data != null) {
-              // Create a session object with empty events and state, as per
-              // InMemorySessionService
-              Session session =
-                  Session.builder((String) data.get(ID_KEY))
-                      .appName((String) data.get(APP_NAME_KEY))
-                      .userId((String) data.get(USER_ID_KEY))
-                      .lastUpdateTime(Instant.parse((String) data.get(UPDATE_TIME_KEY)))
-                      .state(new ConcurrentHashMap<>()) // Empty state
-                      .events(new ArrayList<>()) // Empty events
-                      .build();
-              sessions.add(session);
-            }
-          }
+              List<Session> sessions = new ArrayList<>();
+              for (DocumentSnapshot document : querySnapshot.get()) {
+                Map<String, Object> data = document.getData();
+                if (data != null) {
+                  // Create a session object with empty events and state, as per
+                  // InMemorySessionService
+                  Session session =
+                      Session.builder((String) data.get(ID_KEY))
+                          .appName((String) data.get(APP_NAME_KEY))
+                          .userId((String) data.get(USER_ID_KEY))
+                          .lastUpdateTime(Instant.parse((String) data.get(UPDATE_TIME_KEY)))
+                          .state(new ConcurrentHashMap<>()) // Empty state
+                          .events(new ArrayList<>()) // Empty events
+                          .build();
+                  sessions.add(session);
+                }
+              }
 
-          return ListSessionsResponse.builder().sessions(sessions).build();
-        });
+              return sessions;
+            })
+        .flatMap(
+            sessions -> {
+              if (sessions.isEmpty()) {
+                return Single.just(ListSessionsResponse.builder().sessions(sessions).build());
+              }
+              return getGlobalState(appName, userId)
+                  .map(
+                      globalState -> {
+                        for (Session session : sessions) {
+                          session.state().putAll(globalState);
+                        }
+                        return ListSessionsResponse.builder().sessions(sessions).build();
+                      });
+            });
   }
 
   /** Deletes a session and all its associated events from Firestore. */
@@ -656,14 +676,31 @@ public class FirestoreSessionService implements BaseSessionService {
 
               stateDelta.forEach(
                   (key, value) -> {
-                    if (key.startsWith("_app_")) {
-                      appStateUpdates.put(key.substring("_app_".length()), value);
-                    } else if (key.startsWith("_user_")) {
-                      userStateUpdates.put(key.substring("_user_".length()), value);
+                    if (key.startsWith(State.TEMP_PREFIX)) {
+                      // Temp state is ephemeral and not persisted
+                      return;
+                    } else if (key.startsWith(State.APP_PREFIX)) {
+                      String appKey = key.substring(State.APP_PREFIX.length());
+                      if (value == State.REMOVED) {
+                        appStateUpdates.put(appKey, FieldValue.delete());
+                        session.state().remove(key);
+                      } else {
+                        appStateUpdates.put(appKey, value);
+                        session.state().put(key, value);
+                      }
+                    } else if (key.startsWith(State.USER_PREFIX)) {
+                      String userKey = key.substring(State.USER_PREFIX.length());
+                      if (value == State.REMOVED) {
+                        userStateUpdates.put(userKey, FieldValue.delete());
+                        session.state().remove(key);
+                      } else {
+                        userStateUpdates.put(userKey, value);
+                        session.state().put(key, value);
+                      }
                     } else {
                       // Regular session state
                       sessionStateChanged.set(true);
-                      if (value == null) {
+                      if (value == null || value == State.REMOVED) {
                         session.state().remove(key);
                       } else {
                         session.state().put(key, value);
@@ -783,5 +820,67 @@ public class FirestoreSessionService implements BaseSessionService {
         clazz.getName(),
         obj.getClass().getName());
     return defaultValue;
+  }
+
+  /**
+   * Fetches the global application and user state from Firestore and prefixes them with {@link
+   * State#APP_PREFIX} and {@link State#USER_PREFIX}.
+   */
+  private Single<Map<String, Object>> getGlobalState(String appName, String userId) {
+    CollectionReference appCol = firestore.collection(APP_STATE_COLLECTION);
+    DocumentReference appDoc = appCol != null ? appCol.document(appName) : null;
+    ApiFuture<DocumentSnapshot> appStateFuture = appDoc != null ? appDoc.get() : null;
+
+    CollectionReference userCol = firestore.collection(USER_STATE_COLLECTION);
+    DocumentReference userAppDoc = userCol != null ? userCol.document(appName) : null;
+    CollectionReference usersSubCol = userAppDoc != null ? userAppDoc.collection("users") : null;
+    DocumentReference userDoc = usersSubCol != null ? usersSubCol.document(userId) : null;
+    ApiFuture<DocumentSnapshot> userStateFuture = userDoc != null ? userDoc.get() : null;
+
+    Single<Map<String, Object>> appStateSingle =
+        appStateFuture != null
+            ? ApiFutureUtils.toSingle(appStateFuture)
+                .map(
+                    snap -> {
+                      Map<String, Object> map = new HashMap<>();
+                      if (snap != null && snap.exists() && snap.getData() != null) {
+                        snap.getData().forEach((k, v) -> map.put(State.APP_PREFIX + k, v));
+                      }
+                      return map;
+                    })
+            : Single.just(Collections.emptyMap());
+
+    Single<Map<String, Object>> userStateSingle =
+        userStateFuture != null
+            ? ApiFutureUtils.toSingle(userStateFuture)
+                .map(
+                    snap -> {
+                      Map<String, Object> map = new HashMap<>();
+                      if (snap != null && snap.exists() && snap.getData() != null) {
+                        snap.getData().forEach((k, v) -> map.put(State.USER_PREFIX + k, v));
+                      }
+                      return map;
+                    })
+            : Single.just(Collections.emptyMap());
+
+    return Single.zip(
+        appStateSingle,
+        userStateSingle,
+        (appMap, userMap) -> {
+          Map<String, Object> globalState = new HashMap<>(appMap);
+          globalState.putAll(userMap);
+          return globalState;
+        });
+  }
+
+  /** Merges app-level and user-level state into the provided session's state map. */
+  @CanIgnoreReturnValue
+  private Single<Session> mergeWithGlobalState(String appName, String userId, Session session) {
+    return getGlobalState(appName, userId)
+        .map(
+            globalState -> {
+              session.state().putAll(globalState);
+              return session;
+            });
   }
 }
