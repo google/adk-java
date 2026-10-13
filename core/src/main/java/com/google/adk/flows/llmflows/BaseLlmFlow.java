@@ -257,10 +257,12 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                                 agent.resolvedModel().modelName().get());
                                     LlmRequest finalLlmRequest = llmRequestBuilder.build();
 
-                                    return llm.generateContent(
-                                            finalLlmRequest,
-                                            context.runConfig().streamingMode()
-                                                == StreamingMode.SSE)
+                                    return Flowable.defer(
+                                            () ->
+                                                llm.generateContent(
+                                                    finalLlmRequest,
+                                                    context.runConfig().streamingMode()
+                                                        == StreamingMode.SSE))
                                         .onErrorResumeNext(
                                             exception ->
                                                 handleOnModelErrorCallback(
