@@ -3499,6 +3499,43 @@ public final class RunnerTest {
         .isFalse();
   }
 
+  @Test
+  public void runLive_partialEvent_streamedButNotPassedToSessionService() throws Exception {
+    // The live model streams a partial text chunk followed by the full text.
+    LlmResponse partialResponse =
+        LlmResponse.builder()
+            .content(Content.builder().role("model").parts(Part.fromText("partial")).build())
+            .partial(true)
+            .build();
+    LlmResponse finalResponse =
+        LlmResponse.builder()
+            .content(Content.builder().role("model").parts(Part.fromText("final")).build())
+            .build();
+    TestLlm testLlm = new TestLlm(() -> Flowable.just(partialResponse, finalResponse));
+    RecordingSessionService sessionService = new RecordingSessionService();
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(createTestAgent(testLlm)).build())
+            .sessionService(sessionService)
+            .build();
+    Session session = sessionService.createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(session, liveRequestQueue, RunConfig.builder().build()).test();
+    liveRequestQueue.content(createContent("hi"));
+    liveRequestQueue.close();
+    testSubscriber.await();
+
+    testSubscriber.assertComplete();
+    // The partial event is still streamed to the caller.
+    assertThat(testSubscriber.values().stream().anyMatch(event -> event.partial().orElse(false)))
+        .isTrue();
+    // As in runAsync, only the final event is handed to the session service.
+    assertThat(sessionService.appendedEvents.stream().map(e -> e.content().get().text()).toList())
+        .containsExactly("final");
+  }
+
   /** A session service that records every event passed to {@code appendEvent} for assertions. */
   private static final class RecordingSessionService implements BaseSessionService {
     private final InMemorySessionService delegate = new InMemorySessionService();
