@@ -27,6 +27,7 @@ import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.NodeViewAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
@@ -55,6 +56,8 @@ import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.utils.CollectionUtils;
+import com.google.adk.workflow.Node;
+import com.google.adk.workflow.NodeRunner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.MapMaker;
@@ -85,11 +88,13 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 
 /** The main class for the GenAI Agents runner. */
 public class Runner {
   private final BaseAgent agent;
+  private final @Nullable Node node;
   private final String appName;
   private final BaseArtifactService artifactService;
   private final BaseSessionService sessionService;
@@ -220,6 +225,7 @@ public class Runner {
     @SuppressWarnings("deprecation")
     public Runner build() {
       BaseAgent buildAgent;
+      Node buildNode;
       String buildAppName;
       List<? extends Plugin> buildPlugins;
       EventsCompactionConfig buildEventsCompactionConfig;
@@ -234,6 +240,7 @@ public class Runner {
           throw new IllegalStateException("plugins() cannot be called when app() is called.");
         }
         buildAgent = this.app.rootAgent();
+        buildNode = this.app.rootNode().orElse(null);
         buildPlugins = this.app.plugins();
         buildAppName = this.appName == null ? this.app.name() : this.appName;
         buildEventsCompactionConfig = this.app.eventsCompactionConfig();
@@ -241,6 +248,7 @@ public class Runner {
         buildResumabilityConfig = this.app.resumabilityConfig();
       } else {
         buildAgent = this.agent;
+        buildNode = null;
         buildAppName = this.appName;
         buildPlugins = this.plugins;
         buildEventsCompactionConfig = null;
@@ -250,6 +258,10 @@ public class Runner {
 
       if (buildAgent == null) {
         throw new IllegalStateException("Agent must be provided via app() or agent().");
+      }
+      if (buildAgent instanceof NodeViewAgent && buildNode == null) {
+        throw new IllegalStateException(
+            "A node view agent cannot run on its own; run its node through an app's root node.");
       }
       if (buildAppName == null) {
         throw new IllegalStateException("App name must be provided via app() or appName().");
@@ -270,6 +282,7 @@ public class Runner {
       }
       return new Runner(
           buildAgent,
+          buildNode,
           buildAppName,
           artifactService,
           sessionService,
@@ -364,6 +377,7 @@ public class Runner {
       @Nullable ResumabilityConfig resumabilityConfig) {
     this(
         agent,
+        /* node= */ null,
         appName,
         artifactService,
         sessionService,
@@ -379,6 +393,7 @@ public class Runner {
 
   private Runner(
       BaseAgent agent,
+      @Nullable Node node,
       String appName,
       BaseArtifactService artifactService,
       BaseSessionService sessionService,
@@ -390,7 +405,11 @@ public class Runner {
       @Nullable Scheduler scheduler,
       InstantSource instantSource,
       UuidProvider uuidProvider) {
+    checkArgument(
+        !(agent instanceof NodeViewAgent) || node != null,
+        "A node view agent cannot run on its own; run its node through an app's root node.");
     this.agent = agent;
+    this.node = node;
     this.appName = appName;
     this.artifactService = artifactService;
     this.sessionService = sessionService;
@@ -421,6 +440,15 @@ public class Runner {
 
   public BaseAgent agent() {
     return this.agent;
+  }
+
+  /**
+   * Returns the workflow node this runner runs, or empty when it runs an agent tree. When it runs a
+   * node, {@link #agent()} returns a {@link NodeViewAgent} that stands in for it.
+   */
+  @Experimental
+  public Optional<Node> node() {
+    return Optional.ofNullable(node);
   }
 
   public String appName() {
@@ -736,6 +764,10 @@ public class Runner {
       @Nullable Map<String, Object> stateDelta) {
     return Flowable.defer(
             () -> {
+              // Rejected before any callback or append; defer turns the throw into an error signal.
+              if (node != null) {
+                checkNoTextWithFunctionResponses(newMessage);
+              }
               Context capturedContext = Context.current();
               BaseAgent rootAgent = this.agent;
               String invocationId = InvocationContext.newInvocationContextId(this.uuidProvider);
@@ -844,9 +876,9 @@ public class Runner {
   }
 
   /**
-   * Runs {@code context.agent()} and drives the persist / plugin-callback pipeline shared by both
-   * invocation paths, through the after-run and compaction brackets. A {@code beforeRunEvent}
-   * short-circuits the agent run; {@code onEachPersisted} runs after each persisted event.
+   * Runs the root of {@code context} and drives the persist / plugin-callback pipeline shared by
+   * both invocation paths, through the after-run and compaction brackets. A {@code beforeRunEvent}
+   * short-circuits the run; {@code onEachPersisted} runs after each persisted event.
    */
   private Flowable<Event> executeAgentPipeline(
       InvocationContext context,
@@ -856,45 +888,57 @@ public class Runner {
     // Let BaseLlmFlow block each step until this Runner has persisted the prior step's events.
     PersistBarrier.enable(context);
 
-    Flowable<Event> agentEvents =
-        context
-            .agent()
-            .runAsync(context)
-            .concatMap(
-                agentEvent -> {
-                  // Mirror ADK Python (runners.py): partial events are streamed to the caller but
-                  // never persisted, so managed session services (e.g. VertexAiSessionService) do
-                  // not store a duplicate of the function call/text that the final aggregated event
-                  // already carries. Nothing to persist, so resolve the barrier immediately.
-                  Single<Event> persistStep =
-                      agentEvent.partial().orElse(false)
-                          ? Single.just(agentEvent)
-                          : this.sessionService.appendEvent(sessionToPersist, agentEvent);
-                  return persistStep
-                      // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
-                      // sole appendEvent caller (see PersistBarrier).
-                      .doOnSuccess(
-                          unusedEvent -> PersistBarrier.markPersisted(context, agentEvent.id()))
-                      .doOnError(
-                          error -> PersistBarrier.markFailed(context, agentEvent.id(), error))
-                      .flatMap(
-                          registeredEvent -> {
-                            if (onEachPersisted != null) {
-                              onEachPersisted.run();
-                            }
-                            return context
-                                .pluginManager()
-                                .onEventCallback(context, registeredEvent)
-                                .defaultIfEmpty(registeredEvent);
-                          })
-                      .toFlowable();
-                });
-
     return beforeRunEvent
         .toFlowable()
-        .switchIfEmpty(agentEvents)
+        .switchIfEmpty(
+            runRoot(
+                context, event -> processEvent(context, sessionToPersist, onEachPersisted, event)))
         .concatWith(Completable.defer(() -> pluginManager.afterRunCallback(context)))
         .concatWith(Completable.defer(() -> compactEvents(sessionToPersist)));
+  }
+
+  /**
+   * Persists {@code event} unless it is partial, runs {@code onEachPersisted} and the plugins'
+   * event callbacks, and returns the event to emit.
+   */
+  private Single<Event> processEvent(
+      InvocationContext context,
+      Session sessionToPersist,
+      @Nullable Runnable onEachPersisted,
+      Event event) {
+    // Mirror ADK Python (runners.py): partial events are streamed to the caller but
+    // never persisted, so managed session services (e.g. VertexAiSessionService) do
+    // not store a duplicate of the function call/text that the final aggregated event
+    // already carries. Nothing to persist, so resolve the barrier immediately.
+    Single<Event> persistStep =
+        event.partial().orElse(false)
+            ? Single.just(event)
+            : this.sessionService.appendEvent(sessionToPersist, event);
+    return persistStep
+        // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
+        // sole appendEvent caller (see PersistBarrier).
+        .doOnSuccess(unusedEvent -> PersistBarrier.markPersisted(context, event.id()))
+        .doOnError(error -> PersistBarrier.markFailed(context, event.id(), error))
+        .flatMap(
+            registeredEvent -> {
+              if (onEachPersisted != null) {
+                onEachPersisted.run();
+              }
+              return context
+                  .pluginManager()
+                  .onEventCallback(context, registeredEvent)
+                  .defaultIfEmpty(registeredEvent);
+            });
+  }
+
+  /** Runs an agent root through its own lifecycle, and any other node root through NodeRunner. */
+  private static Flowable<Event> runRoot(
+      InvocationContext context, Function<Event, Single<Event>> processEvent) {
+    Node root = context.node().orElse(context.agent());
+    if (root instanceof BaseAgent agent) {
+      return agent.runAsync(context).concatMapSingle(processEvent::apply);
+    }
+    return NodeRunner.runRoot(root, context, processEvent);
   }
 
   private Completable compactEvents(Session session) {
@@ -941,6 +985,9 @@ public class Runner {
     return Flowable.defer(
         () -> {
           // Rejected before the invocation-id fallback; defer turns the throw into an error signal.
+          if (node != null) {
+            checkNoTextWithFunctionResponses(newMessage);
+          }
           if (newMessage != null) {
             validateResumeMessage(session, newMessage);
           }
@@ -958,6 +1005,12 @@ public class Runner {
             // Only a wholly empty session is rejected; Python does not reject an unmatched id.
             return Flowable.<Event>error(
                 new IllegalArgumentException("Session has no events to resume."));
+          }
+          if (node != null) {
+            // Without replay, resuming would run the node again and repeat its side effects.
+            return Flowable.<Event>error(
+                new UnsupportedOperationException(
+                    "Resuming an invocation of a workflow node root is not supported."));
           }
           return resumeCore(session, resolvedInvocationId, newMessage, runConfig, stateDelta);
         });
@@ -1228,6 +1281,29 @@ public class Runner {
   }
 
   /**
+   * Rejects a message for a node root if the message mixes text with function responses that carry
+   * an id: the responses resume an existing invocation, while the text starts a new one. Python's
+   * node path rejects such a message too; its agent path accepts it.
+   *
+   * @throws IllegalArgumentException if {@code message} mixes them.
+   */
+  private static void checkNoTextWithFunctionResponses(@Nullable Content message) {
+    if (message == null || functionResponseIds(message).stream().allMatch(String::isEmpty)) {
+      return;
+    }
+    boolean hasText =
+        message.parts().stream()
+            .flatMap(List::stream)
+            .map(Part::text)
+            .flatMap(Optional::stream)
+            .anyMatch(text -> !text.isEmpty());
+    checkArgument(
+        !hasText,
+        "Message cannot contain both function responses and text. Function responses resume an"
+            + " existing invocation while text starts a new one.");
+  }
+
+  /**
    * Rejects a resume message no invocation can be resumed from: one whose first function response
    * carries no id, one whose response ids match no call in session history (it would feed the model
    * an orphan response), and one whose responses span more than one invocation. Counts rather than
@@ -1380,7 +1456,8 @@ public class Runner {
         .scheduler(this.scheduler)
         .instantSource(this.instantSource)
         .uuidProvider(this.uuidProvider)
-        .agent(agent);
+        .agent(agent)
+        .node(node);
   }
 
   public Flowable<Event> runLive(
@@ -1437,6 +1514,11 @@ public class Runner {
       Session session, @Nullable LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
     return Flowable.defer(
         () -> {
+          if (node != null) {
+            return Flowable.<Event>error(
+                new UnsupportedOperationException(
+                    "Live runs of a workflow node root are not supported."));
+          }
           Context capturedContext = Context.current();
           InvocationContext invocationContext =
               newInvocationContextForLive(session, liveRequestQueue, runConfig);
@@ -1511,6 +1593,10 @@ public class Runner {
 
   /** Returns the agent that should handle the next request based on session history. */
   private BaseAgent findAgentToRun(Session session, BaseAgent rootAgent) {
+    if (node != null) {
+      // A node root has no agent tree to pick a sub-agent from, so it always runs itself.
+      return rootAgent;
+    }
     // Route a function response to its call's author, as Python's _agent_router does. An enclosing
     // workflow advances by re-entering the root, which holds its own checkpoint, not from here.
     ImmutableList<Event> sessionEvents = session.immutableEvents();
