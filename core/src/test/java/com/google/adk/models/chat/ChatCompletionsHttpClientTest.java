@@ -20,15 +20,24 @@ import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.models.BaseLlm;
+import com.google.adk.models.BaseLlmConnection;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.runner.InMemoryRunner;
+import com.google.adk.sessions.Session;
+import com.google.adk.tools.mcp.McpSessionManager;
+import com.google.adk.tools.mcp.McpTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -36,6 +45,8 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.HttpOptions;
 import com.google.genai.types.Part;
+import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.spec.McpSchema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.io.IOException;
@@ -202,6 +213,64 @@ public final class ChatCompletionsHttpClientTest {
             .build();
 
     assertThat(response).isEqualTo(expectedResponse);
+  }
+
+  @Test
+  public void complete_mcpToolRunThroughAgent_sendsInputSchemaAsParameters() throws Exception {
+    ImmutableMap<String, Object> inputSchema =
+        ImmutableMap.of(
+            "type", "object",
+            "properties", ImmutableMap.of("jobId", ImmutableMap.of("type", "string")),
+            "required", ImmutableList.of("jobId"));
+    McpTool mcpTool =
+        new McpTool(
+            McpSchema.Tool.builder("analyze_job", inputSchema).build(),
+            mock(McpSyncClient.class),
+            mock(McpSessionManager.class));
+    BaseLlm model =
+        new BaseLlm("test-model") {
+          @Override
+          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+            return client.complete(llmRequest, stream);
+          }
+
+          @Override
+          public BaseLlmConnection connect(LlmRequest llmRequest) {
+            throw new UnsupportedOperationException();
+          }
+        };
+    String responseBody =
+        """
+        {"choices": [{"message": {"role": "assistant", "content": "Done"}, "finish_reason": "stop"}]}
+        """;
+    doAnswer(
+            invocation -> {
+              invocation
+                  .<Callback>getArgument(0)
+                  .onResponse(mockCall, createMockResponse(responseBody, JSON));
+              return null;
+            })
+        .when(mockCall)
+        .enqueue(any());
+    InMemoryRunner runner =
+        new InMemoryRunner(LlmAgent.builder().name("agent").model(model).tools(mcpTool).build());
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+
+    // `var _` needs Java 22, and ADK Java still compiles for Java 17.
+    @SuppressWarnings("UnnamedVariable")
+    var unused =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("Analyze job 42")))
+            .toList()
+            .blockingGet();
+
+    ArgumentCaptor<Request> requestCaptor = ArgumentCaptor.forClass(Request.class);
+    verify(mockHttpClient).newCall(requestCaptor.capture());
+    Buffer buffer = new Buffer();
+    requestCaptor.getValue().body().writeTo(buffer);
+    JsonNode function = objectMapper.readTree(buffer.readUtf8()).at("/tools/0/function");
+    assertThat(function.get("name").asText()).isEqualTo("analyze_job");
+    assertThat(function.get("parameters")).isEqualTo(objectMapper.valueToTree(inputSchema));
   }
 
   @Test

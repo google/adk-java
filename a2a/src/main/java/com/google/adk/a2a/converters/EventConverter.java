@@ -27,7 +27,6 @@ import io.a2a.spec.Part;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 
 /** Converter for ADK Events to A2A Messages. */
@@ -144,29 +143,36 @@ public final class EventConverter {
     }
     List<Event> events = context.session().events();
     int lastResponseIndex = -1;
-    String contextId = "";
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
       if (event.author().equals(context.agent().name())) {
         lastResponseIndex = i;
-        contextId = contextId(event);
         break;
       }
     }
     ImmutableList.Builder<Part<?>> partsBuilder = ImmutableList.builder();
     for (int i = lastResponseIndex + 1; i < events.size(); i++) {
       Event event = events.get(i);
+      Optional<Content> content;
+      boolean partial;
       if (!event.author().equals("user") && !event.author().equals(context.agent().name())) {
-        event = presentAsUserMessage(event, contextId);
+        // Another agent's output is rephrased as a complete user message.
+        content = presentAsUserMessage(event);
+        partial = false;
+      } else {
+        content = event.content();
+        partial = event.partial().orElse(false);
       }
-      contentToParts(event.content(), event.partial().orElse(false)).forEach(partsBuilder::add);
+      contentToParts(content, partial).forEach(partsBuilder::add);
     }
     return partsBuilder.build();
   }
 
-  private static Event presentAsUserMessage(Event event, String contextId) {
-    Event.Builder userEvent =
-        new Event.Builder().id(UUID.randomUUID().toString()).invocationId(contextId).author("user");
+  /**
+   * Rephrases the content of an event authored by another agent as a user message, or returns empty
+   * when the event has no parts to present.
+   */
+  private static Optional<Content> presentAsUserMessage(Event event) {
     ImmutableList<com.google.genai.types.Part> parts =
         event.content().flatMap(Content::parts).stream()
             .flatMap(Collection::stream)
@@ -176,20 +182,18 @@ public final class EventConverter {
             .map(part -> PartConverter.remoteCallAsUserPart(event.author(), part))
             .collect(toImmutableList());
     if (parts.isEmpty()) {
-      return userEvent.build();
+      return Optional.empty();
     }
     com.google.genai.types.Part forContext =
         com.google.genai.types.Part.builder().text("For context:").build();
-    return userEvent
-        .content(
-            Content.builder()
-                .parts(
-                    ImmutableList.<com.google.genai.types.Part>builder()
-                        .add(forContext)
-                        .addAll(parts)
-                        .build())
-                .build())
-        .build();
+    return Optional.of(
+        Content.builder()
+            .parts(
+                ImmutableList.<com.google.genai.types.Part>builder()
+                    .add(forContext)
+                    .addAll(parts)
+                    .build())
+            .build());
   }
 
   private static String metadataValue(Event event, String key) {

@@ -196,6 +196,7 @@ public final class EventConverterTest {
                         .build(),
                     Event.builder()
                         .author("other_agent")
+                        .partial(true)
                         .content(
                             Content.builder()
                                 .parts(ImmutableList.of(Part.builder().text("hey").build()))
@@ -208,12 +209,21 @@ public final class EventConverterTest {
             .session(session)
             .sessionService(new InMemorySessionService())
             .agent(agent)
+            // An explicit invocation id keeps build() from drawing one; rephrasing another agent's
+            // output must draw none.
+            .invocationId("invocation-id")
+            .uuidProvider(
+                () -> {
+                  throw new AssertionError("messagePartsFromContext must not draw ids");
+                })
             .build();
     ImmutableList<io.a2a.spec.Part<?>> parts = EventConverter.messagePartsFromContext(ctx);
 
     assertThat(parts).hasSize(2);
     assertThat(((TextPart) parts.get(0)).getText()).isEqualTo("For context:");
     assertThat(((TextPart) parts.get(1)).getText()).isEqualTo("[other_agent] said: hey");
+    // Another agent's output is rephrased as a complete message even when its event was partial.
+    assertThat(parts.get(1).getMetadata()).doesNotContainKey(A2AMetadataKey.PARTIAL.getType());
   }
 
   private static final class TestAgent extends BaseAgent {

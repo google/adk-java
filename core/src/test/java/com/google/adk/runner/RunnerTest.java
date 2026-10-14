@@ -16,8 +16,18 @@
 
 package com.google.adk.runner;
 
+import static com.google.adk.testing.ResumabilityTestUtils.approveConfirmation;
+import static com.google.adk.testing.ResumabilityTestUtils.confirmingEchoFunctionTool;
+import static com.google.adk.testing.ResumabilityTestUtils.functionResponseContent;
+import static com.google.adk.testing.ResumabilityTestUtils.newSession;
+import static com.google.adk.testing.ResumabilityTestUtils.reloadSession;
+import static com.google.adk.testing.ResumabilityTestUtils.runTurn;
+import static com.google.adk.testing.ResumabilityTestUtils.runTurnAskingConfirmation;
+import static com.google.adk.testing.ResumabilityTestUtils.textAgent;
+import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
+import static com.google.adk.testing.TestUtils.createSubAgent;
 import static com.google.adk.testing.TestUtils.createTestAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
@@ -25,10 +35,12 @@ import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Arrays.stream;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -45,6 +57,7 @@ import com.google.adk.agents.Callbacks.AfterModelCallback;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
@@ -53,8 +66,11 @@ import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
+import com.google.adk.models.BaseLlm;
+import com.google.adk.models.BaseLlmConnection;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.GetSessionConfig;
@@ -65,22 +81,26 @@ import com.google.adk.sessions.Session;
 import com.google.adk.sessions.SessionKey;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.telemetry.Tracing;
+import com.google.adk.testing.RecordingScheduler;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.testing.TestUtils.FailingEchoTool;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
+import com.google.adk.tools.SetModelResponseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
+import com.google.common.truth.Correspondence;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
+import com.google.genai.types.Schema;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
@@ -91,9 +111,11 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -1089,6 +1111,109 @@ public final class RunnerTest {
   }
 
   /**
+   * Ensures a slow appendEvent does not let a transfer target build its request from a stale
+   * session, in either direction: the sub-agent must see the root's transfer, and after the
+   * transfer back the root must see its own transfer response.
+   */
+  @Test
+  public void runAsync_slowAppendEvent_doesNotCauseStaleSessionInTransferTarget() throws Exception {
+    TestLlm subTestLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "call_sub", "transfer_to_agent", ImmutableMap.of("agent_name", "test agent")));
+    LlmAgent subAgent = createTestAgentBuilder(subTestLlm).name("sub_agent").build();
+
+    TestLlm rootTestLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "call_root", "transfer_to_agent", ImmutableMap.of("agent_name", "sub_agent")),
+            createTextLlmResponse("done"));
+
+    LlmAgent rootAgent = createTestAgentBuilder(rootTestLlm).subAgents(subAgent).build();
+
+    Runner runnerForRace =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(rootAgent).build())
+            .sessionService(new AppendDelayingSessionService(new InMemorySessionService(), 50))
+            .build();
+    Session raceSession =
+        runnerForRace.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        runnerForRace
+            .runAsync("user", raceSession.id(), createContent("start"))
+            .toList()
+            .blockingGet();
+
+    // The root's transfer reaches the sub-agent as relayed text, since another agent authored it.
+    ImmutableList<LlmRequest> subRequests = subTestLlm.getRequests();
+    assertThat(subRequests).hasSize(1);
+    assertThat(
+            subRequests.get(0).contents().stream()
+                .flatMap(c -> c.parts().stream().flatMap(List::stream))
+                .flatMap(part -> part.text().stream())
+                .collect(toImmutableList()))
+        .comparingElementsUsing(
+            Correspondence.<String, String>from(String::startsWith, "starts with"))
+        .contains("[test agent] `transfer_to_agent` tool returned result:");
+
+    // After the transfer back, the root must see its own transfer response.
+    ImmutableList<LlmRequest> rootRequests = rootTestLlm.getRequests();
+    assertThat(rootRequests).hasSize(2);
+    assertThat(
+            rootRequests.get(1).contents().stream()
+                .flatMap(c -> c.parts().stream().flatMap(List::stream))
+                .flatMap(part -> part.functionResponse().flatMap(FunctionResponse::id).stream())
+                .collect(toImmutableList()))
+        .contains("call_root");
+    assertThat(Iterables.getLast(rootRequests.get(1).contents()).role()).hasValue("user");
+  }
+
+  /**
+   * With a slow appendEvent, the append's thread releases the transfer target; the target's {@code
+   * invoke_agent} span must still be a child of the transferring agent's, not start a new trace.
+   */
+  @Test
+  public void runAsync_slowAppendEvent_transferTargetSpanIsChildOfParentAgentSpan() {
+    LlmAgent subAgent =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub response")))
+            .name("sub_agent")
+            .build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "call_root",
+                        "transfer_to_agent",
+                        ImmutableMap.of("agent_name", "sub_agent"))))
+            .subAgents(subAgent)
+            .build();
+    Runner runnerForRace =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(rootAgent).build())
+            .sessionService(new AppendDelayingSessionService(new InMemorySessionService(), 50))
+            .build();
+    Session raceSession =
+        runnerForRace.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        runnerForRace
+            .runAsync("user", raceSession.id(), createContent("start"))
+            .toList()
+            .blockingGet();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    Optional<SpanData> parentSpan =
+        spans.stream().filter(s -> s.getName().equals("invoke_agent test agent")).findFirst();
+    Optional<SpanData> targetSpan =
+        spans.stream().filter(s -> s.getName().equals("invoke_agent sub_agent")).findFirst();
+    assertThat(parentSpan).isPresent();
+    assertThat(targetSpan).isPresent();
+    assertThat(targetSpan.get().getParentSpanContext().getSpanId())
+        .isEqualTo(parentSpan.get().getSpanContext().getSpanId());
+  }
+
+  /**
    * When an LlmAgent transfers to a sub-LlmAgent, the sub-agent's events flow back up through the
    * parent's flow and must each be appended to the session exactly once.
    */
@@ -1841,6 +1966,116 @@ public final class RunnerTest {
         .inOrder();
   }
 
+  @Test
+  public void runAsync_parallelAgent_usesRunnerScheduler() {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    Runner schedulerRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(parallelAgentWithTwoSubAgents()).build())
+            .scheduler(recordingScheduler)
+            .build();
+    Session schedulerSession =
+        schedulerRunner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        schedulerRunner
+            .runAsync("user", schedulerSession.id(), createContent("hi"))
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(2);
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(2);
+  }
+
+  @Test
+  public void builder_scheduler_null_usesDefaultScheduler() {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    Runner schedulerRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(parallelAgentWithTwoSubAgents()).build())
+            .scheduler(recordingScheduler)
+            .scheduler(null)
+            .build();
+    Session schedulerSession =
+        schedulerRunner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        schedulerRunner
+            .runAsync("user", schedulerSession.id(), createContent("hi"))
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(2);
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(0);
+  }
+
+  @Test
+  public void runLive_usesRunnerScheduler() throws Exception {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    Runner schedulerRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .scheduler(recordingScheduler)
+            .build();
+    Session liveSession =
+        schedulerRunner.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        schedulerRunner.runLive(liveSession, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+    assertThat(liveRequestTexts(testLlm)).contains("from user");
+    // The hop that starts the live send loop went through the runner's scheduler.
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(1);
+  }
+
+  @Test
+  public void runLive_agentExecutorTakesPrecedenceOverRunnerScheduler() throws Exception {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    TestLlm liveTestLlm = createTestLlm(createLlmResponse(createContent("from llm")));
+    LlmAgent agentWithExecutor =
+        createTestAgentBuilder(liveTestLlm).executor(Runnable::run).build();
+    Runner schedulerRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agentWithExecutor).build())
+            .scheduler(recordingScheduler)
+            .build();
+    Session liveSession =
+        schedulerRunner.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        schedulerRunner.runLive(liveSession, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+    assertThat(liveRequestTexts(liveTestLlm)).contains("from user");
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(0);
+  }
+
+  private static ParallelAgent parallelAgentWithTwoSubAgents() {
+    return ParallelAgent.builder()
+        .name("parallel")
+        .subAgents(createSubAgent("a", createEvent("ea")), createSubAgent("b", createEvent("eb")))
+        .build();
+  }
+
+  /** Returns the text of each content request that the live connection of {@code llm} received. */
+  private static ImmutableList<String> liveRequestTexts(TestLlm llm) {
+    return llm.getLiveRequestHistory().stream()
+        .map(request -> request.content().map(Content::text))
+        .flatMap(Optional::stream)
+        .collect(toImmutableList());
+  }
+
   private Content createContent(String text) {
     return Content.builder().parts(Part.builder().text(text).build()).build();
   }
@@ -2356,6 +2591,205 @@ public final class RunnerTest {
             "child_agent: FunctionResponse(name=echoTool, response={message=hello})",
             "child_agent: Response after user confirmed.")
         .inOrder();
+  }
+
+  // The approval's new invocation must run the child on its parallel branch, where its request is.
+  @Test
+  public void runAsync_withToolConfirmation_inParallelAgentSubAgent_callsOriginalFunction() {
+    TestLlm childTestLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("Response after observing tool needs confirmation."),
+            createTextLlmResponse("Response after user confirmed."));
+    LlmAgent childAgent =
+        createTestAgentBuilder(childTestLlm)
+            .name("child_agent")
+            .tools(confirmingEchoFunctionTool())
+            .build();
+    ParallelAgent rootAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(ImmutableList.of(childAgent, textAgent("sibling_agent", "Sibling done.")))
+            .build();
+
+    ImmutableList<Event> eventsAfterConfirmation = approveToolConfirmation(rootAgent, "from user");
+
+    assertThat(simplifyEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "child_agent: FunctionResponse(name=echoTool, response={message=hello})",
+            "child_agent: Response after user confirmed.")
+        .inOrder();
+    assertThat(eventsAfterConfirmation.stream().map(event -> event.branch().orElse(null)))
+        .containsExactly("parallel_agent.child_agent", "parallel_agent.child_agent");
+    // As on the first turn, the sibling branch stays out of the child's prompt.
+    assertThat(childTestLlm.getLastRequest().contents().stream().map(TestUtils::formatContent))
+        .containsExactly(
+            "from user",
+            "FunctionCall(name=echoTool, args={message=hello})",
+            "FunctionResponse(name=echoTool, response={message=hello})")
+        .inOrder();
+  }
+
+  // A SequentialAgent between the ParallelAgent and the child makes the restored branch deeper.
+  @Test
+  public void runAsync_withToolConfirmation_inNestedParallelBranch_callsOriginalFunction() {
+    LlmAgent childAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+                    createTextLlmResponse("Response after observing tool needs confirmation."),
+                    createTextLlmResponse("Response after user confirmed.")))
+            .name("child_agent")
+            .tools(confirmingEchoFunctionTool())
+            .build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder()
+            .name("sequential_agent")
+            .subAgents(ImmutableList.of(childAgent))
+            .build();
+    ParallelAgent rootAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(
+                ImmutableList.of(sequentialAgent, textAgent("sibling_agent", "Sibling done.")))
+            .build();
+
+    ImmutableList<Event> eventsAfterConfirmation = approveToolConfirmation(rootAgent, "from user");
+
+    assertThat(simplifyEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "child_agent: FunctionResponse(name=echoTool, response={message=hello})",
+            "child_agent: Response after user confirmed.")
+        .inOrder();
+    assertThat(eventsAfterConfirmation.stream().map(event -> event.branch().orElse(null)))
+        .containsExactly(
+            "parallel_agent.sequential_agent.child_agent",
+            "parallel_agent.sequential_agent.child_agent");
+  }
+
+  // The approval must restore the branch of the call it answers, not the agent's latest branch.
+  @Test
+  public void runAsync_withToolConfirmation_afterAgentRanOnAnotherBranch_callsOriginalFunction() {
+    LlmAgent agentB =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+                    createTextLlmResponse("Response after observing tool needs confirmation."),
+                    createTextLlmResponse("Response to the second message."),
+                    createTextLlmResponse("Response after user confirmed.")))
+            .name("agent_b")
+            .tools(confirmingEchoFunctionTool())
+            .build();
+    LlmAgent agentA =
+        createTestAgentBuilder(createTestLlm(createTransferToAgentResponse("agent_b")))
+            .name("agent_a")
+            .build();
+    LlmAgent leadAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createTransferToAgentResponse("agent_a"),
+                    createTransferToAgentResponse("agent_b")))
+            .name("lead_agent")
+            .subAgents(ImmutableList.of(agentA, agentB))
+            .build();
+    ParallelAgent rootAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(
+                ImmutableList.of(
+                    leadAgent, textAgent("sibling_agent", "Sibling done.", "Sibling done again.")))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(rootAgent).build()).build();
+    Session session = newSession(runner);
+    // agent_b asks for confirmation after a transfer from its peer agent_a.
+    FunctionCall askUserConfirmationFunctionCall =
+        runTurnAskingConfirmation(runner, session, "from user");
+    // lead_agent then transfers to agent_b directly, which runs it on a shorter branch.
+    var unused = runTurn(runner, session, "second message");
+
+    ImmutableList<Event> eventsAfterConfirmation =
+        approveConfirmation(runner, session, askUserConfirmationFunctionCall);
+
+    assertThat(simplifyEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "agent_b: FunctionResponse(name=echoTool, response={message=hello})",
+            "agent_b: Response after user confirmed.")
+        .inOrder();
+    assertThat(eventsAfterConfirmation.stream().map(event -> event.branch().orElse(null)))
+        .containsExactly(
+            "parallel_agent.lead_agent.agent_a.agent_b",
+            "parallel_agent.lead_agent.agent_a.agent_b");
+  }
+
+  private static LlmResponse createTransferToAgentResponse(String agentName) {
+    return createLlmResponse(
+        Content.fromParts(
+            Part.fromFunctionCall("transfer_to_agent", ImmutableMap.of("agent_name", agentName))));
+  }
+
+  // runLive restores the child's branch too, so an approval already in the session is honored.
+  @Test
+  public void runLive_withToolConfirmationApproved_inParallelAgentSubAgent_callsOriginalFunction()
+      throws Exception {
+    LlmAgent childAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+                    createTextLlmResponse("Response after observing tool needs confirmation.")))
+            .name("child_agent")
+            .tools(confirmingEchoFunctionTool())
+            .build();
+    ParallelAgent rootAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(ImmutableList.of(childAgent, textAgent("sibling_agent", "Sibling done.")))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(rootAgent).build()).build();
+    Session session = newSession(runner);
+    FunctionCall askUserConfirmationFunctionCall =
+        runTurnAskingConfirmation(runner, session, "from user");
+    Session updatedSession = reloadSession(runner, session);
+    var unused =
+        runner
+            .sessionService()
+            .appendEvent(
+                updatedSession,
+                Event.builder()
+                    .id(Event.generateEventId())
+                    .invocationId(InvocationContext.newInvocationContextId())
+                    .author("user")
+                    .content(
+                        functionResponseContent(
+                            askUserConfirmationFunctionCall.id().orElseThrow(),
+                            askUserConfirmationFunctionCall.name().orElseThrow(),
+                            ImmutableMap.of("confirmed", true)))
+                    .build())
+            .blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(updatedSession, liveRequestQueue, RunConfig.builder().build()).test();
+    liveRequestQueue.close();
+    testSubscriber.await();
+
+    Event firstEvent = testSubscriber.values().get(0);
+    assertThat(simplifyEvents(ImmutableList.of(firstEvent)))
+        .containsExactly("child_agent: FunctionResponse(name=echoTool, response={message=hello})");
+    assertThat(firstEvent.branch()).hasValue("parallel_agent.child_agent");
+  }
+
+  /** Approves, on a default runner, the confirmation a first turn of {@code text} asks for. */
+  private static ImmutableList<Event> approveToolConfirmation(BaseAgent rootAgent, String text) {
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(rootAgent).build()).build();
+    Session session = newSession(runner);
+    return approveConfirmation(runner, session, runTurnAskingConfirmation(runner, session, text));
   }
 
   // Gating: with resumability OFF (default) the flow does NOT pause on a long-running call; it
@@ -3108,5 +3542,410 @@ public final class RunnerTest {
     public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
       return delegate.listEvents(appName, userId, sessionId);
     }
+  }
+
+  /**
+   * Verification of custom time/UUID provider behavior: running identical input twice with the same
+   * deterministic clock and UUID provider yields byte-identical event ids, timestamps, and
+   * invocation ids.
+   */
+  @Test
+  public void runAsync_withDeterministicProviders_producesIdenticalEvents() {
+    List<Event> firstRun = runWithDeterministicProviders();
+    List<Event> secondRun = runWithDeterministicProviders();
+
+    assertThat(firstRun).isNotEmpty();
+
+    List<String> firstIds = firstRun.stream().map(Event::id).toList();
+    List<String> secondIds = secondRun.stream().map(Event::id).toList();
+    assertThat(firstIds).isEqualTo(secondIds);
+
+    List<Long> firstTimestamps = firstRun.stream().map(Event::timestamp).toList();
+    List<Long> secondTimestamps = secondRun.stream().map(Event::timestamp).toList();
+    assertThat(firstTimestamps).isEqualTo(secondTimestamps);
+
+    List<String> firstInvocationIds = firstRun.stream().map(Event::invocationId).toList();
+    List<String> secondInvocationIds = secondRun.stream().map(Event::invocationId).toList();
+    assertThat(firstInvocationIds).isEqualTo(secondInvocationIds);
+
+    // The injected clock seam is actually used: every event carries the fixed timestamp.
+    assertThat(firstTimestamps.stream().distinct().toList()).containsExactly(1234L);
+    // The invocation id is minted from the injected UUID provider.
+    assertThat(firstInvocationIds.stream().distinct().toList()).containsExactly("e-uuid-0000");
+  }
+
+  @Test
+  public void build_defaultSessionService_isSharedByRunnersFromTheSameBuilder() {
+    Runner.Builder builder =
+        Runner.builder().app(App.builder().name("test").rootAgent(agent).build());
+
+    Runner first = builder.build();
+    Runner second = builder.build();
+    Session created =
+        first.sessionService().createSession("test", "user", null, "shared-session").blockingGet();
+
+    assertThat(second.sessionService()).isSameInstanceAs(first.sessionService());
+    assertThat(
+            second
+                .sessionService()
+                .getSession("test", "user", created.id(), Optional.empty())
+                .blockingGet())
+        .isNotNull();
+  }
+
+  @Test
+  public void build_explicitSessionService_isUsedAsIs() {
+    BaseSessionService explicitSessionService = new InMemorySessionService();
+
+    Runner built =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .sessionService(explicitSessionService)
+            .build();
+
+    assertThat(built.sessionService()).isSameInstanceAs(explicitSessionService);
+  }
+
+  @Test
+  public void build_withNullSessionService_throws() {
+    Runner.Builder builder =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .sessionService(null);
+
+    IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
+
+    assertThat(exception).hasMessageThat().isEqualTo("Session service must be provided.");
+  }
+
+  @Test
+  public void build_withNullThenSessionService_usesTheSessionService() {
+    BaseSessionService explicitSessionService = new InMemorySessionService();
+
+    Runner built =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .sessionService(null)
+            .sessionService(explicitSessionService)
+            .build();
+
+    assertThat(built.sessionService()).isSameInstanceAs(explicitSessionService);
+  }
+
+  @Test
+  public void builder_nullProviders_selectTheSystemDefaults() {
+    Runner nullProviderRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .instantSource(InstantSource.fixed(Instant.EPOCH))
+            .uuidProvider(() -> "fixed-uuid")
+            .instantSource(null)
+            .uuidProvider(null)
+            .build();
+
+    Session created =
+        nullProviderRunner.sessionService().createSession("test", "user").blockingGet();
+
+    assertThat(created.id()).isNotEqualTo("fixed-uuid");
+    assertThat(created.lastUpdateTime()).isGreaterThan(Instant.EPOCH);
+  }
+
+  @Test
+  public void build_defaultSessionService_usesRunnerProviders() {
+    InstantSource fixedClock = () -> Instant.ofEpochMilli(1234L);
+    UuidProvider fixedUuids = () -> "session-uuid";
+    Runner deterministicRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .instantSource(fixedClock)
+            .uuidProvider(fixedUuids)
+            .build();
+
+    Session createdSession =
+        deterministicRunner.sessionService().createSession("test", "user").blockingGet();
+
+    assertThat(createdSession.id()).isEqualTo("session-uuid");
+    assertThat(createdSession.lastUpdateTime()).isEqualTo(Instant.ofEpochMilli(1234L));
+  }
+
+  @Test
+  public void beforeRunCallback_eventUsesRunnerProviders() {
+    BasePlugin providerPlugin = mockPlugin("provider-plugin");
+    when(providerPlugin.beforeRunCallback(any())).thenReturn(Maybe.just(pluginContent));
+    Runner deterministicRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .plugins(ImmutableList.of(providerPlugin))
+                    .build())
+            .instantSource(() -> Instant.ofEpochMilli(1234L))
+            .uuidProvider(() -> "plugin-event-uuid")
+            .build();
+    Session deterministicSession =
+        deterministicRunner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        deterministicRunner
+            .runAsync("user", deterministicSession.id(), createContent("will not be processed"))
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(events)).containsExactly("model: from plugin");
+    assertThat(events.get(0).id()).isEqualTo("plugin-event-uuid");
+    assertThat(events.get(0).timestamp()).isEqualTo(1234L);
+  }
+
+  @Test
+  public void runLive_withProviders_eventsUseRunnerProviders() throws Exception {
+    AtomicInteger counter = new AtomicInteger();
+    Runner liveRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .instantSource(() -> Instant.ofEpochMilli(1234L))
+            .uuidProvider(() -> String.format("uuid-%04d", counter.getAndIncrement()))
+            .build();
+    Session liveSession = liveRunner.sessionService().createSession("test", "user").blockingGet();
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        liveRunner.runLive(liveSession, liveRequestQueue, RunConfig.builder().build()).test();
+
+    liveRequestQueue.content(createContent("from user"));
+    liveRequestQueue.close();
+
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+    assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+    assertThat(liveSession.id()).isEqualTo("uuid-0000");
+    for (Event event : testSubscriber.values()) {
+      assertThat(event.id()).startsWith("uuid-");
+      assertThat(event.invocationId()).startsWith("e-uuid-");
+      assertThat(event.timestamp()).isEqualTo(1234L);
+    }
+  }
+
+  // A clock fixed at the epoch exposes every event a run builds or rebuilds without the
+  // invocation's providers: a wall-clock stamp is never 0, and any id not drawn from the counter
+  // breaks the "uuid-NNNN" pattern.
+
+  @Test
+  public void runAsync_toolCallTurn_withEpochClock_everyEventFollowsTheProviders() {
+    DeterministicRun first = runWithEpochClock(toolCallAgent());
+    DeterministicRun second = runWithEpochClock(toolCallAgent());
+
+    // Two parallel calls, their merged responses, and the final text.
+    assertThat(first.emitted()).hasSize(3);
+    assertThat(first.emitted().get(0).functionCalls()).hasSize(2);
+    assertThat(first.emitted().get(1).functionResponses()).hasSize(2);
+    assertThat(first.emitted().get(2).content().get().text()).isEqualTo("done");
+    assertThat(first.persisted()).hasSize(4);
+    assertEventsFollowProviders(first);
+    assertIdenticalRuns(first, second);
+  }
+
+  @Test
+  public void runAsync_agentCallbacks_withEpochClock_everyEventFollowsTheProviders() {
+    DeterministicRun first = runWithEpochClock(callbackAgent());
+    DeterministicRun second = runWithEpochClock(callbackAgent());
+
+    // The before-callback's state delta, the model response, and the after-callback's content.
+    assertThat(first.emitted()).hasSize(3);
+    assertThat(first.emitted().get(0).actions().stateDelta()).containsEntry("before_key", "v");
+    assertThat(first.emitted().get(1).content().get().text()).isEqualTo("from llm");
+    assertThat(first.emitted().get(2).content().get().text()).isEqualTo("from callback");
+    assertThat(first.persisted()).hasSize(4);
+    assertEventsFollowProviders(first);
+    assertIdenticalRuns(first, second);
+  }
+
+  @Test
+  public void runAsync_outputSchemaAgent_withEpochClock_everyEventFollowsTheProviders() {
+    DeterministicRun first = runWithEpochClock(outputSchemaAgent());
+    DeterministicRun second = runWithEpochClock(outputSchemaAgent());
+
+    // The set_model_response call, its response, and the final structured response.
+    assertThat(first.emitted()).hasSize(3);
+    assertThat(first.emitted().get(0).functionCalls().get(0).name())
+        .hasValue(SetModelResponseTool.NAME);
+    assertThat(first.emitted().get(2).content().get().text()).isEqualTo("{\"field1\":\"value1\"}");
+    assertThat(first.persisted()).hasSize(4);
+    assertEventsFollowProviders(first);
+    assertIdenticalRuns(first, second);
+  }
+
+  /** The events one run emitted and the events it left in the session. */
+  private record DeterministicRun(ImmutableList<Event> emitted, ImmutableList<Event> persisted) {}
+
+  /** Runs {@code agent} once on a fresh runner with an epoch clock and counter-minted ids. */
+  private DeterministicRun runWithEpochClock(LlmAgent agent) {
+    AtomicInteger counter = new AtomicInteger();
+    Runner epochRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .instantSource(InstantSource.fixed(Instant.EPOCH))
+            .uuidProvider(() -> String.format("uuid-%04d", counter.getAndIncrement()))
+            .build();
+    Session epochSession =
+        epochRunner
+            .sessionService()
+            .createSession("test", "user", null, "fixed-session")
+            .blockingGet();
+    ImmutableList<Event> emitted =
+        ImmutableList.copyOf(
+            epochRunner
+                .runAsync("user", epochSession.id(), createContent("hi"))
+                .toList()
+                .blockingGet());
+    ImmutableList<Event> persisted =
+        ImmutableList.copyOf(
+            epochRunner
+                .sessionService()
+                .getSession("test", "user", epochSession.id(), Optional.empty())
+                .blockingGet()
+                .events());
+    return new DeterministicRun(emitted, persisted);
+  }
+
+  /** An agent whose model issues two id-less {@code echo_tool} calls and then answers in text. */
+  private LlmAgent toolCallAgent() {
+    Part idlessCall =
+        Part.builder()
+            .functionCall(
+                FunctionCall.builder()
+                    .name(echoTool.name())
+                    .args(ImmutableMap.of("args_name", "args_value"))
+                    .build())
+            .build();
+    Content parallelCalls =
+        Content.builder().role("model").parts(ImmutableList.of(idlessCall, idlessCall)).build();
+    return createTestAgentBuilder(
+            createTestLlm(createLlmResponse(parallelCalls), createTextLlmResponse("done")))
+        .tools(echoTool)
+        .build();
+  }
+
+  /**
+   * An agent whose before-agent callback only writes state and whose after-agent callback replies.
+   */
+  private LlmAgent callbackAgent() {
+    Callbacks.BeforeAgentCallback writeState =
+        callbackContext -> {
+          var unused = callbackContext.state().put("before_key", "v");
+          return Maybe.empty();
+        };
+    Callbacks.AfterAgentCallback reply =
+        callbackContext -> Maybe.just(createContent("from callback"));
+    return createTestAgentBuilder(createTestLlm(createTextLlmResponse("from llm")))
+        .beforeAgentCallback(writeState)
+        .afterAgentCallback(reply)
+        .build();
+  }
+
+  /**
+   * An agent with an output schema and a tool under a gemini-2 model name, so the flow routes the
+   * answer through {@code set_model_response} and builds the final structured response event.
+   */
+  private LlmAgent outputSchemaAgent() {
+    TestLlm scriptedLlm =
+        createTestLlm(
+            createLlmResponse(
+                Content.fromParts(
+                    Part.fromFunctionCall(
+                        SetModelResponseTool.NAME, ImmutableMap.of("field1", "value1")))));
+    BaseLlm gemini2NamedLlm =
+        new BaseLlm("gemini-2.0-flash") {
+          @Override
+          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+            return scriptedLlm.generateContent(llmRequest, stream);
+          }
+
+          @Override
+          public BaseLlmConnection connect(LlmRequest llmRequest) {
+            return scriptedLlm.connect(llmRequest);
+          }
+        };
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("field1", Schema.builder().type("STRING").build()))
+            .required(ImmutableList.of("field1"))
+            .build();
+    return LlmAgent.builder()
+        .name("test agent")
+        .model(gemini2NamedLlm)
+        .outputSchema(outputSchema)
+        .tools(echoTool)
+        .build();
+  }
+
+  /**
+   * Asserts that every emitted and persisted event carries the epoch timestamp, a counter id, a
+   * counter-derived invocation id, and ADK-prefixed function-call ids, with no id used twice.
+   */
+  private static void assertEventsFollowProviders(DeterministicRun run) {
+    for (Event event : Iterables.concat(run.emitted(), run.persisted())) {
+      assertWithMessage("timestamp of event %s", event.id()).that(event.timestamp()).isEqualTo(0L);
+      assertThat(event.id()).matches("uuid-\\d{4}");
+      assertThat(event.invocationId()).matches("e-uuid-\\d{4}");
+      for (FunctionCall functionCall : event.functionCalls()) {
+        assertThat(functionCall.id().get()).startsWith("adk-uuid-");
+      }
+      for (FunctionResponse functionResponse : event.functionResponses()) {
+        assertThat(functionResponse.id().get()).startsWith("adk-uuid-");
+      }
+    }
+    assertThat(ids(run.emitted())).containsNoDuplicates();
+    assertThat(ids(run.persisted())).containsNoDuplicates();
+  }
+
+  /** Asserts that {@code second} reproduced the ids, timestamps, and call ids of {@code first}. */
+  private static void assertIdenticalRuns(DeterministicRun first, DeterministicRun second) {
+    assertThat(ids(second.emitted())).isEqualTo(ids(first.emitted()));
+    assertThat(ids(second.persisted())).isEqualTo(ids(first.persisted()));
+    assertThat(second.persisted().stream().map(Event::timestamp).collect(toImmutableList()))
+        .isEqualTo(first.persisted().stream().map(Event::timestamp).collect(toImmutableList()));
+    assertThat(functionCallIds(second.persisted())).isEqualTo(functionCallIds(first.persisted()));
+  }
+
+  private static ImmutableList<String> ids(List<Event> events) {
+    return events.stream().map(Event::id).collect(toImmutableList());
+  }
+
+  private static ImmutableList<String> functionCallIds(List<Event> events) {
+    return events.stream()
+        .flatMap(event -> event.functionCalls().stream())
+        .map(functionCall -> functionCall.id().get())
+        .collect(toImmutableList());
+  }
+
+  private List<Event> runWithDeterministicProviders() {
+    InstantSource fixedClock = () -> Instant.ofEpochMilli(1234L);
+    UuidProvider sequentialUuids =
+        new UuidProvider() {
+          private final AtomicInteger counter = new AtomicInteger();
+
+          @Override
+          public String newUuid() {
+            return String.format("uuid-%04d", counter.getAndIncrement());
+          }
+        };
+    LlmAgent deterministicAgent =
+        createTestAgentBuilder(createTestLlm(createLlmResponse(createContent("from llm")))).build();
+    Runner deterministicRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(deterministicAgent).build())
+            .instantSource(fixedClock)
+            .uuidProvider(sequentialUuids)
+            .build();
+    Session deterministicSession =
+        deterministicRunner
+            .sessionService()
+            .createSession("test", "user", new ConcurrentHashMap<String, Object>(), "fixed-session")
+            .blockingGet();
+    return deterministicRunner
+        .runAsync("user", deterministicSession.id(), createContent("hi"))
+        .toList()
+        .blockingGet();
   }
 }

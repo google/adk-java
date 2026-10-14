@@ -26,6 +26,7 @@ import com.google.adk.telemetry.Metrics;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestCallback;
 import com.google.adk.testing.TestUtils;
+import com.google.adk.workflow.Node;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
@@ -110,6 +111,13 @@ public final class BaseAgentTest {
 
     assertThat(agent.name()).isEqualTo(name);
     assertThat(agent.description()).isEqualTo(description);
+  }
+
+  @Test
+  public void constructor_nullDescription_setsEmptyDescription() {
+    TestBaseAgent agent = new TestBaseAgent("testName", null, null, ImmutableList.of(), null, null);
+
+    assertThat(agent.description()).isEmpty();
   }
 
   @Test
@@ -400,6 +408,34 @@ public final class BaseAgentTest {
   }
 
   @Test
+  public void runNode_runsAgentWithItsCallbacks() {
+    var runAsyncImpl = TestCallback.<Void>returningEmpty();
+    Content runAsyncImplContent = Content.fromParts(Part.fromText("main_output"));
+    Content afterCallbackContent = Content.fromParts(Part.fromText("after_callback_output"));
+    var beforeCallback = TestCallback.<Content>returningEmpty();
+    var afterCallback = TestCallback.returning(afterCallbackContent);
+    TestBaseAgent agent =
+        new TestBaseAgent(
+            TEST_AGENT_NAME,
+            TEST_AGENT_DESCRIPTION,
+            ImmutableList.of(beforeCallback.asBeforeAgentCallback()),
+            ImmutableList.of(afterCallback.asAfterAgentCallback()),
+            runAsyncImpl.asRunAsyncImplSupplier(runAsyncImplContent));
+    Context context =
+        new CallbackContext(TestUtils.createInvocationContext(agent), /* eventActions= */ null);
+    Node node = agent;
+
+    List<Event> results =
+        node.runNode(context, /* nodeInput= */ "unused").cast(Event.class).toList().blockingGet();
+
+    assertThat(results).hasSize(2);
+    assertThat(results.get(0).content()).hasValue(runAsyncImplContent);
+    assertThat(results.get(1).content()).hasValue(afterCallbackContent);
+    assertThat(beforeCallback.wasCalled()).isTrue();
+    assertThat(runAsyncImpl.wasCalled()).isTrue();
+  }
+
+  @Test
   public void canonicalCallbacks_returnsEmptyListWhenNull() {
     TestBaseAgent agent =
         new TestBaseAgent(TEST_AGENT_NAME, TEST_AGENT_DESCRIPTION, null, null, null);
@@ -635,6 +671,20 @@ public final class BaseAgentTest {
     assertThat(runLiveImpl.wasCalled()).isTrue();
     assertThat(afterCallback1.wasCalled()).isTrue();
     assertThat(afterCallback2.wasCalled()).isFalse();
+  }
+
+  @Test
+  public void constructor_nullName_throwsIllegalArgumentException() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new TestBaseAgent(null, "description", null, null, null));
+  }
+
+  @Test
+  public void constructor_emptyName_throwsIllegalArgumentException() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new TestBaseAgent("", "description", null, null, null));
   }
 
   @Test

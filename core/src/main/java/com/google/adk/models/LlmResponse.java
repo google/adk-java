@@ -130,6 +130,10 @@ public abstract class LlmResponse extends JsonBaseModel {
   @JsonProperty("outputTranscription")
   public abstract Optional<Transcription> outputTranscription();
 
+  /** Context cache state for this response; set only when context caching is enabled. */
+  @JsonProperty("cacheMetadata")
+  public abstract Optional<CacheMetadata> cacheMetadata();
+
   public abstract Builder toBuilder();
 
   /** Builder for constructing {@link LlmResponse} instances. */
@@ -184,6 +188,9 @@ public abstract class LlmResponse extends JsonBaseModel {
 
     @JsonProperty("outputTranscription")
     public abstract Builder outputTranscription(@Nullable Transcription outputTranscription);
+
+    @JsonProperty("cacheMetadata")
+    public abstract Builder cacheMetadata(@Nullable CacheMetadata cacheMetadata);
 
     @CanIgnoreReturnValue
     public final Builder response(GenerateContentResponse response) {

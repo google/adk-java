@@ -24,12 +24,12 @@ import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Scheduler;
-import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,7 +75,7 @@ import org.slf4j.LoggerFactory;
 public class ParallelAgent extends BaseAgent {
 
   private static final Logger logger = LoggerFactory.getLogger(ParallelAgent.class);
-  private final Scheduler scheduler;
+  @Nullable private final Scheduler scheduler;
 
   /**
    * Constructor for ParallelAgent.
@@ -85,7 +85,8 @@ public class ParallelAgent extends BaseAgent {
    * @param subAgents The list of sub-agents to run in parallel.
    * @param beforeAgentCallback Optional callback before the agent runs.
    * @param afterAgentCallback Optional callback after the agent runs.
-   * @param scheduler The scheduler to use for parallel execution.
+   * @param scheduler The scheduler to use for parallel execution, or {@code null} to use the
+   *     invocation's scheduler.
    */
   private ParallelAgent(
       String name,
@@ -93,19 +94,29 @@ public class ParallelAgent extends BaseAgent {
       List<? extends BaseAgent> subAgents,
       List<Callbacks.BeforeAgentCallback> beforeAgentCallback,
       List<Callbacks.AfterAgentCallback> afterAgentCallback,
-      Scheduler scheduler) {
+      @Nullable Scheduler scheduler) {
 
     super(name, description, subAgents, beforeAgentCallback, afterAgentCallback);
     this.scheduler = scheduler;
   }
 
+  /** Returns the agent's own scheduler when configured, otherwise the invocation's. */
+  private Scheduler schedulerFor(InvocationContext invocationContext) {
+    return scheduler != null ? scheduler : invocationContext.scheduler();
+  }
+
   /** Builder for {@link ParallelAgent}. */
   public static class Builder extends BaseAgent.Builder<Builder> {
 
-    private Scheduler scheduler = Schedulers.io();
+    @Nullable private Scheduler scheduler = null;
 
+    /**
+     * Sets the scheduler the sub-agents are subscribed on, or {@code null} (the default) to inherit
+     * the invocation's scheduler ({@link InvocationContext#scheduler()}: {@code Schedulers.io()}
+     * unless the {@code Runner} is configured with another one).
+     */
     @CanIgnoreReturnValue
-    public Builder scheduler(Scheduler scheduler) {
+    public Builder scheduler(@Nullable Scheduler scheduler) {
       this.scheduler = scheduler;
       return this;
     }
@@ -186,11 +197,13 @@ public class ParallelAgent extends BaseAgent {
             .filter(Objects::nonNull)
             .collect(ImmutableSet.toImmutableSet());
 
+    Scheduler fanOutScheduler = schedulerFor(invocationContext);
     if (!invocationContext.isResumable()) {
       var updatedInvocationContext = setBranchForCurrentAgent(this, invocationContext);
       List<Flowable<Event>> agentFlowables = new ArrayList<>();
       for (BaseAgent subAgent : currentSubAgents) {
-        agentFlowables.add(subAgent.runAsync(updatedInvocationContext).subscribeOn(scheduler));
+        agentFlowables.add(
+            subAgent.runAsync(updatedInvocationContext).subscribeOn(fanOutScheduler));
       }
       return Flowable.merge(agentFlowables)
           .takeUntil((Event event) -> asksThisAgentToExit(event, directSubAgentNames));
@@ -219,7 +232,7 @@ public class ParallelAgent extends BaseAgent {
             agentFlowables.add(
                 subAgent
                     .runAsync(updatedInvocationContext)
-                    .subscribeOn(scheduler)
+                    .subscribeOn(fanOutScheduler)
                     .doOnNext(
                         event -> {
                           if (invocationContext.shouldPauseInvocation(event)) {

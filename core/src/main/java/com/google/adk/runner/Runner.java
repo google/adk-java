@@ -27,7 +27,6 @@ import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
-import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
@@ -42,6 +41,7 @@ import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.flows.llmflows.PersistBarrier;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.Model;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
@@ -71,8 +71,10 @@ import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -96,6 +98,9 @@ public class Runner {
   @Nullable private final EventsCompactionConfig eventsCompactionConfig;
   @Nullable private final ContextCacheConfig contextCacheConfig;
   private final @Nullable ResumabilityConfig resumabilityConfig;
+  @Nullable private final Scheduler scheduler;
+  private final InstantSource instantSource;
+  private final UuidProvider uuidProvider;
   private final ConcurrentMap<String, Completable> activeSessionCompletables =
       new MapMaker().weakValues().makeMap();
 
@@ -105,9 +110,14 @@ public class Runner {
     private BaseAgent agent;
     private String appName;
     private BaseArtifactService artifactService = new InMemoryArtifactService();
-    private BaseSessionService sessionService = new InMemorySessionService();
+    private @Nullable BaseSessionService sessionService = null;
+    // Distinguishes "never set" (a shared in-memory default is created) from an explicit null.
+    private boolean sessionServiceSet;
     @Nullable private BaseMemoryService memoryService = null;
     private List<? extends Plugin> plugins = ImmutableList.of();
+    @Nullable private Scheduler scheduler = null;
+    private InstantSource instantSource = InstantSource.system();
+    private UuidProvider uuidProvider = UuidProvider.SYSTEM;
 
     @CanIgnoreReturnValue
     public Builder app(App app) {
@@ -139,6 +149,7 @@ public class Runner {
     @CanIgnoreReturnValue
     public Builder sessionService(BaseSessionService sessionService) {
       this.sessionService = sessionService;
+      this.sessionServiceSet = true;
       return this;
     }
 
@@ -162,6 +173,51 @@ public class Runner {
       return this;
     }
 
+    /**
+     * Sets the {@link Scheduler} for the work ADK hands off to worker threads in this runner's
+     * invocations: the sub-agents of a {@code ParallelAgent}, tool calls in {@link
+     * RunConfig.ToolExecutionMode#PARALLEL_SUBSCRIBE} mode, and the hop that starts the live send
+     * loop. The runs that an {@code AgentTool} nests inherit it. An agent-level {@code
+     * ParallelAgent.Builder#scheduler} or {@code LlmAgent.Builder#executor} takes precedence.
+     * {@code null} (the default) selects {@code Schedulers.io()}.
+     *
+     * <p>Only these hand-offs are affected; work that completes asynchronously elsewhere (model
+     * clients, session services, MCP, plugins) stays on its own threads. {@code
+     * Schedulers.trampoline()} runs the hand-offs inline, so sub-agents and tools are subscribed
+     * sequentially, but anything they start asynchronously can still overlap.
+     */
+    @CanIgnoreReturnValue
+    public Builder scheduler(@Nullable Scheduler scheduler) {
+      this.scheduler = scheduler;
+      return this;
+    }
+
+    /**
+     * Sets the {@link InstantSource} that supplies every timestamp this runner generates: event
+     * timestamps, and the {@code lastUpdateTime} of sessions created by the default in-memory
+     * session service, which is created on the first {@code build()}. {@code null} (the default)
+     * selects {@link InstantSource#system()}.
+     */
+    @CanIgnoreReturnValue
+    public Builder instantSource(@Nullable InstantSource instantSource) {
+      this.instantSource = instantSource != null ? instantSource : InstantSource.system();
+      return this;
+    }
+
+    /**
+     * Sets the {@link UuidProvider} that supplies every identifier this runner generates: event,
+     * invocation, and client function-call ids, and the ids of sessions created by the default
+     * in-memory session service, which is created on the first {@code build()}. {@code null} (the
+     * default) selects {@link UuidProvider#SYSTEM}.
+     */
+    @CanIgnoreReturnValue
+    public Builder uuidProvider(@Nullable UuidProvider uuidProvider) {
+      this.uuidProvider = uuidProvider != null ? uuidProvider : UuidProvider.SYSTEM;
+      return this;
+    }
+
+    // OVERWRITE is the documented default of new InMemorySessionService() until callers migrate.
+    @SuppressWarnings("deprecation")
     public Runner build() {
       BaseAgent buildAgent;
       String buildAppName;
@@ -202,7 +258,15 @@ public class Runner {
         throw new IllegalStateException("Artifact service must be provided.");
       }
       if (sessionService == null) {
-        throw new IllegalStateException("Session service must be provided.");
+        if (sessionServiceSet) {
+          throw new IllegalStateException("Session service must be provided.");
+        }
+        // Created once per builder, so every runner built from it shares the same sessions.
+        sessionService =
+            new InMemorySessionService(
+                InMemorySessionService.DuplicateSessionIdBehavior.OVERWRITE,
+                instantSource,
+                uuidProvider);
       }
       return new Runner(
           buildAgent,
@@ -213,7 +277,10 @@ public class Runner {
           buildPlugins,
           buildEventsCompactionConfig,
           buildContextCacheConfig,
-          buildResumabilityConfig);
+          buildResumabilityConfig,
+          scheduler,
+          instantSource,
+          uuidProvider);
     }
   }
 
@@ -295,15 +362,47 @@ public class Runner {
       @Nullable EventsCompactionConfig eventsCompactionConfig,
       @Nullable ContextCacheConfig contextCacheConfig,
       @Nullable ResumabilityConfig resumabilityConfig) {
+    this(
+        agent,
+        appName,
+        artifactService,
+        sessionService,
+        memoryService,
+        plugins,
+        eventsCompactionConfig,
+        contextCacheConfig,
+        resumabilityConfig,
+        /* scheduler= */ null,
+        InstantSource.system(),
+        UuidProvider.SYSTEM);
+  }
+
+  private Runner(
+      BaseAgent agent,
+      String appName,
+      BaseArtifactService artifactService,
+      BaseSessionService sessionService,
+      @Nullable BaseMemoryService memoryService,
+      List<? extends Plugin> plugins,
+      @Nullable EventsCompactionConfig eventsCompactionConfig,
+      @Nullable ContextCacheConfig contextCacheConfig,
+      @Nullable ResumabilityConfig resumabilityConfig,
+      @Nullable Scheduler scheduler,
+      InstantSource instantSource,
+      UuidProvider uuidProvider) {
     this.agent = agent;
     this.appName = appName;
     this.artifactService = artifactService;
     this.sessionService = sessionService;
     this.memoryService = memoryService;
     this.pluginManager = new PluginManager(plugins);
-    this.eventsCompactionConfig = createEventsCompactionConfig(agent, eventsCompactionConfig);
+    this.eventsCompactionConfig =
+        createEventsCompactionConfig(agent, eventsCompactionConfig, instantSource, uuidProvider);
     this.contextCacheConfig = contextCacheConfig;
     this.resumabilityConfig = resumabilityConfig;
+    this.scheduler = scheduler;
+    this.instantSource = instantSource;
+    this.uuidProvider = uuidProvider;
   }
 
   /**
@@ -368,13 +467,14 @@ public class Runner {
       InvocationContext invocationContext,
       boolean saveInputBlobsAsArtifacts,
       @Nullable Map<String, Object> stateDelta) {
+    // As on the resumable path, a function response takes the branch of the call it answers.
     return appendNewMessageToSession(
         session,
         newMessage,
         invocationContext,
         saveInputBlobsAsArtifacts,
         stateDelta,
-        /* branch= */ null);
+        matchingFunctionCallEvent(session, newMessage).flatMap(Event::branch).orElse(null));
   }
 
   private Single<Event> appendNewMessageToSession(
@@ -414,7 +514,8 @@ public class Runner {
     }
     Event.Builder eventBuilder =
         Event.builder()
-            .id(Event.generateEventId())
+            .id(invocationContext.newUuid())
+            .timestamp(invocationContext.now().toEpochMilli())
             .invocationId(invocationContext.invocationId())
             .author(Role.USER)
             .branch(branch)
@@ -637,7 +738,7 @@ public class Runner {
             () -> {
               Context capturedContext = Context.current();
               BaseAgent rootAgent = this.agent;
-              String invocationId = InvocationContext.newInvocationContextId();
+              String invocationId = InvocationContext.newInvocationContextId(this.uuidProvider);
 
               // Eagerly merge stateDelta into session state so onUserMessageCallback() can see it.
               // Safe: this in-memory update is ahead of time; canonical persistence still happens
@@ -720,12 +821,14 @@ public class Runner {
    */
   private Flowable<Event> runAgentWithUpdatedSession(
       InvocationContext initialContext, Session updatedSession, Event event, BaseAgent rootAgent) {
+    BaseAgent agentToRun = this.findAgentToRun(updatedSession, rootAgent);
     // Create context with updated session for beforeRunCallback
     InvocationContext contextWithUpdatedSession =
         initialContext.toBuilder()
             .session(updatedSession)
-            .agent(this.findAgentToRun(updatedSession, rootAgent))
+            .agent(agentToRun)
             .userContent(event.content().orElseGet(Content::fromParts))
+            .branch(routedAgentParentBranch(updatedSession, agentToRun, rootAgent))
             .build();
 
     // If beforeRunCallback returns content, emit it and skip agent.
@@ -809,7 +912,8 @@ public class Runner {
         .map(
             content ->
                 Event.builder()
-                    .id(Event.generateEventId())
+                    .id(context.newUuid())
+                    .timestamp(context.now().toEpochMilli())
                     .invocationId(context.invocationId())
                     .author("model")
                     .content(content)
@@ -931,7 +1035,8 @@ public class Runner {
             // No message to carry the delta, so persist a content-less event, as Python does.
             Event stateDeltaEvent =
                 Event.builder()
-                    .id(Event.generateEventId())
+                    .id(initialContext.newUuid())
+                    .timestamp(initialContext.now().toEpochMilli())
                     .invocationId(resolvedInvocationId)
                     .author(Role.USER)
                     .actions(
@@ -1007,26 +1112,79 @@ public class Runner {
   }
 
   /**
-   * Branch to seed a resumed context with so {@code resumeAgent} runs under the same branch it
-   * originally did. Returns the parent branch (the resolved agent's most recent event branch minus
-   * its own trailing name segment, which {@link BaseAgent#runAsync} re-appends), or {@code null}
-   * for the root branch. Non-null only for an agent nested under a {@link ParallelAgent}.
+   * Branch to seed a new invocation with so a routed sub-agent runs where it ran before, or {@code
+   * null} when {@code agentToRun} is the root. A function response restores the branch of the call
+   * it answers, since a Java agent's branch depends on the transfer path that reached it; other
+   * routing restores the agent's latest branch, as Python does.
+   */
+  private static @Nullable String routedAgentParentBranch(
+      Session session, BaseAgent agentToRun, BaseAgent rootAgent) {
+    if (agentToRun.equals(rootAgent)) {
+      return null;
+    }
+    Optional<Event> answeredCall =
+        Functions.findMatchingFunctionCallEvent(session.immutableEvents());
+    if (answeredCall.isPresent()) {
+      String ownSuffix = sequentialBranchSuffix(agentToRun, answeredCall.get().author());
+      if (ownSuffix != null) {
+        return parentBranch(answeredCall.get().branch().orElse(null), ownSuffix);
+      }
+    }
+    return resumeParentBranch(session, /* invocationId= */ null, agentToRun);
+  }
+
+  /**
+   * Branch to seed a context with so {@code resumeAgent} runs under the branch it last ran on: the
+   * parent branch of the newest event by {@code resumeAgent}, or by an agent it reaches through
+   * SequentialAgents, with a non-empty branch. A non-null {@code invocationId} limits the search to
+   * that invocation; {@code null} is returned for the root branch.
    */
   private static @Nullable String resumeParentBranch(
-      Session session, String invocationId, BaseAgent resumeAgent) {
+      Session session, @Nullable String invocationId, BaseAgent resumeAgent) {
     ImmutableList<Event> events = session.immutableEvents();
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
-      if (invocationId.equals(event.invocationId())
-          && resumeAgent.name().equals(event.author())
-          && event.branch().isPresent()) {
-        String branch = event.branch().get();
-        String ownSegment = "." + resumeAgent.name();
-        if (branch.endsWith(ownSegment)) {
-          String parent = branch.substring(0, branch.length() - ownSegment.length());
-          return parent.isEmpty() ? null : parent;
+      if ((invocationId == null || invocationId.equals(event.invocationId()))
+          && event.branch().filter(branch -> !branch.isEmpty()).isPresent()) {
+        String ownSuffix = sequentialBranchSuffix(resumeAgent, event.author());
+        if (ownSuffix != null) {
+          return parentBranch(event.branch().get(), ownSuffix);
         }
-        return branch.equals(resumeAgent.name()) ? null : branch;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Returns {@code branch} minus the trailing {@code ownSuffix} that {@link BaseAgent#runAsync}
+   * re-appends, or {@code null} for the root branch.
+   */
+  private static @Nullable String parentBranch(@Nullable String branch, String ownSuffix) {
+    if (branch == null || branch.isEmpty() || branch.equals(ownSuffix)) {
+      return null;
+    }
+    if (branch.endsWith("." + ownSuffix)) {
+      String parent = branch.substring(0, branch.length() - ownSuffix.length() - 1);
+      return parent.isEmpty() ? null : parent;
+    }
+    return branch;
+  }
+
+  /**
+   * Returns the dot-joined names from {@code agent} down to the agent named {@code author} when
+   * that agent is {@code agent} or below it through SequentialAgents, else {@code null}. The legacy
+   * flow resumes such an ancestor, which records no events of its own.
+   */
+  private static @Nullable String sequentialBranchSuffix(BaseAgent agent, @Nullable String author) {
+    if (agent.name().equals(author)) {
+      return agent.name();
+    }
+    if (agent instanceof SequentialAgent) {
+      for (BaseAgent subAgent : agent.subAgents()) {
+        String suffix = sequentialBranchSuffix(subAgent, author);
+        if (suffix != null) {
+          return agent.name() + "." + suffix;
+        }
       }
     }
     return null;
@@ -1193,11 +1351,13 @@ public class Runner {
         runConfigBuilder.inputAudioTranscription(AudioTranscriptionConfig.builder().build());
       }
     }
+    BaseAgent agentToRun = findAgentToRun(session, this.agent);
     InvocationContext.Builder builder =
-        newInvocationContextBuilder(session, findAgentToRun(session, this.agent))
+        newInvocationContextBuilder(session, agentToRun)
             .runConfig(runConfigBuilder.build())
             .userContent(Content.fromParts())
-            .liveRequestQueue(liveRequestQueue);
+            .liveRequestQueue(liveRequestQueue)
+            .branch(routedAgentParentBranch(session, agentToRun, this.agent));
 
     return builder.build();
   }
@@ -1217,6 +1377,9 @@ public class Runner {
         .eventsCompactionConfig(this.eventsCompactionConfig)
         .contextCacheConfig(this.contextCacheConfig)
         .resumabilityConfig(this.resumabilityConfig)
+        .scheduler(this.scheduler)
+        .instantSource(this.instantSource)
+        .uuidProvider(this.uuidProvider)
         .agent(agent);
   }
 
@@ -1432,7 +1595,10 @@ public class Runner {
 
   @Nullable
   private static EventsCompactionConfig createEventsCompactionConfig(
-      BaseAgent agent, @Nullable EventsCompactionConfig config) {
+      BaseAgent agent,
+      @Nullable EventsCompactionConfig config,
+      InstantSource instantSource,
+      UuidProvider uuidProvider) {
     if (config == null || config.summarizer() != null) {
       return config;
     }
@@ -1442,7 +1608,10 @@ public class Runner {
             .map(LlmAgent.class::cast)
             .flatMap(LlmAgent::model)
             .flatMap(Model::model)
-            .map(LlmEventSummarizer::new)
+            .map(
+                baseLlm ->
+                    new LlmEventSummarizer(
+                        baseLlm, /* promptTemplate= */ null, instantSource, uuidProvider))
             .orElseThrow(
                 () ->
                     new IllegalArgumentException(

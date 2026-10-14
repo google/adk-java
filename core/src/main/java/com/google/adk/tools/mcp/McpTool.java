@@ -79,7 +79,9 @@ public final class McpTool extends AbstractMcpTool<McpSyncClient> {
     return Single.<Map<String, Object>>fromCallable(
             () -> {
               CallToolResult callResult =
-                  mcpSession.callTool(new CallToolRequest(this.name(), ImmutableMap.copyOf(args)));
+                  mcpSession.callTool(
+                      new CallToolRequest(
+                          this.name(), ImmutableMap.copyOf(args), /* meta= */ null));
               return wrapCallResult(this.objectMapper, this.name(), callResult);
             })
         .retryWhen(

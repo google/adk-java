@@ -5,7 +5,9 @@ Please take a look at [ADK Contribution Guidelines](https://google.github.io/adk
 
 ## Samples
 
-The samples folder hosts minimal examples to test different features. These samples are intentionally simplistic and focused on testing specific scenarios.
+Minimal examples that test different features live in the top-level
+[`examples`](../examples) folder. They are intentionally simplistic and focused
+on testing specific scenarios.
 
 **Note:** This is different from the [google/adk-samples](https://github.com/google/adk-samples) repository, which hosts more complex end-to-end samples for customers to use or modify directly.
 

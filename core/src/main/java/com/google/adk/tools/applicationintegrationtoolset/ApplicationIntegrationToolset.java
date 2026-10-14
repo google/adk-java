@@ -27,7 +27,6 @@ import com.google.adk.tools.BaseToolset;
 import io.reactivex.rxjava3.core.Flowable;
 import java.net.http.HttpClient;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
@@ -142,9 +141,7 @@ public class ApplicationIntegrationToolset implements BaseToolset {
     }
     JsonNode rootNode = objectMapper.readTree(specNode.asText());
     JsonNode pathsNode = rootNode.path("paths");
-    Iterator<Map.Entry<String, JsonNode>> paths = pathsNode.fields();
-    while (paths.hasNext()) {
-      Map.Entry<String, JsonNode> pathEntry = paths.next();
+    for (Map.Entry<String, JsonNode> pathEntry : pathsNode.properties()) {
       String pathUrl = pathEntry.getKey();
       pathUrls.add(pathUrl);
     }

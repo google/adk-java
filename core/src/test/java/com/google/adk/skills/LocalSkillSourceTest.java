@@ -23,7 +23,10 @@ import static org.junit.Assert.assertThrows;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteSource;
+import com.google.common.jimfs.Configuration;
+import com.google.common.jimfs.Jimfs;
 import java.io.IOException;
+import java.nio.file.FileSystem;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.Rule;
@@ -94,6 +97,27 @@ public final class LocalSkillSourceTest {
     ImmutableList<String> resources = source.listResources("my-skill", "assets").blockingGet();
 
     assertThat(resources).containsExactly("assets/file1.txt", "assets/subdir/file2.txt");
+  }
+
+  @Test
+  public void testListResources_windowsFileSystem() throws IOException {
+    // Use Windows paths on any host so Ubuntu CI covers separator normalization.
+    try (FileSystem fileSystem = Jimfs.newFileSystem(Configuration.windows())) {
+      Path skillsBase = fileSystem.getPath("C:\\skills");
+      Path assetsDir = skillsBase.resolve("my-skill").resolve("assets");
+      Files.createDirectories(assetsDir.resolve("subdir"));
+      Files.writeString(assetsDir.resolve("file1.txt"), "resource content");
+      Files.writeString(assetsDir.resolve("subdir").resolve("file2.txt"), "resource content");
+
+      SkillSource source = new LocalSkillSource(skillsBase);
+      ImmutableList<String> resources = source.listResources("my-skill", "assets").blockingGet();
+
+      assertThat(resources).containsExactly("assets/file1.txt", "assets/subdir/file2.txt");
+      for (String resourcePath : resources) {
+        ByteSource resource = source.loadResource("my-skill", resourcePath).blockingGet();
+        assertThat(new String(resource.read(), UTF_8)).isEqualTo("resource content");
+      }
+    }
   }
 
   @Test

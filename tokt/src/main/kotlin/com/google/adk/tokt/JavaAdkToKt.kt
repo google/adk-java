@@ -141,7 +141,7 @@ object JavaAdkToKt {
    * Java view of a Kotlin service is unwrapped to that Kotlin service, with no `dispatcher` hop.
    * Resumption works across the adapter (`EventActions.agentState` crosses);
    * `rewindBeforeInvocationId` crosses too, but a rewind drops the rewound turns only if the Java
-   * service stores it, which ADK Java's `VertexAiSessionService` does not.
+   * service stores that field.
    */
   @JvmStatic
   @JvmOverloads

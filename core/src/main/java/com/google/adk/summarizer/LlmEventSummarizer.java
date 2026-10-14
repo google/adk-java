@@ -26,6 +26,7 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.platform.UuidProvider;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -33,8 +34,11 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
+import java.time.InstantSource;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /** An LLM-based event summarizer for sliding window compaction. */
 public final class LlmEventSummarizer implements BaseEventSummarizer {
@@ -52,14 +56,33 @@ public final class LlmEventSummarizer implements BaseEventSummarizer {
 
   private final BaseLlm baseLlm;
   private final String promptTemplate;
+  private final InstantSource instantSource;
+  private final UuidProvider uuidProvider;
 
   public LlmEventSummarizer(BaseLlm baseLlm) {
     this(baseLlm, DEFAULT_PROMPT_TEMPLATE);
   }
 
-  public LlmEventSummarizer(BaseLlm baseLlm, String promptTemplate) {
+  /**
+   * Creates a summarizer with the given prompt template; {@code null} selects the default template.
+   */
+  public LlmEventSummarizer(BaseLlm baseLlm, @Nullable String promptTemplate) {
+    this(baseLlm, promptTemplate, InstantSource.system(), UuidProvider.SYSTEM);
+  }
+
+  /**
+   * Creates a summarizer whose compaction events draw their id, invocation id, and timestamp from
+   * the given sources. Passing {@code null} as {@code promptTemplate} selects the default template.
+   */
+  public LlmEventSummarizer(
+      BaseLlm baseLlm,
+      @Nullable String promptTemplate,
+      InstantSource instantSource,
+      UuidProvider uuidProvider) {
     this.baseLlm = baseLlm;
-    this.promptTemplate = promptTemplate;
+    this.promptTemplate = promptTemplate != null ? promptTemplate : DEFAULT_PROMPT_TEMPLATE;
+    this.instantSource = Objects.requireNonNull(instantSource, "instantSource cannot be null");
+    this.uuidProvider = Objects.requireNonNull(uuidProvider, "uuidProvider cannot be null");
   }
 
   @Override
@@ -101,10 +124,11 @@ public final class LlmEventSummarizer implements BaseEventSummarizer {
                         .map(
                             compaction ->
                                 Event.builder()
-                                    .id(Event.generateEventId())
+                                    .id(uuidProvider.newUuid())
+                                    .timestamp(instantSource.instant().toEpochMilli())
                                     .author(Role.USER)
                                     .actions(EventActions.builder().compaction(compaction).build())
-                                    .invocationId(Event.generateEventId())
+                                    .invocationId(uuidProvider.newUuid())
                                     .build())));
   }
 

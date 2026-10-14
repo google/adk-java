@@ -17,19 +17,21 @@
 package com.google.adk.tools;
 
 import com.google.adk.agents.CallbackContext;
+import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
-import com.google.adk.memory.SearchMemoryResponse;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
-import io.reactivex.rxjava3.core.Single;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 
-/** ToolContext object provides a structured context for executing tools or functions. */
+/**
+ * ToolContext object provides a structured context for executing tools or functions.
+ *
+ * <p>Extends {@link CallbackContext} (and through it {@link Context}); {@link BaseTool#runAsync}
+ * and tool callbacks take this type.
+ */
 public class ToolContext extends CallbackContext {
-  private Optional<String> functionCallId = Optional.empty();
-  private Optional<ToolConfirmation> toolConfirmation = Optional.empty();
 
   private ToolContext(
       InvocationContext invocationContext,
@@ -38,32 +40,12 @@ public class ToolContext extends CallbackContext {
       Optional<ToolConfirmation> toolConfirmation,
       @Nullable String eventId) {
     super(invocationContext, eventActions, eventId);
-    this.functionCallId = functionCallId;
-    this.toolConfirmation = toolConfirmation;
-  }
-
-  public EventActions actions() {
-    return this.eventActions;
+    functionCallId(functionCallId.orElse(null));
+    toolConfirmation(toolConfirmation.orElse(null));
   }
 
   public void setActions(EventActions actions) {
     this.eventActions = actions;
-  }
-
-  public Optional<String> functionCallId() {
-    return functionCallId;
-  }
-
-  public void functionCallId(String functionCallId) {
-    this.functionCallId = Optional.ofNullable(functionCallId);
-  }
-
-  public Optional<ToolConfirmation> toolConfirmation() {
-    return toolConfirmation;
-  }
-
-  public void toolConfirmation(ToolConfirmation toolConfirmation) {
-    this.toolConfirmation = Optional.ofNullable(toolConfirmation);
   }
 
   @SuppressWarnings("unused")
@@ -76,46 +58,6 @@ public class ToolContext extends CallbackContext {
     throw new UnsupportedOperationException("Auth response retrieval not implemented yet.");
   }
 
-  /**
-   * Requests confirmation for the given function call.
-   *
-   * @param hint A hint to the user on how to confirm the tool call.
-   * @param payload The payload used to confirm the tool call.
-   */
-  public void requestConfirmation(@Nullable String hint, @Nullable Object payload) {
-    if (functionCallId.isEmpty()) {
-      throw new IllegalStateException("function_call_id is not set.");
-    }
-    this.eventActions
-        .requestedToolConfirmations()
-        .put(functionCallId.get(), ToolConfirmation.builder().hint(hint).payload(payload).build());
-  }
-
-  /**
-   * Requests confirmation for the given function call.
-   *
-   * @param hint A hint to the user on how to confirm the tool call.
-   */
-  public void requestConfirmation(@Nullable String hint) {
-    requestConfirmation(hint, null);
-  }
-
-  /** Requests confirmation for the given function call. */
-  public void requestConfirmation() {
-    requestConfirmation(null, null);
-  }
-
-  /** Searches the memory of the current user. */
-  public Single<SearchMemoryResponse> searchMemory(String query) {
-    if (invocationContext.memoryService() == null) {
-      throw new IllegalStateException("Memory service is not initialized.");
-    }
-    return invocationContext
-        .memoryService()
-        .searchMemory(
-            invocationContext.session().appName(), invocationContext.session().userId(), query);
-  }
-
   public static Builder builder(InvocationContext invocationContext) {
     return new Builder(invocationContext);
   }
@@ -123,8 +65,8 @@ public class ToolContext extends CallbackContext {
   public Builder toBuilder() {
     return new Builder(invocationContext)
         .actions(eventActions)
-        .functionCallId(functionCallId.orElse(null))
-        .toolConfirmation(toolConfirmation.orElse(null))
+        .functionCallId(functionCallId().orElse(null))
+        .toolConfirmation(toolConfirmation().orElse(null))
         .eventId(eventId());
   }
 
@@ -136,9 +78,9 @@ public class ToolContext extends CallbackContext {
         + ", eventActions="
         + eventActions
         + ", functionCallId="
-        + functionCallId
+        + functionCallId()
         + ", toolConfirmation="
-        + toolConfirmation
+        + toolConfirmation()
         + '}';
   }
 

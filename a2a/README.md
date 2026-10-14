@@ -89,58 +89,43 @@ tools.
 The `a2a/webservice` module packages the Spring Boot transport that exposes the
 REST endpoint:
 
-- `A2ARemoteApplication` – Spring Boot entrypoint that boots the Tomcat server
-  and wires in the remote configuration.
-- `A2ARemoteConfiguration` – Spring `@Configuration` that imports the transport
-  stack and the shared `A2ASendMessageExecutor`. Provide a `BaseAgent` bean to
-  handle requests locally (as the `a2a_remote` sample does).
-- `A2ARemoteController` – JSON-RPC adapter mounted at `/a2a/remote/v1`.
-- `A2ARemoteService` – delegates incoming requests to the executor and handles
-  JSON-RPC error responses.
+-   `A2ARemoteApplication` – Spring Boot entrypoint that boots the Tomcat server
+    and wires in the remote configuration.
+-   `A2ARemoteConfiguration` – Spring `@Configuration` that imports the
+    transport stack and the shared `A2ASendMessageExecutor`. Provide a
+    `BaseAgent` bean to handle requests locally.
+-   `A2ARemoteController` – JSON-RPC adapter mounted at `/a2a/remote/v1`.
+-   `A2ARemoteService` – delegates incoming requests to the executor and handles
+    JSON-RPC error responses.
 All application wiring lives in this module; the core A2A logic remains in the
 transport-agnostic `a2a/src/...` tree described above.
 
 ### Samples
 
-- `contrib/samples/a2a_basic` – minimal HTTP client demo that hits a remote
-  A2A endpoint and logs the JSON-RPC exchange. Useful for verifying the
-  transport without standing up the full Spring service.
-- `contrib/samples/a2a_remote` – standalone Spring service mirroring the
-  Stubby demo. It depends on the shared `a2a/webservice` module so the sample
-  only provides the prime-agent wiring while reusing the production controller
-  and service stack.
+-   `examples/a2a_basic` – minimal HTTP client demo that hits a remote A2A
+    endpoint and logs the JSON-RPC exchange. Useful for verifying the transport
+    against a running A2A server, such as `examples/a2a_server`.
+-   `examples/a2a_server` – Quarkus service that exposes a prime-checking ADK
+    agent over A2A on port 9090; its README shows how to run and call it.
 
 ### Quick Start
 
 All commands below assume you are in `google_adk`.
 
-1. **Start the Spring webservice sample** (run in its own terminal)
+1.  **Start the A2A server sample (`a2a_server`)** (run in its own terminal)
 
     ```bash
-    lsof -ti :8081 | xargs -r kill
-    ./mvnw -f contrib/samples/a2a_remote/pom.xml spring-boot:run \
-     -Dspring-boot.run.arguments=--server.port=8081
+    GOOGLE_API_KEY=your_api_key \
+    ./mvnw -f examples/a2a_server/pom.xml quarkus:dev
     ```
 
-    Background option:
-
-    ```bash
-    nohup env GOOGLE_GENAI_USE_VERTEXAI=FALSE \
-     GOOGLE_API_KEY=your_api_key \
-     ./mvnw -f contrib/samples/a2a_remote/pom.xml spring-boot:run \
-     -Dspring-boot.run.arguments=--server.port=8081 \
-     > /tmp/a2a_webservice.log 2>&1 & echo $!
-    ```
-
-    The log can be found at /tmp/a2a_webservice.log.
-
-2. **Run the basic client sample (`a2a_basic`)** (from another terminal)
+2.  **Run the basic client sample (`a2a_basic`)** (from another terminal)
 
     ```bash
     GOOGLE_GENAI_USE_VERTEXAI=FALSE \
     GOOGLE_API_KEY=your_api_key \
-    ./mvnw -f contrib/samples/a2a_basic/pom.xml exec:java \
-     -Dexec.args="http://localhost:8081/a2a/remote"
+    ./mvnw -f examples/a2a_basic/pom.xml exec:java \
+     -Dexec.args="http://localhost:9090"
     ```
 
     The client logs the outbound JSON-RPC payload and shows the remote agent’s
@@ -155,15 +140,14 @@ All commands below assume you are in `google_adk`.
     ```bash
     nohup env GOOGLE_GENAI_USE_VERTEXAI=FALSE \
      GOOGLE_API_KEY=your_api_key \
-     ./mvnw -f contrib/samples/a2a_basic/pom.xml exec:java \
-     -Dexec.args="http://localhost:8081/a2a/remote" \
+     ./mvnw -f examples/a2a_basic/pom.xml exec:java \
+     -Dexec.args="http://localhost:9090" \
      > /tmp/a2a_basic.log 2>&1 & echo $!
     ```
 
     Tail `/tmp/a2a_basic.log` to observe subsequent turns.
 
-To build the runtime, Spring webservice, and both samples together, activate the
-opt-in Maven profile:
+To build the A2A runtime:
 
 ```bash
 ./mvnw -pl a2a -am clean package
@@ -174,7 +158,7 @@ opt-in Maven profile:
 With the server running locally you can exercise the endpoint with `curl`:
 
 ```bash
-curl -X POST http://localhost:8081/a2a/remote/v1/message:send \
+curl -X POST http://localhost:9090 \
   -H "Content-Type: application/json" \
   -d '{
         "jsonrpc": "2.0",

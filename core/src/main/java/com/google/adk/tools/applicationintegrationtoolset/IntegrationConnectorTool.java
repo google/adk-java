@@ -224,18 +224,14 @@ public class IntegrationConnectorTool extends BaseTool {
     JsonNode paths = rootNode.path("paths");
 
     // Iterate through each path in the OpenAPI spec.
-    Iterator<Map.Entry<String, JsonNode>> pathsFields = paths.fields();
-    while (pathsFields.hasNext()) {
-      Map.Entry<String, JsonNode> pathEntry = pathsFields.next();
+    for (Map.Entry<String, JsonNode> pathEntry : paths.properties()) {
       String currentPath = pathEntry.getKey();
       if (!currentPath.equals(pathUrl)) {
         continue;
       }
       JsonNode pathItem = pathEntry.getValue();
 
-      Iterator<Map.Entry<String, JsonNode>> methods = pathItem.fields();
-      while (methods.hasNext()) {
-        Map.Entry<String, JsonNode> methodEntry = methods.next();
+      for (Map.Entry<String, JsonNode> methodEntry : pathItem.properties()) {
         JsonNode operationNode = methodEntry.getValue();
         // Set  values for entity, operation, and action
         this.entity = "";
@@ -317,9 +313,7 @@ public class IntegrationConnectorTool extends BaseTool {
   private @Nullable JsonNode findOperationNodeById(JsonNode rootNode, String operationId) {
     JsonNode paths = rootNode.path("paths");
     for (JsonNode pathItem : paths) {
-      Iterator<Map.Entry<String, JsonNode>> methods = pathItem.fields();
-      while (methods.hasNext()) {
-        Map.Entry<String, JsonNode> methodEntry = methods.next();
+      for (Map.Entry<String, JsonNode> methodEntry : pathItem.properties()) {
         JsonNode operationNode = methodEntry.getValue();
         if (operationNode.path("operationId").asText().equals(operationId)) {
           return operationNode;
@@ -344,9 +338,7 @@ public class IntegrationConnectorTool extends BaseTool {
         return resolveRefs(referencedNode, rootNode);
       } else {
         ObjectNode newObjectNode = objectMapper.createObjectNode();
-        Iterator<Map.Entry<String, JsonNode>> fields = currentNode.fields();
-        while (fields.hasNext()) {
-          Map.Entry<String, JsonNode> field = fields.next();
+        for (Map.Entry<String, JsonNode> field : currentNode.properties()) {
           newObjectNode.set(field.getKey(), resolveRefs(field.getValue(), rootNode));
         }
         return newObjectNode;

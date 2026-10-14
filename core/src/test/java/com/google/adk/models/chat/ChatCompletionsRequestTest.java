@@ -16,6 +16,7 @@
 
 package com.google.adk.models.chat;
 
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
@@ -647,6 +648,162 @@ public final class ChatCompletionsRequestTest {
     @SuppressWarnings("unchecked")
     Map<String, Object> param1 = (Map<String, Object>) props.get("param1");
     assertThat(param1.get("type")).isEqualTo("string");
+  }
+
+  private static Map<String, Object> toolParameters(FunctionDeclaration function) {
+    Tool tool = Tool.builder().functionDeclarations(ImmutableList.of(function)).build();
+    LlmRequest llmRequest =
+        LlmRequest.builder()
+            .model("openai-compatible-model")
+            .config(GenerateContentConfig.builder().tools(ImmutableList.of(tool)).build())
+            .contents(ImmutableList.of())
+            .build();
+    ChatCompletionsRequest request = ChatCompletionsRequest.fromLlmRequest(llmRequest, false);
+    return getOnlyElement(request.tools).function.parameters;
+  }
+
+  @Test
+  public void testFromLlmRequest_withParametersJsonSchema_forwardsRawSchema() throws Exception {
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "type", "object",
+            "$defs", ImmutableMap.of("JobId", ImmutableMap.of("type", "string")),
+            "properties", ImmutableMap.of("jobId", ImmutableMap.of("$ref", "#/$defs/JobId")),
+            "required", ImmutableList.of("jobId"),
+            "additionalProperties", false);
+
+    Map<String, Object> parameters =
+        toolParameters(
+            FunctionDeclaration.builder()
+                .name("analyze_job")
+                .parametersJsonSchema(rawSchema)
+                .build());
+
+    assertThat(parameters).isEqualTo(rawSchema);
+  }
+
+  @Test
+  public void testFromLlmRequest_withParametersJsonSchemaAndParameters_prefersRawSchema()
+      throws Exception {
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "type",
+            "object",
+            "properties",
+            ImmutableMap.of("raw", ImmutableMap.of("type", "string")));
+    Schema typedSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("typed", Schema.builder().type("STRING").build()))
+            .build();
+
+    Map<String, Object> parameters =
+        toolParameters(
+            FunctionDeclaration.builder()
+                .name("test_func")
+                .parameters(typedSchema)
+                .parametersJsonSchema(rawSchema)
+                .build());
+
+    assertThat(parameters).isEqualTo(rawSchema);
+  }
+
+  @Test
+  public void testFromLlmRequest_withZeroArgumentParametersJsonSchema_addsEmptyProperties()
+      throws Exception {
+    Map<String, Object> rawSchema = new LinkedHashMap<>();
+    rawSchema.put("type", "object");
+
+    Map<String, Object> parameters =
+        toolParameters(
+            FunctionDeclaration.builder().name("ping").parametersJsonSchema(rawSchema).build());
+
+    assertThat(parameters).containsExactly("type", "object", "properties", ImmutableMap.of());
+    assertThat(rawSchema).doesNotContainKey("properties");
+  }
+
+  @Test
+  public void testFromLlmRequest_withEmptyParametersJsonSchema_sendsEmptyObjectSchema()
+      throws Exception {
+    Map<String, Object> parameters =
+        toolParameters(
+            FunctionDeclaration.builder()
+                .name("ping")
+                .parametersJsonSchema(ImmutableMap.of())
+                .build());
+
+    assertThat(parameters).isEqualTo(ChatCompletionsCommon.EMPTY_PARAMETERS_SCHEMA);
+  }
+
+  @Test
+  public void testFromLlmRequest_withEmptyParametersJsonSchemaAndParameters_usesParameters()
+      throws Exception {
+    Schema typedSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("typed", Schema.builder().type("STRING").build()))
+            .build();
+
+    Map<String, Object> parameters =
+        toolParameters(
+            FunctionDeclaration.builder()
+                .name("test_func")
+                .parameters(typedSchema)
+                .parametersJsonSchema(ImmutableMap.of())
+                .build());
+
+    assertThat(parameters)
+        .containsExactly(
+            "type",
+            "object",
+            "properties",
+            ImmutableMap.of("typed", ImmutableMap.of("type", "string")));
+  }
+
+  @Test
+  public void testFromLlmRequest_withUppercaseParametersJsonSchema_lowercasesTypes()
+      throws Exception {
+    ImmutableMap<String, Object> rawSchema =
+        ImmutableMap.of(
+            "type",
+            "OBJECT",
+            "default",
+            ImmutableMap.of("type", "KEEP"),
+            "properties",
+            ImmutableMap.of(
+                "unit", ImmutableMap.of("type", "STRING", "enum", ImmutableList.of("CELSIUS")),
+                "days",
+                    ImmutableMap.of("type", "ARRAY", "items", ImmutableMap.of("type", "INTEGER")),
+                "note", ImmutableMap.of("type", ImmutableList.of("STRING", "NULL")),
+                "when",
+                    ImmutableMap.of(
+                        "anyOf",
+                        ImmutableList.of(ImmutableMap.of("type", "STRING"), ImmutableMap.of())),
+                "type", ImmutableMap.of("type", "STRING"),
+                "extra", true));
+
+    Map<String, Object> parameters =
+        toolParameters(
+            FunctionDeclaration.builder().name("forecast").parametersJsonSchema(rawSchema).build());
+
+    assertThat(parameters)
+        .containsExactly(
+            "type",
+            "object",
+            "default",
+            ImmutableMap.of("type", "KEEP"),
+            "properties",
+            ImmutableMap.of(
+                "unit", ImmutableMap.of("type", "string", "enum", ImmutableList.of("CELSIUS")),
+                "days",
+                    ImmutableMap.of("type", "array", "items", ImmutableMap.of("type", "integer")),
+                "note", ImmutableMap.of("type", ImmutableList.of("string", "null")),
+                "when",
+                    ImmutableMap.of(
+                        "anyOf",
+                        ImmutableList.of(ImmutableMap.of("type", "string"), ImmutableMap.of())),
+                "type", ImmutableMap.of("type", "string"),
+                "extra", true));
   }
 
   @Test

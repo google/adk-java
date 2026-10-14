@@ -16,8 +16,16 @@
 
 package com.google.adk.flows.llmflows;
 
+import static com.google.adk.testing.TestUtils.createInvocationContext;
+import static com.google.adk.testing.TestUtils.createTestAgent;
+import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.agents.ContextCacheConfig;
+import com.google.adk.agents.InvocationContext;
+import com.google.adk.testing.TestLlm;
+import java.time.Duration;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -31,5 +39,26 @@ public final class SingleFlowTest {
         SingleFlow.REQUEST_PROCESSORS.stream()
             .anyMatch(processor -> processor instanceof Compaction);
     assertThat(hasCompaction).isTrue();
+  }
+
+  @Test
+  public void requestProcessors_runContextCacheAfterContents() {
+    assertThat(SingleFlow.REQUEST_PROCESSORS.stream().map(Object::getClass))
+        .containsAtLeast(Contents.class, ContextCacheRequestProcessor.class)
+        .inOrder();
+  }
+
+  @Test
+  public void run_withContextCacheConfig_passesItToTheModel() {
+    ContextCacheConfig cacheConfig = new ContextCacheConfig(5, Duration.ofMinutes(10), 1024);
+    TestLlm testLlm = createTestLlm(createTextLlmResponse("hi"));
+    InvocationContext context =
+        createInvocationContext(createTestAgent(testLlm)).toBuilder()
+            .contextCacheConfig(cacheConfig)
+            .build();
+
+    var unused = new SingleFlow().run(context).toList().blockingGet();
+
+    assertThat(testLlm.getLastRequest().cacheConfig()).hasValue(cacheConfig);
   }
 }

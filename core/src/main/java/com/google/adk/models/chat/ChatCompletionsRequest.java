@@ -726,15 +726,7 @@ public final class ChatCompletionsRequest {
             FunctionDefinition def = new FunctionDefinition();
             def.name = fd.name().orElse("");
             def.description = fd.description().orElse("");
-            if (fd.parameters().isPresent()) {
-              def.parameters =
-                  objectMapper.convertValue(
-                      fd.parameters().get(), new TypeReference<Map<String, Object>>() {});
-            } else {
-              // OpenAI-compatible APIs (like Groq) strictly require the parameters object
-              // to exist, even for zero-argument functions.
-              def.parameters = ChatCompletionsCommon.EMPTY_PARAMETERS_SCHEMA;
-            }
+            def.parameters = toolParameters(fd);
             tool.function = def;
             tools.add(tool);
           }
@@ -762,6 +754,57 @@ public final class ChatCompletionsRequest {
         }
       }
     }
+  }
+
+  /**
+   * Returns the parameters schema for a tool. The raw {@code parametersJsonSchema}, which MCP tools
+   * set, takes precedence over the typed {@code parameters}; an empty raw schema counts as absent.
+   */
+  private static Map<String, Object> toolParameters(FunctionDeclaration fd) {
+    Map<String, Object> rawSchema =
+        fd.parametersJsonSchema().map(ChatCompletionsRequest::toMap).orElse(ImmutableMap.of());
+    if (!rawSchema.isEmpty()) {
+      lowercaseTypes(rawSchema);
+      // Some endpoints reject objects without "properties"; zero-argument MCP tools often omit it.
+      rawSchema.putIfAbsent("properties", ImmutableMap.of());
+      return rawSchema;
+    }
+    // OpenAI-compatible APIs (like Groq) strictly require the parameters object
+    // to exist, even for zero-argument functions.
+    return fd.parameters()
+        .map(ChatCompletionsRequest::toMap)
+        .orElse(ChatCompletionsCommon.EMPTY_PARAMETERS_SCHEMA);
+  }
+
+  /** Converts {@code schema} into a mutable map. */
+  private static Map<String, Object> toMap(Object schema) {
+    return objectMapper.convertValue(schema, new TypeReference<Map<String, Object>>() {});
+  }
+
+  /**
+   * Lowercases the {@code type} names in a raw schema, which {@link #schemaNormalizerModule} only
+   * does for typed schemas. ADK's own MCP export sends genai's uppercase names, such as "OBJECT".
+   *
+   * @param node The schema node to adjust in place.
+   */
+  private static void lowercaseTypes(Object node) {
+    if (!(node instanceof Map<?, ?> rawNode)) {
+      return;
+    }
+    // Safe: the tree comes from convertValue into Map<String, Object>, so every key is a String.
+    @SuppressWarnings("unchecked")
+    Map<String, Object> schema = (Map<String, Object>) rawNode;
+    Object type = schema.get("type");
+    if (type instanceof String name) {
+      schema.put("type", Ascii.toLowerCase(name));
+    } else if (type instanceof List<?> names) {
+      schema.put(
+          "type",
+          names.stream()
+              .map(name -> name instanceof String text ? Ascii.toLowerCase(text) : name)
+              .toList());
+    }
+    subschemas(schema).forEach(ChatCompletionsRequest::lowercaseTypes);
   }
 
   /**

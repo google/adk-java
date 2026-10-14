@@ -17,6 +17,7 @@
 package com.google.adk.tools.mcp;
 
 import com.google.adk.tools.BaseTool;
+import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
 import io.modelcontextprotocol.json.McpJsonDefaults;
@@ -29,15 +30,23 @@ public final class ConversionUtils {
 
   private static final McpJsonMapper jsonMapper = McpJsonDefaults.getMapper();
 
+  /**
+   * Input schema for a tool with no parameters. This is the schema the deprecated {@code
+   * McpSchema.Tool.builder()} filled in when none was set, and the MCP spec accepts it for a tool
+   * that takes no arguments.
+   */
+  private static final ImmutableMap<String, Object> NO_PARAMETERS_SCHEMA =
+      ImmutableMap.of("type", "object");
+
   public static McpSchema.Tool adkToMcpToolType(BaseTool tool) {
     Optional<Schema> parameters = tool.declaration().flatMap(FunctionDeclaration::parameters);
     if (parameters.isEmpty()) {
-      return McpSchema.Tool.builder().name(tool.name()).description(tool.description()).build();
+      return McpSchema.Tool.builder(tool.name(), NO_PARAMETERS_SCHEMA)
+          .description(tool.description())
+          .build();
     }
-    return McpSchema.Tool.builder()
-        .name(tool.name())
+    return McpSchema.Tool.builder(tool.name(), jsonMapper, parameters.get().toJson())
         .description(tool.description())
-        .inputSchema(jsonMapper, parameters.get().toJson())
         .build();
   }
 

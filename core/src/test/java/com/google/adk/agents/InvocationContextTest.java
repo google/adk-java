@@ -26,6 +26,7 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.memory.BaseMemoryService;
 import com.google.adk.models.LlmCallsLimitExceededException;
+import com.google.adk.platform.UuidProvider;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
@@ -37,9 +38,14 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+import java.time.Instant;
+import java.time.InstantSource;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.jspecify.annotations.Nullable;
 import org.junit.Assert;
 import org.junit.Before;
@@ -303,6 +309,73 @@ public final class InvocationContextTest {
     // Basic check for UUID format after "e-"
     assertThat(id.substring(2))
         .matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+  }
+
+  @Test
+  public void scheduler_defaultsToIoScheduler() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .build();
+
+    assertThat(context.scheduler()).isSameInstanceAs(Schedulers.io());
+  }
+
+  @Test
+  public void scheduler_customIsCarriedAndCopiedByToBuilder() {
+    Scheduler scheduler = Schedulers.trampoline();
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .scheduler(scheduler)
+            .build();
+
+    assertThat(context.scheduler()).isSameInstanceAs(scheduler);
+    assertThat(context.toBuilder().build().scheduler()).isSameInstanceAs(scheduler);
+  }
+
+  @Test
+  public void scheduler_nullSelectsTheDefault() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .scheduler(Schedulers.trampoline())
+            .scheduler(null)
+            .build();
+
+    assertThat(context.scheduler()).isSameInstanceAs(Schedulers.io());
+  }
+
+  @Test
+  public void equals_comparesTheConfiguredScheduler() {
+    InvocationContext unset =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .invocationId("same-id")
+            .build();
+    InvocationContext trampoline = unset.toBuilder().scheduler(Schedulers.trampoline()).build();
+    InvocationContext io = unset.toBuilder().scheduler(Schedulers.io()).build();
+
+    assertThat(unset.toBuilder().build()).isEqualTo(unset);
+    assertThat(unset.toBuilder().build().hashCode()).isEqualTo(unset.hashCode());
+    assertThat(trampoline.toBuilder().build()).isEqualTo(trampoline);
+    assertThat(trampoline.toBuilder().build().hashCode()).isEqualTo(trampoline.hashCode());
+    assertThat(trampoline).isNotEqualTo(io);
+    assertThat(trampoline).isNotEqualTo(unset);
+    // The configured field is compared, so an unset scheduler differs from an explicit io().
+    assertThat(io).isNotEqualTo(unset);
   }
 
   @Test
@@ -1419,5 +1492,183 @@ public final class InvocationContextTest {
 
     assertThat(context.agentStates()).isEmpty();
     assertThat(context.endOfAgents()).isEmpty();
+  }
+
+  @Test
+  public void testNewInvocationContextId_withCustomProvider() {
+    UuidProvider provider = () -> "deterministic-uuid";
+
+    String id = InvocationContext.newInvocationContextId(provider);
+
+    assertThat(id).isEqualTo("e-deterministic-uuid");
+  }
+
+  @Test
+  public void providers_defaultToSystem() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .build();
+
+    assertThat(context.instantSource()).isEqualTo(InstantSource.system());
+    assertThat(context.uuidProvider()).isEqualTo(UuidProvider.SYSTEM);
+    assertThat(context.newUuid())
+        .matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+    Instant before = Instant.now();
+    Instant now = context.now();
+    assertThat(now).isAtLeast(before);
+  }
+
+  @Test
+  public void providers_nullSelectsTheDefaults() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .instantSource(() -> Instant.ofEpochMilli(1234L))
+            .uuidProvider(() -> "fixed-uuid")
+            .instantSource(null)
+            .uuidProvider(null)
+            .build();
+
+    assertThat(context.instantSource()).isEqualTo(InstantSource.system());
+    assertThat(context.uuidProvider()).isEqualTo(UuidProvider.SYSTEM);
+  }
+
+  @Test
+  public void equals_includesTheProviders() {
+    InvocationContext defaults =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .invocationId("same-id")
+            .build();
+    InvocationContext custom =
+        defaults.toBuilder()
+            .instantSource(() -> Instant.ofEpochMilli(1234L))
+            .uuidProvider(() -> "fixed-uuid")
+            .build();
+
+    assertThat(defaults.toBuilder().build()).isEqualTo(defaults);
+    assertThat(defaults.toBuilder().build().hashCode()).isEqualTo(defaults.hashCode());
+    assertThat(custom.toBuilder().build()).isEqualTo(custom);
+    assertThat(custom).isNotEqualTo(defaults);
+  }
+
+  @Test
+  public void providers_customAreCarriedAndUsedByAccessors() {
+    Instant fixed = Instant.ofEpochMilli(1234L);
+    InstantSource fixedClock = () -> fixed;
+    UuidProvider fixedUuids = () -> "fixed-uuid";
+
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .instantSource(fixedClock)
+            .uuidProvider(fixedUuids)
+            .build();
+
+    assertThat(context.instantSource()).isEqualTo(fixedClock);
+    assertThat(context.uuidProvider()).isEqualTo(fixedUuids);
+    assertThat(context.now()).isEqualTo(fixed);
+    assertThat(context.newUuid()).isEqualTo("fixed-uuid");
+  }
+
+  @Test
+  public void toBuilder_carriesProviders() {
+    InstantSource fixedClock = () -> Instant.ofEpochMilli(1234L);
+    UuidProvider fixedUuids = () -> "fixed-uuid";
+
+    InvocationContext originalContext =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .instantSource(fixedClock)
+            .uuidProvider(fixedUuids)
+            .build();
+
+    InvocationContext copiedContext = originalContext.toBuilder().build();
+
+    assertThat(copiedContext.instantSource()).isEqualTo(fixedClock);
+    assertThat(copiedContext.uuidProvider()).isEqualTo(fixedUuids);
+  }
+
+  @Test
+  public void build_withoutInvocationId_mintsIdFromUuidProvider() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .uuidProvider(() -> "fixed-uuid")
+            .build();
+
+    assertThat(context.invocationId()).isEqualTo("e-fixed-uuid");
+  }
+
+  @Test
+  public void toBuilder_keepsLazilyMintedInvocationId_withoutDrawingAgain() {
+    AtomicInteger draws = new AtomicInteger();
+    InvocationContext original =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .uuidProvider(() -> "uuid-" + draws.incrementAndGet())
+            .build();
+
+    InvocationContext copy = original.toBuilder().build();
+
+    assertThat(original.invocationId()).isEqualTo("e-uuid-1");
+    assertThat(copy.invocationId()).isEqualTo(original.invocationId());
+    assertThat(draws.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void build_twiceWithoutInvocationId_sharesOneMintedId() {
+    AtomicInteger draws = new AtomicInteger();
+    InvocationContext.Builder builder =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .uuidProvider(() -> "uuid-" + draws.incrementAndGet());
+
+    InvocationContext first = builder.build();
+    InvocationContext second = builder.build();
+
+    assertThat(first.invocationId()).isEqualTo("e-uuid-1");
+    assertThat(second.invocationId()).isEqualTo("e-uuid-1");
+    assertThat(draws.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void build_withExplicitInvocationId_keepsItRegardlessOfUuidProvider() {
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .artifactService(mockArtifactService)
+            .agent(mockAgent)
+            .session(session)
+            .invocationId("explicit-id")
+            .uuidProvider(() -> "fixed-uuid")
+            .build();
+
+    assertThat(context.invocationId()).isEqualTo("explicit-id");
   }
 }

@@ -98,7 +98,9 @@ public final class McpAsyncTool extends AbstractMcpTool<McpAsyncClient> {
             () ->
                 Maybe.fromCompletionStage(
                         this.mcpSession
-                            .callTool(new CallToolRequest(this.name(), ImmutableMap.copyOf(args)))
+                            .callTool(
+                                new CallToolRequest(
+                                    this.name(), ImmutableMap.copyOf(args), /* meta= */ null))
                             .toFuture())
                     .map(callResult -> wrapCallResult(this.objectMapper, this.name(), callResult))
                     .switchIfEmpty(

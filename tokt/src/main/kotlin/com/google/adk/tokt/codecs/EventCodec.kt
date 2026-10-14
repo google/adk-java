@@ -21,7 +21,6 @@ import com.google.adk.events.EventActions as JavaEventActions
 import com.google.adk.kt.events.Event as KtEvent
 import com.google.adk.kt.events.EventActions as KtEventActions
 import com.google.adk.kt.ids.Uuid
-import com.google.adk.kt.types.FinishReason as KtFinishReason
 import com.google.genai.types.FinishReason as GenaiFinishReason
 import kotlin.jvm.optionals.getOrNull
 
@@ -103,8 +102,7 @@ internal object EventCodec {
       // toString() preserves the raw value; knownEnum().name would collapse an unrecognized code to
       // FINISH_REASON_UNSPECIFIED (errorCode is a free-form String on the Kotlin side).
       errorCode = event.errorCode().getOrNull()?.toString(),
-      finishReason =
-        enumByNameOrNull<KtFinishReason>(event.finishReason().getOrNull()?.knownEnum()?.name),
+      finishReason = event.finishReason().getOrNull()?.toKt(),
       usageMetadata = event.usageMetadata().getOrNull()?.let { UsageMetadataCodec.fromJava(it) },
       avgLogProbs = event.avgLogprobs().getOrNull(),
       groundingMetadata =

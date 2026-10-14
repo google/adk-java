@@ -74,8 +74,8 @@ import kotlin.jvm.optionals.getOrNull
  * Carries the system instruction, cached content name, tools (function declarations, Google Search,
  * Google Maps, and both the Vertex AI Search and Vertex RAG store retrieval kinds), the common
  * generation parameters (including seed and response modalities), thinking config, model routing
- * config, tool config (with the function-calling mode), and safety settings (with the block
- * method).
+ * config, tool config (with the function-calling mode), safety settings (with the block method),
+ * and the continuation token that resumes a paused generation.
  */
 internal object GenerateContentConfigCodec {
 
@@ -113,6 +113,7 @@ internal object GenerateContentConfigCodec {
     config.safetySettings?.let { settings ->
       builder.safetySettings(settings.map { safetySettingToJava(it) })
     }
+    config.continuationToken?.let { builder.continuationToken(it) }
     return builder.build()
   }
 
@@ -146,6 +147,7 @@ internal object GenerateContentConfigCodec {
       routingConfig = config.routingConfig().getOrNull()?.let { routingConfigFromJava(it) },
       toolConfig = config.toolConfig().getOrNull()?.let { toolConfigFromJava(it) },
       safetySettings = config.safetySettings().getOrNull()?.map { safetySettingFromJava(it) },
+      continuationToken = config.continuationToken().getOrNull(),
     )
 
   private fun toolToJava(tool: KtTool): GenaiTool {

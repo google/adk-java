@@ -10,6 +10,15 @@ on:
   pull_request:
     types: [opened, synchronize]
 
+# A newer run for the same pull request supersedes this one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Read-only: the job only counts commits locally.
+permissions:
+  contents: read
+
 # Defines the jobs that will run as part of the workflow.
 jobs:
   check-commit-count:

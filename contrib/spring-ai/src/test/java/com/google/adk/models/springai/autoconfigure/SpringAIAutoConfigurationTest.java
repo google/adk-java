@@ -16,8 +16,10 @@
 package com.google.adk.models.springai.autoconfigure;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 import com.google.adk.models.springai.SpringAI;
+import com.google.adk.models.springai.SpringAIEmbedding;
 import com.google.adk.models.springai.properties.SpringAIProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -25,6 +27,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.model.StreamingChatModel;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -162,6 +165,44 @@ class SpringAIAutoConfigurationTest {
               assertThat(properties.getObservability().isMetricsEnabled()).isTrue();
               assertThat(properties.getObservability().isIncludeContent()).isFalse();
             });
+  }
+
+  @Test
+  void testBacksOffWithMultipleChatModelBeans() {
+    contextRunner
+        .withBean("chatModelOne", ChatModel.class, () -> mock(ChatModel.class))
+        .withBean("chatModelTwo", ChatModel.class, () -> mock(ChatModel.class))
+        .run(context -> assertThat(context).doesNotHaveBean(SpringAI.class));
+  }
+
+  @Test
+  void testBacksOffWithMultipleStreamingChatModelBeans() {
+    contextRunner
+        .withBean(
+            "streamingModelOne", StreamingChatModel.class, () -> mock(StreamingChatModel.class))
+        .withBean(
+            "streamingModelTwo", StreamingChatModel.class, () -> mock(StreamingChatModel.class))
+        .run(context -> assertThat(context).doesNotHaveBean(SpringAI.class));
+  }
+
+  @Test
+  void testBacksOffWithMultipleEmbeddingModelBeans() {
+    contextRunner
+        .withBean("embeddingModelOne", EmbeddingModel.class, () -> mock(EmbeddingModel.class))
+        .withBean("embeddingModelTwo", EmbeddingModel.class, () -> mock(EmbeddingModel.class))
+        .run(context -> assertThat(context).doesNotHaveBean(SpringAIEmbedding.class));
+  }
+
+  @Test
+  void testRegistersSpringAIWithPrimaryChatModelBean() {
+    contextRunner
+        .withBean(
+            "primaryChatModel",
+            ChatModel.class,
+            () -> mock(ChatModel.class),
+            beanDefinition -> beanDefinition.setPrimary(true))
+        .withBean("chatModelTwo", ChatModel.class, () -> mock(ChatModel.class))
+        .run(context -> assertThat(context).hasSingleBean(SpringAI.class));
   }
 
   @Configuration

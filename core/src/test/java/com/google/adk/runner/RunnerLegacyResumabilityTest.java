@@ -17,10 +17,14 @@
 package com.google.adk.runner;
 
 import static com.google.adk.testing.ResumabilityTestUtils.answerCall;
+import static com.google.adk.testing.ResumabilityTestUtils.approveConfirmation;
+import static com.google.adk.testing.ResumabilityTestUtils.confirmingEchoFunctionTool;
 import static com.google.adk.testing.ResumabilityTestUtils.newSession;
 import static com.google.adk.testing.ResumabilityTestUtils.pendingFunctionTool;
 import static com.google.adk.testing.ResumabilityTestUtils.runTurn;
+import static com.google.adk.testing.ResumabilityTestUtils.runTurnAskingConfirmation;
 import static com.google.adk.testing.ResumabilityTestUtils.shimRunner;
+import static com.google.adk.testing.ResumabilityTestUtils.textAgent;
 import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
@@ -473,6 +477,86 @@ public final class RunnerLegacyResumabilityTest {
     assertThat(continuation.invocationId()).isNotEqualTo(pausedInvocationId);
     assertThat(continuation.actions().stateDelta()).containsAtLeastEntriesIn(stateDelta);
     assertThat(finalSession.state()).containsAtLeastEntriesIn(stateDelta);
+  }
+
+  // The shim resumes the SequentialAgent, which has no events of its own to restore a branch from.
+  @Test
+  public void
+      runAsync_withToolConfirmation_inSequentialAgentUnderParallelAgent_callsTool_legacyShim() {
+    LlmAgent childAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+                    createTextLlmResponse("Response after user confirmed.")))
+            .name("child_agent")
+            .tools(confirmingEchoFunctionTool())
+            .build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder()
+            .name("sequential_agent")
+            .subAgents(ImmutableList.of(childAgent))
+            .build();
+    ParallelAgent rootAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(
+                ImmutableList.of(sequentialAgent, textAgent("sibling_agent", "Sibling done.")))
+            .build();
+    Runner runner = shimRunner(rootAgent);
+    Session session = newSession(runner);
+    FunctionCall askUserConfirmationFunctionCall =
+        runTurnAskingConfirmation(runner, session, "from user");
+
+    ImmutableList<Event> eventsAfterConfirmation =
+        approveConfirmation(runner, session, askUserConfirmationFunctionCall);
+
+    assertThat(simplifyEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "child_agent: FunctionResponse(name=echoTool, response={message=hello})",
+            "child_agent: Response after user confirmed.")
+        .inOrder();
+    assertThat(eventsAfterConfirmation.stream().map(event -> event.branch().orElse(null)))
+        .containsExactly(
+            "parallel_agent.sequential_agent.child_agent",
+            "parallel_agent.sequential_agent.child_agent");
+  }
+
+  // Answering a long-running call resumes the sequence; its later sub-agent must still run.
+  @Test
+  public void
+      runAsync_withLongRunningCall_inSequentialAgentUnderParallelAgent_runsNextAgent_legacyShim() {
+    LlmAgent childAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    createFunctionCallLlmResponse(
+                        "lro_call_id", "pendingTool", ImmutableMap.of("message", "draft")),
+                    createTextLlmResponse("child resumed")))
+            .name("child_agent")
+            .tools(pendingFunctionTool())
+            .build();
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder()
+            .name("sequential_agent")
+            .subAgents(ImmutableList.of(childAgent, textAgent("next_agent", "next done")))
+            .build();
+    ParallelAgent rootAgent =
+        ParallelAgent.builder()
+            .name("parallel_agent")
+            .subAgents(
+                ImmutableList.of(sequentialAgent, textAgent("sibling_agent", "Sibling done.")))
+            .build();
+    Runner runner = shimRunner(rootAgent);
+    Session session = newSession(runner);
+    var unused = runTurn(runner, session, "from user");
+
+    ImmutableList<Event> eventsAfterResume =
+        answerCall(
+            runner, session, "lro_call_id", "pendingTool", ImmutableMap.of("result", "done"));
+
+    assertThat(simplifyEvents(eventsAfterResume))
+        .containsExactly("child_agent: child resumed", "next_agent: next done")
+        .inOrder();
   }
 
   // ===== CL1-parity: every CL1 resumable(true) test, re-run under the text-only shim =====

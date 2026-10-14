@@ -17,6 +17,7 @@
 package com.google.adk.agents;
 
 import static com.google.adk.testing.TestUtils.createEscalateEvent;
+import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createResumableInvocationContext;
@@ -25,10 +26,12 @@ import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
+import static com.google.adk.testing.TestUtils.simplifyResumableEvents;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 import com.google.adk.events.Event;
+import com.google.adk.testing.RecordingScheduler;
 import com.google.adk.tools.FunctionTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -84,6 +87,89 @@ public final class ParallelAgentTest {
     protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
       throw new UnsupportedOperationException("Not implemented");
     }
+  }
+
+  @Test
+  public void runAsync_withoutAgentScheduler_runsSubAgentsOnInvocationScheduler() {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder()
+            .name("parallel")
+            .subAgents(
+                createSubAgent("a", createEvent("ea")), createSubAgent("b", createEvent("eb")))
+            .build();
+    InvocationContext invocationContext =
+        createInvocationContext(parallelAgent).toBuilder().scheduler(recordingScheduler).build();
+
+    List<Event> events = parallelAgent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(2);
+    // One subscription per sub-agent went through the invocation's scheduler.
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(2);
+  }
+
+  @Test
+  public void runAsync_resumable_withoutAgentScheduler_runsSubAgentsOnInvocationScheduler() {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder()
+            .name("parallel")
+            .subAgents(
+                createSubAgent("a", createEvent("ea")), createSubAgent("b", createEvent("eb")))
+            .build();
+    InvocationContext invocationContext =
+        createResumableInvocationContext(parallelAgent).toBuilder()
+            .scheduler(recordingScheduler)
+            .build();
+
+    List<Event> events = parallelAgent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(simplifyResumableEvents(events))
+        .containsExactly(
+            "parallel: agent_state={}",
+            "author: content for event ea",
+            "author: content for event eb")
+        .inOrder();
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(2);
+  }
+
+  @Test
+  public void builder_scheduler_null_inheritsInvocationScheduler() {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder()
+            .name("parallel")
+            .scheduler(Schedulers.trampoline())
+            .scheduler(null)
+            .subAgents(
+                createSubAgent("a", createEvent("ea")), createSubAgent("b", createEvent("eb")))
+            .build();
+    InvocationContext invocationContext =
+        createInvocationContext(parallelAgent).toBuilder().scheduler(recordingScheduler).build();
+
+    List<Event> events = parallelAgent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(2);
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(2);
+  }
+
+  @Test
+  public void runAsync_withAgentScheduler_ignoresInvocationScheduler() {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder()
+            .name("parallel")
+            .scheduler(Schedulers.trampoline())
+            .subAgents(
+                createSubAgent("a", createEvent("ea")), createSubAgent("b", createEvent("eb")))
+            .build();
+    InvocationContext invocationContext =
+        createInvocationContext(parallelAgent).toBuilder().scheduler(recordingScheduler).build();
+
+    List<Event> events = parallelAgent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(2);
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(0);
   }
 
   @Test

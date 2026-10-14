@@ -19,6 +19,7 @@ package com.google.adk.models;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.tools.BaseTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -27,6 +28,7 @@ import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import java.time.Duration;
 import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -307,5 +309,36 @@ public final class LlmRequestTest {
     assertThat(request.getSystemInstructions())
         .containsExactly(instruction1 + "\n\n" + instruction2)
         .inOrder();
+  }
+
+  @Test
+  public void cacheFields_surviveToBuilderAndStayOutOfJson() {
+    ContextCacheConfig cacheConfig = new ContextCacheConfig(5, Duration.ofMinutes(10), 1024);
+    CacheMetadata cacheMetadata =
+        CacheMetadata.builder().fingerprint("abc123").contentsCount(2).build();
+
+    LlmRequest request =
+        LlmRequest.builder()
+            .model("gemini-2.5-flash")
+            .cacheConfig(cacheConfig)
+            .cacheMetadata(cacheMetadata)
+            .cacheableContentsTokenCount(4096)
+            .build()
+            .toBuilder()
+            .build();
+
+    assertThat(request.cacheConfig()).hasValue(cacheConfig);
+    assertThat(request.cacheMetadata()).hasValue(cacheMetadata);
+    assertThat(request.cacheableContentsTokenCount()).hasValue(4096);
+    assertThat(request.toJson()).doesNotContain("cache");
+  }
+
+  @Test
+  public void cacheFields_emptyByDefault() {
+    LlmRequest request = LlmRequest.builder().build();
+
+    assertThat(request.cacheConfig()).isEmpty();
+    assertThat(request.cacheMetadata()).isEmpty();
+    assertThat(request.cacheableContentsTokenCount()).isEmpty();
   }
 }

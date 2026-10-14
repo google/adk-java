@@ -70,6 +70,23 @@ public final class InMemorySessionServiceTest {
   }
 
   @Test
+  public void createSession_withDuplicateBehaviorAndProviders_usesBoth() {
+    InMemorySessionService sessionService =
+        new InMemorySessionService(
+            DuplicateSessionIdBehavior.REJECT,
+            () -> Instant.ofEpochMilli(1234L),
+            () -> "fixed-session-id");
+
+    Session session = sessionService.createSession("app-name", "user-id").blockingGet();
+    Single<Session> duplicate = sessionService.createSession("app-name", "user-id");
+
+    assertThat(session.id()).isEqualTo("fixed-session-id");
+    assertThat(session.lastUpdateTime()).isEqualTo(Instant.ofEpochMilli(1234L));
+    SessionException exception = assertThrows(SessionException.class, duplicate::blockingGet);
+    assertThat(exception).hasMessageThat().isEqualTo(SessionException.SESSION_ALREADY_EXISTS);
+  }
+
+  @Test
   public void lifecycle_getSession() {
     InMemorySessionService sessionService = new InMemorySessionService();
 

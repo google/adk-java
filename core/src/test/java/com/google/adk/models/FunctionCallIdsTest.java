@@ -17,6 +17,7 @@ package com.google.adk.models;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.platform.UuidProvider;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -37,6 +38,16 @@ public final class FunctionCallIdsTest {
     String second = FunctionCallIds.generateClientFunctionCallId();
 
     assertThat(first).isNotEqualTo(second);
+  }
+
+  @Test
+  public void generateClientFunctionCallId_withProvider_derivesFromProvider() {
+    UuidProvider provider = () -> "deterministic-uuid";
+
+    String id = FunctionCallIds.generateClientFunctionCallId(provider);
+
+    assertThat(id).isEqualTo("adk-deterministic-uuid");
+    assertThat(FunctionCallIds.isClientGeneratedFunctionCallId(id)).isTrue();
   }
 
   @Test

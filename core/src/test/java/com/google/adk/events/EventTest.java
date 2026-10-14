@@ -18,6 +18,8 @@ package com.google.adk.events;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.models.CacheMetadata;
+import com.google.adk.workflow.NodeInfo;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -28,6 +30,7 @@ import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.Transcription;
 import java.time.Instant;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -55,6 +58,9 @@ public final class EventTest {
                       "auth_config_key",
                       new ConcurrentHashMap<>(ImmutableMap.of("auth_key", "auth_value")))))
           .build();
+  private static final NodeInfo NODE_INFO =
+      NodeInfo.builder().path("wf@1/a@1").outputFor(ImmutableList.of("wf@1/a@1")).build();
+
   private static final Event EVENT =
       Event.builder()
           .id("event_id")
@@ -125,6 +131,21 @@ public final class EventTest {
   }
 
   @Test
+  public void event_toBuilder_preserves_zero_timestamp() {
+    Event event =
+        Event.builder()
+            .id("event_id")
+            .invocationId("invocation_id")
+            .author("agent")
+            .timestamp(0L)
+            .build();
+
+    Event copy = event.toBuilder().build();
+
+    assertThat(copy.timestamp()).isEqualTo(0L);
+  }
+
+  @Test
   public void event_equals_works() {
     Event event1 =
         Event.builder()
@@ -191,6 +212,67 @@ public final class EventTest {
     String json = EVENT.toJson();
     Event deserializedEvent = Event.fromJson(json);
     assertThat(deserializedEvent).isEqualTo(EVENT);
+  }
+
+  @Test
+  public void toBuilder_copiesOutputAndNodeInfo() {
+    Event event =
+        EVENT.toBuilder().output(ImmutableMap.of("answer", 42)).nodeInfo(NODE_INFO).build();
+
+    assertThat(event.toBuilder().build()).isEqualTo(event);
+  }
+
+  @Test
+  public void outputAndNodeInfo_roundTripThroughJson() {
+    Event event =
+        EVENT.toBuilder().output(ImmutableMap.of("answer", 42)).nodeInfo(NODE_INFO).build();
+
+    assertThat(Event.fromJson(event.toJson())).isEqualTo(event);
+  }
+
+  @Test
+  public void fromJson_readsContentOutputInItsJsonForm() {
+    Event event = EVENT.toBuilder().output(CONTENT).build();
+
+    assertThat(Event.fromJson(event.toJson()).output().orElseThrow()).isInstanceOf(Map.class);
+  }
+
+  @Test
+  public void outputAndNodeInfo_absentByDefault() {
+    assertThat(EVENT.output()).isEmpty();
+    assertThat(EVENT.nodeInfo()).isEmpty();
+  }
+
+  @Test
+  public void toJson_omitsAbsentOutputAndNodeInfo() {
+    String json = EVENT.toJson();
+
+    assertThat(json).doesNotContain("\"output\"");
+    assertThat(json).doesNotContain("\"nodeInfo\"");
+  }
+
+  @Test
+  public void fromJson_keepsAnEmptyNodeInfo() {
+    Event event =
+        Event.fromJson(
+            eventJsonWithNodeInfo("{\"path\":\"\",\"outputFor\":null,\"messageAsOutput\":null}"));
+
+    assertThat(event.nodeInfo()).hasValue(NodeInfo.builder().build());
+  }
+
+  @Test
+  public void fromJson_readsNullNodeInfoAsAbsent() {
+    Event event = Event.fromJson(eventJsonWithNodeInfo("null"));
+
+    assertThat(event.nodeInfo()).isEmpty();
+  }
+
+  @Test
+  public void json_roundTripsAnEmptyNodeInfo() {
+    Event event =
+        Event.builder().id("event_id").author("agent").nodeInfo(NodeInfo.builder().build()).build();
+
+    assertThat(Event.fromJson(event.toJson())).isEqualTo(event);
   }
 
   @Test
@@ -269,6 +351,32 @@ public final class EventTest {
   }
 
   @Test
+  public void event_cacheMetadata_survivesJsonAndToBuilder() {
+    CacheMetadata cacheMetadata =
+        CacheMetadata.builder()
+            .fingerprint("abc123")
+            .contentsCount(2)
+            .cacheName("cachedContents/42")
+            .expireTime(Instant.ofEpochSecond(2_000_000_000L, 500_000_000))
+            .invocationsUsed(3)
+            .createdAt(Instant.ofEpochSecond(1_999_998_200L))
+            .build();
+    Event event = EVENT.toBuilder().cacheMetadata(cacheMetadata).build();
+
+    assertThat(event.cacheMetadata()).hasValue(cacheMetadata);
+    assertThat(event.toBuilder().build()).isEqualTo(event);
+    assertThat(Event.fromJson(event.toJson()).cacheMetadata()).hasValue(cacheMetadata);
+    assertThat(event).isNotEqualTo(EVENT);
+    assertThat(event.hashCode()).isNotEqualTo(EVENT.hashCode());
+  }
+
+  @Test
+  public void event_cacheMetadata_emptyByDefault() {
+    assertThat(EVENT.cacheMetadata()).isEmpty();
+    assertThat(EVENT.toJson()).doesNotContain("cacheMetadata");
+  }
+
+  @Test
   public void finalResponse_returnsTrueIfNoToolCalls() {
     Event event =
         Event.builder()
@@ -329,5 +437,9 @@ public final class EventTest {
             .actions(EventActions.builder().skipSummarization(true).build())
             .build();
     assertThat(event.finalResponse()).isTrue();
+  }
+
+  private static String eventJsonWithNodeInfo(String nodeInfoJson) {
+    return "{\"id\":\"event_id\",\"author\":\"agent\",\"nodeInfo\":" + nodeInfoJson + "}";
   }
 }

@@ -17,6 +17,7 @@
 package com.google.adk.agents;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
@@ -25,14 +26,12 @@ import com.google.adk.testing.TestUtils;
 import com.google.common.collect.ImmutableList;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
+import org.junit.jupiter.api.Test;
 
 /** Unit tests for {@link PlannerAgent}. */
-@RunWith(JUnit4.class)
 public final class PlannerAgentTest {
 
   @Test
@@ -84,6 +83,36 @@ public final class PlannerAgentTest {
 
     assertThat(events).hasSize(1);
     assertThat(events.get(0).content().get().text()).isEqualTo("final answer");
+  }
+
+  @Test
+  public void runAsync_withDoneWithResult_resultEventUsesInvocationProviders() {
+    TestBaseAgent subAgent = TestUtils.createSubAgent("sub");
+    Planner resultPlanner =
+        new Planner() {
+          @Override
+          public Single<PlannerAction> firstAction(PlanningContext context) {
+            return Single.just(new PlannerAction.DoneWithResult("final answer"));
+          }
+
+          @Override
+          public Single<PlannerAction> nextAction(PlanningContext context) {
+            return Single.just(new PlannerAction.Done());
+          }
+        };
+    PlannerAgent agent =
+        PlannerAgent.builder().name("planner").subAgents(subAgent).planner(resultPlanner).build();
+    InvocationContext ctx =
+        TestUtils.createInvocationContext(agent).toBuilder()
+            .instantSource(() -> Instant.ofEpochMilli(1234L))
+            .uuidProvider(() -> "fixed-uuid")
+            .build();
+
+    List<Event> events = agent.runAsync(ctx).toList().blockingGet();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).id()).isEqualTo("fixed-uuid");
+    assertThat(events.get(0).timestamp()).isEqualTo(1234L);
   }
 
   @Test
@@ -262,10 +291,12 @@ public final class PlannerAgentTest {
     assertThat(events).isEmpty();
   }
 
-  @Test(expected = IllegalStateException.class)
+  @Test
   public void builder_withoutPlanner_throwsIllegalState() {
     TestBaseAgent subAgent = TestUtils.createSubAgent("sub");
-    PlannerAgent.builder().name("planner").subAgents(subAgent).build();
+    PlannerAgent.Builder builder = PlannerAgent.builder().name("planner").subAgents(subAgent);
+
+    assertThrows(IllegalStateException.class, builder::build);
   }
 
   @Test

@@ -17,7 +17,6 @@
 package com.google.adk.tokt.codecs
 
 import com.google.adk.kt.models.LlmResponse as KtLlmResponse
-import com.google.adk.kt.types.FinishReason as KtFinishReason
 import com.google.adk.models.LlmResponse as JavaLlmResponse
 import com.google.genai.types.FinishReason as GenaiFinishReason
 import kotlin.jvm.optionals.getOrNull
@@ -42,8 +41,7 @@ internal object LlmResponseCodec {
       partial = response.partial().getOrNull() ?: false,
       interrupted = response.interrupted().getOrNull() ?: false,
       modelVersion = response.modelVersion().getOrNull(),
-      finishReason =
-        enumByNameOrNull<KtFinishReason>(response.finishReason().getOrNull()?.knownEnum()?.name),
+      finishReason = response.finishReason().getOrNull()?.toKt(),
       usageMetadata = response.usageMetadata().getOrNull()?.let { UsageMetadataCodec.fromJava(it) },
       groundingMetadata =
         response.groundingMetadata().getOrNull()?.let { GroundingMetadataCodec.fromJava(it) },

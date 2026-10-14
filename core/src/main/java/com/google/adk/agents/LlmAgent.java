@@ -553,6 +553,11 @@ public class LlmAgent extends BaseAgent {
       return this;
     }
 
+    /**
+     * Sets the executor for this agent's offloaded work: tool calls in {@code
+     * ToolExecutionMode.PARALLEL_SUBSCRIBE} mode and the live request loop. When unset, that work
+     * runs on the invocation's scheduler ({@link InvocationContext#scheduler()}).
+     */
     @CanIgnoreReturnValue
     public Builder executor(Executor executor) {
       this.executor = executor;
@@ -1024,10 +1029,12 @@ public class LlmAgent extends BaseAgent {
     return onToolErrorCallback;
   }
 
+  @Override
   public Optional<Schema> inputSchema() {
     return inputSchema;
   }
 
+  @Override
   public Optional<Schema> outputSchema() {
     return outputSchema;
   }

@@ -56,6 +56,7 @@ import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.apps.App;
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.flows.llmflows.Functions;
@@ -78,6 +79,7 @@ import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -974,6 +976,68 @@ public final class RunnerResumabilityTest {
                         event.content().isEmpty()
                             && event.actions().stateDelta().containsKey("key1")))
         .isTrue();
+  }
+
+  // Checkpoint (end-of-agent) events and the content-less stateDelta event minted on resume draw
+  // their ids and timestamps from the Runner's providers, like every other persisted event.
+  @Test
+  public void resumableRunner_withProviders_checkpointAndStateDeltaEventsUseProviders() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "draft")),
+            createTextLlmResponse("done"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).name("agent").tools(pendingFunctionTool()).build();
+    AtomicInteger counter = new AtomicInteger();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(agent)
+                    .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .build())
+            .instantSource(() -> Instant.ofEpochMilli(1234L))
+            .uuidProvider(() -> String.format("uuid-%04d", counter.getAndIncrement()))
+            .build();
+    Session session = newSession(runner);
+    ImmutableList<Event> turn1 = runTurn(runner, session, "start");
+    String invocationId = turn1.get(0).invocationId();
+    var unused =
+        resume(runner, session, invocationId, /* newMessage= */ null, ImmutableMap.of("key1", "v"));
+    // A second, completing turn records an end-of-agent checkpoint.
+    Runner completingRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(textAgent("agent", "hello"))
+                    .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .build())
+            .sessionService(runner.sessionService())
+            .instantSource(() -> Instant.ofEpochMilli(1234L))
+            .uuidProvider(() -> String.format("uuid-%04d", counter.getAndIncrement()))
+            .build();
+    ImmutableList<Event> turn2 = runTurn(completingRunner, session, "again");
+
+    assertThat(session.id()).isEqualTo("uuid-0000");
+    assertThat(invocationId).isEqualTo("e-uuid-0001");
+    assertEndOfAgent(turn2, "agent");
+    Session reloaded = reloadSession(runner, session);
+    assertThat(
+            reloaded.events().stream()
+                .anyMatch(
+                    event ->
+                        event.content().isEmpty()
+                            && event.actions().stateDelta().containsKey("key1")))
+        .isTrue();
+    for (Event event : reloaded.events()) {
+      assertThat(event.id()).startsWith("uuid-");
+      assertThat(event.timestamp()).isEqualTo(1234L);
+    }
+    assertThat(reloaded.events().stream().map(Event::id).distinct().count())
+        .isEqualTo(reloaded.events().size());
   }
 
   // ResumeInvocationTest parity: a function response resumes an older invocation, not the latest.

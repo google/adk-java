@@ -45,6 +45,8 @@ import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
+import java.time.Instant;
+import java.time.InstantSource;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -84,6 +86,22 @@ public final class OutputSchemaTest {
     public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
       return Single.just(ImmutableMap.of());
     }
+  }
+
+  @Test
+  public void createFinalModelResponseEvent_usesInvocationProviders() {
+    LlmAgent agent = LlmAgent.builder().name("agent").model(testLlm).build();
+    InvocationContext context =
+        createInvocationContext(agent).toBuilder()
+            .instantSource(InstantSource.fixed(Instant.ofEpochMilli(1234L)))
+            .uuidProvider(() -> "fixed-uuid")
+            .build();
+
+    Event event = OutputSchema.createFinalModelResponseEvent(context, "{\"answer\": 42}");
+
+    assertThat(event.id()).isEqualTo("fixed-uuid");
+    assertThat(event.timestamp()).isEqualTo(1234L);
+    assertThat(event.invocationId()).isEqualTo(context.invocationId());
   }
 
   @Test

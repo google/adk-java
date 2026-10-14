@@ -36,6 +36,7 @@ import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.List;
+import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -51,6 +52,11 @@ public class McpToolsetTest {
   @Mock private McpSessionManager mockMcpSessionManager;
   @Mock private McpSyncClient mockMcpSyncClient;
   @Mock private ReadonlyContext mockReadonlyContext;
+
+  @After
+  public void restoreConfigStdioDefault() {
+    McpToolset.setAllowConfigStdioServers(true);
+  }
 
   private static final McpJsonMapper jsonMapper = McpJsonDefaults.getMapper();
 
@@ -212,6 +218,69 @@ public class McpToolsetTest {
   }
 
   @Test
+  public void testFromConfig_stdioServerParams_rejectedWhenDisallowed() {
+    McpToolset.setAllowConfigStdioServers(false);
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.put("stdioServerParams", STDIO_SERVER_PARAMS);
+
+    BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
+    String configPath = "/path/to/config.yaml";
+
+    ConfigurationException exception =
+        assertThrows(ConfigurationException.class, () -> McpToolset.fromConfig(config, configPath));
+
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("Refusing to start a local MCP server declared in an agent config");
+  }
+
+  @Test
+  public void testFromConfig_stdioConnectionParams_rejectedWhenDisallowed() {
+    McpToolset.setAllowConfigStdioServers(false);
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.put(
+        "stdioConnectionParams",
+        ImmutableMap.of("timeout", 10f, "serverParams", STDIO_SERVER_PARAMS));
+
+    BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
+    String configPath = "/path/to/config.yaml";
+
+    ConfigurationException exception =
+        assertThrows(ConfigurationException.class, () -> McpToolset.fromConfig(config, configPath));
+
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("Refusing to start a local MCP server declared in an agent config");
+  }
+
+  @Test
+  public void testFromConfig_stdioServerParams_allowedByDefault() throws ConfigurationException {
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.put("stdioServerParams", STDIO_SERVER_PARAMS);
+
+    BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
+    String configPath = "/path/to/config.yaml";
+
+    McpToolset toolset = McpToolset.fromConfig(config, configPath);
+
+    assertThat(toolset).isNotNull();
+  }
+
+  @Test
+  public void testFromConfig_sseParams_unaffectedByStdioRejection() throws ConfigurationException {
+    McpToolset.setAllowConfigStdioServers(false);
+    BaseTool.ToolArgsConfig args = new BaseTool.ToolArgsConfig();
+    args.put("sseServerParams", ImmutableMap.of("url", "http://localhost:8080"));
+
+    BaseTool.ToolConfig config = new BaseTool.ToolConfig("mcp_toolset", args);
+    String configPath = "/path/to/config.yaml";
+
+    McpToolset toolset = McpToolset.fromConfig(config, configPath);
+
+    assertThat(toolset).isNotNull();
+  }
+
+  @Test
   public void testFromConfig_onlySseParams_doesNotUseStdioBranch() throws ConfigurationException {
     // This test ensures that when only SSE params are provided, the SSE branch is taken
     // If line 328 is mutated to if(true), this test should fail because it would try to
@@ -301,25 +370,14 @@ public class McpToolsetTest {
   public void getTools_withToolFilter_returnsFilteredTools() {
     ImmutableList<String> toolFilter = ImmutableList.of("tool1", "tool3");
     McpSchema.Tool mockTool1 =
-        McpSchema.Tool.builder()
-            .name("tool1")
-            .description("desc1")
-            .inputSchema(jsonMapper, "{}")
-            .build();
+        McpSchema.Tool.builder("tool1", jsonMapper, "{}").description("desc1").build();
     McpSchema.Tool mockTool2 =
-        McpSchema.Tool.builder()
-            .name("tool2")
-            .description("desc2")
-            .inputSchema(jsonMapper, "{}")
-            .build();
+        McpSchema.Tool.builder("tool2", jsonMapper, "{}").description("desc2").build();
     McpSchema.Tool mockTool3 =
-        McpSchema.Tool.builder()
-            .name("tool3")
-            .description("desc3")
-            .inputSchema(jsonMapper, "{}")
-            .build();
+        McpSchema.Tool.builder("tool3", jsonMapper, "{}").description("desc3").build();
     McpSchema.ListToolsResult mockResult =
-        new McpSchema.ListToolsResult(ImmutableList.of(mockTool1, mockTool2, mockTool3), null);
+        McpSchema.ListToolsResult.builder(ImmutableList.of(mockTool1, mockTool2, mockTool3))
+            .build();
 
     when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
     when(mockMcpSyncClient.listTools()).thenReturn(mockResult);
@@ -355,7 +413,8 @@ public class McpToolsetTest {
 
   @Test
   public void getTools_succeedsOnLastRetryAttempt() {
-    McpSchema.ListToolsResult mockResult = new McpSchema.ListToolsResult(ImmutableList.of(), null);
+    McpSchema.ListToolsResult mockResult =
+        McpSchema.ListToolsResult.builder(ImmutableList.of()).build();
     when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
     when(mockMcpSyncClient.listTools())
         .thenThrow(new RuntimeException("Attempt 1 failed"))

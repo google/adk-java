@@ -19,12 +19,18 @@ package com.google.adk.flows.llmflows;
 import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createRootAgent;
+import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
+import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.events.Event;
+import com.google.adk.testing.RecordingScheduler;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
@@ -37,6 +43,9 @@ import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -499,6 +508,66 @@ public final class FunctionsTest {
     runParallelSubscribeBlockingToolsTest(/* toolCount= */ 5);
   }
 
+  @Test
+  public void handleFunctionCalls_parallelSubscribe_usesInvocationScheduler() {
+    // Each tool was subscribed on the invocation's scheduler.
+    assertThat(workersCreatedForParallelSubscribe(createRootAgent())).isEqualTo(2);
+  }
+
+  @Test
+  public void
+      handleFunctionCalls_parallelSubscribe_llmAgentWithoutExecutor_usesInvocationScheduler() {
+    LlmAgent agentWithoutExecutor =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused"))).build();
+
+    assertThat(workersCreatedForParallelSubscribe(agentWithoutExecutor)).isEqualTo(2);
+  }
+
+  @Test
+  public void handleFunctionCalls_parallelSubscribe_agentExecutorTakesPrecedenceOverScheduler() {
+    LlmAgent agentWithExecutor =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("unused")))
+            .executor(Runnable::run)
+            .build();
+
+    assertThat(workersCreatedForParallelSubscribe(agentWithExecutor)).isEqualTo(0);
+  }
+
+  /**
+   * Runs two tool calls for {@code agent} in PARALLEL_SUBSCRIBE mode on an invocation whose
+   * scheduler records its use, asserts that both responses arrived, and returns how many workers
+   * that scheduler handed out.
+   */
+  private static int workersCreatedForParallelSubscribe(BaseAgent agent) {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    InvocationContext invocationContext =
+        createInvocationContext(
+                agent,
+                RunConfig.builder().toolExecutionMode(ToolExecutionMode.PARALLEL_SUBSCRIBE).build())
+            .toBuilder()
+            .scheduler(recordingScheduler)
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(
+                invocationContext,
+                twoToolCallsEvent(),
+                ImmutableMap.of(
+                    "tool_1",
+                    new SleepingTool("tool_1", 0L),
+                    "tool_2",
+                    new SleepingTool("tool_2", 0L)))
+            .blockingGet();
+
+    assertThat(functionResponseEvent).isNotNull();
+    assertThat(functionResponseEvent.functionResponses()).hasSize(2);
+    return recordingScheduler.workersCreated();
+  }
+
+  private static Event twoToolCallsEvent() {
+    return toolCallsEvent("tool_1", "tool_2");
+  }
+
   /** Single-tool case bypasses the parallel scheduler path; must still return the correct event. */
   @Test
   public void handleFunctionCalls_parallelSubscribe_blockingTool_singleTool() {
@@ -696,5 +765,84 @@ public final class FunctionsTest {
             return ImmutableMap.<String, Object>of("tool", name());
           });
     }
+  }
+
+  @Test
+  public void populateClientFunctionCallId_withProvider_usesProvider() {
+    Event event =
+        Event.builder()
+            .id("event1")
+            .invocationId("invocation1")
+            .author("agent")
+            .content(Content.fromParts(Part.fromFunctionCall("some_function", ImmutableMap.of())))
+            .build();
+
+    Functions.populateClientFunctionCallId(event, () -> "deterministic-uuid");
+
+    Part populatedPart = event.content().get().parts().get().get(0);
+    assertThat(populatedPart.functionCall().get().id()).hasValue("adk-deterministic-uuid");
+  }
+
+  @Test
+  public void handleFunctionCalls_singleCall_responseEventUsesInvocationProviders() {
+    InvocationContext invocationContext = providerContext();
+
+    Event responseEvent =
+        Functions.handleFunctionCalls(
+                invocationContext,
+                toolCallsEvent("tool_1"),
+                ImmutableMap.of("tool_1", new SleepingTool("tool_1", 0L)))
+            .blockingGet();
+
+    assertThat(responseEvent.id()).isEqualTo("fixed-uuid");
+    assertThat(responseEvent.timestamp()).isEqualTo(0L);
+    assertThat(responseEvent.functionResponses()).hasSize(1);
+  }
+
+  @Test
+  public void handleFunctionCalls_parallelCalls_mergedEventUsesInvocationProviders() {
+    InvocationContext invocationContext = providerContext();
+
+    Event mergedEvent =
+        Functions.handleFunctionCalls(
+                invocationContext,
+                toolCallsEvent("tool_1", "tool_2"),
+                ImmutableMap.of(
+                    "tool_1",
+                    new SleepingTool("tool_1", 0L),
+                    "tool_2",
+                    new SleepingTool("tool_2", 0L)))
+            .blockingGet();
+
+    assertThat(mergedEvent.id()).isEqualTo("fixed-uuid");
+    assertThat(mergedEvent.timestamp()).isEqualTo(0L);
+    assertThat(mergedEvent.functionResponses()).hasSize(2);
+  }
+
+  /** A context whose clock is fixed at the epoch and whose ids are all {@code fixed-uuid}. */
+  private static InvocationContext providerContext() {
+    return createInvocationContext(createRootAgent()).toBuilder()
+        .instantSource(InstantSource.fixed(Instant.EPOCH))
+        .uuidProvider(() -> "fixed-uuid")
+        .build();
+  }
+
+  /** A model event calling each named tool once, with model-assigned call ids. */
+  private static Event toolCallsEvent(String... toolNames) {
+    ImmutableList.Builder<Part> parts = ImmutableList.builder();
+    for (int i = 0; i < toolNames.length; i++) {
+      parts.add(
+          Part.builder()
+              .functionCall(
+                  FunctionCall.builder()
+                      .id("call_" + (i + 1))
+                      .name(toolNames[i])
+                      .args(ImmutableMap.of())
+                      .build())
+              .build());
+    }
+    return createEvent("event").toBuilder()
+        .content(Content.builder().role("model").parts(parts.build()).build())
+        .build();
   }
 }

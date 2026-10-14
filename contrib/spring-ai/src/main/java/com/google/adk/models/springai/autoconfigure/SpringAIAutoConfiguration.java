@@ -24,20 +24,24 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.StreamingChatModel;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.AutoConfigureOrder;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.Ordered;
 
 /**
  * Auto-configuration for Spring AI integration with ADK.
  *
- * <p>This auto-configuration automatically creates SpringAI beans when Spring AI ChatModel beans
- * are available in the application context. It supports both regular ChatModel and
- * StreamingChatModel instances.
+ * <p>This auto-configuration automatically creates SpringAI beans when a Spring AI ChatModel bean
+ * is available in the application context as a single autowire candidate (or is marked
+ * {@code @Primary}). It supports both regular ChatModel and StreamingChatModel instances. When
+ * several model beans are present without a primary, the auto-configuration backs off and the
+ * application should define its own beans.
  *
  * <p>The auto-configuration can be disabled by setting:
  *
@@ -59,6 +63,9 @@ import org.springframework.context.annotation.Primary;
  * </pre>
  */
 @AutoConfiguration
+// Sorts after provider auto-configurations; configs ordered after this class need LOWEST_PRECEDENCE
+// too.
+@AutoConfigureOrder(Ordered.LOWEST_PRECEDENCE)
 @ConditionalOnClass({SpringAI.class, ChatModel.class})
 @ConditionalOnProperty(
     prefix = "adk.spring-ai.auto-configuration",
@@ -71,7 +78,8 @@ public class SpringAIAutoConfiguration {
   private static final Logger logger = LoggerFactory.getLogger(SpringAIAutoConfiguration.class);
 
   /**
-   * Creates a SpringAI bean when both ChatModel and StreamingChatModel are available.
+   * Creates a SpringAI bean when a single-candidate ChatModel is available. Every ChatModel is also
+   * a StreamingChatModel, so one bean serves both paths.
    *
    * @param chatModel the Spring AI ChatModel
    * @param streamingChatModel the Spring AI StreamingChatModel
@@ -81,7 +89,7 @@ public class SpringAIAutoConfiguration {
   @Bean
   @Primary
   @ConditionalOnMissingBean(SpringAI.class)
-  @ConditionalOnBean({ChatModel.class, StreamingChatModel.class})
+  @ConditionalOnSingleCandidate(ChatModel.class)
   public SpringAI springAIWithBothModels(
       ChatModel chatModel, StreamingChatModel streamingChatModel, SpringAIProperties properties) {
 
@@ -95,7 +103,7 @@ public class SpringAIAutoConfiguration {
   }
 
   /**
-   * Creates a SpringAI bean when only ChatModel is available.
+   * Creates a SpringAI bean when only a single-candidate ChatModel is available.
    *
    * @param chatModel the Spring AI ChatModel
    * @param properties the ADK Spring AI properties
@@ -103,7 +111,7 @@ public class SpringAIAutoConfiguration {
    */
   @Bean
   @ConditionalOnMissingBean(SpringAI.class)
-  @ConditionalOnBean(ChatModel.class)
+  @ConditionalOnSingleCandidate(ChatModel.class)
   public SpringAI springAIWithChatModel(ChatModel chatModel, SpringAIProperties properties) {
 
     String modelName = determineModelName(chatModel, properties);
@@ -114,7 +122,7 @@ public class SpringAIAutoConfiguration {
   }
 
   /**
-   * Creates a SpringAI bean when only StreamingChatModel is available.
+   * Creates a SpringAI bean when only a single-candidate StreamingChatModel is available.
    *
    * @param streamingChatModel the Spring AI StreamingChatModel
    * @param properties the ADK Spring AI properties
@@ -122,7 +130,7 @@ public class SpringAIAutoConfiguration {
    */
   @Bean
   @ConditionalOnMissingBean({SpringAI.class, ChatModel.class})
-  @ConditionalOnBean(StreamingChatModel.class)
+  @ConditionalOnSingleCandidate(StreamingChatModel.class)
   public SpringAI springAIWithStreamingModel(
       StreamingChatModel streamingChatModel, SpringAIProperties properties) {
 
@@ -134,7 +142,7 @@ public class SpringAIAutoConfiguration {
   }
 
   /**
-   * Creates a SpringAIEmbedding bean when EmbeddingModel is available.
+   * Creates a SpringAIEmbedding bean when a single-candidate EmbeddingModel is available.
    *
    * @param embeddingModel the Spring AI EmbeddingModel
    * @param properties the ADK Spring AI properties
@@ -142,7 +150,7 @@ public class SpringAIAutoConfiguration {
    */
   @Bean
   @ConditionalOnMissingBean(SpringAIEmbedding.class)
-  @ConditionalOnBean(EmbeddingModel.class)
+  @ConditionalOnSingleCandidate(EmbeddingModel.class)
   public SpringAIEmbedding springAIEmbedding(
       EmbeddingModel embeddingModel, SpringAIProperties properties) {
 

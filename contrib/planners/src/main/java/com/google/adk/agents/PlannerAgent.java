@@ -132,7 +132,8 @@ public class PlannerAgent extends BaseAgent {
     if (action instanceof PlannerAction.DoneWithResult doneWithResult) {
       Event resultEvent =
           Event.builder()
-              .id(Event.generateEventId())
+              .id(invocationContext.newUuid())
+              .timestamp(invocationContext.now().toEpochMilli())
               .invocationId(invocationContext.invocationId())
               .author(name())
               .branch(invocationContext.branch().orElse(null))

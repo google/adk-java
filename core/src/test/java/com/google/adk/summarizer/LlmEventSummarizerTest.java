@@ -34,7 +34,9 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
+import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -114,6 +116,38 @@ public class LlmEventSummarizerTest {
     assertThat(llmRequest.model()).hasValue("test-model");
     assertThat(llmRequest.contents().get(0).role()).hasValue("user");
     assertThat(llmRequest.contents().get(0).parts().get().get(0).text()).hasValue(expectedPrompt);
+  }
+
+  @Test
+  public void summarizeEvents_usesInjectedProviders() {
+    AtomicInteger counter = new AtomicInteger();
+    LlmEventSummarizer providerSummarizer =
+        new LlmEventSummarizer(
+            mockLlm,
+            /* promptTemplate= */ null,
+            () -> Instant.ofEpochMilli(1234L),
+            () -> String.format("uuid-%04d", counter.getAndIncrement()));
+    ImmutableList<Event> events =
+        ImmutableList.of(createEvent(1L, "Hello", "user"), createEvent(2L, "Hi there!", "model"));
+    LlmResponse mockLlmResponse =
+        LlmResponse.builder()
+            .content(Content.builder().parts(ImmutableList.of(Part.fromText("Summary"))).build())
+            .build();
+    when(mockLlm.generateContent(any(LlmRequest.class), eq(false)))
+        .thenReturn(Flowable.just(mockLlmResponse));
+
+    Event compactedEvent = providerSummarizer.summarizeEvents(events).blockingGet();
+
+    // The event id is drawn before the invocation id.
+    assertThat(compactedEvent.id()).isEqualTo("uuid-0000");
+    assertThat(compactedEvent.invocationId()).isEqualTo("uuid-0001");
+    assertThat(compactedEvent.timestamp()).isEqualTo(1234L);
+    // A null prompt template selects the default one.
+    verify(mockLlm).generateContent(llmRequestCaptor.capture(), eq(false));
+    assertThat(llmRequestCaptor.getValue().contents().get(0).parts().get().get(0).text())
+        .hasValue(
+            DEFAULT_PROMPT_TEMPLATE.replace(
+                "{conversation_history}", "user: Hello\nmodel: Hi there!"));
   }
 
   @Test

@@ -32,6 +32,7 @@ import com.google.adk.models.LlmRequest;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.summarizer.LlmEventSummarizer;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.common.collect.ImmutableList;
@@ -206,6 +207,101 @@ public class RequestConfirmationLlmRequestProcessorTest {
                 .blockingGet()
                 .events())
         .isEmpty();
+  }
+
+  @Test
+  public void runAsync_compactionAfterApproval_doesNotCallOriginalFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    // The summarizer's event is user-authored, so it ends the scan as in ADK Python.
+    Event compactionEvent =
+        new LlmEventSummarizer(
+                createTestLlm(createLlmResponse(Content.fromParts(Part.fromText("summary")))))
+            .summarizeEvents(CONFIRMED_CALL_EVENTS)
+            .blockingGet();
+    assertThat(compactionEvent).isNotNull();
+    assertThat(compactionEvent.author()).isEqualTo("user");
+    Session session =
+        Session.builder("session_id")
+            .events(
+                ImmutableList.<Event>builder()
+                    .addAll(CONFIRMED_CALL_EVENTS)
+                    .add(compactionEvent)
+                    .build())
+            .build();
+
+    assertThat(resumedEvents(agent, session)).isEmpty();
+  }
+
+  @Test
+  public void runAsync_stateDeltaOnlyEventAfterApproval_doesNotCallOriginalFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    // A state-only user event, such as a resume without a message, ends the scan too.
+    Event stateDeltaEvent =
+        Event.builder()
+            .author("user")
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("resume_count", 1)).build())
+            .build();
+    Session session =
+        Session.builder("session_id")
+            .events(
+                ImmutableList.<Event>builder()
+                    .addAll(CONFIRMED_CALL_EVENTS)
+                    .add(stateDeltaEvent)
+                    .build())
+            .build();
+
+    assertThat(resumedEvents(agent, session)).isEmpty();
+  }
+
+  @Test
+  public void runAsync_userTextTurnAfterApproval_doesNotCallOriginalFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    // The approved call never recorded a response; a later text turn must not re-run it.
+    Event laterUserTextEvent =
+        Event.builder()
+            .author("user")
+            .content(Content.fromParts(Part.fromText("unrelated follow-up question")))
+            .build();
+    Session session =
+        Session.builder("session_id")
+            .events(
+                ImmutableList.<Event>builder()
+                    .addAll(CONFIRMED_CALL_EVENTS)
+                    .add(laterUserTextEvent)
+                    .build())
+            .build();
+
+    assertThat(resumedEvents(agent, session)).isEmpty();
+  }
+
+  @Test
+  public void runAsync_laterUserTurnAnswersOtherFunctionCall_doesNotCallOriginalFunction() {
+    LlmAgent agent = createAgentWithEchoTool();
+    // The latest user event answers another function call, so the earlier approval stays unused.
+    Event otherFunctionResponseEvent =
+        Event.builder()
+            .author("user")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionResponse(
+                            FunctionResponse.builder()
+                                .id("other_fc_id")
+                                .name("other_tool")
+                                .response(ImmutableMap.of("result", "done"))
+                                .build())
+                        .build()))
+            .build();
+    Session session =
+        Session.builder("session_id")
+            .events(
+                ImmutableList.<Event>builder()
+                    .addAll(CONFIRMED_CALL_EVENTS)
+                    .add(otherFunctionResponseEvent)
+                    .build())
+            .build();
+
+    assertThat(resumedEvents(agent, session)).isEmpty();
   }
 
   @Test

@@ -46,7 +46,7 @@ import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Single;
-import io.reactivex.rxjava3.observers.TestObserver;
+import java.time.Instant;
 import java.util.ArrayList;
 import org.junit.Before;
 import org.junit.Rule;
@@ -81,6 +81,8 @@ public class CodeExecutionTest {
     when(invocationContext.appName()).thenReturn("app");
     when(invocationContext.userId()).thenReturn("user");
     when(invocationContext.artifactService()).thenReturn(mockArtifactService);
+    when(invocationContext.now()).thenReturn(Instant.ofEpochMilli(1234L));
+    when(invocationContext.newUuid()).thenReturn("test-event-id");
     when(mockArtifactService.saveArtifact(
             anyString(), anyString(), anyString(), anyString(), any(Part.class)))
         .thenReturn(Single.just(1));
@@ -116,6 +118,11 @@ public class CodeExecutionTest {
 
     ImmutableList<Event> events = ImmutableList.copyOf(result.events());
     assertThat(events).hasSize(2);
+    // Both code-execution events draw their id and timestamp from the invocation context.
+    for (Event event : events) {
+      assertThat(event.id()).isEqualTo("test-event-id");
+      assertThat(event.timestamp()).isEqualTo(1234L);
+    }
     Part executableCodePart = events.get(0).content().get().parts().get().get(1);
     assertThat(executableCodePart.executableCode().get().code()).hasValue(code);
 
@@ -181,11 +188,19 @@ public class CodeExecutionTest {
                     .build())));
 
     // act
-    Single<RequestProcessingResult> result =
-        CodeExecution.requestProcessor.processRequest(invocationContext, llmReqBuilder.build());
-    TestObserver<RequestProcessingResult> testObserver = result.test();
+    RequestProcessingResult result =
+        CodeExecution.requestProcessor
+            .processRequest(invocationContext, llmReqBuilder.build())
+            .blockingGet();
 
     // assert
-    testObserver.assertNoErrors();
+    ImmutableList<Event> events = ImmutableList.copyOf(result.events());
+    assertThat(events).hasSize(2);
+    // The data-file processing event and its execution result draw their id and timestamp from
+    // the invocation context.
+    for (Event event : events) {
+      assertThat(event.id()).isEqualTo("test-event-id");
+      assertThat(event.timestamp()).isEqualTo(1234L);
+    }
   }
 }

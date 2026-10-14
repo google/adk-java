@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.12.0](https://github.com/google/adk-java/compare/v1.11.0...v1.12.0) (2026-10-14)
+
+
+### Features
+
+* add a context caching demo sample ([91a1838](https://github.com/google/adk-java/commit/91a183865e5e14499e827961cb96df24a0476ea1))
+* add a Gemini context cache manager ([e5083e3](https://github.com/google/adk-java/commit/e5083e3ba9410ec32eb8d785d0f1f31eed7375d4))
+* add an injectable scheduler for ADK's internal fan-out ([1b89d23](https://github.com/google/adk-java/commit/1b89d23b78c09b87b0dd7d2d7daac866fd9fc5c0))
+* add cacheIntervals and createHttpOptions to ContextCacheConfig, as in ADK Python ([3afe4e5](https://github.com/google/adk-java/commit/3afe4e5e12800f604c83365383c808a4760f736c))
+* add Context as the common base of CallbackContext and ToolContext ([1309d38](https://github.com/google/adk-java/commit/1309d3841b5609943aa5c88b8b8d4b986646e9c6))
+* add injectable time and UUID providers for timestamps and ids ([caccc7c](https://github.com/google/adk-java/commit/caccc7cbbc3198b35bd769d20d72c1cd68a08d4c))
+* add the experimental Edge and Start workflow types ([a7b317a](https://github.com/google/adk-java/commit/a7b317a8dc8d19bc406de63e556ece3fdf2c5f80))
+* add the experimental JoinNode workflow node ([5137604](https://github.com/google/adk-java/commit/5137604e2a8f9ddacced43b0cbd918f26ac1f2ed))
+* add the experimental Node and BaseNode workflow types ([189d463](https://github.com/google/adk-java/commit/189d463a9988d5235ccf34de6a6fab1aae779d20))
+* add the experimental Workflow type for workflow graphs ([4c77cdf](https://github.com/google/adk-java/commit/4c77cdface117da17f79778e5a5726db1fdefc99))
+* add the workflow fields Event.output, Event.nodeInfo and EventActions.route ([e823fba](https://github.com/google/adk-java/commit/e823fbac72f8ab2829a0a128686047fb1f3dc420))
+* carry context cache config and metadata on LlmRequest, LlmResponse and Event ([187a4e1](https://github.com/google/adk-java/commit/187a4e1234a8d949c6b33b201a9a6b39e995f21a))
+* carry the continuation token across the Kotlin engine interop ([b3f0665](https://github.com/google/adk-java/commit/b3f0665288a9a388ec5c323733df460be9aaeaa1))
+* make BaseAgent extend BaseNode so every agent is a workflow node ([dbc973b](https://github.com/google/adk-java/commit/dbc973bfcfc1b23ca04fed3cf8f8bb84f03ab160))
+* **mcp:** allow rejecting config-supplied stdio MCP servers ([28810cd](https://github.com/google/adk-java/commit/28810cdc0165b1cb71b24b9f98c154da9f2b88a7))
+
+
+### Bug Fixes
+
+* **a2a:** skip an unconvertible remote A2A part instead of failing the turn ([9debe96](https://github.com/google/adk-java/commit/9debe96751165fbf63f41858f87ae8deddcff7e4))
+* create and use Gemini context caches when ContextCacheConfig is set ([68914c5](https://github.com/google/adk-java/commit/68914c59e254e50fece01711d5213d3c03b07090)), closes [#1530](https://github.com/google/adk-java/issues/1530)
+* run approved tool confirmations for agents under a ParallelAgent ([f866804](https://github.com/google/adk-java/commit/f866804518e6fd2bb2ebb206bcb11007f17dca98))
+* send MCP tool input schemas in chat completions requests ([ce88237](https://github.com/google/adk-java/commit/ce882374918a96ff1d306bab38cbdd3eb77c071d))
+* **spring-ai:** order SpringAIAutoConfiguration after Spring AI model auto-configurations ([d342a95](https://github.com/google/adk-java/commit/d342a959fee63723dc6a81e734a4c34eda674290))
+* **spring-ai:** preserve enum and items in tool schema conversion ([7b1a5b8](https://github.com/google/adk-java/commit/7b1a5b800e9dd3f3329976e708585b7404a3a3e4)), closes [#1609](https://github.com/google/adk-java/issues/1609)
+* stop losing event fields on Vertex AI session reloads ([887f9da](https://github.com/google/adk-java/commit/887f9da87e48b072cbf68936141294373d9f7c4e))
+* wait for the transfer event to be persisted before running the transfer target ([9f5d5ce](https://github.com/google/adk-java/commit/9f5d5ce736c9a9aff7f5ae5b4390c93507519e68))
+
 ## [1.11.0](https://github.com/google/adk-java/compare/v1.10.1...v1.11.0) (2026-10-02)
 
 

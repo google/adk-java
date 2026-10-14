@@ -15,13 +15,18 @@
  */
 package com.google.adk.events;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.annotations.Experimental;
 import com.google.adk.sessions.State;
+import com.google.adk.workflow.Route;
+import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -47,6 +52,7 @@ public class EventActions extends JsonBaseModel {
   private @Nullable EventCompaction compaction;
   private @Nullable Object setModelResponse;
   private @Nullable String rewindBeforeInvocationId;
+  private @Nullable ImmutableList<Route> route;
 
   /** Default constructor for Jackson. */
   public EventActions() {
@@ -72,6 +78,7 @@ public class EventActions extends JsonBaseModel {
     this.compaction = builder.compaction;
     this.setModelResponse = builder.setModelResponse;
     this.rewindBeforeInvocationId = builder.rewindBeforeInvocationId;
+    this.route = builder.route;
   }
 
   @JsonProperty("skipSummarization")
@@ -252,6 +259,23 @@ public class EventActions extends JsonBaseModel {
     this.rewindBeforeInvocationId = rewindBeforeInvocationId;
   }
 
+  /**
+   * For a workflow node, returns the routes this event selects; an edge is followed when it has one
+   * of these routes. The value is optional because an empty list is still a routing decision that
+   * selects no route, whereas an absent value means the event makes no routing decision. When
+   * merging, an empty list replaces the existing routes, while an absent value keeps them.
+   */
+  @Experimental
+  @JsonProperty("route")
+  public Optional<ImmutableList<Route>> route() {
+    return Optional.ofNullable(route);
+  }
+
+  @Experimental
+  public void setRoute(@Nullable List<Route> route) {
+    this.route = route == null ? null : ImmutableList.copyOf(route);
+  }
+
   public static Builder builder() {
     return new Builder();
   }
@@ -280,7 +304,8 @@ public class EventActions extends JsonBaseModel {
         && Objects.equals(agentState, that.agentState)
         && Objects.equals(compaction, that.compaction)
         && Objects.equals(setModelResponse, that.setModelResponse)
-        && Objects.equals(rewindBeforeInvocationId, that.rewindBeforeInvocationId);
+        && Objects.equals(rewindBeforeInvocationId, that.rewindBeforeInvocationId)
+        && Objects.equals(route, that.route);
   }
 
   @Override
@@ -298,7 +323,8 @@ public class EventActions extends JsonBaseModel {
         agentState,
         compaction,
         setModelResponse,
-        rewindBeforeInvocationId);
+        rewindBeforeInvocationId,
+        route);
   }
 
   /** Builder for {@link EventActions}. */
@@ -316,6 +342,7 @@ public class EventActions extends JsonBaseModel {
     private @Nullable EventCompaction compaction;
     private @Nullable Object setModelResponse;
     private @Nullable String rewindBeforeInvocationId;
+    private @Nullable ImmutableList<Route> route;
 
     public Builder() {
       this.stateDelta = new ConcurrentHashMap<>();
@@ -340,6 +367,7 @@ public class EventActions extends JsonBaseModel {
       this.compaction = eventActions.compaction;
       this.setModelResponse = eventActions.setModelResponse;
       this.rewindBeforeInvocationId = eventActions.rewindBeforeInvocationId;
+      this.route = eventActions.route;
     }
 
     @CanIgnoreReturnValue
@@ -467,6 +495,16 @@ public class EventActions extends JsonBaseModel {
       return this;
     }
 
+    // ADK Python writes a single route as a bare value rather than a one-element list.
+    @Experimental
+    @CanIgnoreReturnValue
+    @JsonProperty("route")
+    @JsonFormat(with = JsonFormat.Feature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
+    public Builder route(@Nullable List<Route> value) {
+      this.route = value == null ? null : ImmutableList.copyOf(value);
+      return this;
+    }
+
     @CanIgnoreReturnValue
     public Builder merge(EventActions other) {
       other.skipSummarization().ifPresent(this::skipSummarization);
@@ -482,6 +520,7 @@ public class EventActions extends JsonBaseModel {
       other.compaction().ifPresent(this::compaction);
       other.setModelResponse().ifPresent(this::setModelResponse);
       other.rewindBeforeInvocationId().ifPresent(this::rewindBeforeInvocationId);
+      other.route().ifPresent(this::route);
       return this;
     }
 

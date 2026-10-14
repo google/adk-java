@@ -51,6 +51,7 @@ import com.google.adk.kt.tools.ToolContext as KtToolContext
 import com.google.adk.kt.types.Blob as KtBlob
 import com.google.adk.kt.types.Content as KtContent
 import com.google.adk.kt.types.FileData as KtFileData
+import com.google.adk.kt.types.FinishReason as KtFinishReason
 import com.google.adk.kt.types.FunctionCallingConfig as KtFunctionCallingConfig
 import com.google.adk.kt.types.FunctionCallingConfigMode as KtFunctionCallingConfigMode
 import com.google.adk.kt.types.FunctionResponse as KtFunctionResponse
@@ -101,6 +102,7 @@ import com.google.adk.tokt.codecs.GenerateContentConfigCodec
 import com.google.adk.tokt.codecs.GroundingMetadataCodec
 import com.google.adk.tokt.codecs.KtBackedEventsMutableView
 import com.google.adk.tokt.codecs.KtEventActionsToJavaView
+import com.google.adk.tokt.codecs.LlmResponseCodec
 import com.google.adk.tokt.codecs.PartCodec
 import com.google.adk.tokt.codecs.RunConfigCodec
 import com.google.adk.tokt.codecs.SchemaCodec
@@ -4414,6 +4416,64 @@ class KtRunnerInteropTest {
       ktConfig.toolConfig?.functionCallingConfig?.mode,
       "function calling mode",
     )
+  }
+
+  @Test
+  fun generateContentConfigCodec_carriesContinuationToken() {
+    val token = byteArrayOf(0, 1, 2, -1)
+
+    val javaConfig = GenerateContentConfigCodec.toJava(KtConfig(continuationToken = token))
+    val ktConfig =
+      GenerateContentConfigCodec.fromJava(
+        GenaiGenerateContentConfig.builder().continuationToken(token).build()
+      )
+
+    assertContentEquals(token, javaConfig.continuationToken().getOrNull(), "toJava")
+    assertContentEquals(token, ktConfig.continuationToken, "fromJava")
+  }
+
+  @Test
+  fun llmResponseCodec_carriesContinuationFinishReason() {
+    val ktResponse =
+      LlmResponseCodec.fromJava(
+        JavaLlmResponse.builder()
+          .finishReason(GenaiFinishReason(GenaiFinishReason.Known.CONTINUATION))
+          .build()
+      )
+    val javaResponse =
+      LlmResponseCodec.toJava(KtLlmResponse(finishReason = KtFinishReason.CONTINUATION))
+
+    assertEquals(KtFinishReason.CONTINUATION, ktResponse.finishReason, "fromJava")
+    assertEquals("CONTINUATION", javaResponse.finishReason().getOrNull()?.toString(), "toJava")
+  }
+
+  @Test
+  fun finishReasonCodecs_mapReasonKotlinLacksToOther() {
+    val unknown = GenaiFinishReason("NEW_FINISH_REASON")
+
+    val response =
+      LlmResponseCodec.fromJava(JavaLlmResponse.builder().finishReason(unknown).build())
+    val event =
+      EventCodec.fromJava(
+        JavaEvent.builder()
+          .id(JavaEvent.generateEventId())
+          .author("a")
+          .finishReason(unknown)
+          .build()
+      )
+
+    assertEquals(KtFinishReason.OTHER, response.finishReason, "LlmResponseCodec")
+    assertEquals(KtFinishReason.OTHER, event.finishReason, "EventCodec")
+  }
+
+  @Test
+  fun llmResponseCodec_matchesFinishReasonIgnoringCase() {
+    val response =
+      LlmResponseCodec.fromJava(
+        JavaLlmResponse.builder().finishReason(GenaiFinishReason("stop")).build()
+      )
+
+    assertEquals(KtFinishReason.STOP, response.finishReason)
   }
 
   @Test

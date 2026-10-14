@@ -21,6 +21,7 @@ import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyResumableEvents;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static java.util.Arrays.stream;
@@ -31,6 +32,7 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.apps.App;
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
+import com.google.adk.flows.llmflows.Functions;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.runner.Runner;
@@ -179,6 +181,26 @@ public final class ResumabilityTestUtils {
             .runAsync("user", session.id(), functionResponseContent(callId, toolName, response))
             .toList()
             .blockingGet());
+  }
+
+  /** Runs one plain-text turn and returns the single tool confirmation it asks for. */
+  public static FunctionCall runTurnAskingConfirmation(
+      Runner runner, Session session, String text) {
+    return runTurn(runner, session, text).stream()
+        .flatMap(event -> Functions.getAskUserConfirmationFunctionCalls(event).stream())
+        .collect(onlyElement());
+  }
+
+  /** Approves {@code confirmationCall}, a tool confirmation an earlier turn asked for. */
+  @CanIgnoreReturnValue
+  public static ImmutableList<Event> approveConfirmation(
+      Runner runner, Session session, FunctionCall confirmationCall) {
+    return answerCall(
+        runner,
+        session,
+        confirmationCall.id().orElseThrow(),
+        confirmationCall.name().orElseThrow(),
+        ImmutableMap.of("confirmed", true));
   }
 
   /** The un-subscribed resume stream, for tests asserting on the error rather than the events. */

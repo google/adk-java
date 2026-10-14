@@ -16,18 +16,22 @@
 
 package com.google.adk.tools;
 
+import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createSubAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.RunConfig.StreamingMode;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
@@ -37,6 +41,7 @@ import com.google.adk.plugins.Plugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.testing.RecordingScheduler;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.utils.ComponentRegistry;
@@ -48,9 +53,12 @@ import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -912,6 +920,103 @@ public final class AgentToolTest {
       assertThat(testAgent.getLastInvocationContext().runConfig())
           .isEqualTo(runConfig.toBuilder().streamingMode(StreamingMode.NONE).build());
     }
+  }
+
+  @Test
+  public void call_nestedRunInheritsCallerScheduler() throws Exception {
+    RecordingScheduler recordingScheduler = new RecordingScheduler(Schedulers.trampoline());
+    ParallelAgent parallelAgent =
+        ParallelAgent.builder()
+            .name("parallel")
+            .description("runs two sub-agents in parallel")
+            .subAgents(
+                createSubAgent("a", createEvent("ea")), createSubAgent("b", createEvent("eb")))
+            .build();
+    AgentTool agentTool = AgentTool.create(parallelAgent);
+    ToolContext toolContext =
+        ToolContext.builder(
+                createInvocationContext(parallelAgent).toBuilder()
+                    .scheduler(recordingScheduler)
+                    .build())
+            .build();
+
+    Map<String, Object> result =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("result", "content for event eb");
+    // Each sub-agent of the nested run was subscribed on the caller's scheduler.
+    assertThat(recordingScheduler.workersCreated()).isEqualTo(2);
+  }
+
+  @Test
+  public void call_withMockedInvocationContext_fallsBackToDefaultProvidersAndScheduler()
+      throws Exception {
+    LlmAgent testAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    LlmResponse.builder()
+                        .content(Content.fromParts(Part.fromText("nested response")))
+                        .build()))
+            .name("agent_name")
+            .description("agent description")
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent);
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    // A Mockito mock answers null from the unstubbed instantSource(), uuidProvider() and
+    // scheduler() accessors; the nested runner must fall back to the defaults.
+    InvocationContext mockedContext = mock(InvocationContext.class);
+    when(mockedContext.agent()).thenReturn(testAgent);
+    when(mockedContext.session()).thenReturn(session);
+    when(mockedContext.runConfig()).thenReturn(RunConfig.builder().build());
+    ToolContext toolContext = ToolContext.builder(mockedContext).build();
+
+    Map<String, Object> result =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("result", "nested response");
+  }
+
+  @Test
+  public void call_nestedRunner_inheritsParentInvocationProviders() throws Exception {
+    LlmAgent testAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    LlmResponse.builder()
+                        .content(Content.fromParts(Part.fromText("nested response")))
+                        .build()))
+            .name("agent_name")
+            .description("agent description")
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent);
+    AtomicInteger uuidDraws = new AtomicInteger();
+    AtomicInteger clockReads = new AtomicInteger();
+    Session session =
+        sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
+    ToolContext toolContext =
+        ToolContext.builder(
+                InvocationContext.builder()
+                    .invocationId("parent-invocation")
+                    .agent(testAgent)
+                    .session(session)
+                    .sessionService(sessionService)
+                    .instantSource(
+                        () -> {
+                          clockReads.incrementAndGet();
+                          return Instant.ofEpochMilli(1234L);
+                        })
+                    .uuidProvider(() -> "uuid-" + uuidDraws.incrementAndGet())
+                    .build())
+            .build();
+
+    Map<String, Object> result =
+        agentTool.runAsync(ImmutableMap.of("request", "magic"), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("result", "nested response");
+    // The nested runner's session id, invocation id and event ids/timestamps all came from the
+    // parent invocation's providers rather than from UUID.randomUUID() / the wall clock.
+    assertThat(uuidDraws.get()).isAtLeast(3);
+    assertThat(clockReads.get()).isAtLeast(1);
   }
 
   private ToolContext createToolContext(BaseAgent agent) {
