@@ -33,8 +33,10 @@ import kotlin.jvm.optionals.getOrNull
  * skipSummarization, endOfAgent - the requested tool confirmations, the context-compaction summary,
  * the resumable-run `agentState`, and the rewind marker `rewindBeforeInvocationId`), the
  * streaming/error signals (`partial`, `turnComplete`, `interrupted`, `errorMessage`, `errorCode`,
- * `finishReason`), the token `usageMetadata` ([UsageMetadataCodec]) and `groundingMetadata`
- * ([GroundingMetadataCodec]), long-running tool ids, and the timestamp.
+ * `finishReason`), the live transcriptions ([TranscriptionCodec]), the token `usageMetadata`
+ * ([UsageMetadataCodec]) and `groundingMetadata` ([GroundingMetadataCodec]), long-running tool ids,
+ * and the timestamp. Every other field is dropped; [reapplyJavaEvent] keeps them when a Java plugin
+ * returns an event.
  */
 internal object EventCodec {
 
@@ -54,6 +56,8 @@ internal object EventCodec {
     if (event.partial) builder.partial(true)
     if (event.turnComplete) builder.turnComplete(true)
     if (event.interrupted) builder.interrupted(true)
+    event.inputTranscription?.let { builder.inputTranscription(TranscriptionCodec.toJava(it)) }
+    event.outputTranscription?.let { builder.outputTranscription(TranscriptionCodec.toJava(it)) }
     event.errorMessage?.let { builder.errorMessage(it) }
     event.errorCode?.let { builder.errorCode(GenaiFinishReason(it)) }
     event.finishReason?.let { builder.finishReason(it.toGenai()) }
@@ -98,6 +102,10 @@ internal object EventCodec {
       partial = event.partial().getOrNull() ?: false,
       turnComplete = event.turnComplete().getOrNull() ?: false,
       interrupted = event.interrupted().getOrNull() ?: false,
+      inputTranscription =
+        event.inputTranscription().getOrNull()?.let { TranscriptionCodec.fromJava(it) },
+      outputTranscription =
+        event.outputTranscription().getOrNull()?.let { TranscriptionCodec.fromJava(it) },
       errorMessage = event.errorMessage().getOrNull(),
       // toString() preserves the raw value; knownEnum().name would collapse an unrecognized code to
       // FINISH_REASON_UNSPECIFIED (errorCode is a free-form String on the Kotlin side).
@@ -112,4 +120,30 @@ internal object EventCodec {
       timestamp = event.timestamp(),
     )
   }
+}
+
+/**
+ * Re-applies the event a Java plugin returned onto the original Kotlin [event]: fields [EventCodec]
+ * converts come from the result, and every other field keeps [event]'s value. `partial` and
+ * `turnComplete` keep [event]'s values when the result leaves them unset, as ADK Python does.
+ * `interactionStatus` stays only while the turn is complete.
+ */
+internal fun reapplyJavaEvent(event: KtEvent, javaResult: JavaEvent): KtEvent {
+  val result = EventCodec.fromJava(javaResult)
+  // fromJava reads unset flags as false, so check the Java values.
+  val turnComplete = javaResult.turnComplete().getOrNull() ?: event.turnComplete
+  return result.copy(
+    partial = javaResult.partial().getOrNull() ?: event.partial,
+    turnComplete = turnComplete,
+    actions = result.actions.copy(route = event.actions.route),
+    citationMetadata = event.citationMetadata,
+    cacheMetadata = event.cacheMetadata,
+    output = event.output,
+    nodeInfo = event.nodeInfo,
+    turnCompleteReason = event.turnCompleteReason,
+    interactionStatus = event.interactionStatus.takeIf { turnComplete },
+    liveSessionId = event.liveSessionId,
+    liveSessionResumptionUpdate = event.liveSessionResumptionUpdate,
+    voiceActivity = event.voiceActivity,
+  )
 }
