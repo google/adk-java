@@ -835,6 +835,112 @@ public final class LlmAgentTest {
     assertThat(rootLlm.getRequests()).isEmpty();
   }
 
+  // The transfer belongs to a run of root that already ended, as in a past loop iteration.
+  @Test
+  public void runAsync_resumeAfterThisAgentEnded_ignoresTheEarlierTransfer() {
+    LlmAgent sub =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub should not run")))
+            .name("sub")
+            .build();
+    TestLlm rootLlm = createTestLlm(createTextLlmResponse("root runs again"));
+    LlmAgent root = createTestAgentBuilder(rootLlm).name("root").subAgents(sub).build();
+    InvocationContext context = resumableContextWithSeededEvent(root, transferEvent("root", "sub"));
+    for (Event event :
+        ImmutableList.of(
+            Event.builder()
+                .id("e1")
+                .invocationId("inv")
+                .author("root")
+                .actions(EventActions.builder().endOfAgent(true).build())
+                .build(),
+            Event.builder()
+                .id("u1")
+                .invocationId("inv")
+                .author("user")
+                .content(Content.fromParts(Part.fromText("next")))
+                .build())) {
+      var unused = context.sessionService().appendEvent(context.session(), event).blockingGet();
+    }
+    context.setAgentState("root", ImmutableMap.of(), /* endOfAgent= */ false);
+    context.setAgentState("sub", /* agentState= */ null, /* endOfAgent= */ true);
+
+    List<Event> events = root.runAsync(context).toList().blockingGet();
+
+    assertThat(simplifyEvents(events)).contains("root: root runs again");
+    assertThat(simplifyEvents(events)).doesNotContain("sub: sub should not run");
+  }
+
+  // The target's end marker is from before root's latest transfer, as in a past loop iteration.
+  @Test
+  public void runAsync_resumeTransferAfterTargetEndedEarlier_runsTheTarget() {
+    TestLlm subLlm = createTestLlm(createTextLlmResponse("sub runs"));
+    LlmAgent sub = createTestAgentBuilder(subLlm).name("sub").build();
+    LlmAgent root =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("root should not run")))
+            .name("root")
+            .subAgents(sub)
+            .build();
+    InvocationContext context = resumableContextWithSeededEvent(root, transferEvent("root", "sub"));
+    for (Event event :
+        ImmutableList.of(
+            Event.builder()
+                .id("e1")
+                .invocationId("inv")
+                .author("sub")
+                .actions(EventActions.builder().endOfAgent(true).build())
+                .build(),
+            Event.builder()
+                .id("e2")
+                .invocationId("inv")
+                .author("root")
+                .actions(EventActions.builder().endOfAgent(true).build())
+                .build(),
+            transferEvent("root", "sub").toBuilder().id("t2").build())) {
+      var unused = context.sessionService().appendEvent(context.session(), event).blockingGet();
+    }
+    context.setAgentState("root", ImmutableMap.of(), /* endOfAgent= */ false);
+    context.setAgentState("sub", /* agentState= */ null, /* endOfAgent= */ true);
+
+    List<Event> events = root.runAsync(context).toList().blockingGet();
+
+    assertThat(simplifyEvents(events)).contains("sub: sub runs");
+  }
+
+  // The deprecated setEndInvocation flag on a content event is not an end marker.
+  @Test
+  public void runAsync_resumeAfterContentWithEndFlag_stillResumesTheTransfer() {
+    LlmAgent sub =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub resumes")))
+            .name("sub")
+            .build();
+    TestLlm rootLlm = createTestLlm(createTextLlmResponse("root should not run"));
+    LlmAgent root = createTestAgentBuilder(rootLlm).name("root").subAgents(sub).build();
+    InvocationContext context = resumableContextWithSeededEvent(root, transferEvent("root", "sub"));
+    for (Event event :
+        ImmutableList.of(
+            Event.builder()
+                .id("e1")
+                .invocationId("inv")
+                .author("root")
+                .content(Content.fromParts(Part.fromText("ending")))
+                .actions(EventActions.builder().endOfAgent(true).build())
+                .build(),
+            Event.builder()
+                .id("u1")
+                .invocationId("inv")
+                .author("user")
+                .content(Content.fromParts(Part.fromText("next")))
+                .build())) {
+      var unused = context.sessionService().appendEvent(context.session(), event).blockingGet();
+    }
+    context.setAgentState("root", ImmutableMap.of(), /* endOfAgent= */ false);
+
+    List<Event> events = root.runAsync(context).toList().blockingGet();
+
+    assertThat(simplifyEvents(events)).contains("sub: sub resumes");
+    assertThat(rootLlm.getRequests()).isEmpty();
+  }
+
   // Mirrors AgentTransferTest.transferTargets_ordersSubAgentsThenParentThenPeers: the flow keeps a
   // second copy of this rule that the agents package cannot reach, so both copies are pinned.
   @Test

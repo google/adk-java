@@ -940,7 +940,7 @@ public final class RunnerResumabilityTest {
         .test()
         .assertError(
             error ->
-                error instanceof IllegalStateException
+                error instanceof IllegalArgumentException
                     && error.getMessage().contains("is not allowed to transfer"));
     assertThat(peerLlm.getRequests()).isEmpty();
   }
