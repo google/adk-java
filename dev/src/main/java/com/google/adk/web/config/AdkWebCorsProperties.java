@@ -21,7 +21,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
  * Properties for configuring CORS in ADK Web. This class is used to load CORS settings from
- * application properties.
+ * application properties. {@code origins} defaults to an empty list, which allows only same-origin
+ * requests.
  */
 @ConfigurationProperties(prefix = "adk.web.cors")
 public record AdkWebCorsProperties(
@@ -34,7 +35,7 @@ public record AdkWebCorsProperties(
 
   public AdkWebCorsProperties {
     mapping = mapping != null ? mapping : "/**";
-    origins = origins != null && !origins.isEmpty() ? origins : List.of("*");
+    origins = origins != null ? origins : List.of();
     methods =
         methods != null && !methods.isEmpty()
             ? methods
