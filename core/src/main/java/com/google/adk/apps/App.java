@@ -16,15 +16,20 @@
 
 package com.google.adk.apps;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.ContextCacheConfig;
+import com.google.adk.agents.NodeViewAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.adk.workflow.Node;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 
@@ -41,6 +46,7 @@ public class App {
 
   private final String name;
   private final BaseAgent rootAgent;
+  private final @Nullable Node rootNode;
   private final ImmutableList<? extends Plugin> plugins;
   private final @Nullable EventsCompactionConfig eventsCompactionConfig;
   private final @Nullable ContextCacheConfig contextCacheConfig;
@@ -49,12 +55,14 @@ public class App {
   private App(
       String name,
       BaseAgent rootAgent,
+      @Nullable Node rootNode,
       List<? extends Plugin> plugins,
       @Nullable EventsCompactionConfig eventsCompactionConfig,
       @Nullable ContextCacheConfig contextCacheConfig,
       @Nullable ResumabilityConfig resumabilityConfig) {
     this.name = name;
     this.rootAgent = rootAgent;
+    this.rootNode = rootNode;
     this.plugins = ImmutableList.copyOf(plugins);
     this.eventsCompactionConfig = eventsCompactionConfig;
     this.contextCacheConfig = contextCacheConfig;
@@ -67,6 +75,15 @@ public class App {
 
   public BaseAgent rootAgent() {
     return rootAgent;
+  }
+
+  /**
+   * Returns the workflow node the app runs, or empty when it runs an agent tree. When it runs a
+   * node, {@link #rootAgent()} returns a {@link NodeViewAgent} that stands in for it.
+   */
+  @Experimental
+  public Optional<Node> rootNode() {
+    return Optional.ofNullable(rootNode);
   }
 
   public List<? extends Plugin> plugins() {
@@ -92,6 +109,7 @@ public class App {
   public static class Builder {
     private String name;
     private BaseAgent rootAgent;
+    private @Nullable Node rootNode;
     private List<? extends Plugin> plugins = ImmutableList.of();
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
     @Nullable private ContextCacheConfig contextCacheConfig;
@@ -106,6 +124,17 @@ public class App {
     @CanIgnoreReturnValue
     public Builder rootAgent(BaseAgent rootAgent) {
       this.rootAgent = rootAgent;
+      return this;
+    }
+
+    /**
+     * Sets the workflow node the app runs in place of a root agent. If the given node is an agent,
+     * it becomes the root agent.
+     */
+    @CanIgnoreReturnValue
+    @Experimental
+    public Builder rootNode(Node rootNode) {
+      this.rootNode = checkNotNull(rootNode);
       return this;
     }
 
@@ -144,12 +173,36 @@ public class App {
       if (name == null) {
         throw new IllegalStateException("App name must be provided.");
       }
-      if (rootAgent == null) {
-        throw new IllegalStateException("Root agent must be provided.");
-      }
+      BaseAgent buildRootAgent = resolveRootAgent();
       validateAppName(name);
       return new App(
-          name, rootAgent, plugins, eventsCompactionConfig, contextCacheConfig, resumabilityConfig);
+          name,
+          buildRootAgent,
+          // An agent set as the root node is the root agent, so the app has no root node.
+          rootNode instanceof BaseAgent ? null : rootNode,
+          plugins,
+          eventsCompactionConfig,
+          contextCacheConfig,
+          resumabilityConfig);
+    }
+
+    /** Returns the root agent, or the agent that stands in for the root node. */
+    private BaseAgent resolveRootAgent() {
+      if (rootAgent instanceof NodeViewAgent || rootNode instanceof NodeViewAgent) {
+        throw new IllegalStateException(
+            "A node view agent cannot be the root; set the node it stands in for as the root"
+                + " node.");
+      }
+      if (rootNode == null) {
+        if (rootAgent == null) {
+          throw new IllegalStateException("Root agent or root node must be provided.");
+        }
+        return rootAgent;
+      }
+      if (rootAgent != null) {
+        throw new IllegalStateException("Set a root agent or a root node, not both.");
+      }
+      return rootNode instanceof BaseAgent agent ? agent : new NodeViewAgent(rootNode);
     }
   }
 

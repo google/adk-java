@@ -177,17 +177,13 @@ public final class WorkflowTest {
   }
 
   @Test
-  public void runNode_failsAsNotSupportedYet() {
-    Workflow workflow =
-        Workflow.builder().name("flow").edges(new Edge(Start.INSTANCE, new StubNode("a"))).build();
+  public void runNode_withoutEdges_completesWithoutEmitting() {
+    Workflow workflow = Workflow.builder().name("flow").build();
     CallbackContext context =
         new CallbackContext(
             TestUtils.createInvocationContext(TestUtils.createRootAgent()),
             /* eventActions= */ null);
 
-    workflow
-        .runNode(context, /* nodeInput= */ null)
-        .test()
-        .assertError(UnsupportedOperationException.class);
+    workflow.runNode(context, /* nodeInput= */ null).test().assertComplete().assertNoValues();
   }
 }

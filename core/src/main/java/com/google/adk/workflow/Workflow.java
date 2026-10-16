@@ -25,6 +25,7 @@ import com.google.adk.annotations.Experimental;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import java.util.Optional;
@@ -77,10 +78,23 @@ public final class Workflow extends BaseNode {
     return Optional.ofNullable(graph);
   }
 
+  /**
+   * Runs the graph from its start node, which hands {@code nodeInput} to its successors. The output
+   * of the sole terminal node that produces one becomes the workflow's output.
+   */
   @Override
   public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-    return Flowable.error(
-        new UnsupportedOperationException("Running a workflow is not supported yet."));
+    Graph runGraph = graph;
+    if (runGraph == null) {
+      return Flowable.empty();
+    }
+    return Completable.defer(
+            () -> {
+              // Inner nodes inherit the workflow as event author; agent nodes keep their own.
+              context.requireNodeState().eventAuthor(name());
+              return new Scheduler(this, runGraph, context).run(nodeInput);
+            })
+        .toFlowable();
   }
 
   /**

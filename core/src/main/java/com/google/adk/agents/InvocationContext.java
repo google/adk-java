@@ -33,6 +33,7 @@ import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.adk.workflow.Node;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -84,6 +85,7 @@ public class InvocationContext {
 
   @Nullable private String branch;
   private BaseAgent agent;
+  private final @Nullable Node node;
   private boolean endInvocation;
 
   protected InvocationContext(Builder builder) {
@@ -97,6 +99,7 @@ public class InvocationContext {
     // Resolved here so subclasses that construct from a builder without build() also get an id.
     this.invocationId = builder.resolveInvocationId();
     this.agent = builder.agent;
+    this.node = builder.node;
     this.session = builder.session;
     this.userContent = builder.userContent;
     this.runConfig = builder.runConfig;
@@ -180,6 +183,15 @@ public class InvocationContext {
   /** Returns the agent being invoked. */
   public BaseAgent agent() {
     return agent;
+  }
+
+  /**
+   * Returns the workflow node this invocation runs, or empty when it runs an agent. When it runs a
+   * node, {@link #agent()} returns a {@link NodeViewAgent} that stands in for it.
+   */
+  @Experimental
+  public Optional<Node> node() {
+    return Optional.ofNullable(node);
   }
 
   /** Returns the session associated with this invocation. */
@@ -653,6 +665,7 @@ public class InvocationContext {
       this.invocationId = context.invocationId;
       this.invocationIdSet = true;
       this.agent = context.agent;
+      this.node = context.node;
       this.session = context.session;
       this.userContent = context.userContent;
       this.runConfig = context.runConfig;
@@ -684,6 +697,7 @@ public class InvocationContext {
     // Distinguishes "never set" (an id is minted from the UuidProvider) from an explicit null.
     private boolean invocationIdSet;
     private BaseAgent agent;
+    private @Nullable Node node;
     private Session session;
     @Nullable private Content userContent = null;
     private RunConfig runConfig = RunConfig.builder().build();
@@ -793,6 +807,17 @@ public class InvocationContext {
     @CanIgnoreReturnValue
     public Builder agent(BaseAgent agent) {
       this.agent = agent;
+      return this;
+    }
+
+    /**
+     * Sets the workflow node the invocation runs, or null when it runs an agent. When the
+     * invocation runs a node, its agent is a {@link NodeViewAgent} that stands in for the node.
+     */
+    @CanIgnoreReturnValue
+    @Experimental
+    public Builder node(@Nullable Node node) {
+      this.node = node;
       return this;
     }
 
@@ -968,6 +993,9 @@ public class InvocationContext {
     if (builder.agent == null) {
       throw new IllegalStateException("Agent must be set.");
     }
+    if (builder.agent instanceof NodeViewAgent && builder.node == null) {
+      throw new IllegalStateException("A node view agent requires the node it stands in for.");
+    }
     if (builder.session == null) {
       throw new IllegalStateException("Session must be set.");
     }
@@ -994,6 +1022,7 @@ public class InvocationContext {
         && Objects.equals(branch, that.branch)
         && Objects.equals(invocationId, that.invocationId)
         && Objects.equals(agent, that.agent)
+        && Objects.equals(node, that.node)
         && Objects.equals(session, that.session)
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
@@ -1019,6 +1048,7 @@ public class InvocationContext {
         branch,
         invocationId,
         agent,
+        node,
         session,
         userContent,
         runConfig,

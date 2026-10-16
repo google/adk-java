@@ -31,6 +31,8 @@ import com.google.adk.plugins.PluginManager;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.adk.testing.TestNode;
+import com.google.adk.workflow.Node;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -104,6 +106,53 @@ public final class InvocationContextTest {
     assertThat(explicitlyOffContext.isResumable()).isFalse();
     assertThat(neitherContext.isResumable()).isFalse();
     assertThat(neitherContext.isLegacyResumability()).isFalse();
+  }
+
+  @Test
+  public void node_isTheNodeSetOnTheBuilder() {
+    Node node = TestNode.of("solo");
+
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .agent(new NodeViewAgent(node))
+            .node(node)
+            .session(session)
+            .build();
+
+    assertThat(context.node()).hasValue(node);
+  }
+
+  @Test
+  public void toBuilder_keepsTheNode() {
+    Node node = TestNode.of("solo");
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .agent(new NodeViewAgent(node))
+            .node(node)
+            .session(session)
+            .build();
+
+    assertThat(context.toBuilder().build().node()).hasValue(node);
+  }
+
+  @Test
+  public void build_withANodeViewAgentButNoNode_throwsIllegalStateException() {
+    InvocationContext.Builder builder =
+        InvocationContext.builder()
+            .sessionService(mockSessionService)
+            .agent(new NodeViewAgent(TestNode.of("solo")))
+            .session(session);
+
+    assertThrows(IllegalStateException.class, builder::build);
+  }
+
+  @Test
+  public void node_whenTheAgentIsAnAgent_isEmpty() {
+    InvocationContext context = contextWith(/* resumabilityConfig= */ null);
+
+    assertThat(context.node()).isEmpty();
   }
 
   private InvocationContext contextWith(ResumabilityConfig resumabilityConfig) {
