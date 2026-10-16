@@ -60,6 +60,7 @@ import com.google.adk.kt.types.GenerationConfigRoutingConfig as KtRoutingConfig
 import com.google.adk.kt.types.GenerationConfigRoutingConfigManualRoutingMode as KtManualRoutingMode
 import com.google.adk.kt.types.GoogleMaps as KtGoogleMaps
 import com.google.adk.kt.types.GoogleSearch as KtGoogleSearch
+import com.google.adk.kt.types.GroundingMetadata as KtGroundingMetadata
 import com.google.adk.kt.types.HarmBlockMethod as KtHarmBlockMethod
 import com.google.adk.kt.types.HarmBlockThreshold as KtHarmBlockThreshold
 import com.google.adk.kt.types.HarmCategory as KtHarmCategory
@@ -503,6 +504,19 @@ class KtRunnerInteropTest {
   private class FailingKtAgent : KtBaseAgent(name = "failing") {
     override fun runAsyncImpl(context: KtInvocationContext): Flow<KtEvent> = flow {
       throw RuntimeException("boom")
+    }
+  }
+
+  /** A native Kotlin agent emitting grounding metadata that has no image search queries. */
+  private class GroundedKtAgent : KtBaseAgent(name = "grounded") {
+    override fun runAsyncImpl(context: KtInvocationContext): Flow<KtEvent> = flow {
+      emit(
+        KtEvent(
+          invocationId = context.invocationId,
+          author = name,
+          groundingMetadata = KtGroundingMetadata(webSearchQueries = listOf("q")),
+        )
+      )
     }
   }
 
@@ -4132,6 +4146,42 @@ class KtRunnerInteropTest {
     val response = assertNotNull(rt.response().getOrNull(), "response schema should round-trip")
     assertEquals("STRING", response.type().getOrNull()?.knownEnum()?.name, "response type")
     assertEquals("the forecast", response.description().getOrNull(), "response description")
+  }
+
+  @Test
+  fun groundingMetadataCodec_withoutImageSearchQueries_leavesThemUnset() {
+    // The Kotlin list is nullable, but the genai builder's setter rejects a null argument.
+    val kt =
+      GroundingMetadataCodec.fromJava(
+        GenaiGroundingMetadata.builder().webSearchQueries(listOf("q")).build()
+      )
+    val java = GroundingMetadataCodec.toJava(KtGroundingMetadata(webSearchQueries = listOf("q")))
+
+    assertNull(kt.imageSearchQueries)
+    assertEquals(Optional.of(listOf("q")), java.webSearchQueries())
+    assertEquals(Optional.empty(), java.imageSearchQueries())
+  }
+
+  @Test
+  fun asJavaRunner_groundingMetadataWithoutImageSearchQueries_streamsTheEvent() {
+    // The same metadata through the Java runAsync API, which converts every engine event.
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(KtInMemoryRunner(agent = GroundedKtAgent(), appName = "app"))
+
+    val events =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+          JavaRunConfig.builder().autoCreateSession(true).build(),
+        )
+        .toList()
+        .blockingGet()
+
+    val metadata = assertNotNull(events.firstNotNullOfOrNull { it.groundingMetadata().getOrNull() })
+    assertEquals(Optional.of(listOf("q")), metadata.webSearchQueries())
+    assertEquals(Optional.empty(), metadata.imageSearchQueries())
   }
 
   @Test
