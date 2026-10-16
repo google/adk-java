@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.13.0](https://github.com/google/adk-java/compare/v1.12.0...v1.13.0) (2026-10-16)
+
+
+### Features
+
+* add a builder for workflow graph edges ([4721491](https://github.com/google/adk-java/commit/4721491878231bd9b7a448b2a7c8d25be6798654))
+* **langchain4j:** make modelName optional when ChatModel or StreamingChatModel is provided ([03036c3](https://github.com/google/adk-java/commit/03036c32eac6548e8cbecdcce599a542404dd7b8))
+
+
+### Bug Fixes
+
+* **mcp:** emit valid JSON Schema when converting ADK tools to MCP tools ([60250a9](https://github.com/google/adk-java/commit/60250a930ec50b9e63a4bef8b6d3949fa0b31817))
+
 ## [1.12.0](https://github.com/google/adk-java/compare/v1.11.0...v1.12.0) (2026-10-14)
 
 
