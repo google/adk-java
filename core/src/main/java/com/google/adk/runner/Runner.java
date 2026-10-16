@@ -1460,8 +1460,12 @@ public class Runner {
                       updatedInvocationContext
                           .agent()
                           .runLive(updatedInvocationContext)
+                          // As in runAsync, partial events are streamed but not persisted.
                           .concatMapSingle(
-                              event -> this.sessionService.appendEvent(session, event)))
+                              event ->
+                                  event.partial().orElse(false)
+                                      ? Single.just(event)
+                                      : this.sessionService.appendEvent(session, event)))
               .doOnError(
                   throwable -> {
                     Span span = Span.current();
