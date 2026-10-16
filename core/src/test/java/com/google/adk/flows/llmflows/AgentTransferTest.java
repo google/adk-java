@@ -16,13 +16,22 @@
 
 package com.google.adk.flows.llmflows;
 
+import static com.google.adk.testing.ResumabilityTestUtils.newSession;
+import static com.google.adk.testing.ResumabilityTestUtils.reloadSession;
+import static com.google.adk.testing.ResumabilityTestUtils.resumableRunner;
+import static com.google.adk.testing.ResumabilityTestUtils.resumeById;
+import static com.google.adk.testing.ResumabilityTestUtils.runTurn;
+import static com.google.adk.testing.ResumabilityTestUtils.textAgent;
+import static com.google.adk.testing.TestUtils.END_OF_AGENT;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
+import static com.google.adk.testing.TestUtils.simplifyResumableEvents;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
@@ -33,6 +42,7 @@ import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
 import com.google.adk.events.Event;
+import com.google.adk.models.LlmResponse;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
@@ -517,6 +527,316 @@ public final class AgentTransferTest {
     actualEvents = runRunner(runner, invocationContext);
 
     assertThat(simplifyEvents(actualEvents)).containsExactly("root_agent: response5");
+  }
+
+  // A grandchild is not a sub-agent, parent or peer, so it is not a transfer target.
+  @Test
+  public void runAsync_transferToGrandchild_failsAndGrandchildNeverRuns() {
+    TestLlm grandchildLlm = TestLlm.create(createTextLlmResponse("grandchild ran"));
+    Runner runner = new InMemoryRunner(rootTransferringToGrandchild(grandchildLlm), "test");
+    Session session = newSession(runner);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'root' is not allowed to transfer to the requested agent.");
+    assertThat(grandchildLlm.getRequests()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_resumable_transferToGrandchild_failsAndGrandchildNeverRuns() {
+    TestLlm grandchildLlm = TestLlm.create(createTextLlmResponse("grandchild ran"));
+    Runner runner = resumableRunner(rootTransferringToGrandchild(grandchildLlm));
+    Session session = newSession(runner);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'root' is not allowed to transfer to the requested agent.");
+    assertThat(grandchildLlm.getRequests()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_transferToSelf_failsAndTheAgentDoesNotRunAgain() {
+    TestLlm rootLlm = TestLlm.create(transferTo("root"));
+    Runner runner = new InMemoryRunner(root(rootLlm, textAgent("sub", "sub ran")), "test");
+    Session session = newSession(runner);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+
+    assertThat(error).hasMessageThat().isEqualTo("Agent 'root' cannot transfer to itself.");
+    assertThat(rootLlm.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void runAsync_resumable_transferToSelf_failsAndTheAgentDoesNotRunAgain() {
+    TestLlm rootLlm = TestLlm.create(transferTo("root"));
+    Runner runner = resumableRunner(root(rootLlm, textAgent("sub", "sub ran")));
+    Session session = newSession(runner);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+
+    assertThat(error).hasMessageThat().isEqualTo("Agent 'root' cannot transfer to itself.");
+    assertThat(rootLlm.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void runAsync_transferToParent_withDisallowTransferToParent_fails() {
+    TestLlm rootLlm = TestLlm.create(transferTo("sub"));
+    Runner runner = new InMemoryRunner(rootWithSubDisallowingParent(rootLlm), "test");
+    Session session = newSession(runner);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'sub' is not allowed to transfer to the requested agent.");
+    assertThat(rootLlm.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void runAsync_resumable_transferToParent_withDisallowTransferToParent_fails() {
+    TestLlm rootLlm = TestLlm.create(transferTo("sub"));
+    Runner runner = resumableRunner(rootWithSubDisallowingParent(rootLlm));
+    Session session = newSession(runner);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'sub' is not allowed to transfer to the requested agent.");
+    assertThat(rootLlm.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void runAsync_transferToPeer_withDisallowTransferToPeers_failsAndPeerNeverRuns() {
+    TestLlm peerLlm = TestLlm.create(createTextLlmResponse("peer ran"));
+    Runner runner =
+        new InMemoryRunner(
+            rootWithSubDisallowingPeers(TestLlm.create(transferTo("peer")), peerLlm), "test");
+    Session session = newSession(runner);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'sub' is not allowed to transfer to the requested agent.");
+    assertThat(peerLlm.getRequests()).isEmpty();
+  }
+
+  @Test
+  public void
+      runAsync_resumable_transferToPeer_withDisallowTransferToPeers_failsAndPeerNeverRuns() {
+    TestLlm peerLlm = TestLlm.create(createTextLlmResponse("peer ran"));
+    Runner runner =
+        resumableRunner(rootWithSubDisallowingPeers(TestLlm.create(transferTo("peer")), peerLlm));
+    Session session = newSession(runner);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'sub' is not allowed to transfer to the requested agent.");
+    assertThat(peerLlm.getRequests()).isEmpty();
+  }
+
+  // The model chose the name, so the error names only the calling agent.
+  @Test
+  public void runAsync_transferToUnknownAgent_failsAsNotInTree() {
+    Runner runner =
+        new InMemoryRunner(
+            root(TestLlm.create(transferTo("missing")), textAgent("sub", "sub ran")), "test");
+    Session session = newSession(runner);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'root' requested a transfer to an agent that is not in the agent tree.");
+  }
+
+  @Test
+  public void runAsync_resumable_transferToUnknownAgent_failsAsNotInTree() {
+    Runner runner =
+        resumableRunner(root(TestLlm.create(transferTo("missing")), textAgent("sub", "sub ran")));
+    Session session = newSession(runner);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'root' requested a transfer to an agent that is not in the agent tree.");
+  }
+
+  @Test
+  public void runAsync_transferToDuplicateName_runsTheDeclaredTarget() {
+    TestLlm declaredLlm = TestLlm.create(createTextLlmResponse("declared ran"));
+    TestLlm namesakeLlm = TestLlm.create(createTextLlmResponse("namesake ran"));
+    Runner runner = new InMemoryRunner(rootWithNamesakeTargets(declaredLlm, namesakeLlm), "test");
+
+    runTurn(runner, newSession(runner), "hi");
+
+    assertThat(declaredLlm.getRequests()).hasSize(1);
+    assertThat(namesakeLlm.getRequests()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_resumable_transferToDuplicateName_runsTheDeclaredTarget() {
+    TestLlm declaredLlm = TestLlm.create(createTextLlmResponse("declared ran"));
+    TestLlm namesakeLlm = TestLlm.create(createTextLlmResponse("namesake ran"));
+    Runner runner = resumableRunner(rootWithNamesakeTargets(declaredLlm, namesakeLlm));
+
+    runTurn(runner, newSession(runner), "hi");
+
+    assertThat(declaredLlm.getRequests()).hasSize(1);
+    assertThat(namesakeLlm.getRequests()).isEmpty();
+  }
+
+  // After a rejected transfer, the next turn runs the agent that tried it.
+  @Test
+  public void runAsync_afterRejectedPeerTransfer_nextTurnRunsTheTransferringAgent() {
+    TestLlm subLlm = TestLlm.create(transferTo("peer"), createTextLlmResponse("sub turn 2"));
+    TestLlm peerLlm = TestLlm.create(createTextLlmResponse("peer ran"));
+    Runner runner = new InMemoryRunner(rootWithSubDisallowingPeers(subLlm, peerLlm), "test");
+    Session session = newSession(runner);
+    assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "turn 1"));
+
+    ImmutableList<Event> turn2 = runTurn(runner, session, "turn 2");
+
+    assertThat(simplifyEvents(turn2)).containsExactly("sub: sub turn 2");
+    assertThat(peerLlm.getRequests()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_resumable_afterRejectedPeerTransfer_nextTurnRunsTheTransferringAgent() {
+    TestLlm subLlm = TestLlm.create(transferTo("peer"), createTextLlmResponse("sub turn 2"));
+    TestLlm peerLlm = TestLlm.create(createTextLlmResponse("peer ran"));
+    Runner runner = resumableRunner(rootWithSubDisallowingPeers(subLlm, peerLlm));
+    Session session = newSession(runner);
+    assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "turn 1"));
+
+    ImmutableList<Event> turn2 = runTurn(runner, session, "turn 2");
+
+    assertThat(simplifyResumableEvents(turn2))
+        .containsExactly("sub: sub turn 2", "sub: " + END_OF_AGENT)
+        .inOrder();
+    assertThat(peerLlm.getRequests()).isEmpty();
+  }
+
+  // A rejected transfer ends the agent that made it, so resuming the invocation runs nothing.
+  @Test
+  public void resume_afterRejectedSelfTransfer_runsNothing() {
+    TestLlm rootLlm = TestLlm.create(transferTo("root"));
+    Runner runner = resumableRunner(root(rootLlm, textAgent("sub", "sub ran")));
+    Session session = newSession(runner);
+    assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+    String invocationId = reloadSession(runner, session).immutableEvents().get(0).invocationId();
+
+    ImmutableList<Event> resumed = resumeById(runner, session, invocationId);
+
+    assertThat(resumed).isEmpty();
+    assertThat(rootLlm.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void resume_afterTransferToUnknownAgent_runsNothing() {
+    TestLlm rootLlm = TestLlm.create(transferTo("missing"));
+    Runner runner = resumableRunner(root(rootLlm, textAgent("sub", "sub ran")));
+    Session session = newSession(runner);
+    assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+    String invocationId = reloadSession(runner, session).immutableEvents().get(0).invocationId();
+
+    ImmutableList<Event> resumed = resumeById(runner, session, invocationId);
+
+    assertThat(resumed).isEmpty();
+    assertThat(rootLlm.getRequests()).hasSize(1);
+  }
+
+  // The transferring sub-agent ends before the run fails, so a resume only closes the root.
+  @Test
+  public void resume_afterRejectedPeerTransfer_runsNeitherThePeerNorTheTransferringAgent() {
+    TestLlm subLlm = TestLlm.create(transferTo("peer"));
+    TestLlm peerLlm = TestLlm.create(createTextLlmResponse("peer ran"));
+    Runner runner = resumableRunner(rootWithSubDisallowingPeers(subLlm, peerLlm));
+    Session session = newSession(runner);
+    assertThrows(IllegalArgumentException.class, () -> runTurn(runner, session, "hi"));
+    ImmutableList<Event> firstTurnEvents = reloadSession(runner, session).immutableEvents();
+    ImmutableList<String> firstTurn = simplifyResumableEvents(firstTurnEvents);
+    String invocationId = firstTurnEvents.get(0).invocationId();
+
+    ImmutableList<Event> resumed = resumeById(runner, session, invocationId);
+
+    assertThat(firstTurn.subList(firstTurn.size() - 2, firstTurn.size()))
+        .containsExactly(
+            "sub: FunctionResponse(name=transfer_to_agent, response={})", "sub: " + END_OF_AGENT)
+        .inOrder();
+    assertThat(simplifyResumableEvents(resumed)).containsExactly("root: " + END_OF_AGENT);
+    assertThat(subLlm.getRequests()).hasSize(1);
+    assertThat(peerLlm.getRequests()).isEmpty();
+  }
+
+  private static LlmResponse transferTo(String agentName) {
+    return createLlmResponse(Content.fromParts(createTransferCallPart(agentName)));
+  }
+
+  private static LlmAgent root(TestLlm llm, BaseAgent... subAgents) {
+    return createTestAgentBuilder(llm).name("root").subAgents(subAgents).build();
+  }
+
+  /** A root whose model transfers to its grandchild, which runs on {@code grandchildLlm}. */
+  private static LlmAgent rootTransferringToGrandchild(TestLlm grandchildLlm) {
+    LlmAgent grandchild = createTestAgentBuilder(grandchildLlm).name("grandchild").build();
+    LlmAgent sub =
+        createTestAgentBuilder(TestLlm.create(createTextLlmResponse("sub ran")))
+            .name("sub")
+            .subAgents(grandchild)
+            .build();
+    return root(TestLlm.create(transferTo("grandchild")), sub);
+  }
+
+  /** A root, on {@code rootLlm}, whose sub-agent transfers back despite disallowing it. */
+  private static LlmAgent rootWithSubDisallowingParent(TestLlm rootLlm) {
+    LlmAgent sub =
+        createTestAgentBuilder(TestLlm.create(transferTo("root")))
+            .name("sub")
+            .disallowTransferToParent(true)
+            .build();
+    // Gives sub a target, so it is offered the transfer tool.
+    return root(rootLlm, sub, textAgent("peer", "peer ran"));
+  }
+
+  /** A root that transfers to {@code sub}, on {@code subLlm}, which disallows peer transfers. */
+  private static LlmAgent rootWithSubDisallowingPeers(TestLlm subLlm, TestLlm peerLlm) {
+    LlmAgent sub = createTestAgentBuilder(subLlm).name("sub").disallowTransferToPeers(true).build();
+    LlmAgent peer = createTestAgentBuilder(peerLlm).name("peer").build();
+    return root(TestLlm.create(transferTo("sub")), sub, peer);
+  }
+
+  /**
+   * A root whose sub-agent "shared" runs on {@code declaredLlm}, a deeper one on {@code
+   * namesakeLlm}.
+   */
+  private static LlmAgent rootWithNamesakeTargets(TestLlm declaredLlm, TestLlm namesakeLlm) {
+    LlmAgent otherBranch =
+        createTestAgentBuilder(TestLlm.create(createTextLlmResponse("other ran")))
+            .name("other_branch")
+            .subAgents(createTestAgentBuilder(namesakeLlm).name("shared").build())
+            .build();
+    LlmAgent declared = createTestAgentBuilder(declaredLlm).name("shared").build();
+    // other_branch comes first, so a depth-first search of the tree reaches the namesake first.
+    return root(TestLlm.create(transferTo("shared")), otherBranch, declared);
   }
 
   private Runner getRunnerAndCreateSession(LlmAgent agent, Session session) {
