@@ -42,6 +42,10 @@ import org.slf4j.LoggerFactory;
 /**
  * Connects to a MCP Server, and retrieves MCP Tools into ADK Tools.
  *
+ * <p>Server tools named {@code set_model_response}, {@code transfer_to_agent}, {@code
+ * adk_request_confirmation}, {@code adk_request_credential}, or {@code adk_request_input} are
+ * skipped with a warning, regardless of the tool filter, because ADK reserves these names.
+ *
  * <p>Attributes:
  *
  * <ul>
@@ -287,6 +291,7 @@ public class McpToolset implements BaseToolset {
               ListToolsResult toolsResponse = this.mcpSession.listTools();
               return Flowable.fromStream(
                   toolsResponse.tools().stream()
+                      .filter(tool -> McpToolNameFilter.isAllowed(tool.name()))
                       .map(
                           tool ->
                               new McpTool(
