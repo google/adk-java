@@ -489,13 +489,21 @@ public abstract class BaseAgent extends BaseNode {
 
   /**
    * Runs this agent as a workflow node through its {@link #runAsync} lifecycle, including its
-   * callbacks. The node input is not used.
+   * callbacks. The node input is not used. Each event's author is set with {@link
+   * com.google.adk.workflow.NodeExecutionState#eventAuthor(String)}, so the agent's events keep
+   * their own authors instead of an inherited author or the node's name.
    */
   @Experimental
   @Override
   public Flowable<Event> runNode(
       com.google.adk.agents.Context context, @Nullable Object nodeInput) {
-    return runAsync(context.invocationContext());
+    return runAsync(context.invocationContext())
+        .doOnNext(
+            event -> {
+              if (!isNullOrEmpty(event.author())) {
+                context.requireNodeState().eventAuthor(event.author());
+              }
+            });
   }
 
   /**
