@@ -16,8 +16,10 @@
 
 package com.google.adk.web.config;
 
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.cors.CorsConfiguration;
@@ -30,35 +32,44 @@ import org.springframework.web.filter.CorsFilter;
  * application. This class defines beans for configuring CORS settings based on properties defined
  * in {@link AdkWebCorsProperties}.
  *
- * <p>CORS allows the application to handle requests from different origins, enabling secure
- * communication between the frontend and backend services.
- *
- * <p>Beans provided:
- *
- * <ul>
- *   <li>{@link CorsConfigurationSource}: Configures CORS settings such as allowed origins, methods,
- *       headers, credentials, and max age.
- *   <li>{@link CorsFilter}: Applies the CORS configuration to incoming requests.
- * </ul>
+ * <p>When no explicit origin allowlist is configured, this defaults to the server's own loopback
+ * origins (localhost / 127.0.0.1 / [::1] on the configured port) instead of allowing every origin,
+ * since allowing "*" by default lets any website a developer's browser visits call this server
+ * while it is running. Set 'adk.web.cors.origins' explicitly to widen this.
  */
 @Configuration
 public class AdkWebCorsConfig {
 
   private static final Logger logger = LoggerFactory.getLogger(AdkWebCorsConfig.class);
 
+  @Value("${server.port:8000}")
+  private int serverPort;
+
   @Bean
   public CorsConfigurationSource corsConfigurationSource(AdkWebCorsProperties corsProperties) {
-    if (corsProperties.origins().contains("*")) {
+    List<String> origins = corsProperties.origins();
+
+    if (origins.isEmpty()) {
+      origins =
+          List.of(
+              "http://localhost:" + serverPort,
+              "http://127.0.0.1:" + serverPort,
+              "http://[::1]:" + serverPort);
+      logger.info(
+          "No 'adk.web.cors.origins' configured; defaulting to this server's own loopback"
+              + " origins on port {}. Set 'adk.web.cors.origins' explicitly to allow other"
+              + " origins.",
+          serverPort);
+    } else if (origins.contains("*")) {
       logger.warn(
-          "CORS is configured to allow all origins (\"*\"), which is insecure and intended for"
-              + " local development only. This also applies to the /run_live WebSocket endpoint."
-              + " Set 'adk.web.cors.origins' to an explicit allowlist to restrict which origins"
-              + " may call the server.");
+          "CORS is configured to allow all origins (\"*\"), which is insecure and lets any"
+              + " website call this server, including the /run_live WebSocket endpoint. Only"
+              + " set this if you understand the risk.");
     }
 
     CorsConfiguration configuration = new CorsConfiguration();
 
-    configuration.setAllowedOrigins(corsProperties.origins());
+    configuration.setAllowedOrigins(origins);
     configuration.setAllowedMethods(corsProperties.methods());
     configuration.setAllowedHeaders(corsProperties.headers());
     configuration.setAllowCredentials(corsProperties.allowCredentials());

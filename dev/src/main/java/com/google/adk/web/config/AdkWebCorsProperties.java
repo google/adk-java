@@ -34,7 +34,10 @@ public record AdkWebCorsProperties(
 
   public AdkWebCorsProperties {
     mapping = mapping != null ? mapping : "/**";
-    origins = origins != null && !origins.isEmpty() ? origins : List.of("*");
+    // Leave unset origins empty rather than defaulting to "*": AdkWebCorsConfig computes a
+    // same-machine loopback default from the server's own port when this is empty, so every
+    // origin on the internet is not allowed to call the server out of the box.
+    origins = origins != null ? origins : List.of();
     methods =
         methods != null && !methods.isEmpty()
             ? methods
