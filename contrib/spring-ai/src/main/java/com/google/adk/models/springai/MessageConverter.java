@@ -394,8 +394,10 @@ public class MessageConverter {
 
     Content content = convertAssistantMessageToContent(assistantMessage);
 
-    // For streaming responses, check if this is a partial response
-    boolean isPartial = isStreaming && isPartialResponse(assistantMessage);
+    // Streaming chunks are always partial: the final (persisted) response is produced once,
+    // by StreamingResponseAggregator, on stream completion. Mid-stream punctuation heuristics
+    // misclassify non-ASCII terminal punctuation (e.g. CJK) and can fire early on '.'.
+    boolean isPartial = isStreaming;
     boolean isTurnComplete = !isStreaming || isTurnCompleteResponse(chatResponse);
 
     LlmResponse.Builder responseBuilder =
@@ -421,7 +423,16 @@ public class MessageConverter {
     return value != null ? value.intValue() : 0;
   }
 
-  /** Determines if an assistant message represents a partial response in streaming. */
+  /**
+   * The previous streaming classification heuristic (ASCII terminal punctuation): chunks ending
+   * with {@code . ! ? \n} (and tool-call chunks) were considered final.
+   *
+   * <p>Retained for rollback/reference only — this was the production behavior before
+   * stream-completion-based final detection, where a response ending with CJK terminal punctuation
+   * (。！？) was never persisted and a mid-stream {@code '.'} fired a premature final. Do not call:
+   * streaming chunks are now always partial, and the final response is derived from the stream
+   * completion signal (see {@code SpringAI}).
+   */
   private boolean isPartialResponse(AssistantMessage message) {
     // Check if message has incomplete content (e.g., ends mid-sentence, has pending tool calls)
     if (message.getText() != null && !message.getText().isEmpty()) {
