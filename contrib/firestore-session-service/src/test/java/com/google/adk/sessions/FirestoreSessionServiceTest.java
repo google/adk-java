@@ -29,6 +29,7 @@ import static org.mockito.Mockito.when;
 
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
 import com.google.adk.utils.Constants;
 import com.google.api.core.ApiFutures;
 import com.google.api.gax.grpc.GrpcStatusCode;
@@ -48,11 +49,15 @@ import com.google.cloud.firestore.WriteResult;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.grpc.Status;
 import io.reactivex.rxjava3.observers.TestObserver;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -622,7 +627,9 @@ public class FirestoreSessionServiceTest {
     // ARRANGE (Deserialization part)
     ArgumentCaptor<Map<String, Object>> eventDataCaptor = ArgumentCaptor.forClass(Map.class);
     verify(mockEventDocRef).set(eventDataCaptor.capture());
-    Map<String, Object> savedEventData = eventDataCaptor.getValue();
+    // Read back as an event stored before rawEvent, from the other fields.
+    Map<String, Object> savedEventData = new HashMap<>(eventDataCaptor.getValue());
+    savedEventData.remove(FirestoreSessionService.RAW_EVENT_KEY);
 
     QueryDocumentSnapshot mockComplexEventSnapshot = mock(QueryDocumentSnapshot.class);
     when(mockComplexEventSnapshot.getData()).thenReturn(savedEventData);
@@ -668,6 +675,222 @@ public class FirestoreSessionServiceTest {
               .hasValue("image/png");
           return true;
         });
+  }
+
+  /** Tests that getSession returns appended events with all their fields. */
+  @Test
+  @SuppressWarnings("unchecked")
+  void appendAndGet_returnsEventsAsAppended() {
+    Session session =
+        Session.builder(SESSION_ID)
+            .appName(APP_NAME)
+            .userId(USER_ID)
+            .state(new ConcurrentHashMap<>())
+            .build();
+    Event question =
+        Event.builder()
+            .id("event-1")
+            .invocationId("invocation-1")
+            .author(Constants.KEY_USER)
+            .timestamp(1_000L)
+            .content(Content.fromParts(Part.fromText("What's the weather in Seoul?")))
+            .build();
+    Event call =
+        Event.builder()
+            .id("event-2")
+            .invocationId("invocation-1")
+            .author("weather_agent")
+            .branch("weather_agent")
+            .timestamp(2_000L)
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.builder()
+                            .text("The user wants the weather.")
+                            .thought(true)
+                            .thoughtSignature(new byte[] {1, 2, 3})
+                            .build(),
+                        Part.builder()
+                            .functionCall(
+                                FunctionCall.builder()
+                                    .id("call-1")
+                                    .name("get_weather")
+                                    .args(ImmutableMap.of("city", "Seoul"))
+                                    .build())
+                            .thoughtSignature(new byte[] {4, 5, 6})
+                            .build())
+                    .build())
+            .build();
+    Event result =
+        Event.builder()
+            .id("event-3")
+            .invocationId("invocation-1")
+            .author("weather_agent")
+            .timestamp(3_000L)
+            .content(
+                Content.builder()
+                    .role("user")
+                    .parts(
+                        Part.builder()
+                            .functionResponse(
+                                FunctionResponse.builder()
+                                    .id("call-1")
+                                    .name("get_weather")
+                                    .response(ImmutableMap.of("temp_c", 21))
+                                    .build())
+                            .build())
+                    .build())
+            .actions(EventActions.builder().skipSummarization(true).build())
+            .build();
+    ImmutableList<Event> appended = ImmutableList.of(question, call, result);
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockEventsCollection.document()).thenReturn(mockEventDocRef);
+    when(mockEventDocRef.getId()).thenReturn(EVENT_ID);
+    when(mockEventsCollection.document(EVENT_ID)).thenReturn(mockEventDocRef);
+    for (Event event : appended) {
+      sessionService.appendEvent(session, event).test().assertComplete();
+    }
+
+    // Serve the stored event documents back to getSession.
+    ArgumentCaptor<Map<String, Object>> eventDataCaptor = ArgumentCaptor.forClass(Map.class);
+    verify(mockEventDocRef, times(3)).set(eventDataCaptor.capture());
+    List<QueryDocumentSnapshot> eventDocs = new ArrayList<>();
+    for (Map<String, Object> eventData : eventDataCaptor.getAllValues()) {
+      QueryDocumentSnapshot eventDoc = mock(QueryDocumentSnapshot.class);
+      when(eventDoc.getData()).thenReturn(eventData);
+      eventDocs.add(eventDoc);
+    }
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    when(mockSessionSnapshot.exists()).thenReturn(true);
+    when(mockSessionSnapshot.getReference()).thenReturn(mockSessionDocRef);
+    when(mockSessionSnapshot.getData())
+        .thenReturn(
+            ImmutableMap.of(
+                "id",
+                SESSION_ID,
+                "appName",
+                APP_NAME,
+                "userId",
+                USER_ID,
+                "updateTime",
+                NOW.toString(),
+                "state",
+                Collections.emptyMap()));
+    when(mockQuery.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
+    when(mockQuerySnapshot.getDocuments()).thenReturn(eventDocs);
+
+    List<Event> reloaded =
+        sessionService
+            .getSession(APP_NAME, USER_ID, SESSION_ID, Optional.empty())
+            .blockingGet()
+            .events();
+
+    // Compared as JSON because Part.equals compares thought signatures by reference.
+    assertThat(reloaded.stream().map(Event::toJson).toList())
+        .containsExactlyElementsIn(appended.stream().map(Event::toJson).toList())
+        .inOrder();
+  }
+
+  /** Tests that a tool confirmation request is stored with plain values in its args. */
+  @Test
+  @SuppressWarnings("unchecked")
+  void appendEvent_withToolConfirmationRequest_storesArgsAsPlainValues() {
+    Session session =
+        Session.builder(SESSION_ID)
+            .appName(APP_NAME)
+            .userId(USER_ID)
+            .state(new ConcurrentHashMap<>())
+            .build();
+    FunctionCall toolCall =
+        FunctionCall.builder()
+            .id("call-1")
+            .name("get_weather")
+            .args(ImmutableMap.of("city", "Seoul"))
+            .build();
+    // Shaped like the event Functions.generateRequestConfirmationEvent creates.
+    Event confirmationRequest =
+        Event.builder()
+            .author("weather_agent")
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(
+                            FunctionCall.builder()
+                                .id("call-2")
+                                .name("adk_request_confirmation")
+                                .args(
+                                    ImmutableMap.of(
+                                        "originalFunctionCall",
+                                        toolCall,
+                                        "toolConfirmation",
+                                        ToolConfirmation.builder().hint("Approve?").build()))
+                                .build())
+                        .build()))
+            .build();
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockEventsCollection.document()).thenReturn(mockEventDocRef);
+    when(mockEventDocRef.getId()).thenReturn(EVENT_ID);
+    when(mockEventsCollection.document(EVENT_ID)).thenReturn(mockEventDocRef);
+
+    sessionService.appendEvent(session, confirmationRequest).test().assertComplete();
+
+    // Firestore cannot encode FunctionCall or ToolConfirmation objects.
+    ArgumentCaptor<Map<String, Object>> eventDataCaptor = ArgumentCaptor.forClass(Map.class);
+    verify(mockEventDocRef).set(eventDataCaptor.capture());
+    Map<String, Object> content = (Map<String, Object>) eventDataCaptor.getValue().get("content");
+    Map<String, Object> part = ((List<Map<String, Object>>) content.get("parts")).get(0);
+    Map<String, Object> args =
+        (Map<String, Object>) ((Map<String, Object>) part.get("functionCall")).get("args");
+    assertThat(args.get("originalFunctionCall"))
+        .isEqualTo(
+            ImmutableMap.of(
+                "id", "call-1", "name", "get_weather", "args", ImmutableMap.of("city", "Seoul")));
+    assertThat((Map<String, Object>) args.get("toolConfirmation"))
+        .containsEntry("hint", "Approve?");
+  }
+
+  /** A tool return value that Firestore cannot encode, because of its Optional. */
+  record Alert(String city, Optional<String> warning) {}
+
+  /** Tests that objects in a tool result are stored as plain values. */
+  @Test
+  @SuppressWarnings("unchecked")
+  void appendEvent_withObjectsInToolResult_storesResultAsPlainValues() {
+    Session session =
+        Session.builder(SESSION_ID)
+            .appName(APP_NAME)
+            .userId(USER_ID)
+            .state(new ConcurrentHashMap<>())
+            .build();
+    // FunctionTool returns {"result": value} for a value it cannot convert to a map, like a list.
+    Event toolResult =
+        Event.builder()
+            .author("weather_agent")
+            .content(
+                Content.fromParts(
+                    Part.fromFunctionResponse(
+                        "get_alerts",
+                        ImmutableMap.of(
+                            "result",
+                            ImmutableList.of(new Alert("Seoul", Optional.of("Heavy rain")))))))
+            .build();
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockEventsCollection.document()).thenReturn(mockEventDocRef);
+    when(mockEventDocRef.getId()).thenReturn(EVENT_ID);
+    when(mockEventsCollection.document(EVENT_ID)).thenReturn(mockEventDocRef);
+
+    sessionService.appendEvent(session, toolResult).test().assertComplete();
+
+    ArgumentCaptor<Map<String, Object>> eventDataCaptor = ArgumentCaptor.forClass(Map.class);
+    verify(mockEventDocRef).set(eventDataCaptor.capture());
+    Map<String, Object> content = (Map<String, Object>) eventDataCaptor.getValue().get("content");
+    Map<String, Object> part = ((List<Map<String, Object>>) content.get("parts")).get(0);
+    assertThat(((Map<String, Object>) part.get("functionResponse")).get("response"))
+        .isEqualTo(
+            ImmutableMap.of(
+                "result",
+                ImmutableList.of(ImmutableMap.of("city", "Seoul", "warning", "Heavy rain"))));
   }
 
   /** Tests that appendEvent with only app state deltas updates the correct stores. */
@@ -911,6 +1134,52 @@ public class FirestoreSessionServiceTest {
         .test()
         .assertNoErrors() // The error should be caught and logged, not propagated
         .assertValue(session -> session.events().isEmpty()); // The bad event should be skipped
+  }
+
+  /** Tests that an event whose rawEvent cannot be read is loaded from its other fields. */
+  @Test
+  void getSession_withUnreadableRawEvent_loadsEventFromOtherFields() {
+    QueryDocumentSnapshot eventDoc = mock(QueryDocumentSnapshot.class);
+    when(eventDoc.getData())
+        .thenReturn(
+            ImmutableMap.of(
+                Constants.KEY_AUTHOR,
+                "weather_agent",
+                Constants.KEY_TIMESTAMP,
+                Instant.ofEpochMilli(1_000L).toString(),
+                "content",
+                ImmutableMap.of("parts", ImmutableList.of(ImmutableMap.of("text", "It is sunny."))),
+                FirestoreSessionService.RAW_EVENT_KEY,
+                "{"));
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    when(mockSessionSnapshot.exists()).thenReturn(true);
+    when(mockSessionSnapshot.getReference()).thenReturn(mockSessionDocRef);
+    when(mockSessionSnapshot.getData())
+        .thenReturn(
+            ImmutableMap.of(
+                "id",
+                SESSION_ID,
+                "appName",
+                APP_NAME,
+                "userId",
+                USER_ID,
+                "updateTime",
+                NOW.toString(),
+                "state",
+                Collections.emptyMap()));
+    when(mockQuery.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
+    when(mockQuerySnapshot.getDocuments()).thenReturn(ImmutableList.of(eventDoc));
+
+    List<Event> events =
+        sessionService
+            .getSession(APP_NAME, USER_ID, SESSION_ID, Optional.empty())
+            .blockingGet()
+            .events();
+
+    assertThat(events).hasSize(1);
+    assertThat(events.get(0).author()).isEqualTo("weather_agent");
+    assertThat(events.get(0).content().get().parts().get().get(0).text()).hasValue("It is sunny.");
   }
 
   // --- listEvents Tests ---
