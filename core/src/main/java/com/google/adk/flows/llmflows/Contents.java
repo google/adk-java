@@ -35,6 +35,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import com.google.genai.types.Transcription;
 import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -111,12 +112,52 @@ public final class Contents implements RequestProcessor {
     // Find the latest event that starts the current turn and process from there.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
-      if (event.author().equals(Role.USER) || isOtherAgentReply(agentName, event)) {
+      TranscriptionKind kind = transcriptionKind(event);
+      int start = -1;
+      if (kind != null) {
+        start = spokenTurnStart(currentBranch, events, agentName, i, kind);
+      } else if (shouldIncludeEventInContext(currentBranch, event)
+          && (event.author().equals(Role.USER) || isOtherAgentReply(agentName, event))) {
+        start = i;
+      }
+      if (start >= 0) {
         return getContents(
-            currentBranch, events.subList(i, events.size()), agentName, groupFunctionResponses);
+            currentBranch, events.subList(start, events.size()), agentName, groupFunctionResponses);
       }
     }
     return ImmutableList.of();
+  }
+
+  /**
+   * Returns where the spoken run ending at {@code end} starts, so the turn keeps the whole run
+   * rather than its last chunk. Returns -1 when the run does not start a turn: the agent's own
+   * speech, a chunk outside the context, or a blank run, which the merge drops.
+   */
+  private int spokenTurnStart(
+      @Nullable String currentBranch,
+      List<Event> events,
+      String agentName,
+      int end,
+      TranscriptionKind kind) {
+    Event event = events.get(end);
+    boolean startsTurn = kind == TranscriptionKind.INPUT || isOtherAgentReply(agentName, event);
+    if (!startsTurn || !shouldIncludeEventInContext(currentBranch, event)) {
+      return -1;
+    }
+    int start = end;
+    boolean blank = kind.text(event).isBlank();
+    for (int i = end - 1; i >= 0; i--) {
+      // Events left out of the context do not break the run.
+      if (!shouldIncludeEventInContext(currentBranch, events.get(i))) {
+        continue;
+      }
+      if (!continuesRun(kind, events.get(start), events.get(i))) {
+        break;
+      }
+      start = i;
+      blank &= kind.text(events.get(i)).isBlank();
+    }
+    return blank ? -1 : start;
   }
 
   private ImmutableList<Content> getContents(
@@ -127,47 +168,31 @@ public final class Contents implements RequestProcessor {
     List<Event> filteredEvents = new ArrayList<>();
     boolean hasCompactEvent = false;
 
-    // Filter the events, leaving the contents and the function calls and responses from the current
-    // agent.
     for (Event event : events) {
-      if (event.actions().compaction().isPresent()) {
-        // Always include the compaction event for the later processCompactionEvent call.
-        // The compaction event is used to filter out normal events that are covered by the
-        // compaction event.
-        hasCompactEvent = true;
-        filteredEvents.add(event);
-        continue;
-      }
-
-      // Skip events without content, or generated neither by user nor by model or has empty text.
-      // E.g. events purely for mutating session states.
-      if (isEmptyContent(event)) {
-        continue;
-      }
-      if (!isEventBelongsToBranch(currentBranch, event)) {
-        continue;
-      }
-      if (isRequestConfirmationEvent(event)) {
-        continue;
-      }
-
-      // TODO: Skip auth events.
-
-      if (isOtherAgentReply(agentName, event)) {
-        Event foreignEvent = convertForeignEvent(event);
-        if (foreignEvent != null) {
-          filteredEvents.add(foreignEvent);
-        }
-      } else {
+      if (shouldIncludeEventInContext(currentBranch, event)) {
+        hasCompactEvent |= event.actions().compaction().isPresent();
         filteredEvents.add(event);
       }
     }
 
     if (hasCompactEvent) {
-      filteredEvents = processCompactionEvent(filteredEvents);
+      filteredEvents = processCompactionEvent(filteredEvents, agentName);
     }
 
-    List<Event> resultEvents = rearrangeEventsForLatestFunctionResponse(filteredEvents);
+    // Merge after compaction, which may end mid-run, and before other agents are narrated.
+    List<Event> resultEvents = new ArrayList<>();
+    for (Event event : mergeTranscriptions(filteredEvents)) {
+      if (isOtherAgentReply(agentName, event)) {
+        Event foreignEvent = convertForeignEvent(event);
+        if (foreignEvent != null) {
+          resultEvents.add(foreignEvent);
+        }
+      } else {
+        resultEvents.add(event);
+      }
+    }
+
+    resultEvents = rearrangeEventsForLatestFunctionResponse(resultEvents);
     resultEvents =
         rearrangeEventsForAsyncFunctionResponsesInHistory(resultEvents, groupFunctionResponses);
 
@@ -178,10 +203,24 @@ public final class Contents implements RequestProcessor {
   }
 
   /**
+   * Whether {@code event} goes into the LLM context. Compaction events always do, so {@link
+   * #processCompactionEvent} can apply them.
+   */
+  private boolean shouldIncludeEventInContext(@Nullable String currentBranch, Event event) {
+    if (event.actions().compaction().isPresent()) {
+      return true;
+    }
+    // TODO: Skip auth events.
+    return !isEmptyContent(event)
+        && isEventBelongsToBranch(currentBranch, event)
+        && !isRequestConfirmationEvent(event);
+  }
+
+  /**
    * Check if an event has missing or empty content.
    *
-   * <p>This can happen to the events that only changed session state. When both content and
-   * transcriptions are empty, the event will be considered as empty. The content is considered
+   * <p>This can happen to the events that only changed session state. When the content is empty and
+   * no transcription has text, the event will be considered as empty. The content is considered
    * empty if none of its parts contain text, inline data, file data, function call, function
    * response, server-side tool call, or server-side tool response. Parts with only thoughts are
    * also considered empty.
@@ -190,15 +229,104 @@ public final class Contents implements RequestProcessor {
    * @return {@code true} if the event is considered to have empty content, {@code false} otherwise.
    */
   private boolean isEmptyContent(Event event) {
-    if (event.content().isEmpty()) {
-      return true;
+    return !hasVisibleContent(event) && transcriptionKind(event) == null;
+  }
+
+  /** Whether {@code event} has a role and at least one part that is visible in the LLM context. */
+  private boolean hasVisibleContent(Event event) {
+    return event
+        .content()
+        .filter(content -> !content.role().orElse("").isEmpty())
+        .flatMap(Content::parts)
+        .map(parts -> parts.stream().anyMatch(part -> !isPartInvisible(part)))
+        .orElse(false);
+  }
+
+  /**
+   * Merges each spoken run into one text event, so later invocations replay what was said: input as
+   * a user turn, output as a model turn. A blank run is dropped.
+   */
+  private ImmutableList<Event> mergeTranscriptions(List<Event> events) {
+    ImmutableList.Builder<Event> merged = ImmutableList.builder();
+    StringBuilder text = new StringBuilder();
+    for (int i = 0; i < events.size(); i++) {
+      Event event = events.get(i);
+      TranscriptionKind kind = transcriptionKind(event);
+      if (kind == null) {
+        merged.add(event);
+        continue;
+      }
+      text.append(kind.text(event));
+      if (i + 1 < events.size() && continuesRun(kind, event, events.get(i + 1))) {
+        continue;
+      }
+      // A blank run says nothing, while a space chunk inside a run still joins the words around it.
+      String runText = text.toString();
+      if (!runText.isBlank()) {
+        merged.add(kind.toTextEvent(event, runText));
+      }
+      text.setLength(0);
     }
-    var content = event.content().get();
-    return (content.role().isEmpty()
-        || content.role().get().isEmpty()
-        || content.parts().isEmpty()
-        || content.parts().get().isEmpty()
-        || content.parts().get().stream().allMatch(this::isPartInvisible));
+    return merged.build();
+  }
+
+  /**
+   * Whether {@code other} belongs to the {@code kind} run that {@code event} is in. An output run
+   * is one agent's speech; an input run is the user's even when stored under different agents.
+   */
+  private boolean continuesRun(TranscriptionKind kind, Event event, Event other) {
+    return transcriptionKind(other) == kind
+        && (kind == TranscriptionKind.INPUT || event.author().equals(other.author()));
+  }
+
+  /**
+   * The kind of transcription {@code event} is merged as, or null if it has visible content or no
+   * transcription text.
+   */
+  private @Nullable TranscriptionKind transcriptionKind(Event event) {
+    if (hasVisibleContent(event)) {
+      return null;
+    }
+    if (!TranscriptionKind.INPUT.text(event).isEmpty()) {
+      return TranscriptionKind.INPUT;
+    }
+    if (!TranscriptionKind.OUTPUT.text(event).isEmpty()) {
+      return TranscriptionKind.OUTPUT;
+    }
+    return null;
+  }
+
+  /** Which side of a live conversation a transcription records. */
+  private enum TranscriptionKind {
+    INPUT,
+    OUTPUT;
+
+    String text(Event event) {
+      Optional<Transcription> transcription =
+          switch (this) {
+            case INPUT -> event.inputTranscription();
+            case OUTPUT -> event.outputTranscription();
+          };
+      return transcription.flatMap(Transcription::text).orElse("");
+    }
+
+    /** The run's last {@code event}, carrying the run's {@code text} instead of a transcription. */
+    Event toTextEvent(Event event, String text) {
+      return switch (this) {
+        // A live run stores the user's speech under the listening agent's name.
+        case INPUT ->
+            event.toBuilder()
+                .author(Role.USER)
+                .content(Content.builder().role(Role.USER).parts(Part.fromText(text)).build())
+                .inputTranscription(null)
+                .build();
+        case OUTPUT ->
+            event.toBuilder()
+                .content(Content.builder().role("model").parts(Part.fromText(text)).build())
+                .outputTranscription(null)
+                .build();
+      };
+    }
   }
 
   /**
@@ -314,9 +442,10 @@ public final class Contents implements RequestProcessor {
    * </pre>
    *
    * @param events the list of event to filter.
+   * @param agentName the current agent, which authors each summary.
    * @return a new list with compaction applied.
    */
-  private List<Event> processCompactionEvent(List<Event> events) {
+  private List<Event> processCompactionEvent(List<Event> events, String agentName) {
     // Step 1: Split events into compaction events and regular events.
     List<Event> compactionEvents = new ArrayList<>();
     List<Event> regularEvents = new ArrayList<>();
@@ -350,13 +479,13 @@ public final class Contents implements RequestProcessor {
         e--;
       } else {
         // Otherwise the event is before the compaction, let's move to the next compaction event;
-        result.add(createCompactionEvent(compactionEvents.get(c)));
+        result.add(createCompactionEvent(compactionEvents.get(c), agentName));
         c--;
       }
     }
     // Flush any remaining compactions.
     while (c >= 0) {
-      result.add(createCompactionEvent(compactionEvents.get(c)));
+      result.add(createCompactionEvent(compactionEvents.get(c), agentName));
       c--;
     }
     // Flush any remaining regular events.
@@ -390,11 +519,12 @@ public final class Contents implements RequestProcessor {
     return Lists.reverse(result);
   }
 
-  private static Event createCompactionEvent(Event event) {
+  private static Event createCompactionEvent(Event event, String agentName) {
     EventCompaction compaction = event.actions().compaction().get();
     return event.toBuilder()
         .timestamp(compaction.endTimestamp())
-        .author("model")
+        // Authored by this agent, so convertForeignEvent leaves the summary alone.
+        .author(agentName.isEmpty() ? "model" : agentName)
         .content(compaction.compactedContent())
         .build();
   }
