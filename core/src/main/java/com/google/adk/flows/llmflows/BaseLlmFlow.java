@@ -55,6 +55,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.observers.DisposableCompletableObserver;
+import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -542,7 +543,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
       InvocationContext invocationContext,
       int stepsCompleted,
       AtomicBoolean continueFlow) {
-    Flowable<Event> currentStepEvents = runOneStep(spanContext, invocationContext).cache();
+    Flowable<Event> currentStepEvents =
+        cancellableCache(runOneStep(spanContext, invocationContext));
     if (stepsCompleted + 1 >= maxSteps) {
       logger.debug("Ending flow execution because max steps reached.");
       return currentStepEvents;
@@ -574,6 +576,16 @@ public abstract class BaseLlmFlow implements BaseFlow {
                     return PersistBarrier.awaitPersisted(invocationContext, eventList).toFlowable();
                   }
                 }));
+  }
+
+  /**
+   * Like {@code step.cache()}, but cancels {@code step} when a subscriber cancels. {@code cache()}
+   * never cancels upstream, so a client disconnect left the model stream and pending tool calls
+   * running. A subscriber that arrives after the cancel still gets the buffered events.
+   */
+  private static Flowable<Event> cancellableCache(Flowable<Event> step) {
+    CompletableSubject cancelled = CompletableSubject.create();
+    return step.takeUntil(cancelled.toFlowable()).cache().doOnCancel(cancelled::onComplete);
   }
 
   /**

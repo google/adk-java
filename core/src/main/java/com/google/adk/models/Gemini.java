@@ -38,14 +38,17 @@ import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 import okhttp3.OkHttpClient;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -299,11 +302,7 @@ public class Gemini extends BaseLlm {
               effectiveModelName, llmRequest.contents(), config);
 
       return Flowable.defer(
-          () ->
-              new StreamingResponseAggregator()
-                  .process(
-                      Flowable.fromFuture(streamFuture).flatMapIterable(iterable -> iterable),
-                      cacheMetadata));
+          () -> new StreamingResponseAggregator().process(readStream(streamFuture), cacheMetadata));
     } else {
       logger.debug("Sending generateContent request to model {}", effectiveModelName);
       return Flowable.fromFuture(
@@ -313,6 +312,78 @@ public class Gemini extends BaseLlm {
                   .generateContent(effectiveModelName, llmRequest.contents(), config)
                   .thenApplyAsync(LlmResponse::create))
           .map(response -> withCacheMetadata(response, cacheMetadata));
+    }
+  }
+
+  /**
+   * Reads the stream and, when the subscriber cancels, closes it on {@link Schedulers#io()} so a
+   * partial read doesn't leave the HTTP response open. The close waits for the stream to open and
+   * can block behind a {@code readLine()} in progress. An iterator call that returns after the
+   * cancel closes the stream again, covering a continuation request opened during that call.
+   */
+  @VisibleForTesting
+  static <T, S extends Iterable<T> & AutoCloseable> Flowable<T> readStream(
+      CompletableFuture<S> streamFuture) {
+    return Flowable.defer(
+        () -> {
+          AtomicBoolean cancelled = new AtomicBoolean();
+          AtomicBoolean terminated = new AtomicBoolean();
+          return Flowable.using(
+              () -> streamFuture,
+              future ->
+                  Flowable.fromFuture(future)
+                      .flatMapIterable(stream -> closingAfterCancel(stream, cancelled))
+                      .doOnTerminate(() -> terminated.set(true)),
+              future -> {
+                if (!terminated.get()) {
+                  cancelled.set(true);
+                  future.thenAccept(Gemini::closeAsync);
+                }
+              },
+              /* eager= */ false);
+        });
+  }
+
+  private static <T, S extends Iterable<T> & AutoCloseable> Iterable<T> closingAfterCancel(
+      S stream, AtomicBoolean cancelled) {
+    Iterator<T> delegate = stream.iterator();
+    return () ->
+        new Iterator<T>() {
+          @Override
+          public boolean hasNext() {
+            try {
+              return delegate.hasNext();
+            } finally {
+              closeIfCancelled();
+            }
+          }
+
+          @Override
+          public T next() {
+            try {
+              return delegate.next();
+            } finally {
+              closeIfCancelled();
+            }
+          }
+
+          private void closeIfCancelled() {
+            if (cancelled.get()) {
+              closeAsync(stream);
+            }
+          }
+        };
+  }
+
+  private static void closeAsync(AutoCloseable stream) {
+    Schedulers.io().scheduleDirect(() -> closeQuietly(stream));
+  }
+
+  private static void closeQuietly(AutoCloseable stream) {
+    try {
+      stream.close();
+    } catch (Exception e) {
+      logger.debug("Failed to close the response stream", e);
     }
   }
 
