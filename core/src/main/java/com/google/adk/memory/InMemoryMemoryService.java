@@ -20,14 +20,15 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.adk.events.Event;
 import com.google.adk.sessions.Session;
+import com.google.common.base.CharMatcher;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
+import java.text.Normalizer;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -44,8 +45,9 @@ import java.util.regex.Pattern;
  */
 public final class InMemoryMemoryService implements BaseMemoryService {
 
-  // Pattern to extract words, matching the Python version.
-  private static final Pattern WORD_PATTERN = Pattern.compile("[A-Za-z]+");
+  // Unicode-aware word pattern, close to Python's \w+.
+  private static final Pattern WORD_PATTERN =
+      Pattern.compile("\\w+", Pattern.UNICODE_CHARACTER_CLASS);
 
   /** Keys are "app_name/user_id", values are maps of "session_id" to a list of events. */
   private final Map<String, Map<String, List<Event>>> sessionEvents;
@@ -91,8 +93,7 @@ public final class InMemoryMemoryService implements BaseMemoryService {
 
           Map<String, List<Event>> userSessions = sessionEvents.get(key);
 
-          ImmutableSet<String> wordsInQuery =
-              ImmutableSet.copyOf(query.toLowerCase(Locale.ROOT).split("\\s+"));
+          ImmutableSet<String> wordsInQuery = extractWordsLower(query);
 
           List<MemoryEntry> matchingMemories = new ArrayList<>();
 
@@ -103,13 +104,12 @@ public final class InMemoryMemoryService implements BaseMemoryService {
               }
 
               Set<String> wordsInEvent = new HashSet<>();
+              List<String> eventTexts = new ArrayList<>();
               for (Part part : event.content().get().parts().get()) {
                 String text = part.text().orElse("");
+                wordsInEvent.addAll(extractSearchableWords(text));
                 if (!text.isEmpty()) {
-                  Matcher matcher = WORD_PATTERN.matcher(text);
-                  while (matcher.find()) {
-                    wordsInEvent.add(matcher.group().toLowerCase(Locale.ROOT));
-                  }
+                  eventTexts.add(text);
                 }
               }
 
@@ -117,7 +117,19 @@ public final class InMemoryMemoryService implements BaseMemoryService {
                 continue;
               }
 
-              if (!Collections.disjoint(wordsInQuery, wordsInEvent)) {
+              // A non-ASCII query word also matches inside the text, as Japanese and Chinese put no
+              // spaces between words.
+              String eventTextLower =
+                  Normalizer.normalize(String.join(" ", eventTexts), Normalizer.Form.NFC)
+                      .toLowerCase(Locale.ROOT);
+              boolean matches =
+                  wordsInQuery.stream()
+                      .anyMatch(
+                          word ->
+                              wordsInEvent.contains(word)
+                                  || (!CharMatcher.ascii().matchesAllOf(word)
+                                      && eventTextLower.contains(word)));
+              if (matches) {
                 MemoryEntry memory =
                     MemoryEntry.builder()
                         .content(event.content().get())
@@ -133,6 +145,58 @@ public final class InMemoryMemoryService implements BaseMemoryService {
               .memories(ImmutableList.copyOf(matchingMemories))
               .build();
         });
+  }
+
+  /** Extracts words from a string and converts them to lowercase. */
+  private static ImmutableSet<String> extractWordsLower(String text) {
+    ImmutableSet.Builder<String> words = ImmutableSet.builder();
+    Matcher matcher = WORD_PATTERN.matcher(Normalizer.normalize(text, Normalizer.Form.NFC));
+    while (matcher.find()) {
+      words.add(matcher.group().toLowerCase(Locale.ROOT));
+    }
+    return words.build();
+  }
+
+  /**
+   * Extracts the words an event can be matched on, in lowercase: the words of {@link
+   * #extractWordsLower} plus, for a word that mixes Latin and non-Latin characters, each of its
+   * single-script runs. Japanese and Chinese are written without spaces, so {@code 私はPythonを使う} is
+   * a single word, and splitting it where the script changes lets a query for {@code python} match
+   * while a partial word such as {@code thon} still does not.
+   */
+  private static ImmutableSet<String> extractSearchableWords(String text) {
+    ImmutableSet<String> words = extractWordsLower(text);
+    ImmutableSet.Builder<String> searchable = ImmutableSet.<String>builder().addAll(words);
+    for (String word : words) {
+      if (CharMatcher.ascii().matchesAllOf(word)) {
+        continue;
+      }
+      int runStart = 0;
+      boolean runIsLatin = isLatin(word.codePointAt(0));
+      for (int i = 0; i < word.length(); i += Character.charCount(word.codePointAt(i))) {
+        boolean latin = isLatin(word.codePointAt(i));
+        if (latin != runIsLatin) {
+          searchable.add(word.substring(runStart, i));
+          runStart = i;
+          runIsLatin = latin;
+        }
+      }
+      searchable.add(word.substring(runStart));
+    }
+    return searchable.build();
+  }
+
+  /**
+   * ASCII letters, digits and {@code _}, or a character above ASCII whose Unicode name starts with
+   * {@code LATIN}, as Python checks it. Unlike the Latin script, this leaves out characters such as
+   * {@code º} and {@code ª}.
+   */
+  private static boolean isLatin(int codePoint) {
+    if (codePoint < 0x80) {
+      return Character.isLetterOrDigit(codePoint) || codePoint == '_';
+    }
+    String name = Character.getName(codePoint);
+    return name != null && name.startsWith("LATIN");
   }
 
   private String formatTimestamp(long timestamp) {
