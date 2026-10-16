@@ -35,9 +35,20 @@ import java.util.stream.Stream;
 /** Request / Response utilities for {@link Gemini}. */
 public final class GeminiUtil {
 
+  /**
+   * Text of the user turn appended when a request has no contents, so that the model acts on the
+   * system instruction. Same wording as ADK Python and ADK TypeScript.
+   */
+  public static final String HANDLE_SYSTEM_INSTRUCTION_MESSAGE =
+      "Handle the requests as specified in the System Instruction.";
+
+  /**
+   * Text of the user turn appended when the last content is not from the user, so that the model
+   * keeps producing output. Same wording as ADK Python, ADK TypeScript and ADK Go.
+   */
   public static final String CONTINUE_OUTPUT_MESSAGE =
-      "Continue output. DO NOT look at this line. ONLY look at the content before this line and"
-          + " system instruction.";
+      "Continue processing previous requests as instructed. Exit or provide a summary if no more"
+          + " outputs are needed.";
 
   private GeminiUtil() {}
 
@@ -193,9 +204,10 @@ public final class GeminiUtil {
    * Ensures that the content is conducive to prompting a model response by ensuring the last
    * content part is from the user.
    *
-   * <p>If the list is empty or the last message is not from the user, a new "user" content part
-   * with a {@link #CONTINUE_OUTPUT_MESSAGE} is appended to the list. This is necessary to prompt
-   * the model to generate a response.
+   * <p>If the list is empty, a new "user" content part with {@link
+   * #HANDLE_SYSTEM_INSTRUCTION_MESSAGE} is appended. If the last message is not from the user, a
+   * new "user" content part with {@link #CONTINUE_OUTPUT_MESSAGE} is appended. This is necessary to
+   * prompt the model to generate a response.
    *
    * @param contents The original list of {@link Content}.
    * @return A list of {@link Content} where the last element is guaranteed to be from the "user".
@@ -204,11 +216,10 @@ public final class GeminiUtil {
     // Last content must be from the user, otherwise the model won't respond.
     if (contents.isEmpty()
         || !Ascii.equalsIgnoreCase(Iterables.getLast(contents).role().orElse(""), Role.USER)) {
+      String text =
+          contents.isEmpty() ? HANDLE_SYSTEM_INSTRUCTION_MESSAGE : CONTINUE_OUTPUT_MESSAGE;
       Content userContent =
-          Content.builder()
-              .parts(ImmutableList.of(Part.fromText(CONTINUE_OUTPUT_MESSAGE)))
-              .role(Role.USER)
-              .build();
+          Content.builder().parts(ImmutableList.of(Part.fromText(text))).role(Role.USER).build();
       return Stream.concat(contents.stream(), Stream.of(userContent)).collect(toImmutableList());
     }
     return contents;

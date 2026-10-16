@@ -37,8 +37,16 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public final class GeminiUtilTest {
 
+  // Same wording as the user turns that ADK Python appends in
+  // BaseLlm._maybe_append_user_content.
+  private static final Content SYSTEM_INSTRUCTION_CONTENT =
+      Content.fromParts(
+          Part.fromText("Handle the requests as specified in the System Instruction."));
   private static final Content CONTINUE_CONTENT =
-      Content.fromParts(Part.fromText(GeminiUtil.CONTINUE_OUTPUT_MESSAGE));
+      Content.fromParts(
+          Part.fromText(
+              "Continue processing previous requests as instructed. Exit or provide a summary if"
+                  + " no more outputs are needed."));
 
   @Test
   public void getPart0FromLlmResponse_noContent_returnsEmpty() {
@@ -334,12 +342,12 @@ public final class GeminiUtilTest {
   }
 
   @Test
-  public void ensureModelResponse_emptyList_appendsContinueMessage() {
+  public void ensureModelResponse_emptyList_appendsSystemInstructionMessage() {
     ImmutableList<Content> contents = ImmutableList.of();
 
     List<Content> result = GeminiUtil.ensureModelResponse(contents);
 
-    assertThat(result).containsExactly(CONTINUE_CONTENT);
+    assertThat(result).containsExactly(SYSTEM_INSTRUCTION_CONTENT);
   }
 
   @Test
@@ -405,12 +413,13 @@ public final class GeminiUtilTest {
   }
 
   @Test
-  public void prepareGenenerateContentRequest_emptyRequest_returnsRequestWithContinueContent() {
+  public void
+      prepareGenenerateContentRequest_emptyRequest_returnsRequestWithSystemInstructionContent() {
     LlmRequest request = LlmRequest.builder().build();
 
     LlmRequest result = GeminiUtil.prepareGenenerateContentRequest(request, true);
 
-    assertThat(result.contents()).containsExactly(CONTINUE_CONTENT);
+    assertThat(result.contents()).containsExactly(SYSTEM_INSTRUCTION_CONTENT);
     assertThat(result.config()).isEmpty();
   }
 
