@@ -20,6 +20,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Correspondence.transforming;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.stream.Collectors.joining;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.InvocationContext;
@@ -41,6 +42,7 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import com.google.genai.types.ToolCall;
 import com.google.genai.types.ToolResponse;
+import com.google.genai.types.Transcription;
 import java.util.ArrayList;
 import java.util.ConcurrentModificationException;
 import java.util.Iterator;
@@ -50,6 +52,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Stream;
+import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -1372,6 +1375,522 @@ public final class ContentsTest {
                 otherAgentPreamblePart(), otherAgentPart("[agent_1] said:", "sibling output")));
   }
 
+  // A live run stores what was said as transcription chunks; a later run replays them.
+  @Test
+  public void processRequest_transcriptionOnlyEvents_becomeUserAndModelText() {
+    ImmutableList<Event> events =
+        ImmutableList.of(heard("My name "), heard("is Ada."), spoken("Hi "), spoken("Ada!"));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents))
+        .containsExactly("user: My name is Ada.", "model: Hi Ada!")
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_typedAndSpokenTurns_keepTheirOrder() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Hello."),
+            createAgentEvent("a1", "Hi, who is this?"),
+            heard("It is Ada."),
+            spoken("Nice to meet you, "),
+            spoken("Ada."),
+            createUserEvent("u2", "What is my name?"));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents))
+        .containsExactly(
+            "user: Hello.",
+            "model: Hi, who is this?",
+            "user: It is Ada.",
+            "model: Nice to meet you, Ada.",
+            "user: What is my name?")
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_alternatingSpokenTurns_staySeparate() {
+    ImmutableList<Event> events =
+        ImmutableList.of(heard("a"), spoken("b"), heard("c"), spoken("d"));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents))
+        .containsExactly("user: a", "model: b", "user: c", "model: d")
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_spokenRunsSplitByATypedTurn_stayApart() {
+    ImmutableList<Event> events =
+        ImmutableList.of(heard("a"), createUserEvent("u1", "typed"), heard("b"));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents)).containsExactly("user: a", "user: typed", "user: b").inOrder();
+  }
+
+  // The event with content is kept as it is, so the run before it must not carry over past it.
+  @Test
+  public void processRequest_runBeforeAnEventWithContent_isFlushedFirst() {
+    Event typed =
+        createUserEvent("u1", "typed").toBuilder().inputTranscription(transcription("x")).build();
+    ImmutableList<Event> events = ImmutableList.of(heard("a"), typed, heard("b"));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents)).containsExactly("user: a", "user: typed", "user: b").inOrder();
+  }
+
+  @Test
+  public void processRequest_eventWithContentAndTranscription_keepsOnlyItsContent() {
+    Event typed =
+        createUserEvent("u1", "typed").toBuilder().inputTranscription(transcription("x")).build();
+
+    List<Content> contents = runContentsProcessor(ImmutableList.of(typed));
+
+    assertThat(turns(contents)).containsExactly("user: typed");
+  }
+
+  @Test
+  public void processRequest_emptyChunkInsideRun_doesNotSplitIt() {
+    Event noText =
+        Event.builder()
+            .author(AGENT)
+            .inputTranscription(Transcription.builder().finished(false).build())
+            .build();
+    ImmutableList<Event> events = ImmutableList.of(heard("My "), heard(""), noText, heard("name."));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents)).containsExactly("user: My name.");
+  }
+
+  @Test
+  public void processRequest_emptyTranscription_isDropped() {
+    ImmutableList<Event> events =
+        ImmutableList.of(heard(""), spoken(""), createUserEvent("u1", "Hello."));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents)).containsExactly("user: Hello.");
+  }
+
+  @Test
+  public void processRequest_spaceChunkBetweenWords_isKept() {
+    ImmutableList<Event> events = ImmutableList.of(heard("Hello"), heard(" "), heard("world."));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents)).containsExactly("user: Hello world.");
+  }
+
+  @Test
+  public void processRequest_blankSpokenRun_isDropped() {
+    ImmutableList<Event> events = ImmutableList.of(heard("Hi."), spoken(" "), spoken("  "));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents)).containsExactly("user: Hi.");
+  }
+
+  // Thoughts or an empty part list say nothing, so they must not hide what was said.
+  @Test
+  public void processRequest_emptyOrThoughtOnlyContentWithTranscription_isMergedAsTranscription() {
+    Event emptyContent =
+        heard("Hi.").toBuilder()
+            .content(Content.builder().role(USER).parts(ImmutableList.of()).build())
+            .build();
+    Event thoughtOnly =
+        spoken("Hello.").toBuilder()
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(Part.builder().text("Greet them.").thought(true).build())
+                    .build())
+            .build();
+
+    List<Content> contents = runContentsProcessor(ImmutableList.of(emptyContent, thoughtOnly));
+
+    assertThat(turns(contents)).containsExactly("user: Hi.", "model: Hello.").inOrder();
+  }
+
+  @Test
+  public void processRequest_otherAgentsSpokenReply_isPresentedAsContext() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            heard("Is it sunny?"), spoken(OTHER_AGENT, "Yes, "), spoken(OTHER_AGENT, "sunny."));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents)
+        .containsExactly(
+            Content.fromParts(Part.fromText("Is it sunny?")),
+            Content.fromParts(
+                otherAgentPreamblePart(), otherAgentPart("[other_agent] said:", "Yes, sunny.")))
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_spokenRepliesFromTwoAgents_stayAttributedToEach() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            heard("Weather and time?"),
+            spoken(OTHER_AGENT, "Sunny."),
+            spoken("clock_agent", "Noon."));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(contents)
+        .containsExactly(
+            Content.fromParts(Part.fromText("Weather and time?")),
+            Content.fromParts(
+                otherAgentPreamblePart(), otherAgentPart("[other_agent] said:", "Sunny.")),
+            Content.fromParts(
+                otherAgentPreamblePart(), otherAgentPart("[clock_agent] said:", "Noon.")))
+        .inOrder();
+  }
+
+  // A live run stores the user's speech under the listening agent's name; it is still the user's.
+  @Test
+  public void processRequest_speechHeardByAnotherAgent_isTheUsersTurn() {
+    ImmutableList<Event> events = ImmutableList.of(heard(OTHER_AGENT, "Is it sunny?"));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents)).containsExactly("user: Is it sunny?");
+  }
+
+  @Test
+  public void processRequest_speechHeardByTwoAgents_staysOneTurn() {
+    ImmutableList<Event> events =
+        ImmutableList.of(heard(OTHER_AGENT, "Is it "), heard(AGENT, "sunny?"));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents)).containsExactly("user: Is it sunny?");
+  }
+
+  @Test
+  public void processRequest_compactionEndingInsideASpokenRun_keepsOnlyTheUncoveredChunks() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            heard("one ").toBuilder().timestamp(100).build(),
+            heard("two").toBuilder().timestamp(200).build(),
+            createCompactedEvent(100, 150, "Summary"));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents)).containsExactly("model: Summary", "user: two").inOrder();
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_keepsTheWholeSpokenRun() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Earlier question."),
+            createAgentEvent("a1", "Earlier answer."),
+            heard("My name "),
+            heard("is Ada."));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: My name is Ada.");
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_userAuthoredSpeech_keepsTheWholeSpokenRun() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Earlier question."),
+            heard(USER, "My name "),
+            heard(USER, "is Ada."));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: My name is Ada.");
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_keepsAnotherAgentsWholeSpokenRun() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Is it sunny?"),
+            spoken(OTHER_AGENT, "Yes, "),
+            spoken(OTHER_AGENT, "sunny."));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(contents)
+        .containsExactly(
+            Content.fromParts(
+                otherAgentPreamblePart(), otherAgentPart("[other_agent] said:", "Yes, sunny.")));
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_otherAgentsSpokenRunWithThoughts_startsTheTurn() {
+    Content thought =
+        Content.builder()
+            .role("model")
+            .parts(Part.builder().text("Look it up.").thought(true).build())
+            .build();
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Is it sunny?"),
+            spoken(OTHER_AGENT, "Yes, ").toBuilder().content(thought).build(),
+            spoken(OTHER_AGENT, "sunny.").toBuilder().content(thought).build());
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(contents)
+        .containsExactly(
+            Content.fromParts(
+                otherAgentPreamblePart(), otherAgentPart("[other_agent] said:", "Yes, sunny.")));
+  }
+
+  // The agent's own speech answers the turn rather than starting one.
+  @Test
+  public void processRequest_includeContentsNone_ownSpokenReply_staysInTheUsersTurn() {
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("u1", "Is it sunny?"), spoken("Yes, "), spoken("sunny."));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents))
+        .containsExactly("user: Is it sunny?", "model: Yes, sunny.")
+        .inOrder();
+  }
+
+  // Speech heard on a sibling branch is outside this agent's context, so it cannot start the turn.
+  @Test
+  public void processRequest_includeContentsNone_speechOnAnotherBranch_doesNotStartTheTurn() {
+    Event offBranch = heard("agent_1", "Hi.").toBuilder().branch("root.agent_1").build();
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("u1", "Is it sunny?"), offBranch);
+
+    List<Content> contents =
+        runContentsProcessorOnBranch(
+            events, "agent_10", "root.agent_10", LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: Is it sunny?");
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_replyOnAnotherBranch_doesNotStartTheTurn() {
+    Event offBranch =
+        createAgentEvent("agent_1", "o1", "Sibling reply.").toBuilder()
+            .branch("root.agent_1")
+            .build();
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("u1", "Is it sunny?"), offBranch);
+
+    List<Content> contents =
+        runContentsProcessorOnBranch(
+            events, "agent_10", "root.agent_10", LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: Is it sunny?");
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_trailingEmptyChunk_keepsTheTurn() {
+    ImmutableList<Event> events = ImmutableList.of(heard(USER, "Hello."), heard(USER, ""));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: Hello.");
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_runWithAnExcludedChunk_staysWhole() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Earlier question."), heard("My "), heard(""), heard("name."));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: My name.");
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_blankSpokenRun_doesNotBlankTheTurn() {
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("u1", "Is it sunny?"), spoken(OTHER_AGENT, "   "));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: Is it sunny?");
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_otherAgentsTextReplies_keepsOnlyTheLast() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Is it sunny?"),
+            createAgentEvent(OTHER_AGENT, "o1", "Checking."),
+            createAgentEvent(OTHER_AGENT, "o2", "Sunny."));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(contents)
+        .containsExactly(
+            Content.fromParts(
+                otherAgentPreamblePart(), otherAgentPart("[other_agent] said:", "Sunny.")));
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_otherAgentsTrailingEmptyChunk_keepsTheTurn() {
+    ImmutableList<Event> events = ImmutableList.of(heard("Hello."), heard(OTHER_AGENT, ""));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: Hello.");
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_otherAgentsRunWithTrailingEmptyChunk_staysWhole() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Is it sunny?"),
+            spoken(OTHER_AGENT, "Yes, "),
+            spoken(OTHER_AGENT, "sunny."),
+            spoken(OTHER_AGENT, ""));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(contents)
+        .containsExactly(
+            Content.fromParts(
+                otherAgentPreamblePart(), otherAgentPart("[other_agent] said:", "Yes, sunny.")));
+  }
+
+  // A live run stores a turnComplete-only event after each turn, under the agent that spoke.
+  @Test
+  public void
+      processRequest_includeContentsNone_otherAgentsRunBeforeItsTurnComplete_startsTheTurn() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Is it sunny?"),
+            spoken(OTHER_AGENT, "Yes."),
+            Event.builder().author(OTHER_AGENT).turnComplete(true).build());
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(contents)
+        .containsExactly(
+            Content.fromParts(
+                otherAgentPreamblePart(), otherAgentPart("[other_agent] said:", "Yes.")));
+  }
+
+  // The confirmation response is left out of the context, so the turn starts at the user's message.
+  @Test
+  public void processRequest_includeContentsNone_trailingConfirmationResponse_keepsTheUsersTurn() {
+    Event confirmationResponse =
+        Event.builder()
+            .author(USER)
+            .content(
+                Content.fromParts(
+                    Part.fromFunctionResponse(
+                        Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                        ImmutableMap.of("confirmed", true))))
+            .build();
+    ImmutableList<Event> events =
+        ImmutableList.of(createUserEvent("u1", "Delete it."), confirmationResponse);
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: Delete it.");
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_spokenRunOpeningTheSession_staysWhole() {
+    ImmutableList<Event> events = ImmutableList.of(heard("My name "), heard("is Ada."));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: My name is Ada.");
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_earlierSpokenRunBeforeAReply_isLeftOut() {
+    ImmutableList<Event> events =
+        ImmutableList.of(heard("Earlier."), createAgentEvent("a1", "Answer."), heard("Now."));
+
+    List<Content> contents =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: Now.");
+  }
+
+  @Test
+  public void processRequest_blankRunBeforeAnotherRun_addsNothingToIt() {
+    ImmutableList<Event> events = ImmutableList.of(spoken(" "), heard("Hi."));
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents)).containsExactly("user: Hi.");
+  }
+
+  // Pins today's behavior: an event carrying both transcriptions is merged as input, as ADK
+  // Python's merge does, and its output is lost.
+  @Test
+  public void processRequest_eventWithBothTranscriptions_isMergedAsInput() {
+    Event both = heard("Hi.").toBuilder().outputTranscription(transcription("Hello.")).build();
+
+    List<Content> contents = runContentsProcessor(ImmutableList.of(both));
+
+    assertThat(turns(contents)).containsExactly("user: Hi.");
+  }
+
+  // Content with no role is not visible, so it does not hide a transcription.
+  @Test
+  public void processRequest_rolelessContentWithTranscription_isMergedAsTranscription() {
+    Event event =
+        spoken("said").toBuilder()
+            .content(Content.builder().parts(Part.fromText("raw")).build())
+            .build();
+
+    List<Content> contents = runContentsProcessor(ImmutableList.of(event));
+
+    assertThat(turns(contents)).containsExactly("model: said");
+  }
+
+  // A live run stores a turnComplete-only event after each turn, which must not split a run.
+  @Test
+  public void processRequest_turnCompleteEventsBetweenChunks_doNotSplitARun() {
+    Event turnComplete = Event.builder().author(AGENT).turnComplete(true).build();
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            heard("My name "),
+            heard("is Ada."),
+            spoken("Hi "),
+            turnComplete,
+            spoken("Ada!"),
+            turnComplete);
+
+    List<Content> contents = runContentsProcessor(events);
+
+    assertThat(turns(contents))
+        .containsExactly("user: My name is Ada.", "model: Hi Ada!")
+        .inOrder();
+  }
+
   private static Event createUserEvent(String id, String text) {
     return Event.builder()
         .id(id)
@@ -1620,12 +2139,17 @@ public final class ContentsTest {
   }
 
   private List<Content> runContentsProcessorOnBranch(
-      List<Event> events, String agentName, String invocationBranch) {
-    LlmAgent agent =
-        LlmAgent.builder()
-            .name(agentName)
-            .includeContents(LlmAgent.IncludeContents.DEFAULT)
-            .build();
+      List<Event> events, String agentName, @Nullable String invocationBranch) {
+    return runContentsProcessorOnBranch(
+        events, agentName, invocationBranch, LlmAgent.IncludeContents.DEFAULT);
+  }
+
+  private List<Content> runContentsProcessorOnBranch(
+      List<Event> events,
+      String agentName,
+      @Nullable String invocationBranch,
+      LlmAgent.IncludeContents includeContents) {
+    LlmAgent agent = LlmAgent.builder().name(agentName).includeContents(includeContents).build();
     Session session =
         sessionService.createSession("test-app", "test-user", null, "test-session").blockingGet();
     session.addEvents(events);
@@ -1695,5 +2219,40 @@ public final class ContentsTest {
                         .build())
                 .build())
         .build();
+  }
+
+  /** A chunk of the user's speech, stored under the listening agent's name as a live run does. */
+  private static Event heard(String text) {
+    return heard(AGENT, text);
+  }
+
+  private static Event heard(String author, String text) {
+    return Event.builder().author(author).inputTranscription(transcription(text)).build();
+  }
+
+  /** A chunk of an agent's speech. */
+  private static Event spoken(String text) {
+    return spoken(AGENT, text);
+  }
+
+  private static Event spoken(String author, String text) {
+    return Event.builder().author(author).outputTranscription(transcription(text)).build();
+  }
+
+  private static Transcription transcription(String text) {
+    return Transcription.builder().text(text).build();
+  }
+
+  /** Each content as "role: text", joining the text of its parts. */
+  private static ImmutableList<String> turns(List<Content> contents) {
+    return contents.stream()
+        .map(
+            content ->
+                content.role().orElse("")
+                    + ": "
+                    + content.parts().orElse(ImmutableList.of()).stream()
+                        .map(part -> part.text().orElse(""))
+                        .collect(joining(" | ")))
+        .collect(toImmutableList());
   }
 }

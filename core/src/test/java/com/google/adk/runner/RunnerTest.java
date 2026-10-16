@@ -101,6 +101,7 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import com.google.genai.types.Schema;
+import com.google.genai.types.Transcription;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
@@ -2120,6 +2121,57 @@ public final class RunnerTest {
     testSubscriber.await();
     testSubscriber.assertComplete();
     assertThat(simplifyEvents(testSubscriber.values())).containsExactly("test agent: from llm");
+  }
+
+  // Each runLive opens a new connection and sends it the session's stored history.
+  @Test
+  public void runLive_newConnection_sendsStoredTranscriptionsAsHistory() throws Exception {
+    TestLlm liveLlm =
+        createTestLlm(
+            heardResponse("My name "),
+            heardResponse("is Ada."),
+            spokenResponse("Nice to meet you, "),
+            spokenResponse("Ada."));
+    Runner liveRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(createTestAgentBuilder(liveLlm).build())
+                    .build())
+            .build();
+    Session liveSession = liveRunner.sessionService().createSession("test", "user").blockingGet();
+
+    runLiveToCompletion(liveRunner, liveSession.sessionKey());
+    runLiveToCompletion(liveRunner, liveSession.sessionKey());
+
+    LlmRequest secondConnection = liveLlm.getRequests().get(1);
+    assertThat(secondConnection.contents())
+        .containsExactly(
+            Content.builder().role("user").parts(Part.fromText("My name is Ada.")).build(),
+            Content.builder().role("model").parts(Part.fromText("Nice to meet you, Ada.")).build())
+        .inOrder();
+  }
+
+  private static void runLiveToCompletion(Runner runner, SessionKey sessionKey) throws Exception {
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    TestSubscriber<Event> testSubscriber =
+        runner.runLive(sessionKey, liveRequestQueue, RunConfig.builder().build()).test();
+    liveRequestQueue.close();
+    testSubscriber.await();
+    testSubscriber.assertComplete();
+  }
+
+  private static LlmResponse heardResponse(String text) {
+    return LlmResponse.builder()
+        .inputTranscription(Transcription.builder().text(text).build())
+        .build();
+  }
+
+  private static LlmResponse spokenResponse(String text) {
+    return LlmResponse.builder()
+        .outputTranscription(Transcription.builder().text(text).build())
+        .build();
   }
 
   @Test
