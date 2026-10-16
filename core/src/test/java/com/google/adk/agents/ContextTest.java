@@ -77,6 +77,13 @@ public final class ContextTest {
   }
 
   @Test
+  public void requireNodeState_onCallbackContext_throwsUnsupportedOperationException() {
+    CallbackContext context = new CallbackContext(newInvocationContext(), null);
+
+    assertThrows(UnsupportedOperationException.class, context::requireNodeState);
+  }
+
+  @Test
   public void searchMemory_onCallbackContext_findsRememberedEvents() {
     InvocationContext invocationContext = newInvocationContext();
     Event rememberedEvent =
