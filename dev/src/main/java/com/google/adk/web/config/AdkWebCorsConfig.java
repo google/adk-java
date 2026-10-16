@@ -16,12 +16,17 @@
 
 package com.google.adk.web.config;
 
+import java.io.IOException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.server.ServerHttpRequest;
+import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.DefaultCorsProcessor;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.filter.CorsFilter;
 
@@ -39,6 +44,7 @@ import org.springframework.web.filter.CorsFilter;
  *   <li>{@link CorsConfigurationSource}: Configures CORS settings such as allowed origins, methods,
  *       headers, credentials, and max age.
  *   <li>{@link CorsFilter}: Applies the CORS configuration to incoming requests.
+ *   <li>{@code OriginGuardFilter}: Rejects requests from pages rebound onto this machine by DNS.
  * </ul>
  */
 @Configuration
@@ -50,10 +56,10 @@ public class AdkWebCorsConfig {
   public CorsConfigurationSource corsConfigurationSource(AdkWebCorsProperties corsProperties) {
     if (corsProperties.origins().contains("*")) {
       logger.warn(
-          "CORS is configured to allow all origins (\"*\"), which is insecure and intended for"
-              + " local development only. This also applies to the /run_live WebSocket endpoint."
-              + " Set 'adk.web.cors.origins' to an explicit allowlist to restrict which origins"
-              + " may call the server.");
+          "CORS is configured to allow all origins (\"*\"), so any website open in a browser can"
+              + " call this server, including the /run_live WebSocket endpoint. Set"
+              + " 'adk.web.cors.origins' to an explicit allowlist to restrict which origins may"
+              + " call the server.");
     }
 
     CorsConfiguration configuration = new CorsConfiguration();
@@ -72,6 +78,29 @@ public class AdkWebCorsConfig {
 
   @Bean
   public CorsFilter corsFilter(CorsConfigurationSource corsConfigurationSource) {
-    return new CorsFilter(corsConfigurationSource);
+    CorsFilter filter = new CorsFilter(corsConfigurationSource);
+    filter.setCorsProcessor(new ForwardedSameOriginCorsProcessor());
+    return filter;
+  }
+
+  @Bean
+  OriginGuardFilter originGuardFilter(
+      AdkWebCorsProperties corsProperties, @Value("${server.address:}") String serverAddress) {
+    return new OriginGuardFilter(corsProperties.origins(), serverAddress);
+  }
+
+  /** Treats a request as same-origin when its origin matches the URL a reverse proxy reports. */
+  private static final class ForwardedSameOriginCorsProcessor extends DefaultCorsProcessor {
+
+    @Override
+    protected boolean handleInternal(
+        ServerHttpRequest request,
+        ServerHttpResponse response,
+        CorsConfiguration config,
+        boolean preFlightRequest)
+        throws IOException {
+      return ForwardedSameOrigin.matches(request)
+          || super.handleInternal(request, response, config, preFlightRequest);
+    }
   }
 }
