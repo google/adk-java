@@ -59,7 +59,8 @@ change without notice.
 
 `runLive` runs a live (bidirectional) conversation on the Kotlin engine, fed
 from an ADK Java `LiveRequestQueue`. The agent's model must support live
-connections, as the Kotlin engine's `Gemini` does:
+connections. The Kotlin engine's `Gemini` does, and so does ADK Java's `Gemini`
+adapted with `JavaAdkToKt.asKtModel`:
 
 ```java
 import com.google.adk.agents.LiveRequestQueue; // ADK Java queue
