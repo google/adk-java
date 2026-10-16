@@ -34,6 +34,7 @@ public class LlmAgentConfig extends BaseAgentConfig {
   private String outputKey;
   private List<ToolConfig> tools;
   private IncludeContents includeContents;
+  private Boolean preserveEscapedPlaceholders;
   private GenerateContentConfig generateContentConfig;
 
   // Callback configuration (names resolved via ComponentRegistry)
@@ -101,6 +102,14 @@ public class LlmAgentConfig extends BaseAgentConfig {
 
   public void setIncludeContents(IncludeContents includeContents) {
     this.includeContents = includeContents;
+  }
+
+  public Boolean preserveEscapedPlaceholders() {
+    return preserveEscapedPlaceholders;
+  }
+
+  public void setPreserveEscapedPlaceholders(Boolean preserveEscapedPlaceholders) {
+    this.preserveEscapedPlaceholders = preserveEscapedPlaceholders;
   }
 
   public GenerateContentConfig generateContentConfig() {

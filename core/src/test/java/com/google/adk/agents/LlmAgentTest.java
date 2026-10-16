@@ -935,4 +935,53 @@ public final class LlmAgentTest {
     assertThat(simplifyEvents(events)).contains("agent_b: agent B response");
     assertThat(simplifyEvents(events)).doesNotContain("agent_a: agent A should not re-run");
   }
+
+  @Test
+  public void testBuild_withoutPreserveEscapedPlaceholders_defaultsToFalse() {
+    LlmAgent agent = createTestAgentBuilder(createTestLlm(LlmResponse.builder().build())).build();
+
+    assertThat(agent.preserveEscapedPlaceholders()).isFalse();
+  }
+
+  @Test
+  public void testBuild_withPreserveEscapedPlaceholders_setsFlag() {
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(LlmResponse.builder().build()))
+            .preserveEscapedPlaceholders(true)
+            .build();
+
+    assertThat(agent.preserveEscapedPlaceholders()).isTrue();
+  }
+
+  @Test
+  public void run_withPreserveEscapedPlaceholders_sendsEscapedPlaceholdersToModel() {
+    TestLlm testLlm = createTestLlm(createTextLlmResponse("response"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm)
+            .instruction("{name} shows ${price}.")
+            .preserveEscapedPlaceholders(true)
+            .build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+    invocationContext.session().state().put("name", "TestBot");
+    invocationContext.session().state().put("price", 9.99);
+
+    List<Event> unused = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(getOnlyElement(testLlm.getLastRequest().getSystemInstructions()))
+        .startsWith("TestBot shows ${price}.\n\n");
+  }
+
+  @Test
+  public void run_withoutPreserveEscapedPlaceholders_sendsResolvedPlaceholdersToModel() {
+    TestLlm testLlm = createTestLlm(createTextLlmResponse("response"));
+    LlmAgent agent = createTestAgentBuilder(testLlm).instruction("{name} shows ${price}.").build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+    invocationContext.session().state().put("name", "TestBot");
+    invocationContext.session().state().put("price", 9.99);
+
+    List<Event> unused = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(getOnlyElement(testLlm.getLastRequest().getSystemInstructions()))
+        .startsWith("TestBot shows $9.99.\n\n");
+  }
 }

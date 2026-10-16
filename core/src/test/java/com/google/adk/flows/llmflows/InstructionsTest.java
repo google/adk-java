@@ -252,4 +252,108 @@ public final class InstructionsTest {
     assertThat(result.updatedRequest().getSystemInstructions())
         .containsExactly("Global instruction.\n\nAgent instruction.");
   }
+
+  @Test
+  public void processRequest_agentPreservingEscapedPlaceholders_keepsEscapedPlaceholders() {
+    Session session = createSession();
+    session.state().put("price", 9.99);
+    session.state().put("name", "TestBot");
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .instruction("{name} shows ${price}, ${{price}} and \\{price}.")
+            .preserveEscapedPlaceholders(true)
+            .build();
+    InvocationContext context = createContext(agent, session);
+
+    RequestProcessor.RequestProcessingResult result =
+        instructionsProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().getSystemInstructions())
+        .containsExactly("TestBot shows ${price}, ${{price}} and \\{price}.");
+  }
+
+  @Test
+  public void processRequest_agentWithDefaults_resolvesEscapedPlaceholders() {
+    Session session = createSession();
+    session.state().put("price", 9.99);
+    session.state().put("name", "TestBot");
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .instruction("{name} shows ${price}, ${{price}} and \\{price}.")
+            .build();
+    InvocationContext context = createContext(agent, session);
+
+    RequestProcessor.RequestProcessingResult result =
+        instructionsProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().getSystemInstructions())
+        .containsExactly("TestBot shows $9.99, $9.99 and \\9.99.");
+  }
+
+  @Test
+  public void processRequest_globalInstruction_followsRootAgentPreservingEscapedPlaceholders() {
+    Session session = createSession();
+    session.state().put("price", 9.99);
+    LlmAgent subAgent = LlmAgent.builder().name("sub_agent").instruction("Sub: ${price}").build();
+    LlmAgent unused =
+        LlmAgent.builder()
+            .name("root_agent")
+            .globalInstruction("Global: ${price}")
+            .preserveEscapedPlaceholders(true)
+            .subAgents(subAgent)
+            .build();
+    InvocationContext context = createContext(subAgent, session);
+
+    RequestProcessor.RequestProcessingResult result =
+        instructionsProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().getSystemInstructions())
+        .containsExactly("Global: ${price}\n\nSub: $9.99");
+  }
+
+  @Test
+  public void processRequest_globalInstruction_ignoresSubAgentPreservingEscapedPlaceholders() {
+    Session session = createSession();
+    session.state().put("price", 9.99);
+    LlmAgent subAgent =
+        LlmAgent.builder()
+            .name("sub_agent")
+            .instruction("Sub: ${price}")
+            .preserveEscapedPlaceholders(true)
+            .build();
+    LlmAgent unused =
+        LlmAgent.builder()
+            .name("root_agent")
+            .globalInstruction("Global: ${price}")
+            .subAgents(subAgent)
+            .build();
+    InvocationContext context = createContext(subAgent, session);
+
+    RequestProcessor.RequestProcessingResult result =
+        instructionsProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().getSystemInstructions())
+        .containsExactly("Global: $9.99\n\nSub: ${price}");
+  }
+
+  @Test
+  public void processRequest_providerInstruction_isNotTemplatedWhenPreservingEscapedPlaceholders() {
+    Session session = createSession();
+    session.state().put("price", 9.99);
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .instruction(new Instruction.Provider(unused -> Single.just("{price} and ${price}")))
+            .preserveEscapedPlaceholders(true)
+            .build();
+    InvocationContext context = createContext(agent, session);
+
+    RequestProcessor.RequestProcessingResult result =
+        instructionsProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().getSystemInstructions())
+        .containsExactly("{price} and ${price}");
+  }
 }
