@@ -31,6 +31,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.HttpOptions;
+import com.google.genai.types.HttpRetryOptions;
 import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
@@ -72,34 +73,68 @@ public class Gemini extends BaseLlm {
   }
 
   // Every client ADK builds starts here, so each sends ADK's tracking tag.
-  private static Client.Builder adkClientBuilder(@Nullable ExecutorService executorService) {
+  private static Client.Builder adkClientBuilder(
+      @Nullable ExecutorService executorService, @Nullable HttpRetryOptions retryOptions) {
     return Client.builder()
-        .httpOptions(HttpOptions.builder().headers(TrackingHeaders.GENAI_SDK_HEADERS).build())
+        .httpOptions(buildHttpOptions(retryOptions))
         .clientOptions(
             ClientOptions.builder().customHttpClient(prepareHttpClient(executorService)).build());
   }
 
   private static Client buildApiKeyClient(
-      String apiKey, @Nullable ExecutorService executorService) {
-    return adkClientBuilder(executorService).apiKey(apiKey).build();
+      String apiKey,
+      @Nullable ExecutorService executorService,
+      @Nullable HttpRetryOptions retryOptions) {
+    return adkClientBuilder(executorService, retryOptions).apiKey(apiKey).build();
   }
 
   private static Client buildVertexClient(
-      VertexCredentials vertexCredentials, @Nullable ExecutorService executorService) {
-    Client.Builder apiClientBuilder = adkClientBuilder(executorService);
+      VertexCredentials vertexCredentials,
+      @Nullable ExecutorService executorService,
+      @Nullable HttpRetryOptions retryOptions) {
+    Client.Builder apiClientBuilder = adkClientBuilder(executorService, retryOptions);
     vertexCredentials.project().ifPresent(apiClientBuilder::project);
     vertexCredentials.location().ifPresent(apiClientBuilder::location);
     vertexCredentials.credentials().ifPresent(apiClientBuilder::credentials);
     return apiClientBuilder.build();
   }
 
-  private static Client buildDefaultClient(@Nullable ExecutorService executorService) {
-    return adkClientBuilder(executorService).build();
+  private static Client buildDefaultClient(
+      @Nullable ExecutorService executorService, @Nullable HttpRetryOptions retryOptions) {
+    return adkClientBuilder(executorService, retryOptions).build();
+  }
+
+  @VisibleForTesting
+  static HttpOptions buildHttpOptions(@Nullable HttpRetryOptions retryOptions) {
+    HttpOptions.Builder httpOptionsBuilder =
+        HttpOptions.builder().headers(TrackingHeaders.GENAI_SDK_HEADERS);
+    if (retryOptions != null) {
+      httpOptionsBuilder.retryOptions(retryOptions);
+    }
+    return httpOptionsBuilder.build();
   }
 
   private final Client apiClient;
   // True when apiClient already sends ADK's tracking tag.
   private final boolean clientSendsTrackingHeaders;
+
+  private Gemini(Builder builder) {
+    super(builder.modelName);
+    if (builder.apiClient != null) {
+      this.apiClient = builder.apiClient;
+    } else if (builder.apiKey != null) {
+      this.apiClient =
+          buildApiKeyClient(builder.apiKey, builder.httpExecutorService, builder.retryOptions);
+    } else if (builder.vertexCredentials != null) {
+      this.apiClient =
+          buildVertexClient(
+              builder.vertexCredentials, builder.httpExecutorService, builder.retryOptions);
+    } else {
+      this.apiClient = buildDefaultClient(builder.httpExecutorService, builder.retryOptions);
+    }
+    this.clientSendsTrackingHeaders =
+        builder.apiClient == null || builder.clientSendsTrackingHeaders;
+  }
 
   /**
    * Constructs a new Gemini instance. Each generate request sent through {@code apiClient} carries
@@ -111,13 +146,18 @@ public class Gemini extends BaseLlm {
    * @param apiClient The genai {@link com.google.genai.Client} instance for making API calls.
    */
   public Gemini(String modelName, Client apiClient) {
-    this(modelName, apiClient, /* clientSendsTrackingHeaders= */ false);
+    this(
+        builder()
+            .modelName(modelName)
+            .apiClient(Objects.requireNonNull(apiClient, "apiClient cannot be null")));
   }
 
   Gemini(String modelName, Client apiClient, boolean clientSendsTrackingHeaders) {
-    super(modelName);
-    this.apiClient = Objects.requireNonNull(apiClient, "apiClient cannot be null");
-    this.clientSendsTrackingHeaders = clientSendsTrackingHeaders;
+    this(
+        builder()
+            .modelName(modelName)
+            .apiClient(Objects.requireNonNull(apiClient, "apiClient cannot be null"))
+            .clientSendsTrackingHeaders(clientSendsTrackingHeaders));
   }
 
   /**
@@ -128,29 +168,28 @@ public class Gemini extends BaseLlm {
    */
   public Gemini(String modelName, String apiKey) {
     this(
-        modelName,
-        buildApiKeyClient(Objects.requireNonNull(apiKey, "apiKey cannot be null"), null),
-        /* clientSendsTrackingHeaders= */ true);
+        builder()
+            .modelName(modelName)
+            .apiKey(Objects.requireNonNull(apiKey, "apiKey cannot be null")));
   }
 
   /**
-   * Constructs a new Gemini instance with a Google Gemini API key.
+   * Constructs a new Gemini instance with Vertex AI credentials.
    *
    * @param modelName The name of the Gemini model to use (e.g., "gemini-2.0-flash").
    * @param vertexCredentials The Vertex AI credentials to access the Gemini model.
    */
   public Gemini(String modelName, VertexCredentials vertexCredentials) {
     this(
-        modelName,
-        buildVertexClient(
-            Objects.requireNonNull(vertexCredentials, "vertexCredentials cannot be null"), null),
-        /* clientSendsTrackingHeaders= */ true);
+        builder()
+            .modelName(modelName)
+            .vertexCredentials(
+                Objects.requireNonNull(vertexCredentials, "vertexCredentials cannot be null")));
   }
 
   /**
-   * Returns a new Builder instance for constructing Gemini objects. Note that when building a
-   * Gemini object, at least one of apiKey, vertexCredentials, or an explicit apiClient must be set.
-   * If multiple are set, the explicit apiClient will take precedence.
+   * Returns a builder for configuring Gemini. An explicit client takes precedence over an API key
+   * or Vertex credentials. If none are supplied, the client uses its default configuration.
    *
    * @return A new {@link Builder}.
    */
@@ -165,8 +204,15 @@ public class Gemini extends BaseLlm {
     private String apiKey;
     private VertexCredentials vertexCredentials;
     private ExecutorService httpExecutorService;
+    private HttpRetryOptions retryOptions;
+    private boolean clientSendsTrackingHeaders;
 
     private Builder() {}
+
+    private Builder clientSendsTrackingHeaders(boolean clientSendsTrackingHeaders) {
+      this.clientSendsTrackingHeaders = clientSendsTrackingHeaders;
+      return this;
+    }
 
     /**
      * Sets the name of the Gemini model to use.
@@ -237,6 +283,21 @@ public class Gemini extends BaseLlm {
     }
 
     /**
+     * Sets options for retrying transient HTTP failures through the Gemini client.
+     *
+     * <p>If an explicit {@link #apiClient(Client)} is supplied, its existing HTTP options take
+     * precedence and these retry options are ignored.
+     *
+     * @param retryOptions The retry options to pass to the Google Gen AI client.
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder retryOptions(HttpRetryOptions retryOptions) {
+      this.retryOptions = retryOptions;
+      return this;
+    }
+
+    /**
      * Builds the {@link Gemini} instance.
      *
      * @return A new {@link Gemini} instance.
@@ -244,19 +305,7 @@ public class Gemini extends BaseLlm {
      */
     public Gemini build() {
       Objects.requireNonNull(modelName, "modelName must be set.");
-
-      if (apiClient != null) {
-        return new Gemini(modelName, apiClient);
-      }
-      Client client;
-      if (apiKey != null) {
-        client = buildApiKeyClient(apiKey, httpExecutorService);
-      } else if (vertexCredentials != null) {
-        client = buildVertexClient(vertexCredentials, httpExecutorService);
-      } else {
-        client = buildDefaultClient(httpExecutorService);
-      }
-      return new Gemini(modelName, client, /* clientSendsTrackingHeaders= */ true);
+      return new Gemini(this);
     }
   }
 
