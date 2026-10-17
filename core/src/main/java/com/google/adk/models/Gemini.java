@@ -34,6 +34,7 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.HttpOptions;
+import com.google.genai.types.HttpRetryOptions;
 import com.google.genai.types.LiveConnectConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
@@ -76,20 +77,24 @@ public class Gemini extends BaseLlm {
   }
 
   private static Client buildApiKeyClient(
-      String apiKey, @Nullable ExecutorService executorService) {
+      String apiKey,
+      @Nullable ExecutorService executorService,
+      @Nullable HttpRetryOptions retryOptions) {
     return Client.builder()
         .apiKey(apiKey)
-        .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
+        .httpOptions(buildHttpOptions(retryOptions))
         .clientOptions(
             ClientOptions.builder().customHttpClient(prepareHttpClient(executorService)).build())
         .build();
   }
 
   private static Client buildVertexClient(
-      VertexCredentials vertexCredentials, @Nullable ExecutorService executorService) {
+      VertexCredentials vertexCredentials,
+      @Nullable ExecutorService executorService,
+      @Nullable HttpRetryOptions retryOptions) {
     Client.Builder apiClientBuilder =
         Client.builder()
-            .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
+            .httpOptions(buildHttpOptions(retryOptions))
             .clientOptions(
                 ClientOptions.builder()
                     .customHttpClient(prepareHttpClient(executorService))
@@ -100,12 +105,22 @@ public class Gemini extends BaseLlm {
     return apiClientBuilder.build();
   }
 
-  private static Client buildDefaultClient(@Nullable ExecutorService executorService) {
+  private static Client buildDefaultClient(
+      @Nullable ExecutorService executorService, @Nullable HttpRetryOptions retryOptions) {
     return Client.builder()
-        .httpOptions(HttpOptions.builder().headers(TRACKING_HEADERS).build())
+        .httpOptions(buildHttpOptions(retryOptions))
         .clientOptions(
             ClientOptions.builder().customHttpClient(prepareHttpClient(executorService)).build())
         .build();
+  }
+
+  @VisibleForTesting
+  static HttpOptions buildHttpOptions(@Nullable HttpRetryOptions retryOptions) {
+    HttpOptions.Builder httpOptionsBuilder = HttpOptions.builder().headers(TRACKING_HEADERS);
+    if (retryOptions != null) {
+      httpOptionsBuilder.retryOptions(retryOptions);
+    }
+    return httpOptionsBuilder.build();
   }
 
   static {
@@ -139,9 +154,20 @@ public class Gemini extends BaseLlm {
    * @param apiKey The Google Gemini API key.
    */
   public Gemini(String modelName, String apiKey) {
+    this(modelName, apiKey, /* retryOptions= */ null);
+  }
+
+  /**
+   * Constructs a new Gemini instance with a Google Gemini API key and optional retry options.
+   *
+   * @param modelName The name of the Gemini model to use (e.g., "gemini-2.0-flash").
+   * @param apiKey The Google Gemini API key.
+   * @param retryOptions Options for retrying transient HTTP failures.
+   */
+  public Gemini(String modelName, String apiKey, @Nullable HttpRetryOptions retryOptions) {
     super(modelName);
     Objects.requireNonNull(apiKey, "apiKey cannot be null");
-    this.apiClient = buildApiKeyClient(apiKey, null);
+    this.apiClient = buildApiKeyClient(apiKey, null, retryOptions);
   }
 
   /**
@@ -151,9 +177,23 @@ public class Gemini extends BaseLlm {
    * @param vertexCredentials The Vertex AI credentials to access the Gemini model.
    */
   public Gemini(String modelName, VertexCredentials vertexCredentials) {
+    this(modelName, vertexCredentials, /* retryOptions= */ null);
+  }
+
+  /**
+   * Constructs a new Gemini instance with Vertex AI credentials and optional retry options.
+   *
+   * @param modelName The name of the Gemini model to use (e.g., "gemini-2.0-flash").
+   * @param vertexCredentials The Vertex AI credentials to access the Gemini model.
+   * @param retryOptions Options for retrying transient HTTP failures.
+   */
+  public Gemini(
+      String modelName,
+      VertexCredentials vertexCredentials,
+      @Nullable HttpRetryOptions retryOptions) {
     super(modelName);
     Objects.requireNonNull(vertexCredentials, "vertexCredentials cannot be null");
-    this.apiClient = buildVertexClient(vertexCredentials, null);
+    this.apiClient = buildVertexClient(vertexCredentials, null, retryOptions);
   }
 
   /**
@@ -174,6 +214,7 @@ public class Gemini extends BaseLlm {
     private String apiKey;
     private VertexCredentials vertexCredentials;
     private ExecutorService httpExecutorService;
+    private HttpRetryOptions retryOptions;
 
     private Builder() {}
 
@@ -246,6 +287,21 @@ public class Gemini extends BaseLlm {
     }
 
     /**
+     * Sets options for retrying transient HTTP failures through the Gemini client.
+     *
+     * <p>If an explicit {@link #apiClient(Client)} is supplied, its existing HTTP options take
+     * precedence and these retry options are ignored.
+     *
+     * @param retryOptions The retry options to pass to the Google Gen AI client.
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder retryOptions(HttpRetryOptions retryOptions) {
+      this.retryOptions = retryOptions;
+      return this;
+    }
+
+    /**
      * Builds the {@link Gemini} instance.
      *
      * @return A new {@link Gemini} instance.
@@ -257,11 +313,12 @@ public class Gemini extends BaseLlm {
       if (apiClient != null) {
         return new Gemini(modelName, apiClient);
       } else if (apiKey != null) {
-        return new Gemini(modelName, buildApiKeyClient(apiKey, httpExecutorService));
+        return new Gemini(modelName, buildApiKeyClient(apiKey, httpExecutorService, retryOptions));
       } else if (vertexCredentials != null) {
-        return new Gemini(modelName, buildVertexClient(vertexCredentials, httpExecutorService));
+        return new Gemini(
+            modelName, buildVertexClient(vertexCredentials, httpExecutorService, retryOptions));
       } else {
-        return new Gemini(modelName, buildDefaultClient(httpExecutorService));
+        return new Gemini(modelName, buildDefaultClient(httpExecutorService, retryOptions));
       }
     }
   }
