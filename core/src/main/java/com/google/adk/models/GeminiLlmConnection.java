@@ -34,9 +34,11 @@ import com.google.genai.types.UsageMetadata;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Observable;
+import io.reactivex.rxjava3.core.ObservableEmitter;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.processors.PublishProcessor;
 import java.net.SocketException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -63,6 +65,8 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
   private final Flowable<LlmResponse> responseFlowable = responseProcessor.serialize();
   private final CompositeDisposable disposables = new CompositeDisposable();
   private final AtomicBoolean closed = new AtomicBoolean(false);
+  // Used only by handleServerMessage, which genai's WebSocket listener calls one message at a time.
+  private final PendingText pendingText = new PendingText();
 
   /**
    * Establishes a new connection over the given live transport.
@@ -117,7 +121,7 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
 
     logger.debug("Received server message: {}", message.toJson());
 
-    Observable<LlmResponse> llmResponse = convertToServerResponse(message);
+    Observable<LlmResponse> llmResponse = convertToServerResponse(message, pendingText);
     if (!disposables.add(
         llmResponse.subscribe(responseProcessor::onNext, responseProcessor::onError))) {
       logger.warn(
@@ -125,8 +129,13 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     }
   }
 
-  /** Converts a server message into the standardized LlmResponse format. */
-  static Observable<LlmResponse> convertToServerResponse(LiveServerMessage message) {
+  /**
+   * Converts a server message into the standardized LlmResponse format.
+   *
+   * @param pendingText the text streamed by earlier messages and not yet emitted in full
+   */
+  static Observable<LlmResponse> convertToServerResponse(
+      LiveServerMessage message, PendingText pendingText) {
     return Observable.create(
         emitter -> {
           // AtomicBoolean is used to modify state from within lambdas, which
@@ -136,13 +145,14 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
               .serverContent()
               .ifPresent(
                   serverContent -> {
-                    emitter.onNext(createServerContentResponse(serverContent));
+                    emitServerContentResponses(serverContent, pendingText, emitter);
                     handled.set(true);
                   });
           message
               .toolCall()
               .ifPresent(
                   toolCall -> {
+                    pendingText.flush().ifPresent(emitter::onNext);
                     emitter.onNext(createToolCallResponse(toolCall));
                     handled.set(true);
                   });
@@ -178,16 +188,65 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
         });
   }
 
-  private static LlmResponse createServerContentResponse(LiveServerContent serverContent) {
+  /**
+   * Emits the responses for a server content message. As in ADK Python, text parts are streamed in
+   * partial responses and collected in {@code pendingText}, which is emitted as one non-partial
+   * response when other content ends it and before the end of the turn or an interruption. Text
+   * that arrives with the end of the turn or an interruption is emitted only in full.
+   */
+  private static void emitServerContentResponses(
+      LiveServerContent serverContent,
+      PendingText pendingText,
+      ObservableEmitter<LlmResponse> emitter) {
+    List<Part> parts = serverContent.modelTurn().flatMap(Content::parts).orElse(ImmutableList.of());
+    List<Part> streamedParts = new ArrayList<>();
+    for (Part part : parts) {
+      if (pendingText.isEndedBy(part)) {
+        pendingText.flush().ifPresent(emitter::onNext);
+        // The full response now carries the text parts of this message so far.
+        streamedParts.removeIf(GeminiLlmConnection::hasText);
+      }
+      if (hasText(part)) {
+        pendingText.append(part);
+      }
+      streamedParts.add(part);
+    }
+    boolean turnComplete = serverContent.turnComplete().orElse(false);
+    if (turnComplete || serverContent.interrupted().orElse(false)) {
+      streamedParts.removeIf(GeminiLlmConnection::hasText);
+      // Unlike in ADK Python, the full text does not carry interrupted; the response below does.
+      pendingText.flush().ifPresent(emitter::onNext);
+    }
+
     LlmResponse.Builder builder = LlmResponse.builder();
-    serverContent.modelTurn().ifPresent(builder::content);
-    return builder
-        .partial(serverContent.turnComplete().map(completed -> !completed).orElse(false))
-        .turnComplete(serverContent.turnComplete().orElse(false))
-        .interrupted(serverContent.interrupted().orElse(null))
-        .inputTranscription(serverContent.inputTranscription().orElse(null))
-        .outputTranscription(serverContent.outputTranscription().orElse(null))
-        .build();
+    if (streamedParts.size() == parts.size()) {
+      serverContent.modelTurn().ifPresent(builder::content);
+    } else if (!streamedParts.isEmpty()) {
+      builder.content(serverContent.modelTurn().get().toBuilder().parts(streamedParts).build());
+    }
+    // Only text is partial: it is emitted again in full, as in ADK Python.
+    boolean streamsText = streamedParts.stream().anyMatch(GeminiLlmConnection::hasText);
+    builder
+        .partial(streamsText)
+        .turnComplete(turnComplete)
+        .interrupted(serverContent.interrupted().orElse(null));
+    if (streamsText
+        && (serverContent.inputTranscription().isPresent()
+            || serverContent.outputTranscription().isPresent())) {
+      // A partial response is not persisted, so the transcriptions get a response of their own.
+      emitter.onNext(builder.build());
+      builder = LlmResponse.builder().partial(false).turnComplete(turnComplete);
+    }
+    emitter.onNext(
+        builder
+            .inputTranscription(serverContent.inputTranscription().orElse(null))
+            .outputTranscription(serverContent.outputTranscription().orElse(null))
+            .build());
+  }
+
+  /** Returns whether {@code part} has text; as in ADK Python, an empty string does not count. */
+  private static boolean hasText(Part part) {
+    return part.text().filter(text -> !text.isEmpty()).isPresent();
   }
 
   private static LlmResponse createToolCallResponse(LiveServerToolCall toolCall) {
@@ -349,6 +408,45 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
                 logger.warn("Error occurred while closing live transport", closeError);
                 return null; // Suppress error during close
               });
+    }
+  }
+
+  /** Model text that has been streamed in partial responses but not yet emitted in full. */
+  static final class PendingText {
+    private final StringBuilder text = new StringBuilder();
+    private boolean thought;
+
+    /**
+     * Returns whether {@code part} ends the pending text: text of the other thought kind, or a part
+     * that is neither text nor inline data.
+     */
+    private boolean isEndedBy(Part part) {
+      if (text.length() == 0) {
+        return false;
+      }
+      return hasText(part) ? part.thought().orElse(false) != thought : part.inlineData().isEmpty();
+    }
+
+    private void append(Part part) {
+      text.append(part.text().get());
+      thought = part.thought().orElse(false);
+    }
+
+    /** Returns the pending text as one non-partial response and clears it, or empty if none. */
+    private Optional<LlmResponse> flush() {
+      if (text.length() == 0) {
+        return Optional.empty();
+      }
+      Part.Builder part = Part.builder().text(text.toString());
+      if (thought) {
+        part.thought(true);
+      }
+      text.setLength(0);
+      return Optional.of(
+          LlmResponse.builder()
+              .content(Content.builder().role("model").parts(part.build()).build())
+              .partial(false)
+              .build());
     }
   }
 }
