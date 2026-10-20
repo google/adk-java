@@ -26,6 +26,10 @@ import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.spy;
 
 import com.google.adk.agents.Callbacks;
 import com.google.adk.agents.InvocationContext;
@@ -80,6 +84,64 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link BaseLlmFlow}. */
 @RunWith(JUnit4.class)
 public final class BaseLlmFlowTest {
+
+  @Test
+  public void run_synchronousModelError_callbackReturnsFallback() {
+    RuntimeException modelError = new RuntimeException("Model request failed");
+    Content fallbackContent = Content.fromParts(Part.fromText("Fallback response"));
+    AtomicInteger callbackCalls = new AtomicInteger();
+
+    TestLlm testLlm = spy(createTestLlm(createLlmResponse(fallbackContent)));
+    doThrow(modelError).when(testLlm).generateContent(any(LlmRequest.class), anyBoolean());
+
+    Callbacks.OnModelErrorCallback onErrorCallback =
+        (ctx, request, error) -> {
+          callbackCalls.incrementAndGet();
+          assertThat(error).isSameInstanceAs(modelError);
+          return Maybe.just(createLlmResponse(fallbackContent));
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm).onModelErrorCallback(onErrorCallback).build());
+
+    List<Event> events =
+        createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet();
+
+    assertThat(callbackCalls.get()).isEqualTo(1);
+    assertThat(events).hasSize(1);
+    assertThat(getOnlyElement(events).content()).hasValue(fallbackContent);
+  }
+
+  @Test
+  public void run_synchronousModelError_emptyCallbackPropagatesOriginalError() {
+    RuntimeException modelError = new RuntimeException("Model request failed");
+    AtomicInteger callbackCalls = new AtomicInteger();
+
+    TestLlm testLlm =
+        spy(createTestLlm(createLlmResponse(Content.fromParts(Part.fromText("Unused")))));
+    doThrow(modelError).when(testLlm).generateContent(any(LlmRequest.class), anyBoolean());
+
+    Callbacks.OnModelErrorCallback onErrorCallback =
+        (ctx, request, error) -> {
+          callbackCalls.incrementAndGet();
+          assertThat(error).isSameInstanceAs(modelError);
+          return Maybe.empty();
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm).onModelErrorCallback(onErrorCallback).build());
+
+    RuntimeException thrown =
+        assertThrows(
+            RuntimeException.class,
+            () ->
+                createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet());
+
+    assertThat(thrown).isSameInstanceAs(modelError);
+    assertThat(callbackCalls.get()).isEqualTo(1);
+  }
 
   @Test
   public void run_singleTextResponse_returnsSingleEvent() {
