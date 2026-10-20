@@ -22,12 +22,15 @@ import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.google.adk.JsonBaseModel;
 import com.google.adk.a2a.common.A2AClientError;
 import com.google.adk.a2a.common.A2AMetadata;
+import com.google.adk.a2a.converters.EventConverter;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.Callbacks;
@@ -42,6 +45,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.a2a.client.Client;
@@ -57,6 +61,7 @@ import io.a2a.spec.FilePart;
 import io.a2a.spec.FileWithBytes;
 import io.a2a.spec.FileWithUri;
 import io.a2a.spec.Message;
+import io.a2a.spec.MessageSendParams;
 import io.a2a.spec.Task;
 import io.a2a.spec.TaskArtifactUpdateEvent;
 import io.a2a.spec.TaskState;
@@ -140,6 +145,250 @@ public final class RemoteA2AAgentTest {
             .runConfig(RunConfig.builder().build())
             .endInvocation(false)
             .build();
+  }
+
+  @Test
+  public void runAsync_withoutMetadataProvider_doesNotForwardSessionState() {
+    session.state().put("user_id", "customer-42");
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("Done"), agentCard));
+
+    var unused = createAgent().runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(captureSentMessage().getMetadata()).isNull();
+  }
+
+  @Test
+  public void runAsync_metadataProvider_receivesCompleteMessageAndInvocation() {
+    AtomicInteger calls = new AtomicInteger();
+    session.state().put("user_id", "customer-42");
+    session.state().put("private_key", "not-forwarded");
+    RemoteA2AAgent agent =
+        getAgentBuilder()
+            .requestMetadataProvider(
+                (context, message) -> {
+                  calls.incrementAndGet();
+                  assertThat(context.invocationId()).isEqualTo(invocationContext.invocationId());
+                  assertThat(context.session()).isSameInstanceAs(session);
+                  assertThat(context.agent()).isInstanceOf(RemoteA2AAgent.class);
+                  assertThat(message.getMessageId()).isNotEmpty();
+                  assertThat(message.getRole()).isEqualTo(Message.Role.USER);
+                  assertThat(((TextPart) message.getParts().get(0)).getText()).isEqualTo("Hello");
+                  return Map.of("user_id", context.session().state().get("user_id"));
+                })
+            .build();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("Done"), agentCard));
+
+    var unused = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(calls.get()).isEqualTo(1);
+    assertThat(captureSentMessage().getMetadata()).containsExactly("user_id", "customer-42");
+  }
+
+  @Test
+  public void runAsync_metadataProvider_preservesFunctionCallTaskAndContext() {
+    Event call =
+        Event.builder()
+            .author("remote-agent")
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.builder()
+                            .functionCall(
+                                FunctionCall.builder().name("lookup").id("call-1").build())
+                            .build())
+                    .build())
+            .customMetadata(
+                List.of(
+                    CustomMetadata.builder()
+                        .key(EventConverter.ADK_TASK_ID_KEY)
+                        .stringValue("task-42")
+                        .build(),
+                    CustomMetadata.builder()
+                        .key(EventConverter.ADK_CONTEXT_ID_KEY)
+                        .stringValue("context-42")
+                        .build()))
+            .build();
+    Event response =
+        Event.builder()
+            .author("user")
+            .content(
+                Content.builder()
+                    .role("user")
+                    .parts(
+                        Part.builder()
+                            .functionResponse(
+                                FunctionResponse.builder()
+                                    .name("lookup")
+                                    .id("call-1")
+                                    .response(Map.of("result", "found"))
+                                    .build())
+                            .build())
+                    .build())
+            .build();
+    Session followup =
+        Session.builder("followup")
+            .appName("demo")
+            .userId("user")
+            .events(List.of(call, response))
+            .build();
+    RemoteA2AAgent agent =
+        getAgentBuilder()
+            .requestMetadataProvider(
+                (context, message) -> {
+                  assertThat(message.getTaskId()).isEqualTo("task-42");
+                  assertThat(message.getContextId()).isEqualTo("context-42");
+                  return Map.of("selected", true);
+                })
+            .build();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("Done"), agentCard));
+
+    var unused =
+        agent
+            .runAsync(invocationContext.toBuilder().session(followup).build())
+            .toList()
+            .blockingGet();
+
+    Message sent = captureSentMessage();
+    assertThat(sent.getTaskId()).isEqualTo("task-42");
+    assertThat(sent.getContextId()).isEqualTo("context-42");
+    assertThat(sent.getMetadata()).containsExactly("selected", true);
+  }
+
+  @Test
+  public void runAsync_metadataProvider_isEvaluatedForEachInvocation() {
+    RemoteA2AAgent agent =
+        getAgentBuilder()
+            .requestMetadataProvider(
+                (context, message) -> Map.of("user_id", context.session().state().get("user_id")))
+            .build();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("Done"), agentCard));
+    session.state().put("user_id", "first");
+    var first = agent.runAsync(invocationContext).toList().blockingGet();
+    session.state().put("user_id", "second");
+    var second = agent.runAsync(invocationContext).toList().blockingGet();
+
+    ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+    verify(mockClient, times(2))
+        .sendMessage(captor.capture(), any(List.class), any(Consumer.class), any());
+    assertThat(captor.getAllValues().get(0).getMetadata()).containsExactly("user_id", "first");
+    assertThat(captor.getAllValues().get(1).getMetadata()).containsExactly("user_id", "second");
+  }
+
+  @Test
+  public void runAsync_metadataProviderNullResult_leavesMetadataUnset() {
+    RemoteA2AAgent agent =
+        getAgentBuilder().requestMetadataProvider((context, message) -> null).build();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("Done"), agentCard));
+
+    var unused = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(captureSentMessage().getMetadata()).isNull();
+  }
+
+  @Test
+  public void runAsync_metadataProviderEmptyResult_preservesEmptyMap() {
+    RemoteA2AAgent agent =
+        getAgentBuilder().requestMetadataProvider((context, message) -> Map.of()).build();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("Done"), agentCard));
+
+    var unused = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(captureSentMessage().getMetadata()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_metadataProviderResult_isCopiedAndAllowsJsonNull() {
+    Map<String, Object> metadata = new HashMap<>();
+    metadata.put("optional", null);
+    metadata.put("nested", Map.of("roles", List.of("reader")));
+    RemoteA2AAgent agent =
+        getAgentBuilder().requestMetadataProvider((context, message) -> metadata).build();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("Done"), agentCard));
+
+    var unused = agent.runAsync(invocationContext).toList().blockingGet();
+    metadata.put("unexpected", "later");
+
+    assertThat(captureSentMessage().getMetadata())
+        .containsExactly("optional", null, "nested", Map.of("roles", List.of("reader")));
+  }
+
+  @Test
+  public void runAsync_metadataProviderFailure_abortsSend() {
+    IllegalStateException failure = new IllegalStateException("provider failure");
+    RemoteA2AAgent agent =
+        getAgentBuilder()
+            .requestMetadataProvider(
+                (context, message) -> {
+                  throw failure;
+                })
+            .build();
+
+    agent.runAsync(invocationContext).test().assertError(failure);
+
+    verify(mockClient, times(0)).sendMessage(any(), any(List.class), any(Consumer.class), any());
+  }
+
+  @Test
+  public void runAsync_metadataSurvivesSdkJsonRoundTripWithoutBecomingRequestMetadata()
+      throws Exception {
+    Map<String, Object> selected = Map.of("user_id", "customer-42", "roles", List.of("reader"));
+    RemoteA2AAgent agent =
+        getAgentBuilder().requestMetadataProvider((context, message) -> selected).build();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("Done"), agentCard));
+    var unused = agent.runAsync(invocationContext).toList().blockingGet();
+    MessageSendParams params =
+        new MessageSendParams.Builder()
+            .message(captureSentMessage())
+            .metadata(Map.of("request_key", "unchanged"))
+            .build();
+    var mapper = JsonBaseModel.getMapper();
+
+    MessageSendParams received =
+        mapper.readValue(mapper.writeValueAsString(params), MessageSendParams.class);
+
+    assertThat(received.message().getMetadata()).isEqualTo(selected);
+    assertThat(received.metadata()).containsExactly("request_key", "unchanged");
+    assertThat(((TextPart) received.message().getParts().get(0)).getText()).isEqualTo("Hello");
+  }
+
+  @Test
+  public void runAsync_clearedMetadataProvider_keepsDefaultBehavior() {
+    RemoteA2AAgent agent =
+        getAgentBuilder()
+            .requestMetadataProvider((context, message) -> Map.of("unused", true))
+            .requestMetadataProvider(null)
+            .build();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("Done"), agentCard));
+
+    var unused = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(captureSentMessage().getMetadata()).isNull();
+  }
+
+  @Test
+  public void runAsync_emptySession_doesNotEvaluateMetadataProvider() {
+    A2ARequestMetadataProvider provider = mock(A2ARequestMetadataProvider.class);
+    RemoteA2AAgent agent = getAgentBuilder().requestMetadataProvider(provider).build();
+    Session empty =
+        Session.builder("empty").appName("demo").userId("user").events(List.of()).build();
+
+    assertThat(
+            agent
+                .runAsync(invocationContext.toBuilder().session(empty).build())
+                .toList()
+                .blockingGet())
+        .isEmpty();
+
+    verifyNoInteractions(provider);
+    verify(mockClient, times(0)).sendMessage(any(), any(List.class), any(Consumer.class), any());
+  }
+
+  @SuppressWarnings("unchecked")
+  private Message captureSentMessage() {
+    ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+    verify(mockClient).sendMessage(captor.capture(), any(List.class), any(Consumer.class), any());
+    return captor.getValue();
   }
 
   @Test
