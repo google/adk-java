@@ -17,6 +17,7 @@
 package com.google.adk.utils;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.sessions.Session;
 import com.google.adk.sessions.State;
 import com.google.common.collect.ImmutableSet;
@@ -34,6 +35,11 @@ public final class InstructionUtils {
 
   private static final Pattern INSTRUCTION_PLACEHOLDER_PATTERN =
       Pattern.compile("\\{+[^\\{\\}]*\\}+");
+
+  // Also skips braces preceded by '$', '{' or '\', so ${key}, ${{key}} and \{key} are left as
+  // written. The '{' keeps the inner braces of ${{key}} and \{{key}} from matching on their own.
+  private static final Pattern DOLLAR_ESCAPED_PLACEHOLDER_PATTERN =
+      Pattern.compile("(?<![\\$\\{\\\\])\\{+[^\\{\\}]*\\}+");
 
   private InstructionUtils() {}
 
@@ -74,9 +80,18 @@ public final class InstructionUtils {
    *         <li>If an optional placeholder cannot be resolved (e.g., variable not found, artifact
    *             not found), it is replaced with an empty string.
    *       </ul>
+   *   <li><b>Escaped Placeholders:</b> A placeholder right after {@code $} or {@code \}, such as
+   *       {@code ${key}}, {@code ${{key}}} or {@code \{key}}.
+   *       <ul>
+   *         <li>When {@link com.google.adk.agents.RunConfig#dollarEscapedPlaceholders()} is {@code
+   *             true}, it is left as written, backslash included.
+   *         <li>When it is {@code false}, the default, it is resolved like any other placeholder
+   *             and the {@code $} or {@code \} before it is kept, so {@code ${key}} with {@code
+   *             key} set to {@code 9.99} becomes {@code $9.99}.
+   *       </ul>
    * </ul>
    *
-   * <b>Example Usage:</b>
+   * <p><b>Example Usage:</b>
    *
    * <pre>{@code
    * InvocationContext context = ...; // Assume this is initialized with session and artifact service
@@ -113,7 +128,12 @@ public final class InstructionUtils {
     if (context == null) {
       return Single.error(new NullPointerException("context cannot be null"));
     }
-    Matcher matcher = INSTRUCTION_PLACEHOLDER_PATTERN.matcher(template);
+    RunConfig runConfig = context.runConfig();
+    Pattern placeholderPattern =
+        runConfig != null && runConfig.dollarEscapedPlaceholders()
+            ? DOLLAR_ESCAPED_PLACEHOLDER_PATTERN
+            : INSTRUCTION_PLACEHOLDER_PATTERN;
+    Matcher matcher = placeholderPattern.matcher(template);
     List<Single<String>> parts = new ArrayList<>();
     int lastEnd = 0;
 

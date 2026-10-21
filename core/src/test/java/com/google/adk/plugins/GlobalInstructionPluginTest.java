@@ -20,6 +20,7 @@ import static org.mockito.Mockito.when;
 
 import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.sessions.Session;
@@ -113,6 +114,18 @@ public class GlobalInstructionPluginTest {
     assertThat(parts).hasSize(1);
     assertThat(parts.get(0).text()).hasValue("Hello Alice");
     assertThat(systemInstruction.role()).isEmpty();
+  }
+
+  @Test
+  public void beforeModelCallback_dollarEscapedPlaceholders_keepsEscapedPlaceholder() {
+    state.put("price", "9.99");
+    when(mockInvocationContext.runConfig())
+        .thenReturn(RunConfig.builder().dollarEscapedPlaceholders(true).build());
+    LlmRequest.Builder llmRequestBuilder = LlmRequest.builder();
+    GlobalInstructionPlugin plugin = new GlobalInstructionPlugin("Price: ${price}, {price}");
+    plugin.beforeModelCallback(mockCallbackContext, llmRequestBuilder).test().assertComplete();
+    Content systemInstruction = llmRequestBuilder.build().config().get().systemInstruction().get();
+    assertThat(systemInstruction.parts().get().get(0).text()).hasValue("Price: ${price}, 9.99");
   }
 
   @Test

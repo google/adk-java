@@ -4776,6 +4776,18 @@ class KtRunnerInteropTest {
   }
 
   @Test
+  fun runConfigFromJava_dollarEscapedPlaceholders_failsRatherThanDroppingIt() {
+    val java = JavaRunConfig.builder().dollarEscapedPlaceholders(true).build()
+
+    val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJava(java) }
+
+    assertTrue(
+      failure.message?.contains("dollarEscapedPlaceholders") == true,
+      "the failure should name dollarEscapedPlaceholders, got ${failure.message}",
+    )
+  }
+
+  @Test
   fun runConfigFromJava_bidiStreaming_failsRatherThanDowngradingToNone() {
     val java = JavaRunConfig.builder().streamingMode(JavaRunConfig.StreamingMode.BIDI).build()
 

@@ -72,8 +72,17 @@ public final class RunConfigTest {
     assertThat(runConfig.inputAudioTranscription()).isNull();
     assertThat(runConfig.maxLlmCalls()).isEqualTo(500);
     assertThat(runConfig.autoCreateSession()).isFalse();
+    assertThat(runConfig.dollarEscapedPlaceholders()).isFalse();
     assertThat(runConfig.groupFunctionResponsesInHistoryOverride()).isEmpty();
     assertThat(runConfig.groupFunctionResponsesInHistory()).isFalse();
+  }
+
+  @Test
+  public void dollarEscapedPlaceholders_propagatedByCopy() {
+    RunConfig source = RunConfig.builder().dollarEscapedPlaceholders(true).build();
+
+    assertThat(RunConfig.builder(source).build().dollarEscapedPlaceholders()).isTrue();
+    assertThat(source.toBuilder().build().dollarEscapedPlaceholders()).isTrue();
   }
 
   @Test

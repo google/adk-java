@@ -58,6 +58,7 @@ internal object RunConfigCodec {
       if (config.inputAudioTranscription() != null) add("inputAudioTranscription")
       if (config.groupFunctionResponsesInHistoryOverride().isPresent)
         add("groupFunctionResponsesInHistoryOverride")
+      if (config.dollarEscapedPlaceholders()) add("dollarEscapedPlaceholders")
     }
     require(unsupported.isEmpty()) {
       "RunConfig settings not supported by the ADK Kotlin engine: $unsupported"
