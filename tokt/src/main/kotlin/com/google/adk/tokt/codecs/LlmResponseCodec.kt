@@ -27,9 +27,9 @@ import kotlin.jvm.optionals.getOrNull
  * ([JavaModelToKt][com.google.adk.tokt.adapters.JavaModelToKt]); Kotlin to Java hands a response to
  * a bridged Java plugin's `afterModel`.
  *
- * Carries content, error message, streaming flags, model version, finish reason, usage metadata,
- * grounding metadata, average log-probs, error code, and custom metadata. Citation metadata and
- * logprobs results have no ADK Java facade field, so they are not mapped.
+ * Carries content, error message, streaming flags, `turnComplete`, the live transcriptions, model
+ * version, finish reason, usage metadata, grounding metadata, average log-probs, error code, and
+ * custom metadata. Every other field, such as citation metadata and logprobs results, is dropped.
  */
 internal object LlmResponseCodec {
 
@@ -40,6 +40,11 @@ internal object LlmResponseCodec {
       errorMessage = response.errorMessage().getOrNull(),
       partial = response.partial().getOrNull() ?: false,
       interrupted = response.interrupted().getOrNull() ?: false,
+      turnComplete = response.turnComplete().getOrNull(),
+      inputTranscription =
+        response.inputTranscription().getOrNull()?.let { TranscriptionCodec.fromJava(it) },
+      outputTranscription =
+        response.outputTranscription().getOrNull()?.let { TranscriptionCodec.fromJava(it) },
       modelVersion = response.modelVersion().getOrNull(),
       finishReason = response.finishReason().getOrNull()?.toKt(),
       usageMetadata = response.usageMetadata().getOrNull()?.let { UsageMetadataCodec.fromJava(it) },
@@ -58,6 +63,9 @@ internal object LlmResponseCodec {
     val builder =
       JavaLlmResponse.builder().partial(response.partial).interrupted(response.interrupted)
     response.content?.let { builder.content(ContentCodec.toJava(it)) }
+    response.turnComplete?.let { builder.turnComplete(it) }
+    response.inputTranscription?.let { builder.inputTranscription(TranscriptionCodec.toJava(it)) }
+    response.outputTranscription?.let { builder.outputTranscription(TranscriptionCodec.toJava(it)) }
     response.errorMessage?.let { builder.errorMessage(it) }
     response.modelVersion?.let { builder.modelVersion(it) }
     response.finishReason?.let { builder.finishReason(it.toGenai()) }

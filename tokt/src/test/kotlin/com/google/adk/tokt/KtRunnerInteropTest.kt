@@ -37,6 +37,7 @@ import com.google.adk.kt.apps.App as KtApp
 import com.google.adk.kt.callbacks.AfterModelCallback as KtAfterModelCallback
 import com.google.adk.kt.events.Event as KtEvent
 import com.google.adk.kt.events.EventActions as KtEventActions
+import com.google.adk.kt.models.LlmRequest as KtLlmRequest
 import com.google.adk.kt.models.LlmResponse as KtLlmResponse
 import com.google.adk.kt.runners.InMemoryRunner as KtInMemoryRunner
 import com.google.adk.kt.runners.Runner as KtRunner
@@ -49,6 +50,8 @@ import com.google.adk.kt.sessions.State as KtState
 import com.google.adk.kt.tools.BaseTool as KtBaseTool
 import com.google.adk.kt.tools.ToolContext as KtToolContext
 import com.google.adk.kt.types.Blob as KtBlob
+import com.google.adk.kt.types.Citation as KtCitation
+import com.google.adk.kt.types.CitationMetadata as KtCitationMetadata
 import com.google.adk.kt.types.Content as KtContent
 import com.google.adk.kt.types.FileData as KtFileData
 import com.google.adk.kt.types.FinishReason as KtFinishReason
@@ -60,9 +63,13 @@ import com.google.adk.kt.types.GenerationConfigRoutingConfig as KtRoutingConfig
 import com.google.adk.kt.types.GenerationConfigRoutingConfigManualRoutingMode as KtManualRoutingMode
 import com.google.adk.kt.types.GoogleMaps as KtGoogleMaps
 import com.google.adk.kt.types.GoogleSearch as KtGoogleSearch
+import com.google.adk.kt.types.GroundingMetadata as KtGroundingMetadata
 import com.google.adk.kt.types.HarmBlockMethod as KtHarmBlockMethod
 import com.google.adk.kt.types.HarmBlockThreshold as KtHarmBlockThreshold
 import com.google.adk.kt.types.HarmCategory as KtHarmCategory
+import com.google.adk.kt.types.InteractionStatus as KtInteractionStatus
+import com.google.adk.kt.types.LiveServerGoAway as KtLiveServerGoAway
+import com.google.adk.kt.types.LiveServerSessionResumptionUpdate as KtLiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.MediaResolution as KtMediaResolution
 import com.google.adk.kt.types.Part as KtPart
 import com.google.adk.kt.types.PartialArgValue as KtPartialArgValue
@@ -74,12 +81,16 @@ import com.google.adk.kt.types.ThinkingConfig as KtThinkingConfig
 import com.google.adk.kt.types.ThinkingLevel as KtThinkingLevel
 import com.google.adk.kt.types.Tool as KtTool
 import com.google.adk.kt.types.ToolConfig as KtToolConfig
+import com.google.adk.kt.types.Transcription as KtTranscription
+import com.google.adk.kt.types.TurnCompleteReason as KtTurnCompleteReason
 import com.google.adk.kt.types.Type as KtType
 import com.google.adk.kt.types.UrlContext as KtUrlContext
 import com.google.adk.kt.types.VertexAISearch as KtVertexAISearch
 import com.google.adk.kt.types.VertexAISearchDataStoreSpec as KtVertexAISearchDataStoreSpec
 import com.google.adk.kt.types.VertexRagStore as KtVertexRagStore
 import com.google.adk.kt.types.VertexRagStoreRagResource as KtVertexRagStoreRagResource
+import com.google.adk.kt.types.VoiceActivity as KtVoiceActivity
+import com.google.adk.kt.types.WordInfo as KtWordInfo
 import com.google.adk.memory.InMemoryMemoryService as JavaInMemoryMemoryService
 import com.google.adk.models.BaseLlm as JavaBaseLlm
 import com.google.adk.models.BaseLlmConnection as JavaBaseLlmConnection
@@ -107,6 +118,7 @@ import com.google.adk.tokt.codecs.PartCodec
 import com.google.adk.tokt.codecs.RunConfigCodec
 import com.google.adk.tokt.codecs.SchemaCodec
 import com.google.adk.tokt.codecs.SessionCodec
+import com.google.adk.tokt.codecs.TranscriptionCodec
 import com.google.adk.tokt.codecs.agentStateFromJava
 import com.google.adk.tokt.codecs.agentStateToJava
 import com.google.adk.tokt.codecs.stateValueFromJava
@@ -145,7 +157,9 @@ import com.google.genai.types.ToolCall as GenaiToolCall
 import com.google.genai.types.ToolConfig as GenaiToolConfig
 import com.google.genai.types.ToolResponse as GenaiToolResponse
 import com.google.genai.types.TrafficType as GenaiTrafficType
+import com.google.genai.types.Transcription as GenaiTranscription
 import com.google.genai.types.VideoMetadata as GenaiVideoMetadata
+import com.google.genai.types.WordInfo as GenaiWordInfo
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Maybe
@@ -503,6 +517,19 @@ class KtRunnerInteropTest {
   private class FailingKtAgent : KtBaseAgent(name = "failing") {
     override fun runAsyncImpl(context: KtInvocationContext): Flow<KtEvent> = flow {
       throw RuntimeException("boom")
+    }
+  }
+
+  /** A native Kotlin agent emitting grounding metadata that has no image search queries. */
+  private class GroundedKtAgent : KtBaseAgent(name = "grounded") {
+    override fun runAsyncImpl(context: KtInvocationContext): Flow<KtEvent> = flow {
+      emit(
+        KtEvent(
+          invocationId = context.invocationId,
+          author = name,
+          groundingMetadata = KtGroundingMetadata(webSearchQueries = listOf("q")),
+        )
+      )
     }
   }
 
@@ -4042,6 +4069,160 @@ class KtRunnerInteropTest {
   }
 
   @Test
+  fun transcriptionCodec_everyField_convertsInBothDirections() {
+    // Built independently on each side, so the codec cannot agree with itself by accident.
+    assertEquals(genaiTranscription("in"), TranscriptionCodec.toJava(ktTranscription("in")))
+    assertEquals(ktTranscription("in"), TranscriptionCodec.fromJava(genaiTranscription("in")))
+  }
+
+  @Test
+  fun eventCodec_liveTranscriptions_crossToTheJavaEventAndBack() {
+    // Wiring check: each slot crosses as itself, so a swap or a dropped slot fails.
+    val ktEvent =
+      KtEvent(
+        author = "model",
+        inputTranscription = ktTranscription("in"),
+        outputTranscription = ktTranscription("out"),
+      )
+
+    val javaEvent = EventCodec.toJava(ktEvent)
+
+    assertEquals(Optional.of(genaiTranscription("in")), javaEvent.inputTranscription())
+    assertEquals(Optional.of(genaiTranscription("out")), javaEvent.outputTranscription())
+    val back = EventCodec.fromJava(javaEvent)
+    assertEquals(ktTranscription("in"), back.inputTranscription)
+    assertEquals(ktTranscription("out"), back.outputTranscription)
+  }
+
+  @Test
+  fun eventCodec_fieldsAdkJavaLacks_leaveNoTraceOnTheJavaEvent() {
+    val base = KtEvent(author = "model")
+    val ktEvent =
+      base.copy(
+        citationMetadata =
+          KtCitationMetadata(citationSources = listOf(KtCitation(title = "t", uri = "u"))),
+        turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = KtInteractionStatus.IDLE,
+        liveSessionId = "live-1",
+        liveSessionResumptionUpdate =
+          KtLiveServerSessionResumptionUpdate(newHandle = "handle", resumable = true),
+        voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+      )
+
+    // A Kotlin-only field must not leak into a field ADK Java has.
+    assertEquals(EventCodec.toJava(base), EventCodec.toJava(ktEvent))
+  }
+
+  @Test
+  fun eventCodec_absentTranscriptions_stayAbsent() {
+    val javaEvent = EventCodec.toJava(KtEvent(author = "model"))
+
+    assertEquals(Optional.empty(), javaEvent.inputTranscription())
+    assertEquals(Optional.empty(), javaEvent.outputTranscription())
+    assertNull(EventCodec.fromJava(javaEvent).inputTranscription)
+    assertNull(EventCodec.fromJava(javaEvent).outputTranscription)
+  }
+
+  @Test
+  fun llmResponseCodec_turnCompleteAndTranscriptions_crossToTheJavaResponseAndBack() {
+    val ktResponse =
+      KtLlmResponse(
+        turnComplete = true,
+        inputTranscription = ktTranscription("in"),
+        outputTranscription = ktTranscription("out"),
+      )
+
+    val javaResponse = LlmResponseCodec.toJava(ktResponse)
+
+    assertEquals(Optional.of(true), javaResponse.turnComplete())
+    assertEquals(Optional.of(genaiTranscription("in")), javaResponse.inputTranscription())
+    assertEquals(Optional.of(genaiTranscription("out")), javaResponse.outputTranscription())
+    val back = LlmResponseCodec.fromJava(javaResponse)
+    assertEquals(true, back.turnComplete)
+    assertEquals(ktTranscription("in"), back.inputTranscription)
+    assertEquals(ktTranscription("out"), back.outputTranscription)
+  }
+
+  @Test
+  fun llmResponseCodec_turnComplete_keepsFalseApartFromAbsent() {
+    assertEquals(
+      false,
+      LlmResponseCodec.fromJava(JavaLlmResponse.builder().turnComplete(false).build()).turnComplete,
+    )
+    assertNull(LlmResponseCodec.fromJava(JavaLlmResponse.builder().build()).turnComplete)
+    assertEquals(
+      Optional.of(false),
+      LlmResponseCodec.toJava(KtLlmResponse(turnComplete = false)).turnComplete(),
+    )
+    assertEquals(Optional.empty(), LlmResponseCodec.toJava(KtLlmResponse()).turnComplete())
+  }
+
+  @Test
+  fun llmResponseCodec_fieldsAdkJavaLacks_areDropped() {
+    val ktResponse =
+      KtLlmResponse(
+        turnComplete = true,
+        turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = KtInteractionStatus.IDLE,
+        liveSessionId = "live-1",
+        liveSessionResumptionUpdate = KtLiveServerSessionResumptionUpdate(newHandle = "handle"),
+        goAway = KtLiveServerGoAway(timeLeft = 5.seconds),
+        voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+      )
+
+    val back = LlmResponseCodec.fromJava(LlmResponseCodec.toJava(ktResponse))
+
+    assertEquals(KtLlmResponse(turnComplete = true), back)
+  }
+
+  @Test
+  fun asKtModel_javaResponseWithTurnComplete_reachesTheKotlinEngine() = runBlocking {
+    // ADK Java sets turnComplete on live responses; a non-live Java model may set it too.
+    val javaModel =
+      object : JavaBaseLlm("turn-complete-model") {
+        override fun generateContent(
+          llmRequest: JavaLlmRequest,
+          stream: Boolean,
+        ): Flowable<JavaLlmResponse> =
+          Flowable.just(
+            JavaLlmResponse.builder().content(modelText("done")).turnComplete(true).build()
+          )
+
+        override fun connect(llmRequest: JavaLlmRequest): JavaBaseLlmConnection =
+          throw UnsupportedOperationException()
+      }
+
+    val responses = JavaAdkToKt.asKtModel(javaModel).generateContent(KtLlmRequest(), false).toList()
+
+    assertEquals(true, responses.single().turnComplete)
+  }
+
+  @Test
+  fun asKtSessionService_appendedTranscriptionEvent_isStoredWithItsTranscriptions() = runBlocking {
+    // Wiring check: a live run stores its transcription events through the adapted service.
+    val javaSessions = JavaInMemorySessionService()
+    val sessions = JavaAdkToKt.asKtSessionService(javaSessions)
+    val session = sessions.createSession(KtSessionKey("app", "u", "s"))
+
+    val unused =
+      sessions.appendEvent(
+        session,
+        KtEvent(
+          author = "model",
+          inputTranscription = ktTranscription("in"),
+          outputTranscription = ktTranscription("out"),
+        ),
+      )
+
+    val stored =
+      javaSessions.getSession("app", "u", "s", Optional.empty()).blockingGet()
+        ?: fail("the adapted Java service should hold the session")
+    val event = stored.immutableEvents().single()
+    assertEquals(Optional.of(genaiTranscription("in")), event.inputTranscription())
+    assertEquals(Optional.of(genaiTranscription("out")), event.outputTranscription())
+  }
+
+  @Test
   fun schemaCodec_carriesEveryFacet_roundTrips() {
     // Every facet the Kotlin Schema models must survive Java -> Kotlin -> Java, or structured
     // output (responseSchema) and tool parameter constraints are silently lost.
@@ -4132,6 +4313,42 @@ class KtRunnerInteropTest {
     val response = assertNotNull(rt.response().getOrNull(), "response schema should round-trip")
     assertEquals("STRING", response.type().getOrNull()?.knownEnum()?.name, "response type")
     assertEquals("the forecast", response.description().getOrNull(), "response description")
+  }
+
+  @Test
+  fun groundingMetadataCodec_withoutImageSearchQueries_leavesThemUnset() {
+    // The Kotlin list is nullable, but the genai builder's setter rejects a null argument.
+    val kt =
+      GroundingMetadataCodec.fromJava(
+        GenaiGroundingMetadata.builder().webSearchQueries(listOf("q")).build()
+      )
+    val java = GroundingMetadataCodec.toJava(KtGroundingMetadata(webSearchQueries = listOf("q")))
+
+    assertNull(kt.imageSearchQueries)
+    assertEquals(Optional.of(listOf("q")), java.webSearchQueries())
+    assertEquals(Optional.empty(), java.imageSearchQueries())
+  }
+
+  @Test
+  fun asJavaRunner_groundingMetadataWithoutImageSearchQueries_streamsTheEvent() {
+    // The same metadata through the Java runAsync API, which converts every engine event.
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(KtInMemoryRunner(agent = GroundedKtAgent(), appName = "app"))
+
+    val events =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("hi")).build(),
+          JavaRunConfig.builder().autoCreateSession(true).build(),
+        )
+        .toList()
+        .blockingGet()
+
+    val metadata = assertNotNull(events.firstNotNullOfOrNull { it.groundingMetadata().getOrNull() })
+    assertEquals(Optional.of(listOf("q")), metadata.webSearchQueries())
+    assertEquals(Optional.empty(), metadata.imageSearchQueries())
   }
 
   @Test
@@ -4816,5 +5033,34 @@ class KtRunnerInteropTest {
 
     fun modelText(text: String): GenaiContent =
       GenaiContent.builder().role("model").parts(GenaiPart.builder().text(text).build()).build()
+
+    /** A transcription with every field set and two words, distinct per [text]. */
+    fun ktTranscription(text: String) =
+      KtTranscription(
+        text = text,
+        finished = true,
+        languageCode = "en-US",
+        speakerLabel = "speaker-$text",
+        words =
+          listOf(
+            KtWordInfo(word = "$text-1", startOffset = "0.1s", endOffset = "0.4s"),
+            KtWordInfo(word = "$text-2", startOffset = "0.5s", endOffset = "0.9s"),
+          ),
+      )
+
+    /** The genai twin of [ktTranscription], built without the codec. */
+    fun genaiTranscription(text: String): GenaiTranscription =
+      GenaiTranscription.builder()
+        .text(text)
+        .finished(true)
+        .languageCode("en-US")
+        .speakerLabel("speaker-$text")
+        .words(
+          listOf(
+            GenaiWordInfo.builder().word("$text-1").startOffset("0.1s").endOffset("0.4s").build(),
+            GenaiWordInfo.builder().word("$text-2").startOffset("0.5s").endOffset("0.9s").build(),
+          )
+        )
+        .build()
   }
 }
