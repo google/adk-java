@@ -25,6 +25,8 @@ import com.google.adk.kt.sessions.SessionKey as KtSessionKey
 import com.google.adk.kt.sessions.State as KtState
 import com.google.adk.sessions.Session as JavaSession
 import com.google.adk.sessions.State as JavaState
+import com.google.adk.workflow.Route as JavaRoute
+import com.google.common.collect.ImmutableList
 import java.util.AbstractList
 import java.util.AbstractMap
 import java.util.Optional
@@ -81,6 +83,17 @@ internal class KtEventActionsToJavaView(private val actions: KtEventActions) : J
     actions.rewindBeforeInvocationId = rewindBeforeInvocationId
   }
 
+  override fun route(): Optional<ImmutableList<JavaRoute>> =
+    Optional.ofNullable(
+      actions.route?.let { routes ->
+        ImmutableList.copyOf(routes.map { WorkflowCodec.routeToJava(it) })
+      }
+    )
+
+  override fun setRoute(route: List<JavaRoute>?) {
+    actions.route = route?.map { WorkflowCodec.routeFromJava(it) }
+  }
+
   // Overridden so the write reaches the Kotlin side; the base setters write private fields the
   // overridden getters never read.
 
@@ -113,9 +126,9 @@ internal class KtEventActionsToJavaView(private val actions: KtEventActions) : J
  * Builds a read-only Java [JavaEventActions] snapshot from a Kotlin [KtEventActions], carrying the
  * deltas, the control-flow signals (skip-summarization, transfer, escalate, end-of-agent), the
  * requested tool confirmations, the compaction summary, the resumable-run `agentState`
- * ([agentStateToJava]), and the rewind marker (`rewindBeforeInvocationId`). Used when exposing an
- * existing Kotlin event to a Java runner ([EventCodec.toJava]); unlike [KtEventActionsToJavaView]
- * (a live write sink), nothing writes back through it.
+ * ([agentStateToJava]), the rewind marker (`rewindBeforeInvocationId`), and the workflow `route`.
+ * Used when exposing an existing Kotlin event to a Java runner ([EventCodec.toJava]); unlike
+ * [KtEventActionsToJavaView] (a live write sink), nothing writes back through it.
  */
 internal fun eventActionsToJava(actions: KtEventActions): JavaEventActions =
   JavaEventActions.builder()
@@ -131,6 +144,7 @@ internal fun eventActionsToJava(actions: KtEventActions): JavaEventActions =
     .compaction(actions.compaction?.let { EventCompactionCodec.toJava(it) })
     .agentState(agentStateToJava(actions.agentState))
     .rewindBeforeInvocationId(actions.rewindBeforeInvocationId)
+    .route(actions.route?.map { WorkflowCodec.routeToJava(it) })
     .build()
 
 /** Copies a Kotlin state delta to Java, mapping the Kotlin [KtState.REMOVED] deletion sentinel. */

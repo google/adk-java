@@ -27,12 +27,15 @@ import com.google.adk.events.Event as JavaEvent
 import com.google.adk.events.EventActions as JavaEventActions
 import com.google.adk.events.EventCompaction as JavaEventCompaction
 import com.google.adk.kt.agents.BaseAgent as KtBaseAgent
+import com.google.adk.kt.agents.Context as KtContext
 import com.google.adk.kt.agents.InvocationContext as KtInvocationContext
 import com.google.adk.kt.agents.LlmAgent as KtLlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig as KtResumabilityConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
 import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.ExperimentalWorkflowApi
+import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App as KtApp
 import com.google.adk.kt.callbacks.AfterModelCallback as KtAfterModelCallback
 import com.google.adk.kt.events.Event as KtEvent
@@ -40,6 +43,7 @@ import com.google.adk.kt.events.EventActions as KtEventActions
 import com.google.adk.kt.models.LlmResponse as KtLlmResponse
 import com.google.adk.kt.runners.InMemoryRunner as KtInMemoryRunner
 import com.google.adk.kt.runners.Runner as KtRunner
+import com.google.adk.kt.serialization.anyToJsonElement
 import com.google.adk.kt.sessions.GetSessionConfig as KtGetSessionConfig
 import com.google.adk.kt.sessions.InMemorySessionService as KtInMemorySessionService
 import com.google.adk.kt.sessions.Session as KtSession
@@ -80,6 +84,13 @@ import com.google.adk.kt.types.VertexAISearch as KtVertexAISearch
 import com.google.adk.kt.types.VertexAISearchDataStoreSpec as KtVertexAISearchDataStoreSpec
 import com.google.adk.kt.types.VertexRagStore as KtVertexRagStore
 import com.google.adk.kt.types.VertexRagStoreRagResource as KtVertexRagStoreRagResource
+import com.google.adk.kt.workflow.Edge as KtEdge
+import com.google.adk.kt.workflow.Node as KtNode
+import com.google.adk.kt.workflow.NodeInfo as KtNodeInfo
+import com.google.adk.kt.workflow.RequestInput as KtRequestInput
+import com.google.adk.kt.workflow.Route as KtRoute
+import com.google.adk.kt.workflow.Start as KtStart
+import com.google.adk.kt.workflow.Workflow as KtWorkflow
 import com.google.adk.memory.InMemoryMemoryService as JavaInMemoryMemoryService
 import com.google.adk.models.BaseLlm as JavaBaseLlm
 import com.google.adk.models.BaseLlmConnection as JavaBaseLlmConnection
@@ -96,6 +107,7 @@ import com.google.adk.sessions.Session as JavaSession
 import com.google.adk.sessions.SessionKey as JavaSessionKey
 import com.google.adk.sessions.State as JavaState
 import com.google.adk.tokt.adapters.reconcileActionsToKt
+import com.google.adk.tokt.codecs.ContentCodec
 import com.google.adk.tokt.codecs.EventCodec
 import com.google.adk.tokt.codecs.FunctionDeclarationCodec
 import com.google.adk.tokt.codecs.GenerateContentConfigCodec
@@ -114,6 +126,8 @@ import com.google.adk.tokt.codecs.typedDataFromJava
 import com.google.adk.tools.BaseTool as JavaBaseTool
 import com.google.adk.tools.BaseToolset as JavaBaseToolset
 import com.google.adk.tools.ToolContext as JavaToolContext
+import com.google.adk.workflow.NodeInfo as JavaNodeInfo
+import com.google.adk.workflow.Route as JavaRoute
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import com.google.genai.types.CodeExecutionResult as GenaiCodeExecutionResult
 import com.google.genai.types.Content as GenaiContent
@@ -150,6 +164,8 @@ import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Single
+import java.math.BigDecimal
+import java.math.BigInteger
 import java.time.Instant
 import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
@@ -503,6 +519,72 @@ class KtRunnerInteropTest {
   private class FailingKtAgent : KtBaseAgent(name = "failing") {
     override fun runAsyncImpl(context: KtInvocationContext): Flow<KtEvent> = flow {
       throw RuntimeException("boom")
+    }
+  }
+
+  /** A workflow node that emits [output] as its output and counts its runs. */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private class EmittingKtNode(override val name: String, private val output: Any) : KtNode {
+    var runs = 0
+      private set
+
+    override fun runNode(context: KtContext, nodeInput: Any?): Flow<Any?> = flow {
+      runs++
+      emit(output)
+    }
+  }
+
+  /** A workflow node that asks the user for input, which pauses the workflow. */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private class AskingKtNode(override val name: String, private val interruptId: String) : KtNode {
+    override fun runNode(context: KtContext, nodeInput: Any?): Flow<Any?> = flow {
+      emit(KtRequestInput(interruptId = interruptId, message = "Approve?"))
+    }
+  }
+
+  /** A workflow node that selects [route] and emits no output. */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private class RoutingKtNode(override val name: String, private val route: KtRoute) : KtNode {
+    override fun runNode(context: KtContext, nodeInput: Any?): Flow<Any?> = flow {
+      context.routes = listOf(route)
+    }
+  }
+
+  /**
+   * A Java tool that selects the route "yes", either in place or by replacing its actions
+   * wholesale.
+   */
+  private class JavaRoutingTool(private val replaceActions: Boolean) :
+    JavaBaseTool("java_route", "selects a workflow route") {
+    override fun declaration(): Optional<GenaiFunctionDeclaration> =
+      Optional.of(GenaiFunctionDeclaration.builder().name("java_route").build())
+
+    @JvmSuppressWildcards
+    override fun runAsync(
+      args: Map<String, Any>,
+      toolContext: JavaToolContext,
+    ): Single<Map<String, Any>> {
+      val route = listOf<JavaRoute>(JavaRoute.Tag("yes"))
+      if (replaceActions) {
+        toolContext.setActions(JavaEventActions.builder().route(route).build())
+      } else {
+        toolContext.actions().setRoute(route)
+      }
+      return Single.just(mapOf("ok" to true))
+    }
+  }
+
+  /** A Java plugin whose afterTool callback selects the route "yes". */
+  private class RoutingJavaPlugin : JavaBasePlugin("routing_plugin") {
+    @JvmSuppressWildcards
+    override fun afterToolCallback(
+      tool: JavaBaseTool,
+      toolArgs: Map<String, Any>,
+      toolContext: JavaToolContext,
+      result: Map<String, Any>,
+    ): Maybe<Map<String, Any>> {
+      toolContext.actions().setRoute(listOf(JavaRoute.Tag("yes")))
+      return Maybe.empty()
     }
   }
 
@@ -968,6 +1050,192 @@ class KtRunnerInteropTest {
       assertContains(lastPrompt, "keep me", "the turn before the rewind should stay in the prompt")
       assertFalse("forget me" in lastPrompt, "the rewound turn must not reach the model")
     }
+
+  @Test
+  @OptIn(ExperimentalWorkflowApi::class)
+  fun ktRunner_workflowThroughAnAdaptedJavaSessionService_reloadsNodeInfoOutputAndRoute() =
+    runBlocking {
+      // A resumed workflow reads these fields back, so the Java store must keep each one.
+      val sessions = JavaAdkToKt.asKtSessionService(JavaInMemorySessionService())
+      val draft = EmittingKtNode("draft", mapOf("text" to "hello", "tags" to listOf("a", "b")))
+      val router = RoutingKtNode("router", KtRoute.Tag("yes"))
+      val done = EmittingKtNode("done", KtContent.fromText("model", "finished"))
+      val workflow =
+        KtWorkflow(
+          name = "wf",
+          edges =
+            listOf(
+              KtEdge(KtStart, draft),
+              KtEdge(draft, router),
+              KtEdge(router, done, listOf(KtRoute.Tag("yes"))),
+            ),
+        )
+      val runner =
+        KtInMemoryRunner(
+          app = KtApp(appName = "app", rootNode = workflow),
+          sessionService = sessions,
+        )
+
+      val emitted = runner.turn().filter { it.nodeInfo != null }
+
+      assertTrue(emitted.any { it.output is Map<*, *> }, "a node should emit a value output")
+      assertTrue(emitted.any { it.output is KtContent }, "a node should emit a message output")
+      assertTrue(emitted.any { it.actions.route != null }, "a node should select a route")
+      val reloaded =
+        sessions.getSession(KtSessionKey("app", "u", "s"))?.events?.associateBy { it.id }
+          ?: fail("the adapted Java service should hold the session")
+      fun KtEvent.workflowFields() = Triple(nodeInfo, output, actions.route)
+      assertEquals(
+        emitted.map { it.workflowFields() },
+        emitted.map { reloaded[it.id]?.workflowFields() },
+        "each node event should reload with its node info, output and route",
+      )
+    }
+
+  @Test
+  @OptIn(ExperimentalWorkflowApi::class)
+  fun ktRunner_workflowResumedThroughAnAdaptedJavaSessionService_replaysFinishedNodes() =
+    runBlocking {
+      // The answering turn reloads the session from the Java store, so prep must replay from it.
+      val prep = EmittingKtNode("prep", "prepared")
+      val ask = AskingKtNode("ask", "ask_1")
+      val done = EmittingKtNode("done", "finished")
+      val workflow =
+        KtWorkflow(
+          name = "wf",
+          edges = listOf(KtEdge(KtStart, prep), KtEdge(prep, ask), KtEdge(ask, done)),
+        )
+      val runner =
+        KtInMemoryRunner(
+          app =
+            KtApp(
+              appName = "app",
+              rootNode = workflow,
+              resumabilityConfig = KtResumabilityConfig(isResumable = true),
+            ),
+          sessionService = JavaAdkToKt.asKtSessionService(JavaInMemorySessionService()),
+        )
+      runner.turn()
+
+      val answer =
+        KtFunctionResponse(
+          name = KtRequestInput.FUNCTION_CALL_NAME,
+          id = "ask_1",
+          response = mapOf("approved" to true),
+        )
+      runner
+        .runAsync(
+          userId = "u",
+          sessionId = "s",
+          newMessage = KtContent(role = "user", parts = listOf(KtPart(functionResponse = answer))),
+        )
+        .toList()
+
+      assertEquals(1, prep.runs, "prep finished before the pause, so it should replay")
+      assertEquals(1, done.runs, "the answer should let the workflow continue past the pause")
+    }
+
+  @Test
+  @OptIn(ExperimentalWorkflowApi::class, FrameworkInternalApi::class)
+  fun asJavaRunner_workflowOutputs_reachJavaCodeAsJavaTypes() {
+    // Java callers and Java session services read these events, so outputs must use Java types.
+    val sessions = JavaInMemorySessionService()
+    val message = EmittingKtNode("message", KtContent.fromText("model", "drafted"))
+    val json = EmittingKtNode("json", anyToJsonElement(mapOf("k" to 1)))
+    val workflow =
+      KtWorkflow(name = "wf", edges = listOf(KtEdge(KtStart, message), KtEdge(message, json)))
+    val javaRunner =
+      KotlinAdkToJava.asJavaRunner(
+        KtInMemoryRunner(
+          app = KtApp(appName = "app", rootNode = workflow),
+          sessionService = JavaAdkToKt.asKtSessionService(sessions),
+        )
+      )
+
+    val streamed =
+      javaRunner
+        .runAsync(
+          "u",
+          "s",
+          GenaiContent.builder().role("user").parts(GenaiPart.fromText("go")).build(),
+          JavaRunConfig.builder().autoCreateSession(true).build(),
+        )
+        .toList()
+        .blockingGet()
+    val stored =
+      sessions.getSession("app", "u", "s", Optional.empty()).blockingGet()?.events().orEmpty()
+
+    for ((source, events) in mapOf("runAsync" to streamed, "the session service" to stored)) {
+      val outputs = events.mapNotNull { it.output().getOrNull() }
+      assertEquals(
+        "drafted",
+        outputs.filterIsInstance<GenaiContent>().firstOrNull()?.text(),
+        "$source should hold the message output as a genai Content",
+      )
+      assertContains(outputs, mapOf("k" to 1L), "$source should hold the JSON output as a map")
+    }
+  }
+
+  @Test
+  fun ktRunner_routeSetByAJavaToolOrPlugin_routesTheWorkflow() = runBlocking {
+    // The engine routes on the agent node's own events, so the Java write must reach Kotlin.
+    assertEquals(
+      listOf("yes"),
+      routedNodesAfter(JavaAdkToKt.asKtTool(JavaRoutingTool(replaceActions = false))),
+      "a Java tool setting its route in place should route the workflow",
+    )
+    assertEquals(
+      listOf("yes"),
+      routedNodesAfter(JavaAdkToKt.asKtTool(JavaRoutingTool(replaceActions = true))),
+      "a Java tool replacing its actions should route the workflow",
+    )
+    assertEquals(
+      listOf("yes"),
+      routedNodesAfter(NativeKtEchoTool(), RoutingJavaPlugin()),
+      "a Java plugin setting the route after a tool call should route the workflow",
+    )
+  }
+
+  /**
+   * Runs a workflow whose agent node calls [tool] once, with [plugin] installed, and returns which
+   * of the nodes behind the routes "yes" and "no" ran.
+   */
+  @OptIn(ExperimentalWorkflowApi::class)
+  private suspend fun routedNodesAfter(
+    tool: KtBaseTool,
+    plugin: JavaBasePlugin? = null,
+  ): List<String> {
+    val agent =
+      KtLlmAgent(
+        name = "a",
+        model =
+          JavaAdkToKt.asKtModel(
+            SequentialJavaModel(listOf(modelFunctionCall(tool.name, emptyMap()), modelText("done")))
+          ),
+        tools = listOf(tool),
+      )
+    val yes = EmittingKtNode("yes", "took yes")
+    val no = EmittingKtNode("no", "took no")
+    val workflow =
+      KtWorkflow(
+        name = "wf",
+        edges =
+          listOf(
+            KtEdge(KtStart, agent),
+            KtEdge(agent, yes, listOf(KtRoute.Tag("yes"))),
+            KtEdge(agent, no, listOf(KtRoute.Tag("no"))),
+          ),
+      )
+    KtInMemoryRunner(
+        KtApp(
+          appName = "app",
+          rootNode = workflow,
+          plugins = listOfNotNull(plugin?.let { JavaAdkToKt.asKtPlugin(it) }),
+        )
+      )
+      .turn()
+    return listOf(yes, no).filter { it.runs > 0 }.map { it.name }
+  }
 
   @Test
   fun ktRunner_pluginBeforeToolCallback_firesForNativeKotlinTool_andCanDenyIt() = runBlocking {
@@ -4039,6 +4307,123 @@ class KtRunnerInteropTest {
       EventCodec.fromJava(EventCodec.toJava(ktEvent)).actions.rewindBeforeInvocationId,
       "rewindBeforeInvocationId must survive EventCodec.toJava -> fromJava",
     )
+  }
+
+  @Test
+  fun eventCodec_workflowFields_roundTripThroughTheJavaEvent() {
+    // Java code reads these fields too, so a Kotlin Content in the output crosses as a genai one.
+    val message = KtContent.fromText("model", "draft")
+    val output = mapOf("message" to message, "scores" to listOf(1, 2.5, null))
+    val ktEvent =
+      KtEvent(
+        author = "wf",
+        output = output,
+        nodeInfo =
+          KtNodeInfo(
+            path = "wf@1/a@1",
+            outputFor = listOf("wf@1/a@1", "wf@1"),
+            messageAsOutput = true,
+          ),
+        actions =
+          KtEventActions(
+            route = listOf(KtRoute.Tag("yes"), KtRoute.Num(2), KtRoute.Flag(false), KtRoute.Default)
+          ),
+      )
+
+    val javaEvent = EventCodec.toJava(ktEvent)
+    val roundTripped = EventCodec.fromJava(javaEvent)
+
+    assertEquals<Any?>(
+      mapOf("message" to ContentCodec.toJava(message), "scores" to listOf(1, 2.5, null)),
+      javaEvent.output().getOrNull(),
+    )
+    assertEquals<Any?>(output, roundTripped.output)
+    assertEquals(
+      JavaNodeInfo.builder()
+        .path("wf@1/a@1")
+        .outputFor(listOf("wf@1/a@1", "wf@1"))
+        .messageAsOutput(true)
+        .build(),
+      javaEvent.nodeInfo().getOrNull(),
+    )
+    assertEquals<List<JavaRoute>?>(
+      listOf(
+        JavaRoute.Tag("yes"),
+        JavaRoute.Num(2),
+        JavaRoute.Flag(false),
+        JavaRoute.Default.INSTANCE,
+      ),
+      javaEvent.actions().route().getOrNull(),
+    )
+    assertEquals(ktEvent.nodeInfo, roundTripped.nodeInfo)
+    assertEquals(ktEvent.actions.route, roundTripped.actions.route)
+  }
+
+  @Test
+  fun eventCodec_emptyRouteList_staysARoutingDecision() {
+    // An empty route list selects no edge, while no list makes no routing decision.
+    val selectsNoRoute = KtEvent(author = "a", actions = KtEventActions(route = emptyList()))
+
+    assertEquals(
+      emptyList<KtRoute>(),
+      EventCodec.fromJava(EventCodec.toJava(selectsNoRoute)).actions.route,
+    )
+    assertNull(EventCodec.fromJava(EventCodec.toJava(KtEvent(author = "a"))).actions.route)
+  }
+
+  @Test
+  @OptIn(FrameworkInternalApi::class)
+  fun eventCodec_jsonElementOutput_crossesAsPlainJavaValues() {
+    // Java code can't use a kotlinx JsonElement, and Jackson would write its internals.
+    val json: Any = anyToJsonElement(mapOf("k" to 1, "tags" to listOf("a", true)))
+
+    val javaEvent = EventCodec.toJava(KtEvent(author = "wf", output = json))
+
+    val plain = mapOf("k" to 1L, "tags" to listOf("a", true))
+    assertEquals<Any?>(plain, javaEvent.output().getOrNull())
+    assertContains(javaEvent.toJson(), "\"output\":{\"k\":1,\"tags\":[\"a\",true]}")
+    assertEquals<Any?>(plain, EventCodec.fromJava(javaEvent).output)
+  }
+
+  @Test
+  fun eventCodec_kotlinOutputWithNoJsonForm_throws() {
+    // An output with no JSON form fails here, just as when a Kotlin session service saves it.
+    assertFailsWith<IllegalArgumentException> {
+      EventCodec.toJava(KtEvent(author = "wf", output = setOf("a")))
+    }
+  }
+
+  /** An output object that Jackson serializes through its getters, as ADK Java allows. */
+  private data class Draft(val title: String, val tags: Set<String>, val price: BigDecimal)
+
+  @Test
+  fun eventCodec_javaObjectOutput_crossesAsItsJsonForm() {
+    // The Kotlin engine holds only JSON-native outputs, so a Java object must not reach it as is.
+    val draft = Draft(title = "t", tags = setOf("a"), price = BigDecimal("1.50"))
+    val javaEvent = JavaEvent.builder().author("wf").output(draft).build()
+
+    val ktEvent = EventCodec.fromJava(javaEvent)
+
+    val json = mapOf("title" to "t", "tags" to listOf("a"), "price" to 1.5)
+    assertEquals<Any?>(json, ktEvent.output)
+    assertEquals<Any?>(json, EventCodec.toJava(ktEvent).output().getOrNull())
+    val bigInteger = JavaEvent.builder().author("wf").output(BigInteger.valueOf(7)).build()
+    assertEquals<Any?>(7L, EventCodec.fromJava(bigInteger).output)
+    val array = JavaEvent.builder().author("wf").output(arrayOf<Any>("a", BigDecimal("2"))).build()
+    assertEquals<Any?>(listOf("a", 2L), EventCodec.fromJava(array).output)
+  }
+
+  @Test
+  fun ktEventActionsView_route_readsAndWritesTheKotlinActions() {
+    // A Java tool or plugin sees the current route, and its write reaches the engine at once.
+    val actions = KtEventActions(route = listOf(KtRoute.Num(1)))
+    val view = KtEventActionsToJavaView(actions)
+
+    assertEquals<List<JavaRoute>?>(listOf(JavaRoute.Num(1)), view.route().getOrNull())
+    view.setRoute(listOf(JavaRoute.Tag("yes")))
+    assertEquals(listOf<KtRoute>(KtRoute.Tag("yes")), actions.route)
+    view.setRoute(null)
+    assertNull(actions.route)
   }
 
   @Test

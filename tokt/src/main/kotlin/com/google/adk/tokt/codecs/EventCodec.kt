@@ -31,10 +31,11 @@ import kotlin.jvm.optionals.getOrNull
  * Carries the identity (`id`, `invocationId`, `author`, `branch`), the [content][ContentCodec], the
  * [actions][KtEventActions] (state/artifact deltas, the control-flow flags - transfer, escalate,
  * skipSummarization, endOfAgent - the requested tool confirmations, the context-compaction summary,
- * the resumable-run `agentState`, and the rewind marker `rewindBeforeInvocationId`), the
- * streaming/error signals (`partial`, `turnComplete`, `interrupted`, `errorMessage`, `errorCode`,
- * `finishReason`), the token `usageMetadata` ([UsageMetadataCodec]) and `groundingMetadata`
- * ([GroundingMetadataCodec]), long-running tool ids, and the timestamp.
+ * the resumable-run `agentState`, the rewind marker `rewindBeforeInvocationId`, and the workflow
+ * `route`), the streaming/error signals (`partial`, `turnComplete`, `interrupted`, `errorMessage`,
+ * `errorCode`, `finishReason`), the token `usageMetadata` ([UsageMetadataCodec]) and
+ * `groundingMetadata` ([GroundingMetadataCodec]), a workflow node's `output` and `nodeInfo`
+ * ([WorkflowCodec]), long-running tool ids, and the timestamp.
  */
 internal object EventCodec {
 
@@ -62,6 +63,8 @@ internal object EventCodec {
     event.groundingMetadata?.let { builder.groundingMetadata(GroundingMetadataCodec.toJava(it)) }
     event.modelVersion?.let { builder.modelVersion(it) }
     event.customMetadata?.let { builder.customMetadata(CustomMetadataCodec.toJava(it)) }
+    event.output?.let { builder.output(WorkflowCodec.outputToJava(it)) }
+    event.nodeInfo?.let { builder.nodeInfo(WorkflowCodec.nodeInfoToJava(it)) }
     builder.timestamp(event.timestamp)
     return builder.build()
   }
@@ -93,6 +96,7 @@ internal object EventCodec {
             javaActions.compaction().getOrNull()?.let { EventCompactionCodec.fromJava(it) },
           agentState = agentStateFromJava(javaActions.agentState().getOrNull()),
           rewindBeforeInvocationId = javaActions.rewindBeforeInvocationId().getOrNull(),
+          route = javaActions.route().getOrNull()?.map { WorkflowCodec.routeFromJava(it) },
         ),
       branch = event.branch().getOrNull(),
       partial = event.partial().getOrNull() ?: false,
@@ -109,6 +113,8 @@ internal object EventCodec {
         event.groundingMetadata().getOrNull()?.let { GroundingMetadataCodec.fromJava(it) },
       modelVersion = event.modelVersion().getOrNull(),
       customMetadata = event.customMetadata().getOrNull()?.let { CustomMetadataCodec.fromJava(it) },
+      output = event.output().getOrNull()?.let { WorkflowCodec.outputFromJava(it) },
+      nodeInfo = event.nodeInfo().getOrNull()?.let { WorkflowCodec.nodeInfoFromJava(it) },
       timestamp = event.timestamp(),
     )
   }

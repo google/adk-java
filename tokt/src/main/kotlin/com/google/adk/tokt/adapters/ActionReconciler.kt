@@ -20,15 +20,16 @@ import com.google.adk.events.EventActions as JavaEventActions
 import com.google.adk.kt.events.EventActions as KtEventActions
 import com.google.adk.tokt.codecs.EventCompactionCodec
 import com.google.adk.tokt.codecs.ToolConfirmationCodec
+import com.google.adk.tokt.codecs.WorkflowCodec
 import com.google.adk.tokt.codecs.agentStateFromJava
 import com.google.adk.tokt.codecs.reconcileRemovedSentinels
 
 /**
  * Copies what a bridged tool or plugin callback wrote on its [JavaEventActions] onto the live
- * [KtEventActions] the engine reads. Fields the live view already writes through are re-applied
- * idempotently; skip-summarization, tool confirmations, agentState, compaction and
- * rewindBeforeInvocationId are carried here. A signal the engine cannot represent
- * (requestedAuthConfigs, deletedArtifactIds) throws.
+ * [KtEventActions] the engine reads. Fields the live view writes through, such as the workflow
+ * route, are re-applied idempotently, which also carries them after a wholesale `setActions(...)`;
+ * skip-summarization, tool confirmations, and agentState are carried only here. A signal the engine
+ * cannot represent (requestedAuthConfigs, deletedArtifactIds) throws.
  */
 internal fun reconcileActionsToKt(java: JavaEventActions, kt: KtEventActions) {
   require(java.requestedAuthConfigs().isNullOrEmpty()) {
@@ -43,6 +44,7 @@ internal fun reconcileActionsToKt(java: JavaEventActions, kt: KtEventActions) {
   java.agentState().ifPresent { kt.agentState = agentStateFromJava(it) }
   java.compaction().ifPresent { kt.compaction = EventCompactionCodec.fromJava(it) }
   java.rewindBeforeInvocationId().ifPresent { kt.rewindBeforeInvocationId = it }
+  java.route().ifPresent { routes -> kt.route = routes.map { WorkflowCodec.routeFromJava(it) } }
   kt.endOfAgent = kt.endOfAgent || java.endOfAgent()
   // Merge deltas only when the tool replaced the actions (else they are the same live Kotlin map).
   if (java.stateDelta() !== kt.stateDelta) kt.stateDelta.putAll(java.stateDelta())

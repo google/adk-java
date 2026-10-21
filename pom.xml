@@ -72,10 +72,10 @@
     <jspecify.version>1.0.0</jspecify.version>
     <rxjava.version>3.1.12</rxjava.version>
     <!-- ADK Kotlin engine interop (google-adk-tokt module). -->
-    <kotlin.version>2.1.20</kotlin.version>
+    <kotlin.version>2.3.21</kotlin.version>
     <dokka.version>2.2.0</dokka.version>
     <kotlinx-coroutines.version>1.11.0</kotlinx-coroutines.version>
-    <adk-kotlin.version>1.3.0</adk-kotlin.version>
+    <adk-kotlin.version>1.4.0</adk-kotlin.version>
     <reactor-core.version>3.7.0</reactor-core.version>
     <wiremock.version>2.35.1</wiremock.version>
     <assertj.version>3.27.7</assertj.version>
