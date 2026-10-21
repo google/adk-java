@@ -49,7 +49,7 @@ internal object GroundingMetadataCodec {
   /** Returns the Kotlin [KtGroundingMetadata] view of the genai [metadata]. */
   fun fromJava(metadata: GenaiGroundingMetadata): KtGroundingMetadata =
     KtGroundingMetadata(
-      imageSearchQueries = metadata.imageSearchQueries().getOrNull().orEmpty(),
+      imageSearchQueries = metadata.imageSearchQueries().getOrNull(),
       groundingChunks = metadata.groundingChunks().getOrNull()?.map { chunkFromJava(it) },
       groundingSupports = metadata.groundingSupports().getOrNull()?.map { supportFromJava(it) },
       webSearchQueries = metadata.webSearchQueries().getOrNull(),
@@ -62,7 +62,8 @@ internal object GroundingMetadataCodec {
 
   /** Returns the genai [GenaiGroundingMetadata] view of the Kotlin [metadata]. */
   fun toJava(metadata: KtGroundingMetadata): GenaiGroundingMetadata {
-    val builder = GenaiGroundingMetadata.builder().imageSearchQueries(metadata.imageSearchQueries)
+    val builder = GenaiGroundingMetadata.builder()
+    metadata.imageSearchQueries?.let { builder.imageSearchQueries(it) }
     metadata.groundingChunks?.let { builder.groundingChunks(it.map { c -> chunkToJava(c) }) }
     metadata.groundingSupports?.let { builder.groundingSupports(it.map { s -> supportToJava(s) }) }
     metadata.webSearchQueries?.let { builder.webSearchQueries(it) }
