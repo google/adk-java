@@ -32,6 +32,8 @@ import com.google.adk.tokt.codecs.ContentCodec
 import com.google.adk.tokt.codecs.EventCodec
 import com.google.adk.tokt.codecs.LlmRequestCodec
 import com.google.adk.tokt.codecs.LlmResponseCodec
+import com.google.adk.tokt.codecs.reapplyJavaEvent
+import com.google.adk.tokt.codecs.reapplyJavaResponse
 import com.google.adk.tokt.context.KtInvocationContextToJavaView
 import com.google.adk.tokt.context.javaAgentView
 import com.google.adk.tokt.context.ktCallbackContextToJava
@@ -97,7 +99,7 @@ internal class JavaPluginToKt(
   override suspend fun onEvent(invocationContext: KtInvocationContext, event: KtEvent): KtEvent {
     val javaContext = KtInvocationContextToJavaView(invocationContext, dispatcher)
     val replacement = onDispatcher { plugin.onEventCallback(javaContext, EventCodec.toJava(event)) }
-    return replacement?.let { EventCodec.fromJava(it) } ?: event
+    return replacement?.let { reapplyJavaEvent(event, it) } ?: event
   }
 
   override suspend fun afterRun(invocationContext: KtInvocationContext) {
@@ -157,7 +159,7 @@ internal class JavaPluginToKt(
       plugin.afterModelCallback(javaContext, LlmResponseCodec.toJava(response))
     }
     reconcileActionsToKt(javaContext.eventActions(), context.eventActions)
-    return if (override != null) LlmResponseCodec.fromJava(override) else response
+    return if (override != null) reapplyJavaResponse(response, override) else response
   }
 
   override suspend fun onModelError(

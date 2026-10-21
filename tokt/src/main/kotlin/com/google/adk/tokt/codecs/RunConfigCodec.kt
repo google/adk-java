@@ -19,27 +19,52 @@ package com.google.adk.tokt.codecs
 import com.google.adk.agents.RunConfig as JavaRunConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
+import com.google.adk.kt.types.Modality as KtModality
+import com.google.genai.types.Modality as GenaiModality
 
 /**
  * Converts between the Kotlin `kt.agents.RunConfig` and the ADK Java [JavaRunConfig].
  *
- * Only three settings cross both ways: streaming mode, the LLM call budget, and custom metadata.
- * [toJava] leaves the Java-only settings at their defaults; [fromJava] instead rejects a Java
- * setting the engine cannot honor rather than dropping it silently.
+ * Streaming mode, the LLM call budget and custom metadata cross both ways; [toJava] also shows a
+ * BIDI run's live settings (modalities, speech, transcriptions). [fromJava] rejects a Java setting
+ * the engine cannot honor rather than dropping it silently.
  */
 internal object RunConfigCodec {
 
-  /** Returns the Java [JavaRunConfig] view of the Kotlin [config]. */
-  fun toJava(config: KtRunConfig): JavaRunConfig =
-    JavaRunConfig.builder()
-      // Kotlin has no BIDI, so a by-name match always resolves; NONE is the shared default.
-      .streamingMode(
-        enumByNameOrNull<JavaRunConfig.StreamingMode>(config.streamingMode.name)
-          ?: JavaRunConfig.StreamingMode.NONE
-      )
-      .maxLlmCalls(config.maxLlmCalls)
-      .customMetadata(config.customMetadata.orEmpty())
-      .build()
+  /**
+   * Returns the Java [JavaRunConfig] view of the Kotlin [config]. Only a BIDI run shows live
+   * settings, since Kotlin turns transcription on for every run.
+   */
+  fun toJava(config: KtRunConfig): JavaRunConfig {
+    val builder =
+      JavaRunConfig.builder()
+        .streamingMode(
+          when (config.streamingMode) {
+            KtStreamingMode.NONE -> JavaRunConfig.StreamingMode.NONE
+            KtStreamingMode.SSE -> JavaRunConfig.StreamingMode.SSE
+            KtStreamingMode.BIDI -> JavaRunConfig.StreamingMode.BIDI
+          }
+        )
+        .maxLlmCalls(config.maxLlmCalls)
+        .customMetadata(config.customMetadata.orEmpty())
+    if (config.streamingMode == KtStreamingMode.BIDI) {
+      builder
+        // ADK Java and Python default a live run's response modalities to AUDIO.
+        .responseModalities(
+          config.live.responseModalities
+            .ifEmpty { listOf(KtModality.AUDIO) }
+            .map { GenaiModality(it.name) }
+        )
+        .speechConfig(config.live.speechConfig?.let { SpeechConfigCodec.toJava(it) })
+        .outputAudioTranscription(
+          config.live.outputAudioTranscription?.let { AudioTranscriptionConfigCodec.toJava(it) }
+        )
+        .inputAudioTranscription(
+          config.live.inputAudioTranscription?.let { AudioTranscriptionConfigCodec.toJava(it) }
+        )
+    }
+    return builder.build()
+  }
 
   /** Returns the Kotlin [KtRunConfig] view of the Java [config]. */
   @Suppress(
