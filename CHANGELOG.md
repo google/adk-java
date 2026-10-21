@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.13.0](https://github.com/google/adk-java/compare/v1.12.0...v1.13.0) (2026-10-21)
+
+
+### Features
+
+* add a builder for workflow graph edges ([4721491](https://github.com/google/adk-java/commit/4721491878231bd9b7a448b2a7c8d25be6798654))
+* expose turnComplete for live content ([857ee63](https://github.com/google/adk-java/commit/857ee63ada5cf6bcd10dcab7259949a76d1f00f2))
+* **langchain4j:** make modelName optional when ChatModel or StreamingChatModel is provided ([03036c3](https://github.com/google/adk-java/commit/03036c32eac6548e8cbecdcce599a542404dd7b8))
+* run a single workflow node ([28f2606](https://github.com/google/adk-java/commit/28f2606ce05d20444bb0c5e8db37d98ec1727b59))
+* run a workflow graph ([cecad8f](https://github.com/google/adk-java/commit/cecad8f49e7ce58aea790ab598753f1475b685dd))
+* run a workflow node as the invocation root ([66eab8c](https://github.com/google/adk-java/commit/66eab8cc448297708c162838bd45519885c47ad4))
+
+
+### Bug Fixes
+
+* **dev:** allow only same-origin requests by default for CORS and /run_live ([5667d38](https://github.com/google/adk-java/commit/5667d382ab5078a0d6e8f7184713a6bab767e004))
+* **dev:** reject DNS-rebinding requests that reach the server over loopback ([1ae5078](https://github.com/google/adk-java/commit/1ae5078072e13e101318e32833f1db323ef084e1))
+* **mcp:** emit valid JSON Schema when converting ADK tools to MCP tools ([60250a9](https://github.com/google/adk-java/commit/60250a930ec50b9e63a4bef8b6d3949fa0b31817))
+* omit caller values from VertexAiSessionService error messages ([dc56f11](https://github.com/google/adk-java/commit/dc56f11f0ebfca75f0024dde29daddf25b914f15))
+* round-trip thinking blocks in the Claude model ([d1d9dc2](https://github.com/google/adk-java/commit/d1d9dc2ba7841dd436ef4f446321779f9ea910bf))
+
 ## [1.12.0](https://github.com/google/adk-java/compare/v1.11.0...v1.12.0) (2026-10-14)
 
 
