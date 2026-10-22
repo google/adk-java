@@ -146,9 +146,10 @@ final class Scheduler {
      */
     private boolean handleFailures(List<Completion> batch) {
       for (Completion completion : batch) {
-        Optional<Exception> failure = completion.context().requireNodeState().failure();
+        NodeExecutionState childState = completion.context().requireNodeState();
+        Optional<Exception> failure = childState.failure();
         if (failure.isPresent()) {
-          workflowState.failure(failure.get());
+          workflowState.failure(failure.get(), childState.failureNodePath().orElseThrow());
           failed = true;
           childRuns.dispose();
           wakeUps.onComplete();
@@ -287,7 +288,8 @@ final class Scheduler {
    * records the output of the sole terminal node that produced one as the workflow's output.
    */
   private Completable finalizeRun() {
-    if (!interruptIds.isEmpty()) {
+    // A child run from the workflow's own context records its interrupts on the workflow.
+    if (!interruptIds.isEmpty() || !workflowState.interruptIds().isEmpty()) {
       workflowState.addInterruptIds(interruptIds);
       return Completable.complete();
     }

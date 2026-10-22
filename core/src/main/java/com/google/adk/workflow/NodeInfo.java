@@ -46,9 +46,11 @@ public abstract class NodeInfo {
 
   /**
    * Returns the node paths this event's output counts for: the emitting node's path, followed by
-   * the paths of the ancestor workflows that use this event as their output. It is set on an event
-   * that carries the node's output, either in its {@code output} field or as a message-as-output
-   * event whose content is the output; an empty list means the output counts for no node.
+   * the paths of the ancestors that use this output as their own, such as the workflow of a
+   * terminal node or a node that ran the emitting node with {@code useAsOutput}. It is set on an
+   * event that carries the node's output, either in its {@code output} field or as a
+   * message-as-output event whose content is the output; an empty list means the output counts for
+   * no node.
    */
   @JsonProperty("outputFor")
   @JsonInclude(JsonInclude.Include.NON_EMPTY)

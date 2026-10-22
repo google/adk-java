@@ -16,6 +16,7 @@
 
 package com.google.adk.workflow;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
@@ -26,15 +27,19 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.common.base.CharMatcher;
+import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.FinishReason;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.processors.FlowableProcessor;
 import io.reactivex.rxjava3.processors.UnicastProcessor;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Function;
@@ -44,10 +49,13 @@ import org.jspecify.annotations.Nullable;
  * The runner for one workflow node. It stamps every emitted event with its author, node path, and
  * branch before forwarding it, and records the node's output, routes, interrupts, and failure on
  * the node state of the returned context. {@link #runRoot} runs a node as the root of an
- * invocation.
+ * invocation, and {@code runChild} runs one as a child that another node starts itself.
  */
 @Experimental
 public final class NodeRunner {
+
+  // '/' and '@' form node-path segments and '.' separates branch segments, so disallow all three.
+  static final CharMatcher PATH_SEPARATORS = CharMatcher.anyOf("/@.");
 
   /** Sink that receives the events of a workflow run. */
   @Experimental
@@ -171,6 +179,97 @@ public final class NodeRunner {
   }
 
   /**
+   * Returns a {@link Maybe} that, when subscribed, runs {@code node} as a child of the node whose
+   * context is {@code parent} and emits the child's output, or completes empty if it has none. The
+   * caller includes it in its run and catches only failures it handles, such as {@link
+   * DynamicNodeFailedException}: when the child waits, it fails with an internal {@link
+   * RuntimeException} that must propagate to end the caller's run, so that the caller waits too.
+   *
+   * <p>It fails with {@link DynamicNodeFailedException} if the child fails; with {@link
+   * IllegalStateException} if {@code parent} is not a workflow node's context, if the caller's
+   * {@link Node#rerunOnResume} is false, or if {@code config} delegates an output that the caller
+   * already has or has delegated; and with {@link IllegalArgumentException} if the child's name
+   * cannot form a node path.
+   */
+  static Maybe<Object> runChild(
+      Context parent, Node node, @Nullable Object nodeInput, RunNodeConfig config) {
+    checkNotNull(parent);
+    checkNotNull(node);
+    checkNotNull(config);
+    return Maybe.defer(() -> startChild(parent, node, nodeInput, config));
+  }
+
+  /** Runs {@code node} as a child of {@code parent} and turns the child's run into its result. */
+  private static Maybe<Object> startChild(
+      Context parent, Node node, @Nullable Object nodeInput, RunNodeConfig config) {
+    NodeExecutionState parentState = parent.requireNodeState();
+    checkState(
+        parentState.node().rerunOnResume(),
+        "Node '%s' must rerun on resume to run child nodes: a child it runs may be interrupted, and"
+            + " the workflow reruns the caller on resume to collect the child's output.",
+        parentState.node().name());
+    // No graph validates a child that a node runs itself, so check that it keeps paths intact.
+    checkArgument(!node.name().isEmpty(), "A node name must not be empty.");
+    checkArgument(
+        PATH_SEPARATORS.matchesNoneOf(node.name()),
+        "A node name must not contain '/', '@', or '.', but '%s' does. Agent names allow these"
+            + " characters, so an agent run as a node needs a name that a node path can carry.",
+        node.name());
+    // A workflow takes its output from its terminal node, so it never delegates it to a child.
+    boolean delegatesOutput = config.useAsOutput() && !(parentState.node() instanceof Workflow);
+    if (delegatesOutput) {
+      parentState.claimOutputDelegation();
+    }
+    return builder()
+        .node(node)
+        .parent(parent)
+        .runId(config.runId().orElseGet(() -> parentState.nextChildRunId(node.name())))
+        .useAsOutput(config.useAsOutput())
+        .useSubBranch(config.useSubBranch())
+        .overrideBranch(config.overrideBranch().orElse(null))
+        .build()
+        .run(nodeInput)
+        .flatMapMaybe(child -> childResult(parent, child, delegatesOutput, config.raiseOnWait()));
+  }
+
+  /**
+   * Returns the child's output, or fails with the child's failure or with an interrupt, which the
+   * caller takes on as its own.
+   */
+  private static Maybe<Object> childResult(
+      Context parent, Context child, boolean delegatesOutput, boolean raiseOnWait) {
+    NodeExecutionState parentState = parent.requireNodeState();
+    NodeExecutionState childState = child.requireNodeState();
+    if (child.eventActions().skipSummarization().orElse(false)) {
+      parent.eventActions().setSkipSummarization(true);
+    }
+    Optional<Exception> failure = childState.failure();
+    if (failure.isPresent()) {
+      // A delegate that fails before it emits an output leaves the caller free to produce one.
+      if (delegatesOutput) {
+        parentState.releaseOutputDelegation();
+      }
+      return Maybe.error(
+          new DynamicNodeFailedException(
+              childState.node().name(), failure.get(), childState.failureNodePath().orElseThrow()));
+    }
+    ImmutableSet<String> interruptIds = childState.interruptIds();
+    if (!interruptIds.isEmpty()) {
+      // The caller waits as well, and reruns on resume to collect the child's output.
+      parentState.addInterruptIds(interruptIds);
+      return Maybe.error(new NodeInterruptedException());
+    }
+    Node childNode = childState.node();
+    if (raiseOnWait
+        && childState.output().isEmpty()
+        && child.eventActions().transferToAgent().isEmpty()
+        && (childNode instanceof Workflow || childNode.waitForOutput())) {
+      return Maybe.error(new NodeInterruptedException());
+    }
+    return Maybe.fromOptional(childState.output());
+  }
+
+  /**
    * Runs the node on {@code nodeInput} and returns its context when the node finishes. An exception
    * from the node is recorded on the context's node state rather than signaled, while an {@code
    * Error} propagates.
@@ -231,6 +330,15 @@ public final class NodeRunner {
     }
 
     private Completable onError(Throwable error) {
+      if (error instanceof NodeInterruptedException) {
+        // A child waits, or raiseOnWait ended the run; any interrupt IDs are already recorded.
+        return flushPending();
+      }
+      if (error instanceof DynamicNodeFailedException childFailure) {
+        // The child already sent an error event, so the node takes on its failure without one.
+        nodeState.failure(childFailure.error(), childFailure.errorNodePath());
+        return Completable.complete();
+      }
       // Only an Exception fails the node; an Error is fatal and propagates.
       return error instanceof Exception exception ? fail(exception) : Completable.error(error);
     }
