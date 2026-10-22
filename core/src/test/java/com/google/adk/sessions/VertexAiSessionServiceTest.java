@@ -572,6 +572,17 @@ public class VertexAiSessionServiceTest {
   }
 
   @Test
+  public void listEvents_wrongUser_returnsEmpty() {
+    // Session "1" belongs to "user" and has an event in eventMap (MOCK_EVENT_STRING).
+    // A different user must not be able to read those events - mirrors
+    // getSession_wrongUser_returnsEmpty above, applied to listEvents.
+    ListEventsResponse response =
+        vertexAiSessionService.listEvents("123", "attacker", "1").blockingGet();
+
+    assertThat(response.events()).isEmpty();
+  }
+
+  @Test
   public void deleteSession_wrongUser_deniedAndSessionKept() {
     sessionMap.put("victim-session", mockSessionJson("victim-session", "2024-12-12T12:12:12Z"));
     // The ownership error surfaces on subscription, so hoist the Completable out.
