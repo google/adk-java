@@ -45,6 +45,10 @@ import reactor.util.retry.RetrySpec;
 /**
  * Connects to a MCP Server, and retrieves MCP Tools into ADK Tools.
  *
+ * <p>Server tools named {@code set_model_response}, {@code transfer_to_agent}, {@code
+ * adk_request_confirmation}, {@code adk_request_credential}, or {@code adk_request_input} are
+ * skipped with a warning, regardless of the tool filter, because ADK reserves these names.
+ *
  * <p>Attributes:
  *
  * <ul>
@@ -143,6 +147,9 @@ public class McpAsyncToolset implements BaseToolset {
         .map(
             tools ->
                 tools.stream()
+                    // Retain the full cached list so close() can release the session even when
+                    // every server tool has a reserved name.
+                    .filter(tool -> McpToolNameFilter.isAllowed(tool.name()))
                     .filter(tool -> isToolSelected(tool, toolFilter, readonlyContext))
                     .toList())
         .onErrorResumeNext(
