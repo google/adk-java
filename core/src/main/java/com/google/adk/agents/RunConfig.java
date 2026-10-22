@@ -89,6 +89,13 @@ public abstract class RunConfig {
   public abstract boolean autoCreateSession();
 
   /**
+   * Whether an instruction placeholder right after {@code $} or {@code \}, such as {@code ${key}},
+   * {@code ${{key}}} or {@code \{key}}, is left as written instead of being resolved, as adk-python
+   * does. Defaults to {@code false}, which resolves it and keeps the character before it.
+   */
+  public abstract boolean dollarEscapedPlaceholders();
+
+  /**
    * Three-state override for grouping function calls before function responses in history (FC1,
    * FC2, FR1, FR2) instead of pairing each response with its call (FC1, FR1, FC2, FR2).
    *
@@ -129,6 +136,7 @@ public abstract class RunConfig {
         .toolExecutionMode(ToolExecutionMode.NONE)
         .maxLlmCalls(500)
         .autoCreateSession(false)
+        .dollarEscapedPlaceholders(false)
         .customMetadata(ImmutableMap.of());
   }
 
@@ -145,6 +153,7 @@ public abstract class RunConfig {
         .outputAudioTranscription(runConfig.outputAudioTranscription())
         .inputAudioTranscription(runConfig.inputAudioTranscription())
         .autoCreateSession(runConfig.autoCreateSession())
+        .dollarEscapedPlaceholders(runConfig.dollarEscapedPlaceholders())
         .groupFunctionResponsesInHistoryOverride(
             runConfig.groupFunctionResponsesInHistoryOverride())
         .customMetadata(runConfig.customMetadata());
@@ -241,6 +250,9 @@ public abstract class RunConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder autoCreateSession(boolean autoCreateSession);
+
+    @CanIgnoreReturnValue
+    public abstract Builder dollarEscapedPlaceholders(boolean dollarEscapedPlaceholders);
 
     @CanIgnoreReturnValue
     public abstract Builder customMetadata(Map<String, Object> customMetadata);

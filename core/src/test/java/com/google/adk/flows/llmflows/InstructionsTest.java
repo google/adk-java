@@ -25,6 +25,7 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Instruction;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.BaseArtifactService;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.sessions.InMemorySessionService;
@@ -251,5 +252,87 @@ public final class InstructionsTest {
 
     assertThat(result.updatedRequest().getSystemInstructions())
         .containsExactly("Global instruction.\n\nAgent instruction.");
+  }
+
+  @Test
+  public void processRequest_dollarEscapedPlaceholders_keepsEscapedPlaceholders() {
+    Session session = createSession();
+    session.state().put("price", 9.99);
+    session.state().put("name", "TestBot");
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .instruction("{name} shows ${price}, ${{price}} and \\{price}.")
+            .build();
+    InvocationContext context = dollarEscaped(createContext(agent, session));
+
+    RequestProcessor.RequestProcessingResult result =
+        instructionsProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().getSystemInstructions())
+        .containsExactly("TestBot shows ${price}, ${{price}} and \\{price}.");
+  }
+
+  @Test
+  public void processRequest_defaultRunConfig_resolvesEscapedPlaceholders() {
+    Session session = createSession();
+    session.state().put("price", 9.99);
+    session.state().put("name", "TestBot");
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .instruction("{name} shows ${price}, ${{price}} and \\{price}.")
+            .build();
+    InvocationContext context = createContext(agent, session);
+
+    RequestProcessor.RequestProcessingResult result =
+        instructionsProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().getSystemInstructions())
+        .containsExactly("TestBot shows $9.99, $9.99 and \\9.99.");
+  }
+
+  @Test
+  public void processRequest_dollarEscapedPlaceholders_appliesToGlobalAndSubAgentInstructions() {
+    Session session = createSession();
+    session.state().put("price", 9.99);
+    LlmAgent subAgent = LlmAgent.builder().name("sub_agent").instruction("Sub: ${price}").build();
+    LlmAgent unused =
+        LlmAgent.builder()
+            .name("root_agent")
+            .globalInstruction("Global: ${price}")
+            .subAgents(subAgent)
+            .build();
+    InvocationContext context = dollarEscaped(createContext(subAgent, session));
+
+    RequestProcessor.RequestProcessingResult result =
+        instructionsProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().getSystemInstructions())
+        .containsExactly("Global: ${price}\n\nSub: ${price}");
+  }
+
+  @Test
+  public void processRequest_providerInstruction_isNotTemplatedWithDollarEscapedPlaceholders() {
+    Session session = createSession();
+    session.state().put("price", 9.99);
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .instruction(new Instruction.Provider(unused -> Single.just("{price} and ${price}")))
+            .build();
+    InvocationContext context = dollarEscaped(createContext(agent, session));
+
+    RequestProcessor.RequestProcessingResult result =
+        instructionsProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().getSystemInstructions())
+        .containsExactly("{price} and ${price}");
+  }
+
+  private static InvocationContext dollarEscaped(InvocationContext context) {
+    return context.toBuilder()
+        .runConfig(RunConfig.builder().dollarEscapedPlaceholders(true).build())
+        .build();
   }
 }
