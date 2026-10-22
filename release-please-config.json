@@ -6,6 +6,7 @@
   "release-type": "maven",
   "extra-files": [
     "core/src/main/java/com/google/adk/Version.java",
-    "README.md"
+    "README.md",
+    "contrib/mysql-session-service/README.md"
   ]
 }
