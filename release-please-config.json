@@ -6,6 +6,7 @@
   "release-type": "maven",
   "extra-files": [
     "core/src/main/java/com/google/adk/Version.java",
-    "README.md"
+    "README.md",
+    "contrib/firestore-session-service/README.md"
   ]
 }
