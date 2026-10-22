@@ -22,8 +22,12 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.memory.SearchMemoryResponse;
 import com.google.adk.sessions.State;
+import com.google.adk.workflow.DynamicNodeFailedException;
+import com.google.adk.workflow.Node;
 import com.google.adk.workflow.NodeExecutionState;
+import com.google.adk.workflow.NodeRunner;
 import com.google.adk.workflow.Route;
+import com.google.adk.workflow.RunNodeConfig;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Part;
@@ -285,7 +289,8 @@ public class Context extends ReadonlyContext {
   }
 
   /**
-   * Returns this workflow node's output, or empty if it has produced none.
+   * Returns this workflow node's output, which is the output of its {@code useAsOutput} child once
+   * that child emits one, or empty if it has none.
    *
    * @throws IllegalStateException if this is not the context of a workflow node.
    */
@@ -314,5 +319,47 @@ public class Context extends ReadonlyContext {
   @Experimental
   public final void routes(List<? extends Route> routes) {
     requireNodeState().selectRoutes(routes);
+  }
+
+  /**
+   * Runs {@code node} as a child of this workflow node without an input, as {@link #runNode(Node,
+   * Object, RunNodeConfig)} does with the default {@link RunNodeConfig}.
+   */
+  @Experimental
+  public final Maybe<Object> runNode(Node node) {
+    return runNode(node, /* nodeInput= */ null);
+  }
+
+  /**
+   * Runs {@code node} as a child of this workflow node, as {@link #runNode(Node, Object,
+   * RunNodeConfig)} does with the default {@link RunNodeConfig}.
+   *
+   * @throws IllegalArgumentException if {@code nodeInput} is a {@link RunNodeConfig}, which belongs
+   *     in the three-argument overload.
+   */
+  @Experimental
+  public final Maybe<Object> runNode(Node node, @Nullable Object nodeInput) {
+    Preconditions.checkArgument(
+        !(nodeInput instanceof RunNodeConfig),
+        "Pass the RunNodeConfig as the third argument of runNode, not as the node input.");
+    return runNode(node, nodeInput, RunNodeConfig.builder().build());
+  }
+
+  /**
+   * Returns a {@link Maybe} that, when subscribed, runs {@code node} as a child of this workflow
+   * node and emits the child's output, or completes empty if it has none. Include it in this node's
+   * run and catch only failures you handle, such as {@link DynamicNodeFailedException}: when the
+   * child waits, it fails with an internal {@link RuntimeException} that must propagate to end this
+   * node's run, so that it waits too.
+   *
+   * <p>It fails with {@link DynamicNodeFailedException} if the child fails; with {@link
+   * IllegalStateException} if this is not a workflow node's context, if this node's {@link
+   * Node#rerunOnResume} is false, or if {@code config} delegates an output that this node already
+   * has or has delegated; and with {@link IllegalArgumentException} if the child's name cannot form
+   * a node path.
+   */
+  @Experimental
+  public final Maybe<Object> runNode(Node node, @Nullable Object nodeInput, RunNodeConfig config) {
+    return NodeRunner.runChild(this, node, nodeInput, config);
   }
 }

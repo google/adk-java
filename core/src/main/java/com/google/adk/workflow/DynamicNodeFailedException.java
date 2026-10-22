@@ -19,12 +19,12 @@ package com.google.adk.workflow;
 import com.google.adk.annotations.Experimental;
 
 /**
- * An exception that {@link NodeRunner#runChild} signals when the child node fails. If the caller
- * does not handle this exception, the caller fails with the child's error without emitting an error
- * event of its own.
+ * An exception that {@link com.google.adk.agents.Context#runNode} signals when the child node
+ * fails. If the caller does not handle this exception, the caller fails with the child's error
+ * without emitting an error event of its own.
  */
 @Experimental
-final class DynamicNodeFailedException extends RuntimeException {
+public final class DynamicNodeFailedException extends RuntimeException {
 
   private final String errorNodePath;
 

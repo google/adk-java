@@ -31,8 +31,11 @@ import com.google.adk.memory.SearchMemoryResponse;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
 import com.google.adk.sessions.State;
+import com.google.adk.testing.TestNode;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
+import com.google.adk.workflow.Node;
+import com.google.adk.workflow.RunNodeConfig;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
@@ -92,6 +95,25 @@ public final class ContextTest {
     assertThrows(IllegalStateException.class, context::output);
     assertThrows(IllegalStateException.class, context::routes);
     assertThrows(IllegalStateException.class, () -> context.routes(ImmutableList.of()));
+  }
+
+  @Test
+  public void runNode_onCallbackContext_failsWithIllegalStateException() {
+    CallbackContext context = new CallbackContext(newInvocationContext(), null);
+
+    context.runNode(TestNode.of("child")).test().assertError(IllegalStateException.class);
+  }
+
+  @Test
+  public void runNode_configPassedAsTheInput_throwsIllegalArgumentException() {
+    CallbackContext context = new CallbackContext(newInvocationContext(), null);
+    Node child = TestNode.of("child");
+    RunNodeConfig config = RunNodeConfig.builder().useAsOutput(true).build();
+
+    IllegalArgumentException thrown =
+        assertThrows(IllegalArgumentException.class, () -> context.runNode(child, config));
+
+    assertThat(thrown).hasMessageThat().contains("third argument");
   }
 
   @Test

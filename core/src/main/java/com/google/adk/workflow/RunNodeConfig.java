@@ -24,10 +24,10 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 
-/** Configuration for running a child node with {@link NodeRunner#runChild}. */
+/** Configuration for running a child node with {@link com.google.adk.agents.Context#runNode}. */
 @Experimental
 @AutoValue
-abstract class RunNodeConfig {
+public abstract class RunNodeConfig {
 
   /**
    * Returns the ID of the child's run, which names the run in node paths and branches. When empty,

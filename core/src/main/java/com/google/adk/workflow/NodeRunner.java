@@ -49,7 +49,7 @@ import org.jspecify.annotations.Nullable;
  * The runner for one workflow node. It stamps every emitted event with its author, node path, and
  * branch before forwarding it, and records the node's output, routes, interrupts, and failure on
  * the node state of the returned context. {@link #runRoot} runs a node as the root of an
- * invocation, and {@code runChild} runs one as a child that another node starts itself.
+ * invocation, and {@link #runChild} runs one as a child that another node starts itself.
  */
 @Experimental
 public final class NodeRunner {
@@ -179,19 +179,12 @@ public final class NodeRunner {
   }
 
   /**
-   * Returns a {@link Maybe} that, when subscribed, runs {@code node} as a child of the node whose
-   * context is {@code parent} and emits the child's output, or completes empty if it has none. The
-   * caller includes it in its run and catches only failures it handles, such as {@link
-   * DynamicNodeFailedException}: when the child waits, it fails with an internal {@link
-   * RuntimeException} that must propagate to end the caller's run, so that the caller waits too.
-   *
-   * <p>It fails with {@link DynamicNodeFailedException} if the child fails; with {@link
-   * IllegalStateException} if {@code parent} is not a workflow node's context, if the caller's
-   * {@link Node#rerunOnResume} is false, or if {@code config} delegates an output that the caller
-   * already has or has delegated; and with {@link IllegalArgumentException} if the child's name
-   * cannot form a node path.
+   * Runs {@code node} as a child of the node whose context is {@code parent}, as {@link
+   * Context#runNode(Node, Object, RunNodeConfig)} describes. Nodes call that method; this one is
+   * public only so {@link Context} can call it from another package.
    */
-  static Maybe<Object> runChild(
+  @Experimental
+  public static Maybe<Object> runChild(
       Context parent, Node node, @Nullable Object nodeInput, RunNodeConfig config) {
     checkNotNull(parent);
     checkNotNull(node);
