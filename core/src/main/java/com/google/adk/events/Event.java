@@ -420,6 +420,21 @@ public class Event extends JsonBaseModel {
   }
 
   /**
+   * Returns the name of the workflow node that emitted this event, from {@link NodeInfo#name()}.
+   * Empty outside a workflow and on an event that carries any agent state or ends an agent. ADK
+   * Python's {@code Event.node_name} returns an empty string instead and ignores an empty agent
+   * state.
+   */
+  @Experimental
+  @JsonIgnore
+  public final Optional<String> nodeName() {
+    if (actions().agentState().isPresent() || actions().endOfAgent()) {
+      return Optional.empty();
+    }
+    return nodeInfo().flatMap(NodeInfo::name);
+  }
+
+  /**
    * Converts the event content into a readable string.
    *
    * <p>Includes text, function calls, and responses.

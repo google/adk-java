@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.JsonBaseModel;
 import com.google.common.collect.ImmutableList;
+import java.util.Map;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -62,5 +63,63 @@ public final class NodeInfoTest {
     assertThat(json).contains("\"path\":\"a@1\"");
     assertThat(json).doesNotContain("outputFor");
     assertThat(json).doesNotContain("messageAsOutput");
+  }
+
+  @Test
+  public void json_omitsPathHelpers() {
+    Map<?, ?> json = JsonBaseModel.getMapper().convertValue(NODE_INFO, Map.class);
+
+    assertThat(json.keySet()).containsExactly("path", "outputFor", "messageAsOutput");
+  }
+
+  @Test
+  public void name_isTheLastSegmentWithoutItsRunId() {
+    assertThat(nodeInfo("wf@1/a@2/b@3").name()).hasValue("b");
+    assertThat(nodeInfo("wf@1/b").name()).hasValue("b");
+    assertThat(nodeInfo("wf@1").name()).hasValue("wf");
+  }
+
+  @Test
+  public void runId_isTheLastSegmentsRunId() {
+    assertThat(nodeInfo("wf@1/a@2/b@3").runId()).hasValue("3");
+  }
+
+  @Test
+  public void runId_emptyWithoutARunId() {
+    assertThat(nodeInfo("wf@1/b").runId()).isEmpty();
+  }
+
+  @Test
+  public void parentRunId_isTheSecondToLastSegmentsRunId() {
+    assertThat(nodeInfo("wf@1/a@2/b@3").parentRunId()).hasValue("2");
+    assertThat(nodeInfo("wf@1/b").parentRunId()).hasValue("1");
+  }
+
+  @Test
+  public void parentRunId_emptyWithoutAParentRunId() {
+    assertThat(nodeInfo("wf@1").parentRunId()).isEmpty();
+    assertThat(nodeInfo("wf/b@1").parentRunId()).isEmpty();
+  }
+
+  @Test
+  public void pathHelpers_splitEachSegmentAtItsLastAt() {
+    NodeInfo nodeInfo = nodeInfo("w@f@1/a@b@2");
+
+    assertThat(nodeInfo.name()).hasValue("a@b");
+    assertThat(nodeInfo.runId()).hasValue("2");
+    assertThat(nodeInfo.parentRunId()).hasValue("1");
+  }
+
+  @Test
+  public void pathHelpers_emptyForAnEmptyPath() {
+    NodeInfo nodeInfo = NodeInfo.builder().build();
+
+    assertThat(nodeInfo.name()).isEmpty();
+    assertThat(nodeInfo.runId()).isEmpty();
+    assertThat(nodeInfo.parentRunId()).isEmpty();
+  }
+
+  private static NodeInfo nodeInfo(String path) {
+    return NodeInfo.builder().path(path).build();
   }
 }

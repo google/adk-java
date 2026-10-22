@@ -276,6 +276,36 @@ public final class EventTest {
   }
 
   @Test
+  public void nodeName_isTheEmittingNodesName() {
+    Event event = EVENT.toBuilder().nodeInfo(NodeInfo.builder().path("wf@1/a@2").build()).build();
+
+    assertThat(event.nodeName()).hasValue("a");
+  }
+
+  @Test
+  public void nodeName_emptyOutsideAWorkflow() {
+    assertThat(EVENT.nodeName()).isEmpty();
+    assertThat(EVENT.toBuilder().nodeInfo(NodeInfo.builder().build()).build().nodeName()).isEmpty();
+  }
+
+  @Test
+  public void nodeName_emptyForAgentStateAndEndOfAgentEvents() {
+    Event endOfAgent =
+        EVENT.toBuilder()
+            .nodeInfo(NODE_INFO)
+            .actions(EventActions.builder().endOfAgent(true).build())
+            .build();
+    Event agentState =
+        EVENT.toBuilder()
+            .nodeInfo(NODE_INFO)
+            .actions(EventActions.builder().agentState(ImmutableMap.of()).build())
+            .build();
+
+    assertThat(endOfAgent.nodeName()).isEmpty();
+    assertThat(agentState.nodeName()).isEmpty();
+  }
+
+  @Test
   public void event_builder_with_transcriptions_works() {
     Transcription inputTranscription =
         Transcription.builder().text("user said hello").finished(true).build();

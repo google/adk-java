@@ -17,6 +17,7 @@
 package com.google.adk.workflow;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSetter;
@@ -27,6 +28,7 @@ import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * The identity of the workflow-node activation that emitted an {@link com.google.adk.events.Event}.
@@ -63,6 +65,53 @@ public abstract class NodeInfo {
   @JsonProperty("messageAsOutput")
   @JsonInclude(JsonInclude.Include.NON_DEFAULT)
   public abstract boolean messageAsOutput();
+
+  /**
+   * Returns the emitting node's name: the last segment of {@link #path()} without its run ID, such
+   * as {@code a} for {@code wf@1/a@2}, or empty when the path is empty. ADK Python's {@code
+   * NodeInfo.name} returns an empty string instead.
+   */
+  @JsonIgnore
+  public final Optional<String> name() {
+    if (path().isEmpty()) {
+      return Optional.empty();
+    }
+    String segment = lastSegment(path());
+    int at = segment.lastIndexOf('@');
+    return Optional.of(at < 0 ? segment : segment.substring(0, at));
+  }
+
+  /**
+   * Returns the emitting node's run ID: the part after {@code @} in the last segment of {@link
+   * #path()}, such as {@code 2} for {@code wf@1/a@2}, or empty when the segment has none. ADK
+   * Python's {@code NodeInfo.run_id} returns an empty string instead.
+   */
+  @JsonIgnore
+  public final Optional<String> runId() {
+    return runIdOf(lastSegment(path()));
+  }
+
+  /**
+   * Returns the run ID of the emitting node's parent: the part after {@code @} in the
+   * second-to-last segment of {@link #path()}, such as {@code 1} for {@code wf@1/a@2}. Empty when
+   * the path has no parent segment or that segment has no run ID, as in ADK Python's {@code
+   * NodeInfo.parent_run_id}.
+   */
+  @JsonIgnore
+  public final Optional<String> parentRunId() {
+    String path = path();
+    int lastSlash = path.lastIndexOf('/');
+    return lastSlash < 0 ? Optional.empty() : runIdOf(lastSegment(path.substring(0, lastSlash)));
+  }
+
+  private static String lastSegment(String path) {
+    return path.substring(path.lastIndexOf('/') + 1);
+  }
+
+  private static Optional<String> runIdOf(String segment) {
+    int at = segment.lastIndexOf('@');
+    return at < 0 ? Optional.empty() : Optional.of(segment.substring(at + 1));
+  }
 
   public static Builder builder() {
     return new AutoValue_NodeInfo.Builder()
