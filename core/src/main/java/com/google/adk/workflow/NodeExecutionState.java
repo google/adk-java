@@ -151,26 +151,36 @@ public final class NodeExecutionState {
 
   /**
    * Records the node's output, which an event carries when the node finishes unless an earlier
-   * event already carried it. A node produces at most one output.
+   * event already carried it. A node produces at most one output. Once the node delegates its
+   * output to a {@code useAsOutput} child, an output it produces itself is dropped, as in Python
+   * ADK.
    *
-   * @throws IllegalStateException if the node already has an output, or if it delegated its output
-   *     to a {@code useAsOutput} child.
+   * @throws IllegalStateException if the node already produced an output of its own
    */
   public void produceOutput(Object output) {
+    tryProduceOutput(output);
+  }
+
+  /**
+   * Records {@code output} as {@link #produceOutput} does, and returns {@code false} if it was
+   * dropped because a {@code useAsOutput} child holds the node's output.
+   */
+  @CanIgnoreReturnValue
+  boolean tryProduceOutput(Object output) {
     checkNotNull(output);
-    outputState.updateAndGet(
-        current -> {
-          checkState(
-              !current.status().isDelegated(),
-              "Node '%s' delegated its output to a useAsOutput child and must not produce one of"
-                  + " its own.",
-              node.name());
-          checkState(
-              current.status() == OutputStatus.NONE,
-              "Node '%s' produced a second output; a node produces at most one output.",
-              node.name());
-          return new OutputState(OutputStatus.PRODUCED, output);
-        });
+    OutputState updated =
+        outputState.updateAndGet(
+            current -> {
+              if (current.status().isDelegated()) {
+                return current;
+              }
+              checkState(
+                  current.status() == OutputStatus.NONE,
+                  "Node '%s' produced a second output; a node produces at most one output.",
+                  node.name());
+              return new OutputState(OutputStatus.PRODUCED, output);
+            });
+    return !updated.status().isDelegated();
   }
 
   /**
@@ -288,10 +298,16 @@ public final class NodeExecutionState {
             .updateAndGet(
                 current -> {
                   checkState(
-                      current.status() == OutputStatus.PRODUCED,
+                      current.status() == OutputStatus.PRODUCED
+                          || current.status() == OutputStatus.DELEGATE_PRODUCED,
                       "Node '%s' has no unsent output to mark as emitted.",
                       node.name());
-                  return new OutputState(OutputStatus.EMITTED, current.value());
+                  // It stays delegated, so an output the node produces later is still dropped.
+                  return new OutputState(
+                      current.status().isDelegated()
+                          ? OutputStatus.DELEGATE_EMITTED
+                          : OutputStatus.EMITTED,
+                      current.value());
                 })
             .value();
     for (NodeExecutionState ancestor = outputParent;
@@ -309,7 +325,8 @@ public final class NodeExecutionState {
   private void recordDelegatedOutput(@Nullable Object output) {
     outputState.updateAndGet(
         current ->
-            current.status().isDelegated()
+            current.status() == OutputStatus.DELEGATED
+                    || current.status() == OutputStatus.DELEGATE_EMITTED
                 ? new OutputState(OutputStatus.DELEGATE_EMITTED, output)
                 : current);
   }
@@ -348,7 +365,8 @@ public final class NodeExecutionState {
   void adoptReplayedOutput(Object output) {
     checkState(
         outputState.compareAndSet(
-            DELEGATED_OUTPUT, new OutputState(OutputStatus.PRODUCED, checkNotNull(output))),
+            DELEGATED_OUTPUT,
+            new OutputState(OutputStatus.DELEGATE_PRODUCED, checkNotNull(output))),
         "Node '%s' adopted a replayed output without a pending delegation.",
         node.name());
   }
@@ -403,11 +421,13 @@ public final class NodeExecutionState {
     PRODUCED,
     /** An event carried the output the run produced. */
     EMITTED,
-    /** An event of a {@code useAsOutput} descendant carried the run's output. */
+    /** The run holds a delegate's output, such as a replayed child's, to send on its own event. */
+    DELEGATE_PRODUCED,
+    /** An event carried the run's delegated output, sent by a descendant or by the run. */
     DELEGATE_EMITTED;
 
     boolean isDelegated() {
-      return this == DELEGATED || this == DELEGATE_EMITTED;
+      return this == DELEGATED || this == DELEGATE_PRODUCED || this == DELEGATE_EMITTED;
     }
   }
 
