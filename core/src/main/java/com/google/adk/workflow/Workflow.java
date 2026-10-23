@@ -201,6 +201,12 @@ public final class Workflow extends BaseNode {
       return this;
     }
 
+    /**
+     * Builds the workflow.
+     *
+     * @throws WorkflowConfigurationException if the output schema of an edge's source admits a
+     *     value that the input schema of its target does not
+     */
     public Workflow build() {
       checkState(name != null, "Workflow.Builder requires name to be set.");
       return new Workflow(this);

@@ -184,10 +184,11 @@ public class Runner {
     /**
      * Sets the {@link Scheduler} for the work ADK hands off to worker threads in this runner's
      * invocations: the sub-agents of a {@code ParallelAgent}, tool calls in {@link
-     * RunConfig.ToolExecutionMode#PARALLEL_SUBSCRIBE} mode, and the hop that starts the live send
-     * loop. The runs that an {@code AgentTool} nests inherit it. An agent-level {@code
-     * ParallelAgent.Builder#scheduler} or {@code LlmAgent.Builder#executor} takes precedence.
-     * {@code null} (the default) selects {@code Schedulers.io()}.
+     * RunConfig.ToolExecutionMode#PARALLEL_SUBSCRIBE} mode, workflow {@code FunctionNode} bodies,
+     * and the hop that starts the live send loop. The runs that an {@code AgentTool} nests inherit
+     * it. An agent-level {@code ParallelAgent.Builder#scheduler} or {@code
+     * LlmAgent.Builder#executor} takes precedence. {@code null} (the default) selects {@code
+     * Schedulers.io()}.
      *
      * <p>Only these hand-offs are affected; work that completes asynchronously elsewhere (model
      * clients, session services, MCP, plugins) stays on its own threads. {@code
