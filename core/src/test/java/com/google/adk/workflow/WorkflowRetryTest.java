@@ -436,6 +436,53 @@ public final class WorkflowRetryTest {
   }
 
   @Test
+  public void aWorkflowTimeout_cancelsAChildThatBlocksAsItStarts() {
+    CountDownLatch release = new CountDownLatch(1);
+    CountDownLatch firstRunEnded = new CountDownLatch(1);
+    AtomicBoolean interrupted = new AtomicBoolean();
+    // As above, but the blocking node is a child that its caller starts with runNode.
+    CountingNode blocking =
+        new CountingNode(
+            "blocking",
+            (ctx, run) ->
+                run > 1
+                    ? Flowable.fromCallable(
+                        () -> {
+                          release.countDown();
+                          checkState(firstRunEnded.await(10, SECONDS));
+                          return "in time";
+                        })
+                    : Flowable.fromCallable(
+                            () -> {
+                              try {
+                                checkState(release.await(10, SECONDS));
+                                return "late";
+                              } catch (InterruptedException e) {
+                                interrupted.set(true);
+                                throw e;
+                              }
+                            })
+                        .doFinally(firstRunEnded::countDown));
+    CountingNode caller =
+        new CountingNode("caller", (ctx, run) -> ctx.runNode(blocking, null).toFlowable());
+    Workflow outer =
+        Workflow.builder()
+            .name("wf")
+            .edges(new Edge(START, caller))
+            .config(
+                NodeConfig.builder().retryConfig(instantRetry(2)).timeout(SHORT_TIMEOUT).build())
+            .build();
+
+    ImmutableList<Event> events = new WorkflowSession(outer).turn(go());
+
+    assertThat(interrupted.get()).isFalse();
+    assertThat(errorCodes(events)).containsExactly(new FinishReason("NodeTimeoutException"));
+    assertThat(events.stream().flatMap(event -> event.output().stream())).doesNotContain("late");
+    assertThat(outputEventAt(events, "wf@1/caller@1/blocking@1").output()).hasValue("in time");
+    assertThat(outputEventAt(events, "wf@1/caller@1").output()).hasValue("in time");
+  }
+
+  @Test
   public void aWorkflowWithTwoTerminalOutputs_failsWithoutARetry() {
     Workflow root =
         Workflow.builder()

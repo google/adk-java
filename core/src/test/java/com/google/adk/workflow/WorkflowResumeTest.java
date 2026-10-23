@@ -18,6 +18,7 @@ package com.google.adk.workflow;
 
 import static com.google.adk.testing.WorkflowTestNodes.dispatcher;
 import static com.google.adk.testing.WorkflowTestNodes.emitter;
+import static com.google.adk.testing.WorkflowTestNodes.throwing;
 import static com.google.adk.testing.WorkflowTestNodes.workflow;
 import static com.google.adk.workflow.WorkflowResumeTesting.AGE_SCHEMA;
 import static com.google.adk.workflow.WorkflowResumeTesting.START;
@@ -68,6 +69,8 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.functions.Consumer;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
@@ -155,6 +158,30 @@ public final class WorkflowResumeTest {
     assertThat(routerRuns.get()).isEqualTo(1);
     assertThat(unreached.runs()).isEqualTo(0);
     assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("v", 1));
+  }
+
+  @Test
+  public void resume_fannedOutRouterReplayed_keepsItsSuccessorOnItsSubBranch() {
+    Route yes = new Route.Tag("yes");
+    Node router =
+        new TestNode(
+            "router",
+            (ctx, input) -> {
+              ctx.routes(ImmutableList.of(yes));
+              return Flowable.empty();
+            });
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, router),
+                new Edge(START, new CountingNode("other", /* output= */ null)),
+                new Edge(router, longRunningAsk("ask", "ask_1"), yes)));
+    String askBranch =
+        Iterables.getOnlyElement(interruptEvents(session.turn(go()))).branch().orElseThrow();
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    assertThat(outputEventAt(events, "wf@1/ask@1").branch()).hasValue(askBranch);
   }
 
   @Test
@@ -458,6 +485,34 @@ public final class WorkflowResumeTest {
   }
 
   @Test
+  public void resume_callerWhoseDelegateRanOnASubBranch_keepsItsSuccessorOnItsOwnBranch() {
+    // The delegate's output event carries its sub-branch, which the caller must not adopt.
+    Node caller =
+        dispatcher(
+            "caller",
+            (ctx, input) ->
+                ctx.runNode(
+                        new CountingNode("c", "child_out"),
+                        null,
+                        RunNodeConfig.builder()
+                            .runId("c")
+                            .useAsOutput(true)
+                            .useSubBranch(true)
+                            .build())
+                    .ignoreElement()
+                    .toFlowable());
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(new Edge(START, caller), new Edge(caller, longRunningAsk("ask", "ask_1"))));
+    Optional<String> askBranch =
+        Iterables.getOnlyElement(interruptEvents(session.turn(go()))).branch();
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    assertThat(outputEventAt(events, "wf@1/ask@1").branch()).isEqualTo(askBranch);
+  }
+
+  @Test
   public void runNode_delegatingCallWhoseChildNoLongerRehydrates_letsTheCallerProduceItsOutput() {
     Node chat = new MessageOutputNode("chat", "not json", AGE_SCHEMA);
     Node ask = longRunningAsk("ask", "ask_1");
@@ -498,9 +553,64 @@ public final class WorkflowResumeTest {
   }
 
   @Test
+  public void resume_terminalChildWorkflowWhoseTerminalNodeReplayed_sendsNoOutputOfItsOwn() {
+    CountingNode done = new CountingNode("done", "DONE");
+    Workflow sub = workflow("sub", new Edge(START, done));
+    Node sink = new TestNode("sink", (ctx, input) -> Flowable.empty());
+    Node ask = longRunningAsk("ask", "ask_1");
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(new Edge(START, sub), new Edge(START, ask), new Edge(ask, sink)));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    assertThat(done.runs()).isEqualTo(1);
+    assertThat(
+            events.stream()
+                .filter(event -> pathOf(event).equals("wf@1/sub@1") && event.output().isPresent()))
+        .isEmpty();
+  }
+
+  @Test
   public void resume_callerRerunOverAReplayingChildWorkflow_isReplayedOnTheNextTurn() {
     AtomicInteger callerRuns = new AtomicInteger();
     Workflow child = workflow("sub", new Edge(START, emitter("done", "DONE")));
+    Node caller =
+        dispatcher(
+            "caller",
+            (ctx, input) -> {
+              callerRuns.incrementAndGet();
+              return ctx.runNode(child, null, USE_AS_OUTPUT)
+                  .ignoreElement()
+                  .andThen(ctx.runNode(longRunningAsk("ask", "ask_1"), null, runId("a")))
+                  .ignoreElement()
+                  .toFlowable();
+            });
+    Node other = longRunningAsk("other", "o_1");
+    JoinNode join = JoinNode.builder().name("j").build();
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, caller),
+                new Edge(START, other),
+                new Edge(caller, join),
+                new Edge(other, join)));
+    session.advance(go());
+    session.advance(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    ImmutableList<Event> events = session.turn(answer("o_1", ImmutableMap.of("v", 2)));
+
+    assertThat(callerRuns.get()).isEqualTo(2);
+    assertThat(outputEventAt(events, "wf@1/j@1").output())
+        .hasValue(ImmutableMap.of("caller", "DONE", "other", ImmutableMap.of("v", 2)));
+  }
+
+  @Test
+  public void resume_callerRerunOverANestedReplayingChildWorkflow_isReplayedOnTheNextTurn() {
+    AtomicInteger callerRuns = new AtomicInteger();
+    Workflow sub = workflow("sub", new Edge(START, emitter("done", "DONE")));
+    Workflow child = workflow("outer", new Edge(START, sub));
     Node caller =
         dispatcher(
             "caller",
@@ -1153,36 +1263,147 @@ public final class WorkflowResumeTest {
   }
 
   @Test
-  public void runNode_firstCallOfASharedRunCanceled_waitingCallRunsTheChild() {
-    AtomicInteger stalledRuns = new AtomicInteger();
+  public void runNode_firstCallOfASharedRunCanceled_waitingCallKeepsTheRun() {
     CompletableSubject secondJoined = CompletableSubject.create();
-    Node stalled =
-        new TestNode(
-            "stalled",
-            (ctx, input) ->
-                stalledRuns.incrementAndGet() == 1
-                    ? Flowable.never()
-                    : Flowable.just("stalled done"));
+    CountingNode fetch = new CountingNode("fetch", "fetched", secondJoined);
     Node caller =
         dispatcher(
             "caller",
             (ctx, input) -> {
-              // The second call joining the run cancels the first call.
+              // takeUntil sees secondJoined before fetch's gate, so the first call ends first.
               Maybe<Object> first =
-                  ctx.runNode(stalled, null, runId("s"))
+                  ctx.runNode(fetch, null, runId("f"))
                       .takeUntil(secondJoined.toMaybe())
                       .switchIfEmpty(Maybe.just("canceled"));
               Maybe<Object> second =
-                  ctx.runNode(stalled, null, runId("s"))
+                  ctx.runNode(fetch, null, runId("f"))
                       .doOnSubscribe(unused -> secondJoined.onComplete());
               return Maybe.zip(first, second, ImmutableList::of).toFlowable();
             });
 
     ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, caller))).turn(go());
 
-    assertThat(stalledRuns.get()).isEqualTo(2);
+    assertThat(fetch.runs()).isEqualTo(1);
     assertThat(outputEventAt(events, "wf@1/caller@1").output())
-        .hasValue(ImmutableList.of("canceled", "stalled done"));
+        .hasValue(ImmutableList.of("canceled", "fetched"));
+  }
+
+  @Test
+  public void runNode_sharedRunWhoseCallsAreAllCanceled_doesNotRunAgain() {
+    CountingNode stalled = new CountingNode("stalled", "done", Completable.never());
+    Node broken = throwing("broken", new IllegalStateException("broken"));
+    Node caller =
+        dispatcher(
+            "caller",
+            (ctx, input) ->
+                Maybe.zip(
+                        ctx.runNode(stalled, null, runId("s")),
+                        ctx.runNode(stalled, null, runId("s")),
+                        ctx.runNode(broken, null, runId("b")),
+                        (first, second, third) -> "unreached")
+                    .toFlowable());
+
+    FailedTurn turn = new WorkflowSession(workflow(new Edge(START, caller))).failingTurn(go());
+
+    assertThat(turn.error()).isInstanceOf(IllegalStateException.class);
+    assertThat(stalled.runs()).isEqualTo(1);
+  }
+
+  @Test
+  public void runNode_sharedRunOfACallerThatASiblingsFailureCanceled_doesNotRunAgain() {
+    CompletableSubject secondJoined = CompletableSubject.create();
+    CountingNode stalled = new CountingNode("stalled", "done", Completable.never());
+    Node caller = overlappingCalls("caller", stalled, runId("s"), runId("s"), secondJoined);
+    Node sibling =
+        new TestNode(
+            "sibling",
+            (ctx, input) ->
+                secondJoined.andThen(Flowable.error(new IllegalStateException("sibling fails"))));
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, caller), new Edge(START, sibling)));
+
+    FailedTurn turn = session.failingTurn(go());
+
+    assertThat(turn.error()).isInstanceOf(IllegalStateException.class);
+    assertThat(stalled.runs()).isEqualTo(1);
+  }
+
+  @Test
+  public void runNode_callFailingOnTheResultOfASharedRun_leavesNoUndeliverableError() {
+    List<Throwable> undeliverable = Collections.synchronizedList(new ArrayList<>());
+    Consumer<? super Throwable> previousHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+    try {
+      AtomicInteger askRuns = new AtomicInteger();
+      CompletableSubject released = CompletableSubject.create();
+      Node ask =
+          new TestNode(
+              "ask",
+              (ctx, input) -> {
+                askRuns.incrementAndGet();
+                return released.andThen(Flowable.just(interrupt("ask_1")));
+              });
+      Node caller =
+          dispatcher(
+              "caller",
+              (ctx, input) ->
+                  Maybe.zip(
+                          ctx.runNode(ask, null, runId("a")),
+                          ctx.runNode(ask, null, runId("a")),
+                          // Releases ask once both calls wait on its run.
+                          Maybe.fromCallable(
+                              () -> {
+                                released.onComplete();
+                                return "released";
+                              }),
+                          (first, second, release) -> "unreached")
+                      .toFlowable());
+
+      ImmutableList<Event> events =
+          new WorkflowSession(workflow(new Edge(START, caller))).turn(go());
+
+      assertThat(undeliverable).isEmpty();
+      assertThat(askRuns.get()).isEqualTo(1);
+      assertThat(interruptEvents(events)).hasSize(1);
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousHandler);
+    }
+  }
+
+  @Test
+  public void runNode_sameExplicitRunIdTwiceForAWaitingChildThatOnlyRoutes_runsItOnce() {
+    AtomicInteger routerRuns = new AtomicInteger();
+    Node router =
+        new WaitingNode(
+            "router",
+            (ctx, input) -> {
+              routerRuns.incrementAndGet();
+              ctx.routes(ImmutableList.of(new Route.Tag("yes")));
+              return Flowable.empty();
+            });
+    Node caller = twoCallsInTurn("caller", router, runId("r"));
+
+    new WorkflowSession(workflow(new Edge(START, caller))).advance(go());
+
+    assertThat(routerRuns.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void runNode_sameExplicitRunIdTwiceForAWaitingChildThatOnlyTransfers_runsItOnce() {
+    AtomicInteger transferRuns = new AtomicInteger();
+    Node transfer =
+        new WaitingNode(
+            "transfer",
+            (ctx, input) -> {
+              transferRuns.incrementAndGet();
+              ctx.eventActions().setTransferToAgent("other");
+              return Flowable.empty();
+            });
+    Node caller = twoCallsInTurn("caller", transfer, runId("t"));
+
+    new WorkflowSession(workflow(new Edge(START, caller))).advance(go());
+
+    assertThat(transferRuns.get()).isEqualTo(1);
   }
 
   @Test
@@ -1379,6 +1600,17 @@ public final class WorkflowResumeTest {
                     ctx.runNode(child, null, second)
                         .doOnSubscribe(unused -> secondJoined.onComplete()),
                     ImmutableList::of)
+                .toFlowable());
+  }
+
+  /** Returns a node that runs {@code child} with {@code config} twice, one call after the other. */
+  private static Node twoCallsInTurn(String name, Node child, RunNodeConfig config) {
+    return dispatcher(
+        name,
+        (ctx, input) ->
+            ctx.runNode(child, null, config)
+                .ignoreElement()
+                .andThen(ctx.runNode(child, null, config).ignoreElement())
                 .toFlowable());
   }
 
