@@ -17,6 +17,7 @@ package com.google.adk.models;
 
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -34,7 +35,13 @@ import com.google.genai.types.ToolCall;
 import com.google.genai.types.ToolResponse;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.functions.Predicate;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.util.Iterator;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.stream.IntStream;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -2191,5 +2198,73 @@ public final class GeminiTest {
         .candidatesTokenCount(candidateTokens)
         .totalTokenCount(totalTokens)
         .build();
+  }
+
+  @Test
+  public void readStream_cancelMidStream_closesStream() throws Exception {
+    FakeStream stream = new FakeStream();
+
+    TestSubscriber<String> subscriber =
+        Gemini.readStream(CompletableFuture.completedFuture(stream)).take(1).test();
+
+    subscriber.assertValues("chunk-1").assertComplete();
+    assertThat(stream.closed.await(5, SECONDS)).isTrue();
+  }
+
+  @Test
+  public void readStream_cancelBeforeStreamOpens_closesStreamOnceOpen() throws Exception {
+    CountDownLatch waiting = new CountDownLatch(1);
+    CompletableFuture<FakeStream> future =
+        new CompletableFuture<>() {
+          @Override
+          public FakeStream get() throws InterruptedException, ExecutionException {
+            waiting.countDown();
+            return super.get();
+          }
+        };
+    TestSubscriber<String> subscriber =
+        Gemini.readStream(future).subscribeOn(Schedulers.io()).test();
+    assertThat(waiting.await(5, SECONDS)).isTrue();
+
+    subscriber.cancel();
+    FakeStream stream = new FakeStream();
+    future.complete(stream);
+
+    assertThat(stream.closed.await(5, SECONDS)).isTrue();
+    subscriber.assertNoValues();
+  }
+
+  @Test
+  public void readStream_readsToEnd_emitsEveryResponse() {
+    FakeStream stream = new FakeStream(3);
+
+    Gemini.readStream(CompletableFuture.completedFuture(stream))
+        .test()
+        .assertValues("chunk-1", "chunk-2", "chunk-3")
+        .assertComplete();
+  }
+
+  /** A stream of "chunk-N" strings that records when it is closed; unbounded by default. */
+  private static final class FakeStream implements Iterable<String>, AutoCloseable {
+    final CountDownLatch closed = new CountDownLatch(1);
+    private final int size;
+
+    FakeStream() {
+      this(Integer.MAX_VALUE);
+    }
+
+    FakeStream(int size) {
+      this.size = size;
+    }
+
+    @Override
+    public Iterator<String> iterator() {
+      return IntStream.rangeClosed(1, size).mapToObj(i -> "chunk-" + i).iterator();
+    }
+
+    @Override
+    public void close() {
+      closed.countDown();
+    }
   }
 }
