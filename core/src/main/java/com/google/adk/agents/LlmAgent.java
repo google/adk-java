@@ -678,16 +678,8 @@ public class LlmAgent extends BaseAgent {
         () -> {
           // Resumed after a transfer: continue the sub-agent instead of re-invoking the model.
           if (invocationContext.agentStates().containsKey(name())) {
-            Optional<String> resumeTargetName = findTransferToResume(invocationContext);
-            if (resumeTargetName.isPresent()) {
-              Optional<BaseAgent> resumeTarget = declaredTransferTarget(resumeTargetName.get());
-              // End this agent without running anything if the recorded target is undeclared
-              // (rejected) or already ended after this agent's latest transfer (e.g. on the
-              // target's own rejected transfer).
-              if (resumeTarget.isEmpty()
-                  || endedAfterLatestTransfer(invocationContext, resumeTarget.get())) {
-                return endOfAgentAndRecord(invocationContext);
-              }
+            Optional<BaseAgent> resumeTarget = findSubAgentToResume(invocationContext);
+            if (resumeTarget.isPresent()) {
               AtomicBoolean resumePaused = new AtomicBoolean(false);
               return resumeTarget
                   .get()
@@ -719,7 +711,6 @@ public class LlmAgent extends BaseAgent {
                       paused.set(true);
                     }
                   })
-              .onErrorResumeNext(error -> endIfOwnRejectedTransfer(invocationContext, error))
               .concatWith(
                   Flowable.defer(
                       () -> {
@@ -732,20 +723,6 @@ public class LlmAgent extends BaseAgent {
                         return endOfAgentAndRecord(invocationContext);
                       }));
         });
-  }
-
-  /**
-   * Emits an end-of-agent marker before {@code error} when it is a {@link
-   * TransferRejectedException} from this agent, so a resume does not re-run it. Any other error,
-   * including a sub-agent's rejection, passes through and leaves this agent open.
-   */
-  private Flowable<Event> endIfOwnRejectedTransfer(
-      InvocationContext invocationContext, Throwable error) {
-    if (error instanceof TransferRejectedException rejected
-        && rejected.agentName().equals(name())) {
-      return endOfAgentAndRecord(invocationContext).concatWith(Flowable.error(error));
-    }
-    return Flowable.error(error);
   }
 
   /**
@@ -764,48 +741,33 @@ public class LlmAgent extends BaseAgent {
   }
 
   /**
-   * Returns whether {@code target} ended after this agent's latest transfer, as it does on its own
-   * rejected transfer. An end marker from before that transfer, such as a past loop iteration, does
-   * not count.
+   * Resolves a transfer target recorded in history back to its agent. A live transfer fails in
+   * {@code BaseLlmFlow} when the target is gone; a resumed one has no such check, and returning
+   * empty here would silently re-run this agent instead of the sub-agent it handed off to.
    */
-  private boolean endedAfterLatestTransfer(InvocationContext context, BaseAgent target) {
-    // All branches: under a ParallelAgent, the target writes its marker on a descendant branch.
-    for (Event event :
-        context.events(/* currentInvocation= */ true, /* currentBranch= */ false).reverse()) {
-      if (transferTargetNameFrom(event).isPresent()) {
-        return false;
-      }
-      if (isEndMarker(event, target.name())) {
-        return true;
+  private BaseAgent resolveTransferTarget(String targetName) {
+    // Declared targets first, as in Python, so a same-named agent on an unrelated branch is not
+    // resumed into; then the same tree-wide search the live transfer path uses.
+    for (BaseAgent target : transferTargets()) {
+      if (target.name().equals(targetName)) {
+        return target;
       }
     }
-    return false;
+    return rootAgent()
+        .findAgent(targetName)
+        .orElseThrow(
+            () ->
+                new IllegalStateException(
+                    "Cannot resume agent "
+                        + name()
+                        + ": the agent it transferred to is no longer in the agent tree."));
   }
 
   /**
-   * Returns whether {@code event} is {@code author}'s end-of-agent marker, which has no content.
+   * When this agent is being resumed, returns the sub-agent it had transferred to (so the resume
+   * continues that sub-agent), or empty when this agent should continue itself.
    */
-  private static boolean isEndMarker(Event event, String author) {
-    return author.equals(event.author())
-        && event.actions().endOfAgent()
-        && event.content().isEmpty();
-  }
-
-  /**
-   * Returns the declared target named {@code targetName}, or empty when it is not one, so a
-   * same-named agent elsewhere in the tree is never resumed in its place.
-   */
-  private Optional<BaseAgent> declaredTransferTarget(String targetName) {
-    return transferTargets().stream()
-        .filter(target -> target.name().equals(targetName))
-        .findFirst();
-  }
-
-  /**
-   * When this agent is being resumed, returns the name of the agent it had transferred to, or empty
-   * when this agent should continue itself. The name need not be a declared target.
-   */
-  private Optional<String> findTransferToResume(InvocationContext context) {
+  private Optional<BaseAgent> findSubAgentToResume(InvocationContext context) {
     ImmutableList<Event> events =
         context.events(/* currentInvocation= */ true, /* currentBranch= */ true);
     if (events.isEmpty()) {
@@ -813,7 +775,7 @@ public class LlmAgent extends BaseAgent {
     }
     Event lastEvent = Iterables.getLast(events);
     if (name().equals(lastEvent.author())) {
-      return transferTargetNameFrom(lastEvent);
+      return transferTargetNameFrom(lastEvent).map(this::resolveTransferTarget);
     }
     if (Objects.equals(lastEvent.author(), Role.USER) && !lastEvent.functionResponses().isEmpty()) {
       // IAE (not ISE): an unresolvable resume surfaces through Runner.runAsync's IAE contract.
@@ -832,14 +794,9 @@ public class LlmAgent extends BaseAgent {
     }
     // A user event answering no call falls through; Python fails the resume instead.
     for (int i = events.size() - 2; i >= 0; i--) {
-      Event event = events.get(i);
-      // Transfers before this agent's own end marker belong to a finished run, such as a past loop.
-      if (isEndMarker(event, name())) {
-        break;
-      }
-      Optional<String> targetName = transferTargetNameFrom(event);
+      Optional<String> targetName = transferTargetNameFrom(events.get(i));
       if (targetName.isPresent()) {
-        return targetName;
+        return Optional.of(resolveTransferTarget(targetName.get()));
       }
     }
     return Optional.empty();

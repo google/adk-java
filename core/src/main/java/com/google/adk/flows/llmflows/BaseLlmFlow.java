@@ -27,7 +27,6 @@ import com.google.adk.agents.LiveRequest;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.agents.RunConfig.StreamingMode;
-import com.google.adk.agents.TransferRejectedException;
 import com.google.adk.events.Event;
 import com.google.adk.flows.BaseFlow;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
@@ -425,9 +424,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
    *
    * <p>Handles early termination, LLM call limits, and agent transfer if needed.
    *
-   * @return A {@link Flowable} of {@link Event} objects from this step, or an error with {@link
-   *     TransferRejectedException} if a transfer names an agent this agent may not transfer to.
+   * @return A {@link Flowable} of {@link Event} objects from this step.
    * @throws LlmCallsLimitExceededException if the agent exceeds allowed LLM invocations.
+   * @throws IllegalStateException if a transfer agent is specified but not found.
    */
   private Flowable<Event> runOneStep(Context spanContext, InvocationContext context) {
     AtomicReference<LlmRequest> llmRequestRef = new AtomicReference<>(LlmRequest.builder().build());
@@ -803,17 +802,34 @@ public abstract class BaseLlmFlow implements BaseFlow {
       return self;
     }
     String agentToTransfer = event.actions().transferToAgent().get();
-    LlmAgent agent = (LlmAgent) context.agent();
-    Optional<BaseAgent> target = declaredTransferTarget(agent, agentToTransfer);
-    if (target.isEmpty()) {
-      return self.concatWith(Flowable.error(transferRejected(agent, agentToTransfer)));
+    Optional<BaseAgent> nextAgent = context.agent().rootAgent().findAgent(agentToTransfer);
+    if (nextAgent.isEmpty()) {
+      logger.error("Agent not found: {}", agentToTransfer);
+      return self.concatWith(
+          Flowable.error(new IllegalStateException("Agent not found: " + agentToTransfer)));
+    }
+    BaseAgent target;
+    // Resumable only: restricting the default flow too would move behavior for existing callers.
+    if (context.isResumable() && context.agent() instanceof LlmAgent llmAgent) {
+      Optional<BaseAgent> declared = declaredTransferTarget(llmAgent, agentToTransfer);
+      if (declared.isEmpty()) {
+        return self.concatWith(
+            Flowable.error(
+                new IllegalStateException(
+                    "Agent "
+                        + llmAgent.name()
+                        + " is not allowed to transfer to the requested agent.")));
+      }
+      target = declared.get();
+    } else {
+      target = nextAgent.get();
     }
     // Otherwise the target can build its request from a session missing the transfer event.
     return self.concatWith(
         PersistBarrier.awaitPersisted(context, ImmutableList.of(event))
             .andThen(
                 // Not around the barrier: andThen subscribes the target on the append's thread.
-                Flowable.defer(() -> target.get().runAsync(context))
+                Flowable.defer(() -> target.runAsync(context))
                     .compose(Tracing.withContext(spanContext))));
   }
 
@@ -824,32 +840,11 @@ public abstract class BaseLlmFlow implements BaseFlow {
    */
   private static Optional<BaseAgent> declaredTransferTarget(LlmAgent from, String name) {
     if (name.equals(from.name())) {
-      return Optional.empty();
+      return Optional.of(from);
     }
     return AgentTransfer.transferTargets(from).stream()
         .filter(candidate -> candidate.name().equals(name))
         .findFirst();
-  }
-
-  /**
-   * Returns the error for a transfer {@link #declaredTransferTarget} rejected. The message names
-   * only {@code from}, since {@code name} is model output.
-   */
-  private static TransferRejectedException transferRejected(LlmAgent from, String name) {
-    if (name.equals(from.name())) {
-      return new TransferRejectedException(
-          from.name(), "Agent '" + from.name() + "' cannot transfer to itself.");
-    }
-    if (from.rootAgent().findAgent(name).isEmpty()) {
-      return new TransferRejectedException(
-          from.name(),
-          "Agent '"
-              + from.name()
-              + "' requested a transfer to an agent that is not in the agent tree.");
-    }
-    return new TransferRejectedException(
-        from.name(),
-        "Agent '" + from.name() + "' is not allowed to transfer to the requested agent.");
   }
 
   /**
