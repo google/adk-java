@@ -39,9 +39,9 @@ public abstract class RunNodeConfig {
   public abstract Optional<String> runId();
 
   /**
-   * Returns whether the child's output is also the caller's output. When true, the caller must not
-   * produce an output of its own, even if the child produces none, unless the child fails before
-   * emitting its output.
+   * Returns whether the child's output is also the caller's output. When true, an output the caller
+   * produces itself is dropped, even if the child produces none. Only a child that fails before
+   * emitting its output gives the output back to the caller.
    */
   public abstract boolean useAsOutput();
 

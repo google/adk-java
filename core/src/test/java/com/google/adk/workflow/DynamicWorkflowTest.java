@@ -294,17 +294,29 @@ public final class DynamicWorkflowTest {
   }
 
   @Test
-  public void runNode_useAsOutputThenCallerEmitsTheChildsOutput_failsTheRun() {
-    Node dispatcher = returning("dispatcher", emitter("child", "CHILD_OUT"), USE_AS_OUTPUT);
+  public void runNode_useAsOutputThenCallerEmitsTheChildsOutput_storesOnlyTheChildsOutputEvent() {
+    // The caller emits the child's result, as Python ADK's delegating functions return it.
+    Node dispatcher = returning("dispatcher", echo("child", "echo"), USE_AS_OUTPUT);
+    Node after = echo("after", "after");
 
-    RunResult result = run(workflow(new Edge(START, dispatcher)));
+    RunResult result = run(workflow(new Edge(START, dispatcher), new Edge(dispatcher, after)));
 
-    assertThat(result.error()).isInstanceOf(IllegalStateException.class);
-    assertThat(result.error()).hasMessageThat().contains("delegated its output");
+    result.assertCompleted();
+    ImmutableList<Event> outputEvents = result.storedOutputEvents();
+    assertThat(paths(outputEvents))
+        .containsExactly("wf@1/dispatcher@1/child@1", "wf@1/after@1")
+        .inOrder();
+    assertThat(outputFor(outputEvents.get(0)))
+        .containsExactly("wf@1/dispatcher@1/child@1", "wf@1/dispatcher@1")
+        .inOrder();
+    assertThat(outputEvents.get(1).output()).hasValue("after:echo:null");
+    // The event that carried only the caller's own output is not sent at all.
+    assertThat(result.events().stream().filter(event -> pathOf(event).equals("wf@1/dispatcher@1")))
+        .isEmpty();
   }
 
   @Test
-  public void runNode_useAsOutputChildWithoutAnOutputThenCallerEmits_failsTheRun() {
+  public void runNode_useAsOutputChildWithoutAnOutputThenCallerEmits_dropsTheCallersOutput() {
     Node dispatcher =
         dispatcher(
             "dispatcher",
@@ -312,18 +324,21 @@ public final class DynamicWorkflowTest {
                 ctx.runNode(TestNode.of("child"), null, USE_AS_OUTPUT)
                     .ignoreElement()
                     .andThen(Flowable.just("OWN")));
+    Node after = echo("after", "after");
 
-    RunResult result = run(workflow(new Edge(START, dispatcher)));
+    RunResult result = run(workflow(new Edge(START, dispatcher), new Edge(dispatcher, after)));
 
-    assertThat(result.error()).isInstanceOf(IllegalStateException.class);
-    assertThat(result.error()).hasMessageThat().contains("delegated its output");
+    result.assertCompleted();
+    assertThat(result.outputs()).doesNotContain("OWN");
+    assertThat(result.outputEventAt("wf@1/after@1").output()).hasValue("after:null");
   }
 
   @Test
-  public void runNode_useAsOutputThenCallerEmitsAMessageAsOutput_failsTheRun() {
+  public void runNode_useAsOutputThenCallerEmitsAMessageAsOutput_storesItAsAPlainMessage() {
+    Content ownText = Content.fromParts(Part.fromText("own text"));
     Event ownMessage =
         newEvent()
-            .content(Content.fromParts(Part.fromText("own text")))
+            .content(ownText)
             .nodeInfo(NodeInfo.builder().messageAsOutput(true).build())
             .build();
     Node dispatcher =
@@ -333,11 +348,16 @@ public final class DynamicWorkflowTest {
                 ctx.runNode(emitter("child", "CHILD_OUT"), null, USE_AS_OUTPUT)
                     .ignoreElement()
                     .andThen(Flowable.just(ownMessage)));
+    Node after = echo("after", "after");
 
-    RunResult result = run(workflow(new Edge(START, dispatcher)));
+    RunResult result = run(workflow(new Edge(START, dispatcher), new Edge(dispatcher, after)));
 
-    assertThat(result.error()).isInstanceOf(IllegalStateException.class);
-    assertThat(result.error()).hasMessageThat().contains("delegated its output");
+    result.assertCompleted();
+    Event message = result.storedEventAt("wf@1/dispatcher@1");
+    assertThat(message.content()).hasValue(ownText);
+    assertThat(message.nodeInfo().map(NodeInfo::messageAsOutput)).hasValue(false);
+    assertThat(outputFor(message)).isEmpty();
+    assertThat(result.outputEventAt("wf@1/after@1").output()).hasValue("after:CHILD_OUT");
   }
 
   @Test
@@ -359,6 +379,57 @@ public final class DynamicWorkflowTest {
     result.assertCompleted();
     assertThat(result.session().state()).containsEntry("written", "yes");
     assertThat(result.eventAt("wf@1/dispatcher@1").output()).isEmpty();
+  }
+
+  @Test
+  public void runNode_useAsOutputThenCallerEmitsItsOutputWithAStateChange_storesOnlyTheChange() {
+    Event ownOutput =
+        newEvent()
+            .output("OWN")
+            .actions(EventActions.builder().stateDelta(ImmutableMap.of("written", "yes")).build())
+            .build();
+    Node dispatcher =
+        dispatcher(
+            "dispatcher",
+            (ctx, input) ->
+                ctx.runNode(emitter("child", "CHILD_OUT"), null, USE_AS_OUTPUT)
+                    .ignoreElement()
+                    .andThen(Flowable.just(ownOutput)));
+    Node after = echo("after", "after");
+
+    RunResult result = run(workflow(new Edge(START, dispatcher), new Edge(dispatcher, after)));
+
+    result.assertCompleted();
+    assertThat(result.session().state()).containsEntry("written", "yes");
+    assertThat(result.storedEventAt("wf@1/dispatcher@1").output()).isEmpty();
+    assertThat(result.outputEventAt("wf@1/after@1").output()).hasValue("after:CHILD_OUT");
+  }
+
+  @Test
+  public void runNode_useAsOutputThenCallerEmitsItsOutputWithARoute_storesOnlyTheRoute() {
+    Route yes = new Route.Tag("yes");
+    // A resumed run reads the route back from the session.
+    Event ownOutput =
+        newEvent()
+            .output("OWN")
+            .actions(EventActions.builder().route(ImmutableList.of(yes)).build())
+            .build();
+    Node dispatcher =
+        dispatcher(
+            "dispatcher",
+            (ctx, input) ->
+                ctx.runNode(emitter("child", "CHILD_OUT"), null, USE_AS_OUTPUT)
+                    .ignoreElement()
+                    .andThen(Flowable.just(ownOutput)));
+    Node onYes = echo("on_yes", "yes");
+
+    RunResult result = run(workflow(new Edge(START, dispatcher), new Edge(dispatcher, onYes, yes)));
+
+    result.assertCompleted();
+    Event stored = result.storedEventAt("wf@1/dispatcher@1");
+    assertThat(stored.actions().route()).hasValue(ImmutableList.of(yes));
+    assertThat(stored.output()).isEmpty();
+    assertThat(result.outputEventAt("wf@1/on_yes@1").output()).hasValue("yes:CHILD_OUT");
   }
 
   @Test

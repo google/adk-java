@@ -166,7 +166,7 @@ public final class DynamicDispatchTest {
   }
 
   @Test
-  public void runChild_useAsOutputThenCallerProducesOutputOnItsState_failsTheCaller() {
+  public void runChild_useAsOutputThenCallerProducesOutputOnItsState_dropsIt() {
     Node dispatcher =
         dispatcher(
             "dispatcher",
@@ -177,10 +177,11 @@ public final class DynamicDispatchTest {
                         Completable.fromAction(() -> ctx.requireNodeState().produceOutput("OWN")))
                     .toFlowable());
 
-    Exception failure = runToFailure(workflow(new Edge(START, dispatcher)));
+    Context context = run(workflow(new Edge(START, dispatcher)));
 
-    assertThat(failure).isInstanceOf(IllegalStateException.class);
-    assertThat(failure).hasMessageThat().contains("delegated its output");
+    assertThat(context.requireNodeState().failure()).isEmpty();
+    assertThat(context.requireNodeState().output()).hasValue("CHILD_OUT");
+    assertThat(outputs()).doesNotContain("OWN");
   }
 
   @Test
@@ -277,7 +278,7 @@ public final class DynamicDispatchTest {
   }
 
   @Test
-  public void runChild_delegateCanceledBeforeEmitting_keepsTheCallersOutputDelegated() {
+  public void runChild_delegateCanceledBeforeEmitting_keepsTheDelegationAndDropsTheFallback() {
     MaybeSubject<Boolean> cancel = MaybeSubject.create();
     Node child =
         new TestNode(
@@ -286,14 +287,16 @@ public final class DynamicDispatchTest {
                 Completable.fromAction(() -> cancel.onSuccess(true)).andThen(Flowable.never()));
     Node dispatcher = cancelingAndFallingBack("dispatcher", child, cancel);
 
-    Exception failure = runToFailure(workflow(new Edge(START, dispatcher)));
+    Context context = run(workflow(new Edge(START, dispatcher)));
 
-    assertThat(failure).isInstanceOf(IllegalStateException.class);
-    assertThat(failure).hasMessageThat().contains("delegated its output");
+    // Only a failed delegate releases the delegation, so the caller ends without an output.
+    assertThat(context.requireNodeState().failure()).isEmpty();
+    assertThat(context.requireNodeState().output()).isEmpty();
+    assertThat(outputs()).doesNotContain("FALLBACK");
   }
 
   @Test
-  public void runChild_delegateCanceledAfterEmittingItsOutput_failsACallerProducingItsOwn() {
+  public void runChild_delegateCanceledAfterEmittingItsOutput_keepsThatOutputAsTheCallers() {
     MaybeSubject<Boolean> cancel = MaybeSubject.create();
     Node child =
         new TestNode(
@@ -304,15 +307,16 @@ public final class DynamicDispatchTest {
                     .concatWith(Flowable.never()));
     Node dispatcher = cancelingAndFallingBack("dispatcher", child, cancel);
 
-    Exception failure = runToFailure(workflow(new Edge(START, dispatcher)));
+    Context context = run(workflow(new Edge(START, dispatcher)));
 
-    assertThat(failure).isInstanceOf(IllegalStateException.class);
-    assertThat(failure).hasMessageThat().contains("delegated its output");
+    assertThat(context.requireNodeState().failure()).isEmpty();
+    assertThat(context.requireNodeState().output()).hasValue("CHILD_OUT");
     assertThat(eventAt("wf@1/dispatcher@1/child@1").output()).hasValue("CHILD_OUT");
+    assertThat(outputs()).doesNotContain("FALLBACK");
   }
 
   @Test
-  public void runChild_delegateThatFailsAfterEmittingItsOutput_failsACallerProducingItsOwn() {
+  public void runChild_delegateThatFailsAfterEmittingItsOutput_dropsTheCallersFallback() {
     Node dispatcher =
         handling(
             "dispatcher",
@@ -321,22 +325,24 @@ public final class DynamicDispatchTest {
             DynamicNodeFailedException.class,
             "FALLBACK");
 
-    Exception failure = runToFailure(workflow(new Edge(START, dispatcher)));
+    Context context = run(workflow(new Edge(START, dispatcher)));
 
-    assertThat(failure).isInstanceOf(IllegalStateException.class);
-    assertThat(failure).hasMessageThat().contains("delegated its output");
+    assertThat(context.requireNodeState().failure()).isEmpty();
+    assertThat(context.requireNodeState().output()).hasValue("CHILD_OUT");
+    assertThat(outputs()).doesNotContain("FALLBACK");
   }
 
   @Test
-  public void runChild_delegateWorkflowFailingAfterItsOutput_failsACallerProducingItsOwn() {
+  public void runChild_delegateWorkflowFailingAfterItsOutput_dropsTheCallersFallback() {
     Workflow inner = workflow("inner_wf", new Edge(START, emitThenFail("term", "CHILD_OUT")));
     Node dispatcher =
         handling("dispatcher", inner, USE_AS_OUTPUT, DynamicNodeFailedException.class, "FALLBACK");
 
-    Exception failure = runToFailure(workflow(new Edge(START, dispatcher)));
+    Context context = run(workflow(new Edge(START, dispatcher)));
 
-    assertThat(failure).isInstanceOf(IllegalStateException.class);
-    assertThat(failure).hasMessageThat().contains("delegated its output");
+    assertThat(context.requireNodeState().failure()).isEmpty();
+    assertThat(context.requireNodeState().output()).hasValue("CHILD_OUT");
+    assertThat(outputs()).doesNotContain("FALLBACK");
   }
 
   @Test
