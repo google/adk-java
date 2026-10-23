@@ -32,6 +32,8 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -149,16 +151,90 @@ class SpringAITest {
     testObserver.awaitDone(5, TimeUnit.SECONDS);
     testObserver.assertComplete();
     testObserver.assertNoErrors();
-    testObserver.assertValueCount(3);
+    // 3 partial chunks + 1 aggregated final response on stream completion
+    testObserver.assertValueCount(4);
 
     List<LlmResponse> responses = testObserver.values();
-    assertThat(responses).hasSize(3);
+    assertThat(responses).hasSize(4);
 
     // Verify each streaming response
     for (LlmResponse response : responses) {
       assertThat(response.content()).isPresent();
       assertThat(response.content().get().parts()).isPresent();
     }
+
+    // The first 3 values are partial chunks; the last value is the aggregated final response
+    for (int i = 0; i < 3; i++) {
+      assertThat(responses.get(i).partial()).contains(true);
+    }
+    LlmResponse finalResponse = responses.get(3);
+    assertThat(finalResponse.partial()).contains(false);
+    assertThat(finalResponse.turnComplete()).contains(true);
+    assertThat(finalResponse.content().get().parts().get().get(0).text())
+        .contains("I'm doing well!");
+  }
+
+  @Test
+  void testGenerateContentStreamingFinalCarriesUsageMetadata() {
+    // Usage metadata from the stream's last chunk must survive onto the aggregated final
+    // response (partial events are streamed but never persisted by the Runner).
+    AssistantMessage chunk1 = new AssistantMessage("Hello");
+    AssistantMessage chunk2 = new AssistantMessage(" world");
+    ChatResponse lastResponse =
+        new ChatResponse(
+            List.of(new Generation(chunk2)),
+            ChatResponseMetadata.builder()
+                .id("resp-usage")
+                .usage(new DefaultUsage(10, 4, 6))
+                .build());
+    Flux<ChatResponse> responseFlux =
+        Flux.just(new ChatResponse(List.of(new Generation(chunk1))), lastResponse);
+
+    when(mockStreamingChatModel.stream(any(Prompt.class))).thenReturn(responseFlux);
+
+    SpringAI springAI = new SpringAI(mockStreamingChatModel);
+
+    TestSubscriber<LlmResponse> testObserver = springAI.generateContent(testRequest, true).test();
+
+    testObserver.awaitDone(5, TimeUnit.SECONDS);
+    testObserver.assertComplete();
+    testObserver.assertNoErrors();
+    testObserver.assertValueCount(3);
+
+    LlmResponse finalResponse = testObserver.values().get(2);
+    assertThat(finalResponse.partial()).contains(false);
+    assertThat(finalResponse.usageMetadata()).isPresent();
+  }
+
+  @Test
+  void testGenerateContentStreamingCjkTerminalPunctuationPersistsFinal() {
+    // Regression for CJK turns: a response ending with CJK terminal punctuation must still
+    // produce exactly one final (persisted) event, emitted on stream completion.
+    Flux<ChatResponse> responseFlux =
+        Flux.just(
+            createStreamingChatResponse("今天天气"),
+            createStreamingChatResponse("不错，适合出门。"),
+            createStreamingChatResponse("记得带伞。"));
+
+    when(mockStreamingChatModel.stream(any(Prompt.class))).thenReturn(responseFlux);
+
+    SpringAI springAI = new SpringAI(mockStreamingChatModel);
+
+    TestSubscriber<LlmResponse> testObserver = springAI.generateContent(testRequest, true).test();
+
+    testObserver.awaitDone(5, TimeUnit.SECONDS);
+    testObserver.assertComplete();
+    testObserver.assertNoErrors();
+    testObserver.assertValueCount(4);
+
+    List<LlmResponse> responses = testObserver.values();
+    for (int i = 0; i < 3; i++) {
+      assertThat(responses.get(i).partial()).contains(true);
+    }
+    LlmResponse finalResponse = responses.get(3);
+    assertThat(finalResponse.partial()).contains(false);
+    assertThat(finalResponse.content().get().parts().get().get(0).text())
+        .contains("今天天气不错，适合出门。记得带伞。");
   }
 
   @Test
@@ -273,7 +349,8 @@ class SpringAITest {
     testObserver.awaitDone(10, TimeUnit.SECONDS);
     testObserver.assertComplete();
     testObserver.assertNoErrors();
-    testObserver.assertValueCount(1000);
+    // 1000 partial chunks + 1 aggregated final response on stream completion
+    testObserver.assertValueCount(1001);
   }
 
   private ChatResponse createStreamingChatResponse(String text) {
