@@ -18,8 +18,8 @@ package com.google.adk.agents;
 
 /**
  * Thrown when an {@link LlmAgent} calls {@code transfer_to_agent} with an agent it may not transfer
- * to: one other than its sub-agents, parent, and peers; one its {@code disallowTransferToParent} or
- * {@code disallowTransferToPeers} setting excludes; or itself, outside a live run.
+ * to: itself, an agent other than its sub-agents, parent, and peers, or one its {@code
+ * disallowTransferToParent} or {@code disallowTransferToPeers} setting excludes.
  */
 public final class TransferRejectedException extends IllegalStateException {
 

@@ -583,8 +583,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
    * <p>Handles sending history and live requests to the LLM, receiving responses, processing them,
    * and managing agent transfers.
    *
-   * @return A {@link Flowable} of {@link Event}s streamed in real-time, which fails with {@link
-   *     TransferRejectedException} if an agent in the run requests a transfer it may not make.
+   * @return A {@link Flowable} of {@link Event}s streamed in real-time.
    */
   @Override
   public Flowable<Event> runLive(InvocationContext invocationContext) {
@@ -704,7 +703,28 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                 llmResponse,
                                 callLlmContext);
                           })
-                      .flatMap(event -> followLiveTransfer(event, invocationContext, spanContext))
+                      .flatMap(
+                          event -> {
+                            Flowable<Event> events = Flowable.just(event);
+                            if (event.actions().transferToAgent().isPresent()) {
+                              BaseAgent rootAgent = invocationContext.agent().rootAgent();
+                              Optional<BaseAgent> nextAgent =
+                                  rootAgent.findAgent(event.actions().transferToAgent().get());
+                              if (nextAgent.isEmpty()) {
+                                throw new IllegalStateException(
+                                    "Agent not found: " + event.actions().transferToAgent().get());
+                              }
+                              Flowable<Event> nextAgentEvents =
+                                  Flowable.defer(
+                                      () -> {
+                                        try (Scope scope = spanContext.makeCurrent()) {
+                                          return nextAgent.get().runLive(invocationContext);
+                                        }
+                                      });
+                              events = Flowable.concat(events, nextAgentEvents);
+                            }
+                            return events;
+                          })
                       .doOnNext(
                           event -> {
                             ImmutableList<FunctionResponse> functionResponses =
@@ -729,32 +749,6 @@ public abstract class BaseLlmFlow implements BaseFlow {
                           receiveFlow.takeWhile(
                               event -> !event.actions().endInvocation().orElse(false)))
                   .compose(Tracing.withContext(spanContext));
-            }));
-  }
-
-  /**
-   * Emits {@code event}, followed by the target agent's live run when it carries a transfer. If the
-   * agent may not make that transfer, fails with {@link TransferRejectedException} after {@code
-   * event}, so the caller's {@code doOnNext} still sees the transfer and closes the connection.
-   */
-  private static Flowable<Event> followLiveTransfer(
-      Event event, InvocationContext context, Context spanContext) {
-    Flowable<Event> self = Flowable.just(event);
-    if (event.actions().transferToAgent().isEmpty()) {
-      return self;
-    }
-    String agentToTransfer = event.actions().transferToAgent().get();
-    LlmAgent agent = (LlmAgent) context.agent();
-    Optional<BaseAgent> target = liveTransferTarget(agent, agentToTransfer);
-    if (target.isEmpty()) {
-      return self.concatWith(Flowable.error(transferRejected(agent, agentToTransfer)));
-    }
-    return self.concatWith(
-        Flowable.defer(
-            () -> {
-              try (Scope scope = spanContext.makeCurrent()) {
-                return target.get().runLive(context);
-              }
             }));
   }
 
@@ -835,16 +829,6 @@ public abstract class BaseLlmFlow implements BaseFlow {
     return AgentTransfer.transferTargets(from).stream()
         .filter(candidate -> candidate.name().equals(name))
         .findFirst();
-  }
-
-  /**
-   * Returns the agent a live transfer from {@code from} hands over to, or empty when the transfer
-   * is not allowed. Unlike {@link #declaredTransferTarget}, returns {@code from} itself when {@code
-   * name} names it, so a live run reopens it on a new connection; any other name must be a declared
-   * target.
-   */
-  private static Optional<BaseAgent> liveTransferTarget(LlmAgent from, String name) {
-    return name.equals(from.name()) ? Optional.of(from) : declaredTransferTarget(from, name);
   }
 
   /**
