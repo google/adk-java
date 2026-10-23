@@ -43,6 +43,7 @@ import com.google.adk.agents.Callbacks.OnToolErrorCallback;
 import com.google.adk.agents.Callbacks.OnToolErrorCallbackBase;
 import com.google.adk.agents.Callbacks.OnToolErrorCallbackSync;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
+import com.google.adk.annotations.Experimental;
 import com.google.adk.codeexecutors.BaseCodeExecutor;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.AutoFlow;
@@ -1080,6 +1081,16 @@ public class LlmAgent extends BaseAgent {
   @Override
   public Optional<Schema> outputSchema() {
     return outputSchema;
+  }
+
+  /**
+   * Returns {@code true}, so that a workflow resuming this agent as a node runs it again and its
+   * model sees the answers to its long-running calls.
+   */
+  @Experimental
+  @Override
+  public boolean rerunOnResume() {
+    return true;
   }
 
   public Optional<Executor> executor() {

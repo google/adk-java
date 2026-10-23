@@ -35,6 +35,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 
@@ -319,6 +320,18 @@ public class Context extends ReadonlyContext {
   @Experimental
   public final void routes(List<? extends Route> routes) {
     requireNodeState().selectRoutes(routes);
+  }
+
+  /**
+   * Returns the user's answers to the long-running calls that this workflow node or its descendants
+   * made in an earlier turn, keyed by interrupt ID. A node that reruns on resume reads these
+   * answers. A null answer has a null value in the map.
+   *
+   * @throws IllegalStateException if this is not the context of a workflow node.
+   */
+  @Experimental
+  public final Map<String, @Nullable Object> resumeInputs() {
+    return requireNodeState().resumeInputs();
   }
 
   /**

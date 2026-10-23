@@ -53,6 +53,7 @@ import com.google.adk.workflow.Start;
 import com.google.adk.workflow.Workflow;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
@@ -369,6 +370,42 @@ public final class RunnerRootNodeTest {
   }
 
   @Test
+  public void runAsync_resumingANodeRootWithAStateDelta_showsItToTheOnUserMessageCallback() {
+    List<Optional<Object>> seen = new ArrayList<>();
+    Plugin stateReader =
+        new BasePlugin("state_reader") {
+          @Override
+          public Maybe<Content> onUserMessageCallback(
+              InvocationContext invocationContext, Content userMessage) {
+            seen.add(Optional.ofNullable(invocationContext.session().state().get("step")));
+            return Maybe.empty();
+          }
+        };
+    Node ask =
+        new TestNode("ask", (context, input) -> Flowable.just(longRunningCallEvent("call_1")));
+    Runner runner = runner(ask, stateReader);
+    Session session = newSession(runner);
+    runner.runAsync(USER_ID, session.id(), USER_MESSAGE).blockingSubscribe();
+
+    runner
+        .runAsync(
+            USER_ID,
+            session.id(),
+            /* invocationId= */ null,
+            functionResponse(
+                FunctionResponse.builder()
+                    .id("call_1")
+                    .name("tool")
+                    .response(ImmutableMap.of("v", 1))
+                    .build()),
+            RunConfig.builder().build(),
+            ImmutableMap.<String, Object>of("step", "two"))
+        .blockingSubscribe();
+
+    assertThat(seen).containsExactly(Optional.empty(), Optional.of("two")).inOrder();
+  }
+
+  @Test
   public void runAsync_partialEventOfANodeRoot_isStreamedButNotPersisted() {
     Node node =
         new TestNode(
@@ -414,7 +451,7 @@ public final class RunnerRootNodeTest {
   }
 
   @Test
-  public void runAsync_resumingANodeRootInvocation_failsWithoutRunningTheNodeAgain() {
+  public void runAsync_resumingAFinishedNodeRootInvocation_replaysItsOutputWithoutRunningIt() {
     AtomicInteger runs = new AtomicInteger();
     Node node =
         new TestNode(
@@ -428,7 +465,7 @@ public final class RunnerRootNodeTest {
     String invocationId =
         runner.runAsync(USER_ID, session.id(), USER_MESSAGE).blockingFirst().invocationId();
 
-    TestSubscriber<Event> subscriber =
+    List<Event> events =
         runner
             .runAsync(
                 USER_ID,
@@ -437,11 +474,61 @@ public final class RunnerRootNodeTest {
                 /* newMessage= */ null,
                 RunConfig.builder().build(),
                 /* stateDelta= */ null)
-            .test();
-    subscriber.awaitDone(5, SECONDS);
+            .toList()
+            .blockingGet();
 
-    subscriber.assertError(UnsupportedOperationException.class);
     assertThat(runs.get()).isEqualTo(1);
+    Event replayed = getOnlyElement(events);
+    assertThat(replayed.output()).hasValue("done");
+    assertThat(replayed.invocationId()).isEqualTo(invocationId);
+  }
+
+  @Test
+  public void runAsync_resumingANodeRootWithTextWithoutResumability_keepsOnlyTheStateDelta() {
+    List<Object> inputs = new ArrayList<>();
+    Runner runner = runner(inputRecorder(inputs));
+    Session session = newSession(runner);
+    runner.runAsync(USER_ID, session.id(), USER_MESSAGE).blockingSubscribe();
+    String invocationId = getOnlyElement(reload(runner, session).immutableEvents()).invocationId();
+
+    runner
+        .runAsync(
+            USER_ID,
+            session.id(),
+            invocationId,
+            Content.fromParts(Part.fromText("more")),
+            RunConfig.builder().build(),
+            ImmutableMap.<String, Object>of("step", "two"))
+        .blockingSubscribe();
+
+    // As in Python, the node reruns on the message that started the invocation.
+    assertThat(inputs).containsExactly(USER_MESSAGE, USER_MESSAGE);
+    Session reloaded = reload(runner, session);
+    assertThat(texts(reloaded.immutableEvents())).doesNotContain("more");
+    assertThat(reloaded.state()).containsEntry("step", "two");
+    assertThat(reloaded.immutableEvents().stream().map(Event::invocationId).distinct())
+        .containsExactly(invocationId);
+  }
+
+  @Test
+  public void runAsync_resumingANodeRootWithoutResumabilityOrAMessage_rerunsOnItsFirstMessage() {
+    List<Object> inputs = new ArrayList<>();
+    Runner runner = runner(inputRecorder(inputs));
+    Session session = newSession(runner);
+    runner.runAsync(USER_ID, session.id(), USER_MESSAGE).blockingSubscribe();
+    String invocationId = getOnlyElement(reload(runner, session).immutableEvents()).invocationId();
+
+    runner
+        .runAsync(
+            USER_ID,
+            session.id(),
+            invocationId,
+            /* newMessage= */ null,
+            RunConfig.builder().build(),
+            /* stateDelta= */ null)
+        .blockingSubscribe();
+
+    assertThat(inputs).containsExactly(USER_MESSAGE, USER_MESSAGE);
   }
 
   @Test
@@ -489,26 +576,156 @@ public final class RunnerRootNodeTest {
   }
 
   @Test
-  public void runAsync_functionResponseToTheNodeRootsEarlierCall_failsWithoutRunningTheNodeAgain() {
-    AtomicInteger runs = new AtomicInteger();
+  public void runAsync_functionResponseToTheNodeRootsEarlierCall_runsTheNodeInThatInvocation() {
+    List<Object> inputs = new ArrayList<>();
     Node node =
         new TestNode(
             "solo",
             (context, input) -> {
-              runs.incrementAndGet();
+              inputs.add(input);
               return Flowable.just(functionCallEvent(IDENTIFIED_RESPONSE.id().orElseThrow()));
             });
     Runner runner = runner(node);
     Session session = newSession(runner);
+    String invocationId =
+        runner.runAsync(USER_ID, session.id(), USER_MESSAGE).blockingFirst().invocationId();
+
+    runner
+        .runAsync(USER_ID, session.id(), functionResponse(IDENTIFIED_RESPONSE))
+        .blockingSubscribe();
+
+    // The call was not long-running, so the node reruns on the invocation's first message.
+    assertThat(inputs).containsExactly(USER_MESSAGE, USER_MESSAGE);
+    assertThat(
+            reload(runner, session).immutableEvents().stream().map(Event::invocationId).distinct())
+        .containsExactly(invocationId);
+  }
+
+  @Test
+  public void runAsync_pluginReplacingTheMessageWithAnAnswer_completesTheNodeInThatInvocation() {
+    Node node =
+        new TestNode("ask", (context, input) -> Flowable.just(longRunningCallEvent("ask_1")));
+    Content answer =
+        functionResponse(
+            FunctionResponse.builder()
+                .id("ask_1")
+                .name("tool")
+                .response(ImmutableMap.of("result", "yes"))
+                .build());
+    AtomicBoolean replace = new AtomicBoolean();
+    Plugin answeringPlugin =
+        new BasePlugin("answering") {
+          @Override
+          public Maybe<Content> onUserMessageCallback(
+              InvocationContext invocationContext, Content userMessage) {
+            return replace.get() ? Maybe.just(answer) : Maybe.empty();
+          }
+        };
+    Runner runner = runner(node, answeringPlugin);
+    Session session = newSession(runner);
+    String invocationId =
+        runner.runAsync(USER_ID, session.id(), USER_MESSAGE).blockingFirst().invocationId();
+    replace.set(true);
+
+    List<Event> events =
+        runner
+            .runAsync(USER_ID, session.id(), Content.fromParts(Part.fromText("ignored")))
+            .toList()
+            .blockingGet();
+
+    Event output = getOnlyElement(events);
+    assertThat(output.output()).hasValue("yes");
+    assertThat(output.invocationId()).isEqualTo(invocationId);
+  }
+
+  @Test
+  public void runAsync_pluginReplacingTheMessageWithTextAndAnAnswer_failsBeforeRunningTheNode() {
+    AtomicInteger runs = new AtomicInteger();
+    Plugin mixingPlugin =
+        new BasePlugin("mixing") {
+          @Override
+          public Maybe<Content> onUserMessageCallback(
+              InvocationContext invocationContext, Content userMessage) {
+            return Maybe.just(textWithFunctionResponse(IDENTIFIED_RESPONSE));
+          }
+        };
+    Runner runner = runner(countingNode(runs), mixingPlugin);
+    Session session = newSession(runner);
+    Flowable<Event> events = runner.runAsync(USER_ID, session.id(), USER_MESSAGE);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, events::blockingSubscribe);
+
+    assertThat(error).hasMessageThat().contains("both function responses and text");
+    assertThat(runs.get()).isEqualTo(0);
+    assertThat(reload(runner, session).immutableEvents()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_pluginReplacingTheMessageWithAnAnswerToAnUnknownCall_failsBeforeRunning() {
+    AtomicInteger runs = new AtomicInteger();
+    Plugin answeringPlugin =
+        new BasePlugin("answering") {
+          @Override
+          public Maybe<Content> onUserMessageCallback(
+              InvocationContext invocationContext, Content userMessage) {
+            return Maybe.just(functionResponse(IDENTIFIED_RESPONSE));
+          }
+        };
+    Runner runner = runner(countingNode(runs), answeringPlugin);
+    Session session = newSession(runner);
+    Flowable<Event> events = runner.runAsync(USER_ID, session.id(), USER_MESSAGE);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, events::blockingSubscribe);
+
+    assertThat(error).hasMessageThat().contains("No matching function call");
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void runAsync_pluginReplacingAResumableNodeRootsAnswerWithTextAndAnAnswer_fails() {
+    AtomicInteger runs = new AtomicInteger();
+    Node node =
+        new TestNode(
+            "ask",
+            (context, input) -> {
+              runs.incrementAndGet();
+              return Flowable.just(longRunningCallEvent("ask_1"));
+            });
+    FunctionResponse answer =
+        FunctionResponse.builder()
+            .id("ask_1")
+            .name("tool")
+            .response(ImmutableMap.of("result", "yes"))
+            .build();
+    AtomicBoolean replace = new AtomicBoolean();
+    Plugin mixingPlugin =
+        new BasePlugin("mixing") {
+          @Override
+          public Maybe<Content> onUserMessageCallback(
+              InvocationContext invocationContext, Content userMessage) {
+            return replace.get() ? Maybe.just(textWithFunctionResponse(answer)) : Maybe.empty();
+          }
+        };
+    Runner runner =
+        runner(
+            App.builder()
+                .name(APP_NAME)
+                .rootNode(node)
+                .plugins(mixingPlugin)
+                .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                .build());
+    Session session = newSession(runner);
     runner.runAsync(USER_ID, session.id(), USER_MESSAGE).blockingSubscribe();
-    int eventsAfterTheFirstRun = reload(runner, session).immutableEvents().size();
-    Flowable<Event> events =
-        runner.runAsync(USER_ID, session.id(), functionResponse(IDENTIFIED_RESPONSE));
+    replace.set(true);
+    Flowable<Event> events = runner.runAsync(USER_ID, session.id(), functionResponse(answer));
 
-    assertThrows(UnsupportedOperationException.class, events::blockingSubscribe);
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, events::blockingSubscribe);
 
+    assertThat(error).hasMessageThat().contains("both function responses and text");
     assertThat(runs.get()).isEqualTo(1);
-    assertThat(reload(runner, session).immutableEvents()).hasSize(eventsAfterTheFirstRun);
   }
 
   @Test
@@ -659,6 +876,16 @@ public final class RunnerRootNodeTest {
         });
   }
 
+  /** Returns a node that adds each input it runs on to {@code inputs} and emits nothing. */
+  private static Node inputRecorder(List<Object> inputs) {
+    return new TestNode(
+        "solo",
+        (context, input) -> {
+          inputs.add(input);
+          return Flowable.empty();
+        });
+  }
+
   private static Node countingNode(AtomicInteger runs) {
     return new TestNode(
         "solo",
@@ -699,6 +926,13 @@ public final class RunnerRootNodeTest {
                 Part.builder()
                     .functionCall(FunctionCall.builder().id(callId).name("tool").build())
                     .build()))
+        .build();
+  }
+
+  /** Returns an event in which a node waits on the long-running call {@code callId}. */
+  private static Event longRunningCallEvent(String callId) {
+    return functionCallEvent(callId).toBuilder()
+        .longRunningToolIds(ImmutableSet.of(callId))
         .build();
   }
 

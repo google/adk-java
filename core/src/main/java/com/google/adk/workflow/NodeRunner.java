@@ -27,7 +27,9 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.workflow.ResumeScan.Interception;
 import com.google.common.base.CharMatcher;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.FinishReason;
@@ -78,6 +80,7 @@ public final class NodeRunner {
   private final boolean useAsOutput;
   private final boolean useSubBranch;
   private final @Nullable String overrideBranch;
+  private final Map<String, @Nullable Object> resumeInputs;
 
   private NodeRunner(Builder builder) {
     checkState(builder.node != null, "A node runner needs a node.");
@@ -100,6 +103,7 @@ public final class NodeRunner {
     this.useAsOutput = builder.useAsOutput;
     this.useSubBranch = builder.useSubBranch;
     this.overrideBranch = builder.overrideBranch;
+    this.resumeInputs = builder.resumeInputs;
   }
 
   /** Returns a builder for a runner of one node. */
@@ -213,16 +217,45 @@ public final class NodeRunner {
     if (delegatesOutput) {
       parentState.claimOutputDelegation();
     }
+    String runId = config.runId().orElseGet(() -> parentState.nextChildRunId(node.name()));
+    // Deferred so that a throw from scan or intercept releases the delegation, as a failure does.
+    return Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
+        .doOnError(
+            error -> {
+              if (delegatesOutput) {
+                parentState.releaseOutputDelegation();
+              }
+            })
+        .flatMapMaybe(child -> childResult(parent, child, delegatesOutput, config.raiseOnWait()));
+  }
+
+  /**
+   * Runs {@code node} as a child of {@code parent}, or replays the result it recorded in an earlier
+   * turn under the same run ID.
+   */
+  private static Single<Context> runOrReplayChild(
+      Context parent, Node node, @Nullable Object nodeInput, String runId, RunNodeConfig config) {
+    NodeExecutionState parentState = parent.requireNodeState();
+    String childKey = segment(node.name(), runId);
+    ResumeScan.RecoveredNode recovered =
+        parentState.recoveredChildren(parent.invocationContext()).get(childKey);
+    Interception interception =
+        ResumeScan.intercept(
+            node, recovered, /* dynamic= */ true, parentState.childCanceledMidRun(childKey));
+    if (!interception.shouldRun()) {
+      return Single.just(
+          ResumeScan.replayContext(parent, node, runId, config.useAsOutput(), interception));
+    }
     return builder()
         .node(node)
         .parent(parent)
-        .runId(config.runId().orElseGet(() -> parentState.nextChildRunId(node.name())))
+        .runId(runId)
         .useAsOutput(config.useAsOutput())
         .useSubBranch(config.useSubBranch())
         .overrideBranch(config.overrideBranch().orElse(null))
+        .resumeInputs(interception.resumeInputs())
         .build()
-        .run(nodeInput)
-        .flatMapMaybe(child -> childResult(parent, child, delegatesOutput, config.raiseOnWait()));
+        .run(nodeInput);
   }
 
   /**
@@ -259,7 +292,12 @@ public final class NodeRunner {
         && (childNode instanceof Workflow || childNode.waitForOutput())) {
       return Maybe.error(new NodeInterruptedException());
     }
-    return Maybe.fromOptional(childState.output());
+    // No event of this run carries a delegate's replayed output, so the caller emits it.
+    Optional<Object> output = childState.output();
+    if (delegatesOutput && output.isPresent() && !childState.outputEmitted()) {
+      parentState.adoptReplayedOutput(output.get());
+    }
+    return Maybe.fromOptional(output);
   }
 
   /**
@@ -270,18 +308,38 @@ public final class NodeRunner {
   Single<Context> run(@Nullable Object nodeInput) {
     return Single.defer(
         () -> {
-          Context context =
-              new Context(
-                  childInvocationContext(),
-                  NodeExecutionState.builder()
-                      .node(node)
-                      .eventSink(eventSink)
-                      .parent(parent)
-                      .runId(runId)
-                      .useAsOutput(useAsOutput)
-                      .build());
+          if (parent != null) {
+            Context context = newContext(resumeInputs);
+            return new Activation(context).run(nodeInput).toSingleDefault(context);
+          }
+          // A root scans its own progress and resumes like a dynamic child.
+          Interception interception =
+              ResumeScan.intercept(
+                  node,
+                  ResumeScan.scan(invocationContext, /* basePath= */ "")
+                      .get(segment(node.name(), runId)),
+                  /* dynamic= */ true,
+                  /* canceledMidRun= */ false);
+          Context context = newContext(interception.resumeInputs());
+          if (!interception.shouldRun()) {
+            interception.replayOn(context);
+            return new Activation(context).flushPending().toSingleDefault(context);
+          }
           return new Activation(context).run(nodeInput).toSingleDefault(context);
         });
+  }
+
+  private Context newContext(Map<String, @Nullable Object> resumeInputs) {
+    return new Context(
+        childInvocationContext(),
+        NodeExecutionState.builder()
+            .node(node)
+            .eventSink(eventSink)
+            .parent(parent)
+            .runId(runId)
+            .useAsOutput(useAsOutput)
+            .resumeInputs(resumeInputs)
+            .build());
   }
 
   private InvocationContext childInvocationContext() {
@@ -319,7 +377,10 @@ public final class NodeRunner {
           // Avoid concatMapCompletable: its prefetch would let the node run ahead of the sink.
           .flatMapCompletable(this::dispatch, /* delayErrors= */ true, /* maxConcurrency= */ 1)
           .andThen(Completable.defer(this::flushPending))
-          .onErrorResumeNext(this::onError);
+          .onErrorResumeNext(this::onError)
+          // A run cut short stays unfinished, so a later call in this turn reruns it.
+          .doOnSubscribe(unused -> nodeState.markStarted())
+          .doOnComplete(nodeState::markFinished);
     }
 
     private Completable onError(Throwable error) {
@@ -480,8 +541,13 @@ public final class NodeRunner {
 
   /** Appends a {@code name@runId} segment to {@code base}, joined by {@code separator}. */
   static String appendSegment(@Nullable String base, String name, String runId, char separator) {
-    String segment = name + "@" + runId;
+    String segment = segment(name, runId);
     return isNullOrEmpty(base) ? segment : base + separator + segment;
+  }
+
+  /** Returns the {@code name@runId} path segment of a node's run. */
+  static String segment(String name, String runId) {
+    return name + "@" + runId;
   }
 
   /** Returns whether {@code event} is a final event whose content is the node's output. */
@@ -524,6 +590,7 @@ public final class NodeRunner {
     private boolean useAsOutput;
     private boolean useSubBranch;
     private @Nullable String overrideBranch;
+    private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
 
     private Builder() {}
 
@@ -586,6 +653,16 @@ public final class NodeRunner {
     @CanIgnoreReturnValue
     Builder overrideBranch(@Nullable String overrideBranch) {
       this.overrideBranch = overrideBranch;
+      return this;
+    }
+
+    /**
+     * Sets the answers that a child resumes with, keyed by interrupt ID. A runner at the root reads
+     * the root's answers from the session itself.
+     */
+    @CanIgnoreReturnValue
+    Builder resumeInputs(Map<String, @Nullable Object> resumeInputs) {
+      this.resumeInputs = checkNotNull(resumeInputs);
       return this;
     }
 

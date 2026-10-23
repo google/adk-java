@@ -18,15 +18,29 @@ package com.google.adk.workflow;
 
 import com.google.adk.annotations.Experimental;
 
-/** The status of a node within one run of a workflow graph. */
+/**
+ * The status of a node within one run of a workflow graph. A resumable session records its {@link
+ * #code}, which the other ADK languages share, so the codes must not change.
+ */
 @Experimental
 enum NodeStatus {
   /** Running now. */
-  RUNNING,
+  RUNNING(2),
 
   /** Finished; a node that waits for output finishes only once it produces an output or routes. */
-  COMPLETED,
+  COMPLETED(3),
 
   /** Paused, either awaiting a user's answers or awaiting another trigger. */
-  WAITING
+  WAITING(4);
+
+  private final int code;
+
+  NodeStatus(int code) {
+    this.code = code;
+  }
+
+  /** Returns the number that a resumable session records for this status. */
+  int code() {
+    return code;
+  }
 }

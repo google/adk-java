@@ -20,12 +20,17 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.google.adk.agents.Context;
+import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -54,7 +59,10 @@ public final class NodeExecutionState {
   private final String runId;
   private final String nodePath;
   private final ImmutableList<String> outputFor;
+  private final Map<String, @Nullable Object> resumeInputs;
   private final ConcurrentMap<String, Integer> childRunCounts = new ConcurrentHashMap<>();
+  // The paths of the node runs started but not finished in this turn, shared under one root.
+  private final Set<String> unfinishedNodePaths;
   private final Set<String> interruptIds = new CopyOnWriteArraySet<>();
   private final AtomicReference<OutputState> outputState = new AtomicReference<>(NO_OUTPUT);
   private String eventAuthor;
@@ -62,6 +70,7 @@ public final class NodeExecutionState {
   private boolean routesEmitted;
   private @Nullable Exception failure;
   private @Nullable String failureNodePath;
+  private @Nullable ImmutableMap<String, ResumeScan.RecoveredNode> recoveredChildren;
 
   private NodeExecutionState(Builder builder) {
     checkState(builder.node != null, "A node state needs a node.");
@@ -84,6 +93,9 @@ public final class NodeExecutionState {
             ? ImmutableList.<String>builder().add(nodePath).addAll(outputParent.outputFor).build()
             : ImmutableList.of(nodePath);
     this.eventAuthor = parentState == null ? "" : parentState.eventAuthor;
+    this.unfinishedNodePaths =
+        parentState == null ? ConcurrentHashMap.newKeySet() : parentState.unfinishedNodePaths;
+    this.resumeInputs = Collections.unmodifiableMap(new LinkedHashMap<>(builder.resumeInputs));
   }
 
   /** Returns a builder for the state of one node run. */
@@ -181,6 +193,15 @@ public final class NodeExecutionState {
     return ImmutableSet.copyOf(interruptIds);
   }
 
+  /**
+   * Returns the user's answers to the long-running calls that this node or its descendants raised
+   * in an earlier turn, keyed by interrupt ID. A null answer has a null value in the map. The map
+   * is empty unless the node reruns on resume.
+   */
+  public Map<String, @Nullable Object> resumeInputs() {
+    return resumeInputs;
+  }
+
   NodeRunner.EventSink eventSink() {
     return eventSink;
   }
@@ -193,9 +214,45 @@ public final class NodeExecutionState {
     return outputFor;
   }
 
+  /** Returns whether this run's output is also its parent's output, as with {@code useAsOutput}. */
+  boolean outputCountsForParent() {
+    return outputParent != null;
+  }
+
   /** Returns the next run ID for a child node named {@code name}, counting from {@code "1"}. */
   String nextChildRunId(String name) {
     return String.valueOf(childRunCounts.merge(name, 1, Integer::sum));
+  }
+
+  /** Records that this run started; it counts as canceled mid-run until it finishes. */
+  void markStarted() {
+    unfinishedNodePaths.add(nodePath);
+  }
+
+  /** Records that this run finished, with or without a result. */
+  void markFinished() {
+    unfinishedNodePaths.remove(nodePath);
+  }
+
+  /**
+   * Returns whether this run's child {@code childKey}, a {@code name@runId} segment, started in
+   * this turn and has not finished. When read before the child runs again, this means a failing
+   * sibling or caller canceled it.
+   */
+  boolean childCanceledMidRun(String childKey) {
+    return unfinishedNodePaths.contains(nodePath + "/" + childKey);
+  }
+
+  /**
+   * Returns the states of this node's children from earlier turns, keyed by {@code name@runId},
+   * which the first call reconstructs from the events of {@code invocationContext}.
+   */
+  synchronized ImmutableMap<String, ResumeScan.RecoveredNode> recoveredChildren(
+      InvocationContext invocationContext) {
+    if (recoveredChildren == null) {
+      recoveredChildren = ResumeScan.scan(invocationContext, nodePath);
+    }
+    return recoveredChildren;
   }
 
   /** Returns whether an event has carried the node's own or delegated output. */
@@ -267,6 +324,20 @@ public final class NodeExecutionState {
     outputState.compareAndSet(DELEGATED_OUTPUT, NO_OUTPUT);
   }
 
+  /**
+   * Records {@code output} from a {@code useAsOutput} child as this node's own unsent output when
+   * no event carried it for this run, as when the child replays an earlier turn's output.
+   *
+   * @throws IllegalStateException if the node has no pending delegation
+   */
+  void adoptReplayedOutput(Object output) {
+    checkState(
+        outputState.compareAndSet(
+            DELEGATED_OUTPUT, new OutputState(OutputStatus.PRODUCED, checkNotNull(output))),
+        "Node '%s' adopted a replayed output without a pending delegation.",
+        node.name());
+  }
+
   /** Returns whether an event has carried the node's current route selection. */
   boolean routesEmitted() {
     return routesEmitted;
@@ -336,6 +407,7 @@ public final class NodeExecutionState {
     private @Nullable Context parent;
     private @Nullable String runId;
     private boolean useAsOutput;
+    private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
 
     private Builder() {}
 
@@ -374,6 +446,13 @@ public final class NodeExecutionState {
     @CanIgnoreReturnValue
     Builder useAsOutput(boolean useAsOutput) {
       this.useAsOutput = useAsOutput;
+      return this;
+    }
+
+    /** Sets the answers the node resumes with, keyed by interrupt ID. */
+    @CanIgnoreReturnValue
+    Builder resumeInputs(Map<String, @Nullable Object> resumeInputs) {
+      this.resumeInputs = checkNotNull(resumeInputs);
       return this;
     }
 

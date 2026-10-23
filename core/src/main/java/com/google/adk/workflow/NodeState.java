@@ -18,10 +18,14 @@ package com.google.adk.workflow;
 
 import com.google.adk.annotations.Experimental;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 
 /** A node's progress within one run of a workflow graph. */
 @Experimental
 final class NodeState {
+
+  /** The key under which a workflow's checkpoint holds the checkpoints of its nodes. */
+  static final String NODES_KEY = "nodes";
 
   /** Where the node stands in the current run. */
   NodeStatus status;
@@ -31,5 +35,14 @@ final class NodeState {
 
   NodeState(NodeStatus status) {
     this.status = status;
+  }
+
+  /**
+   * Returns what a resumable session records for the node. Its keys and numeric status are shared
+   * with the other ADK languages. The node's answers are left out: they can hold a credential the
+   * user sent, and a resume reads them from the session's events.
+   */
+  ImmutableMap<String, Object> toCheckpoint() {
+    return ImmutableMap.of("status", status.code(), "interrupts", interrupts);
   }
 }
