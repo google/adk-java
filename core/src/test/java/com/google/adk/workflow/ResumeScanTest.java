@@ -41,6 +41,7 @@ import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
+import java.util.Collections;
 import java.util.Map;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -57,6 +58,14 @@ public final class ResumeScanTest {
           .properties(ImmutableMap.of("count", Schema.builder().type(Type.Known.INTEGER).build()))
           .build();
 
+  private static final Schema INTEGER_ARRAY_SCHEMA =
+      Schema.builder()
+          .type(Type.Known.ARRAY)
+          .items(Schema.builder().type(Type.Known.INTEGER).build())
+          .build();
+
+  private static final Schema NULL_SCHEMA = Schema.builder().type(Type.Known.NULL).build();
+
   @Test
   public void scan_interruptRaisedBelowAChild_isAnsweredOnThatChild() {
     ImmutableList<Event> events =
@@ -68,6 +77,20 @@ public final class ResumeScanTest {
     assertThat(recovered.keySet()).containsExactly("d@1");
     assertThat(recovered.get("d@1").resolvedResponses)
         .containsExactly("ask_1", ImmutableMap.of("v", 1));
+  }
+
+  @Test
+  public void scan_requestForInputWithoutLongRunningToolIds_isAnInterrupt() {
+    // Sessions recorded before requests carried long-running tool IDs hold only the call.
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            nodeEvent("wf@1/ask@1")
+                .content(callContent(RequestInput.FUNCTION_CALL_NAME, "ask_1"))
+                .build());
+
+    RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("ask@1");
+
+    assertThat(recovered.unresolved()).containsExactly("ask_1");
   }
 
   @Test
@@ -326,6 +349,118 @@ public final class ResumeScanTest {
     Node node = new MessageOutputNode("chat", "", Schema.builder().type(Type.Known.STRING).build());
 
     assertThat(ResumeScan.processRehydratedOutput(node, modelText("42"))).isEqualTo("42");
+  }
+
+  @Test
+  public void validateAnswer_answerThatFits_isReturned() {
+    Object answer = ResumeScan.validateAnswer(COUNT_SCHEMA, ImmutableMap.of("count", 1), "ask_1");
+
+    assertThat(answer).isEqualTo(ImmutableMap.of("count", 1));
+  }
+
+  @Test
+  public void validateAnswer_objectTheSchemaRejects_failsWithoutTheValue() {
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                ResumeScan.validateAnswer(
+                    COUNT_SCHEMA, ImmutableMap.of("result", "{\"count\": \"1\"}"), "ask_1"));
+
+    assertThat(error).hasMessageThat().contains("Validation failed for interrupt ask_1");
+    assertThat(error).hasMessageThat().doesNotContain("\"1\"");
+  }
+
+  @Test
+  public void validateAnswer_textTheSchemaRejects_failsWithoutTheValue() {
+    Schema booleanSchema = Schema.builder().type(Type.Known.BOOLEAN).build();
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> ResumeScan.validateAnswer(booleanSchema, ImmutableMap.of("result", "yes"), "a"));
+
+    assertThat(error).hasMessageThat().contains("Validation failed for interrupt a");
+    assertThat(error).hasMessageThat().doesNotContain("yes");
+  }
+
+  @Test
+  public void validateAnswer_arrayOfMatchingItems_isReturned() {
+    Object answer =
+        ResumeScan.validateAnswer(
+            INTEGER_ARRAY_SCHEMA, ImmutableMap.of("result", ImmutableList.of(1, 2)), "a");
+
+    assertThat(answer).isEqualTo(ImmutableList.of(1, 2));
+  }
+
+  @Test
+  public void validateAnswer_arrayWithAnItemOfAnotherType_fails() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            ResumeScan.validateAnswer(
+                INTEGER_ARRAY_SCHEMA, ImmutableMap.of("result", ImmutableList.of(1, "2")), "a"));
+  }
+
+  @Test
+  public void validateAnswer_numberTextForANumberSchema_isReadAsANumber() {
+    Schema numberSchema = Schema.builder().type(Type.Known.NUMBER).build();
+
+    Object answer = ResumeScan.validateAnswer(numberSchema, ImmutableMap.of("result", "2.5"), "a");
+
+    assertThat(answer).isEqualTo(2.5);
+  }
+
+  @Test
+  public void validateAnswer_textForANumberSchema_fails() {
+    Schema numberSchema = Schema.builder().type(Type.Known.NUMBER).build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ResumeScan.validateAnswer(numberSchema, ImmutableMap.of("result", "many"), "a"));
+  }
+
+  @Test
+  public void validateAnswer_nullForANullSchema_isNull() {
+    Object answer =
+        ResumeScan.validateAnswer(NULL_SCHEMA, Collections.singletonMap("result", null), "a");
+
+    assertThat(answer).isNull();
+  }
+
+  @Test
+  public void validateAnswer_valueForANullSchema_fails() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ResumeScan.validateAnswer(NULL_SCHEMA, ImmutableMap.of("result", 1), "a"));
+  }
+
+  @Test
+  public void validateAnswer_nullForAnAnyOfThatAllowsNull_isNull() {
+    Schema ageOrNull = Schema.builder().anyOf(AGE_SCHEMA, NULL_SCHEMA).build();
+
+    Object answer =
+        ResumeScan.validateAnswer(ageOrNull, Collections.singletonMap("result", null), "a");
+
+    assertThat(answer).isNull();
+  }
+
+  @Test
+  public void validateAnswer_objectThatMatchesOneAnyOfAlternative_isReturned() {
+    Schema countOrAge = Schema.builder().anyOf(COUNT_SCHEMA, AGE_SCHEMA).build();
+
+    Object answer = ResumeScan.validateAnswer(countOrAge, ImmutableMap.of("age", 3), "a");
+
+    assertThat(answer).isEqualTo(ImmutableMap.of("age", 3));
+  }
+
+  @Test
+  public void validateAnswer_objectThatMatchesNoAnyOfAlternative_fails() {
+    Schema countOrAge = Schema.builder().anyOf(COUNT_SCHEMA, AGE_SCHEMA).build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ResumeScan.validateAnswer(countOrAge, ImmutableMap.of("height", 3), "a"));
   }
 
   /**

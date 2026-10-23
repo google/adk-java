@@ -119,21 +119,27 @@ public abstract class BaseNode implements Node {
 
   /**
    * Runs the node and emits its events. Each emission of {@link #runNode} that is an {@link Event}
-   * passes through, and any other value becomes the output of a new event.
+   * passes through, a {@link RequestInput} becomes the event that asks for it, and any other value
+   * becomes the output of a new event.
    */
   final Flowable<Event> run(Context context, @Nullable Object nodeInput) {
     InvocationContext invocationContext = checkNotNull(context).invocationContext();
     // The node runner fills in the author, as only it knows the node's place in the graph.
     return Flowable.<Object>defer(() -> runNode(context, nodeInput))
         .map(
-            item ->
-                item instanceof Event event
-                    ? event
-                    : Event.builder()
-                        .id(invocationContext.newUuid())
-                        .timestamp(invocationContext.now().toEpochMilli())
-                        .author("")
-                        .output(item)
-                        .build());
+            item -> {
+              if (item instanceof Event event) {
+                return event;
+              }
+              if (item instanceof RequestInput request) {
+                return request.toEvent(invocationContext);
+              }
+              return Event.builder()
+                  .id(invocationContext.newUuid())
+                  .timestamp(invocationContext.now().toEpochMilli())
+                  .author("")
+                  .output(item)
+                  .build();
+            });
   }
 }

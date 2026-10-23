@@ -33,10 +33,13 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
+import java.math.BigInteger;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -203,15 +206,32 @@ final class ResumeScan {
   }
 
   /**
-   * Returns the answer that {@code response} carries: the value of a {@code {"result": value}}
-   * envelope, read as JSON when it is a string that holds JSON, or else the response itself.
+   * Unwraps and validates the answer {@code response} to interrupt {@code interruptId}. A {@code
+   * {"result": value}} envelope is unwrapped, and a string value inside it is read as JSON unless
+   * {@code schema} accepts a string.
+   *
+   * @throws IllegalArgumentException if the answer does not match {@code schema}
    */
-  private static @Nullable Object unwrapAnswer(@Nullable Object response) {
+  static @Nullable Object validateAnswer(
+      @Nullable Schema schema, @Nullable Object response, String interruptId) {
+    Object answer = unwrapAnswer(schema, response);
+    if (schema == null) {
+      return answer;
+    }
+    String mismatch = valueMismatch(answer, schema);
+    if (mismatch != null) {
+      throw new IllegalArgumentException(
+          "Validation failed for interrupt " + interruptId + ": " + mismatch);
+    }
+    return answer;
+  }
+
+  private static @Nullable Object unwrapAnswer(@Nullable Schema schema, @Nullable Object response) {
     if (!(response instanceof Map<?, ?> map) || map.size() != 1 || !map.containsKey(RESULT_KEY)) {
       return response;
     }
     Object value = map.get(RESULT_KEY);
-    if (!(value instanceof String text)) {
+    if (!(value instanceof String text) || (schema != null && acceptsString(schema))) {
       return value;
     }
     Object json = readJson(text);
@@ -233,6 +253,84 @@ final class ResumeScan {
     }
   }
 
+  /**
+   * Returns why {@code value} does not match {@code schema}, or null if it does. The reason names
+   * parts of the schema but never the value, which comes from the user.
+   */
+  private static @Nullable String valueMismatch(@Nullable Object value, Schema schema) {
+    if (value == null && schema.nullable().orElse(false)) {
+      return null;
+    }
+    // Check maps before anyOf so each member is validated as an object with its required keys.
+    if (value instanceof Map<?, ?> map) {
+      return mapMismatch(map, schema);
+    }
+    List<Schema> anyOf = schema.anyOf().orElse(ImmutableList.of());
+    if (!anyOf.isEmpty()
+        && anyOf.stream().allMatch(member -> valueMismatch(value, member) != null)) {
+      return "it matches none of the schema's anyOf alternatives";
+    }
+    Type.Known type = typeOf(schema);
+    if (type == null || type == Type.Known.TYPE_UNSPECIFIED) {
+      return null;
+    }
+    boolean matches =
+        switch (type) {
+          case STRING -> value instanceof String;
+          case INTEGER ->
+              value instanceof Integer
+                  || value instanceof Long
+                  || value instanceof Short
+                  || value instanceof Byte
+                  || value instanceof BigInteger;
+          case NUMBER -> value instanceof Number;
+          case BOOLEAN -> value instanceof Boolean;
+          case NULL -> value == null;
+          case ARRAY -> {
+            if (!(value instanceof Collection<?> items)) {
+              yield false;
+            }
+            Optional<Schema> itemSchema = schema.items();
+            yield itemSchema.isEmpty()
+                || items.stream().allMatch(item -> valueMismatch(item, itemSchema.get()) == null);
+          }
+          case OBJECT -> false;
+          default -> true;
+        };
+    return matches ? null : "it is not of the schema's type " + type;
+  }
+
+  /** Returns why {@code map} does not match {@code schema}, or null if it does. */
+  private static @Nullable String mapMismatch(Map<?, ?> map, Schema schema) {
+    Type.Known type = typeOf(schema);
+    if (type != null && type != Type.Known.OBJECT && type != Type.Known.TYPE_UNSPECIFIED) {
+      return "the schema's type is " + type + ", not an object";
+    }
+    List<Schema> anyOf = schema.anyOf().orElse(ImmutableList.of());
+    if (!anyOf.isEmpty() && anyOf.stream().allMatch(member -> mapMismatch(map, member) != null)) {
+      return "it matches none of the schema's anyOf alternatives";
+    }
+    Optional<Map<String, Schema>> properties = schema.properties();
+    if (properties.isPresent()) {
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        Schema property = properties.get().get(String.valueOf(entry.getKey()));
+        // An undeclared key comes from the user, so the reason does not name it.
+        if (property == null) {
+          return "it has a key the schema does not declare";
+        }
+        if (valueMismatch(entry.getValue(), property) != null) {
+          return "property '" + entry.getKey() + "' does not match its schema";
+        }
+      }
+    }
+    for (String required : schema.required().orElse(ImmutableList.of())) {
+      if (!map.containsKey(required)) {
+        return "required property '" + required + "' is missing";
+      }
+    }
+    return null;
+  }
+
   private static Type.@Nullable Known typeOf(Schema schema) {
     return schema.type().map(Type::knownEnum).orElse(null);
   }
@@ -246,6 +344,15 @@ final class ResumeScan {
       }
     }
     return text.toString();
+  }
+
+  /** Reads the response schema that an {@value RequestInput#FUNCTION_CALL_NAME} call carried. */
+  private static @Nullable Schema readSchema(@Nullable Object value) {
+    try {
+      return JsonBaseModel.getMapper().convertValue(value, Schema.class);
+    } catch (IllegalArgumentException e) {
+      return null;
+    }
   }
 
   private static Map<String, @Nullable Object> copyOf(Map<String, @Nullable Object> map) {
@@ -367,6 +474,9 @@ final class ResumeScan {
     /** The node that raised each interrupt, so a later answer finds its owner. */
     private final Map<String, RecoveredNode> interruptOwner = new HashMap<>();
 
+    /** The response schema of each request for input, to validate its answer. */
+    private final Map<String, Schema> schemas = new HashMap<>();
+
     Reconstruction(String basePath) {
       this.basePath = basePath;
       this.childPrefix = basePath.isEmpty() ? "" : basePath + "/";
@@ -414,7 +524,7 @@ final class ResumeScan {
         if (targets.isEmpty()) {
           continue;
         }
-        Object answer = unwrapAnswer(response.response().orElse(null));
+        Object answer = validateAnswer(schemas.get(id), response.response().orElse(null), id);
         targets.forEach((interruptId, node) -> node.recordAnswer(interruptId, answer));
       }
     }
@@ -492,11 +602,26 @@ final class ResumeScan {
     }
 
     /**
-     * Records the long-running call interrupts that {@code event} raises for {@code node}, and
-     * returns whether {@code event} raised any.
+     * Records the interrupts {@code event} raises for {@code node} (long-running calls and requests
+     * for input, together with their response schemas) and returns whether it raised any.
      */
     private boolean recordRaisedInterrupts(Event event, RecoveredNode node) {
-      Set<String> raised = event.longRunningToolIds().orElse(ImmutableSet.of());
+      Set<String> raised =
+          new LinkedHashSet<>(event.longRunningToolIds().orElse(ImmutableSet.of()));
+      for (FunctionCall call : event.functionCalls()) {
+        if (call.id().isEmpty()
+            || !call.name().orElse("").equals(RequestInput.FUNCTION_CALL_NAME)) {
+          continue;
+        }
+        String id = call.id().get();
+        raised.add(id);
+        Schema schema =
+            readSchema(
+                call.args().map(args -> args.get(RequestInput.RESPONSE_SCHEMA_KEY)).orElse(null));
+        if (schema != null) {
+          schemas.put(id, schema);
+        }
+      }
       for (String id : raised) {
         // An interrupt raised again waits for a new answer, as in Python.
         node.resolvedResponses.remove(id);

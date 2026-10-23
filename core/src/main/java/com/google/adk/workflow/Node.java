@@ -98,9 +98,10 @@ public interface Node {
   /**
    * Runs the node on {@code nodeInput}, the output it receives from its predecessors.
    *
-   * <p>An emitted {@link Event} passes through, and any other emitted value becomes the node's
-   * output (at most one per run); emit nothing for no output, since RxJava forbids null. The
-   * wildcard lets an implementation return a {@code Flowable} of its own type.
+   * <p>An emitted {@link Event} passes through, an emitted {@link RequestInput} pauses the workflow
+   * until the user answers it, and any other emitted value becomes the node's output (at most one
+   * per run); emit nothing for no output, since RxJava forbids null. The wildcard lets an
+   * implementation return a {@code Flowable} of its own type.
    */
   @Experimental
   Flowable<?> runNode(Context context, @Nullable Object nodeInput);

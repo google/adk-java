@@ -196,9 +196,9 @@ public final class NodeExecutionState {
   }
 
   /**
-   * Returns the user's answers to the long-running calls that this node or its descendants raised
-   * in an earlier turn, keyed by interrupt ID. A null answer has a null value in the map. The map
-   * is empty unless the node reruns on resume.
+   * Returns the user's answers to the requests for input and long-running calls that this node or
+   * its descendants raised in an earlier turn, keyed by interrupt ID. A null answer has a null
+   * value in the map. The map is empty unless the node reruns on resume.
    */
   public Map<String, @Nullable Object> resumeInputs() {
     return resumeInputs;
