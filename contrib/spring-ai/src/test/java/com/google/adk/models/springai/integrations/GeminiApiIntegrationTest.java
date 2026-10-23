@@ -37,27 +37,46 @@ import org.springframework.ai.google.genai.GoogleGenAiChatModel;
 import org.springframework.ai.google.genai.GoogleGenAiChatOptions;
 
 /**
- * Integration tests with real Google Gemini API using Google GenAI library.
+ * Integration tests with real Gemini on Vertex AI using the Google GenAI library.
  *
- * <p>To run these tests: 1. Set environment variable: export GOOGLE_API_KEY=your_actual_api_key 2.
- * Run: mvn test -Dtest=GeminiApiIntegrationTest
+ * <p>To run these tests, run {@code mvn test -Dtest=GeminiApiIntegrationTest} with {@code
+ * GOOGLE_CLOUD_PROJECT} set (it both gates and targets the tests) and Application Default
+ * Credentials available. The project must have the Vertex AI API enabled, grant the caller the
+ * {@code aiplatform.endpoints.predict} permission, and have access to the chosen model; otherwise
+ * the real calls fail with {@code PERMISSION_DENIED} or {@code NOT_FOUND}.
  *
- * <p>Note: This uses the Google GenAI library directly, not Vertex AI. For Vertex AI integration,
- * use GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION environment variables.
+ * <p>Optional environment: {@code GOOGLE_CLOUD_LOCATION} (defaults to {@code global}) and {@code
+ * GEMINI_MODEL} (defaults to {@code gemini-3.8-flash}) to select a model the project can serve.
  */
-@EnabledIfEnvironmentVariable(named = "GOOGLE_API_KEY", matches = "\\S+")
+@EnabledIfEnvironmentVariable(named = "GOOGLE_CLOUD_PROJECT", matches = "\\S+")
 class GeminiApiIntegrationTest {
 
-  private static final String GEMINI_MODEL = "gemini-flash-latest";
+  private static final String GEMINI_MODEL = envOrDefault("GEMINI_MODEL", "gemini-3.8-flash");
+
+  private static final String GOOGLE_CLOUD_LOCATION =
+      envOrDefault("GOOGLE_CLOUD_LOCATION", "global");
+
+  /** Returns environment variable {@code name}, or {@code defaultValue} if unset or empty. */
+  private static String envOrDefault(String name, String defaultValue) {
+    String value = System.getenv(name);
+    return value != null && !value.isEmpty() ? value : defaultValue;
+  }
+
+  /** Builds a Vertex AI GenAI client from GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION. */
+  private static Client createVertexClient() {
+    return Client.builder()
+        .project(System.getenv("GOOGLE_CLOUD_PROJECT"))
+        .location(GOOGLE_CLOUD_LOCATION)
+        .vertexAI(true)
+        .build();
+  }
 
   @Test
   void testSimpleAgentWithRealGeminiApi() throws InterruptedException {
     // Add delay to avoid rapid requests
     Thread.sleep(2000);
 
-    // Create Google GenAI client using API key (not Vertex AI)
-    Client genAiClient =
-        Client.builder().apiKey(System.getenv("GOOGLE_API_KEY")).vertexAI(false).build();
+    Client genAiClient = createVertexClient();
 
     GoogleGenAiChatOptions options = GoogleGenAiChatOptions.builder().model(GEMINI_MODEL).build();
 
@@ -98,8 +117,7 @@ class GeminiApiIntegrationTest {
     // Add delay to avoid rapid requests
     Thread.sleep(2000);
 
-    Client genAiClient =
-        Client.builder().apiKey(System.getenv("GOOGLE_API_KEY")).vertexAI(false).build();
+    Client genAiClient = createVertexClient();
 
     GoogleGenAiChatOptions options = GoogleGenAiChatOptions.builder().model(GEMINI_MODEL).build();
 
@@ -143,8 +161,7 @@ class GeminiApiIntegrationTest {
 
   @Test
   void testAgentWithToolsAndRealApi() {
-    Client genAiClient =
-        Client.builder().apiKey(System.getenv("GOOGLE_API_KEY")).vertexAI(false).build();
+    Client genAiClient = createVertexClient();
 
     GoogleGenAiChatOptions options = GoogleGenAiChatOptions.builder().model(GEMINI_MODEL).build();
 
@@ -187,8 +204,7 @@ class GeminiApiIntegrationTest {
   @Test
   void testDirectComparisonNonStreamingVsStreaming() throws InterruptedException {
     // Test both non-streaming and streaming with the same model to compare behavior
-    Client genAiClient =
-        Client.builder().apiKey(System.getenv("GOOGLE_API_KEY")).vertexAI(false).build();
+    Client genAiClient = createVertexClient();
 
     GoogleGenAiChatOptions options = GoogleGenAiChatOptions.builder().model(GEMINI_MODEL).build();
 
@@ -290,12 +306,11 @@ class GeminiApiIntegrationTest {
         GoogleGenAiChatOptions.builder()
             .model(GEMINI_MODEL)
             .temperature(0.7)
-            .maxOutputTokens(100)
+            .maxOutputTokens(1024)
             .topP(1.0)
             .build();
 
-    Client genAiClient =
-        Client.builder().apiKey(System.getenv("GOOGLE_API_KEY")).vertexAI(false).build();
+    Client genAiClient = createVertexClient();
 
     GoogleGenAiChatModel geminiModel =
         GoogleGenAiChatModel.builder().genAiClient(genAiClient).options(options).build();
@@ -313,7 +328,7 @@ class GeminiApiIntegrationTest {
             .build();
 
     TestSubscriber<LlmResponse> testSubscriber = springAI.generateContent(request, false).test();
-    testSubscriber.awaitDone(15, TimeUnit.SECONDS);
+    testSubscriber.awaitDone(30, TimeUnit.SECONDS);
     testSubscriber.assertComplete();
     testSubscriber.assertNoErrors();
 
