@@ -26,6 +26,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import io.reactivex.rxjava3.subjects.SingleSubject;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -61,6 +62,7 @@ public final class NodeExecutionState {
   private final ImmutableList<String> outputFor;
   private final Map<String, @Nullable Object> resumeInputs;
   private final ConcurrentMap<String, Integer> childRunCounts = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, SingleSubject<Context>> childRuns = new ConcurrentHashMap<>();
   // The paths of the node runs started but not finished in this turn, shared under one root.
   private final Set<String> unfinishedNodePaths;
   private final Set<String> interruptIds = new CopyOnWriteArraySet<>();
@@ -224,6 +226,14 @@ public final class NodeExecutionState {
     return String.valueOf(childRunCounts.merge(name, 1, Integer::sum));
   }
 
+  /**
+   * Returns the runs of the children this node runs itself, keyed by {@code name@runId}, which
+   * calls with the same run ID share.
+   */
+  ConcurrentMap<String, SingleSubject<Context>> childRuns() {
+    return childRuns;
+  }
+
   /** Records that this run started; it counts as canceled mid-run until it finishes. */
   void markStarted() {
     unfinishedNodePaths.add(nodePath);
@@ -253,6 +263,11 @@ public final class NodeExecutionState {
       recoveredChildren = ResumeScan.scan(invocationContext, nodePath);
     }
     return recoveredChildren;
+  }
+
+  /** Returns the parent's state if this run's output is also the parent's, or null. */
+  @Nullable NodeExecutionState outputParent() {
+    return outputParent;
   }
 
   /** Returns whether an event has carried the node's own or delegated output. */

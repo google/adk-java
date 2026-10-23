@@ -31,9 +31,10 @@ public abstract class RunNodeConfig {
 
   /**
    * Returns the ID of the child's run, which names the run in node paths and branches. A child that
-   * recorded an output under the same ID in an earlier turn returns it without running again. When
-   * this ID is empty, the child receives the next number among the caller's runs of nodes with the
-   * same name, in call order, so concurrent children need explicit IDs.
+   * already recorded an output under the same ID, in this run of the caller or in an earlier turn,
+   * returns it without running again; one that finished without an output may run again. When this
+   * ID is empty, the child receives the next number among the caller's runs of nodes with the same
+   * name, in call order, so concurrent children need explicit IDs.
    */
   public abstract Optional<String> runId();
 

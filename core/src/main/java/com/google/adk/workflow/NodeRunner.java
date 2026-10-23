@@ -40,10 +40,12 @@ import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.processors.FlowableProcessor;
 import io.reactivex.rxjava3.processors.UnicastProcessor;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
+import io.reactivex.rxjava3.subjects.SingleSubject;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 
@@ -218,8 +220,7 @@ public final class NodeRunner {
       parentState.claimOutputDelegation();
     }
     String runId = config.runId().orElseGet(() -> parentState.nextChildRunId(node.name()));
-    // Deferred so that a throw from scan or intercept releases the delegation, as a failure does.
-    return Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
+    return sharedChildRun(parent, node, nodeInput, runId, config)
         .doOnError(
             error -> {
               if (delegatesOutput) {
@@ -227,6 +228,50 @@ public final class NodeRunner {
               }
             })
         .flatMapMaybe(child -> childResult(parent, child, delegatesOutput, config.raiseOnWait()));
+  }
+
+  /**
+   * Returns the run of {@code node} under {@code runId} shared by the caller's calls with that run
+   * ID, starting it if needed. A run that fails or waits for an output it did not produce is not
+   * shared, so a later call runs the child again. When the call that started a run is canceled, a
+   * call still waiting on it runs the child itself.
+   */
+  private static Single<Context> sharedChildRun(
+      Context parent, Node node, @Nullable Object nodeInput, String runId, RunNodeConfig config) {
+    return Single.defer(
+        () -> {
+          ConcurrentMap<String, SingleSubject<Context>> childRuns =
+              parent.requireNodeState().childRuns();
+          String childKey = segment(node.name(), runId);
+          SingleSubject<Context> run = SingleSubject.create();
+          SingleSubject<Context> shared = childRuns.putIfAbsent(childKey, run);
+          if (shared != null) {
+            return shared.onErrorResumeNext(
+                error ->
+                    error instanceof ChildRunCanceledException
+                        ? sharedChildRun(parent, node, nodeInput, runId, config)
+                        : Single.error(error));
+          }
+          // Defer so a throw from scan or intercept releases the claimed run instead of leaking it.
+          return Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
+              .doOnSuccess(
+                  child -> {
+                    if (!keepsItsRun(child)) {
+                      childRuns.remove(childKey, run);
+                    }
+                    run.onSuccess(child);
+                  })
+              .doOnError(
+                  error -> {
+                    childRuns.remove(childKey, run);
+                    run.onError(error);
+                  })
+              .doOnDispose(
+                  () -> {
+                    childRuns.remove(childKey, run);
+                    run.onError(new ChildRunCanceledException());
+                  });
+        });
   }
 
   /**
@@ -256,6 +301,22 @@ public final class NodeRunner {
         .resumeInputs(interception.resumeInputs())
         .build()
         .run(nodeInput);
+  }
+
+  /**
+   * Returns whether a later call with the same run ID shares this finished run of a child: a failed
+   * child runs again, as does one that waits for an output and left no outcome.
+   */
+  private static boolean keepsItsRun(Context child) {
+    NodeExecutionState state = child.requireNodeState();
+    if (state.failure().isPresent()) {
+      return false;
+    }
+    return !state.interruptIds().isEmpty()
+        || state.output().isPresent()
+        || state.selectedRoutes().isPresent()
+        || child.eventActions().transferToAgent().isPresent()
+        || !state.node().waitForOutput();
   }
 
   /**
@@ -292,9 +353,11 @@ public final class NodeRunner {
         && (childNode instanceof Workflow || childNode.waitForOutput())) {
       return Maybe.error(new NodeInterruptedException());
     }
-    // No event of this run carries a delegate's replayed output, so the caller emits it.
+    // No event of this run carries a delegate's replayed or shared output, so the caller emits it.
     Optional<Object> output = childState.output();
-    if (delegatesOutput && output.isPresent() && !childState.outputEmitted()) {
+    boolean emittedForCaller =
+        childState.outputEmitted() && childState.outputParent() == parentState;
+    if (delegatesOutput && output.isPresent() && !emittedForCaller) {
       parentState.adoptReplayedOutput(output.get());
     }
     return Maybe.fromOptional(output);
@@ -529,6 +592,13 @@ public final class NodeRunner {
       return Event.builder()
           .id(eventContext.newUuid())
           .timestamp(eventContext.now().toEpochMilli());
+    }
+  }
+
+  /** Ends the waiting calls of a shared child run whose first caller was canceled. */
+  private static final class ChildRunCanceledException extends RuntimeException {
+    ChildRunCanceledException() {
+      super("The call that ran this child was canceled.");
     }
   }
 

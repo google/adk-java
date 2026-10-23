@@ -220,6 +220,10 @@ final class WorkflowResumeTesting {
       String name, BiFunction<Context, @Nullable Object, Flowable<?>> body, boolean rerunOnResume)
       implements Node {
 
+    WaitingNode(String name, BiFunction<Context, @Nullable Object, Flowable<?>> body) {
+      this(name, body, /* rerunOnResume= */ false);
+    }
+
     @Override
     public boolean waitForOutput() {
       return true;
