@@ -60,6 +60,7 @@ import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -240,6 +241,138 @@ public final class AgentTransferTest {
     long closedConnectionsCount =
         testLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose).count();
     assertThat(closedConnectionsCount).isEqualTo(1);
+  }
+
+  @Test
+  public void runLive_transferToGrandchild_failsAndGrandchildNeverRuns() {
+    TestLlm grandchildLlm = TestLlm.create(createTextLlmResponse("grandchild ran"));
+    LlmAgent root = rootTransferringToGrandchild(grandchildLlm);
+
+    TransferRejectedException error =
+        assertThrows(TransferRejectedException.class, () -> runLive(root));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'root' is not allowed to transfer to the requested agent.");
+    assertThat(grandchildLlm.getRequests()).isEmpty();
+  }
+
+  @Test
+  public void runLive_transferToParent_withDisallowTransferToParent_fails() {
+    // A second connection, so a wrongly re-run root ends the run instead of transferring again.
+    TestLlm rootLlm =
+        createTestLlm(
+            Flowable.just(transferTo("sub")),
+            Flowable.just(createTextLlmResponse("root ran again")));
+    LlmAgent root = rootWithSubDisallowingParent(rootLlm);
+
+    TransferRejectedException error =
+        assertThrows(TransferRejectedException.class, () -> runLive(root));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'sub' is not allowed to transfer to the requested agent.");
+    assertThat(rootLlm.getRequests()).hasSize(1);
+  }
+
+  @Test
+  public void runLive_transferToPeer_withDisallowTransferToPeers_failsAndPeerNeverRuns() {
+    TestLlm peerLlm = TestLlm.create(ImmutableList.of());
+    LlmAgent root = rootWithSubDisallowingPeers(TestLlm.create(transferTo("peer")), peerLlm);
+
+    TransferRejectedException error =
+        assertThrows(TransferRejectedException.class, () -> runLive(root));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'sub' is not allowed to transfer to the requested agent.");
+    assertThat(error.agentName()).isEqualTo("sub");
+    assertThat(peerLlm.getRequests()).isEmpty();
+  }
+
+  // The model chose the name, so the error names only the calling agent.
+  @Test
+  public void runLive_transferToUnknownAgent_failsAsNotInTreeAfterClosingTheConnection() {
+    TestLlm rootLlm = TestLlm.create(transferTo("missing"));
+    LlmAgent root = root(rootLlm, textAgent("sub"));
+    List<Event> events = new ArrayList<>();
+
+    TransferRejectedException error =
+        assertThrows(TransferRejectedException.class, () -> runLive(root, events));
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo("Agent 'root' requested a transfer to an agent that is not in the agent tree.");
+    assertThat(simplifyEvents(events))
+        .containsExactly(
+            "root: FunctionCall(name=transfer_to_agent, args={agent_name=missing})",
+            "root: FunctionResponse(name=transfer_to_agent, response={})")
+        .inOrder();
+    assertThat(rootLlm.getLiveRequestHistory().stream().filter(LiveRequest::shouldClose).count())
+        .isEqualTo(1);
+  }
+
+  @Test
+  public void runLive_transferToDuplicateName_runsTheDeclaredTarget() {
+    TestLlm declaredLlm = TestLlm.create(createTextLlmResponse("declared ran"));
+    TestLlm namesakeLlm = TestLlm.create(createTextLlmResponse("namesake ran"));
+
+    ImmutableList<Event> events = runLive(rootWithNamesakeTargets(declaredLlm, namesakeLlm));
+
+    assertThat(simplifyEvents(events)).contains("shared: declared ran");
+    assertThat(declaredLlm.getRequests()).hasSize(1);
+    assertThat(namesakeLlm.getRequests()).isEmpty();
+  }
+
+  // Peers and the parent are declared targets too, not only sub-agents.
+  @Test
+  public void runLive_transferToPeerThenParent_runsBoth() {
+    TestLlm rootLlm =
+        createTestLlm(
+            Flowable.just(transferTo("sub")), Flowable.just(createTextLlmResponse("root again")));
+    TestLlm peerLlm = TestLlm.create(transferTo("root"));
+    LlmAgent sub = createTestAgentBuilder(TestLlm.create(transferTo("peer"))).name("sub").build();
+    LlmAgent peer = createTestAgentBuilder(peerLlm).name("peer").build();
+
+    ImmutableList<Event> events = runLive(root(rootLlm, sub, peer));
+
+    assertThat(simplifyEvents(events)).contains("root: root again");
+    assertThat(peerLlm.getRequests()).hasSize(1);
+    assertThat(rootLlm.getRequests()).hasSize(2);
+  }
+
+  // runAsync rejects a transfer to self; a live run reopens the agent on a new connection.
+  @Test
+  public void runLive_transferToSelf_reopensTheAgent() {
+    TestLlm rootLlm =
+        createTestLlm(
+            Flowable.just(transferTo("root")),
+            Flowable.just(createTextLlmResponse("root reopened")));
+
+    ImmutableList<Event> events = runLive(root(rootLlm, textAgent("sub")));
+
+    assertThat(simplifyEvents(events))
+        .containsExactly(
+            "root: FunctionCall(name=transfer_to_agent, args={agent_name=root})",
+            "root: FunctionResponse(name=transfer_to_agent, response={})",
+            "root: root reopened")
+        .inOrder();
+    assertThat(rootLlm.getRequests()).hasSize(2);
+  }
+
+  @Test
+  public void runLive_transferToSelf_reopensTheCallerNotANamesake() {
+    TestLlm callerLlm =
+        createTestLlm(
+            Flowable.just(transferTo("shared")),
+            Flowable.just(createTextLlmResponse("caller reopened")));
+    TestLlm namesakeLlm = TestLlm.create(createTextLlmResponse("namesake ran"));
+
+    ImmutableList<Event> events = runLive(rootWithNamesakeTargets(callerLlm, namesakeLlm));
+
+    assertThat(simplifyEvents(events)).contains("shared: caller reopened");
+    assertThat(callerLlm.getRequests()).hasSize(2);
+    assertThat(namesakeLlm.getRequests()).isEmpty();
   }
 
   @Test
@@ -952,5 +1085,23 @@ public final class AgentTransferTest {
             session.userId(), session.id(), invocationContext.userContent().orElse(null), runConfig)
         .toList()
         .blockingGet();
+  }
+
+  private static ImmutableList<Event> runLive(LlmAgent root) {
+    List<Event> events = new ArrayList<>();
+    runLive(root, events);
+    return ImmutableList.copyOf(events);
+  }
+
+  /** Runs {@code root} live after one user message, adding each event to {@code events}. */
+  private static void runLive(LlmAgent root, List<Event> events) {
+    Runner runner = new InMemoryRunner(root, "test");
+    LiveRequestQueue liveRequestQueue = new LiveRequestQueue();
+    liveRequestQueue.content(Content.fromParts(Part.fromText("hi")));
+    runner
+        .runLive(newSession(runner), liveRequestQueue, RunConfig.builder().build())
+        .doOnNext(events::add)
+        .ignoreElements()
+        .blockingAwait();
   }
 }
