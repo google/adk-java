@@ -18,6 +18,7 @@ package com.google.adk.tools.mcp;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
@@ -36,15 +37,30 @@ import reactor.core.publisher.Mono;
  * The default builder for creating MCP client transports. Supports StdioClientTransport based on
  * {@link ServerParameters}, HttpClientSseClientTransport based on {@link SseServerParameters}, and
  * HttpClientStreamableHttpTransport based on {@link StreamableHttpServerParameters}.
+ *
+ * <p>On Windows, stdio commands are passed through {@link WindowsExecutableResolver} so that an npm
+ * shim such as {@code npx} reaches {@code ProcessBuilder} as the {@code .cmd} file it really is.
  */
 public class DefaultMcpTransportBuilder implements McpTransportBuilder {
 
   private static final McpJsonMapper jsonMapper = McpJsonDefaults.getMapper();
 
+  private final CommandResolver commandResolver;
+
+  public DefaultMcpTransportBuilder() {
+    this(WindowsExecutableResolver::resolve);
+  }
+
+  /** Creates a builder that resolves stdio commands with {@code commandResolver}. */
+  @VisibleForTesting
+  DefaultMcpTransportBuilder(CommandResolver commandResolver) {
+    this.commandResolver = commandResolver;
+  }
+
   @Override
   public McpClientTransport build(Object connectionParams) {
     if (connectionParams instanceof ServerParameters serverParameters) {
-      return new StdioClientTransport(serverParameters, jsonMapper);
+      return new StdioClientTransport(resolveCommand(serverParameters), jsonMapper);
     } else if (connectionParams instanceof SseServerParameters sseServerParams) {
       return HttpClientSseClientTransport.builder(sseServerParams.url())
           .sseEndpoint(
@@ -90,6 +106,33 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
   }
 
   /**
+   * Returns {@code serverParameters} with its command resolved, keeping the caller's args and
+   * environment.
+   */
+  private ServerParameters resolveCommand(ServerParameters serverParameters) {
+    String command = serverParameters.getCommand();
+    String resolved = commandResolver.resolve(command);
+    if (resolved.equals(command)) {
+      return serverParameters;
+    }
+    return withCommand(serverParameters, resolved);
+  }
+
+  /**
+   * Returns {@code serverParameters} with {@code command} substituted, keeping the caller's args
+   * and environment.
+   *
+   * <p>{@code ServerParameters} merges the default environment with the caller's, so round-tripping
+   * {@code getEnv()} reproduces the same effective environment.
+   */
+  private static ServerParameters withCommand(ServerParameters serverParameters, String command) {
+    return ServerParameters.builder(command)
+        .args(serverParameters.getArgs())
+        .env(serverParameters.getEnv())
+        .build();
+  }
+
+  /**
    * Splits the URL into a base URI (scheme + authority) and endpoint (path + query + fragment).
    * Returns a null endpoint when the URL has no meaningful path or cannot be split, so the
    * transport falls back to its default endpoint.
@@ -120,4 +163,10 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
   }
 
   private record SplitUri(String baseUri, String endpoint) {}
+
+  /** Resolves a stdio command before it reaches {@code ProcessBuilder}. */
+  @FunctionalInterface
+  interface CommandResolver {
+    String resolve(String command);
+  }
 }
