@@ -83,6 +83,12 @@ public final class FunctionCallingUtils {
    */
   public static FunctionDeclaration buildFunctionDeclaration(
       Method func, List<String> ignoreParams) {
+    return buildFunctionDeclaration(
+        func, ignoreParams, ToolSchemaObjectMapper.create(defaultObjectMapper));
+  }
+
+  static FunctionDeclaration buildFunctionDeclaration(
+      Method func, List<String> ignoreParams, ObjectMapper objectMapper) {
     String name =
         func.isAnnotationPresent(Annotations.Schema.class)
                 && !func.getAnnotation(Annotations.Schema.class).name().isEmpty()
@@ -108,7 +114,7 @@ public final class FunctionCallingUtils {
       if (schema == null || !schema.optional()) {
         required.add(paramName);
       }
-      properties.put(paramName, buildSchemaFromParameter(param));
+      properties.put(paramName, buildSchemaFromParameter(param, objectMapper));
     }
     builder.parameters(
         Schema.builder().required(required).properties(properties).type("OBJECT").build());
@@ -126,7 +132,11 @@ public final class FunctionCallingUtils {
           actualReturnType = parameterizedReturnType.getActualTypeArguments()[0];
         }
       }
-      builder.response(buildSchemaFromType(actualReturnType));
+      builder.response(
+          buildSchemaRecursive(
+              objectMapper.constructType(actualReturnType),
+              new SchemaGenerationContext(),
+              objectMapper));
     }
     return builder.build();
   }
@@ -143,8 +153,12 @@ public final class FunctionCallingUtils {
     return declaration;
   }
 
-  private static Schema buildSchemaFromParameter(Parameter param) {
-    Schema schema = buildSchemaFromType(param.getParameterizedType());
+  private static Schema buildSchemaFromParameter(Parameter param, ObjectMapper objectMapper) {
+    Schema schema =
+        buildSchemaRecursive(
+            objectMapper.constructType(param.getParameterizedType()),
+            new SchemaGenerationContext(),
+            objectMapper);
     if (param.isAnnotationPresent(Annotations.Schema.class)
         && !param.getAnnotation(Annotations.Schema.class).description().isEmpty()) {
       return schema.toBuilder()
@@ -174,8 +188,9 @@ public final class FunctionCallingUtils {
    * @throws IllegalArgumentException if a type is encountered that cannot be serialized by Jackson.
    */
   public static Schema buildSchemaFromType(Type type, ObjectMapper objectMapper) {
+    ObjectMapper schemaMapper = ToolSchemaObjectMapper.create(objectMapper);
     return buildSchemaRecursive(
-        objectMapper.constructType(type), new SchemaGenerationContext(), objectMapper);
+        schemaMapper.constructType(type), new SchemaGenerationContext(), schemaMapper);
   }
 
   /**
@@ -256,8 +271,13 @@ public final class FunctionCallingUtils {
         for (BeanPropertyDefinition property : beanDescription.findProperties()) {
           AnnotatedMember member = property.getPrimaryMember();
           if (member != null) {
-            properties.put(
-                property.getName(), buildSchemaRecursive(member.getType(), context, objectMapper));
+            Schema propertySchema = buildSchemaRecursive(member.getType(), context, objectMapper);
+            Annotations.Schema annotation = member.getAnnotation(Annotations.Schema.class);
+            if (annotation != null && !annotation.description().isEmpty()) {
+              propertySchema =
+                  propertySchema.toBuilder().description(annotation.description()).build();
+            }
+            properties.put(property.getName(), propertySchema);
             if (property.isRequired()) {
               required.add(property.getName());
             }

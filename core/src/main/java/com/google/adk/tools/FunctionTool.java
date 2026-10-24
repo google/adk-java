@@ -204,11 +204,11 @@ public class FunctionTool extends BaseTool {
 
     this.instance = instance;
     this.func = func;
+    this.objectMapper = ToolSchemaObjectMapper.create(objectMapper);
     this.funcDeclaration =
         FunctionCallingUtils.buildFunctionDeclaration(
-            this.func, ImmutableList.of("toolContext", "inputStream"));
+            this.func, ImmutableList.of("toolContext", "inputStream"), this.objectMapper);
     this.requireConfirmation = requireConfirmation;
-    this.objectMapper = objectMapper;
   }
 
   @Override
