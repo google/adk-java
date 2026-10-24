@@ -31,6 +31,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.truth.Correspondence;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
+import java.util.regex.Pattern;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -138,6 +139,37 @@ public final class SkillToolsetTest {
           public void close() {}
         }) {
       baseToolset.processLlmRequest(LlmRequest.builder(), mock(ToolContext.class)).blockingAwait();
+    }
+  }
+
+  @Test
+  public void processLlmRequest_defaultInstructionOnlyMentionsRegisteredTools() throws Exception {
+    SkillSource skillSource =
+        InMemorySkillSource.builder()
+            .skill("test-skill")
+            .frontmatter(Frontmatter.builder().name("test-skill").description("test skill").build())
+            .instructions("Test instructions")
+            .build();
+    try (SkillToolset toolSet = new SkillToolset(skillSource)) {
+      LlmRequest.Builder requestBuilder = LlmRequest.builder();
+      toolSet.processLlmRequest(requestBuilder, mock(ToolContext.class)).blockingAwait();
+      String instruction = requestBuilder.build().getSystemInstructions().get(0);
+      assertThat(instruction)
+          .contains(
+              "Scripts bundled with the skill. You cannot run them; use `load_skill_resource` to"
+                  + " read one and follow it yourself.");
+      assertThat(instruction).doesNotContain("can be run via bash");
+      List<String> availableTools =
+          toolSet.getTools(null).toList().blockingGet().stream().map(BaseTool::name).toList();
+      List<String> mentionedTools =
+          Pattern.compile("`([a-z_]+)`")
+              .matcher(instruction)
+              .results()
+              .map(match -> match.group(1))
+              .distinct()
+              .toList();
+      assertThat(mentionedTools).isNotEmpty();
+      assertThat(availableTools).containsAtLeastElementsIn(mentionedTools);
     }
   }
 }
