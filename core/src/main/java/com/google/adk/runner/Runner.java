@@ -1118,11 +1118,7 @@ public class Runner {
                     .flatMap(userEvent -> this.sessionService.appendEvent(session, userEvent))
                     .flatMapPublisher(
                         userEvent ->
-                            runResumedAgent(
-                                session,
-                                resolvedInvocationId,
-                                userEvent.content().orElse(null),
-                                runConfig));
+                            runResumedAgent(initialContext, userEvent.content().orElse(null)));
           } else if (delta != null && !delta.isEmpty()) {
             // No message to carry the delta, so persist a content-less event, as Python does.
             Event stateDeltaEvent =
@@ -1138,12 +1134,9 @@ public class Runner {
                 this.sessionService
                     .appendEvent(session, stateDeltaEvent)
                     .ignoreElement()
-                    .andThen(
-                        runResumedAgent(
-                            session, resolvedInvocationId, /* userContent= */ null, runConfig));
+                    .andThen(runResumedAgent(initialContext, /* userContent= */ null));
           } else {
-            events =
-                runResumedAgent(session, resolvedInvocationId, /* userContent= */ null, runConfig);
+            events = runResumedAgent(initialContext, /* userContent= */ null);
           }
 
           return events
@@ -1156,20 +1149,20 @@ public class Runner {
    * Runs the resolved agent for a resumed invocation with the same before-run / after-run plugin
    * bracket as the new-invocation path. Rehydrates checkpoints, skips a completed invocation, and
    * persists each event.
+   *
+   * @param initialContext the context created for the resumed invocation's pre-run callbacks, used
+   *     to preserve metadata and callback data.
    */
   private Flowable<Event> runResumedAgent(
-      Session session,
-      String resolvedInvocationId,
-      @Nullable Content userContent,
-      RunConfig runConfig) {
+      InvocationContext initialContext, @Nullable Content userContent) {
     return Flowable.defer(
         () -> {
+          Session session = initialContext.session();
           BaseAgent rootAgent = this.agent;
           InvocationContext rootContext =
-              newInvocationContextBuilder(session, rootAgent)
-                  .invocationId(resolvedInvocationId)
-                  .runConfig(runConfig)
-                  .userContent(userContentFor(session, resolvedInvocationId, userContent))
+              initialContext.toBuilder()
+                  .agent(rootAgent)
+                  .userContent(userContentFor(session, initialContext.invocationId(), userContent))
                   .build();
           // Rehydrate before routing, as Python does, so a root that checkpointed re-enters itself.
           rootContext.populateInvocationAgentStates();
@@ -1182,7 +1175,8 @@ public class Runner {
                   ? rootContext
                   : rootContext.toBuilder()
                       .agent(resumeAgent)
-                      .branch(resumeParentBranch(session, resolvedInvocationId, resumeAgent))
+                      .branch(
+                          resumeParentBranch(session, initialContext.invocationId(), resumeAgent))
                       .build();
 
           // No-op guard: a completed invocation (its active agent already finished) is not re-run.
