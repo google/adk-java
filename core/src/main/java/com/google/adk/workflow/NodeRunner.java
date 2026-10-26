@@ -461,16 +461,24 @@ public final class NodeRunner {
     }
 
     private Completable dispatch(Event event) {
-      track(event);
-      return send(event);
+      boolean outputKept = track(event);
+      if (outputKept) {
+        return send(event);
+      }
+      return withoutDroppedOutput(event).map(this::send).orElseGet(Completable::complete);
     }
 
-    /** Records the output, interrupts, and routing carried by {@code event} on the node state. */
-    private void track(Event event) {
+    /**
+     * Records the output, interrupts, and routing carried by {@code event} on the node state.
+     * Returns {@code false} if a {@code useAsOutput} child holds the node's output, so the event's
+     * own output was dropped.
+     */
+    private boolean track(Event event) {
+      boolean outputKept = true;
       if (event.output().isPresent()) {
-        nodeState.produceOutput(event.output().get());
+        outputKept = nodeState.tryProduceOutput(event.output().get());
       } else if (isMessageAsOutput(event)) {
-        nodeState.produceOutput(event.content().get());
+        outputKept = nodeState.tryProduceOutput(event.content().get());
       }
       event.longRunningToolIds().ifPresent(nodeState::addInterruptIds);
       // An event of a nested node was already acted on at that node's level.
@@ -485,6 +493,28 @@ public final class NodeRunner {
                 });
         event.actions().transferToAgent().ifPresent(context.eventActions()::setTransferToAgent);
       }
+      return outputKept;
+    }
+
+    /**
+     * Returns {@code event} without the output the node produced after delegating its output, or
+     * empty if the event has no content, long-running tool IDs or actions to send without it. A
+     * message-as-output event becomes a plain message, so its text is not read back as the output.
+     */
+    private Optional<Event> withoutDroppedOutput(Event event) {
+      boolean carriesMore =
+          event.content().isPresent()
+              || event.hasPendingLongRunningToolCall()
+              || !event.actions().equals(EventActions.builder().build());
+      if (!carriesMore) {
+        return Optional.empty();
+      }
+      NodeInfo plainInfo =
+          event
+              .nodeInfo()
+              .map(info -> info.toBuilder().messageAsOutput(false).build())
+              .orElse(null);
+      return Optional.of(event.toBuilder().output(null).nodeInfo(plainInfo).build());
     }
 
     /**

@@ -430,6 +430,33 @@ public final class WorkflowResumeTest {
   }
 
   @Test
+  public void resume_callerEmittingItsReplayedDelegatesOutput_sendsThatOutputOnce() {
+    CountingNode child = new CountingNode("child", "child_out");
+    // The caller asks after delegating, so the next turn reruns it and replays the delegate.
+    Node caller =
+        dispatcher(
+            "caller",
+            (ctx, input) ->
+                ctx.runNode(child, null, USE_AS_OUTPUT)
+                    .flatMap(
+                        result ->
+                            ctx.runNode(longRunningAsk("ask", "ask_1"), null, runId("a"))
+                                .map(answer -> result))
+                    .toFlowable());
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(new Edge(START, caller), new Edge(caller, captureInput("reply"))));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(answer("ask_1", ImmutableMap.of("v", 1)));
+
+    assertThat(child.runs()).isEqualTo(1);
+    assertThat(events.stream().filter(event -> event.errorCode().isPresent())).isEmpty();
+    assertThat(outputEventAt(events, "wf@1/caller@1").output()).hasValue("child_out");
+    assertThat(replyInput(events)).isEqualTo("child_out");
+  }
+
+  @Test
   public void runNode_delegatingCallWhoseChildNoLongerRehydrates_letsTheCallerProduceItsOutput() {
     Node chat = new MessageOutputNode("chat", "not json", AGE_SCHEMA);
     Node ask = longRunningAsk("ask", "ask_1");
