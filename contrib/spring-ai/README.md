@@ -668,15 +668,18 @@ The library includes comprehensive integration tests for different providers:
 ### Running Integration Tests
 
 ```bash
-# Opt in to integration tests (gates the Gemini and Ollama tests)
+# Opt in to GeminiApiIntegrationTest
 export ADK_RUN_INTEGRATION_TESTS=true
 # Set Gemini model name for integration tests
-export GEMINi_MODEL=gemini-3.8-flash
+export GEMINI_MODEL=gemini-3.8-flash
 
 # Set required environment variables
 export OPENAI_API_KEY=your_key
 export GOOGLE_CLOUD_PROJECT=your_project_id
 export ANTHROPIC_API_KEY=your_key
+
+# Opt in to LocalModelIntegrationTest, which runs Ollama in Docker
+export ADK_RUN_LOCAL_MODEL_TESTS=true
 
 # Run specific integration test
 mvn test -Dtest=OpenAiApiIntegrationTest

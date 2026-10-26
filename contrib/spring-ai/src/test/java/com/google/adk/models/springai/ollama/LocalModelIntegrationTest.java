@@ -34,8 +34,8 @@ import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 
-// @Disabled("To avoid making the assumption that Ollama is available in the CI pipeline")
-@EnabledIfEnvironmentVariable(named = "ADK_RUN_INTEGRATION_TESTS", matches = "true")
+/** Needs Docker for Ollama; runs only when {@code ADK_RUN_LOCAL_MODEL_TESTS=true}. */
+@EnabledIfEnvironmentVariable(named = "ADK_RUN_LOCAL_MODEL_TESTS", matches = "true")
 class LocalModelIntegrationTest {
 
   private static OllamaTestContainer ollamaContainer;
