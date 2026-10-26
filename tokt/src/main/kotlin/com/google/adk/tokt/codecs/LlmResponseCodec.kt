@@ -28,8 +28,8 @@ import kotlin.jvm.optionals.getOrNull
  * a bridged Java plugin's `afterModel`.
  *
  * Carries content, error message, streaming flags, model version, finish reason, usage metadata,
- * grounding metadata, average log-probs, error code, and custom metadata. Citation metadata and
- * logprobs results have no ADK Java facade field, so they are not mapped.
+ * grounding and context cache metadata, average log-probs, error code, and custom metadata.
+ * Citation metadata and logprobs results have no ADK Java facade field, so they are not mapped.
  */
 internal object LlmResponseCodec {
 
@@ -45,6 +45,7 @@ internal object LlmResponseCodec {
       usageMetadata = response.usageMetadata().getOrNull()?.let { UsageMetadataCodec.fromJava(it) },
       groundingMetadata =
         response.groundingMetadata().getOrNull()?.let { GroundingMetadataCodec.fromJava(it) },
+      cacheMetadata = response.cacheMetadata().getOrNull()?.let { CacheMetadataCodec.fromJava(it) },
       avgLogprobs = response.avgLogprobs().getOrNull(),
       // toString() preserves the raw value; knownEnum().name would collapse an unrecognized code to
       // FINISH_REASON_UNSPECIFIED (errorCode is a free-form String on the Kotlin side).
@@ -63,6 +64,7 @@ internal object LlmResponseCodec {
     response.finishReason?.let { builder.finishReason(it.toGenai()) }
     response.usageMetadata?.let { builder.usageMetadata(UsageMetadataCodec.toJava(it)) }
     response.groundingMetadata?.let { builder.groundingMetadata(GroundingMetadataCodec.toJava(it)) }
+    response.cacheMetadata?.let { builder.cacheMetadata(CacheMetadataCodec.toJava(it)) }
     response.avgLogprobs?.let { builder.avgLogprobs(it) }
     response.errorCode?.let { builder.errorCode(GenaiFinishReason(it)) }
     response.customMetadata?.let { builder.customMetadata(CustomMetadataCodec.toJava(it)) }

@@ -40,6 +40,7 @@ import com.google.adk.kt.apps.App as KtApp
 import com.google.adk.kt.callbacks.AfterModelCallback as KtAfterModelCallback
 import com.google.adk.kt.events.Event as KtEvent
 import com.google.adk.kt.events.EventActions as KtEventActions
+import com.google.adk.kt.models.CacheMetadata as KtCacheMetadata
 import com.google.adk.kt.models.LlmResponse as KtLlmResponse
 import com.google.adk.kt.runners.InMemoryRunner as KtInMemoryRunner
 import com.google.adk.kt.runners.Runner as KtRunner
@@ -95,6 +96,7 @@ import com.google.adk.kt.workflow.Workflow as KtWorkflow
 import com.google.adk.memory.InMemoryMemoryService as JavaInMemoryMemoryService
 import com.google.adk.models.BaseLlm as JavaBaseLlm
 import com.google.adk.models.BaseLlmConnection as JavaBaseLlmConnection
+import com.google.adk.models.CacheMetadata as JavaCacheMetadata
 import com.google.adk.models.LlmRequest as JavaLlmRequest
 import com.google.adk.models.LlmResponse as JavaLlmResponse
 import com.google.adk.plugins.BasePlugin as JavaBasePlugin
@@ -3294,6 +3296,52 @@ class KtRunnerInteropTest {
   }
 
   @Test
+  fun ktRunner_bridgedPluginReturningTheResponse_keepsItsCacheMetadata() = runBlocking {
+    // The event keeps the response's cache metadata; the next turn finds its cache there.
+    val model =
+      object : JavaBaseLlm("java-model") {
+        override fun generateContent(
+          llmRequest: JavaLlmRequest,
+          stream: Boolean,
+        ): Flowable<JavaLlmResponse> =
+          Flowable.just(
+            JavaLlmResponse.builder()
+              .content(modelText("cached"))
+              .cacheMetadata(
+                JavaCacheMetadata.builder().fingerprint("abc").contentsCount(2).build()
+              )
+              .build()
+          )
+
+        override fun connect(llmRequest: JavaLlmRequest): JavaBaseLlmConnection =
+          throw UnsupportedOperationException()
+      }
+    // Returning the response sends it through LlmResponseCodec to Java and back.
+    val passthrough =
+      object : JavaBasePlugin("passthrough") {
+        override fun afterModelCallback(
+          callbackContext: JavaCallbackContext,
+          llmResponse: JavaLlmResponse,
+        ): Maybe<JavaLlmResponse> = Maybe.just(llmResponse)
+      }
+    val runner =
+      KtInMemoryRunner(
+        KtApp(
+          appName = "app",
+          rootAgent = KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(model)),
+          plugins = listOf(JavaAdkToKt.asKtPlugin(passthrough)),
+        )
+      )
+
+    val events = runner.turn()
+
+    assertEquals(
+      KtCacheMetadata(fingerprint = "abc", contentsCount = 2),
+      events.single { it.author == "a" }.cacheMetadata,
+    )
+  }
+
+  @Test
   fun ktRunner_bridgedNoOpPlugin_preservesAgentTransfer() = runBlocking {
     // Regression: bridging any Java plugin must not drop the request's Kotlin-only toolsDict in
     // beforeModel, or the request-scoped transfer_to_agent tool disappears and transfer breaks.
@@ -4308,6 +4356,31 @@ class KtRunnerInteropTest {
       EventCodec.fromJava(EventCodec.toJava(ktEvent)).actions.rewindBeforeInvocationId,
       "rewindBeforeInvocationId must survive EventCodec.toJava -> fromJava",
     )
+  }
+
+  @Test
+  fun asKtSessionService_cacheMetadata_survivesTheJavaStore() = runBlocking {
+    // The next turn finds the context cache to reuse in the stored events.
+    val sessions = JavaAdkToKt.asKtSessionService(JavaInMemorySessionService())
+    val key = KtSessionKey("app", "u", "s")
+    val session = sessions.createSession(key)
+    val fingerprintOnly = KtCacheMetadata(fingerprint = "abc", contentsCount = 2)
+    val active =
+      KtCacheMetadata(
+        fingerprint = "abc",
+        contentsCount = 2,
+        cacheName = "cachedContents/1",
+        expireTime = 2_000_000_000_000L,
+        invocationsUsed = 3,
+        createdAt = 1_999_999_000_000L,
+      )
+
+    for (cache in listOf(fingerprintOnly, active)) {
+      val unused = sessions.appendEvent(session, KtEvent(author = "model", cacheMetadata = cache))
+    }
+
+    val stored = assertNotNull(sessions.getSession(key)).events.map { it.cacheMetadata }
+    assertEquals(listOf(fingerprintOnly, active), stored)
   }
 
   @Test

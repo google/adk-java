@@ -33,9 +33,10 @@ import kotlin.jvm.optionals.getOrNull
  * skipSummarization, endOfAgent - the requested tool confirmations, the context-compaction summary,
  * the resumable-run `agentState`, the rewind marker `rewindBeforeInvocationId`, and the workflow
  * `route`), the streaming/error signals (`partial`, `turnComplete`, `interrupted`, `errorMessage`,
- * `errorCode`, `finishReason`), the token `usageMetadata` ([UsageMetadataCodec]) and
- * `groundingMetadata` ([GroundingMetadataCodec]), a workflow node's `output` and `nodeInfo`
- * ([WorkflowCodec]), long-running tool ids, and the timestamp.
+ * `errorCode`, `finishReason`), the token `usageMetadata` ([UsageMetadataCodec]),
+ * `groundingMetadata` ([GroundingMetadataCodec]) and context `cacheMetadata`
+ * ([CacheMetadataCodec]), a workflow node's `output` and `nodeInfo` ([WorkflowCodec]), long-running
+ * tool ids, and the timestamp.
  */
 internal object EventCodec {
 
@@ -61,6 +62,7 @@ internal object EventCodec {
     event.usageMetadata?.let { builder.usageMetadata(UsageMetadataCodec.toJava(it)) }
     event.avgLogProbs?.let { builder.avgLogprobs(it) }
     event.groundingMetadata?.let { builder.groundingMetadata(GroundingMetadataCodec.toJava(it)) }
+    event.cacheMetadata?.let { builder.cacheMetadata(CacheMetadataCodec.toJava(it)) }
     event.modelVersion?.let { builder.modelVersion(it) }
     event.customMetadata?.let { builder.customMetadata(CustomMetadataCodec.toJava(it)) }
     event.output?.let { builder.output(WorkflowCodec.outputToJava(it)) }
@@ -111,6 +113,7 @@ internal object EventCodec {
       avgLogProbs = event.avgLogprobs().getOrNull(),
       groundingMetadata =
         event.groundingMetadata().getOrNull()?.let { GroundingMetadataCodec.fromJava(it) },
+      cacheMetadata = event.cacheMetadata().getOrNull()?.let { CacheMetadataCodec.fromJava(it) },
       modelVersion = event.modelVersion().getOrNull(),
       customMetadata = event.customMetadata().getOrNull()?.let { CustomMetadataCodec.fromJava(it) },
       output = event.output().getOrNull()?.let { WorkflowCodec.outputFromJava(it) },
