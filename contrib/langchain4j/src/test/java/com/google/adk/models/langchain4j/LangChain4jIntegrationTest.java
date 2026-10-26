@@ -37,7 +37,6 @@ import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -45,7 +44,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 class LangChain4jIntegrationTest {
 
   public static final String CLAUDE_4_6_SONNET = "claude-sonnet-4-6";
-  public static final String GEMINI_2_0_FLASH = "gemini-2.0-flash";
+  public static final String GEMINI_3_8_FLASH = "gemini-3.8-flash";
   public static final String GPT_4_O_MINI = "gpt-4o-mini";
 
   @Test
@@ -161,6 +160,7 @@ class LangChain4jIntegrationTest {
   }
 
   @Test
+  @EnabledIfEnvironmentVariable(named = "GOOGLE_API_KEY", matches = "\\S+")
   @EnabledIfEnvironmentVariable(named = "OPENAI_API_KEY", matches = "\\S+")
   void testAgentTool() {
     // given
@@ -174,7 +174,7 @@ class LangChain4jIntegrationTest {
         LlmAgent.builder()
             .name("weather-agent")
             .description("Weather agent")
-            .model(GEMINI_2_0_FLASH)
+            .model(GEMINI_3_8_FLASH)
             .instruction(
                 """
                 Your role is to always answer that the weather is sunny and 20°C.
@@ -239,8 +239,7 @@ class LangChain4jIntegrationTest {
     // given
     OpenAiChatModel gptModel =
         OpenAiChatModel.builder()
-            .baseUrl("http://langchain4j.dev/demo/openai/v1")
-            .apiKey(Objects.requireNonNullElse(System.getenv("OPENAI_API_KEY"), "demo"))
+            .apiKey(System.getenv("OPENAI_API_KEY"))
             .modelName(GPT_4_O_MINI)
             .build();
 
@@ -270,7 +269,7 @@ class LangChain4jIntegrationTest {
         LlmAgent.builder()
             .name("coordinator-agent")
             .description("Coordinator agent")
-            .model(GEMINI_2_0_FLASH)
+            .model(GEMINI_3_8_FLASH)
             .instruction(
                 """
                 Your role is to coordinate 2 agents:
@@ -391,8 +390,7 @@ class LangChain4jIntegrationTest {
     // given
     OpenAiStreamingChatModel streamingModel =
         OpenAiStreamingChatModel.builder()
-            .baseUrl("http://langchain4j.dev/demo/openai/v1")
-            .apiKey(Objects.requireNonNullElse(System.getenv("OPENAI_API_KEY"), "demo"))
+            .apiKey(System.getenv("OPENAI_API_KEY"))
             .modelName(GPT_4_O_MINI)
             .build();
 
