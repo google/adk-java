@@ -44,6 +44,7 @@ To use ADK Java with the Spring AI integration in your application, add the foll
 Add the Spring AI provider dependencies for the AI services you want to use:
 
 **OpenAI:**
+
 ```xml
 <dependency>
     <groupId>org.springframework.ai</groupId>
@@ -52,6 +53,7 @@ Add the Spring AI provider dependencies for the AI services you want to use:
 ```
 
 **Anthropic (Claude):**
+
 ```xml
 <dependency>
     <groupId>org.springframework.ai</groupId>
@@ -60,6 +62,7 @@ Add the Spring AI provider dependencies for the AI services you want to use:
 ```
 
 **Google Gemini:**
+
 ```xml
 <dependency>
     <groupId>org.springframework.ai</groupId>
@@ -68,6 +71,7 @@ Add the Spring AI provider dependencies for the AI services you want to use:
 ```
 
 **Vertex AI:**
+
 ```xml
 <dependency>
     <groupId>org.springframework.ai</groupId>
@@ -76,6 +80,7 @@ Add the Spring AI provider dependencies for the AI services you want to use:
 ```
 
 **Azure OpenAI:**
+
 ```xml
 <dependency>
     <groupId>org.springframework.ai</groupId>
@@ -84,6 +89,7 @@ Add the Spring AI provider dependencies for the AI services you want to use:
 ```
 
 **Ollama (Local models):**
+
 ```xml
 <dependency>
     <groupId>org.springframework.ai</groupId>
@@ -356,6 +362,7 @@ adk-spring-ai/
 The main adapter class that implements `BaseLlm` and wraps Spring AI `ChatModel` and `StreamingChatModel` instances.
 
 **Key Features:**
+
 - Supports both blocking and streaming chat models
 - Reactive API using RxJava3 Flowable
 - Comprehensive error handling and observability
@@ -363,6 +370,7 @@ The main adapter class that implements `BaseLlm` and wraps Spring AI `ChatModel`
 - Multiple constructor overloads for different scenarios
 
 **Usage:**
+
 ```java
 // With ChatModel only
 SpringAI springAI = new SpringAI(chatModel, "claude-sonnet-4-6");
@@ -379,6 +387,7 @@ SpringAI springAI = new SpringAI(chatModel, "claude-sonnet-4-6", observabilityCo
 Handles conversion between ADK's `Content`/`Part` format and Spring AI's `Message`/`ChatResponse` format.
 
 **Key Features:**
+
 - Converts ADK `LlmRequest` to Spring AI `Prompt`
 - Converts Spring AI `ChatResponse` to ADK `LlmResponse`
 - Supports system, user, and assistant messages
@@ -387,6 +396,7 @@ Handles conversion between ADK's `Content`/`Part` format and Spring AI's `Messag
 - Streaming response detection and partial response handling
 
 **Message Type Mapping:**
+
 - ADK `Content` with role "user" → Spring AI `UserMessage`
 - ADK `Content` with role "model"/"assistant" → Spring AI `AssistantMessage`
 - ADK `Content` with role "system" → Spring AI `SystemMessage`
@@ -397,6 +407,7 @@ Handles conversion between ADK's `Content`/`Part` format and Spring AI's `Messag
 Converts between ADK tools and Spring AI function calling format.
 
 **Key Features:**
+
 - Converts ADK `BaseTool` to Spring AI `ToolCallback`
 - Schema conversion from ADK format to Spring AI JSON schema
 - Intelligent argument processing for different provider formats
@@ -404,6 +415,7 @@ Converts between ADK tools and Spring AI function calling format.
 - Debug logging for troubleshooting function calling issues
 
 **Function Calling Flow:**
+
 1. ADK `FunctionDeclaration` → Spring AI `FunctionToolCallback`
 2. ADK schema → JSON schema string
 3. Runtime argument conversion and validation
@@ -414,6 +426,7 @@ Converts between ADK tools and Spring AI function calling format.
 Wrapper for Spring AI embedding models providing ADK-compatible embedding generation.
 
 **Key Features:**
+
 - Single text and batch text embedding
 - Reactive API using RxJava3 Single
 - Full EmbeddingRequest/EmbeddingResponse support
@@ -425,6 +438,7 @@ Wrapper for Spring AI embedding models providing ADK-compatible embedding genera
 Maps ADK `GenerateContentConfig` to Spring AI `ChatOptions`.
 
 **Supported Configurations:**
+
 - Temperature (Float → Double conversion)
 - Max output tokens
 - Top-P (Float → Double conversion)
@@ -432,6 +446,7 @@ Maps ADK `GenerateContentConfig` to Spring AI `ChatOptions`.
 - Configuration validation
 
 **Unsupported/Provider-Specific:**
+
 - Top-K (not directly supported by Spring AI)
 - Presence/frequency penalties (provider-specific)
 - Response schema and MIME type
@@ -439,31 +454,37 @@ Maps ADK `GenerateContentConfig` to Spring AI `ChatOptions`.
 ## Modules
 
 ### Core Module
+
 - **Package:** `com.google.adk.models.springai`
 - **Purpose:** Main integration classes
 - **Key Classes:** `SpringAI`, `MessageConverter`, `ToolConverter`, `ConfigMapper`
 
 ### Embedding Module
+
 - **Package:** `com.google.adk.models.springai`
 - **Purpose:** Embedding model integration
 - **Key Classes:** `SpringAIEmbedding`, `EmbeddingConverter`
 
 ### Auto-Configuration Module
+
 - **Package:** `com.google.adk.models.springai.autoconfigure`
 - **Purpose:** Spring Boot auto-configuration
 - **Key Classes:** `SpringAIAutoConfiguration`
 
 ### Observability Module
+
 - **Package:** `com.google.adk.models.springai.observability`
 - **Purpose:** Metrics, logging, and monitoring
 - **Key Classes:** `SpringAIObservabilityHandler`
 
 ### Properties Module
+
 - **Package:** `com.google.adk.models.springai.properties`
 - **Purpose:** Configuration properties
 - **Key Classes:** `SpringAIProperties`
 
 ### Error Handling Module
+
 - **Package:** `com.google.adk.models.springai.error`
 - **Purpose:** Error mapping and handling
 - **Key Classes:** `SpringAIErrorMapper`
@@ -538,9 +559,9 @@ The library works with any Spring AI provider:
    - **Note:** Requires proper function schema registration
 
 3. **Google Gemini** (`spring-ai-google-genai`)
-   - Models: Gemini 2.0 Flash, Gemini 1.5 Pro
-   - Features: Chat, streaming, function calling
-   - **Note:** Requires single system message (automatically handled)
+    -   Models: Gemini 3.8 Flash
+    - Features: Chat, streaming, function calling
+    - **Note:** Requires single system message (automatically handled)
 
 4. **Vertex AI** (`spring-ai-vertex-ai-gemini`)
    - Models: Vertex AI Gemini models
@@ -557,16 +578,22 @@ The library works with any Spring AI provider:
 ### Provider-Specific Considerations
 
 #### Gemini
+
 - **System Messages:** Only one system message allowed - library automatically combines multiple system messages
-- **Model Names:** Use `gemini-2.0-flash`, `gemini-1.5-pro`
-- **API Key:** Requires `GOOGLE_API_KEY` environment variable
+-   **Model Names:** Use `gemini-3.8-flash` or any other Gemini model name. See
+    [Google Gemini models](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions)
+    for more details.
+-   **Vertex AI:** Requires `GOOGLE_CLOUD_PROJECT` environment variable
+-   **Optional:** `GOOGLE_CLOUD_LOCATION` (defaults to `global`)
 
 #### Anthropic
+
 - **Function Calling:** Requires explicit schema registration using `inputSchema()` method
 - **Model Names:** Use full model names like `claude-sonnet-4-6`
 - **API Key:** Requires `ANTHROPIC_API_KEY` environment variable
 
 #### OpenAI
+
 - **Standard Support:** Full feature compatibility
 - **Model Names:** Use `gpt-4o-mini`, `gpt-4o`, etc.
 - **API Key:** Requires `OPENAI_API_KEY` environment variable
@@ -641,9 +668,14 @@ The library includes comprehensive integration tests for different providers:
 ### Running Integration Tests
 
 ```bash
+# Opt in to integration tests (gates the Gemini and Ollama tests)
+export ADK_RUN_INTEGRATION_TESTS=true
+# Set Gemini model name for integration tests
+export GEMINi_MODEL=gemini-3.8-flash
+
 # Set required environment variables
 export OPENAI_API_KEY=your_key
-export GOOGLE_API_KEY=your_key
+export GOOGLE_CLOUD_PROJECT=your_project_id
 export ANTHROPIC_API_KEY=your_key
 
 # Run specific integration test
@@ -658,11 +690,13 @@ mvn test
 The library provides comprehensive error handling through `SpringAIErrorMapper`:
 
 ### Error Mapping
+
 - Spring AI exceptions → ADK-compatible errors
 - Provider-specific error normalization
 - Detailed error context preservation
 
 ### Observability
+
 - Request/response logging
 - Token usage tracking
 - Error metrics collection
@@ -671,24 +705,28 @@ The library provides comprehensive error handling through `SpringAIErrorMapper`:
 ## Best Practices
 
 ### Model Configuration
+
 1. Always specify explicit model names rather than relying on defaults
 2. Use environment variables for API keys
 3. Configure appropriate timeouts for your use case
 4. Enable observability for production monitoring
 
 ### Function Calling
+
 1. Ensure function schemas are properly defined in ADK tools
 2. Test function calling with each provider separately
 3. Handle provider-specific argument format differences
 4. Use debug logging to troubleshoot function calling issues
 
 ### Performance
+
 1. Use streaming for long responses
 2. Implement proper backpressure handling
 3. Configure connection pooling for high-throughput scenarios
 4. Monitor token usage and costs
 
 ### Error Handling
+
 1. Implement retry logic for transient failures
 2. Handle provider-specific error conditions
 3. Use circuit breakers for external API calls
@@ -697,6 +735,7 @@ The library provides comprehensive error handling through `SpringAIErrorMapper`:
 ## Dependencies
 
 ### Core Dependencies
+
 - Spring AI Model (`spring-ai-model`)
 - ADK Core (`google-adk`)
 - Google GenAI Types (`google-genai`)
@@ -704,6 +743,7 @@ The library provides comprehensive error handling through `SpringAIErrorMapper`:
 - Jackson for JSON processing
 
 ### Provider Dependencies (Test Scope)
+
 - `spring-ai-openai`
 - `spring-ai-anthropic`
 - `spring-ai-google-genai`
@@ -712,6 +752,7 @@ The library provides comprehensive error handling through `SpringAIErrorMapper`:
 - `spring-ai-ollama`
 
 ### Spring Boot Integration
+
 - `spring-boot-autoconfigure` (optional)
 - `spring-boot-configuration-processor` (optional)
 - `jakarta.validation-api` (optional)
@@ -719,6 +760,7 @@ The library provides comprehensive error handling through `SpringAIErrorMapper`:
 ## Future Enhancements
 
 ### Planned Features
+
 1. Enhanced provider-specific optimizations
 2. Advanced streaming aggregation
 3. Multi-modal content support
@@ -726,6 +768,7 @@ The library provides comprehensive error handling through `SpringAIErrorMapper`:
 5. Performance optimization for high-throughput scenarios
 
 ### Known Limitations
+
 1. Live connection mode not supported (returns `UnsupportedOperationException`)
 2. Some provider-specific features may not be fully supported
 3. Response schema and MIME type configuration limited
@@ -734,12 +777,14 @@ The library provides comprehensive error handling through `SpringAIErrorMapper`:
 ## Migration Guide
 
 ### From Direct Spring AI Usage
+
 1. Replace Spring AI `ChatModel.call()` with `SpringAI.generateContent()`
 2. Update message formats from Spring AI to ADK format
 3. Configure auto-configuration properties
 4. Update dependency management to include ADK Spring AI
 
 ### Version Compatibility
+
 - Spring AI: 1.1.0-M3+
 - Spring Boot: 3.0+
 - Java: 17+
