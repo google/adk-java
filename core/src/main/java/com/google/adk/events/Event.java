@@ -64,6 +64,7 @@ public class Event extends JsonBaseModel {
   private @Nullable Double avgLogprobs;
   private @Nullable Boolean interrupted;
   private @Nullable String branch;
+  private @Nullable String isolationScope;
   private @Nullable GroundingMetadata groundingMetadata;
   private @Nullable List<CustomMetadata> customMetadata;
   private @Nullable String modelVersion;
@@ -254,6 +255,22 @@ public class Event extends JsonBaseModel {
    */
   public void branch(@Nullable String branch) {
     this.branch = branch;
+  }
+
+  /**
+   * Returns the isolated conversation this event belongs to, such as a delegated task, so an
+   * agent's model history can keep only events from its own scope. Returns empty when the event is
+   * not scoped. This field is internal to the framework and may change without notice.
+   */
+  @Experimental
+  @JsonProperty("isolationScope")
+  public Optional<String> isolationScope() {
+    return Optional.ofNullable(isolationScope);
+  }
+
+  @Experimental
+  public void setIsolationScope(@Nullable String isolationScope) {
+    this.isolationScope = isolationScope;
   }
 
   /** The grounding metadata of the event. */
@@ -480,6 +497,7 @@ public class Event extends JsonBaseModel {
     private @Nullable Double avgLogprobs;
     private @Nullable Boolean interrupted;
     private @Nullable String branch;
+    private @Nullable String isolationScope;
     private @Nullable GroundingMetadata groundingMetadata;
     private @Nullable List<CustomMetadata> customMetadata;
     private @Nullable String modelVersion;
@@ -626,6 +644,14 @@ public class Event extends JsonBaseModel {
       return Optional.ofNullable(branch);
     }
 
+    @Experimental
+    @CanIgnoreReturnValue
+    @JsonProperty("isolationScope")
+    public Builder isolationScope(@Nullable String value) {
+      this.isolationScope = value;
+      return this;
+    }
+
     @CanIgnoreReturnValue
     @JsonProperty("groundingMetadata")
     public Builder groundingMetadata(@Nullable GroundingMetadata value) {
@@ -704,6 +730,7 @@ public class Event extends JsonBaseModel {
       event.setAvgLogprobs(avgLogprobs);
       event.setInterrupted(interrupted);
       event.branch(branch);
+      event.setIsolationScope(isolationScope);
       event.setGroundingMetadata(groundingMetadata);
       event.setCustomMetadata(customMetadata);
       event.setModelVersion(modelVersion);
@@ -746,6 +773,7 @@ public class Event extends JsonBaseModel {
         .avgLogprobs(this.avgLogprobs)
         .interrupted(this.interrupted)
         .branch(this.branch)
+        .isolationScope(this.isolationScope)
         .groundingMetadata(this.groundingMetadata)
         .customMetadata(this.customMetadata)
         .modelVersion(this.modelVersion)
@@ -781,6 +809,7 @@ public class Event extends JsonBaseModel {
         && Objects.equals(avgLogprobs, other.avgLogprobs)
         && Objects.equals(interrupted, other.interrupted)
         && Objects.equals(branch, other.branch)
+        && Objects.equals(isolationScope, other.isolationScope)
         && Objects.equals(groundingMetadata, other.groundingMetadata)
         && Objects.equals(customMetadata, other.customMetadata)
         && Objects.equals(modelVersion, other.modelVersion)
@@ -814,6 +843,7 @@ public class Event extends JsonBaseModel {
         avgLogprobs,
         interrupted,
         branch,
+        isolationScope,
         groundingMetadata,
         customMetadata,
         modelVersion,

@@ -408,6 +408,31 @@ public final class EventTest {
   }
 
   @Test
+  public void event_isolationScope_survivesJsonAndToBuilder() {
+    Event event = EVENT.toBuilder().isolationScope("wf@1/task@1").build();
+
+    assertThat(event.isolationScope()).hasValue("wf@1/task@1");
+    assertThat(event.toBuilder().build()).isEqualTo(event);
+    assertThat(Event.fromJson(event.toJson())).isEqualTo(event);
+    assertThat(event).isNotEqualTo(EVENT);
+    assertThat(event.hashCode()).isNotEqualTo(EVENT.hashCode());
+  }
+
+  @Test
+  public void event_isolationScope_emptyByDefault() {
+    assertThat(EVENT.isolationScope()).isEmpty();
+    assertThat(EVENT.toJson()).doesNotContain("isolationScope");
+  }
+
+  @Test
+  public void fromJson_readsIsolationScope() {
+    Event event =
+        Event.fromJson("{\"id\":\"event_id\",\"author\":\"agent\",\"isolationScope\":\"fc-1\"}");
+
+    assertThat(event.isolationScope()).hasValue("fc-1");
+  }
+
+  @Test
   public void finalResponse_returnsTrueIfNoToolCalls() {
     Event event =
         Event.builder()
