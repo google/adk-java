@@ -64,6 +64,7 @@ import com.google.adk.kt.types.GenerationConfigRoutingConfig as KtRoutingConfig
 import com.google.adk.kt.types.GenerationConfigRoutingConfigManualRoutingMode as KtManualRoutingMode
 import com.google.adk.kt.types.GoogleMaps as KtGoogleMaps
 import com.google.adk.kt.types.GoogleSearch as KtGoogleSearch
+import com.google.adk.kt.types.GroundingMetadata as KtGroundingMetadata
 import com.google.adk.kt.types.HarmBlockMethod as KtHarmBlockMethod
 import com.google.adk.kt.types.HarmBlockThreshold as KtHarmBlockThreshold
 import com.google.adk.kt.types.HarmCategory as KtHarmCategory
@@ -4550,6 +4551,24 @@ class KtRunnerInteropTest {
       )
     assertEquals("Open until 9pm.", maps.text().getOrNull(), "maps chunk text")
     assertEquals("places/abc", maps.placeId().getOrNull(), "maps chunk placeId")
+  }
+
+  @Test
+  fun asKtSessionService_groundingMetadata_survivesTheJavaStore() = runBlocking {
+    // Kotlin's Gemini leaves imageSearchQueries unset on a Google Search answer.
+    val sessions = JavaAdkToKt.asKtSessionService(JavaInMemorySessionService())
+    val key = KtSessionKey("app", "u", "s")
+    val session = sessions.createSession(key)
+    val webSearch = KtGroundingMetadata(webSearchQueries = listOf("tallest building"))
+    val imageSearch = KtGroundingMetadata(imageSearchQueries = listOf("cat"))
+
+    for (grounding in listOf(webSearch, imageSearch)) {
+      val unused =
+        sessions.appendEvent(session, KtEvent(author = "model", groundingMetadata = grounding))
+    }
+
+    val stored = assertNotNull(sessions.getSession(key)).events.map { it.groundingMetadata }
+    assertEquals(listOf(webSearch, imageSearch), stored)
   }
 
   @Test
