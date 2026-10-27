@@ -16,6 +16,7 @@
 
 package com.google.adk.summarizer;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -158,6 +159,94 @@ public class TailRetentionEventCompactorTest {
 
     verify(mockSummarizer).summarizeEvents(any());
     verify(mockSessionService).appendEvent(eq(session), eq(summaryEvent));
+  }
+
+  @Test
+  public void compaction_happensWhenEventsAfterTokenUsagePushAboveThreshold() {
+    // Threshold is 300, the last model call used 200 prompt tokens, and a tool response of
+    // 800 characters (about 200 tokens) arrived after it: 200 + 200 > 300.
+    EventCompactor compactor = new TailRetentionEventCompactor(mockSummarizer, 1, 300);
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createEvent(1, "Event1"),
+            withUsage(createEvent(2, "Call"), 200),
+            createEvent(3, "x".repeat(800)));
+    Session session = Session.builder("id").events(events).build();
+    Event summaryEvent = createEvent(4, "Summary");
+
+    when(mockSummarizer.summarizeEvents(any())).thenReturn(Maybe.just(summaryEvent));
+    when(mockSessionService.appendEvent(any(), any())).thenReturn(Single.just(summaryEvent));
+
+    compactor.compact(session, mockSessionService).blockingSubscribe();
+
+    verify(mockSummarizer).summarizeEvents(eventListCaptor.capture());
+    assertThat(
+            eventListCaptor.getValue().stream()
+                .map(TailRetentionEventCompactorTest::getPromptText)
+                .collect(toImmutableList()))
+        .containsExactly("Event1", "Call")
+        .inOrder();
+    verify(mockSessionService).appendEvent(eq(session), eq(summaryEvent));
+  }
+
+  @Test
+  public void compaction_skippedWhenEventsAfterTokenUsageStayBelowThreshold() {
+    // Threshold is 300, the last model call used 200 prompt tokens, and a tool response of
+    // 200 characters (about 50 tokens) arrived after it: 200 + 50 <= 300.
+    EventCompactor compactor = new TailRetentionEventCompactor(mockSummarizer, 1, 300);
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createEvent(1, "Event1"),
+            withUsage(createEvent(2, "Call"), 200),
+            createEvent(3, "x".repeat(200)));
+    Session session = Session.builder("id").events(events).build();
+
+    compactor.compact(session, mockSessionService).blockingSubscribe();
+
+    verify(mockSummarizer, never()).summarizeEvents(any());
+    verify(mockSessionService, never()).appendEvent(any(), any());
+  }
+
+  @Test
+  public void compaction_countsTheResponseThatReportedTokenUsage() {
+    // promptTokenCount excludes the response that reports it. Its 40 characters (~10 tokens) are
+    // what push 200 + 100 (the 400-character tool response) past the threshold of 300.
+    EventCompactor compactor = new TailRetentionEventCompactor(mockSummarizer, 1, 300);
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createEvent(1, "Event1"),
+            withUsage(createEvent(2, "y".repeat(40)), 200),
+            createEvent(3, "x".repeat(400)));
+    Session session = Session.builder("id").events(events).build();
+    Event summaryEvent = createEvent(4, "Summary");
+
+    when(mockSummarizer.summarizeEvents(any())).thenReturn(Maybe.just(summaryEvent));
+    when(mockSessionService.appendEvent(any(), any())).thenReturn(Single.just(summaryEvent));
+
+    compactor.compact(session, mockSessionService).blockingSubscribe();
+
+    verify(mockSummarizer).summarizeEvents(any());
+  }
+
+  @Test
+  public void compaction_ignoresTokenUsageReportedBeforeLatestCompaction() {
+    // The 1000-token count describes the prompt that the compaction replaced. What remains
+    // ("Summary", "Retain1", "Retain2") is ~5 estimated tokens, within the threshold of 300.
+    EventCompactor compactor = new TailRetentionEventCompactor(mockSummarizer, 1, 300);
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createEvent(1, "Event1"),
+            withUsage(createEvent(2, "Call"), 1000),
+            createEvent(3, "Retain1"),
+            createCompactedEvent(
+                /* startTimestamp= */ 1, /* endTimestamp= */ 2, "Summary", /* eventTimestamp= */ 4),
+            createEvent(5, "Retain2"));
+    Session session = Session.builder("id").events(events).build();
+
+    compactor.compact(session, mockSessionService).blockingSubscribe();
+
+    verify(mockSummarizer, never()).summarizeEvents(any());
+    verify(mockSessionService, never()).appendEvent(any(), any());
   }
 
   @Test
