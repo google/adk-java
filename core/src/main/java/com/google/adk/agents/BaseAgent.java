@@ -429,7 +429,8 @@ public abstract class BaseAgent extends BaseNode {
         .switchIfEmpty(
             Maybe.defer(
                 () -> {
-                  if (callbackContext.state().hasDelta()) {
+                  if (callbackContext.state().hasDelta()
+                      || !callbackContext.eventActions().artifactDelta().isEmpty()) {
                     Event.Builder eventBuilder =
                         Event.builder()
                             .id(invocationContext.newUuid())

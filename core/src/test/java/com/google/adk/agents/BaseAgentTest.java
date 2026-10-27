@@ -382,6 +382,76 @@ public final class BaseAgentTest {
   }
 
   @Test
+  public void
+      runAsync_beforeCallbackSavesArtifactAndReturnsEmpty_invokesRunAsyncImplAndReturnsArtifactEvent() {
+    var runAsyncImpl = TestCallback.<Void>returningEmpty();
+    Content runAsyncImplContent = Content.fromParts(Part.fromText("main_output"));
+    BeforeAgentCallback beforeCallback =
+        new BeforeAgentCallback() {
+          @Override
+          public Maybe<Content> call(CallbackContext context) {
+            return context.saveArtifact("file", Part.fromText("contents")).andThen(Maybe.empty());
+          }
+        };
+    var afterCallback = TestCallback.<Content>returningEmpty();
+    TestBaseAgent agent =
+        new TestBaseAgent(
+            TEST_AGENT_NAME,
+            TEST_AGENT_DESCRIPTION,
+            ImmutableList.of(beforeCallback),
+            ImmutableList.of(afterCallback.asAfterAgentCallback()),
+            runAsyncImpl.asRunAsyncImplSupplier(runAsyncImplContent));
+    InvocationContext invocationContext = TestUtils.createInvocationContext(agent);
+
+    List<Event> results = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(results).hasSize(2);
+    // Artifact event from before callback
+    assertThat(results.get(0).content()).isEmpty();
+    assertThat(results.get(0).actions().artifactDelta()).containsExactly("file", 0);
+    assertThat(results.get(0).actions().stateDelta()).isEmpty();
+    // Content event from runAsyncImpl
+    assertThat(results.get(1).content()).hasValue(runAsyncImplContent);
+    assertThat(runAsyncImpl.wasCalled()).isTrue();
+    assertThat(afterCallback.wasCalled()).isTrue();
+  }
+
+  @Test
+  public void
+      runAsync_afterCallbackSavesArtifactAndReturnsEmpty_invokesRunAsyncImplAndReturnsArtifactEvent() {
+    var runAsyncImpl = TestCallback.<Void>returningEmpty();
+    Content runAsyncImplContent = Content.fromParts(Part.fromText("main_output"));
+    var beforeCallback = TestCallback.<Content>returningEmpty();
+    AfterAgentCallback afterCallback =
+        new AfterAgentCallback() {
+          @Override
+          public Maybe<Content> call(CallbackContext context) {
+            return context.saveArtifact("file", Part.fromText("contents")).andThen(Maybe.empty());
+          }
+        };
+    TestBaseAgent agent =
+        new TestBaseAgent(
+            TEST_AGENT_NAME,
+            TEST_AGENT_DESCRIPTION,
+            ImmutableList.of(beforeCallback.asBeforeAgentCallback()),
+            ImmutableList.of(afterCallback),
+            runAsyncImpl.asRunAsyncImplSupplier(runAsyncImplContent));
+    InvocationContext invocationContext = TestUtils.createInvocationContext(agent);
+
+    List<Event> results = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(results).hasSize(2);
+    // Content event from runAsyncImpl
+    assertThat(results.get(0).content()).hasValue(runAsyncImplContent);
+    // Artifact event from after callback
+    assertThat(results.get(1).content()).isEmpty();
+    assertThat(results.get(1).actions().artifactDelta()).containsExactly("file", 0);
+    assertThat(results.get(1).actions().stateDelta()).isEmpty();
+    assertThat(runAsyncImpl.wasCalled()).isTrue();
+    assertThat(beforeCallback.wasCalled()).isTrue();
+  }
+
+  @Test
   public void runAsync_firstAfterCallbackReturnsContent_skipsSecondAfterCallback() {
     var runAsyncImpl = TestCallback.<Void>returningEmpty();
     Content runAsyncImplContent = Content.fromParts(Part.fromText("main_output"));
@@ -650,6 +720,76 @@ public final class BaseAgentTest {
     // State event from after callback
     assertThat(results.get(1).content()).isEmpty();
     assertThat(results.get(1).actions().stateDelta()).containsEntry("key", "value");
+    assertThat(runLiveImpl.wasCalled()).isTrue();
+    assertThat(beforeCallback.wasCalled()).isTrue();
+  }
+
+  @Test
+  public void
+      runLive_beforeCallbackSavesArtifactAndReturnsEmpty_invokesRunLiveImplAndReturnsArtifactEvent() {
+    var runLiveImpl = TestCallback.<Void>returningEmpty();
+    Content runLiveImplContent = Content.fromParts(Part.fromText("main_output"));
+    BeforeAgentCallback beforeCallback =
+        new BeforeAgentCallback() {
+          @Override
+          public Maybe<Content> call(CallbackContext context) {
+            return context.saveArtifact("file", Part.fromText("contents")).andThen(Maybe.empty());
+          }
+        };
+    var afterCallback = TestCallback.<Content>returningEmpty();
+    TestBaseAgent agent =
+        new TestBaseAgent(
+            TEST_AGENT_NAME,
+            TEST_AGENT_DESCRIPTION,
+            ImmutableList.of(beforeCallback),
+            ImmutableList.of(afterCallback.asAfterAgentCallback()),
+            runLiveImpl.asRunLiveImplSupplier(runLiveImplContent));
+    InvocationContext invocationContext = TestUtils.createInvocationContext(agent);
+
+    List<Event> results = agent.runLive(invocationContext).toList().blockingGet();
+
+    assertThat(results).hasSize(2);
+    // Artifact event from before callback
+    assertThat(results.get(0).content()).isEmpty();
+    assertThat(results.get(0).actions().artifactDelta()).containsExactly("file", 0);
+    assertThat(results.get(0).actions().stateDelta()).isEmpty();
+    // Content event from runLiveImpl
+    assertThat(results.get(1).content()).hasValue(runLiveImplContent);
+    assertThat(runLiveImpl.wasCalled()).isTrue();
+    assertThat(afterCallback.wasCalled()).isTrue();
+  }
+
+  @Test
+  public void
+      runLive_afterCallbackSavesArtifactAndReturnsEmpty_invokesRunLiveImplAndReturnsArtifactEvent() {
+    var runLiveImpl = TestCallback.<Void>returningEmpty();
+    Content runLiveImplContent = Content.fromParts(Part.fromText("main_output"));
+    var beforeCallback = TestCallback.<Content>returningEmpty();
+    AfterAgentCallback afterCallback =
+        new AfterAgentCallback() {
+          @Override
+          public Maybe<Content> call(CallbackContext context) {
+            return context.saveArtifact("file", Part.fromText("contents")).andThen(Maybe.empty());
+          }
+        };
+    TestBaseAgent agent =
+        new TestBaseAgent(
+            TEST_AGENT_NAME,
+            TEST_AGENT_DESCRIPTION,
+            ImmutableList.of(beforeCallback.asBeforeAgentCallback()),
+            ImmutableList.of(afterCallback),
+            runLiveImpl.asRunLiveImplSupplier(runLiveImplContent));
+    InvocationContext invocationContext = TestUtils.createInvocationContext(agent);
+
+    List<Event> results = agent.runLive(invocationContext).toList().blockingGet();
+
+    assertThat(results).hasSize(2);
+    // Content event from runLiveImpl
+    assertThat(results.get(0).content()).hasValue(runLiveImplContent);
+    // Artifact event from after callback
+    assertThat(results.get(1).content()).isEmpty();
+    assertThat(results.get(1).actions().artifactDelta()).containsExactly("file", 0);
+    assertThat(results.get(1).actions().stateDelta()).isEmpty();
     assertThat(runLiveImpl.wasCalled()).isTrue();
     assertThat(beforeCallback.wasCalled()).isTrue();
   }
