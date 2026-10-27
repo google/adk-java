@@ -16,14 +16,20 @@
 package com.google.adk.models.springai;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.model.tool.StructuredOutputChatOptions;
 
 class ConfigMapperTest {
 
@@ -95,8 +101,8 @@ class ConfigMapperTest {
     ChatOptions chatOptions = configMapper.toSpringAiChatOptions(Optional.of(config));
 
     assertThat(chatOptions).isNotNull();
-    // Penalties are not directly supported by Spring AI ChatOptions
-    // The implementation should handle this gracefully
+    assertThat(chatOptions.getPresencePenalty()).isCloseTo(0.5, within(0.001));
+    assertThat(chatOptions.getFrequencyPenalty()).isCloseTo(0.3, within(0.001));
   }
 
   @Test
@@ -120,6 +126,8 @@ class ConfigMapperTest {
     assertThat(chatOptions.getTopP()).isCloseTo(0.95, within(0.001));
     assertThat(chatOptions.getTopK()).isCloseTo(50, within(1));
     assertThat(chatOptions.getStopSequences()).containsExactly("STOP");
+    assertThat(chatOptions.getPresencePenalty()).isCloseTo(0.1, within(0.001));
+    assertThat(chatOptions.getFrequencyPenalty()).isCloseTo(0.2, within(0.001));
   }
 
   @Test
@@ -257,5 +265,319 @@ class ConfigMapperTest {
     assertThat(chatOptions).isNotNull();
     assertThat(chatOptions.getTemperature()).isCloseTo(0.123456, within(0.000001));
     assertThat(chatOptions.getTopP()).isCloseTo(0.987654, within(0.000001));
+  }
+
+  @Test
+  void toGenerateContentConfig_nullOptions_returnsNull() {
+    GenerateContentConfig fromNull = configMapper.toGenerateContentConfig(null);
+
+    assertThat(fromNull).isNull();
+  }
+
+  @Test
+  void toGenerateContentConfig_allParameters_mapsAllFields() {
+    ChatOptions chatOptions =
+        ChatOptions.builder()
+            .temperature(0.75)
+            .maxTokens(1500)
+            .topP(0.85)
+            .topK(40)
+            .stopSequences(List.of("STOP", "END"))
+            .presencePenalty(0.25)
+            .frequencyPenalty(0.5)
+            .build();
+
+    GenerateContentConfig config = configMapper.toGenerateContentConfig(chatOptions);
+
+    assertThat(config).isNotNull();
+    assertThat(config.temperature()).isPresent();
+    assertThat(config.temperature().get()).isCloseTo(0.75f, within(0.001f));
+    assertThat(config.maxOutputTokens()).contains(1500);
+    assertThat(config.topP()).isPresent();
+    assertThat(config.topP().get()).isCloseTo(0.85f, within(0.001f));
+    assertThat(config.topK()).isPresent();
+    assertThat(config.topK().get()).isCloseTo(40.0f, within(0.001f));
+    assertThat(config.stopSequences()).contains(List.of("STOP", "END"));
+    assertThat(config.presencePenalty()).isPresent();
+    assertThat(config.presencePenalty().get()).isCloseTo(0.25f, within(0.001f));
+    assertThat(config.frequencyPenalty()).isPresent();
+    assertThat(config.frequencyPenalty().get()).isCloseTo(0.5f, within(0.001f));
+  }
+
+  @Test
+  void toGenerateContentConfig_emptyStopSequences_omitsStopSequences() {
+    ChatOptions chatOptions = ChatOptions.builder().stopSequences(List.of()).build();
+
+    GenerateContentConfig config = configMapper.toGenerateContentConfig(chatOptions);
+
+    assertThat(config).isNotNull();
+    assertThat(config.stopSequences()).isEmpty();
+  }
+
+  @Test
+  void toGenerateContentConfig_structuredOutputSchema_roundTripsResponseJsonSchema() {
+    ChatOptions structuredOptions =
+        StructuredOutputChatOptions.builder()
+            .outputSchema(
+                "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"]}")
+            .temperature(0.25)
+            .build();
+
+    GenerateContentConfig config = configMapper.toGenerateContentConfig(structuredOptions);
+    ChatOptions roundTrippedOptions = configMapper.toSpringAiChatOptions(Optional.of(config));
+    GenerateContentConfig roundTrippedConfig =
+        configMapper.toGenerateContentConfig(roundTrippedOptions);
+
+    assertThat(config).isNotNull();
+    assertThat(config.temperature()).contains(0.25f);
+    assertThat(config.responseMimeType()).contains("application/json");
+    assertThat(config.responseSchema()).isEmpty();
+    assertThat(config.responseJsonSchema())
+        .contains(
+            Map.of(
+                "type",
+                "object",
+                "properties",
+                Map.of("answer", Map.of("type", "string")),
+                "required",
+                List.of("answer")));
+    assertThat(roundTrippedOptions).isInstanceOf(StructuredOutputChatOptions.class);
+    assertThat(roundTrippedConfig).isEqualTo(config);
+  }
+
+  @Test
+  void toGenerateContentConfig_nestedRefSchema_preservesDefsAndRefs() {
+    String nestedSchema =
+        """
+        {
+          "type": "object",
+          "$defs": {
+            "Address": {"type": "object", "properties": {"city": {"type": "string"}}}
+          },
+          "properties": {
+            "home": {"$ref": "#/$defs/Address"},
+            "nickname": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+          },
+          "required": ["home"]
+        }
+        """;
+    ChatOptions structuredOptions =
+        StructuredOutputChatOptions.builder().outputSchema(nestedSchema).build();
+
+    GenerateContentConfig config = configMapper.toGenerateContentConfig(structuredOptions);
+
+    assertThat(config).isNotNull();
+    @SuppressWarnings("unchecked") // Test JSON object keys are strings.
+    Map<String, Object> responseJsonSchema =
+        (Map<String, Object>) config.responseJsonSchema().orElseThrow();
+    assertThat(responseJsonSchema).containsKey("$defs");
+    @SuppressWarnings("unchecked") // Test JSON object keys are strings.
+    Map<String, Object> properties = (Map<String, Object>) responseJsonSchema.get("properties");
+    assertThat(properties).containsEntry("home", Map.of("$ref", "#/$defs/Address"));
+    assertThat(properties).containsKey("nickname");
+  }
+
+  @Test
+  void toSpringAiChatOptions_responseSchema_mapsToStructuredOutputSchema() {
+    GenerateContentConfig config =
+        GenerateContentConfig.builder()
+            .responseSchema(
+                Schema.builder()
+                    .type(Type.Known.OBJECT)
+                    .properties(Map.of("answer", Schema.builder().type(Type.Known.STRING).build()))
+                    .build())
+            .build();
+
+    ChatOptions chatOptions = configMapper.toSpringAiChatOptions(Optional.of(config));
+
+    assertThat(chatOptions).isInstanceOf(StructuredOutputChatOptions.class);
+    assertThat(((StructuredOutputChatOptions) chatOptions).getOutputSchema())
+        .contains("\"answer\"")
+        .contains("\"type\":\"object\"");
+  }
+
+  @Test
+  void toOpenAiStrictSchema_nestedSchema_requiresAllPropertiesAndStripsRefSiblings()
+      throws Exception {
+    String schema =
+        """
+        {
+          "type": "object",
+          "$defs": {
+            "Address": {"type": "object", "properties": {"city": {"type": "string"}}}
+          },
+          "properties": {
+            "name": {"type": "string"},
+            "home": {"$ref": "#/$defs/Address", "description": "Home address"},
+            "pets": {
+              "type": "array",
+              "items": {"type": "object", "properties": {"kind": {"type": "string"}}}
+            },
+            "nick": {"anyOf": [{"type": "object", "properties": {"v": {"type": "string"}}}]}
+          },
+          "required": ["name"]
+        }
+        """;
+
+    Map<?, ?> strict =
+        new ObjectMapper().readValue(ConfigMapper.toOpenAiStrictSchema(schema), Map.class);
+
+    assertThat(strict.get("additionalProperties")).isEqualTo(false);
+    assertThat(strict.get("required")).isEqualTo(List.of("home", "name", "nick", "pets"));
+    Map<?, ?> properties = (Map<?, ?>) strict.get("properties");
+    assertThat(properties.get("home")).isEqualTo(Map.of("$ref", "#/$defs/Address"));
+    Map<?, ?> address = (Map<?, ?>) ((Map<?, ?>) strict.get("$defs")).get("Address");
+    assertThat(address.get("additionalProperties")).isEqualTo(false);
+    assertThat(address.get("required")).isEqualTo(List.of("city"));
+    Map<?, ?> petItems = (Map<?, ?>) ((Map<?, ?>) properties.get("pets")).get("items");
+    assertThat(petItems.get("required")).isEqualTo(List.of("kind"));
+    Map<?, ?> nickOption =
+        (Map<?, ?>) ((List<?>) ((Map<?, ?>) properties.get("nick")).get("anyOf")).get(0);
+    assertThat(nickOption.get("additionalProperties")).isEqualTo(false);
+  }
+
+  @Test
+  void toOpenAiStrictSchema_upperCaseTypes_lowercasesAndEnforcesStrictObjects() throws Exception {
+    String schema =
+        """
+        {
+          "type": "OBJECT",
+          "properties": {
+            "city": {"type": "STRING"},
+            "nickname": {"type": ["STRING", "NULL"]}
+          }
+        }
+        """;
+
+    Map<?, ?> strict =
+        new ObjectMapper().readValue(ConfigMapper.toOpenAiStrictSchema(schema), Map.class);
+
+    assertThat(strict.get("type")).isEqualTo("object");
+    assertThat(strict.get("additionalProperties")).isEqualTo(false);
+    assertThat(strict.get("required")).isEqualTo(List.of("city", "nickname"));
+    Map<?, ?> properties = (Map<?, ?>) strict.get("properties");
+    assertThat(((Map<?, ?>) properties.get("city")).get("type")).isEqualTo("string");
+    assertThat(((Map<?, ?>) properties.get("nickname")).get("type"))
+        .isEqualTo(List.of("string", "null"));
+  }
+
+  @Test
+  void toGenerateContentConfig_blankOrInvalidOutputSchema_handlesEdgeCases() {
+    ChatOptions blankSchemaOptions =
+        StructuredOutputChatOptions.builder().outputSchema("   ").build();
+    ChatOptions invalidSchemaOptions =
+        StructuredOutputChatOptions.builder().outputSchema("{invalid").build();
+    ChatOptions nullSchemaOptions =
+        StructuredOutputChatOptions.builder().outputSchema("null").build();
+
+    GenerateContentConfig fromBlank = configMapper.toGenerateContentConfig(blankSchemaOptions);
+
+    assertThat(fromBlank).isNotNull();
+    assertThat(fromBlank.responseJsonSchema()).isEmpty();
+    assertThat(fromBlank.responseMimeType()).isEmpty();
+    assertThatThrownBy(() -> configMapper.toGenerateContentConfig(invalidSchemaOptions))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> configMapper.toGenerateContentConfig(nullSchemaOptions))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+            () ->
+                configMapper.toGenerateContentConfig(
+                    StructuredOutputChatOptions.builder().outputSchema("{} trailing").build()))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void toSpringAiChatOptions_schemaObjectAsResponseJsonSchema_convertsToJsonSchema() {
+    GenerateContentConfig config =
+        GenerateContentConfig.builder()
+            .responseJsonSchema(Schema.builder().type(Type.Known.STRING).build())
+            .build();
+
+    ChatOptions chatOptions = configMapper.toSpringAiChatOptions(Optional.of(config));
+
+    assertThat(chatOptions).isInstanceOf(StructuredOutputChatOptions.class);
+    assertThat(((StructuredOutputChatOptions) chatOptions).getOutputSchema())
+        .isEqualTo("{\"type\":\"string\"}");
+  }
+
+  @Test
+  void isChatOptionsValid_validAndBoundaryOptions_returnsTrue() {
+    ChatOptions validOptions = ChatOptions.builder().temperature(0.8).topP(0.9).topK(32).build();
+    ChatOptions lowerBounds = ChatOptions.builder().temperature(0.0).topP(0.0).topK(1).build();
+    ChatOptions upperBounds = ChatOptions.builder().temperature(2.0).topP(1.0).topK(64).build();
+
+    boolean nullValid = configMapper.isChatOptionsValid(null);
+    boolean validValid = configMapper.isChatOptionsValid(validOptions);
+    boolean lowerValid = configMapper.isChatOptionsValid(lowerBounds);
+    boolean upperValid = configMapper.isChatOptionsValid(upperBounds);
+
+    assertThat(nullValid).isTrue();
+    assertThat(validValid).isTrue();
+    assertThat(lowerValid).isTrue();
+    assertThat(upperValid).isTrue();
+  }
+
+  @Test
+  void isChatOptionsValid_outOfBoundsOrNaN_returnsFalse() {
+    ChatOptions lowTemp = ChatOptions.builder().temperature(-0.1).build();
+    ChatOptions highTemp = ChatOptions.builder().temperature(2.5).build();
+    ChatOptions nanTemp = ChatOptions.builder().temperature(Double.NaN).build();
+    ChatOptions lowTopP = ChatOptions.builder().topP(-0.1).build();
+    ChatOptions highTopP = ChatOptions.builder().topP(1.1).build();
+    ChatOptions nanTopP = ChatOptions.builder().topP(Double.NaN).build();
+    ChatOptions lowTopK = ChatOptions.builder().topK(0).build();
+    ChatOptions highTopK = ChatOptions.builder().topK(65).build();
+    GenerateContentConfig nanConfig =
+        GenerateContentConfig.builder().temperature(Float.NaN).build();
+
+    boolean lowTempValid = configMapper.isChatOptionsValid(lowTemp);
+    boolean highTempValid = configMapper.isChatOptionsValid(highTemp);
+    boolean nanTempValid = configMapper.isChatOptionsValid(nanTemp);
+    boolean lowTopPValid = configMapper.isChatOptionsValid(lowTopP);
+    boolean highTopPValid = configMapper.isChatOptionsValid(highTopP);
+    boolean nanTopPValid = configMapper.isChatOptionsValid(nanTopP);
+    boolean lowTopKValid = configMapper.isChatOptionsValid(lowTopK);
+    boolean highTopKValid = configMapper.isChatOptionsValid(highTopK);
+    boolean nanConfigValid = configMapper.isConfigurationValid(Optional.of(nanConfig));
+
+    assertThat(lowTempValid).isFalse();
+    assertThat(highTempValid).isFalse();
+    assertThat(nanTempValid).isFalse();
+    assertThat(lowTopPValid).isFalse();
+    assertThat(highTopPValid).isFalse();
+    assertThat(nanTopPValid).isFalse();
+    assertThat(lowTopKValid).isFalse();
+    assertThat(highTopKValid).isFalse();
+    assertThat(nanConfigValid).isFalse();
+  }
+
+  @Test
+  void configConversion_roundTrip_preservesAllFields() {
+    GenerateContentConfig originalConfig =
+        GenerateContentConfig.builder()
+            .temperature(0.5f)
+            .maxOutputTokens(1024)
+            .topP(0.75f)
+            .topK(32f)
+            .stopSequences(List.of("DONE"))
+            .presencePenalty(0.25f)
+            .frequencyPenalty(0.5f)
+            .build();
+
+    ChatOptions springOptions = configMapper.toSpringAiChatOptions(Optional.of(originalConfig));
+    GenerateContentConfig roundTrippedConfig = configMapper.toGenerateContentConfig(springOptions);
+    ChatOptions roundTrippedOptions =
+        configMapper.toSpringAiChatOptions(Optional.of(roundTrippedConfig));
+
+    assertThat(roundTrippedConfig).isEqualTo(originalConfig);
+    assertThat(roundTrippedOptions.getTemperature()).isEqualTo(springOptions.getTemperature());
+    assertThat(roundTrippedOptions.getMaxTokens()).isEqualTo(springOptions.getMaxTokens());
+    assertThat(roundTrippedOptions.getTopP()).isEqualTo(springOptions.getTopP());
+    assertThat(roundTrippedOptions.getTopK()).isEqualTo(springOptions.getTopK());
+    assertThat(roundTrippedOptions.getStopSequences()).isEqualTo(springOptions.getStopSequences());
+    assertThat(roundTrippedOptions.getPresencePenalty())
+        .isEqualTo(springOptions.getPresencePenalty());
+    assertThat(roundTrippedOptions.getFrequencyPenalty())
+        .isEqualTo(springOptions.getFrequencyPenalty());
   }
 }

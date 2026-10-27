@@ -23,12 +23,15 @@ import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.tools.BaseTool;
 import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -37,17 +40,26 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.content.Media;
+import org.springframework.ai.google.genai.GoogleGenAiChatOptions;
+import org.springframework.ai.model.tool.StructuredOutputChatOptions;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.function.FunctionToolCallback;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.util.MimeType;
 
 class MessageConverterTest {
 
@@ -921,5 +933,492 @@ class MessageConverterTest {
     UserMessage userMessage = (UserMessage) prompt.getInstructions().get(0);
     assertThat(userMessage.getText()).isEmpty();
     assertThat(userMessage.getMedia()).hasSize(1);
+  }
+
+  @Test
+  void toAdkContent_userMessageWithTextAndMedia_convertsTextInlineAndFileMedia() {
+    byte[] inlineBytes = "png-bytes".getBytes(StandardCharsets.UTF_8);
+    Media inlineMedia =
+        new Media(MimeType.valueOf("image/png"), new ByteArrayResource(inlineBytes));
+    Media uriMedia = new Media(MimeType.valueOf("image/jpeg"), URI.create("gs://bucket/photo.jpg"));
+    UserMessage userMessage =
+        UserMessage.builder().text("Describe these").media(List.of(inlineMedia, uriMedia)).build();
+
+    Content content = messageConverter.toAdkContent(userMessage);
+
+    assertThat(content.role()).contains("user");
+    List<Part> parts = content.parts().orElseThrow();
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0).text()).contains("Describe these");
+    assertThat(parts.get(1).inlineData().orElseThrow().mimeType()).contains("image/png");
+    assertThat(parts.get(1).inlineData().orElseThrow().data()).contains(inlineBytes);
+    assertThat(parts.get(2).fileData().orElseThrow().mimeType()).contains("image/jpeg");
+    assertThat(parts.get(2).fileData().orElseThrow().fileUri()).contains("gs://bucket/photo.jpg");
+  }
+
+  @Test
+  void toAdkContent_systemMessage_convertsToSystemContent() {
+    SystemMessage systemMessage = new SystemMessage("You are a concise assistant.");
+
+    Content content = messageConverter.toAdkContent(systemMessage);
+
+    assertThat(content.role()).contains("system");
+    assertThat(content.parts().orElseThrow()).hasSize(1);
+    assertThat(content.parts().orElseThrow().get(0).text())
+        .contains("You are a concise assistant.");
+  }
+
+  @Test
+  void toAdkContent_toolResponseMessage_convertsJsonObjectAndScalarResponses() {
+    ToolResponseMessage toolResponseMessage =
+        ToolResponseMessage.builder()
+            .responses(
+                List.of(
+                    new ToolResponseMessage.ToolResponse(
+                        "call_1", "get_weather", "{\"temp\":22,\"unit\":\"C\"}"),
+                    new ToolResponseMessage.ToolResponse("call_2", "ping", "raw-text{"),
+                    new ToolResponseMessage.ToolResponse("call_3", "answer", "42 is the answer")))
+            .build();
+
+    Content content = messageConverter.toAdkContent(toolResponseMessage);
+
+    assertThat(content.role()).contains("user");
+    List<Part> parts = content.parts().orElseThrow();
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(2).functionResponse().orElseThrow().response())
+        .contains(Map.of("result", "42 is the answer"));
+    FunctionResponse first = parts.get(0).functionResponse().orElseThrow();
+    assertThat(first.id()).contains("call_1");
+    assertThat(first.name()).contains("get_weather");
+    assertThat(first.response()).contains(Map.of("temp", 22, "unit", "C"));
+
+    FunctionResponse second = parts.get(1).functionResponse().orElseThrow();
+    assertThat(second.id()).contains("call_2");
+    assertThat(second.name()).contains("ping");
+    assertThat(second.response()).contains(Map.of("result", "raw-text{"));
+  }
+
+  @Test
+  void toAdkContent_assistantMessageWithMediaAndToolCalls_roundTripsWithToSpringAiMessages() {
+    byte[] signature = "sig-bytes".getBytes(StandardCharsets.UTF_8);
+    byte[] audioBytes = "audio-bytes".getBytes(StandardCharsets.UTF_8);
+    Media audioMedia = new Media(MimeType.valueOf("audio/wav"), new ByteArrayResource(audioBytes));
+    AssistantMessage assistantMessage =
+        AssistantMessage.builder()
+            .content("Checking now.")
+            .properties(Map.of("thoughtSignatures", List.of(signature)))
+            .toolCalls(
+                List.of(
+                    new AssistantMessage.ToolCall(
+                        "call_99", "function", "get_weather", "{\"location\":\"Paris\"}")))
+            .media(List.of(audioMedia))
+            .build();
+
+    Content adkContent = messageConverter.toAdkContent(assistantMessage);
+    List<Message> roundTrippedMessages = messageConverter.toSpringAiMessages(adkContent);
+
+    assertThat(adkContent.role()).contains("model");
+    List<Part> parts = adkContent.parts().orElseThrow();
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0).text()).contains("Checking now.");
+    assertThat(parts.get(1).inlineData().orElseThrow().data()).contains(audioBytes);
+    assertThat(parts.get(2).functionCall().orElseThrow().id()).contains("call_99");
+    assertThat(parts.get(2).thoughtSignature()).contains(signature);
+
+    assertThat(roundTrippedMessages).hasSize(1);
+    AssistantMessage roundTripped = (AssistantMessage) roundTrippedMessages.get(0);
+    assertThat(roundTripped.getText()).isEqualTo("Checking now.");
+    assertThat(roundTripped.getMedia()).hasSize(1);
+    assertThat(roundTripped.getToolCalls()).hasSize(1);
+  }
+
+  @Test
+  void toLlmResponse_multipleCandidates_keepsOnlyFirstCandidate() {
+    Generation firstChoice =
+        new Generation(
+            AssistantMessage.builder().content("first").properties(Map.of("index", 0)).build());
+    Generation secondChoice =
+        new Generation(
+            AssistantMessage.builder().content("second").properties(Map.of("index", 1)).build());
+
+    LlmResponse response =
+        messageConverter.toLlmResponse(new ChatResponse(List.of(firstChoice, secondChoice)));
+
+    assertThat(response.content().orElseThrow().parts().orElseThrow())
+        .extracting(part -> part.text().orElseThrow())
+        .containsExactly("first");
+  }
+
+  @Test
+  void toLlmResponse_streamingThoughtThenToolCall_isCompleteNotPartial() {
+    Generation thoughtGen =
+        new Generation(
+            AssistantMessage.builder()
+                .content("thinking step")
+                .properties(Map.of("isThought", true))
+                .build());
+    Generation toolCallGen =
+        new Generation(
+            AssistantMessage.builder()
+                .content("")
+                .toolCalls(List.of(new AssistantMessage.ToolCall("id_1", "function", "ping", "{}")))
+                .build(),
+            ChatGenerationMetadata.builder().finishReason("STOP").build());
+
+    LlmResponse response =
+        messageConverter.toLlmResponse(new ChatResponse(List.of(thoughtGen, toolCallGen)), true);
+
+    assertThat(response.partial()).contains(false);
+    assertThat(response.turnComplete()).contains(true);
+    assertThat(response.finishReason()).contains(new FinishReason(FinishReason.Known.STOP));
+  }
+
+  @Test
+  void toLlmResponse_firstGenerationWithoutOutput_keepsLaterGenerationsOfFirstCandidate() {
+    Generation withoutOutput =
+        new Generation(null, ChatGenerationMetadata.builder().finishReason("SAFETY").build());
+    Generation withOutput =
+        new Generation(
+            AssistantMessage.builder().content("hello.").properties(Map.of("index", 0)).build());
+
+    LlmResponse response =
+        messageConverter.toLlmResponse(new ChatResponse(List.of(withoutOutput, withOutput)));
+
+    assertThat(response.content().orElseThrow().parts().orElseThrow())
+        .extracting(part -> part.text().orElseThrow())
+        .containsExactly("hello.");
+    assertThat(response.finishReason()).contains(new FinishReason(FinishReason.Known.SAFETY));
+  }
+
+  @Test
+  void toLlmResponse_streamingGenerationWithoutOutput_doesNotThrow() {
+    LlmResponse response =
+        messageConverter.toLlmResponse(new ChatResponse(List.of(new Generation(null))), true);
+
+    assertThat(response.partial()).contains(false);
+    assertThat(response.content().orElseThrow().parts().orElseThrow()).isEmpty();
+  }
+
+  @Test
+  void toAdkContent_toolCallArgumentsWithTrailingJson_throws() {
+    AssistantMessage trailingJson =
+        AssistantMessage.builder()
+            .content("")
+            .toolCalls(
+                List.of(
+                    new AssistantMessage.ToolCall(
+                        "id_2", "function", "ping", "{\"a\":1}{\"b\":2}")))
+            .build();
+
+    assertThrows(
+        MessageConversionException.class, () -> messageConverter.toAdkContent(trailingJson));
+  }
+
+  @Test
+  void toLlmPrompt_openAiDefaults_sendsStrictOutputSchema() throws Exception {
+    LlmRequest request =
+        LlmRequest.builder()
+            .config(
+                GenerateContentConfig.builder()
+                    .responseJsonSchema(
+                        Map.of(
+                            "type",
+                            "object",
+                            "properties",
+                            Map.of(
+                                "city",
+                                Map.of("type", "string"),
+                                "tempC",
+                                Map.of("type", "number")),
+                            "required",
+                            List.of("city")))
+                    .build())
+            .build();
+
+    ChatOptions openAiOptions =
+        messageConverter
+            .toLlmPrompt(request, OpenAiChatOptions.builder().model("gpt-4o").build())
+            .getOptions();
+    ChatOptions googleOptions =
+        messageConverter
+            .toLlmPrompt(request, GoogleGenAiChatOptions.builder().model("gemini").build())
+            .getOptions();
+
+    Map<?, ?> strictSchema =
+        new ObjectMapper()
+            .readValue(((StructuredOutputChatOptions) openAiOptions).getOutputSchema(), Map.class);
+    Map<?, ?> googleSchema =
+        new ObjectMapper()
+            .readValue(((StructuredOutputChatOptions) googleOptions).getOutputSchema(), Map.class);
+    assertThat(strictSchema.get("additionalProperties")).isEqualTo(false);
+    assertThat(strictSchema.get("required")).isEqualTo(List.of("city", "tempC"));
+    assertThat(googleSchema.containsKey("additionalProperties")).isFalse();
+    assertThat(googleSchema.get("required")).isEqualTo(List.of("city"));
+  }
+
+  @Test
+  void toLlmResponse_nonStopFinishReason_setsErrorCodeAndMessage() {
+    Generation lengthGen =
+        new Generation(
+            new AssistantMessage("cut off"),
+            ChatGenerationMetadata.builder().finishReason("length").build());
+    Generation safetyGen =
+        new Generation(
+            new AssistantMessage(""),
+            ChatGenerationMetadata.builder().finishReason("SAFETY").build());
+    Generation stopGen =
+        new Generation(
+            new AssistantMessage("done."),
+            ChatGenerationMetadata.builder().finishReason("stop").build());
+
+    LlmResponse lengthResponse =
+        messageConverter.toLlmResponse(new ChatResponse(List.of(lengthGen)));
+    LlmResponse safetyResponse =
+        messageConverter.toLlmResponse(new ChatResponse(List.of(safetyGen)));
+    LlmResponse stopResponse = messageConverter.toLlmResponse(new ChatResponse(List.of(stopGen)));
+
+    assertThat(lengthResponse.errorCode())
+        .contains(new FinishReason(FinishReason.Known.MAX_TOKENS));
+    assertThat(lengthResponse.errorMessage()).contains("Maximum tokens reached");
+    assertThat(safetyResponse.errorCode()).contains(new FinishReason(FinishReason.Known.SAFETY));
+    assertThat(safetyResponse.errorMessage()).contains("Finished with SAFETY");
+    assertThat(stopResponse.errorCode()).isEmpty();
+    assertThat(stopResponse.errorMessage()).isEmpty();
+  }
+
+  @Test
+  void toAdkContent_unknownMessageType_throwsIllegalArgumentException() {
+    Message unknownMessage =
+        new Message() {
+          @Override
+          public MessageType getMessageType() {
+            return MessageType.SYSTEM;
+          }
+
+          @Override
+          public String getText() {
+            return "custom";
+          }
+
+          @Override
+          public Map<String, Object> getMetadata() {
+            return Map.of();
+          }
+        };
+
+    assertThrows(
+        IllegalArgumentException.class, () -> messageConverter.toAdkContent(unknownMessage));
+  }
+
+  @Test
+  void toAdkContent_anthropicThinkingAndEmptyToolCallId_marksThoughtAndOmitsId() {
+    AssistantMessage thinkingMessage =
+        AssistantMessage.builder()
+            .content("reasoning")
+            .properties(Map.of("signature", "sig"))
+            .build();
+    AssistantMessage toolCallMessage =
+        AssistantMessage.builder()
+            .content("")
+            .toolCalls(List.of(new AssistantMessage.ToolCall("", "function", "ping", "{}")))
+            .build();
+
+    Part thinkingPart = messageConverter.toAdkContent(thinkingMessage).parts().orElseThrow().get(0);
+    FunctionCall functionCall =
+        messageConverter
+            .toAdkContent(toolCallMessage)
+            .parts()
+            .orElseThrow()
+            .get(0)
+            .functionCall()
+            .orElseThrow();
+
+    assertThat(thinkingPart.thought()).contains(true);
+    assertThat(functionCall.id()).isEmpty();
+    assertThat(functionCall.name()).contains("ping");
+  }
+
+  @Test
+  void toLlmRequest_duplicateToolNames_throwsIllegalArgumentException() {
+    ToolCallback weather =
+        FunctionToolCallback.builder("get_weather", (Map<String, Object> args) -> "{}")
+            .description("Weather")
+            .inputType(Map.class)
+            .build();
+    Prompt prompt =
+        new Prompt(
+            List.of(new UserMessage("Weather?")),
+            ToolCallingChatOptions.builder().toolCallbacks(List.of(weather, weather)).build());
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> messageConverter.toLlmRequest(prompt));
+
+    assertThat(error).hasMessageContaining("Duplicate tool name: get_weather");
+  }
+
+  @Test
+  void toLlmRequest_promptWithSystemMessagesToolsAndOptions_convertsAllFields() {
+    LlmRequest originalRequest =
+        LlmRequest.builder()
+            .config(GenerateContentConfig.builder().temperature(0.5f).maxOutputTokens(500).build())
+            .appendInstructions(List.of("System instruction"))
+            .contents(
+                List.of(
+                    Content.builder()
+                        .role("user")
+                        .parts(List.of(Part.fromText("What is the weather in Paris?")))
+                        .build()))
+            .tools(Map.of("get_weather", testTool()))
+            .build();
+    OpenAiChatOptions defaultOptions = OpenAiChatOptions.builder().model("gpt-4o").build();
+    Prompt prompt = messageConverter.toLlmPrompt(originalRequest, defaultOptions);
+
+    LlmRequest convertedRequest = messageConverter.toLlmRequest(prompt);
+
+    assertThat(convertedRequest.model()).contains("gpt-4o");
+    assertThat(convertedRequest.getSystemInstructions()).containsExactly("System instruction");
+    assertThat(convertedRequest.contents()).hasSize(1);
+    assertThat(convertedRequest.contents().get(0).role()).contains("user");
+    assertThat(convertedRequest.contents().get(0).parts().orElseThrow().get(0).text())
+        .contains("What is the weather in Paris?");
+    assertThat(convertedRequest.config()).isPresent();
+    assertThat(convertedRequest.config().get().temperature()).contains(0.5f);
+    assertThat(convertedRequest.config().get().maxOutputTokens()).contains(500);
+    assertThat(convertedRequest.tools()).containsOnlyKeys("get_weather");
+    assertThat(convertedRequest.config().get().tools().orElseThrow())
+        .singleElement()
+        .satisfies(
+            tool ->
+                assertThat(tool.functionDeclarations().orElseThrow())
+                    .extracting(declaration -> declaration.name().orElseThrow())
+                    .containsExactly("get_weather"));
+  }
+
+  @Test
+  void toChatResponse_llmResponseWithContentFinishReasonUsageAndModel_roundTrips() {
+    GenerateContentResponseUsageMetadata usage =
+        GenerateContentResponseUsageMetadata.builder()
+            .promptTokenCount(12)
+            .candidatesTokenCount(18)
+            .totalTokenCount(30)
+            .build();
+    LlmResponse originalResponse =
+        LlmResponse.builder()
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(List.of(Part.fromText("Paris is sunny.")))
+                    .build())
+            .finishReason(new FinishReason(FinishReason.Known.STOP))
+            .usageMetadata(usage)
+            .modelVersion("gemini-2.5-flash")
+            .build();
+
+    ChatResponse chatResponse = messageConverter.toChatResponse(originalResponse);
+    LlmResponse roundTripped = messageConverter.toLlmResponse(chatResponse);
+
+    assertThat(chatResponse.getResults()).hasSize(1);
+    assertThat(chatResponse.getResult().getOutput().getText()).isEqualTo("Paris is sunny.");
+    assertThat(chatResponse.getResult().getMetadata().getFinishReason()).isEqualTo("STOP");
+    assertThat(chatResponse.getMetadata().getModel()).isEqualTo("gemini-2.5-flash");
+    assertThat(chatResponse.getMetadata().getUsage().getTotalTokens()).isEqualTo(30);
+
+    assertThat(roundTripped.content()).isEqualTo(originalResponse.content());
+    assertThat(roundTripped.finishReason()).contains(new FinishReason(FinishReason.Known.STOP));
+    assertThat(roundTripped.modelVersion()).contains("gemini-2.5-flash");
+    assertThat(roundTripped.usageMetadata()).contains(usage);
+  }
+
+  @Test
+  void toChatResponse_nullOrFinishReasonOnlyResponse_preservesFinishReason() {
+    LlmResponse safetyBlockedResponse =
+        LlmResponse.builder().finishReason(new FinishReason(FinishReason.Known.SAFETY)).build();
+
+    ChatResponse fromNull = messageConverter.toChatResponse(null);
+    ChatResponse fromSafety = messageConverter.toChatResponse(safetyBlockedResponse);
+
+    assertThat(fromNull.getResults()).isEmpty();
+    assertThat(fromSafety.getResults()).hasSize(1);
+    assertThat(fromSafety.getResult().getMetadata().getFinishReason()).isEqualTo("SAFETY");
+  }
+
+  @Test
+  void toLlmResponse_finishReasonsAndMultiGeneration_mapsFinishReasonsAndMergesParts() {
+    Generation maxTokensGen =
+        new Generation(
+            new AssistantMessage("truncated"),
+            ChatGenerationMetadata.builder().finishReason("length").build());
+    Generation safetyGen =
+        new Generation(
+            new AssistantMessage(""),
+            ChatGenerationMetadata.builder().finishReason("content_filter").build());
+    Generation recitationGen =
+        new Generation(
+            new AssistantMessage(""),
+            ChatGenerationMetadata.builder().finishReason("recitation").build());
+    Generation unknownGen =
+        new Generation(
+            new AssistantMessage(""),
+            ChatGenerationMetadata.builder().finishReason("custom_provider_reason").build());
+    Generation thoughtGen =
+        new Generation(
+            AssistantMessage.builder()
+                .content("thinking step")
+                .properties(Map.of("isThought", true))
+                .build());
+    Generation toolCallGen =
+        new Generation(
+            AssistantMessage.builder()
+                .content("")
+                .toolCalls(List.of(new AssistantMessage.ToolCall("id_1", "function", "ping", "")))
+                .build(),
+            ChatGenerationMetadata.builder().finishReason("STOP").build());
+
+    LlmResponse maxTokensResp =
+        messageConverter.toLlmResponse(new ChatResponse(List.of(maxTokensGen)));
+    LlmResponse safetyResp = messageConverter.toLlmResponse(new ChatResponse(List.of(safetyGen)));
+    LlmResponse recitationResp =
+        messageConverter.toLlmResponse(new ChatResponse(List.of(recitationGen)));
+    LlmResponse unknownResp = messageConverter.toLlmResponse(new ChatResponse(List.of(unknownGen)));
+    LlmResponse mergedResp =
+        messageConverter.toLlmResponse(new ChatResponse(List.of(thoughtGen, toolCallGen)));
+
+    assertThat(maxTokensResp.finishReason())
+        .contains(new FinishReason(FinishReason.Known.MAX_TOKENS));
+    assertThat(safetyResp.finishReason()).contains(new FinishReason(FinishReason.Known.SAFETY));
+    assertThat(recitationResp.finishReason())
+        .contains(new FinishReason(FinishReason.Known.RECITATION));
+    assertThat(unknownResp.finishReason()).contains(new FinishReason(FinishReason.Known.OTHER));
+
+    List<Part> mergedParts = mergedResp.content().orElseThrow().parts().orElseThrow();
+    assertThat(mergedParts).hasSize(2);
+    assertThat(mergedParts.get(0).text()).contains("thinking step");
+    assertThat(mergedParts.get(0).thought()).contains(true);
+    assertThat(mergedParts.get(1).functionCall().orElseThrow().name()).contains("ping");
+    assertThat(mergedParts.get(1).functionCall().orElseThrow().args()).contains(Map.of());
+    assertThat(mergedResp.finishReason()).contains(new FinishReason(FinishReason.Known.STOP));
+  }
+
+  @Test
+  void toSpringAiMessages_assistantContentWithThoughtAndIdlessFunctionCall_filtersThought() {
+    Content assistantContent =
+        Content.builder()
+            .role("model")
+            .parts(
+                List.of(
+                    Part.builder().text("internal thought").thought(true).build(),
+                    Part.fromText("Visible answer."),
+                    Part.builder()
+                        .functionCall(FunctionCall.builder().name("ping").args(Map.of()).build())
+                        .build()))
+            .build();
+
+    List<Message> messages = messageConverter.toSpringAiMessages(assistantContent);
+
+    assertThat(messages).hasSize(1);
+    AssistantMessage assistantMessage = (AssistantMessage) messages.get(0);
+    assertThat(assistantMessage.getText()).isEqualTo("Visible answer.");
+    assertThat(assistantMessage.getToolCalls()).hasSize(1);
+    assertThat(assistantMessage.getToolCalls().get(0).id()).isEmpty();
   }
 }

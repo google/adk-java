@@ -20,11 +20,15 @@ import static org.assertj.core.api.Assertions.within;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.google.adk.models.springai.EmbeddingConverter;
+import com.google.genai.types.ContentEmbedding;
+import com.google.genai.types.EmbedContentResponse;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.embedding.Embedding;
 import org.springframework.ai.embedding.EmbeddingRequest;
+import org.springframework.ai.embedding.EmbeddingResponse;
 
 class EmbeddingConverterTest {
 
@@ -48,23 +52,34 @@ class EmbeddingConverterTest {
 
   @Test
   void testExtractEmbeddings() {
-    // Skip this test due to Mockito limitations with final classes
-    // This will be tested with real integration tests
-    assertThat(true).isTrue(); // Placeholder assertion
+    float[] vec1 = {0.1f, 0.2f};
+    float[] vec2 = {0.3f, 0.4f};
+    EmbeddingResponse response = EmbeddingConverter.toEmbeddingResponse(List.of(vec1, vec2));
+
+    List<float[]> extracted = EmbeddingConverter.extractEmbeddings(response);
+
+    assertThat(extracted).hasSize(2);
+    assertThat(extracted.get(0)).containsExactly(0.1f, 0.2f);
+    assertThat(extracted.get(1)).containsExactly(0.3f, 0.4f);
   }
 
   @Test
   void testExtractFirstEmbedding() {
-    // Skip this test due to Mockito limitations with final classes
-    // This will be tested with real integration tests
-    assertThat(true).isTrue(); // Placeholder assertion
+    float[] vec1 = {0.5f, 0.6f, 0.7f};
+    EmbeddingResponse response = EmbeddingConverter.toEmbeddingResponse(vec1);
+
+    float[] first = EmbeddingConverter.extractFirstEmbedding(response);
+
+    assertThat(first).containsExactly(0.5f, 0.6f, 0.7f);
   }
 
   @Test
   void testExtractFirstEmbeddingEmptyResponse() {
-    // Skip this test due to Mockito limitations with final classes
-    // This will be tested with real integration tests
-    assertThat(true).isTrue(); // Placeholder assertion
+    EmbeddingResponse emptyResponse = new EmbeddingResponse(List.of());
+
+    float[] first = EmbeddingConverter.extractFirstEmbedding(emptyResponse);
+
+    assertThat(first).isNull();
   }
 
   @Test
@@ -240,5 +255,78 @@ class EmbeddingConverterTest {
     assertThat(floatArray[0]).isCloseTo(1.0f, within(0.0001f));
     assertThat(floatArray[1]).isCloseTo(2.5f, within(0.0001f));
     assertThat(floatArray[2]).isCloseTo(3.7f, within(0.0001f));
+  }
+
+  @Test
+  void extractTexts_fromEmbeddingRequest_returnsInputInstructions() {
+    EmbeddingRequest request = EmbeddingConverter.createRequest(List.of("alpha", "beta"));
+
+    List<String> extracted = EmbeddingConverter.extractTexts(request);
+
+    assertThat(extracted).containsExactly("alpha", "beta");
+  }
+
+  @Test
+  void toEmbedding_copiesInputVectorAndPreservesIndex() {
+    float[] original = {0.25f, 0.75f};
+
+    Embedding embedding = EmbeddingConverter.toEmbedding(original, 3);
+    original[0] = 99.0f;
+
+    assertThat(embedding.getIndex()).isEqualTo(3);
+    assertThat(embedding.getOutput()).containsExactly(0.25f, 0.75f);
+  }
+
+  @Test
+  void contentEmbeddingConversion_roundTrip_preservesValues() {
+    float[] vector = {0.1f, -0.2f, 0.3f};
+
+    ContentEmbedding contentEmbedding = EmbeddingConverter.toContentEmbedding(vector);
+    float[] roundTrippedVector = EmbeddingConverter.extractEmbedding(contentEmbedding);
+    Embedding springEmbedding = EmbeddingConverter.toEmbedding(contentEmbedding, 2);
+    ContentEmbedding fromSpringEmbedding = EmbeddingConverter.toContentEmbedding(springEmbedding);
+
+    assertThat(contentEmbedding.values()).contains(List.of(0.1f, -0.2f, 0.3f));
+    assertThat(roundTrippedVector).containsExactly(0.1f, -0.2f, 0.3f);
+    assertThat(springEmbedding.getIndex()).isEqualTo(2);
+    assertThat(springEmbedding.getOutput()).containsExactly(0.1f, -0.2f, 0.3f);
+    assertThat(fromSpringEmbedding).isEqualTo(contentEmbedding);
+  }
+
+  @Test
+  void embedContentResponseConversion_roundTripAndOutOfOrderIndices_preservesBatchOrder() {
+    float[] vec0 = {1.0f, 2.0f};
+    float[] vec1 = {3.0f, 4.0f};
+    EmbeddingResponse outOfOrderSpringResponse =
+        new EmbeddingResponse(List.of(new Embedding(vec1, 1), new Embedding(vec0, 0)));
+
+    EmbedContentResponse adkResponse =
+        EmbeddingConverter.toEmbedContentResponse(outOfOrderSpringResponse);
+    EmbeddingResponse roundTrippedSpring = EmbeddingConverter.fromEmbedContentResponse(adkResponse);
+    List<float[]> roundTrippedVectors = EmbeddingConverter.extractEmbeddings(roundTrippedSpring);
+
+    assertThat(adkResponse.embeddings()).isPresent();
+    assertThat(adkResponse.embeddings().get()).hasSize(2);
+    assertThat(roundTrippedSpring.getResults()).hasSize(2);
+    assertThat(roundTrippedSpring.getResults().get(0).getIndex()).isEqualTo(0);
+    assertThat(roundTrippedSpring.getResults().get(1).getIndex()).isEqualTo(1);
+    assertThat(roundTrippedVectors.get(0)).containsExactly(1.0f, 2.0f);
+    assertThat(roundTrippedVectors.get(1)).containsExactly(3.0f, 4.0f);
+  }
+
+  @Test
+  void embeddingConversions_emptyOrAbsentFields_returnEmptyOutputs() {
+    EmbeddingRequest nullInstructionsRequest = new EmbeddingRequest(null, null);
+    ContentEmbedding emptyContentEmbedding = ContentEmbedding.builder().build();
+    EmbedContentResponse emptyAdkResponse = EmbedContentResponse.builder().build();
+
+    List<String> extractedTexts = EmbeddingConverter.extractTexts(nullInstructionsRequest);
+    float[] extractedVector = EmbeddingConverter.extractEmbedding(emptyContentEmbedding);
+    EmbeddingResponse convertedResponse =
+        EmbeddingConverter.fromEmbedContentResponse(emptyAdkResponse);
+
+    assertThat(extractedTexts).isEmpty();
+    assertThat(extractedVector).isEmpty();
+    assertThat(convertedResponse.getResults()).isEmpty();
   }
 }

@@ -17,14 +17,19 @@ package com.google.adk.models.springai;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.events.EventActions;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.BaseToolset;
 import com.google.adk.tools.ToolContext;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Single;
 import java.util.HashMap;
 import java.util.List;
@@ -32,10 +37,17 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.execution.ToolExecutionException;
+import org.springframework.ai.tool.function.FunctionToolCallback;
+import org.springframework.ai.tool.metadata.ToolMetadata;
+import org.springframework.ai.util.json.schema.JsonSchemaGenerator;
 
 class ToolConverterTest {
 
@@ -417,7 +429,8 @@ class ToolConverterTest {
         .isInstanceOf(ToolExecutionException.class)
         .hasRootCauseInstanceOf(IllegalArgumentException.class)
         .hasRootCauseMessage(
-            "Spring AI tool context entry 'adk_tool_context' must be an ADK ToolContext, but was java.lang.String");
+            "Spring AI tool context entry 'adk_tool_context' must be an ADK ToolContext, but was"
+                + " java.lang.String");
     assertThat(tool.invocationCount()).isZero();
   }
 
@@ -431,6 +444,741 @@ class ToolConverterTest {
         .hasCauseInstanceOf(IllegalStateException.class);
     assertThat(tool.invocationCount()).isEqualTo(1);
   }
+
+  @Test
+  void testConvertSchemaFromSpringAiAllTypes() {
+    assertThat(
+            toolConverter
+                .convertSchemaFromSpringAi(
+                    Map.of("type", "string", "description", "A string parameter"))
+                .type())
+        .contains(new Type(Type.Known.STRING));
+    assertThat(toolConverter.convertSchemaFromSpringAi(Map.of("type", "number")).type())
+        .contains(new Type(Type.Known.NUMBER));
+    assertThat(toolConverter.convertSchemaFromSpringAi(Map.of("type", "integer")).type())
+        .contains(new Type(Type.Known.INTEGER));
+    assertThat(toolConverter.convertSchemaFromSpringAi(Map.of("type", "boolean")).type())
+        .contains(new Type(Type.Known.BOOLEAN));
+    assertThat(toolConverter.convertSchemaFromSpringAi(Map.of("type", "array")).type())
+        .contains(new Type(Type.Known.ARRAY));
+    assertThat(toolConverter.convertSchemaFromSpringAi(Map.of("type", "object")).type())
+        .contains(new Type(Type.Known.OBJECT));
+    assertThat(toolConverter.convertSchemaFromSpringAi(Map.of("type", "unknown_type")).type())
+        .contains(new Type(Type.Known.STRING));
+  }
+
+  @Test
+  void testConvertSchemaFromSpringAiWithObjectEnumAndItems() {
+    Map<String, Object> springAiSchema =
+        Map.of(
+            "type",
+            "object",
+            "description",
+            "Order request",
+            "properties",
+            Map.of(
+                "priority",
+                Map.of(
+                    "type",
+                    "string",
+                    "description",
+                    "Order priority",
+                    "enum",
+                    List.of("low", "high")),
+                "tags",
+                Map.of(
+                    "type",
+                    "array",
+                    "items",
+                    Map.of("type", "string", "enum", List.of("fragile", "gift"))),
+                "emptyEnum",
+                Map.of("type", "string", "enum", List.of()),
+                "code",
+                Map.of("type", "integer", "enum", List.of(1, 2, 3))),
+            "required",
+            List.of("priority"));
+
+    Schema schema = toolConverter.convertSchemaFromSpringAi(springAiSchema);
+
+    assertThat(schema.type()).contains(new Type(Type.Known.OBJECT));
+    assertThat(schema.description()).contains("Order request");
+    assertThat(schema.required()).contains(List.of("priority"));
+
+    Map<String, Schema> properties = schema.properties().orElseThrow();
+    Schema priority = properties.get("priority");
+    assertThat(priority.type()).contains(new Type(Type.Known.STRING));
+    assertThat(priority.description()).contains("Order priority");
+    assertThat(priority.enum_()).contains(List.of("low", "high"));
+
+    Schema tags = properties.get("tags");
+    assertThat(tags.type()).contains(new Type(Type.Known.ARRAY));
+    assertThat(tags.items().orElseThrow().type()).contains(new Type(Type.Known.STRING));
+    assertThat(tags.items().orElseThrow().enum_()).contains(List.of("fragile", "gift"));
+
+    assertThat(properties.get("emptyEnum").enum_()).isEmpty();
+    assertThat(properties.get("code").enum_()).contains(List.of("1", "2", "3"));
+  }
+
+  @Test
+  void testConvertSchemaFromSpringAiDefaultsArrayItemsAndNarrowsRequired() {
+    Map<String, Object> springAiSchema =
+        Map.of(
+            "type",
+            "object",
+            "properties",
+            Map.of("tags", Map.of("type", "array"), "name", Map.of("type", "string")),
+            "required",
+            List.of("name", "undeclared_field"));
+
+    Schema schema = toolConverter.convertSchemaFromSpringAi(springAiSchema);
+
+    assertThat(schema.required()).contains(List.of("name"));
+    Schema tags = schema.properties().orElseThrow().get("tags");
+    assertThat(tags.type()).contains(new Type(Type.Known.ARRAY));
+    assertThat(tags.items()).isPresent();
+    assertThat(tags.items().get().type()).contains(new Type(Type.Known.STRING));
+  }
+
+  @Test
+  void testConvertSchemaFromSpringAiResolvesRefsFromSpringGeneratedSchema() {
+    String jsonSchema = JsonSchemaGenerator.generateForType(RouteRequest.class);
+
+    Map<String, Schema> properties =
+        toolConverter.convertSchemaFromSpringAi(jsonSchema).properties().orElseThrow();
+
+    assertThat(properties.get("origin").type()).contains(new Type(Type.Known.OBJECT));
+    assertThat(properties.get("origin").properties().orElseThrow())
+        .containsOnlyKeys("city", "country");
+    assertThat(properties.get("destination").type()).contains(new Type(Type.Known.OBJECT));
+    assertThat(properties.get("destination").properties().orElseThrow())
+        .containsOnlyKeys("city", "country");
+  }
+
+  @Test
+  void testConvertSchemaFromSpringAiRefSiblingKeysOverrideDefinition() {
+    Map<String, Object> springAiSchema =
+        Map.of(
+            "definitions",
+            Map.of("Code", Map.of("type", "integer", "description", "Original")),
+            "$ref",
+            "#/definitions/Code",
+            "description",
+            "Override");
+
+    Schema schema = toolConverter.convertSchemaFromSpringAi(springAiSchema);
+
+    assertThat(schema.type()).contains(new Type(Type.Known.INTEGER));
+    assertThat(schema.description()).contains("Override");
+  }
+
+  @Test
+  void testConvertSchemaFromSpringAiCircularRefBecomesObject() {
+    Map<String, Object> springAiSchema =
+        Map.of(
+            "$defs",
+            Map.of(
+                "Node",
+                Map.of(
+                    "type",
+                    "object",
+                    "properties",
+                    Map.of("next", Map.of("$ref", "#/$defs/Node")))),
+            "$ref",
+            "#/$defs/Node");
+
+    Schema next =
+        toolConverter
+            .convertSchemaFromSpringAi(springAiSchema)
+            .properties()
+            .orElseThrow()
+            .get("next");
+
+    assertThat(next.type()).contains(new Type(Type.Known.OBJECT));
+    assertThat(next.description()).contains("Circular ref to Node");
+  }
+
+  @Test
+  void testConvertSchemaFromSpringAiPrefersDefsOverDefinitionsForLastSegmentLookup() {
+    Map<String, Object> springAiSchema =
+        Map.of(
+            "definitions",
+            Map.of("Value", Map.of("type", "string")),
+            "$defs",
+            Map.of("Value", Map.of("type", "integer")),
+            "$ref",
+            "#/components/Value");
+
+    Schema schema = toolConverter.convertSchemaFromSpringAi(springAiSchema);
+
+    assertThat(schema.type()).contains(new Type(Type.Known.INTEGER));
+  }
+
+  @Test
+  void testConvertSchemaFromSpringAiResolvesJsonPointerRefs() {
+    Map<String, Object> springAiSchema =
+        Map.of(
+            "type",
+            "object",
+            "properties",
+            Map.of(
+                "origin",
+                Map.of("type", "object", "properties", Map.of("city", Map.of("type", "string"))),
+                "destination",
+                Map.of("$ref", "#/properties/origin")));
+
+    Schema destination =
+        toolConverter
+            .convertSchemaFromSpringAi(springAiSchema)
+            .properties()
+            .orElseThrow()
+            .get("destination");
+
+    assertThat(destination.type()).contains(new Type(Type.Known.OBJECT));
+    assertThat(destination.properties().orElseThrow()).containsOnlyKeys("city");
+  }
+
+  @Test
+  void testConvertSchemaFromSpringAiResolvesRootEscapedAndIndexedPointers() {
+    Map<String, Object> springAiSchema =
+        Map.of(
+            "type",
+            "object",
+            "$defs",
+            Map.of("a/b", Map.of("type", "integer")),
+            "anyOf",
+            List.of(Map.of("type", "boolean")),
+            "properties",
+            Map.of(
+                "self", Map.of("$ref", "#"),
+                "escaped", Map.of("$ref", "#/$defs/a~1b"),
+                "indexed", Map.of("$ref", "#/anyOf/0"),
+                "anything", Map.of()));
+
+    Map<String, Schema> properties =
+        toolConverter.convertSchemaFromSpringAi(springAiSchema).properties().orElseThrow();
+
+    Schema self = properties.get("self");
+    assertThat(self.type()).contains(new Type(Type.Known.OBJECT));
+    assertThat(self.properties().orElseThrow().get("self").description())
+        .contains("Circular ref to #");
+    assertThat(properties.get("escaped").type()).contains(new Type(Type.Known.INTEGER));
+    assertThat(properties.get("indexed").type()).contains(new Type(Type.Known.BOOLEAN));
+    assertThat(properties.get("anything").type()).contains(new Type(Type.Known.OBJECT));
+  }
+
+  @Test
+  void testUpperCaseArrayTypesGetDefaultItems() {
+    Map<String, Object> springAiSchema = Map.of("type", "ARRAY");
+    ToolCallback callback =
+        FunctionToolCallback.builder("upper_tool", (Map<String, Object> args) -> "{}")
+            .description("Upper-case types")
+            .inputType(Map.class)
+            .inputSchema("{\"type\":\"OBJECT\",\"properties\":{\"tags\":{\"type\":\"ARRAY\"}}}")
+            .build();
+
+    Schema schema = toolConverter.convertSchemaFromSpringAi(springAiSchema);
+    Map<String, Object> rawProps =
+        asMap(
+            asMap(
+                    toolConverter
+                        .convertToAdkTool(callback)
+                        .declaration()
+                        .orElseThrow()
+                        .parametersJsonSchema()
+                        .orElseThrow())
+                .get("properties"));
+
+    assertThat(schema.items().orElseThrow().type()).contains(new Type(Type.Known.STRING));
+    assertThat(asMap(rawProps.get("tags"))).containsEntry("items", Map.of("type", "string"));
+  }
+
+  @Test
+  void testConvertToAdkToolNormalizesAdditionalPropertiesSchema() {
+    String inputSchema =
+        """
+        {
+          "type": "object",
+          "properties": {
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {"values": {"type": "array"}},
+                "required": ["values", "ghost"]
+              }
+            }
+          }
+        }
+        """;
+    ToolCallback callback =
+        FunctionToolCallback.builder("label_tool", (Map<String, Object> args) -> "{}")
+            .description("Label tool")
+            .inputType(Map.class)
+            .inputSchema(inputSchema)
+            .build();
+
+    Map<String, Object> normalized =
+        asMap(
+            toolConverter
+                .convertToAdkTool(callback)
+                .declaration()
+                .orElseThrow()
+                .parametersJsonSchema()
+                .orElseThrow());
+
+    Map<String, Object> valueSchema =
+        asMap(asMap(asMap(normalized.get("properties")).get("labels")).get("additionalProperties"));
+    assertThat(valueSchema).containsEntry("required", List.of("values"));
+    assertThat(asMap(asMap(valueSchema.get("properties")).get("values")))
+        .containsEntry("items", Map.of("type", "string"));
+  }
+
+  @Test
+  void testConvertToAdkToolPreservesSpringGeneratedSchemaViaParametersJsonSchema() {
+    String jsonSchema = JsonSchemaGenerator.generateForType(RouteRequest.class);
+    ToolCallback callback =
+        FunctionToolCallback.builder("route", (Map<String, Object> args) -> "{}")
+            .description("Route tool")
+            .inputType(Map.class)
+            .inputSchema(jsonSchema)
+            .build();
+
+    BaseTool adkTool = toolConverter.convertToAdkTool(callback);
+
+    FunctionDeclaration declaration = adkTool.declaration().orElseThrow();
+    assertThat(declaration.parameters()).isEmpty();
+    assertThat(declaration.parametersJsonSchema()).isPresent();
+    Map<String, Object> rawSchema = asMap(declaration.parametersJsonSchema().get());
+    assertThat(rawSchema).containsEntry("type", "object");
+    assertThat(asMap(rawSchema.get("properties"))).containsKeys("origin", "destination");
+  }
+
+  @Test
+  void testConvertToAdkToolNormalizesMissingArrayItemsAndRequiredInParametersJsonSchema() {
+    String inputSchema =
+        """
+        {
+          "type": "object",
+          "$defs": {
+            "SubItem": {
+              "type": "object",
+              "properties": {
+                "nestedTags": {"type": "array"}
+              },
+              "required": ["nestedTags", "ghostField"]
+            }
+          },
+          "definitions": {
+            "Legacy": {"type": "array"}
+          },
+          "properties": {
+            "tags": {"type": "array"},
+            "choice": {
+              "anyOf": [
+                {"type": "array"},
+                {"type": "string"}
+              ]
+            },
+            "either": {"oneOf": [{"type": "array"}]},
+            "both": {"allOf": [{"type": "array"}]},
+            "noProps": {"type": "object", "required": ["x"]},
+            "allGhosts": {"type": "object", "properties": {}, "required": ["x"]},
+            "viaRef": {"$ref": "#/$defs/SubItem", "required": ["nestedTags"]}
+          },
+          "required": ["tags", "undeclared"]
+        }
+        """;
+    ToolCallback callback =
+        FunctionToolCallback.builder("tag_tool", (Map<String, Object> args) -> "{}")
+            .description("Tag tool")
+            .inputType(Map.class)
+            .inputSchema(inputSchema)
+            .build();
+
+    BaseTool adkTool = toolConverter.convertToAdkTool(callback);
+
+    Map<String, Object> normalized =
+        asMap(adkTool.declaration().orElseThrow().parametersJsonSchema().orElseThrow());
+    assertThat(normalized).containsEntry("required", List.of("tags"));
+    Map<String, Object> props = asMap(normalized.get("properties"));
+    assertThat(asMap(props.get("tags"))).containsEntry("items", Map.of("type", "string"));
+
+    List<?> anyOfList = (List<?>) asMap(props.get("choice")).get("anyOf");
+    assertThat(asMap(anyOfList.get(0))).containsEntry("items", Map.of("type", "string"));
+
+    Map<String, Object> subItem = asMap(asMap(normalized.get("$defs")).get("SubItem"));
+    assertThat(subItem).containsEntry("required", List.of("nestedTags"));
+    assertThat(asMap(asMap(subItem.get("properties")).get("nestedTags")))
+        .containsEntry("items", Map.of("type", "string"));
+
+    assertThat(asMap(asMap(normalized.get("definitions")).get("Legacy")))
+        .containsEntry("items", Map.of("type", "string"));
+    List<?> oneOfList = (List<?>) asMap(props.get("either")).get("oneOf");
+    assertThat(asMap(oneOfList.get(0))).containsEntry("items", Map.of("type", "string"));
+    List<?> allOfList = (List<?>) asMap(props.get("both")).get("allOf");
+    assertThat(asMap(allOfList.get(0))).containsEntry("items", Map.of("type", "string"));
+    assertThat(asMap(props.get("noProps"))).doesNotContainKey("required");
+    assertThat(asMap(props.get("allGhosts"))).doesNotContainKey("required");
+    assertThat(asMap(props.get("viaRef"))).containsEntry("required", List.of("nestedTags"));
+  }
+
+  @Test
+  void testNullableTypeListsDefaultArrayItemsAndMapToNullableSchema() {
+    String inputSchema =
+        """
+        {
+          "type": "object",
+          "properties": {
+            "tags": {"type": ["array", "null"]},
+            "count": {"type": ["integer", "null"]},
+            "mixed": {"type": ["string", "array"]},
+            "anything": {"type": "array", "items": true},
+            "nothing": {"type": "null"}
+          }
+        }
+        """;
+    ToolCallback callback =
+        FunctionToolCallback.builder("nullable_tool", (Map<String, Object> args) -> "{}")
+            .description("Nullable tool")
+            .inputType(Map.class)
+            .inputSchema(inputSchema)
+            .build();
+
+    Map<String, Object> rawProps =
+        asMap(
+            asMap(
+                    toolConverter
+                        .convertToAdkTool(callback)
+                        .declaration()
+                        .orElseThrow()
+                        .parametersJsonSchema()
+                        .orElseThrow())
+                .get("properties"));
+    Map<String, Schema> props =
+        toolConverter.convertSchemaFromSpringAi(inputSchema).properties().orElseThrow();
+
+    assertThat(asMap(rawProps.get("tags"))).containsEntry("items", Map.of("type", "string"));
+    assertThat(props.get("tags").type()).contains(new Type(Type.Known.ARRAY));
+    assertThat(props.get("tags").nullable()).contains(true);
+    assertThat(props.get("tags").items().orElseThrow().type())
+        .contains(new Type(Type.Known.STRING));
+    assertThat(props.get("count").type()).contains(new Type(Type.Known.INTEGER));
+    assertThat(props.get("count").nullable()).contains(true);
+    assertThat(props.get("mixed").type()).contains(new Type(Type.Known.ARRAY));
+    assertThat(asMap(rawProps.get("anything"))).containsEntry("items", true);
+    assertThat(props.get("nothing").type()).contains(new Type(Type.Known.OBJECT));
+    assertThat(props.get("nothing").nullable()).contains(true);
+  }
+
+  @Test
+  void testConvertSchemaFromSpringAiJsonStringEdgeCases() {
+    assertThat(toolConverter.convertSchemaFromSpringAi((String) null).type())
+        .contains(new Type(Type.Known.OBJECT));
+    assertThat(toolConverter.convertSchemaFromSpringAi("   ").type())
+        .contains(new Type(Type.Known.OBJECT));
+    assertThat(toolConverter.convertSchemaFromSpringAi("null").type())
+        .contains(new Type(Type.Known.OBJECT));
+    assertThatThrownBy(() -> toolConverter.convertSchemaFromSpringAi("not valid json{"))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void testSchemaRoundTripSymmetry() {
+    Schema originalAdkSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .description("Order filter")
+            .properties(
+                Map.of(
+                    "query",
+                    Schema.builder().type("STRING").description("Search query").build(),
+                    "limit",
+                    Schema.builder().type("INTEGER").build(),
+                    "minScore",
+                    Schema.builder().type("NUMBER").build(),
+                    "active",
+                    Schema.builder().type("BOOLEAN").build(),
+                    "status",
+                    Schema.builder().type("STRING").enum_("open", "closed").build(),
+                    "items",
+                    Schema.builder()
+                        .type("ARRAY")
+                        .items(
+                            Schema.builder()
+                                .type("OBJECT")
+                                .properties(Map.of("id", Schema.builder().type("STRING").build()))
+                                .required(List.of("id"))
+                                .build())
+                        .build()))
+            .required(List.of("query"))
+            .build();
+
+    Map<String, Object> springAiMap = toolConverter.convertSchemaToSpringAi(originalAdkSchema);
+    Schema roundTrippedAdkSchema = toolConverter.convertSchemaFromSpringAi(springAiMap);
+    Map<String, Object> roundTrippedSpringAiMap =
+        toolConverter.convertSchemaToSpringAi(roundTrippedAdkSchema);
+
+    assertThat(roundTrippedAdkSchema).isEqualTo(originalAdkSchema);
+    assertThat(roundTrippedSpringAiMap).isEqualTo(springAiMap);
+  }
+
+  @Test
+  void testConvertToSpringAiToolSingleAndZeroArgTool() {
+    FunctionDeclaration zeroArgDeclaration =
+        FunctionDeclaration.builder().name("ping").description("Ping tool").build();
+    BaseTool zeroArgTool =
+        new BaseTool("ping", "Ping tool") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(zeroArgDeclaration);
+          }
+
+          @Override
+          public Single<Map<String, Object>> runAsync(
+              Map<String, Object> args, ToolContext toolContext) {
+            return Single.just(Map.of("pong", true));
+          }
+        };
+    BaseTool undeclaredTool =
+        new BaseTool("undeclared", "No declaration") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.empty();
+          }
+        };
+
+    Optional<ToolCallback> converted = toolConverter.convertToSpringAiTool(zeroArgTool);
+    assertThat(converted).isPresent();
+    assertThat(converted.get().getToolDefinition().name()).isEqualTo("ping");
+    assertThat(converted.get().call("{}")).contains("pong");
+
+    assertThat(toolConverter.convertToSpringAiTool(undeclaredTool)).isEmpty();
+    assertThat(
+            toolConverter.convertToSpringAiTools(
+                Map.of("ping", zeroArgTool, "undeclared", undeclaredTool)))
+        .hasSize(1);
+  }
+
+  @Test
+  void testConvertToAdkToolDeclarationAndExecution() {
+    AtomicReference<Map<String, Object>> capturedArgs = new AtomicReference<>();
+    Function<Map<String, Object>, String> fn =
+        args -> {
+          capturedArgs.set(args);
+          return "{\"temperature\":22,\"condition\":\"sunny\"}";
+        };
+    ToolCallback callback =
+        FunctionToolCallback.builder("get_weather", fn)
+            .description("Get weather for a city")
+            .inputType(Map.class)
+            .inputSchema(
+                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\",\"description\":\"City"
+                    + " name\"}},\"required\":[\"city\"]}")
+            .build();
+
+    BaseTool adkTool = toolConverter.convertToAdkTool(callback);
+
+    assertThat(adkTool.name()).isEqualTo("get_weather");
+    assertThat(adkTool.description()).isEqualTo("Get weather for a city");
+    assertThat(adkTool.declaration()).isPresent();
+
+    FunctionDeclaration declaration = adkTool.declaration().get();
+    assertThat(declaration.name()).contains("get_weather");
+    assertThat(declaration.description()).contains("Get weather for a city");
+    Map<String, Object> schemaMap = asMap(declaration.parametersJsonSchema().orElseThrow());
+    assertThat(schemaMap).containsEntry("type", "object");
+    assertThat(schemaMap).containsEntry("required", List.of("city"));
+    assertThat(asMap(asMap(schemaMap.get("properties")).get("city")))
+        .containsEntry("type", "string");
+
+    Map<String, Object> result = adkTool.runAsync(Map.of("city", "Paris"), null).blockingGet();
+
+    assertThat(capturedArgs.get()).containsEntry("city", "Paris");
+    assertThat(result).containsEntry("temperature", 22).containsEntry("condition", "sunny");
+  }
+
+  @Test
+  void testConvertToAdkToolPropagatesAdkToolContextAndReturnDirect() {
+    AtomicReference<org.springframework.ai.chat.model.ToolContext> capturedContext =
+        new AtomicReference<>();
+    BiFunction<Map<String, Object>, org.springframework.ai.chat.model.ToolContext, String> fn =
+        (args, ctx) -> {
+          capturedContext.set(ctx);
+          return "{\"ok\":true}";
+        };
+    ToolCallback callback =
+        FunctionToolCallback.builder("direct_tool", fn)
+            .description("Direct tool")
+            .inputType(Map.class)
+            .toolMetadata(ToolMetadata.builder().returnDirect(true).build())
+            .build();
+
+    ToolContext adkContext = mock(ToolContext.class);
+    EventActions actions = EventActions.builder().build();
+    when(adkContext.actions()).thenReturn(actions);
+
+    BaseTool adkTool = toolConverter.convertToAdkTool(callback);
+    Map<String, Object> result = adkTool.runAsync(Map.of("k", "v"), adkContext).blockingGet();
+
+    assertThat(result).containsEntry("ok", true);
+    assertThat(capturedContext.get()).isNotNull();
+    assertThat(capturedContext.get().getContext())
+        .containsEntry(ToolConverter.ADK_TOOL_CONTEXT_KEY, adkContext);
+    assertThat(actions.skipSummarization()).contains(true);
+  }
+
+  @Test
+  void testConvertToAdkToolWrapsNonObjectResults() {
+    ToolDefinition definition =
+        ToolDefinition.builder()
+            .name("scalar_tool")
+            .description("Returns non-object payloads")
+            .inputSchema("{\"type\":\"object\"}")
+            .build();
+
+    ToolCallback arrayCallback = mock(ToolCallback.class);
+    when(arrayCallback.getToolDefinition()).thenReturn(definition);
+    when(arrayCallback.call(any(), any())).thenReturn("[1,2,3]");
+    assertThat(toolConverter.convertToAdkTool(arrayCallback).runAsync(Map.of(), null).blockingGet())
+        .isEqualTo(Map.of("result", List.of(1, 2, 3)));
+
+    ToolCallback numberCallback = mock(ToolCallback.class);
+    when(numberCallback.getToolDefinition()).thenReturn(definition);
+    when(numberCallback.call(any(), any())).thenReturn("42");
+    assertThat(
+            toolConverter.convertToAdkTool(numberCallback).runAsync(Map.of(), null).blockingGet())
+        .isEqualTo(Map.of("result", 42));
+
+    ToolCallback rawTextCallback = mock(ToolCallback.class);
+    when(rawTextCallback.getToolDefinition()).thenReturn(definition);
+    when(rawTextCallback.call(any(), any())).thenReturn("not json{");
+    assertThat(
+            toolConverter.convertToAdkTool(rawTextCallback).runAsync(Map.of(), null).blockingGet())
+        .isEqualTo(Map.of("result", "not json{"));
+
+    ToolCallback numericPrefixCallback = mock(ToolCallback.class);
+    when(numericPrefixCallback.getToolDefinition()).thenReturn(definition);
+    when(numericPrefixCallback.call(any(), any())).thenReturn("42 is the answer");
+    assertThat(
+            toolConverter
+                .convertToAdkTool(numericPrefixCallback)
+                .runAsync(Map.of(), null)
+                .blockingGet())
+        .isEqualTo(Map.of("result", "42 is the answer"));
+
+    ToolCallback nullJsonCallback = mock(ToolCallback.class);
+    when(nullJsonCallback.getToolDefinition()).thenReturn(definition);
+    when(nullJsonCallback.call(any(), any())).thenReturn("null");
+    assertThat(
+            toolConverter.convertToAdkTool(nullJsonCallback).runAsync(Map.of(), null).blockingGet())
+        .isEmpty();
+
+    ToolCallback blankCallback = mock(ToolCallback.class);
+    when(blankCallback.getToolDefinition()).thenReturn(definition);
+    when(blankCallback.call(any(), any())).thenReturn("   ");
+    assertThat(toolConverter.convertToAdkTool(blankCallback).runAsync(Map.of(), null).blockingGet())
+        .isEmpty();
+  }
+
+  @Test
+  void testConvertToAdkToolsFromCollectionAndToolsetFromProvider() {
+    ToolCallback weather =
+        FunctionToolCallback.builder("get_weather", (Map<String, Object> args) -> "{\"temp\":20}")
+            .description("Weather")
+            .inputType(Map.class)
+            .build();
+    ToolCallback time =
+        FunctionToolCallback.builder(
+                "get_time", (Map<String, Object> args) -> "{\"time\":\"12:00\"}")
+            .description("Time")
+            .inputType(Map.class)
+            .build();
+
+    List<BaseTool> fromList = toolConverter.convertToAdkTools(List.of(weather, time));
+    assertThat(fromList).extracting(BaseTool::name).containsExactly("get_weather", "get_time");
+
+    ToolCallbackProvider provider = ToolCallbackProvider.from(weather, time);
+    BaseToolset toolset = toolConverter.convertToAdkToolset(provider);
+    assertThat(toolset).isInstanceOf(SpringAiToolset.class);
+    assertThat(toolset.getTools(null).toList().blockingGet())
+        .extracting(BaseTool::name)
+        .containsExactly("get_weather", "get_time");
+  }
+
+  @Test
+  void testRoundTripAdkToolToSpringAiAndBackToAdk() {
+    RecordingTool originalTool = new RecordingTool(Map.of("forecast", "sunny", "tempC", 24));
+    ToolContext adkContext = mock(ToolContext.class);
+
+    List<ToolCallback> springCallbacks =
+        toolConverter.convertToSpringAiTools(Map.of(originalTool.name(), originalTool));
+    List<BaseTool> roundTrippedTools = toolConverter.convertToAdkTools(springCallbacks);
+
+    assertThat(roundTrippedTools).hasSize(1);
+    BaseTool roundTrippedTool = roundTrippedTools.get(0);
+    assertThat(roundTrippedTool.name()).isEqualTo(originalTool.name());
+    assertThat(roundTrippedTool.description()).isEqualTo(originalTool.description());
+    assertThat(roundTrippedTool.declaration().orElseThrow().parametersJsonSchema())
+        .contains(
+            toolConverter.convertSchemaToSpringAi(
+                originalTool.declaration().orElseThrow().parameters().orElseThrow()));
+
+    Map<String, Object> result =
+        roundTrippedTool.runAsync(Map.of("location", "Paris"), adkContext).blockingGet();
+
+    assertThat(result).isEqualTo(Map.of("forecast", "sunny", "tempC", 24));
+    assertThat(originalTool.invocationCount()).isEqualTo(1);
+    assertThat(originalTool.arguments()).isEqualTo(Map.of("location", "Paris"));
+    assertThat(originalTool.context()).isSameAs(adkContext);
+  }
+
+  @Test
+  void testRoundTripSpringAiToolToAdkAndBackToSpringAi() throws Exception {
+    AtomicReference<Map<String, Object>> capturedArgs = new AtomicReference<>();
+    AtomicReference<org.springframework.ai.chat.model.ToolContext> capturedContext =
+        new AtomicReference<>();
+    BiFunction<Map<String, Object>, org.springframework.ai.chat.model.ToolContext, String> fn =
+        (args, ctx) -> {
+          capturedArgs.set(args);
+          capturedContext.set(ctx);
+          return "{\"forecast\":\"rainy\"}";
+        };
+    ToolCallback originalCallback =
+        FunctionToolCallback.builder("get_weather", fn)
+            .description("Get weather for a location")
+            .inputType(Map.class)
+            .inputSchema(
+                "{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}},\"required\":[\"location\"]}")
+            .build();
+
+    BaseTool adkTool = toolConverter.convertToAdkTool(originalCallback);
+    List<ToolCallback> roundTrippedCallbacks =
+        toolConverter.convertToSpringAiTools(Map.of(adkTool.name(), adkTool));
+
+    assertThat(roundTrippedCallbacks).hasSize(1);
+    ToolCallback roundTrippedCallback = roundTrippedCallbacks.get(0);
+    assertThat(roundTrippedCallback.getToolDefinition().name()).isEqualTo("get_weather");
+    assertThat(roundTrippedCallback.getToolDefinition().description())
+        .isEqualTo("Get weather for a location");
+
+    ToolContext adkContext = mock(ToolContext.class);
+    org.springframework.ai.chat.model.ToolContext springContext =
+        new org.springframework.ai.chat.model.ToolContext(
+            Map.of(ToolConverter.ADK_TOOL_CONTEXT_KEY, adkContext));
+
+    String jsonResult = roundTrippedCallback.call("{\"location\":\"London\"}", springContext);
+    Map<String, Object> parsedResult =
+        new ObjectMapper().readValue(jsonResult, new TypeReference<Map<String, Object>>() {});
+
+    assertThat(parsedResult).isEqualTo(Map.of("forecast", "rainy"));
+    assertThat(capturedArgs.get()).containsEntry("location", "London");
+    assertThat(capturedContext.get().getContext())
+        .containsEntry(ToolConverter.ADK_TOOL_CONTEXT_KEY, adkContext);
+  }
+
+  private record Location(String city, String country) {}
+
+  private record RouteRequest(Location origin, Location destination) {}
 
   private static final class RecordingTool extends BaseTool {
     private final FunctionDeclaration declaration;
