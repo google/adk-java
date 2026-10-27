@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -112,7 +113,7 @@ public final class BaseLlmFlowCancelTest {
     responses.onNext(createLlmResponse(FUNCTION_CALL));
     responses.onComplete();
 
-    assertThat(tool.ran.getCount()).isEqualTo(1);
+    assertThat(tool.runCount.get()).isEqualTo(0);
     assertThat(testLlm.getRequests()).hasSize(1);
   }
 
@@ -129,7 +130,7 @@ public final class BaseLlmFlowCancelTest {
 
     List<Event> events = createBaseLlmFlow().run(invocationContext).toList().blockingGet();
 
-    assertThat(tool.ran.getCount()).isEqualTo(0);
+    assertThat(tool.runCount.get()).isEqualTo(1);
     assertThat(events).hasSize(3);
     assertThat(events.get(2).content()).hasValue(TEXT);
     assertThat(testLlm.getRequests()).hasSize(2);
@@ -283,7 +284,7 @@ public final class BaseLlmFlowCancelTest {
   }
 
   private static final class RecordingTool extends BaseTool {
-    final CountDownLatch ran = new CountDownLatch(1);
+    final AtomicInteger runCount = new AtomicInteger();
 
     RecordingTool() {
       super("my_function", "tool description for my_function");
@@ -296,7 +297,7 @@ public final class BaseLlmFlowCancelTest {
 
     @Override
     public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
-      ran.countDown();
+      runCount.incrementAndGet();
       return Single.just(ImmutableMap.of("response", "response for my_function"));
     }
   }

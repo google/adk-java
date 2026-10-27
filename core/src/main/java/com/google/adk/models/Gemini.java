@@ -330,10 +330,10 @@ public class Gemini extends BaseLlm {
   }
 
   /**
-   * Reads the stream and, when the subscriber cancels, closes it on {@link Schedulers#io()} so a
-   * partial read doesn't leave the HTTP response open. The close waits for the stream to open and
-   * can block behind a {@code readLine()} in progress. An iterator call that returns after the
-   * cancel closes the stream again, covering a continuation request opened during that call.
+   * Reads the stream and closes it on {@link Schedulers#io()} unless it was read to the end, so a
+   * cancel or a read error doesn't leave the HTTP response open. The close waits for the stream to
+   * open and can block behind a {@code readLine()} in progress. An iterator call that returns after
+   * the cancel closes the stream again, covering a continuation request opened during that call.
    */
   @VisibleForTesting
   static <T, S extends Iterable<T> & AutoCloseable> Flowable<T> readStream(
@@ -341,15 +341,15 @@ public class Gemini extends BaseLlm {
     return Flowable.defer(
         () -> {
           AtomicBoolean cancelled = new AtomicBoolean();
-          AtomicBoolean terminated = new AtomicBoolean();
+          AtomicBoolean completed = new AtomicBoolean();
           return Flowable.using(
               () -> streamFuture,
               future ->
                   Flowable.fromFuture(future)
                       .flatMapIterable(stream -> closingAfterCancel(stream, cancelled))
-                      .doOnTerminate(() -> terminated.set(true)),
+                      .doOnComplete(() -> completed.set(true)),
               future -> {
-                if (!terminated.get()) {
+                if (!completed.get()) {
                   cancelled.set(true);
                   var unused = future.thenAccept(Gemini::closeAsync);
                 }

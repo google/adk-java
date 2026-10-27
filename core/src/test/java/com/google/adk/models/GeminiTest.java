@@ -2235,6 +2235,18 @@ public final class GeminiTest {
   }
 
   @Test
+  public void readStream_errorMidStream_closesStream() throws Exception {
+    IllegalStateException failure = new IllegalStateException("stream failed");
+    FakeStream stream = new FailingStream(2, failure);
+
+    Gemini.readStream(CompletableFuture.completedFuture(stream))
+        .test()
+        .assertValues("chunk-1", "chunk-2")
+        .assertError(failure);
+    assertThat(stream.closed.await(5, SECONDS)).isTrue();
+  }
+
+  @Test
   public void readStream_readsToEnd_emitsEveryResponse() {
     FakeStream stream = new FakeStream(3);
 
@@ -2245,7 +2257,7 @@ public final class GeminiTest {
   }
 
   /** A stream of "chunk-N" strings that records when it is closed; unbounded by default. */
-  private static final class FakeStream implements Iterable<String>, AutoCloseable {
+  private static class FakeStream implements Iterable<String>, AutoCloseable {
     final CountDownLatch closed = new CountDownLatch(1);
     private final int size;
 
@@ -2265,6 +2277,35 @@ public final class GeminiTest {
     @Override
     public void close() {
       closed.countDown();
+    }
+  }
+
+  /** A {@link FakeStream} of {@code size} chunks whose iterator then throws {@code failure}. */
+  private static final class FailingStream extends FakeStream {
+    private final RuntimeException failure;
+
+    FailingStream(int size, RuntimeException failure) {
+      super(size);
+      this.failure = failure;
+    }
+
+    @Override
+    public Iterator<String> iterator() {
+      Iterator<String> chunks = super.iterator();
+      return new Iterator<String>() {
+        @Override
+        public boolean hasNext() {
+          if (!chunks.hasNext()) {
+            throw failure;
+          }
+          return true;
+        }
+
+        @Override
+        public String next() {
+          return chunks.next();
+        }
+      };
     }
   }
 }
