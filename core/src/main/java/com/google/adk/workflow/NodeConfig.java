@@ -18,11 +18,13 @@ package com.google.adk.workflow;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import com.google.adk.agents.Context;
 import com.google.adk.annotations.Experimental;
 import com.google.auto.value.AutoValue;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.time.Duration;
 import java.util.Optional;
+import java.util.concurrent.TimeoutException;
 import org.jspecify.annotations.Nullable;
 
 /** A node's retry policy and execution timeout. */
@@ -30,12 +32,17 @@ import org.jspecify.annotations.Nullable;
 @AutoValue
 public abstract class NodeConfig {
 
-  /** Returns how the node is retried when it fails; empty does not retry. */
+  /**
+   * Returns how the node is retried when it fails; empty does not retry. A retried workflow replays
+   * its nodes that finished and left an event in the session, and reruns the others. A failure that
+   * a node passes on unchanged from a child it runs with {@link Context#runNode} is not retried;
+   * give the child a retry policy of its own instead.
+   */
   public abstract Optional<RetryConfig> retryConfig();
 
   /**
-   * Returns how long an attempt may run before it is cancelled and treated as a failure; empty
-   * imposes no limit.
+   * Returns how long an attempt may run before it is canceled and fails with a {@link
+   * TimeoutException}; empty imposes no limit.
    */
   public abstract Optional<Duration> timeout();
 

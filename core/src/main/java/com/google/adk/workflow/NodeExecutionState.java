@@ -61,13 +61,16 @@ public final class NodeExecutionState {
   // The parent's state when this run's output is also the parent's.
   private final @Nullable NodeExecutionState outputParent;
   private final String runId;
+  private final int attemptCount;
   private final String nodePath;
   private final ImmutableList<String> outputFor;
   private final Map<String, @Nullable Object> resumeInputs;
-  private final ConcurrentMap<String, Integer> childRunCounts = new ConcurrentHashMap<>();
-  private final ConcurrentMap<String, SingleSubject<Context>> childRuns = new ConcurrentHashMap<>();
-  // The paths of the node runs started but not finished in this turn, shared under one root.
+  private final ConcurrentMap<String, Integer> childRunCounts;
+  private final ConcurrentMap<String, SingleSubject<Context>> childRuns;
+  // Paths of runs started but not finished in this turn, shared under one root and its attempts.
   private final Set<String> unfinishedNodePaths;
+  // Paths of runs that failed this turn and have not finished cleanly since, shared the same way.
+  private final Set<String> failedNodePaths;
   private final Set<String> interruptIds = new CopyOnWriteArraySet<>();
   private final AtomicReference<OutputState> outputState = new AtomicReference<>(NO_OUTPUT);
   // Set once the node drops its own output because a useAsOutput child holds the output.
@@ -100,9 +103,19 @@ public final class NodeExecutionState {
             ? ImmutableList.<String>builder().add(nodePath).addAll(outputParent.outputFor).build()
             : ImmutableList.of(nodePath);
     this.eventAuthor = parentState == null ? "" : parentState.eventAuthor;
+    NodeExecutionState previousAttempt = builder.previousAttempt;
+    this.attemptCount = previousAttempt == null ? 1 : previousAttempt.attemptCount + 1;
+    NodeExecutionState turnRecords = parentState != null ? parentState : previousAttempt;
     this.unfinishedNodePaths =
-        parentState == null ? ConcurrentHashMap.newKeySet() : parentState.unfinishedNodePaths;
+        turnRecords == null ? ConcurrentHashMap.newKeySet() : turnRecords.unfinishedNodePaths;
+    this.failedNodePaths =
+        turnRecords == null ? ConcurrentHashMap.newKeySet() : turnRecords.failedNodePaths;
     this.resumeInputs = Collections.unmodifiableMap(new LinkedHashMap<>(builder.resumeInputs));
+    // A retried workflow restarts its node numbering, so its finished nodes replay.
+    boolean continuesChildRuns = previousAttempt != null && !(node instanceof Workflow);
+    this.childRunCounts =
+        continuesChildRuns ? previousAttempt.childRunCounts : new ConcurrentHashMap<>();
+    this.childRuns = continuesChildRuns ? previousAttempt.childRuns : new ConcurrentHashMap<>();
   }
 
   /** Returns a builder for the state of one node run. */
@@ -126,6 +139,11 @@ public final class NodeExecutionState {
   /** Returns the ID of this run among the node's runs, counting from {@code "1"}. */
   public String runId() {
     return runId;
+  }
+
+  /** Returns the number of this attempt at running the node, counting from 1. */
+  public int attemptCount() {
+    return attemptCount;
   }
 
   /** Returns the context of the node that ran this node, or empty if this is a root node. */
@@ -266,6 +284,11 @@ public final class NodeExecutionState {
   /** Records that this run finished, with or without a result. */
   void markFinished() {
     unfinishedNodePaths.remove(nodePath);
+    if (failure == null) {
+      failedNodePaths.remove(nodePath);
+    } else {
+      failedNodePaths.add(nodePath);
+    }
   }
 
   /**
@@ -275,6 +298,14 @@ public final class NodeExecutionState {
    */
   boolean childCanceledMidRun(String childKey) {
     return unfinishedNodePaths.contains(nodePath + "/" + childKey);
+  }
+
+  /**
+   * Returns whether this run's child {@code childKey} failed in this turn and has not finished
+   * cleanly since. A child that takes on its own child's failure leaves no error event to show it.
+   */
+  boolean childFailedThisTurn(String childKey) {
+    return failedNodePaths.contains(nodePath + "/" + childKey);
   }
 
   /**
@@ -457,6 +488,7 @@ public final class NodeExecutionState {
     private @Nullable String runId;
     private boolean useAsOutput;
     private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
+    private @Nullable NodeExecutionState previousAttempt;
 
     private Builder() {}
 
@@ -502,6 +534,17 @@ public final class NodeExecutionState {
     @CanIgnoreReturnValue
     Builder resumeInputs(Map<String, @Nullable Object> resumeInputs) {
       this.resumeInputs = checkNotNull(resumeInputs);
+      return this;
+    }
+
+    /**
+     * Sets the state of the run's previous attempt, or null for a first attempt. A later attempt's
+     * count is one higher. It shares the previous attempt's records of unfinished and failed runs
+     * and, unless the node is a workflow, its child run IDs and child runs.
+     */
+    @CanIgnoreReturnValue
+    Builder previousAttempt(@Nullable NodeExecutionState previousAttempt) {
+      this.previousAttempt = previousAttempt;
       return this;
     }
 

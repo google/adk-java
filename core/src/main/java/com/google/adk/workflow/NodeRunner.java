@@ -21,12 +21,14 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.base.Strings.nullToEmpty;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.telemetry.Tracing;
 import com.google.adk.workflow.ResumeScan.Interception;
 import com.google.common.base.CharMatcher;
 import com.google.common.collect.ImmutableMap;
@@ -41,19 +43,25 @@ import io.reactivex.rxjava3.processors.FlowableProcessor;
 import io.reactivex.rxjava3.processors.UnicastProcessor;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subjects.SingleSubject;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The runner for one workflow node. It stamps every emitted event with its author, node path, and
- * branch before forwarding it, and records the node's output, routes, interrupts, and failure on
- * the node state of the returned context. {@link #runRoot} runs a node as the root of an
- * invocation, and {@link #runChild} runs one as a child that another node starts itself.
+ * The runner for one workflow node, which times out an attempt that exceeds the node's optional
+ * timeout and retries the node as its retry policy allows. It stamps every emitted event with its
+ * author, node path, and branch before forwarding it, and records the node's output, routes,
+ * interrupts, and failure on the node state of the returned context. {@link #runRoot} runs a node
+ * as the root of an invocation, and {@link #runChild} runs one as a child that another node starts
+ * itself.
  */
 @Experimental
 public final class NodeRunner {
@@ -286,7 +294,11 @@ public final class NodeRunner {
         parentState.recoveredChildren(parent.invocationContext()).get(childKey);
     Interception interception =
         ResumeScan.intercept(
-            node, recovered, /* dynamic= */ true, parentState.childCanceledMidRun(childKey));
+            node,
+            recovered,
+            /* dynamic= */ true,
+            parentState.childCanceledMidRun(childKey),
+            parentState.childFailedThisTurn(childKey));
     if (!interception.shouldRun()) {
       return Single.just(
           ResumeScan.replayContext(parent, node, runId, config.useAsOutput(), interception));
@@ -364,16 +376,15 @@ public final class NodeRunner {
   }
 
   /**
-   * Runs the node on {@code nodeInput} and returns its context when the node finishes. An exception
-   * from the node is recorded on the context's node state rather than signaled, while an {@code
-   * Error} propagates.
+   * Runs the node on {@code nodeInput}, retrying it as its retry policy allows, and returns the
+   * context of its last attempt. An exception from the node is recorded on the context's node state
+   * rather than signaled, while an {@code Error} propagates.
    */
   Single<Context> run(@Nullable Object nodeInput) {
     return Single.defer(
         () -> {
           if (parent != null) {
-            Context context = newContext(resumeInputs);
-            return new Activation(context).run(nodeInput).toSingleDefault(context);
+            return runAttempts(nodeInput, resumeInputs);
           }
           // A root scans its own progress and resumes like a dynamic child.
           Interception interception =
@@ -382,17 +393,55 @@ public final class NodeRunner {
                   ResumeScan.scan(invocationContext, /* basePath= */ "")
                       .get(segment(node.name(), runId)),
                   /* dynamic= */ true,
-                  /* canceledMidRun= */ false);
-          Context context = newContext(interception.resumeInputs());
+                  /* canceledMidRun= */ false,
+                  /* failedThisTurn= */ false);
           if (!interception.shouldRun()) {
+            Context context = newContext(interception.resumeInputs(), /* previousAttempt= */ null);
             interception.replayOn(context);
             return new Activation(context).flushPending().toSingleDefault(context);
           }
-          return new Activation(context).run(nodeInput).toSingleDefault(context);
+          return runAttempts(nodeInput, interception.resumeInputs());
         });
   }
 
-  private Context newContext(Map<String, @Nullable Object> resumeInputs) {
+  private Single<Context> runAttempts(
+      @Nullable Object nodeInput, Map<String, @Nullable Object> resumeInputs) {
+    RetryConfig policy = node.config().retryConfig().orElse(null);
+    int maxAttempts = policy == null ? 1 : Math.max(1, policy.maxAttempts());
+    AtomicReference<@Nullable NodeExecutionState> previousAttempt = new AtomicReference<>();
+    // A retry starts on another thread, so each attempt restores the caller's trace context.
+    io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
+    // concatMap loops instead of recursing, so many instant retries keep the stack flat.
+    return Flowable.range(1, maxAttempts)
+        .concatMapSingle(
+            attempt ->
+                backoff(policy, attempt)
+                    .andThen(
+                        Single.defer(
+                                () -> {
+                                  Context context = newContext(resumeInputs, previousAttempt.get());
+                                  previousAttempt.set(context.requireNodeState());
+                                  Activation activation = new Activation(context);
+                                  return activation.run(nodeInput).toSingleDefault(activation);
+                                })
+                            .compose(Tracing.withContext(traceContext))))
+        .takeUntil(activation -> !activation.retries(policy))
+        .lastOrError()
+        .map(activation -> activation.context);
+  }
+
+  /** Returns the wait before attempt {@code attempt}; there is none before the first. */
+  private Completable backoff(@Nullable RetryConfig policy, int attempt) {
+    if (policy == null || attempt == 1) {
+      return Completable.complete();
+    }
+    Duration delay = policy.delayFor(attempt - 1, ThreadLocalRandom.current());
+    // Even without a delay, the retry starts on the invocation's scheduler, not the failing thread.
+    return Completable.timer(delay.toNanos(), NANOSECONDS, invocationContext.scheduler());
+  }
+
+  private Context newContext(
+      Map<String, @Nullable Object> resumeInputs, @Nullable NodeExecutionState previousAttempt) {
     return new Context(
         childInvocationContext(),
         NodeExecutionState.builder()
@@ -402,6 +451,7 @@ public final class NodeRunner {
             .runId(runId)
             .useAsOutput(useAsOutput)
             .resumeInputs(resumeInputs)
+            .previousAttempt(previousAttempt)
             .build());
   }
 
@@ -420,14 +470,16 @@ public final class NodeRunner {
   }
 
   /**
-   * One run of the node, during which the node is asked for each event only after its previous
-   * event is processed. Events from nested nodes pass through without reapplying their routing or
-   * transfers. When the node finishes, a final event carries any output, routes, or deltas not
-   * carried by an earlier event.
+   * One attempt at running the node, during which the node is asked for each event only after its
+   * previous event is processed. Events from nested nodes pass through without reapplying their
+   * routing or transfers. When the node finishes, a final event carries any output, routes, or
+   * deltas not carried by an earlier event.
    */
   private final class Activation {
     private final Context context;
     private final NodeExecutionState nodeState;
+    // Set when the node takes on a child's failure, which only the child's own policy retries.
+    private boolean childFailed;
 
     Activation(Context context) {
       this.context = context;
@@ -435,15 +487,52 @@ public final class NodeRunner {
     }
 
     Completable run(@Nullable Object nodeInput) {
-      return asBaseNode(node)
-          .run(context, nodeInput)
-          // Avoid concatMapCompletable: its prefetch would let the node run ahead of the sink.
-          .flatMapCompletable(this::dispatch, /* delayErrors= */ true, /* maxConcurrency= */ 1)
+      Completable body =
+          asBaseNode(node)
+              .run(context, nodeInput)
+              // Avoid concatMapCompletable: its prefetch would let the node run ahead of the sink.
+              .flatMapCompletable(this::dispatch, /* delayErrors= */ true, /* maxConcurrency= */ 1);
+      return withTimeout(body)
           .andThen(Completable.defer(this::flushPending))
           .onErrorResumeNext(this::onError)
           // A run cut short stays unfinished, so a later call in this turn reruns it.
           .doOnSubscribe(unused -> nodeState.markStarted())
           .doOnComplete(nodeState::markFinished);
+    }
+
+    /** Returns whether {@code policy} retries this attempt. */
+    boolean retries(@Nullable RetryConfig policy) {
+      return policy != null
+          && !childFailed
+          && nodeState
+              .failure()
+              .map(failure -> policy.shouldRetry(failure, nodeState.attemptCount()))
+              .orElse(false);
+    }
+
+    /** Fails {@code run} with a {@link TimeoutException} once it outlasts the node's timeout. */
+    private Completable withTimeout(Completable run) {
+      Optional<Duration> timeout = node.config().timeout();
+      if (timeout.isEmpty()) {
+        return run;
+      }
+      Duration limit = timeout.get();
+      // Fails on the timer's thread: the timed-out attempt may still hold the scheduler's threads.
+      Completable timedOut =
+          Completable.error(
+              () ->
+                  new TimeoutException(
+                      String.format(
+                          "Node '%s' timed out after %d ms.", node.name(), limit.toMillis())));
+      io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
+      // Off the caller's thread, so a body that blocks its thread cannot hold off the timeout.
+      return Completable.timer(0, NANOSECONDS, invocationContext.scheduler())
+          // Unlike subscribeOn, canceling this hop does not interrupt the handling of node events.
+          .andThen(run.compose(Tracing.withContext(traceContext)))
+          // convert saturates, so a timeout too long to count in nanoseconds waits about 292 years.
+          .timeout(NANOSECONDS.convert(limit), NANOSECONDS, timedOut)
+          // The failure arrives on the timer's thread, so it needs the caller's trace context too.
+          .compose(Tracing.withContext(traceContext));
     }
 
     private Completable onError(Throwable error) {
@@ -453,6 +542,7 @@ public final class NodeRunner {
       }
       if (error instanceof DynamicNodeFailedException childFailure) {
         // The child already sent an error event, so the node takes on its failure without one.
+        childFailed = true;
         nodeState.failure(childFailure.error(), childFailure.errorNodePath());
         return Completable.complete();
       }
@@ -576,7 +666,7 @@ public final class NodeRunner {
           withPendingDeltas(
               stamp(
                   newEvent()
-                      .errorCode(new FinishReason(errorTypeName(failure)))
+                      .errorCode(new FinishReason(RetryConfig.errorTypeName(failure)))
                       .errorMessage(nullToEmpty(failure.getMessage()))
                       .build()));
       return eventSink.send(errorEvent, failure).doOnComplete(() -> nodeState.failure(failure));
@@ -655,12 +745,6 @@ public final class NodeRunner {
     return !event.partial().orElse(false)
         && event.content().isPresent()
         && event.nodeInfo().map(NodeInfo::messageAsOutput).orElse(false);
-  }
-
-  /** Returns the simple name of the failure's type, or its full name for an anonymous class. */
-  private static String errorTypeName(Exception failure) {
-    String name = failure.getClass().getSimpleName();
-    return name.isEmpty() ? failure.getClass().getName() : name;
   }
 
   /** Adapts any node to a {@link BaseNode}, whose {@link BaseNode#run} turns values into events. */

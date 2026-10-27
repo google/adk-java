@@ -95,6 +95,7 @@ public final class ContextTest {
     assertThrows(IllegalStateException.class, context::output);
     assertThrows(IllegalStateException.class, context::routes);
     assertThrows(IllegalStateException.class, () -> context.routes(ImmutableList.of()));
+    assertThrows(IllegalStateException.class, context::attemptCount);
   }
 
   @Test

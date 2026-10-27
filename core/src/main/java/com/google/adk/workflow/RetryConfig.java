@@ -17,6 +17,7 @@
 package com.google.adk.workflow;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 import com.google.adk.annotations.Experimental;
 import com.google.auto.value.AutoValue;
@@ -25,6 +26,7 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.Random;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -84,6 +86,43 @@ public abstract class RetryConfig {
   }
 
   public abstract Builder toBuilder();
+
+  /**
+   * Returns whether a node that failed with {@code failure} on attempt {@code attempt}, counting
+   * from 1, has an attempt left and failed with a type this config retries.
+   */
+  boolean shouldRetry(Exception failure, int attempt) {
+    if (attempt >= maxAttempts()) {
+      return false;
+    }
+    return exceptions().map(names -> names.contains(errorTypeName(failure))).orElse(true);
+  }
+
+  /**
+   * Returns how long to wait after the failed attempt {@code attempt}, counting from 1, before the
+   * next one, drawing the jitter from {@code random}.
+   */
+  Duration delayFor(int attempt, Random random) {
+    // TimeUnit.convert saturates instead of overflowing past about 292 years.
+    double maxNanos = NANOSECONDS.convert(maxDelay());
+    // Clamped, as an infinite power times a zero initial delay would be NaN.
+    double delay =
+        NANOSECONDS.convert(initialDelay())
+            * Math.min(Math.pow(backoffFactor(), attempt - 1), Double.MAX_VALUE);
+    // Capped before jittering, so jitter keeps spreading the delays near the cap.
+    double capped = Math.min(delay, maxNanos / (1.0 + jitter()));
+    double spread = jitter() * (2.0 * random.nextDouble() - 1.0);
+    return Duration.ofNanos((long) Math.max(0.0, Math.min(capped * (1.0 + spread), maxNanos)));
+  }
+
+  /**
+   * Returns the name that a node's error event reports and {@link #exceptions} matches: the simple
+   * name of the failure's type, or its full name for an anonymous class.
+   */
+  static String errorTypeName(Exception failure) {
+    String name = failure.getClass().getSimpleName();
+    return name.isEmpty() ? failure.getClass().getName() : name;
+  }
 
   /** Builder for {@link RetryConfig}. */
   @AutoValue.Builder

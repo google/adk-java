@@ -16,13 +16,18 @@
 
 package com.google.adk.workflow;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Random;
+import java.util.stream.Stream;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -141,5 +146,114 @@ public final class RetryConfigTest {
     IllegalArgumentException e = assertThrows(IllegalArgumentException.class, builder::build);
 
     assertThat(e).hasMessageThat().contains("jitter");
+  }
+
+  @Test
+  public void shouldRetry_withAttemptsLeftAndExceptionsUnset_retriesAnyFailure() {
+    RetryConfig config = RetryConfig.builder().maxAttempts(3).build();
+
+    assertThat(config.shouldRetry(new IllegalStateException(), /* attempt= */ 1)).isTrue();
+    assertThat(config.shouldRetry(new IllegalArgumentException(), /* attempt= */ 2)).isTrue();
+  }
+
+  @Test
+  public void shouldRetry_withNoAttemptLeft_stops() {
+    Exception failure = new IllegalStateException();
+
+    assertThat(withMaxAttempts(3).shouldRetry(failure, /* attempt= */ 3)).isFalse();
+    assertThat(withMaxAttempts(1).shouldRetry(failure, /* attempt= */ 1)).isFalse();
+    assertThat(withMaxAttempts(0).shouldRetry(failure, /* attempt= */ 1)).isFalse();
+  }
+
+  @Test
+  public void shouldRetry_matchesTheSimpleTypeNameWithoutSubclasses() {
+    RetryConfig config =
+        RetryConfig.builder().exceptions(ImmutableList.of("RuntimeException")).build();
+
+    assertThat(config.shouldRetry(new RuntimeException(), /* attempt= */ 1)).isTrue();
+    assertThat(config.shouldRetry(new IllegalStateException(), /* attempt= */ 1)).isFalse();
+  }
+
+  @Test
+  public void shouldRetry_withAnEmptyExceptionsList_retriesNothing() {
+    RetryConfig config = RetryConfig.builder().exceptions(ImmutableList.of()).build();
+
+    assertThat(config.shouldRetry(new IllegalStateException(), /* attempt= */ 1)).isFalse();
+  }
+
+  @Test
+  public void delayFor_withoutJitter_growsByTheBackoffFactorUntilMaxDelay() {
+    RetryConfig config =
+        RetryConfig.builder()
+            .initialDelay(Duration.ofSeconds(1))
+            .maxDelay(Duration.ofSeconds(60))
+            .backoffFactor(2)
+            .jitter(0)
+            .build();
+    Random random = new Random(0);
+
+    assertThat(config.delayFor(/* attempt= */ 1, random)).isEqualTo(Duration.ofSeconds(1));
+    assertThat(config.delayFor(/* attempt= */ 2, random)).isEqualTo(Duration.ofSeconds(2));
+    assertThat(config.delayFor(/* attempt= */ 3, random)).isEqualTo(Duration.ofSeconds(4));
+    assertThat(config.delayFor(/* attempt= */ 10, random)).isEqualTo(Duration.ofSeconds(60));
+  }
+
+  @Test
+  public void delayFor_withJitter_spreadsTheDelayAroundItsBase() {
+    RetryConfig config =
+        RetryConfig.builder().initialDelay(Duration.ofSeconds(1)).jitter(0.5).build();
+    Random random = new Random(0);
+
+    ImmutableList<Duration> delays =
+        Stream.generate(() -> config.delayFor(/* attempt= */ 1, random))
+            .limit(50)
+            .collect(toImmutableList());
+
+    assertThat(Collections.min(delays)).isAtLeast(Duration.ofMillis(500));
+    assertThat(Collections.max(delays)).isAtMost(Duration.ofMillis(1500));
+    assertThat(ImmutableSet.copyOf(delays).size()).isGreaterThan(1);
+  }
+
+  @Test
+  public void delayFor_withJitterWhenTheBackoffOverflows_staysWithinMaxDelay() {
+    RetryConfig config =
+        RetryConfig.builder()
+            .initialDelay(Duration.ofSeconds(1))
+            .maxDelay(Duration.ofSeconds(3))
+            .backoffFactor(2)
+            .jitter(0.5)
+            .build();
+    Random random = new Random(0);
+
+    ImmutableList<Duration> delays =
+        Stream.generate(() -> config.delayFor(/* attempt= */ 5000, random))
+            .limit(50)
+            .collect(toImmutableList());
+
+    // The delay is capped at maxDelay / (1 + jitter) = 2s before jitter spreads it.
+    assertThat(Collections.min(delays)).isAtLeast(Duration.ofSeconds(1));
+    assertThat(Collections.max(delays)).isAtMost(Duration.ofSeconds(3));
+  }
+
+  @Test
+  public void delayFor_withAZeroInitialDelay_staysZeroWhenTheBackoffOverflows() {
+    RetryConfig config =
+        RetryConfig.builder().initialDelay(Duration.ZERO).backoffFactor(10).build();
+
+    assertThat(config.delayFor(/* attempt= */ 5000, new Random(0))).isEqualTo(Duration.ZERO);
+  }
+
+  @Test
+  public void delayFor_beyondTheNanosecondsALongHolds_saturates() {
+    Duration forever = Duration.ofSeconds(Long.MAX_VALUE);
+    RetryConfig config =
+        RetryConfig.builder().initialDelay(forever).maxDelay(forever).jitter(0).build();
+
+    assertThat(config.delayFor(/* attempt= */ 1, new Random(0)))
+        .isEqualTo(Duration.ofNanos(Long.MAX_VALUE));
+  }
+
+  private static RetryConfig withMaxAttempts(int maxAttempts) {
+    return RetryConfig.builder().maxAttempts(maxAttempts).build();
   }
 }

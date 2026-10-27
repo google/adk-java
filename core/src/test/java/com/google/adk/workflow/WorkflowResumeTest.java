@@ -20,12 +20,13 @@ import static com.google.adk.testing.WorkflowTestNodes.dispatcher;
 import static com.google.adk.testing.WorkflowTestNodes.emitter;
 import static com.google.adk.testing.WorkflowTestNodes.workflow;
 import static com.google.adk.workflow.WorkflowResumeTesting.AGE_SCHEMA;
-import static com.google.adk.workflow.WorkflowResumeTesting.LONG_RUNNING_CALL;
 import static com.google.adk.workflow.WorkflowResumeTesting.START;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.callContent;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
+import static com.google.adk.workflow.WorkflowResumeTesting.interrupt;
+import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
 import static com.google.adk.workflow.WorkflowResumeTesting.modelText;
 import static com.google.adk.workflow.WorkflowResumeTesting.newEvent;
 import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
@@ -1358,19 +1359,6 @@ public final class WorkflowResumeTest {
 
   private static RunNodeConfig runId(String runId) {
     return RunNodeConfig.builder().runId(runId).build();
-  }
-
-  /** Returns a node that waits on the long-running call {@code interruptId}, as a tool does. */
-  private static Node longRunningAsk(String name, String interruptId) {
-    return new TestNode(name, (ctx, input) -> Flowable.just(interrupt(interruptId)));
-  }
-
-  /** Returns the event in which a node waits on the long-running call {@code interruptId}. */
-  private static Event interrupt(String interruptId) {
-    return newEvent()
-        .content(callContent(LONG_RUNNING_CALL, interruptId))
-        .longRunningToolIds(ImmutableSet.of(interruptId))
-        .build();
   }
 
   /**

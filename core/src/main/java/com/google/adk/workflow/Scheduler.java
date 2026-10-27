@@ -211,7 +211,8 @@ final class Scheduler {
               node,
               recoveredNode,
               /* dynamic= */ false,
-              workflowState.childCanceledMidRun(childKey));
+              workflowState.childCanceledMidRun(childKey),
+              workflowState.childFailedThisTurn(childKey));
       if (recoveredNode != null && !interception.shouldRun()) {
         // Only a replay that completes an answered transfer marks a new step, as a run does.
         boolean completesTransfer =

@@ -335,6 +335,17 @@ public class Context extends ReadonlyContext {
   }
 
   /**
+   * Returns the number of the attempt this workflow node is on, counting from 1; each retry adds
+   * one.
+   *
+   * @throws IllegalStateException if this is not the context of a workflow node.
+   */
+  @Experimental
+  public final int attemptCount() {
+    return requireNodeState().attemptCount();
+  }
+
+  /**
    * Runs {@code node} as a child of this workflow node without an input, as {@link #runNode(Node,
    * Object, RunNodeConfig)} does with the default {@link RunNodeConfig}.
    */

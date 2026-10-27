@@ -105,13 +105,18 @@ final class ResumeScan {
   /**
    * Decides whether {@code node} runs again or replays its result from {@code recovered}. In order:
    * a node with unanswered interrupts waits on them, unless it reruns on resume and has answers; a
-   * failed node reruns; a recorded output, route or transfer replays; a node {@code canceledMidRun}
-   * in this turn reruns; an answered node that does not rerun on resume completes with its answers.
-   * Otherwise a node that reruns on resume reruns unless it finished since its last answer, and a
-   * {@code dynamic} node reruns while a graph node does not.
+   * node that failed, in {@code recovered} or {@code failedThisTurn}, reruns; a recorded output,
+   * route or transfer replays; a node {@code canceledMidRun} in this turn reruns; an answered node
+   * that does not rerun on resume completes with its answers. Otherwise a node that reruns on
+   * resume reruns unless it finished since its last answer, and a {@code dynamic} node reruns while
+   * a graph node does not.
    */
   static Interception intercept(
-      Node node, @Nullable RecoveredNode recovered, boolean dynamic, boolean canceledMidRun) {
+      Node node,
+      @Nullable RecoveredNode recovered,
+      boolean dynamic,
+      boolean canceledMidRun,
+      boolean failedThisTurn) {
     if (recovered == null) {
       return Interception.run(ImmutableMap.of());
     }
@@ -129,7 +134,8 @@ final class ResumeScan {
           ? Interception.run(resolved)
           : Interception.waitOn(branch, unresolved, transfer);
     }
-    if (recovered.failed) {
+    // A node that takes on a child's failure leaves no error event, so this turn records it.
+    if (recovered.failed || failedThisTurn) {
       return Interception.run(resolved);
     }
     Object output = recovered.output;

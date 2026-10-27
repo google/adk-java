@@ -132,7 +132,11 @@ public final class ResumeScanTest {
     RecoveredNode recovered = ResumeScan.scan(events, "wf@1", "inv").get("chat@1");
     Interception interception =
         ResumeScan.intercept(
-            emitter("chat", "fresh"), recovered, /* dynamic= */ false, /* canceledMidRun= */ false);
+            emitter("chat", "fresh"),
+            recovered,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
 
     assertThat(recovered.failed).isFalse();
     assertThat(interception.shouldRun()).isFalse();
@@ -211,9 +215,19 @@ public final class ResumeScanTest {
     unasked.finishedAfterResume = true;
 
     Interception answeredInterception =
-        ResumeScan.intercept(node, answered, /* dynamic= */ false, /* canceledMidRun= */ false);
+        ResumeScan.intercept(
+            node,
+            answered,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
     Interception unaskedInterception =
-        ResumeScan.intercept(node, unasked, /* dynamic= */ false, /* canceledMidRun= */ false);
+        ResumeScan.intercept(
+            node,
+            unasked,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
 
     assertThat(answeredInterception.shouldRun()).isTrue();
     assertThat(unaskedInterception.shouldRun()).isTrue();
@@ -225,9 +239,19 @@ public final class ResumeScanTest {
     RecoveredNode recovered = new RecoveredNode();
 
     Interception dynamic =
-        ResumeScan.intercept(node, recovered, /* dynamic= */ true, /* canceledMidRun= */ false);
+        ResumeScan.intercept(
+            node,
+            recovered,
+            /* dynamic= */ true,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
     Interception graph =
-        ResumeScan.intercept(node, recovered, /* dynamic= */ false, /* canceledMidRun= */ false);
+        ResumeScan.intercept(
+            node,
+            recovered,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
 
     assertThat(dynamic.shouldRun()).isTrue();
     assertThat(graph.shouldRun()).isFalse();
@@ -239,7 +263,27 @@ public final class ResumeScanTest {
 
     Interception interception =
         ResumeScan.intercept(
-            emitter("n", "out"), progressOnly, /* dynamic= */ false, /* canceledMidRun= */ true);
+            emitter("n", "out"),
+            progressOnly,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ true,
+            /* failedThisTurn= */ false);
+
+    assertThat(interception.shouldRun()).isTrue();
+  }
+
+  @Test
+  public void intercept_nodeThatFailedThisTurn_runsAgainDespiteARecordedOutput() {
+    RecoveredNode recovered = new RecoveredNode();
+    recovered.output = "out";
+
+    Interception interception =
+        ResumeScan.intercept(
+            emitter("n", "out"),
+            recovered,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ true);
 
     assertThat(interception.shouldRun()).isTrue();
   }
@@ -253,7 +297,11 @@ public final class ResumeScanTest {
 
     Interception interception =
         ResumeScan.intercept(
-            emitter("n", "out"), recovered, /* dynamic= */ false, /* canceledMidRun= */ false);
+            emitter("n", "out"),
+            recovered,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
 
     assertThat(interception.shouldRun()).isFalse();
     assertThat(interception.output()).isEqualTo(ImmutableMap.of("a", 1, "b", 2));
@@ -271,13 +319,25 @@ public final class ResumeScanTest {
 
     Interception rerunWithProgress =
         ResumeScan.intercept(
-            rerunNode, partialProgress, /* dynamic= */ false, /* canceledMidRun= */ false);
+            rerunNode,
+            partialProgress,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
     Interception rerunWithoutProgress =
         ResumeScan.intercept(
-            rerunNode, noProgress, /* dynamic= */ false, /* canceledMidRun= */ false);
+            rerunNode,
+            noProgress,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
     Interception staticWithProgress =
         ResumeScan.intercept(
-            graphNode, partialProgress, /* dynamic= */ false, /* canceledMidRun= */ false);
+            graphNode,
+            partialProgress,
+            /* dynamic= */ false,
+            /* canceledMidRun= */ false,
+            /* failedThisTurn= */ false);
 
     assertThat(rerunWithProgress.shouldRun()).isTrue();
     assertThat(rerunWithProgress.resumeInputs()).containsExactly("a", 1);

@@ -31,6 +31,7 @@ import com.google.adk.runner.Runner;
 import com.google.adk.testing.TestNode;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -131,6 +132,19 @@ final class WorkflowResumeTesting {
   static Node captureInput(String name) {
     return new TestNode(
         name, (ctx, input) -> Flowable.just(Collections.singletonMap("received", input)));
+  }
+
+  /** Returns a node that waits on the long-running call {@code interruptId}, as a tool does. */
+  static Node longRunningAsk(String name, String interruptId) {
+    return new TestNode(name, (ctx, input) -> Flowable.just(interrupt(interruptId)));
+  }
+
+  /** Returns the event in which a node waits on the long-running call {@code interruptId}. */
+  static Event interrupt(String interruptId) {
+    return newEvent()
+        .content(callContent(LONG_RUNNING_CALL, interruptId))
+        .longRunningToolIds(ImmutableSet.of(interruptId))
+        .build();
   }
 
   /** A runner over an app rooted on a node, driven a turn at a time on one session. */
