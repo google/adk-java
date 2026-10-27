@@ -21,6 +21,7 @@ import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.stream.Collectors.joining;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -28,20 +29,27 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.ContextCacheConfig;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.Client;
+import com.google.genai.ResponseStream;
 import com.google.genai.types.Candidate;
 import com.google.genai.types.ClientOptions;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
+import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Deque;
+import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import okhttp3.Interceptor;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -50,6 +58,9 @@ import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 import okio.Buffer;
+import okio.BufferedSource;
+import okio.ForwardingSource;
+import okio.Okio;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -184,6 +195,41 @@ public final class GeminiContinuationTest {
     assertUsage(last, /* prompt= */ 10 + 15, /* candidates= */ 5 + 3, /* total= */ 15 + 18);
   }
 
+  @Test
+  public void readStream_cancelWhileResumeOpens_closesBothStreams() throws Exception {
+    api.respondStream(
+        response("CONTINUATION", "state", usage(10, 5, 15), Part.fromText("The answer is")));
+    api.respondStream(response("STOP", /* token= */ null, usage(15, 3, 18), Part.fromText(" 42.")));
+    CountDownLatch resumeRequested = new CountDownLatch(1);
+    CountDownLatch releaseResume = new CountDownLatch(1);
+    api.holdRequest(/* index= */ 1, resumeRequested, releaseResume);
+    // Signals after the SDK's close() returns, so the resume is released only once the first
+    // close can no longer see it.
+    CountDownLatch firstCloseReturned = new CountDownLatch(1);
+    CompletableFuture<CloseTrackingStream> future =
+        api.client()
+            .async
+            .models
+            .generateContentStream(
+                "gemini-test-model",
+                ImmutableList.of(QUESTION),
+                GenerateContentConfig.builder().build())
+            .thenApply(stream -> new CloseTrackingStream(stream, firstCloseReturned));
+
+    TestSubscriber<GenerateContentResponse> subscriber =
+        Gemini.readStream(future).subscribeOn(Schedulers.io()).test();
+    try {
+      assertThat(resumeRequested.await(5, SECONDS)).isTrue();
+      subscriber.cancel();
+      assertThat(api.bodyClosed(0).await(5, SECONDS)).isTrue();
+      assertThat(firstCloseReturned.await(5, SECONDS)).isTrue();
+    } finally {
+      releaseResume.countDown();
+    }
+
+    assertThat(api.bodyClosed(1).await(5, SECONDS)).isTrue();
+  }
+
   private List<LlmResponse> generate(boolean stream) {
     LlmRequest request = LlmRequest.builder().contents(ImmutableList.of(QUESTION)).build();
     return gemini.generateContent(request, stream).toList().blockingGet();
@@ -273,10 +319,38 @@ public final class GeminiContinuationTest {
     return Base64.getEncoder().encodeToString(token.getBytes(UTF_8));
   }
 
+  /** Wraps an SDK stream and counts down a latch once its {@code close()} returns. */
+  private static final class CloseTrackingStream
+      implements Iterable<GenerateContentResponse>, AutoCloseable {
+    private final ResponseStream<GenerateContentResponse> delegate;
+    private final CountDownLatch closeReturned;
+
+    CloseTrackingStream(
+        ResponseStream<GenerateContentResponse> delegate, CountDownLatch closeReturned) {
+      this.delegate = delegate;
+      this.closeReturned = closeReturned;
+    }
+
+    @Override
+    public Iterator<GenerateContentResponse> iterator() {
+      return delegate.iterator();
+    }
+
+    @Override
+    public void close() {
+      delegate.close();
+      closeReturned.countDown();
+    }
+  }
+
   /** A fake Gemini API that records each request and answers it with the next canned response. */
   private static final class ScriptedGeminiApi implements Interceptor {
     private final Deque<String> responses = new ArrayDeque<>();
     private final List<JsonNode> requests = new ArrayList<>();
+    private final List<CountDownLatch> bodiesClosed = new ArrayList<>();
+    private int heldIndex = -1;
+    private CountDownLatch heldRequested;
+    private CountDownLatch heldRelease;
 
     Client client() {
       OkHttpClient httpClient = new OkHttpClient.Builder().addInterceptor(this).build();
@@ -306,22 +380,70 @@ public final class GeminiContinuationTest {
       responses.add("{\"name\":\"" + name + "\",\"expireTime\":\"2099-01-01T00:00:00Z\"}");
     }
 
+    /**
+     * Makes request {@code index} (0-based) count down {@code requested} when it arrives and wait
+     * for {@code release} before it is answered.
+     */
+    synchronized void holdRequest(int index, CountDownLatch requested, CountDownLatch release) {
+      heldIndex = index;
+      heldRequested = requested;
+      heldRelease = release;
+    }
+
+    /** Returns a latch that opens when the body of request {@code index} (0-based) is closed. */
+    synchronized CountDownLatch bodyClosed(int index) {
+      while (bodiesClosed.size() <= index) {
+        bodiesClosed.add(new CountDownLatch(1));
+      }
+      return bodiesClosed.get(index);
+    }
+
     synchronized ImmutableList<JsonNode> requests() {
       return ImmutableList.copyOf(requests);
     }
 
     @Override
-    public synchronized Response intercept(Chain chain) throws IOException {
+    public Response intercept(Chain chain) throws IOException {
       Request request = chain.request();
       Buffer body = new Buffer();
       request.body().writeTo(body);
-      requests.add(objectMapper.readTree(body.readUtf8()));
+      int index;
+      String answer;
+      CountDownLatch closed;
+      CountDownLatch release = null;
+      synchronized (this) {
+        index = requests.size();
+        requests.add(objectMapper.readTree(body.readUtf8()));
+        answer = responses.remove();
+        closed = bodyClosed(index);
+        if (index == heldIndex) {
+          heldRequested.countDown();
+          release = heldRelease;
+        }
+      }
+      if (release != null) {
+        try {
+          release.await();
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IOException(e);
+        }
+      }
+      BufferedSource source =
+          Okio.buffer(
+              new ForwardingSource(new Buffer().writeUtf8(answer)) {
+                @Override
+                public void close() throws IOException {
+                  closed.countDown();
+                  super.close();
+                }
+              });
       return new Response.Builder()
           .request(request)
           .protocol(Protocol.HTTP_1_1)
           .code(200)
           .message("fake")
-          .body(ResponseBody.create(responses.remove(), MediaType.get("application/json")))
+          .body(ResponseBody.create(source, MediaType.get("application/json"), -1))
           .build();
     }
   }
