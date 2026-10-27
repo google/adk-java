@@ -314,9 +314,10 @@ public class InvocationContext {
   /**
    * Returns the {@link Scheduler} on which this invocation runs the work ADK hands to worker
    * threads: the sub-agents of a {@code ParallelAgent}, tool calls in {@code
-   * ToolExecutionMode.PARALLEL_SUBSCRIBE} mode, and the hop that starts the live send loop. An
-   * agent-level setting ({@code ParallelAgent.Builder#scheduler}, {@code
-   * LlmAgent.Builder#executor}) takes precedence over it. Defaults to {@link Schedulers#io()}.
+   * ToolExecutionMode.PARALLEL_SUBSCRIBE} mode, the plain bodies of workflow {@code FunctionNode}s,
+   * and the hop that starts the live send loop. An agent-level setting ({@code
+   * ParallelAgent.Builder#scheduler}, {@code LlmAgent.Builder#executor}) takes precedence over it.
+   * Defaults to {@link Schedulers#io()}.
    */
   public Scheduler scheduler() {
     return scheduler != null ? scheduler : Schedulers.io();
