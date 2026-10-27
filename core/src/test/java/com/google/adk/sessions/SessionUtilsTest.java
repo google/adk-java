@@ -17,16 +17,12 @@
 package com.google.adk.sessions;
 
 import static com.google.common.truth.Truth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.adk.JsonBaseModel;
-import com.google.adk.events.Event;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
+import java.util.Base64;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -34,60 +30,48 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class SessionUtilsTest {
 
-  private static final ObjectMapper objectMapper = JsonBaseModel.getMapper();
-  private static final byte[] PAYLOAD = "payload".getBytes(StandardCharsets.UTF_8);
+  private static final byte[] payload = "payload".getBytes(UTF_8);
 
-  private static Content contentWithInlineData() {
+  private static Content contentWithInlineData(byte[] data) {
     return Content.builder()
         .role("user")
         .parts(
             Part.builder()
-                .inlineData(Blob.builder().mimeType("image/png").data(PAYLOAD).build())
+                .inlineData(
+                    Blob.builder().mimeType("image/png").displayName("cat.png").data(data).build())
                 .build())
         .build();
   }
 
   @Test
-  public void encodeContent_inlineData_preservesMimeType() {
-    Content encoded = SessionUtils.encodeContent(contentWithInlineData());
+  public void encodeContent_inlineData_encodesDataAndKeepsMetadata() {
+    Content encoded = SessionUtils.encodeContent(contentWithInlineData(payload));
 
-    Blob encodedBlob = encoded.parts().get().get(0).inlineData().get();
-    assertThat(encodedBlob.mimeType()).hasValue("image/png");
+    Blob blob = encoded.parts().get().get(0).inlineData().get();
+    assertThat(Base64.getDecoder().decode(blob.data().get())).isEqualTo(payload);
+    assertThat(blob.mimeType()).hasValue("image/png");
+    assertThat(blob.displayName()).hasValue("cat.png");
   }
 
   @Test
-  public void decodeContent_inlineData_preservesMimeType() {
-    Content decoded = SessionUtils.decodeContent(contentWithInlineData());
+  public void decodeContent_base64InlineData_decodesDataAndKeepsMetadata() {
+    Content decoded =
+        SessionUtils.decodeContent(contentWithInlineData(Base64.getEncoder().encode(payload)));
 
-    Blob decodedBlob = decoded.parts().get().get(0).inlineData().get();
-    assertThat(decodedBlob.mimeType()).hasValue("image/png");
+    Blob blob = decoded.parts().get().get(0).inlineData().get();
+    assertThat(blob.data().get()).isEqualTo(payload);
+    assertThat(blob.mimeType()).hasValue("image/png");
+    assertThat(blob.displayName()).hasValue("cat.png");
   }
 
   @Test
   public void decodeContent_encodeContent_roundTripsInlineData() {
     Content roundTripped =
-        SessionUtils.decodeContent(SessionUtils.encodeContent(contentWithInlineData()));
+        SessionUtils.decodeContent(SessionUtils.encodeContent(contentWithInlineData(payload)));
 
     Blob blob = roundTripped.parts().get().get(0).inlineData().get();
+    assertThat(blob.data().get()).isEqualTo(payload);
     assertThat(blob.mimeType()).hasValue("image/png");
-    assertThat(blob.data().get()).isEqualTo(PAYLOAD);
-  }
-
-  /** The MIME type has to survive the JSON the Vertex AI Sessions API stores the event in. */
-  @Test
-  public void convertEventToJson_inlineData_persistsMimeType() throws Exception {
-    Event event =
-        Event.builder()
-            .author("user")
-            .invocationId("inv-123")
-            .timestamp(Instant.parse("2023-01-01T00:00:00Z").toEpochMilli())
-            .content(contentWithInlineData())
-            .build();
-
-    JsonNode jsonNode = objectMapper.readTree(SessionJsonConverter.convertEventToJson(event));
-
-    JsonNode inlineData = jsonNode.get("content").get("parts").get(0).get("inlineData");
-    assertThat(inlineData.has("mimeType")).isTrue();
-    assertThat(inlineData.get("mimeType").asText()).isEqualTo("image/png");
+    assertThat(blob.displayName()).hasValue("cat.png");
   }
 }

@@ -744,7 +744,8 @@ public final class SessionJsonConverterTest {
   }
 
   @Test
-  public void convertEventToJson_thenFromApiEvent_roundTripsInlineBytes() throws Exception {
+  public void convertEventToJson_thenFromApiEventWithoutTypedContent_readsInlineDataFromRawEvent()
+      throws Exception {
     byte[] data = {(byte) 0xfb, (byte) 0xff, 0x01};
     Event event =
         Event.builder()
@@ -753,9 +754,12 @@ public final class SessionJsonConverterTest {
             .timestamp(1_700_000_000_123L)
             .content(Content.fromParts(Part.fromBytes(data, "image/png")))
             .build();
+    Map<String, Object> storedEvent = asStoredEvent(event);
+    // Without the typed content, only rawEvent can supply the bytes and MIME type.
+    storedEvent.remove("content");
 
     Blob reloaded =
-        SessionJsonConverter.fromApiEvent(asStoredEvent(event))
+        SessionJsonConverter.fromApiEvent(storedEvent)
             .content()
             .get()
             .parts()
@@ -765,8 +769,39 @@ public final class SessionJsonConverterTest {
             .get();
 
     assertThat(reloaded.data().get()).isEqualTo(data);
-    // Only rawEvent keeps the MIME type, so this proves the bytes came from it.
     assertThat(reloaded.mimeType()).hasValue("image/png");
+  }
+
+  @Test
+  public void convertEventToJson_thenFromApiEventWithoutRawEvent_keepsInlineData()
+      throws Exception {
+    byte[] data = {(byte) 0xfb, (byte) 0xff, 0x01};
+    Blob inlineData =
+        Blob.builder().data(data).mimeType("image/png").displayName("cat.png").build();
+    Event event =
+        Event.builder()
+            .author("user")
+            .invocationId("inv-1")
+            .timestamp(1_700_000_000_123L)
+            .content(Content.fromParts(Part.builder().inlineData(inlineData).build()))
+            .build();
+    Map<String, Object> storedEvent = asStoredEvent(event);
+    // An event stored without rawEvent reloads from the typed fields.
+    storedEvent.remove("rawEvent");
+
+    Blob reloaded =
+        SessionJsonConverter.fromApiEvent(storedEvent)
+            .content()
+            .get()
+            .parts()
+            .get()
+            .get(0)
+            .inlineData()
+            .get();
+
+    assertThat(reloaded.data().get()).isEqualTo(data);
+    assertThat(reloaded.mimeType()).hasValue("image/png");
+    assertThat(reloaded.displayName()).hasValue("cat.png");
   }
 
   @Test
