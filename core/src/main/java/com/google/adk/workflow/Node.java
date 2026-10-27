@@ -62,7 +62,10 @@ public interface Node {
     return NodeConfig.builder().build();
   }
 
-  /** Returns the schema the node's input must match. */
+  /**
+   * Returns the schema the node's input must match. An edge into the node fails at build when its
+   * source's output schema admits a value this one rejects.
+   */
   @Experimental
   default Optional<Schema> inputSchema() {
     return Optional.empty();
