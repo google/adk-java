@@ -204,6 +204,10 @@ public class SpringAI extends BaseLlm {
             Prompt prompt = messageConverter.toLlmPrompt(llmRequest, resolveDefaultOptions());
             observabilityHandler.logRequest(prompt.toString(), model());
 
+            // Per-stream aggregator: accumulates chunk text / tool calls and produces the
+            // single final response on stream completion.
+            StreamingResponseAggregator aggregator = new StreamingResponseAggregator();
+
             Flux<ChatResponse> responseFlux = streamingChatModel.stream(prompt);
 
             responseFlux
@@ -221,6 +225,7 @@ public class SpringAI extends BaseLlm {
                         // Use enhanced streaming-aware conversion
                         LlmResponse llmResponse =
                             messageConverter.toLlmResponse(chatResponse, true);
+                        aggregator.processStreamingResponse(llmResponse);
                         emitter.onNext(llmResponse);
                       } catch (Exception e) {
                         observabilityHandler.recordError(context, e);
@@ -240,6 +245,11 @@ public class SpringAI extends BaseLlm {
                     () -> {
                       // Record success for streaming completion
                       observabilityHandler.recordSuccess(context, 0, 0, 0);
+                      // The final (persisted) response is emitted exactly once, on stream
+                      // completion. Always emit one final response, even an empty one: without
+                      // it every event is partial, and BaseLlmFlow treats the turn as
+                      // unfinished and re-calls the model until maxLlmCalls.
+                      emitter.onNext(aggregator.getFinalResponse());
                       emitter.onComplete();
                     });
           } catch (Exception e) {

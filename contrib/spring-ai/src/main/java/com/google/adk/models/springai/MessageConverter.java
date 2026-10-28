@@ -45,7 +45,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -321,7 +320,8 @@ public class MessageConverter {
       }
 
       Content content = Content.builder().role("model").parts(mergedParts).build();
-      boolean isPartial = isStreaming && isPartialResponse(mergedParts);
+      // Streamed chunks are partial; SpringAI emits the aggregated final on stream completion.
+      boolean isPartial = isStreaming;
       boolean isTurnComplete = !isStreaming || isTurnCompleteFinishReason(firstFinishReason);
 
       responseBuilder.content(content).partial(isPartial).turnComplete(isTurnComplete);
@@ -678,19 +678,6 @@ public class MessageConverter {
 
   private int nullSafeInt(@Nullable Integer value) {
     return value != null ? value.intValue() : 0;
-  }
-
-  /**
-   * Determines if the merged parts of a streamed candidate are partial: they carry no function call
-   * and their text does not end with sentence punctuation.
-   */
-  private static boolean isPartialResponse(List<Part> parts) {
-    if (parts.stream().anyMatch(part -> part.functionCall().isPresent())) {
-      return false;
-    }
-    String text =
-        parts.stream().map(part -> part.text().orElse("")).collect(Collectors.joining()).trim();
-    return !text.isEmpty() && !text.endsWith(".") && !text.endsWith("!") && !text.endsWith("?");
   }
 
   /** Determines if a candidate's finish reason indicates the turn is complete. */

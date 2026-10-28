@@ -24,14 +24,19 @@ import static org.mockito.Mockito.when;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -149,16 +154,229 @@ class SpringAITest {
     testObserver.awaitDone(5, TimeUnit.SECONDS);
     testObserver.assertComplete();
     testObserver.assertNoErrors();
-    testObserver.assertValueCount(3);
+    // 3 partial chunks + 1 aggregated final response on stream completion
+    testObserver.assertValueCount(4);
 
     List<LlmResponse> responses = testObserver.values();
-    assertThat(responses).hasSize(3);
+    assertThat(responses).hasSize(4);
 
     // Verify each streaming response
     for (LlmResponse response : responses) {
       assertThat(response.content()).isPresent();
       assertThat(response.content().get().parts()).isPresent();
     }
+
+    // The first 3 values are partial chunks; the last value is the aggregated final response
+    for (int i = 0; i < 3; i++) {
+      assertThat(responses.get(i).partial()).contains(true);
+    }
+    LlmResponse finalResponse = responses.get(3);
+    assertThat(finalResponse.partial()).contains(false);
+    assertThat(finalResponse.turnComplete()).contains(true);
+    assertThat(finalResponse.content().get().parts().get().get(0).text())
+        .contains("I'm doing well!");
+  }
+
+  @Test
+  void testGenerateContentStreamingFinalCarriesUsageMetadata() {
+    // Usage metadata from the stream's last chunk must survive onto the aggregated final
+    // response (partial events are streamed but never persisted by the Runner).
+    AssistantMessage chunk1 = new AssistantMessage("Hello");
+    AssistantMessage chunk2 = new AssistantMessage(" world");
+    ChatResponse lastResponse =
+        new ChatResponse(
+            List.of(new Generation(chunk2)),
+            ChatResponseMetadata.builder()
+                .id("resp-usage")
+                .usage(new DefaultUsage(10, 4, 6))
+                .build());
+    Flux<ChatResponse> responseFlux =
+        Flux.just(new ChatResponse(List.of(new Generation(chunk1))), lastResponse);
+
+    when(mockStreamingChatModel.stream(any(Prompt.class))).thenReturn(responseFlux);
+
+    SpringAI springAI = new SpringAI(mockStreamingChatModel);
+
+    TestSubscriber<LlmResponse> testObserver = springAI.generateContent(testRequest, true).test();
+
+    testObserver.awaitDone(5, TimeUnit.SECONDS);
+    testObserver.assertComplete();
+    testObserver.assertNoErrors();
+    testObserver.assertValueCount(3);
+
+    LlmResponse finalResponse = testObserver.values().get(2);
+    assertThat(finalResponse.partial()).contains(false);
+    // Assert the mapped counts (not just presence) to catch a mapping regression.
+    assertThat(finalResponse.usageMetadata()).isPresent();
+    assertThat(finalResponse.usageMetadata().get().promptTokenCount()).contains(10);
+    assertThat(finalResponse.usageMetadata().get().candidatesTokenCount()).contains(4);
+    assertThat(finalResponse.usageMetadata().get().totalTokenCount()).contains(6);
+  }
+
+  @Test
+  void testGenerateContentStreamingEmptyChunksEmitSingleFinal() {
+    // A stream of empty chunks must still yield exactly one partial=false response:
+    // without a final event the turn looks unfinished and BaseLlmFlow re-calls the
+    // model with the same history until maxLlmCalls.
+    AssistantMessage emptyChunk = new AssistantMessage("");
+    Flux<ChatResponse> responseFlux =
+        Flux.just(
+            new ChatResponse(List.of(new Generation(emptyChunk))),
+            new ChatResponse(List.of(new Generation(emptyChunk))));
+
+    when(mockStreamingChatModel.stream(any(Prompt.class))).thenReturn(responseFlux);
+
+    SpringAI springAI = new SpringAI(mockStreamingChatModel);
+
+    TestSubscriber<LlmResponse> testObserver = springAI.generateContent(testRequest, true).test();
+
+    testObserver.awaitDone(5, TimeUnit.SECONDS);
+    testObserver.assertComplete();
+    testObserver.assertNoErrors();
+    // 2 partial chunks + exactly 1 final
+    testObserver.assertValueCount(3);
+    List<LlmResponse> responses = testObserver.values();
+    for (int i = 0; i < 2; i++) {
+      assertThat(responses.get(i).partial()).contains(true);
+    }
+    assertThat(responses.get(2).partial()).contains(false);
+    assertThat(responses.get(2).turnComplete()).contains(true);
+  }
+
+  @Test
+  void testGenerateContentStreamingThoughtThenAnswerKeptAsSeparateParts() {
+    // Reasoning must stay thought-flagged parts separate from the answer (Kotlin parity):
+    // merged into one text part, reasoning is persisted as answer text and replayed to the
+    // model on the next turn.
+    AssistantMessage thoughtChunk =
+        AssistantMessage.builder()
+            .content("reasoning step")
+            .properties(Map.of("isThought", true))
+            .build();
+    AssistantMessage answerChunk = new AssistantMessage("The answer.");
+    Flux<ChatResponse> responseFlux =
+        Flux.just(
+            new ChatResponse(List.of(new Generation(thoughtChunk))),
+            new ChatResponse(List.of(new Generation(answerChunk))));
+
+    when(mockStreamingChatModel.stream(any(Prompt.class))).thenReturn(responseFlux);
+
+    SpringAI springAI = new SpringAI(mockStreamingChatModel);
+
+    TestSubscriber<LlmResponse> testObserver = springAI.generateContent(testRequest, true).test();
+
+    testObserver.awaitDone(5, TimeUnit.SECONDS);
+    testObserver.assertComplete();
+    testObserver.assertNoErrors();
+
+    LlmResponse finalResponse = testObserver.values().get(testObserver.values().size() - 1);
+    List<Part> finalParts = finalResponse.content().get().parts().get();
+    // two separate text parts: thought segment first, answer second
+    assertThat(finalParts.size()).isGreaterThanOrEqualTo(2);
+    assertThat(finalParts.get(0).thought()).contains(true);
+    assertThat(finalParts.get(0).text()).contains("reasoning step");
+    assertThat(finalParts.get(1).thought()).isEmpty();
+    assertThat(finalParts.get(1).text()).contains("The answer.");
+  }
+
+  @Test
+  void testGenerateContentStreamingMaxTokensCarriesErrorOnFinal() {
+    // A MAX_TOKENS stream must not be persisted as a clean turn: the final carries the
+    // finish reason and the error code (Kotlin aggregator / Python LiteLLM parity).
+    AssistantMessage chunk = new AssistantMessage("partial answer");
+    ChatGenerationMetadata maxTokens =
+        ChatGenerationMetadata.builder().finishReason("LENGTH").build();
+    Flux<ChatResponse> responseFlux =
+        Flux.just(new ChatResponse(List.of(new Generation(chunk, maxTokens))));
+
+    when(mockStreamingChatModel.stream(any(Prompt.class))).thenReturn(responseFlux);
+
+    SpringAI springAI = new SpringAI(mockStreamingChatModel);
+
+    TestSubscriber<LlmResponse> testObserver = springAI.generateContent(testRequest, true).test();
+
+    testObserver.awaitDone(5, TimeUnit.SECONDS);
+    testObserver.assertComplete();
+    testObserver.assertNoErrors();
+
+    LlmResponse finalResponse = testObserver.values().get(testObserver.values().size() - 1);
+    assertThat(finalResponse.partial()).contains(false);
+    assertThat(finalResponse.finishReason()).isPresent();
+    assertThat(finalResponse.finishReason().get().knownEnum())
+        .isEqualTo(FinishReason.Known.MAX_TOKENS);
+    assertThat(finalResponse.errorCode()).isPresent();
+  }
+
+  @Test
+  void testGenerateContentStreamingMixedTextAndToolCallTurn() {
+    // A text + tool-call turn: the aggregated final must carry both the full text and the
+    // accumulated function call (checked by review), with the tool call intact.
+    AssistantMessage textChunk = new AssistantMessage("Checking ");
+    AssistantMessage textChunk2 = new AssistantMessage("the logs now.");
+    AssistantMessage toolCallChunk =
+        AssistantMessage.builder()
+            .content("")
+            .toolCalls(
+                List.of(
+                    new AssistantMessage.ToolCall(
+                        "call-1", "function", "queryLog", "{\"kw\":\"x\"}")))
+            .build();
+    Flux<ChatResponse> responseFlux =
+        Flux.just(
+            new ChatResponse(List.of(new Generation(textChunk))),
+            new ChatResponse(List.of(new Generation(textChunk2))),
+            new ChatResponse(List.of(new Generation(toolCallChunk))));
+
+    when(mockStreamingChatModel.stream(any(Prompt.class))).thenReturn(responseFlux);
+
+    SpringAI springAI = new SpringAI(mockStreamingChatModel);
+
+    TestSubscriber<LlmResponse> testObserver = springAI.generateContent(testRequest, true).test();
+
+    testObserver.awaitDone(5, TimeUnit.SECONDS);
+    testObserver.assertComplete();
+    testObserver.assertNoErrors();
+    // 3 partial chunks + 1 aggregated final
+    testObserver.assertValueCount(4);
+
+    LlmResponse finalResponse = testObserver.values().get(3);
+    assertThat(finalResponse.partial()).contains(false);
+    List<Part> finalParts = finalResponse.content().get().parts().get();
+    // full text first, then the accumulated tool call
+    assertThat(finalParts.get(0).text()).contains("Checking the logs now.");
+    assertThat(finalParts.get(1).functionCall()).isPresent();
+    assertThat(finalParts.get(1).functionCall().get().name()).contains("queryLog");
+  }
+
+  @Test
+  void testGenerateContentStreamingCjkTerminalPunctuationPersistsFinal() {
+    // Regression for CJK turns: a response ending with CJK terminal punctuation must still
+    // produce exactly one final (persisted) event, emitted on stream completion.
+    Flux<ChatResponse> responseFlux =
+        Flux.just(
+            createStreamingChatResponse("今天天气"),
+            createStreamingChatResponse("不错，适合出门。"),
+            createStreamingChatResponse("记得带伞。"));
+
+    when(mockStreamingChatModel.stream(any(Prompt.class))).thenReturn(responseFlux);
+
+    SpringAI springAI = new SpringAI(mockStreamingChatModel);
+
+    TestSubscriber<LlmResponse> testObserver = springAI.generateContent(testRequest, true).test();
+
+    testObserver.awaitDone(5, TimeUnit.SECONDS);
+    testObserver.assertComplete();
+    testObserver.assertNoErrors();
+    testObserver.assertValueCount(4);
+
+    List<LlmResponse> responses = testObserver.values();
+    for (int i = 0; i < 3; i++) {
+      assertThat(responses.get(i).partial()).contains(true);
+    }
+    LlmResponse finalResponse = responses.get(3);
+    assertThat(finalResponse.partial()).contains(false);
+    assertThat(finalResponse.content().get().parts().get().get(0).text())
+        .contains("今天天气不错，适合出门。记得带伞。");
   }
 
   @Test
@@ -273,7 +491,8 @@ class SpringAITest {
     testObserver.awaitDone(10, TimeUnit.SECONDS);
     testObserver.assertComplete();
     testObserver.assertNoErrors();
-    testObserver.assertValueCount(1000);
+    // 1000 partial chunks + 1 aggregated final response on stream completion
+    testObserver.assertValueCount(1001);
   }
 
   private ChatResponse createStreamingChatResponse(String text) {

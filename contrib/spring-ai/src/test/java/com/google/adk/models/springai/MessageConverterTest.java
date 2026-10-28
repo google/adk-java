@@ -532,8 +532,10 @@ class MessageConverterTest {
   }
 
   @Test
-  void testPartialResponseDetection() {
-    // Test partial response (no punctuation ending)
+  void testToLlmResponseStreamingAlwaysMarksChunksPartial() {
+    // Streamed chunks are always partial regardless of punctuation: the final (persisted)
+    // response is derived from the stream completion signal, not mid-stream guessing.
+    // Punctuation-based classification dropped turns ending with CJK terminal punctuation.
     AssistantMessage partialMessage = new AssistantMessage("I am thinking");
     Generation partialGeneration = new Generation(partialMessage);
     ChatResponse partialResponse = new ChatResponse(List.of(partialGeneration));
@@ -541,13 +543,12 @@ class MessageConverterTest {
     LlmResponse partialLlmResponse = messageConverter.toLlmResponse(partialResponse, true);
     assertThat(partialLlmResponse.partial()).contains(true);
 
-    // Test complete response (ends with punctuation)
     AssistantMessage completeMessage = new AssistantMessage("I am done.");
     Generation completeGeneration = new Generation(completeMessage);
     ChatResponse completeResponse = new ChatResponse(List.of(completeGeneration));
 
     LlmResponse completeLlmResponse = messageConverter.toLlmResponse(completeResponse, true);
-    assertThat(completeLlmResponse.partial()).contains(false);
+    assertThat(completeLlmResponse.partial()).contains(true);
   }
 
   @Test
@@ -1068,7 +1069,8 @@ class MessageConverterTest {
     LlmResponse response =
         messageConverter.toLlmResponse(new ChatResponse(List.of(thoughtGen, toolCallGen)), true);
 
-    assertThat(response.partial()).contains(false);
+    // Streamed chunks are always partial; the aggregated final is emitted on completion.
+    assertThat(response.partial()).contains(true);
     assertThat(response.turnComplete()).contains(true);
     assertThat(response.finishReason()).contains(new FinishReason(FinishReason.Known.STOP));
   }
@@ -1095,7 +1097,8 @@ class MessageConverterTest {
     LlmResponse response =
         messageConverter.toLlmResponse(new ChatResponse(List.of(new Generation(null))), true);
 
-    assertThat(response.partial()).contains(false);
+    // Streamed chunks are always partial; the aggregated final is emitted on completion.
+    assertThat(response.partial()).contains(true);
     assertThat(response.content().orElseThrow().parts().orElseThrow()).isEmpty();
   }
 
