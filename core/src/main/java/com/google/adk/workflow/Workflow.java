@@ -34,7 +34,8 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * A graph of nodes that is itself a node, so a workflow can go wherever a node can, including in
- * another workflow.
+ * another workflow. Building a workflow validates its graph and throws {@link
+ * GraphValidationException} for a malformed one.
  */
 @Experimental
 public final class Workflow extends BaseNode {
@@ -207,6 +208,8 @@ public final class Workflow extends BaseNode {
      *
      * @throws IllegalArgumentException if the workflow's name or the name of a node in its graph is
      *     empty or contains {@code /}, {@code @}, or {@code .}
+     * @throws GraphValidationException if the graph is malformed, for example if {@link Start}
+     *     cannot reach one of its nodes
      */
     public Workflow build() {
       checkState(name != null, "Workflow.Builder requires name to be set.");

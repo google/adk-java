@@ -31,8 +31,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * A workflow graph. Its nodes are the ones its edges connect, each listed once, in the order the
- * edges first mention them, so scheduling is deterministic.
+ * A validated workflow graph. Its nodes are the ones its edges connect, each listed once, in the
+ * order the edges first mention them, so scheduling is deterministic.
  */
 @Experimental
 final class Graph {
@@ -56,8 +56,11 @@ final class Graph {
   }
 
   /**
-   * Builds the graph that {@code edges} describe, throwing {@link IllegalArgumentException} if a
-   * node's name is empty or contains {@code /}, {@code @}, or {@code .}.
+   * Builds and validates the graph that {@code edges} describe.
+   *
+   * @throws IllegalArgumentException if a node's name is empty or contains {@code /}, {@code @}, or
+   *     {@code .}
+   * @throws GraphValidationException if the graph is malformed
    */
   static Graph of(List<Edge> edges) {
     ImmutableList<Edge> edgeList = ImmutableList.copyOf(edges);
@@ -76,8 +79,9 @@ final class Graph {
     for (Node node : nodes) {
       NodeNames.validate(node.name());
     }
+    GraphValidation.validate(nodes, edgeList);
     ImmutableMap<String, Node> nodesByName =
-        nodes.stream().collect(toImmutableMap(Node::name, node -> node, (first, last) -> last));
+        nodes.stream().collect(toImmutableMap(Node::name, node -> node));
     ImmutableSet<String> sourceNames =
         edgeList.stream().map(edge -> edge.from().name()).collect(toImmutableSet());
     ImmutableSet<String> terminalNodeNames =
