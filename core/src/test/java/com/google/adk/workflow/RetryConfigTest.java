@@ -182,6 +182,18 @@ public final class RetryConfigTest {
   }
 
   @Test
+  public void shouldRetry_neverRetriesAWorkflowConfigurationException() {
+    Exception failure = new WorkflowConfigurationException("misconfigured");
+    RetryConfig listingIt =
+        RetryConfig.builder()
+            .exceptions(ImmutableList.of("WorkflowConfigurationException"))
+            .build();
+
+    assertThat(RetryConfig.builder().build().shouldRetry(failure, /* attempt= */ 1)).isFalse();
+    assertThat(listingIt.shouldRetry(failure, /* attempt= */ 1)).isFalse();
+  }
+
+  @Test
   public void delayFor_withoutJitter_growsByTheBackoffFactorUntilMaxDelay() {
     RetryConfig config =
         RetryConfig.builder()

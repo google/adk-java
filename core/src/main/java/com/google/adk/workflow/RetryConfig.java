@@ -72,7 +72,9 @@ public abstract class RetryConfig {
 
   /**
    * Returns the simple type names of the failures to retry on, matched exactly with no subclass
-   * match. When unset, any failure is retried; an empty list retries none.
+   * match. When unset, any failure is retried; an empty list retries none. A {@link
+   * WorkflowConfigurationException} is never retried, even when listed, because a retry fails the
+   * same way.
    */
   public abstract Optional<ImmutableList<String>> exceptions();
 
@@ -92,7 +94,7 @@ public abstract class RetryConfig {
    * from 1, has an attempt left and failed with a type this config retries.
    */
   boolean shouldRetry(Exception failure, int attempt) {
-    if (attempt >= maxAttempts()) {
+    if (attempt >= maxAttempts() || failure instanceof WorkflowConfigurationException) {
       return false;
     }
     return exceptions().map(names -> names.contains(errorTypeName(failure))).orElse(true);

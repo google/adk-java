@@ -17,6 +17,7 @@
 package com.google.adk.workflow;
 
 import static com.google.adk.testing.WorkflowTestNodes.dispatcher;
+import static com.google.adk.testing.WorkflowTestNodes.emitter;
 import static com.google.adk.testing.WorkflowTestNodes.throwing;
 import static com.google.adk.testing.WorkflowTestNodes.workflow;
 import static com.google.adk.workflow.WorkflowResumeTesting.START;
@@ -380,6 +381,23 @@ public final class WorkflowRetryTest {
 
     assertThat(turn.error()).hasMessageThat().contains("'wf'");
     assertThat(inner.runs()).isEqualTo(1);
+    assertThat(errorPaths(turn.events())).containsExactly("wf@1");
+  }
+
+  @Test
+  public void aWorkflowWithTwoTerminalOutputs_failsWithoutARetry() {
+    Workflow root =
+        Workflow.builder()
+            .name("wf")
+            .edges(
+                new Edge(START, emitter("first", "first_out")),
+                new Edge(START, emitter("second", "second_out")))
+            .config(retrying(3))
+            .build();
+
+    FailedTurn turn = new WorkflowSession(root).failingTurn(go());
+
+    assertThat(turn.error()).isInstanceOf(WorkflowConfigurationException.class);
     assertThat(errorPaths(turn.events())).containsExactly("wf@1");
   }
 
