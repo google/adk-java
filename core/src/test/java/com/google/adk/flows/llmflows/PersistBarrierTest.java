@@ -98,6 +98,30 @@ public final class PersistBarrierTest {
   }
 
   @Test
+  public void streamedReply_waitsForItsCompleteEventOnly() {
+    // The partial chunks of a streamed reply share the id of the complete event that ends it.
+    PersistBarrier.enable(context);
+    Event partial = Event.builder().id("e1").author("agent").partial(true).build();
+
+    TestObserver<Void> observer =
+        PersistBarrier.awaitPersisted(context, ImmutableList.of(partial, event("e1"))).test();
+
+    observer.assertNotComplete();
+    PersistBarrier.markPersisted(context, "e1");
+    observer.assertComplete();
+  }
+
+  @Test
+  public void partialEventsOnly_completesImmediately() {
+    PersistBarrier.enable(context);
+    Event partial = Event.builder().id("e1").author("agent").partial(true).build();
+
+    PersistBarrier.awaitPersisted(context, ImmutableList.of(partial)).test().assertComplete();
+
+    assertThat(PersistBarrier.pendingCount(context)).isEqualTo(0);
+  }
+
+  @Test
   public void multiEventStep_completesOnlyAfterAllMarked() {
     PersistBarrier.enable(context);
 

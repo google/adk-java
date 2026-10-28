@@ -1171,6 +1171,62 @@ public final class RunnerTest {
   }
 
   /**
+   * A streamed reply's partial chunks share the id of its complete event but are never appended, so
+   * they must not release the wait on that event: a transfer it carries must still reach a target
+   * that sees the reply.
+   */
+  @Test
+  public void runAsync_slowAppendEvent_streamedReplyTransfer_targetSeesTheReply() {
+    TestLlm subTestLlm = createTestLlm(createTextLlmResponse("sub response"));
+    LlmAgent subAgent = createTestAgentBuilder(subTestLlm).name("sub_agent").build();
+    LlmResponse partialReply =
+        LlmResponse.builder()
+            .content(Content.builder().role("model").parts(Part.fromText("Handing")).build())
+            .partial(true)
+            .build();
+    LlmResponse completeReply = createTextLlmResponse("Handing off");
+    AfterModelCallback transferOnCompleteReply =
+        (ctx, response) -> {
+          if (!response.partial().orElse(false)) {
+            ctx.eventActions().setTransferToAgent(subAgent.name());
+          }
+          return Maybe.empty();
+        };
+    LlmAgent rootAgent =
+        createTestAgentBuilder(createTestLlm(Flowable.just(partialReply, completeReply)))
+            .subAgents(subAgent)
+            .afterModelCallback(ImmutableList.of(transferOnCompleteReply))
+            .build();
+    Runner runnerForRace =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(rootAgent).build())
+            .sessionService(new AppendDelayingSessionService(new InMemorySessionService(), 50))
+            .build();
+    Session raceSession =
+        runnerForRace.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        runnerForRace
+            .runAsync(
+                "user",
+                raceSession.id(),
+                createContent("start"),
+                RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.SSE).build())
+            .toList()
+            .blockingGet();
+
+    ImmutableList<LlmRequest> subRequests = subTestLlm.getRequests();
+    assertThat(subRequests).hasSize(1);
+    assertThat(
+            subRequests.get(0).contents().stream()
+                .flatMap(c -> c.parts().stream().flatMap(List::stream))
+                .flatMap(part -> part.text().stream())
+                .collect(toImmutableList()))
+        .comparingElementsUsing(Correspondence.<String, String>from(String::contains, "contains"))
+        .contains("Handing off");
+  }
+
+  /**
    * With a slow appendEvent, the append's thread releases the transfer target; the target's {@code
    * invoke_agent} span must still be a child of the transferring agent's, not start a new trace.
    */
