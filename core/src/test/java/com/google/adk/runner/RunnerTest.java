@@ -102,6 +102,7 @@ import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Transcription;
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
@@ -1168,6 +1169,170 @@ public final class RunnerTest {
                 .collect(toImmutableList()))
         .contains("call_root");
     assertThat(Iterables.getLast(rootRequests.get(1).contents()).role()).hasValue("user");
+  }
+
+  /**
+   * A streamed reply's partial chunks share the id of its complete event but are never appended, so
+   * they must not release the wait on that event: a transfer it carries must still reach a target
+   * that sees the reply.
+   */
+  @Test
+  public void runAsync_slowAppendEvent_streamedReplyTransfer_targetSeesTheReply() {
+    TestLlm subTestLlm = createTestLlm(createTextLlmResponse("sub response"));
+    LlmAgent subAgent = createTestAgentBuilder(subTestLlm).name("sub_agent").build();
+    LlmResponse partialReply =
+        LlmResponse.builder()
+            .content(Content.builder().role("model").parts(Part.fromText("Handing")).build())
+            .partial(true)
+            .build();
+    LlmResponse completeReply = createTextLlmResponse("Handing off");
+    AfterModelCallback transferOnCompleteReply =
+        (ctx, response) -> {
+          if (!response.partial().orElse(false)) {
+            ctx.eventActions().setTransferToAgent(subAgent.name());
+          }
+          return Maybe.empty();
+        };
+    LlmAgent rootAgent =
+        createTestAgentBuilder(createTestLlm(Flowable.just(partialReply, completeReply)))
+            .subAgents(subAgent)
+            .afterModelCallback(ImmutableList.of(transferOnCompleteReply))
+            .build();
+    Runner runnerForRace =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(rootAgent).build())
+            .sessionService(new AppendDelayingSessionService(new InMemorySessionService(), 50))
+            .build();
+    Session raceSession =
+        runnerForRace.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        runnerForRace
+            .runAsync(
+                "user",
+                raceSession.id(),
+                createContent("start"),
+                RunConfig.builder().streamingMode(RunConfig.StreamingMode.SSE).build())
+            .toList()
+            .blockingGet();
+
+    ImmutableList<LlmRequest> subRequests = subTestLlm.getRequests();
+    assertThat(subRequests).hasSize(1);
+    assertThat(
+            subRequests.get(0).contents().stream()
+                .flatMap(c -> c.parts().stream().flatMap(List::stream))
+                .flatMap(part -> part.text().stream())
+                .collect(toImmutableList()))
+        .comparingElementsUsing(Correspondence.<String, String>from(String::contains, "contains"))
+        .contains("Handing off");
+  }
+
+  /** A transfer set before the model call rides every chunk of the reply, but runs only once. */
+  @Test
+  public void runAsync_transferSetBeforeModelCall_streamedReply_runsTheTargetOnce() {
+    TestLlm subTestLlm = createTestLlm(createTextLlmResponse("sub response"));
+    LlmAgent subAgent = createTestAgentBuilder(subTestLlm).name("sub_agent").build();
+    Callbacks.BeforeModelCallback transferBeforeModelCall =
+        (ctx, request) -> {
+          ctx.eventActions().setTransferToAgent(subAgent.name());
+          return Maybe.empty();
+        };
+    LlmAgent rootAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    Flowable.just(
+                        partialTextResponse("Hand"),
+                        partialTextResponse("ing"),
+                        createTextLlmResponse("Handing off"))))
+            .subAgents(subAgent)
+            .beforeModelCallback(ImmutableList.of(transferBeforeModelCall))
+            .build();
+    Runner transferRunner =
+        Runner.builder().app(App.builder().name("test").rootAgent(rootAgent).build()).build();
+    Session transferSession =
+        transferRunner.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        transferRunner
+            .runAsync(
+                "user",
+                transferSession.id(),
+                createContent("start"),
+                RunConfig.builder().streamingMode(RunConfig.StreamingMode.SSE).build())
+            .toList()
+            .blockingGet();
+
+    assertThat(subTestLlm.getRequests()).hasSize(1);
+  }
+
+  /**
+   * Each streamed reply carries its own id, which the call_llm span records for the call's last
+   * reply, and a tool response the id its execute_tool span records.
+   */
+  @Test
+  public void runAsync_streamedToolCallAndReply_carryTheEventIdsOfTheirSpans() {
+    LlmResponse toolCall =
+        createLlmResponse(
+            Content.builder()
+                .role("model")
+                .parts(Part.fromFunctionCall(echoTool.name(), ImmutableMap.of("arg", "v")))
+                .build());
+    // The first call streams text, completes it, then completes a tool call, as ChatCompletions
+    // does when a reply has both.
+    TestLlm streamingLlm =
+        createTestLlm(
+            Flowable.just(
+                partialTextResponse("Checking"), createTextLlmResponse("Checking"), toolCall),
+            Flowable.just(partialTextResponse("Do"), createTextLlmResponse("Done")));
+    LlmAgent streamingAgent =
+        createTestAgentBuilder(streamingLlm).tools(ImmutableList.of(echoTool)).build();
+    Runner streamingRunner =
+        Runner.builder().app(App.builder().name("test").rootAgent(streamingAgent).build()).build();
+    Session streamingSession =
+        streamingRunner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        streamingRunner
+            .runAsync(
+                "user",
+                streamingSession.id(),
+                createContent("hi"),
+                RunConfig.builder().streamingMode(RunConfig.StreamingMode.SSE).build())
+            .toList()
+            .blockingGet();
+
+    // Checking (partial), Checking, the tool call, the tool response, Do (partial), Done.
+    assertThat(events).hasSize(6);
+    String textId = events.get(1).id();
+    String toolCallId = events.get(2).id();
+    String toolResponseId = events.get(3).id();
+    String answerId = events.get(5).id();
+    assertThat(events.get(0).id()).isEqualTo(textId);
+    assertThat(toolCallId).isNotEqualTo(textId);
+    assertThat(events.get(4).id()).isEqualTo(answerId);
+    assertThat(eventIdsOfSpans("call_llm")).containsExactly(toolCallId, answerId);
+    assertThat(eventIdsOfSpans("execute_tool " + echoTool.name())).containsExactly(toolResponseId);
+    Session stored =
+        streamingRunner
+            .sessionService()
+            .getSession("test", "user", streamingSession.id(), Optional.empty())
+            .blockingGet();
+    assertThat(stored.events().stream().map(Event::id).collect(toImmutableList()))
+        .containsNoDuplicates();
+  }
+
+  private static LlmResponse partialTextResponse(String text) {
+    return LlmResponse.builder()
+        .content(Content.builder().role("model").parts(Part.fromText(text)).build())
+        .partial(true)
+        .build();
+  }
+
+  private ImmutableList<String> eventIdsOfSpans(String spanName) {
+    return openTelemetryRule.getSpans().stream()
+        .filter(span -> span.getName().equals(spanName))
+        .map(span -> span.getAttributes().get(AttributeKey.stringKey("gcp.vertex.agent.event_id")))
+        .collect(toImmutableList());
   }
 
   /**

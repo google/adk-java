@@ -66,7 +66,7 @@ public final class PersistBarrier {
    * Completes once every event in {@code events} has been {@link #markPersisted}, or fails if any
    * was {@link #markFailed}; completes immediately if the barrier was never {@link #enable}d.
    * Already-resolved events resolve immediately, so the order of {@code awaitPersisted}/{@code
-   * mark*} does not matter.
+   * mark*} does not matter. Partial events are skipped, since the Runner never persists them.
    */
   public static Completable awaitPersisted(InvocationContext context, List<Event> events) {
     Boolean enabled = (Boolean) context.callbackContextData().get(ENABLED_KEY);
@@ -83,7 +83,7 @@ public final class PersistBarrier {
     List<Completable> barriers = new ArrayList<>(events.size());
     for (Event event : events) {
       String eventId = event.id();
-      if (eventId != null) {
+      if (eventId != null && !event.partial().orElse(false)) {
         barriers.add(barrier(context, eventId));
       }
     }

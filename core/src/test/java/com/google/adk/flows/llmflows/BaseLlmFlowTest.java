@@ -25,6 +25,7 @@ import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Callbacks;
@@ -363,6 +364,138 @@ public final class BaseLlmFlowTest {
     assertThat(events).hasSize(1);
     assertThat(events.get(0).partial()).hasValue(true);
     assertThat(events.get(0).functionCalls()).hasSize(1);
+  }
+
+  @Test
+  public void run_streamedReply_partialsShareTheIdOfTheirCompleteEvent() {
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                LlmResponse.builder()
+                    .content(Content.fromParts(Part.fromText("Hel")))
+                    .partial(true)
+                    .build(),
+                LlmResponse.builder()
+                    .content(Content.fromParts(Part.fromText("lo")))
+                    .partial(true)
+                    .build(),
+                createLlmResponse(Content.fromParts(Part.fromText("Hello")))));
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+
+    List<Event> events =
+        createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet();
+
+    String replyId = events.get(2).id();
+    assertThat(replyId).isNotEmpty();
+    assertThat(events.stream().map(Event::id)).containsExactly(replyId, replyId, replyId);
+  }
+
+  @Test
+  public void run_processorEventOnStreamedReply_keepsItsOwnId() {
+    ResponseProcessor emitsOnCompleteResponse =
+        (context, response) ->
+            Single.just(
+                ResponseProcessingResult.create(
+                    response,
+                    response.partial().orElse(false)
+                        ? ImmutableList.of()
+                        : ImmutableList.of(
+                            Event.builder().id("processor-event").author("processor").build())));
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                LlmResponse.builder()
+                    .content(Content.fromParts(Part.fromText("Hel")))
+                    .partial(true)
+                    .build(),
+                createLlmResponse(Content.fromParts(Part.fromText("Hello")))));
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+
+    List<Event> events =
+        createBaseLlmFlow(ImmutableList.of(), ImmutableList.of(emitsOnCompleteResponse))
+            .run(invocationContext)
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(3);
+    assertThat(events.get(1).id()).isEqualTo("processor-event");
+    assertThat(events.get(2).id()).isEqualTo(events.get(0).id());
+  }
+
+  @Test
+  public void run_processorEventWithoutId_getsOne() {
+    ResponseProcessor emitsWithoutId =
+        (context, response) ->
+            Single.just(
+                ResponseProcessingResult.create(
+                    response, ImmutableList.of(Event.builder().author("processor").build())));
+    TestLlm testLlm = createTestLlm(createLlmResponse(Content.fromParts(Part.fromText("Hello"))));
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+
+    List<Event> events =
+        createBaseLlmFlow(ImmutableList.of(), ImmutableList.of(emitsWithoutId))
+            .run(invocationContext)
+            .toList()
+            .blockingGet();
+
+    assertThat(events).hasSize(2);
+    assertThat(events.get(0).id()).isNotEmpty();
+    assertThat(events.get(0).id()).isNotEqualTo(events.get(1).id());
+  }
+
+  @Test
+  public void run_toolAnswersLate_nextReplyStreamsAfterTheToolResponse() {
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                createLlmResponse(
+                    Content.fromParts(Part.fromFunctionCall("delayed_tool", ImmutableMap.of()))),
+                LlmResponse.builder()
+                    .content(Content.fromParts(Part.fromText("Do")))
+                    .partial(true)
+                    .build(),
+                createLlmResponse(Content.fromParts(Part.fromText("Done")))));
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm)
+                .tools(ImmutableList.of(new DelayedTool("delayed_tool")))
+                .build());
+
+    List<Event> events =
+        createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(4);
+    Event toolCall = events.get(0);
+    Event toolResponse = events.get(1);
+    assertThat(toolResponse.functionResponses()).hasSize(1);
+    assertThat(events.get(2).id()).isEqualTo(events.get(3).id());
+    assertThat(events.get(3).id()).isNoneOf(toolCall.id(), toolResponse.id());
+  }
+
+  @Test
+  public void run_oneCallStreamingTwoReplies_givesEachReplyItsOwnId() {
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                LlmResponse.builder()
+                    .content(Content.fromParts(Part.fromText("A")))
+                    .partial(true)
+                    .build(),
+                createLlmResponse(Content.fromParts(Part.fromText("A"))),
+                LlmResponse.builder()
+                    .content(Content.fromParts(Part.fromText("B")))
+                    .partial(true)
+                    .build(),
+                createLlmResponse(Content.fromParts(Part.fromText("B")))));
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+
+    List<Event> events =
+        createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(4);
+    assertThat(events.get(1).id()).isEqualTo(events.get(0).id());
+    assertThat(events.get(3).id()).isEqualTo(events.get(2).id());
+    assertThat(events.get(2).id()).isNotEqualTo(events.get(0).id());
   }
 
   // End-to-end: when the Gemini aggregator emits a partial event and a final aggregated event for
@@ -813,6 +946,24 @@ public final class BaseLlmFlowTest {
     @Override
     public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
       return Single.just(response);
+    }
+  }
+
+  /** Answers on another thread after the model has streamed on. */
+  private static class DelayedTool extends BaseTool {
+    DelayedTool(String name) {
+      super(name, "tool description for " + name);
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(FunctionDeclaration.builder().name(name()).build());
+    }
+
+    @Override
+    public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
+      return Single.timer(100, MILLISECONDS)
+          .map(unused -> ImmutableMap.<String, Object>of("result", "late"));
     }
   }
 
