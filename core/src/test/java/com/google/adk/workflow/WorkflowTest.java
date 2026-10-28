@@ -188,6 +188,25 @@ public final class WorkflowTest {
   }
 
   @Test
+  public void build_rejectsANameThatANodePathCannotCarry() {
+    Workflow.Builder builder = Workflow.builder().name("support.flow");
+
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, builder::build);
+
+    assertThat(e).hasMessageThat().contains("but 'support.flow' does");
+  }
+
+  @Test
+  public void build_rejectsANodeNameThatANodePathCannotCarry() {
+    Workflow.Builder builder =
+        Workflow.builder().name("flow").edges(new Edge(Start.INSTANCE, TestNode.of("a/b")));
+
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, builder::build);
+
+    assertThat(e).hasMessageThat().contains("but 'a/b' does");
+  }
+
+  @Test
   public void aWorkflowCanBeANodeOfAnotherWorkflow() {
     Workflow inner =
         Workflow.builder().name("inner").edges(new Edge(Start.INSTANCE, TestNode.of("a"))).build();

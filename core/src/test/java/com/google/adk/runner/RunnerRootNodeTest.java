@@ -132,6 +132,28 @@ public final class RunnerRootNodeTest {
   }
 
   @Test
+  public void runAsync_nodeRootWithANameThatANodePathCannotCarry_failsWithoutRunningIt() {
+    // App accepts the name, since an agent name may contain '.', but a node path cannot carry it.
+    AtomicInteger runs = new AtomicInteger();
+    Node node =
+        new TestNode(
+            "a.b",
+            (context, input) -> {
+              runs.incrementAndGet();
+              return Flowable.empty();
+            });
+    Runner runner = runner(node);
+    Session session = newSession(runner);
+    Flowable<Event> events = runner.runAsync(USER_ID, session.id(), USER_MESSAGE);
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, events::blockingSubscribe);
+
+    assertThat(error).hasMessageThat().contains("but 'a.b' does");
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  @Test
   public void runAsync_nodeRoot_persistsItsStampedEventAndState() {
     Node node =
         new TestNode(

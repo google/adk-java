@@ -53,6 +53,7 @@ public final class Workflow extends BaseNode {
         builder.inputSchema,
         builder.outputSchema,
         builder.stateSchema);
+    NodeNames.validate(name());
     this.edges = builder.edges;
     this.maxConcurrency = builder.maxConcurrency;
     this.graph = edges.isEmpty() ? null : Graph.of(edges);
@@ -201,6 +202,12 @@ public final class Workflow extends BaseNode {
       return this;
     }
 
+    /**
+     * Builds the workflow.
+     *
+     * @throws IllegalArgumentException if the workflow's name or the name of a node in its graph is
+     *     empty or contains {@code /}, {@code @}, or {@code .}
+     */
     public Workflow build() {
       checkState(name != null, "Workflow.Builder requires name to be set.");
       return new Workflow(this);

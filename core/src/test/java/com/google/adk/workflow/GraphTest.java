@@ -79,6 +79,51 @@ public final class GraphTest {
   }
 
   @Test
+  public void of_rejectsANodeNameContainingASlash() {
+    // '/' separates the segments of a node path.
+    ImmutableList<Edge> edges = ImmutableList.of(new Edge(Start.INSTANCE, TestNode.of("a/b")));
+
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> Graph.of(edges));
+
+    assertThat(e).hasMessageThat().contains("but 'a/b' does");
+  }
+
+  @Test
+  public void of_rejectsANodeNameContainingAnAtSign() {
+    // '@' separates a node's name from its run ID in a node path.
+    ImmutableList<Edge> edges = ImmutableList.of(new Edge(Start.INSTANCE, TestNode.of("a@1")));
+
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> Graph.of(edges));
+
+    assertThat(e).hasMessageThat().contains("but 'a@1' does");
+  }
+
+  @Test
+  public void of_rejectsANodeNameContainingADot() {
+    // '.' separates branch segments; an agent name may contain one, a node name may not.
+    Node a = TestNode.of("a");
+    ImmutableList<Edge> edges =
+        ImmutableList.of(new Edge(Start.INSTANCE, a), new Edge(a, TestNode.of("a.b")));
+
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> Graph.of(edges));
+
+    assertThat(e).hasMessageThat().contains("but 'a.b' does");
+  }
+
+  @Test
+  public void of_rejectsAnEmptyNodeName() {
+    ImmutableList<Edge> edges = ImmutableList.of(new Edge(Start.INSTANCE, TestNode.of("")));
+
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> Graph.of(edges));
+
+    assertThat(e).hasMessageThat().isEqualTo("A node name must not be empty.");
+  }
+
+  @Test
   public void nodesTriggeredBy_followsOnlyTheEdgeWithTheEmittedRoute() {
     Node router = TestNode.of("router");
     Graph graph =

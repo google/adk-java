@@ -55,7 +55,10 @@ final class Graph {
     this.terminalNodeNames = terminalNodeNames;
   }
 
-  /** Builds the graph that {@code edges} describe. */
+  /**
+   * Builds the graph that {@code edges} describe, throwing {@link IllegalArgumentException} if a
+   * node's name is empty or contains {@code /}, {@code @}, or {@code .}.
+   */
   static Graph of(List<Edge> edges) {
     ImmutableList<Edge> edgeList = ImmutableList.copyOf(edges);
     // Edges reuse a node by passing the same instance, so deduplicate by identity.
@@ -69,6 +72,10 @@ final class Graph {
       }
     }
     ImmutableList<Node> nodes = nodeList.build();
+    // The scheduler starts graph nodes without a name check, so check every one here.
+    for (Node node : nodes) {
+      NodeNames.validate(node.name());
+    }
     ImmutableMap<String, Node> nodesByName =
         nodes.stream().collect(toImmutableMap(Node::name, node -> node, (first, last) -> last));
     ImmutableSet<String> sourceNames =

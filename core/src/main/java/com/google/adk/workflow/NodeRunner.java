@@ -16,7 +16,6 @@
 
 package com.google.adk.workflow;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
@@ -30,7 +29,6 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.telemetry.Tracing;
 import com.google.adk.workflow.ResumeScan.Interception;
-import com.google.common.base.CharMatcher;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -65,9 +63,6 @@ import org.jspecify.annotations.Nullable;
  */
 @Experimental
 public final class NodeRunner {
-
-  // '/' and '@' form node-path segments and '.' separates branch segments, so disallow all three.
-  static final CharMatcher PATH_SEPARATORS = CharMatcher.anyOf("/@.");
 
   /** Sink that receives the events of a workflow run. */
   @Experimental
@@ -139,6 +134,8 @@ public final class NodeRunner {
     checkNotNull(processEvent);
     return Flowable.defer(
         () -> {
+          // App checks a root node's name only against the agent-name rule, which allows '.'.
+          NodeNames.validate(node.name());
           FlowableProcessor<QueuedEvent> queue =
               UnicastProcessor.<QueuedEvent>create().toSerialized();
           Queue<Exception> unprocessedFailures = new ConcurrentLinkedQueue<>();
@@ -216,12 +213,7 @@ public final class NodeRunner {
             + " the workflow reruns the caller on resume to collect the child's output.",
         parentState.node().name());
     // No graph validates a child that a node runs itself, so check that it keeps paths intact.
-    checkArgument(!node.name().isEmpty(), "A node name must not be empty.");
-    checkArgument(
-        PATH_SEPARATORS.matchesNoneOf(node.name()),
-        "A node name must not contain '/', '@', or '.', but '%s' does. Agent names allow these"
-            + " characters, so an agent run as a node needs a name that a node path can carry.",
-        node.name());
+    NodeNames.validate(node.name());
     // A workflow takes its output from its terminal node, so it never delegates it to a child.
     boolean delegatesOutput = config.useAsOutput() && !(parentState.node() instanceof Workflow);
     if (delegatesOutput) {

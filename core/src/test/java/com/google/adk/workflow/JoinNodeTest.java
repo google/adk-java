@@ -74,6 +74,24 @@ public final class JoinNodeTest {
   }
 
   @Test
+  public void build_rejectsANameThatANodePathCannotCarry() {
+    JoinNode.Builder builder = JoinNode.builder().name("gather@1");
+
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, builder::build);
+
+    assertThat(e).hasMessageThat().contains("but 'gather@1' does");
+  }
+
+  @Test
+  public void build_rejectsAnEmptyName() {
+    JoinNode.Builder builder = JoinNode.builder().name("");
+
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, builder::build);
+
+    assertThat(e).hasMessageThat().isEqualTo("A node name must not be empty.");
+  }
+
+  @Test
   public void name_rejectsNull() {
     JoinNode.Builder builder = JoinNode.builder();
 

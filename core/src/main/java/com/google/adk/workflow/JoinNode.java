@@ -44,6 +44,7 @@ public final class JoinNode extends BaseNode {
         builder.inputSchema,
         builder.outputSchema,
         /* stateSchema= */ null);
+    NodeNames.validate(name());
   }
 
   public static Builder builder() {
@@ -95,6 +96,12 @@ public final class JoinNode extends BaseNode {
       return this;
     }
 
+    /**
+     * Builds the join node.
+     *
+     * @throws IllegalArgumentException if the name is empty or contains {@code /}, {@code @}, or
+     *     {@code .}
+     */
     public JoinNode build() {
       checkState(name != null, "JoinNode.Builder requires name to be set.");
       return new JoinNode(this);

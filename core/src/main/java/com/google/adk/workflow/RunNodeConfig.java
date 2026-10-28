@@ -114,7 +114,7 @@ public abstract class RunNodeConfig {
                     "runId \"%s\" must contain a non-digit character.",
                     runId);
                 checkArgument(
-                    NodeRunner.PATH_SEPARATORS.matchesNoneOf(runId),
+                    NodeNames.PATH_SEPARATORS.matchesNoneOf(runId),
                     "runId \"%s\" must not contain '/', '@', or '.'.",
                     runId);
               });
