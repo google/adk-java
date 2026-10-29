@@ -38,5 +38,6 @@
     <module>helloworld</module>
     <module>mcpfilesystem</module>
     <module>spring_chat</module>
+    <module>spring_chat_advanced</module>
   </modules>
 </project>

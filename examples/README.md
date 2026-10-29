@@ -21,3 +21,5 @@ contains more complete end-to-end samples for customers to use or modify.
     filesystem server as a toolset.
 -   [`spring_chat`](spring_chat/README.md): a Spring Boot chat page backed by an
     agent that calls its model through Spring AI.
+-   [`spring_chat_advanced`](spring_chat_advanced/README.md): the Spring Boot
+    chat with streamed replies, mixing ADK tools with Spring AI `@Tool` methods.
