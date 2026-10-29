@@ -37,5 +37,6 @@
     <module>contextcaching</module>
     <module>helloworld</module>
     <module>mcpfilesystem</module>
+    <module>spring_chat</module>
   </modules>
 </project>
