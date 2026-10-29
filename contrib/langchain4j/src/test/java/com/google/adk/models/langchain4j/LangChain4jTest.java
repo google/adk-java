@@ -350,6 +350,17 @@ class LangChain4jTest {
     assertThat(responses).hasSize(5); // 4 partial responses + 1 function call
 
     // Verify the partial responses
+    assertThat(responses.stream().map(response -> response.content().orElseThrow().role()))
+        .containsExactly(
+            Optional.of("model"),
+            Optional.of("model"),
+            Optional.of("model"),
+            Optional.of("model"),
+            Optional.of("model"));
+    assertThat(responses.subList(0, 4).stream().map(LlmResponse::partial))
+        .containsExactly(
+            Optional.of(true), Optional.of(true), Optional.of(true), Optional.of(true));
+    assertThat(responses.get(4).partial()).isEmpty();
     assertThat(responses.get(0).content().orElseThrow().text()).isEqualTo("Hello");
     assertThat(responses.get(1).content().orElseThrow().text()).isEqualTo(", how");
     assertThat(responses.get(2).content().orElseThrow().text()).isEqualTo(" can I help");
@@ -369,9 +380,90 @@ class LangChain4jTest {
             .get(0)
             .functionCall()
             .orElseThrow();
+    assertThat(functionCall.id()).hasValue("123");
     assertThat(functionCall.name()).isEqualTo(Optional.of("getWeather"));
     assertThat(functionCall.args().orElseThrow()).containsEntry("city", "Paris");
 
+    disposable.dispose();
+  }
+
+  @Test
+  @DisplayName("Should end a streamed text turn with its full text")
+  void testGenerateContentWithStreamingChatModel_endsWithTheFullText() {
+    final LlmRequest llmRequest =
+        LlmRequest.builder().contents(List.of(Content.fromParts(Part.fromText("Hello")))).build();
+    final List<LlmResponse> responses = new ArrayList<>();
+    final StreamingChatResponseHandler[] handlerRef = new StreamingChatResponseHandler[1];
+    doAnswer(
+            invocation -> {
+              handlerRef[0] = invocation.getArgument(1);
+              return null;
+            })
+        .when(streamingChatModel)
+        .chat(any(ChatRequest.class), any(StreamingChatResponseHandler.class));
+    final var disposable =
+        streamingLangChain4j.generateContent(llmRequest, true).subscribe(responses::add);
+
+    handlerRef[0].onPartialResponse("Par");
+    handlerRef[0].onPartialResponse("is");
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    when(chatResponse.aiMessage()).thenReturn(AiMessage.from("Paris"));
+    handlerRef[0].onCompleteResponse(chatResponse);
+
+    assertThat(responses).hasSize(3);
+    final LlmResponse last = responses.get(2);
+    assertThat(last.partial()).isEmpty();
+    assertThat(last.content().orElseThrow().role()).hasValue("model");
+    assertThat(last.content().orElseThrow().text()).isEqualTo("Paris");
+    disposable.dispose();
+  }
+
+  @Test
+  @DisplayName("Should end a streamed turn with its text and calls in one response")
+  void testGenerateContentWithStreamingChatModel_endsWithTextAndCallsInOneResponse() {
+    final LlmRequest llmRequest =
+        LlmRequest.builder().contents(List.of(Content.fromParts(Part.fromText("Hello")))).build();
+    final List<LlmResponse> responses = new ArrayList<>();
+    final StreamingChatResponseHandler[] handlerRef = new StreamingChatResponseHandler[1];
+    doAnswer(
+            invocation -> {
+              handlerRef[0] = invocation.getArgument(1);
+              return null;
+            })
+        .when(streamingChatModel)
+        .chat(any(ChatRequest.class), any(StreamingChatResponseHandler.class));
+    final var disposable =
+        streamingLangChain4j.generateContent(llmRequest, true).subscribe(responses::add);
+
+    handlerRef[0].onPartialResponse("Let me check.");
+    final AiMessage aiMessage =
+        AiMessage.builder()
+            .text("Let me check.")
+            .toolExecutionRequests(
+                List.of(
+                    ToolExecutionRequest.builder()
+                        .id("c1")
+                        .name("getWeather")
+                        .arguments("{\"city\":\"Paris\"}")
+                        .build(),
+                    ToolExecutionRequest.builder()
+                        .id("c2")
+                        .name("getWeather")
+                        .arguments("{\"city\":\"Rome\"}")
+                        .build()))
+            .build();
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    when(chatResponse.aiMessage()).thenReturn(aiMessage);
+    handlerRef[0].onCompleteResponse(chatResponse);
+
+    assertThat(responses).hasSize(2);
+    final LlmResponse last = responses.get(1);
+    assertThat(last.partial()).isEmpty();
+    final List<Part> parts = last.content().orElseThrow().parts().orElseThrow();
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0).text()).hasValue("Let me check.");
+    assertThat(parts.subList(1, 3).stream().map(part -> part.functionCall().orElseThrow().id()))
+        .containsExactly(Optional.of("c1"), Optional.of("c2"));
     disposable.dispose();
   }
 
