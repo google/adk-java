@@ -445,6 +445,69 @@ public final class ContentsTest {
   }
 
   @Test
+  public void processRequest_userResultForAnotherAgentsCall_isNarrated() {
+    Event u1 = createUserEvent("u1", "Look it up.");
+    Event o1 = createFunctionCallEvent(OTHER_AGENT, "o1", "lookup", "call1");
+    Event fr1 = createFunctionResponseEvent(USER, "fr1", "lookup", "call1", ImmutableMap.of());
+
+    List<Content> result = runContentsProcessor(ImmutableList.of(u1, o1, fr1));
+
+    assertThat(result)
+        .containsExactly(
+            u1.content().get(),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[other_agent] called tool `lookup` with parameters:", "{}")),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[user] `lookup` tool returned result:", "{}")))
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_userResultForACompactedCallOfAnotherAgent_isNarrated() {
+    Event u1 = createUserEvent("u1", "Look it up.", "inv1", 1);
+    Event o1 =
+        createFunctionCallEvent(OTHER_AGENT, "o1", "lookup", "call1").toBuilder()
+            .timestamp(2)
+            .build();
+    Event fr1 =
+        createFunctionResponseEvent(USER, "fr1", "lookup", "call1", ImmutableMap.of()).toBuilder()
+            .timestamp(3)
+            .build();
+
+    List<Content> result =
+        runContentsProcessor(
+            ImmutableList.of(u1, o1, createCompactedEvent(1, 2, "Summary 1-2"), fr1));
+
+    assertThat(result)
+        .containsExactly(
+            Content.builder()
+                .role("model")
+                .parts(Part.builder().text("Summary 1-2").build())
+                .build(),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[user] `lookup` tool returned result:", "{}")))
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_userPostedResult_keepsItsCallInTheTurn() {
+    Event u1 = createUserEvent("u1", "Look it up.");
+    Event fc1 = createFunctionCallEvent("fc1", "lookup", "call1");
+    Event fr1 = createFunctionResponseEvent(USER, "fr1", "lookup", "call1", ImmutableMap.of());
+
+    List<Content> result =
+        runContentsProcessorWithIncludeContents(
+            ImmutableList.of(u1, fc1, fr1), LlmAgent.IncludeContents.NONE);
+
+    assertThat(result)
+        .containsExactly(u1.content().get(), fc1.content().get(), fr1.content().get())
+        .inOrder();
+  }
+
+  @Test
   public void processRequest_includeContentsNone_lastEventIsUser() {
     ImmutableList<Event> events =
         ImmutableList.of(

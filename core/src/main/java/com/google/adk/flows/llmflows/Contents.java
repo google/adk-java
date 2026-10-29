@@ -109,9 +109,25 @@ public final class Contents implements RequestProcessor {
       List<Event> events,
       String agentName,
       boolean groupFunctionResponses) {
+    Set<String> callIds = new HashSet<>();
+    events.forEach(
+        event -> event.functionCalls().forEach(call -> call.id().ifPresent(callIds::add)));
+    // A result the user posted back continues its call's turn, so the turn goes back to the call.
+    Set<String> unmatchedResultIds = new HashSet<>();
     // Find the latest event that starts the current turn and process from there.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
+      event.functionCalls().forEach(call -> call.id().ifPresent(unmatchedResultIds::remove));
+      if (event.author().equals(Role.USER) && !event.functionResponses().isEmpty()) {
+        event.functionResponses().stream()
+            .flatMap(response -> response.id().stream())
+            .filter(callIds::contains)
+            .forEach(unmatchedResultIds::add);
+        continue;
+      }
+      if (!unmatchedResultIds.isEmpty()) {
+        continue;
+      }
       TranscriptionKind kind = transcriptionKind(event);
       int start = -1;
       if (kind != null) {
@@ -167,11 +183,19 @@ public final class Contents implements RequestProcessor {
       boolean groupFunctionResponses) {
     List<Event> filteredEvents = new ArrayList<>();
     boolean hasCompactEvent = false;
+    // Narrate a result whose call is also narrated, so it isn't left orphaned.
+    Set<String> narratedCallIds = new HashSet<>();
 
     for (Event event : events) {
       if (shouldIncludeEventInContext(currentBranch, event)) {
         hasCompactEvent |= event.actions().compaction().isPresent();
         filteredEvents.add(event);
+        // Collected before compaction, which can drop a narrated call while keeping its result.
+        if (event.actions().compaction().isEmpty()
+            && (isOtherAgentReply(agentName, event)
+                || answersNarratedCall(event, narratedCallIds))) {
+          event.functionCalls().forEach(call -> call.id().ifPresent(narratedCallIds::add));
+        }
       }
     }
 
@@ -182,7 +206,7 @@ public final class Contents implements RequestProcessor {
     // Merge after compaction, which may end mid-run, and before other agents are narrated.
     List<Event> resultEvents = new ArrayList<>();
     for (Event event : mergeTranscriptions(filteredEvents)) {
-      if (isOtherAgentReply(agentName, event)) {
+      if (isOtherAgentReply(agentName, event) || answersNarratedCall(event, narratedCallIds)) {
         Event foreignEvent = convertForeignEvent(event);
         if (foreignEvent != null) {
           resultEvents.add(foreignEvent);
@@ -534,6 +558,12 @@ public final class Contents implements RequestProcessor {
     return !agentName.isEmpty()
         && !event.author().equals(agentName)
         && !event.author().equals(Role.USER);
+  }
+
+  /** Whether {@code event} answers a call that the model sees only as narrated context. */
+  private static boolean answersNarratedCall(Event event, Set<String> narratedCallIds) {
+    return event.functionResponses().stream()
+        .anyMatch(response -> response.id().filter(narratedCallIds::contains).isPresent());
   }
 
   /**
