@@ -51,6 +51,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.net.InetAddresses;
 import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
@@ -370,6 +371,43 @@ public final class ClaudeTest {
     assertThat(defsValue).isNotNull();
     Map<String, Object> defs = defsValue.convert(new TypeReference<Map<String, Object>>() {});
     assertThat(defs).containsKey("Pet");
+  }
+
+  @Test
+  public void generateContent_maxTokensStopReason_mapsToMaxTokensFinishReason() {
+    Message truncated =
+        message(textBlock("cut off")).toBuilder().stopReason(StopReason.MAX_TOKENS).build();
+    when(messageService.create(any(MessageCreateParams.class))).thenReturn(truncated);
+
+    LlmResponse response = claude.generateContent(request(userText("hi")), false).blockingFirst();
+
+    assertThat(response.finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.MAX_TOKENS);
+  }
+
+  @Test
+  public void generateContent_contextWindowExceededStopReason_mapsToMaxTokensFinishReason() {
+    Message truncated =
+        message(textBlock("cut off")).toBuilder()
+            .stopReason(StopReason.of("model_context_window_exceeded"))
+            .build();
+    when(messageService.create(any(MessageCreateParams.class))).thenReturn(truncated);
+
+    LlmResponse response = claude.generateContent(request(userText("hi")), false).blockingFirst();
+
+    assertThat(response.finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.MAX_TOKENS);
+  }
+
+  @Test
+  public void generateContent_endTurnStopReason_mapsToStopFinishReason() {
+    when(messageService.create(any(MessageCreateParams.class)))
+        .thenReturn(message(textBlock("done")));
+
+    LlmResponse response = claude.generateContent(request(userText("hi")), false).blockingFirst();
+
+    assertThat(response.finishReason().map(FinishReason::knownEnum))
+        .hasValue(FinishReason.Known.STOP);
   }
 
   @Test
