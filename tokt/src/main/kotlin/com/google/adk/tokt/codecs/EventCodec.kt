@@ -36,7 +36,7 @@ import kotlin.jvm.optionals.getOrNull
  * `errorCode`, `finishReason`), the token `usageMetadata` ([UsageMetadataCodec]),
  * `groundingMetadata` ([GroundingMetadataCodec]) and context `cacheMetadata`
  * ([CacheMetadataCodec]), a workflow node's `output` and `nodeInfo` ([WorkflowCodec]), long-running
- * tool ids, and the timestamp.
+ * tool ids, the timestamp, and the `isolationScope`.
  */
 internal object EventCodec {
 
@@ -49,6 +49,7 @@ internal object EventCodec {
         .actions(eventActionsToJava(event.actions))
     event.invocationId?.let { builder.invocationId(it) }
     event.branch?.let { builder.branch(it) }
+    event.isolationScope?.let { builder.isolationScope(it) }
     event.content?.let { builder.content(ContentCodec.toJava(it)) }
     if (event.longRunningToolIds.isNotEmpty()) builder.longRunningToolIds(event.longRunningToolIds)
     // Streaming/error signals are set only when meaningful, so ordinary events keep the Java
@@ -101,6 +102,7 @@ internal object EventCodec {
           route = javaActions.route().getOrNull()?.map { WorkflowCodec.routeFromJava(it) },
         ),
       branch = event.branch().getOrNull(),
+      isolationScope = event.isolationScope().getOrNull(),
       partial = event.partial().getOrNull() ?: false,
       turnComplete = event.turnComplete().getOrNull() ?: false,
       interrupted = event.interrupted().getOrNull() ?: false,

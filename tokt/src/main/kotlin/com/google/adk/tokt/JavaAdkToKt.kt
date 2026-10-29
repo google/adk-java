@@ -141,7 +141,8 @@ object JavaAdkToKt {
    * Java view of a Kotlin service is unwrapped to that Kotlin service, with no `dispatcher` hop.
    * Resumption and rewinds work across the adapter if the Java service, like
    * `InMemorySessionService`, returns the fields they read unchanged: `EventActions.agentState`,
-   * `rewindBeforeInvocationId`, and a workflow node's output, node info, and routes.
+   * `rewindBeforeInvocationId`, `Event.isolationScope`, and a workflow node's output, node info,
+   * and routes.
    */
   @JvmStatic
   @JvmOverloads

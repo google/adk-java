@@ -4384,6 +4384,21 @@ class KtRunnerInteropTest {
   }
 
   @Test
+  fun asKtSessionService_isolationScope_survivesTheJavaStore() = runBlocking {
+    // A task agent resumes from events in its own scope, so the scope must survive storage.
+    val sessions = JavaAdkToKt.asKtSessionService(JavaInMemorySessionService())
+    val key = KtSessionKey("app", "u", "s")
+    val session = sessions.createSession(key)
+
+    val unusedScoped =
+      sessions.appendEvent(session, KtEvent(author = "task", isolationScope = "task-1"))
+    val unusedUnscoped = sessions.appendEvent(session, KtEvent(author = "user"))
+
+    val stored = assertNotNull(sessions.getSession(key)).events.map { it.isolationScope }
+    assertEquals(listOf("task-1", null), stored)
+  }
+
+  @Test
   fun eventCodec_workflowFields_roundTripThroughTheJavaEvent() {
     // Java code reads these fields too, so a Kotlin Content in the output crosses as a genai one.
     val message = KtContent.fromText("model", "draft")
