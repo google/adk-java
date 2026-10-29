@@ -16,8 +16,6 @@
 
 package com.google.adk.apps;
 
-import static com.google.common.base.Preconditions.checkNotNull;
-
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.NodeViewAgent;
@@ -105,10 +103,30 @@ public class App {
     return resumabilityConfig;
   }
 
+  /**
+   * Returns a builder holding this app's settings. For an app that runs a node, the builder holds
+   * {@link #rootNode()} rather than the agent that stands in for it. To switch between a root agent
+   * and a root node, also clear the current one with {@code null}.
+   */
+  public Builder toBuilder() {
+    Builder builder = new Builder();
+    builder.name = name;
+    if (rootNode != null) {
+      builder.rootNode = rootNode;
+    } else {
+      builder.rootAgent = rootAgent;
+    }
+    builder.plugins = plugins;
+    builder.eventsCompactionConfig = eventsCompactionConfig;
+    builder.contextCacheConfig = contextCacheConfig;
+    builder.resumabilityConfig = resumabilityConfig;
+    return builder;
+  }
+
   /** Builder for {@link App}. */
   public static class Builder {
     private String name;
-    private BaseAgent rootAgent;
+    private @Nullable BaseAgent rootAgent;
     private @Nullable Node rootNode;
     private List<? extends Plugin> plugins = ImmutableList.of();
     @Nullable private EventsCompactionConfig eventsCompactionConfig;
@@ -121,20 +139,21 @@ public class App {
       return this;
     }
 
+    /** Sets the root agent, or clears it when {@code null}. */
     @CanIgnoreReturnValue
-    public Builder rootAgent(BaseAgent rootAgent) {
+    public Builder rootAgent(@Nullable BaseAgent rootAgent) {
       this.rootAgent = rootAgent;
       return this;
     }
 
     /**
-     * Sets the workflow node the app runs in place of a root agent. If the given node is an agent,
-     * it becomes the root agent.
+     * Sets the workflow node the app runs in place of a root agent, or clears it when {@code null}.
+     * If the given node is an agent, it becomes the root agent.
      */
     @CanIgnoreReturnValue
     @Experimental
-    public Builder rootNode(Node rootNode) {
-      this.rootNode = checkNotNull(rootNode);
+    public Builder rootNode(@Nullable Node rootNode) {
+      this.rootNode = rootNode;
       return this;
     }
 
@@ -151,20 +170,20 @@ public class App {
     }
 
     @CanIgnoreReturnValue
-    public Builder eventsCompactionConfig(EventsCompactionConfig eventsCompactionConfig) {
+    public Builder eventsCompactionConfig(@Nullable EventsCompactionConfig eventsCompactionConfig) {
       this.eventsCompactionConfig = eventsCompactionConfig;
       return this;
     }
 
     @CanIgnoreReturnValue
-    public Builder contextCacheConfig(ContextCacheConfig contextCacheConfig) {
+    public Builder contextCacheConfig(@Nullable ContextCacheConfig contextCacheConfig) {
       this.contextCacheConfig = contextCacheConfig;
       return this;
     }
 
     @CanIgnoreReturnValue
     @Experimental
-    public Builder resumabilityConfig(ResumabilityConfig resumabilityConfig) {
+    public Builder resumabilityConfig(@Nullable ResumabilityConfig resumabilityConfig) {
       this.resumabilityConfig = resumabilityConfig;
       return this;
     }
@@ -200,7 +219,8 @@ public class App {
         return rootAgent;
       }
       if (rootAgent != null) {
-        throw new IllegalStateException("Set a root agent or a root node, not both.");
+        throw new IllegalStateException(
+            "Set a root agent or a root node, not both; clear the other with null.");
       }
       return rootNode instanceof BaseAgent agent ? agent : new NodeViewAgent(rootNode);
     }

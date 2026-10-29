@@ -20,7 +20,11 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.NodeViewAgent;
+import com.google.adk.plugins.BasePlugin;
+import com.google.adk.plugins.Plugin;
+import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.workflow.Node;
@@ -92,6 +96,104 @@ public final class AppTest {
   @Test
   public void build_withANodeViewAgentAsTheRootNode_throwsIllegalStateException() {
     App.Builder builder = App.builder().name("app").rootNode(new NodeViewAgent(NODE));
+
+    assertThrows(IllegalStateException.class, builder::build);
+  }
+
+  @Test
+  public void toBuilder_unchanged_buildsAnAppWithTheSameSettings() {
+    BaseAgent agent = TestUtils.createSubAgent("worker");
+    Plugin plugin = new BasePlugin("plugin") {};
+    EventsCompactionConfig compaction = new EventsCompactionConfig(3, 1);
+    ContextCacheConfig cache = new ContextCacheConfig();
+    ResumabilityConfig resumability = ResumabilityConfig.builder().resumable(true).build();
+    App app =
+        App.builder()
+            .name("agent_app")
+            .rootAgent(agent)
+            .plugins(plugin)
+            .eventsCompactionConfig(compaction)
+            .contextCacheConfig(cache)
+            .resumabilityConfig(resumability)
+            .build();
+
+    App copy = app.toBuilder().build();
+
+    assertThat(copy.name()).isEqualTo("agent_app");
+    assertThat(copy.rootAgent()).isSameInstanceAs(agent);
+    assertThat(copy.rootNode()).isEmpty();
+    assertThat(copy.plugins()).containsExactly(plugin);
+    assertThat(copy.eventsCompactionConfig()).isSameInstanceAs(compaction);
+    assertThat(copy.contextCacheConfig()).isSameInstanceAs(cache);
+    assertThat(copy.resumabilityConfig()).isSameInstanceAs(resumability);
+  }
+
+  @Test
+  public void toBuilder_ofANodeApp_keepsTheRootNode() {
+    App app = App.builder().name("node_app").rootNode(NODE).build();
+
+    App copy = app.toBuilder().build();
+
+    assertThat(copy.rootNode()).hasValue(NODE);
+    assertThat(((NodeViewAgent) copy.rootAgent()).node()).isSameInstanceAs(NODE);
+  }
+
+  @Test
+  public void toBuilder_changed_buildsAnAppWithTheChanges() {
+    Plugin plugin = new BasePlugin("plugin") {};
+    App app = App.builder().name("node_app").rootNode(NODE).build();
+
+    App copy = app.toBuilder().name("renamed").plugins(plugin).build();
+
+    assertThat(copy.name()).isEqualTo("renamed");
+    assertThat(copy.plugins()).containsExactly(plugin);
+    assertThat(copy.rootNode()).hasValue(NODE);
+  }
+
+  @Test
+  public void toBuilder_ofANodeAppClearingTheNodeAndSettingAnAgent_runsTheAgent() {
+    BaseAgent agent = TestUtils.createSubAgent("worker");
+    App app = App.builder().name("node_app").rootNode(NODE).build();
+
+    App copy = app.toBuilder().rootNode(null).rootAgent(agent).build();
+
+    assertThat(copy.rootAgent()).isSameInstanceAs(agent);
+    assertThat(copy.rootNode()).isEmpty();
+  }
+
+  @Test
+  public void toBuilder_ofAnAgentAppClearingTheAgentAndSettingANode_runsTheNode() {
+    App app = App.builder().name("agent_app").rootAgent(TestUtils.createSubAgent("worker")).build();
+
+    App copy = app.toBuilder().rootAgent(null).rootNode(NODE).build();
+
+    assertThat(copy.rootNode()).hasValue(NODE);
+    assertThat(((NodeViewAgent) copy.rootAgent()).node()).isSameInstanceAs(NODE);
+  }
+
+  @Test
+  public void toBuilder_ofANodeAppSettingAnotherNode_standsInForTheNewNode() {
+    Node other = TestNode.of("other");
+    App app = App.builder().name("node_app").rootNode(NODE).build();
+
+    App copy = app.toBuilder().rootNode(other).build();
+
+    assertThat(copy.rootNode()).hasValue(other);
+    assertThat(((NodeViewAgent) copy.rootAgent()).node()).isSameInstanceAs(other);
+  }
+
+  @Test
+  public void toBuilder_ofANodeAppClearingTheNode_throwsIllegalStateException() {
+    App app = App.builder().name("node_app").rootNode(NODE).build();
+    App.Builder builder = app.toBuilder().rootNode(null);
+
+    assertThrows(IllegalStateException.class, builder::build);
+  }
+
+  @Test
+  public void toBuilder_ofANodeAppSettingAnAgent_throwsIllegalStateException() {
+    App app = App.builder().name("node_app").rootNode(NODE).build();
+    App.Builder builder = app.toBuilder().rootAgent(TestUtils.createSubAgent("worker"));
 
     assertThrows(IllegalStateException.class, builder::build);
   }
