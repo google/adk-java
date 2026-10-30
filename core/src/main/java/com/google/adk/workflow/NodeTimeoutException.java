@@ -21,7 +21,7 @@ import java.time.Duration;
 
 /** Thrown when a node's attempt outlasts the timeout that {@link NodeConfig#timeout()} sets. */
 @Experimental
-public final class NodeTimeoutException extends RuntimeException {
+public final class NodeTimeoutException extends NodeExecutionException {
 
   private final String nodeName;
   private final Duration timeout;

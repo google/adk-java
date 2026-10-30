@@ -259,6 +259,7 @@ public final class WorkflowRetryTest {
     FailedTurn turn = new WorkflowSession(workflow(new Edge(START, slow))).failingTurn(go());
 
     assertThat(turn.error()).isInstanceOf(NodeTimeoutException.class);
+    assertThat(turn.error()).isInstanceOf(NodeExecutionException.class);
     NodeTimeoutException error = (NodeTimeoutException) turn.error();
     assertThat(error.nodeName()).isEqualTo("slow");
     assertThat(error.timeout()).isEqualTo(SHORT_TIMEOUT);
@@ -281,6 +282,22 @@ public final class WorkflowRetryTest {
 
     assertThat(slow.runs()).isEqualTo(2);
     assertThat(errorCodes(events)).containsExactly(new FinishReason("NodeTimeoutException"));
+    assertThat(outputEventAt(events, "wf@1/slow@1").output()).hasValue("in time");
+  }
+
+  @Test
+  public void aTimedOutAttempt_isRetriedWhenNodeExecutionExceptionIsAListedClass() {
+    RetryConfig onNodeFailures =
+        instantRetry(2).toBuilder().exceptionClasses(NodeExecutionException.class).build();
+    NodeConfig config =
+        NodeConfig.builder().retryConfig(onNodeFailures).timeout(SHORT_TIMEOUT).build();
+    CountingNode slow =
+        new CountingNode(
+            "slow", config, (ctx, run) -> run == 1 ? late() : Flowable.just("in time"));
+
+    ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, slow))).turn(go());
+
+    assertThat(slow.runs()).isEqualTo(2);
     assertThat(outputEventAt(events, "wf@1/slow@1").output()).hasValue("in time");
   }
 
