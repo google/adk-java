@@ -81,6 +81,7 @@ import org.springframework.util.MimeType;
 public class MessageConverter {
 
   private static final Logger logger = LoggerFactory.getLogger(MessageConverter.class);
+
   private static final TypeReference<Map<String, Object>> MAP_TYPE_REFERENCE =
       new TypeReference<>() {};
 
@@ -110,6 +111,9 @@ public class MessageConverter {
   private final ObjectMapper objectMapper;
   private final ToolConverter toolConverter;
   private final ConfigMapper configMapper;
+
+  private final java.util.concurrent.atomic.AtomicBoolean warnedAboutPortableOptions =
+      new java.util.concurrent.atomic.AtomicBoolean();
 
   public MessageConverter(ObjectMapper objectMapper) {
     this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper cannot be null");
@@ -451,6 +455,18 @@ public class MessageConverter {
       }
       applyGenerationConfig(optionsBuilder, adkChatOptions);
       return optionsBuilder.build();
+    }
+
+    // Every path below sends portable options: provider models that cast Prompt.getOptions()
+    // (e.g. OpenAiChatModel.createRequest) will fail with a bare ClassCastException, hard to
+    // trace back to the wrapper. Warn once.
+    if (modelDefaultOptions != null && warnedAboutPortableOptions.compareAndSet(false, true)) {
+      logger.warn(
+          "Requests will carry portable options because the model's default options are {} (not"
+              + " ToolCallingChatOptions); provider models may fail with a ClassCastException."
+              + " Wrappers should delegate getOptions() to the underlying provider model's"
+              + " options.",
+          modelDefaultOptions.getClass().getName());
     }
 
     if (hasTools) {
