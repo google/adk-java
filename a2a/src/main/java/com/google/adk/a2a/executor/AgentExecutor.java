@@ -29,6 +29,7 @@ import com.google.adk.plugins.Plugin;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.sessions.SessionException;
 import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -309,15 +310,52 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     return runConfig.toBuilder().customMetadata(customMetadata).build();
   }
 
+  /**
+   * Returns the session this request belongs to, creating it on the first turn.
+   *
+   * <p>The A2A {@code contextId} is the anchor for a multi-turn conversation, so it is used as the
+   * session id as well: a follow-up message carrying the context id of the previous response lands
+   * in the same session and the agent sees the earlier turns. Creating the session without an id
+   * would let the service generate a fresh one, and every turn would then start from an empty
+   * history. adk-python resolves the same way, by passing the context id as {@code session_id}.
+   */
   private Maybe<Session> prepareSession(
       RequestContext ctx, String appName, BaseSessionService service) {
+    String userId = getUserId(ctx);
+    String contextId = ctx.getContextId();
     return service
-        .getSession(appName, getUserId(ctx), ctx.getContextId(), Optional.empty())
-        .switchIfEmpty(
-            Maybe.defer(
-                () -> {
-                  return service.createSession(appName, getUserId(ctx)).toMaybe();
-                }));
+        .getSession(appName, userId, contextId, Optional.empty())
+        .switchIfEmpty(Maybe.defer(() -> createSession(appName, userId, contextId, service)));
+  }
+
+  /**
+   * Creates the session for {@code contextId}, tolerating a concurrent first turn that won the
+   * race.
+   *
+   * <p>Two first turns carrying the same new context id can both miss {@code getSession} and both
+   * try to create. A service that rejects duplicate ids then fails the losing request, which would
+   * surface to that peer as a failed task. Re-reading the session the winner created turns that
+   * into an ordinary turn.
+   */
+  private static Maybe<Session> createSession(
+      String appName, String userId, String contextId, BaseSessionService service) {
+    return service
+        .createSession(appName, userId, /* state= */ (Map<String, Object>) null, contextId)
+        .onErrorResumeNext(
+            error -> {
+              if (!isSessionAlreadyExists(error)) {
+                return Single.error(error);
+              }
+              return service
+                  .getSession(appName, userId, contextId, Optional.empty())
+                  .switchIfEmpty(Single.error(error));
+            })
+        .toMaybe();
+  }
+
+  private static boolean isSessionAlreadyExists(Throwable error) {
+    return error instanceof SessionException
+        && SessionException.SESSION_ALREADY_EXISTS.equals(error.getMessage());
   }
 
   /**
