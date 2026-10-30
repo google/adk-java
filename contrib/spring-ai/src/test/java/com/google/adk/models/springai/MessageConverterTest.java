@@ -18,6 +18,10 @@ package com.google.adk.models.springai;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
@@ -36,6 +40,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -70,6 +75,59 @@ class MessageConverterTest {
   void setUp() {
     objectMapper = new ObjectMapper();
     messageConverter = new MessageConverter(objectMapper);
+    converterLogger().addAppender(converterLogAppender);
+    converterLogAppender.start();
+  }
+
+  @AfterEach
+  void tearDown() {
+    converterLogger().detachAppender(converterLogAppender);
+  }
+
+  private final ListAppender<ILoggingEvent> converterLogAppender = new ListAppender<>();
+
+  private Logger converterLogger() {
+    return (Logger) org.slf4j.LoggerFactory.getLogger(MessageConverter.class);
+  }
+
+  @Test
+  void toLlmPrompt_nonToolCallingDefaults_warnsOnceAndNamesOptionsClass() {
+    // What Basic sends: contents and an empty config, no tools; defaults keep the interface
+    // default (an empty DefaultChatOptions, not ToolCallingChatOptions).
+    LlmRequest request = portableOptionsRequest();
+    ChatOptions defaults = ChatOptions.builder().build();
+
+    callToLlmPrompt(request, defaults);
+    callToLlmPrompt(request, defaults);
+
+    assertThat(warnEvents()).hasSize(1);
+    assertThat(warnEvents().get(0).getFormattedMessage())
+        .contains("org.springframework.ai.chat.prompt.DefaultChatOptions");
+  }
+
+  @Test
+  void toLlmPrompt_toolCallingDefaults_doNotWarn() {
+    callToLlmPrompt(portableOptionsRequest(), ToolCallingChatOptions.builder().build());
+
+    assertThat(warnEvents()).isEmpty();
+  }
+
+  private static LlmRequest portableOptionsRequest() {
+    return LlmRequest.builder()
+        .contents(
+            List.of(Content.builder().role("user").parts(List.of(Part.fromText("hello"))).build()))
+        .config(GenerateContentConfig.builder().build())
+        .build();
+  }
+
+  private List<ILoggingEvent> warnEvents() {
+    return converterLogAppender.list.stream()
+        .filter(event -> event.getLevel() == Level.WARN)
+        .toList();
+  }
+
+  private void callToLlmPrompt(LlmRequest request, ChatOptions defaults) {
+    messageConverter.toLlmPrompt(request, defaults);
   }
 
   @Test

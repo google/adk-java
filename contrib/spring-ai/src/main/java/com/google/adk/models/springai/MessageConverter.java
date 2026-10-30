@@ -45,6 +45,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -110,6 +111,8 @@ public class MessageConverter {
   private final ObjectMapper objectMapper;
   private final ToolConverter toolConverter;
   private final ConfigMapper configMapper;
+
+  private final AtomicBoolean warnedAboutPortableOptions = new AtomicBoolean();
 
   public MessageConverter(ObjectMapper objectMapper) {
     this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper cannot be null");
@@ -451,6 +454,16 @@ public class MessageConverter {
       }
       applyGenerationConfig(optionsBuilder, adkChatOptions);
       return optionsBuilder.build();
+    }
+
+    // Providers that cast Prompt.getOptions() to their own type fail on portable options.
+    if (modelDefaultOptions != null && warnedAboutPortableOptions.compareAndSet(false, true)) {
+      logger.warn(
+          "Requests will carry portable options because the model's default options are {} (not"
+              + " ToolCallingChatOptions); provider models may fail with a ClassCastException."
+              + " Wrappers should delegate getOptions() to the underlying provider model's"
+              + " options.",
+          modelDefaultOptions.getClass().getName());
     }
 
     if (hasTools) {
