@@ -16,9 +16,12 @@
 
 package com.google.adk.tools.mcp;
 
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -27,6 +30,7 @@ import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.ConfigAgentUtils.ConfigurationException;
 import com.google.adk.agents.ReadonlyContext;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.ToolContext;
 import com.google.adk.tools.mcp.McpToolset.McpToolsetConfig;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -36,6 +40,7 @@ import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.List;
+import java.util.Map;
 import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
@@ -428,6 +433,45 @@ public class McpToolsetTest {
     assertThat(tools).isEmpty();
     verify(mockMcpSessionManager, times(3)).createSession();
     verify(mockMcpSyncClient, times(3)).listTools();
+  }
+
+  @Test
+  public void builder_withCallToolResultMapper_filteredToolsReturnMapperResponse() {
+    McpSchema.Tool tool1 = McpSchema.Tool.builder("tool1", jsonMapper, "{}").build();
+    McpSchema.Tool tool2 = McpSchema.Tool.builder("tool2", jsonMapper, "{}").build();
+    when(mockMcpSessionManager.createSession()).thenReturn(mockMcpSyncClient);
+    when(mockMcpSyncClient.listTools())
+        .thenReturn(McpSchema.ListToolsResult.builder(ImmutableList.of(tool1, tool2)).build());
+    when(mockMcpSyncClient.callTool(any()))
+        .thenReturn(
+            McpSchema.CallToolResult.builder(
+                    ImmutableList.of(McpSchema.TextContent.builder("{\"count\": 2}").build()))
+                .structuredContent(ImmutableMap.of("count", 2))
+                .build());
+
+    McpToolset toolset =
+        McpToolset.builder()
+            .mcpSessionManager(mockMcpSessionManager)
+            .toolFilter(ImmutableList.of("tool1"))
+            .callToolResultMapper(
+                (mcpTool, callResult) ->
+                    ImmutableMap.of("structured", callResult.structuredContent()))
+            .build();
+    BaseTool tool = getOnlyElement(toolset.getTools(mockReadonlyContext).toList().blockingGet());
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of(), mock(ToolContext.class)).blockingGet();
+
+    assertThat(tool.name()).isEqualTo("tool1");
+    assertThat(result).containsExactly("structured", ImmutableMap.of("count", 2));
+  }
+
+  @Test
+  public void builder_withoutConnectionParams_throwsNullPointerException() {
+    McpToolset.Builder builder = McpToolset.builder();
+
+    NullPointerException exception = assertThrows(NullPointerException.class, builder::build);
+
+    assertThat(exception).hasMessageThat().contains("Connection params must be set");
   }
 
   @Test
