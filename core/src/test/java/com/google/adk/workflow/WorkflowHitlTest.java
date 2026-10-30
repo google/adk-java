@@ -28,10 +28,15 @@ import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.stream.Collectors.joining;
 import static org.junit.Assert.assertThrows;
 
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.models.LlmRequest;
+import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
+import com.google.adk.testing.TestUtils;
 import com.google.adk.workflow.WorkflowResumeTesting.FailedTurn;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
@@ -126,6 +131,75 @@ public final class WorkflowHitlTest {
     ImmutableList<Event> events = session.turn(requestAnswer("ask_1", details));
 
     assertThat(replyInput(events)).isEqualTo(details);
+  }
+
+  @Test
+  public void resume_answeredRequestFollowedByAnLlmAgentNode_callsTheModel() {
+    TestLlm model = TestLlm.create(TestUtils.createTextLlmResponse("thanks"));
+    LlmAgent agent = LlmAgent.builder().name("agent").model(model).build();
+    Node ask = ask("ask", request("ask_1"));
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, ask), new Edge(ask, agent)));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("name", "Ada")));
+
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(events.stream().map(Event::stringifyContent)).contains("thanks");
+  }
+
+  @Test
+  public void resume_answeredRequestFollowedByAnLlmAgentNodeOnANonResumableApp_callsTheModel() {
+    TestLlm model = TestLlm.create(TestUtils.createTextLlmResponse("thanks"));
+    LlmAgent agent = LlmAgent.builder().name("agent").model(model).build();
+    Node ask = ask("ask", request("ask_1"));
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(new Edge(START, ask), new Edge(ask, agent)), /* resumable= */ false);
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("name", "Ada")));
+
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(requestText(model.getRequests().get(0))).contains("Ada");
+    assertThat(events.stream().map(Event::stringifyContent)).contains("thanks");
+  }
+
+  @Test
+  public void resume_answeredRequestFollowedByAnAgentWithoutHistory_sendsTheAnswerToTheModel() {
+    TestLlm model = TestLlm.create(TestUtils.createTextLlmResponse("thanks"));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(model)
+            .includeContents(LlmAgent.IncludeContents.NONE)
+            .build();
+    Node ask = ask("ask", request("ask_1"));
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, ask), new Edge(ask, agent)));
+    session.advance(go());
+
+    session.advance(requestAnswer("ask_1", ImmutableMap.of("name", "Ada")));
+
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(requestText(model.getRequests().get(0))).contains("Ada");
+  }
+
+  @Test
+  public void resumableWorkflow_agentWithoutHistory_sendsTheUserMessageToTheModel() {
+    TestLlm model = TestLlm.create(TestUtils.createTextLlmResponse("hi"));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(model)
+            .includeContents(LlmAgent.IncludeContents.NONE)
+            .build();
+
+    new WorkflowSession(workflow(new Edge(START, agent))).advance(go());
+
+    assertThat(requestText(model.getRequests().get(0))).contains("go");
   }
 
   @Test
@@ -277,6 +351,14 @@ public final class WorkflowHitlTest {
                     .anyMatch(
                         call -> call.name().orElse("").equals(RequestInput.FUNCTION_CALL_NAME)))
         .collect(toImmutableList());
+  }
+
+  /** Returns the text of every part of {@code request}'s contents. */
+  private static String requestText(LlmRequest request) {
+    return request.contents().stream()
+        .flatMap(content -> content.parts().orElse(ImmutableList.of()).stream())
+        .flatMap(part -> part.text().stream())
+        .collect(joining("\n"));
   }
 
   private static Content requestAnswer(String interruptId, Map<String, ?> response) {
