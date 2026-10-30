@@ -32,11 +32,13 @@ import com.google.adk.workflow.ResumeScan.Interception;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import com.google.genai.types.FinishReason;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.processors.FlowableProcessor;
 import io.reactivex.rxjava3.processors.UnicastProcessor;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
@@ -232,44 +234,48 @@ public final class NodeRunner {
   /**
    * Returns the run of {@code node} under {@code runId} shared by the caller's calls with that run
    * ID, starting it if needed. A run that fails or waits for an output it did not produce is not
-   * shared, so a later call runs the child again. When the call that started a run is canceled, a
-   * call still waiting on it runs the child itself.
+   * shared, so a later call runs the child again. The run is canceled only once every call waiting
+   * on it is canceled.
    */
   private static Single<Context> sharedChildRun(
       Context parent, Node node, @Nullable Object nodeInput, String runId, RunNodeConfig config) {
     return Single.defer(
         () -> {
-          ConcurrentMap<String, SingleSubject<Context>> childRuns =
-              parent.requireNodeState().childRuns();
+          ConcurrentMap<String, SharedChildRun> childRuns = parent.requireNodeState().childRuns();
           String childKey = segment(node.name(), runId);
-          SingleSubject<Context> run = SingleSubject.create();
-          SingleSubject<Context> shared = childRuns.putIfAbsent(childKey, run);
-          if (shared != null) {
-            return shared.onErrorResumeNext(
-                error ->
-                    error instanceof ChildRunCanceledException
-                        ? sharedChildRun(parent, node, nodeInput, runId, config)
-                        : Single.error(error));
+          SharedChildRun created = new SharedChildRun();
+          SharedChildRun existing = childRuns.putIfAbsent(childKey, created);
+          SharedChildRun run = existing != null ? existing : created;
+          if (!run.join()) {
+            // The run was canceled as this call joined it, so this call starts a new run.
+            childRuns.remove(childKey, run);
+            return sharedChildRun(parent, node, nodeInput, runId, config);
           }
-          // Defer so a throw from scan or intercept releases the claimed run instead of leaking it.
-          return Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
-              .doOnSuccess(
-                  child -> {
-                    if (!keepsItsRun(child)) {
+          Single<Context> call =
+              run.result.doOnDispose(
+                  () -> {
+                    if (run.leave()) {
                       childRuns.remove(childKey, run);
                     }
-                    run.onSuccess(child);
-                  })
-              .doOnError(
-                  error -> {
-                    childRuns.remove(childKey, run);
-                    run.onError(error);
-                  })
-              .doOnDispose(
-                  () -> {
-                    childRuns.remove(childKey, run);
-                    run.onError(new ChildRunCanceledException());
                   });
+          if (existing != null) {
+            return call;
+          }
+          // Start after the call subscribes, so a cancel reaches a child blocked as it starts.
+          return Single.create(
+              emitter -> {
+                emitter.setDisposable(call.subscribe(emitter::onSuccess, emitter::onError));
+                run.start(
+                    // Defer so a throw from scan or intercept fails the run instead of leaking it.
+                    Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
+                        .doOnSuccess(
+                            child -> {
+                              if (!keepsItsRun(child)) {
+                                childRuns.remove(childKey, run);
+                              }
+                            })
+                        .doOnError(error -> childRuns.remove(childKey, run)));
+              });
         });
   }
 
@@ -291,8 +297,10 @@ public final class NodeRunner {
             parentState.childCanceledMidRun(childKey),
             parentState.childFailedThisTurn(childKey));
     if (!interception.shouldRun()) {
+      // The caller reads only the replayed result, not the branch, so the parent's context will do.
       return Single.just(
-          ResumeScan.replayContext(parent, node, runId, config.useAsOutput(), interception));
+          ResumeScan.replayContext(
+              parent, parent.invocationContext(), node, runId, config.useAsOutput(), interception));
     }
     return builder()
         .node(node)
@@ -447,17 +455,30 @@ public final class NodeRunner {
   }
 
   private InvocationContext childInvocationContext() {
+    return scheduledContext(invocationContext, overrideBranch, useSubBranch, node.name(), runId);
+  }
+
+  /**
+   * Returns the context that the run {@code runId} of the node {@code name} runs against: a
+   * sub-branch of its base branch when it is fanned out, else {@code overrideBranch} when one is
+   * given, else {@code parent} itself.
+   */
+  static InvocationContext scheduledContext(
+      InvocationContext parent,
+      @Nullable String overrideBranch,
+      boolean useSubBranch,
+      String name,
+      String runId) {
     if (useSubBranch) {
-      String base =
-          overrideBranch != null ? overrideBranch : invocationContext.branch().orElse(null);
-      return invocationContext.toBuilder()
-          .branch(appendSegment(base, node.name(), runId, /* separator= */ '.'))
+      String base = overrideBranch != null ? overrideBranch : parent.branch().orElse(null);
+      return parent.toBuilder()
+          .branch(appendSegment(base, name, runId, /* separator= */ '.'))
           .build();
     }
     if (overrideBranch != null) {
-      return invocationContext.toBuilder().branch(overrideBranch).build();
+      return parent.toBuilder().branch(overrideBranch).build();
     }
-    return invocationContext;
+    return parent;
   }
 
   /**
@@ -701,10 +722,53 @@ public final class NodeRunner {
     }
   }
 
-  /** Ends the waiting calls of a shared child run whose first caller was canceled. */
-  private static final class ChildRunCanceledException extends RuntimeException {
-    ChildRunCanceledException() {
-      super("The call that ran this child was canceled.");
+  /**
+   * A run of a child that a node's calls with one run ID share. It is canceled only once every call
+   * waiting on it is canceled, so a canceled call never makes another call run the child again.
+   */
+  static final class SharedChildRun {
+    private final SingleSubject<Context> result = SingleSubject.create();
+    private final CompositeDisposable run = new CompositeDisposable();
+
+    @GuardedBy("this")
+    private int waitingCalls;
+
+    @GuardedBy("this")
+    private boolean canceled;
+
+    /** Adds a waiting call, or returns false if the run was already canceled. */
+    private synchronized boolean join() {
+      if (canceled) {
+        return false;
+      }
+      waitingCalls++;
+      return true;
+    }
+
+    /** Starts the run unless every call has left, and reports its result to every waiting call. */
+    private void start(Single<Context> child) {
+      synchronized (this) {
+        if (canceled) {
+          return;
+        }
+      }
+      // Added before it subscribes, so a cancel reaches a child blocked as it starts.
+      child.subscribe(result::onSuccess, result::onError, run);
+    }
+
+    /**
+     * Removes a waiting call. If it was the last one and the run has not finished, cancels the run
+     * and returns true.
+     */
+    private boolean leave() {
+      synchronized (this) {
+        if (--waitingCalls > 0 || result.hasValue() || result.hasThrowable()) {
+          return false;
+        }
+        canceled = true;
+      }
+      run.dispose();
+      return true;
     }
   }
 

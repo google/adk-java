@@ -27,7 +27,11 @@ import static com.google.adk.workflow.WorkflowResumeTesting.newEvent;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import com.google.adk.agents.Context;
+import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
+import com.google.adk.testing.TestNode;
+import com.google.adk.testing.TestUtils;
 import com.google.adk.workflow.ResumeScan.Interception;
 import com.google.adk.workflow.ResumeScan.RecoveredNode;
 import com.google.adk.workflow.WorkflowResumeTesting.MessageOutputNode;
@@ -40,6 +44,7 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.Collections;
 import java.util.Map;
@@ -77,6 +82,61 @@ public final class ResumeScanTest {
     assertThat(recovered.keySet()).containsExactly("d@1");
     assertThat(recovered.get("d@1").resolvedResponses)
         .containsExactly("ask_1", ImmutableMap.of("v", 1));
+  }
+
+  @Test
+  public void scan_outputDelegatedByAChild_leavesTheOwnersBranchUnset() {
+    Event delegated =
+        nodeEvent("wf@1/d@1/c@c")
+            .branch("d@1.c@c")
+            .output("out")
+            .nodeInfo(
+                NodeInfo.builder()
+                    .path("wf@1/d@1/c@c")
+                    .outputFor(ImmutableList.of("wf@1/d@1/c@c", "wf@1/d@1"))
+                    .build())
+            .build();
+
+    ImmutableMap<String, RecoveredNode> recovered =
+        ResumeScan.scan(ImmutableList.of(delegated), "wf@1", "inv");
+
+    assertThat(recovered.get("d@1").output).isEqualTo("out");
+    assertThat(recovered.get("d@1").branch).isNull();
+  }
+
+  @Test
+  public void replayContext_withoutARecordedBranch_replaysOnTheScheduledBranch() {
+    Context parent = parentContext();
+    InvocationContext scheduled = parent.invocationContext().toBuilder().branch("root.a@1").build();
+
+    Context replayed =
+        ResumeScan.replayContext(
+            parent,
+            scheduled,
+            TestNode.of("a"),
+            "1",
+            /* useAsOutput= */ false,
+            Interception.replay(
+                "out", /* route= */ null, /* branch= */ null, /* transferToAgent= */ null));
+
+    assertThat(replayed.invocationContext().branch()).hasValue("root.a@1");
+  }
+
+  @Test
+  public void replayContext_withARecordedBranch_replaysOnThatBranch() {
+    Context parent = parentContext();
+    InvocationContext scheduled = parent.invocationContext().toBuilder().branch("root.a@1").build();
+
+    Context replayed =
+        ResumeScan.replayContext(
+            parent,
+            scheduled,
+            TestNode.of("a"),
+            "1",
+            /* useAsOutput= */ false,
+            Interception.replay("out", /* route= */ null, "recorded", /* transferToAgent= */ null));
+
+    assertThat(replayed.invocationContext().branch()).hasValue("recorded");
   }
 
   @Test
@@ -549,5 +609,18 @@ public final class ResumeScanTest {
         .author("wf")
         .invocationId("inv")
         .nodeInfo(NodeInfo.builder().path(path).build());
+  }
+
+  /** Returns the context of a node named {@code root} that runs on the {@code root} branch. */
+  private static Context parentContext() {
+    return new Context(
+        TestUtils.createInvocationContext(TestUtils.createRootAgent()).toBuilder()
+            .branch("root")
+            .build(),
+        NodeExecutionState.builder()
+            .node(TestNode.of("root"))
+            .eventSink((event, nodeFailure) -> Completable.complete())
+            .runId("1")
+            .build());
   }
 }
