@@ -121,12 +121,13 @@ final class Scheduler {
     private boolean failed;
 
     Completable drive() {
-      return Completable.defer(
+      // Starts nodes after onSubscribe, so the caller can cancel a node that blocks as it starts.
+      return Completable.fromAction(
               () -> {
                 scheduleReady();
                 stopIfIdle();
-                return wakeUps.doOnNext(unused -> handleCompletions()).ignoreElements();
               })
+          .andThen(wakeUps.doOnNext(unused -> handleCompletions()).ignoreElements())
           .andThen(Completable.defer(() -> failed ? Completable.complete() : finalizeRun()))
           .doFinally(childRuns::dispose);
     }
@@ -140,7 +141,7 @@ final class Scheduler {
       List<Completion> batch = new ArrayList<>();
       for (Completion completion; (completion = completions.poll()) != null; ) {
         batch.add(completion);
-        childRuns.delete(running.remove(completion.nodeName()));
+        running.remove(completion.nodeName());
       }
       if (batch.isEmpty()) {
         return;
@@ -182,6 +183,10 @@ final class Scheduler {
     private void scheduleReady() {
       Optional<Integer> maxConcurrency = workflow.maxConcurrency();
       for (String nodeName : triggerQueue.queuedNodeNames()) {
+        // A cancel can arrive while a node blocks as it starts.
+        if (childRuns.isDisposed()) {
+          return;
+        }
         if (running.containsKey(nodeName)) {
           continue;
         }
@@ -257,8 +262,9 @@ final class Scheduler {
                     wakeUps.onNext(true);
                   },
                   // A node's exception fails only that node, so this is an Error.
-                  wakeUps::onError);
-      childRuns.add(run);
+                  wakeUps::onError,
+                  // Added before it subscribes, so a cancel reaches a node blocked as it starts.
+                  childRuns);
       running.put(nodeName, run);
     }
   }

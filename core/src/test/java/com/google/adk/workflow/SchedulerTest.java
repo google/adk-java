@@ -16,12 +16,15 @@
 
 package com.google.adk.workflow;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
@@ -36,7 +39,10 @@ import io.reactivex.rxjava3.observers.TestObserver;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.jspecify.annotations.Nullable;
@@ -497,6 +503,55 @@ public final class SchedulerTest {
   }
 
   @Test
+  public void disposingTheRunWhileANodeBlocksAsItStarts_startsNoOtherNode()
+      throws InterruptedException {
+    CountDownLatch blocked = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    AtomicBoolean secondRan = new AtomicBoolean();
+    Node blocking =
+        new TestNode(
+            "blocking",
+            (ctx, input) ->
+                Flowable.fromCallable(
+                    () -> {
+                      blocked.countDown();
+                      release.await();
+                      return "late";
+                    }));
+    Node second =
+        new TestNode("second", (ctx, input) -> Flowable.fromAction(() -> secondRan.set(true)));
+    List<Event> sent = new CopyOnWriteArrayList<>();
+    NodeRunner runner =
+        NodeRunner.builder()
+            .node(workflow(new Edge(START, blocking), new Edge(START, second)))
+            .invocationContext(
+                TestUtils.createInvocationContext(TestUtils.createRootAgent()).toBuilder()
+                    .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .build())
+            // Records each event when sent, as the root's sink does, so a late checkpoint shows.
+            .eventSink(
+                (event, nodeFailure) -> {
+                  sent.add(event);
+                  return Completable.complete();
+                })
+            .build();
+    TestObserver<Context> observer = new TestObserver<>();
+    // The run starts its nodes on this thread, which the blocking node then holds.
+    Thread thread = new Thread(() -> runner.run(/* nodeInput= */ null).subscribe(observer));
+    thread.start();
+
+    assertThat(blocked.await(10, SECONDS)).isTrue();
+    observer.dispose();
+    release.countDown();
+    thread.join(SECONDS.toMillis(10));
+
+    assertThat(thread.isAlive()).isFalse();
+    assertThat(sent.stream().filter(event -> event.output().isPresent())).isEmpty();
+    assertThat(secondRan.get()).isFalse();
+    assertThat(checkpointedNodes(sent)).containsExactly("blocking");
+  }
+
+  @Test
   public void anErrorFromANode_failsTheWorkflowRun() {
     AssertionError fatal = new AssertionError("fatal");
 
@@ -557,6 +612,14 @@ public final class SchedulerTest {
 
   private Event eventAt(String nodePath) {
     return eventsAt(nodePath).stream().collect(onlyElement());
+  }
+
+  /** Returns the names of the nodes that the checkpoints among {@code events} record. */
+  private static ImmutableSet<Object> checkpointedNodes(List<Event> events) {
+    return events.stream()
+        .flatMap(event -> event.actions().agentState().stream())
+        .flatMap(state -> ((Map<?, ?>) state.get(NodeState.NODES_KEY)).keySet().stream())
+        .collect(toImmutableSet());
   }
 
   private ImmutableList<Event> eventsAt(String nodePath) {

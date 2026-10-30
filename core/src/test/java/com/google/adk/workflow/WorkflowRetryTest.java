@@ -30,6 +30,7 @@ import static com.google.adk.workflow.WorkflowResumeTesting.newEvent;
 import static com.google.adk.workflow.WorkflowResumeTesting.outputEventAt;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -387,6 +388,51 @@ public final class WorkflowRetryTest {
     assertThat(((NodeTimeoutException) turn.error()).nodeName()).isEqualTo("wf");
     assertThat(inner.runs()).isEqualTo(1);
     assertThat(errorPaths(turn.events())).containsExactly("wf@1");
+  }
+
+  @Test
+  public void aWorkflowTimeout_cancelsANodeThatBlocksAsItStarts() {
+    CountDownLatch release = new CountDownLatch(1);
+    CountDownLatch firstRunEnded = new CountDownLatch(1);
+    AtomicBoolean interrupted = new AtomicBoolean();
+    // First run blocks on start, like an LlmAgent calling a model, until the retry releases it.
+    CountingNode blocking =
+        new CountingNode(
+            "blocking",
+            (ctx, run) ->
+                run > 1
+                    ? Flowable.fromCallable(
+                        () -> {
+                          release.countDown();
+                          checkState(firstRunEnded.await(10, SECONDS));
+                          return "in time";
+                        })
+                    : Flowable.fromCallable(
+                            () -> {
+                              try {
+                                checkState(release.await(10, SECONDS));
+                                return "late";
+                              } catch (InterruptedException e) {
+                                interrupted.set(true);
+                                throw e;
+                              }
+                            })
+                        // Once canceled or done emitting, so the retry ends after any late output.
+                        .doFinally(firstRunEnded::countDown));
+    Workflow outer =
+        Workflow.builder()
+            .name("wf")
+            .edges(new Edge(START, blocking))
+            .config(
+                NodeConfig.builder().retryConfig(instantRetry(2)).timeout(SHORT_TIMEOUT).build())
+            .build();
+
+    ImmutableList<Event> events = new WorkflowSession(outer).turn(go());
+
+    // Canceled rather than interrupted, so the first run reports neither a failure nor its output.
+    assertThat(interrupted.get()).isFalse();
+    assertThat(errorCodes(events)).containsExactly(new FinishReason("NodeTimeoutException"));
+    assertThat(outputEventAt(events, "wf@1/blocking@1").output()).hasValue("in time");
   }
 
   @Test
