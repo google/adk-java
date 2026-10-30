@@ -24,7 +24,6 @@ import com.google.auto.value.AutoValue;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.time.Duration;
 import java.util.Optional;
-import java.util.concurrent.TimeoutException;
 import org.jspecify.annotations.Nullable;
 
 /** A node's retry policy and execution timeout. */
@@ -42,7 +41,7 @@ public abstract class NodeConfig {
 
   /**
    * Returns how long an attempt may run before it is canceled and fails with a {@link
-   * TimeoutException}; empty imposes no limit.
+   * NodeTimeoutException}; empty imposes no limit.
    */
   public abstract Optional<Duration> timeout();
 

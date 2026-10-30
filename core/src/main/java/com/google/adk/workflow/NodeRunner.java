@@ -48,7 +48,6 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
@@ -502,7 +501,7 @@ public final class NodeRunner {
               .orElse(false);
     }
 
-    /** Fails {@code run} with a {@link TimeoutException} once it outlasts the node's timeout. */
+    /** Fails {@code run} with a {@link NodeTimeoutException} if it outlasts the node's timeout. */
     private Completable withTimeout(Completable run) {
       Optional<Duration> timeout = node.config().timeout();
       if (timeout.isEmpty()) {
@@ -510,12 +509,7 @@ public final class NodeRunner {
       }
       Duration limit = timeout.get();
       // Fails on the timer's thread: the timed-out attempt may still hold the scheduler's threads.
-      Completable timedOut =
-          Completable.error(
-              () ->
-                  new TimeoutException(
-                      String.format(
-                          "Node '%s' timed out after %d ms.", node.name(), limit.toMillis())));
+      Completable timedOut = Completable.error(() -> new NodeTimeoutException(node.name(), limit));
       io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
       // Off the caller's thread, so a body that blocks its thread cannot hold off the timeout.
       return Completable.timer(0, NANOSECONDS, invocationContext.scheduler())

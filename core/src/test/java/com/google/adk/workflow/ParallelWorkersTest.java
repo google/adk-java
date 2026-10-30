@@ -57,7 +57,6 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -313,7 +312,7 @@ public final class ParallelWorkersTest {
 
     Run run = run(ParallelWorkers.parallelNode(worker), ImmutableList.of("slow"));
 
-    assertThat(run.failure().orElseThrow()).isInstanceOf(TimeoutException.class);
+    assertThat(run.failure().orElseThrow()).isInstanceOf(NodeTimeoutException.class);
     assertThat(run.context().requireNodeState().failureNodePath()).hasValue("worker@1/worker@1");
   }
 

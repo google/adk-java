@@ -56,7 +56,7 @@ public final class RetryConfigTest {
             .maxDelay(Duration.ofSeconds(2))
             .backoffFactor(1.5)
             .jitter(0.5)
-            .exceptions(ImmutableList.of("TimeoutException"))
+            .exceptions(ImmutableList.of("NodeTimeoutException"))
             .build();
 
     assertThat(config.toBuilder().build()).isEqualTo(config);
@@ -65,12 +65,12 @@ public final class RetryConfigTest {
   @Test
   public void exceptions_copiesAMutableList() {
     List<String> exceptions = new ArrayList<>();
-    exceptions.add("TimeoutException");
+    exceptions.add("NodeTimeoutException");
 
     RetryConfig config = RetryConfig.builder().exceptions(exceptions).build();
     exceptions.add("IOException");
 
-    assertThat(config.exceptions()).hasValue(ImmutableList.of("TimeoutException"));
+    assertThat(config.exceptions()).hasValue(ImmutableList.of("NodeTimeoutException"));
   }
 
   @Test

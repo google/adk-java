@@ -59,7 +59,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -128,7 +127,7 @@ public final class WorkflowRetryTest {
   @Test
   public void aFailureOfATypeTheExceptionsDoNotList_isNotRetried() {
     RetryConfig onlyTimeouts =
-        instantRetry(3).toBuilder().exceptions(ImmutableList.of("TimeoutException")).build();
+        instantRetry(3).toBuilder().exceptions(ImmutableList.of("NodeTimeoutException")).build();
     CountingNode flaky =
         new CountingNode(
             "flaky", NodeConfig.builder().retryConfig(onlyTimeouts).build(), (ctx, run) -> fail());
@@ -228,12 +227,12 @@ public final class WorkflowRetryTest {
       error = session.failingTurn(go()).error();
     }
 
-    assertThat(error).isInstanceOf(TimeoutException.class);
+    assertThat(error).isInstanceOf(NodeTimeoutException.class);
     assertThat(seen).containsExactly("set");
   }
 
   @Test
-  public void aNodeOverrunningItsTimeout_failsWithATimeoutExceptionAndIsCanceled() {
+  public void aNodeOverrunningItsTimeout_failsWithANodeTimeoutExceptionAndIsCanceled() {
     AtomicBoolean canceled = new AtomicBoolean();
     CountingNode slow =
         new CountingNode(
@@ -243,16 +242,21 @@ public final class WorkflowRetryTest {
 
     FailedTurn turn = new WorkflowSession(workflow(new Edge(START, slow))).failingTurn(go());
 
-    assertThat(turn.error()).isInstanceOf(TimeoutException.class);
-    assertThat(turn.error()).hasMessageThat().contains("'slow'");
-    assertThat(errorCodes(turn.events())).containsExactly(new FinishReason("TimeoutException"));
+    assertThat(turn.error()).isInstanceOf(NodeTimeoutException.class);
+    NodeTimeoutException error = (NodeTimeoutException) turn.error();
+    assertThat(error.nodeName()).isEqualTo("slow");
+    assertThat(error.timeout()).isEqualTo(SHORT_TIMEOUT);
+    assertThat(error).hasMessageThat().contains("'slow'");
+    assertThat(errorCodes(turn.events())).containsExactly(new FinishReason("NodeTimeoutException"));
     assertThat(canceled.get()).isTrue();
   }
 
   @Test
   public void aTimedOutAttempt_isRetried() {
+    RetryConfig onlyTimeouts =
+        instantRetry(2).toBuilder().exceptions(ImmutableList.of("NodeTimeoutException")).build();
     NodeConfig config =
-        NodeConfig.builder().retryConfig(instantRetry(2)).timeout(SHORT_TIMEOUT).build();
+        NodeConfig.builder().retryConfig(onlyTimeouts).timeout(SHORT_TIMEOUT).build();
     CountingNode slow =
         new CountingNode(
             "slow", config, (ctx, run) -> run == 1 ? late() : Flowable.just("in time"));
@@ -260,7 +264,7 @@ public final class WorkflowRetryTest {
     ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, slow))).turn(go());
 
     assertThat(slow.runs()).isEqualTo(2);
-    assertThat(errorCodes(events)).containsExactly(new FinishReason("TimeoutException"));
+    assertThat(errorCodes(events)).containsExactly(new FinishReason("NodeTimeoutException"));
     assertThat(outputEventAt(events, "wf@1/slow@1").output()).hasValue("in time");
   }
 
@@ -326,7 +330,7 @@ public final class WorkflowRetryTest {
       executor.shutdownNow();
     }
 
-    assertThat(error.get()).isInstanceOf(TimeoutException.class);
+    assertThat(error.get()).isInstanceOf(NodeTimeoutException.class);
     assertThat(error.get()).hasMessageThat().contains("'stuck'");
     assertThat(heldWhenTheTurnFailed).isTrue();
   }
@@ -356,7 +360,7 @@ public final class WorkflowRetryTest {
             })
         .blockingSubscribe(event -> {}, error::set);
 
-    assertThat(error.get()).isInstanceOf(TimeoutException.class);
+    assertThat(error.get()).isInstanceOf(NodeTimeoutException.class);
     assertThat(interrupted.get()).isFalse();
   }
 
@@ -379,7 +383,8 @@ public final class WorkflowRetryTest {
 
     FailedTurn turn = new WorkflowSession(outer).failingTurn(go());
 
-    assertThat(turn.error()).hasMessageThat().contains("'wf'");
+    assertThat(turn.error()).isInstanceOf(NodeTimeoutException.class);
+    assertThat(((NodeTimeoutException) turn.error()).nodeName()).isEqualTo("wf");
     assertThat(inner.runs()).isEqualTo(1);
     assertThat(errorPaths(turn.events())).containsExactly("wf@1");
   }
