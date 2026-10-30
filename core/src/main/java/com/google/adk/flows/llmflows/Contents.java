@@ -81,7 +81,7 @@ public final class Contents implements RequestProcessor {
 
     ImmutableList<Event> sessionEvents = context.session().immutableEvents();
 
-    if (llmAgent.includeContents() == LlmAgent.IncludeContents.NONE) {
+    if (llmAgent.canonicalIncludeContents(context) == LlmAgent.IncludeContents.NONE) {
       return Single.just(
           RequestProcessor.RequestProcessingResult.create(
               request.toBuilder()
