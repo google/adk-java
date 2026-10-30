@@ -467,6 +467,10 @@ public class Claude extends BaseLlm {
       responseBuilder.content(
           Content.builder().role("model").parts(ImmutableList.copyOf(parts)).build());
     }
+    message
+        .stopReason()
+        .map(reason -> toFinishReason(reason.asString()))
+        .ifPresent(responseBuilder::finishReason);
     if (message.usage() != null) {
       responseBuilder.usageMetadata(
           GenerateContentResponseUsageMetadata.builder()
@@ -477,6 +481,18 @@ public class Claude extends BaseLlm {
               .build());
     }
     return responseBuilder.build();
+  }
+
+  /** Maps an Anthropic stop reason to a finish reason, as ADK Python does. */
+  private static FinishReason toFinishReason(String stopReason) {
+    return switch (stopReason) {
+      case "end_turn", "stop_sequence", "tool_use", "pause_turn" ->
+          new FinishReason(FinishReason.Known.STOP.toString());
+      case "max_tokens", "model_context_window_exceeded" ->
+          new FinishReason(FinishReason.Known.MAX_TOKENS.toString());
+      case "refusal" -> new FinishReason(FinishReason.Known.SAFETY.toString());
+      default -> new FinishReason(FinishReason.Known.FINISH_REASON_UNSPECIFIED.toString());
+    };
   }
 
   private Part anthropicContentBlockToPart(ContentBlock block) {
