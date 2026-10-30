@@ -82,13 +82,9 @@ public class CompactionTest {
     when(context.eventsCompactionConfig()).thenReturn(Optional.of(config));
 
     // Setup events with usage > 100 to trigger compaction
-    Event event1 = mock(Event.class);
-    Event event2 = mock(Event.class);
-    Event event3 = mock(Event.class);
-    when(event3.usageMetadata())
-        .thenReturn(
-            Optional.of(
-                GenerateContentResponseUsageMetadata.builder().promptTokenCount(200).build()));
+    Event event1 = Event.builder().timestamp(1).build();
+    Event event2 = Event.builder().timestamp(2).build();
+    Event event3 = eventWithPromptTokenCount(3, 200);
 
     session =
         Session.builder("test-session").events(ImmutableList.of(event1, event2, event3)).build();
@@ -117,11 +113,7 @@ public class CompactionTest {
     when(context.eventsCompactionConfig()).thenReturn(Optional.of(config));
 
     // Setup events with usage 200 (below 500)
-    Event event3 = mock(Event.class);
-    when(event3.usageMetadata())
-        .thenReturn(
-            Optional.of(
-                GenerateContentResponseUsageMetadata.builder().promptTokenCount(200).build()));
+    Event event3 = eventWithPromptTokenCount(3, 200);
 
     session = Session.builder("test-session").events(ImmutableList.of(event3)).build();
     when(context.session()).thenReturn(session);
@@ -153,5 +145,15 @@ public class CompactionTest {
     // Verify NO compaction and session.events() is not called
     verify(sessionService, never()).appendEvent(any(), any());
     verify(context, never()).session();
+  }
+
+  private static Event eventWithPromptTokenCount(long timestamp, int promptTokenCount) {
+    return Event.builder()
+        .timestamp(timestamp)
+        .usageMetadata(
+            GenerateContentResponseUsageMetadata.builder()
+                .promptTokenCount(promptTokenCount)
+                .build())
+        .build();
   }
 }
