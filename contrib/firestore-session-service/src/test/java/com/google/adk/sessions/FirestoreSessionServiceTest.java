@@ -275,28 +275,147 @@ public class FirestoreSessionServiceTest {
     verify(mockQuery).limitToLast(numEvents);
   }
 
-  /** Tests that getSession applies the afterTimestamp filter to the events query when specified. */
+  /** Tests that getSession queries from the same second for a whole-second afterTimestamp. */
   @Test
-  void getSession_withAfterTimestamp_appliesFilterToQuery() {
-    // Arrange
-    Instant timestamp = Instant.now().minusSeconds(60);
-    GetSessionConfig config = GetSessionConfig.builder().afterTimestamp(timestamp).build();
+  void getSession_withAfterTimestampOnWholeSecond_queriesFromThatSecond() {
+    assertAfterTimestampQueriesFrom(
+        Instant.parse("2026-10-10T05:00:05Z"), "2026-10-10T05:00:05.000Z");
+  }
 
+  /** Tests that getSession queries from the same millisecond for a whole-millisecond cursor. */
+  @Test
+  void getSession_withAfterTimestampOnMillisecond_queriesFromThatMillisecond() {
+    assertAfterTimestampQueriesFrom(
+        Instant.parse("2026-10-10T05:00:05.200Z"), "2026-10-10T05:00:05.200Z");
+  }
+
+  /** Tests that getSession rounds a sub-millisecond afterTimestamp up to the next millisecond. */
+  @Test
+  void getSession_withAfterTimestampWithinMillisecond_queriesFromNextMillisecond() {
+    assertAfterTimestampQueriesFrom(
+        Instant.parse("2026-10-10T05:00:05.200300Z"), "2026-10-10T05:00:05.201Z");
+  }
+
+  /** Tests that getSession still queries events at the latest timestamp an event can have. */
+  @Test
+  void getSession_withAfterTimestampAtLatestEventTimestamp_queriesEvents() {
+    // Arrange
+    stubSessionDocument();
+    stubEventsQuery();
+    GetSessionConfig config =
+        GetSessionConfig.builder().afterTimestamp(Instant.ofEpochMilli(Long.MAX_VALUE)).build();
+
+    // Act
+    TestObserver<Session> testObserver =
+        sessionService.getSession(APP_NAME, USER_ID, SESSION_ID, Optional.of(config)).test();
+
+    // Assert
+    testObserver.assertNoErrors();
+    testObserver.assertComplete();
+    verify(mockQuery).get();
+  }
+
+  /** Tests that getSession returns no events for an afterTimestamp later than any event. */
+  @Test
+  void getSession_withAfterTimestampPastLatestEventTimestamp_returnsSessionWithoutEvents() {
+    assertAfterTimestampReturnsNoEvents(Instant.ofEpochMilli(Long.MAX_VALUE).plusNanos(1));
+  }
+
+  /** Tests that getSession returns no events, like InMemorySessionService, for Instant.MAX. */
+  @Test
+  void getSession_withAfterTimestampAtInstantMax_returnsSessionWithoutEvents() {
+    assertAfterTimestampReturnsNoEvents(Instant.MAX);
+  }
+
+  private void assertAfterTimestampQueriesFrom(Instant afterTimestamp, String storedCursor) {
+    // Arrange
+    stubSessionDocument();
+    stubEventsQuery();
+    GetSessionConfig config = GetSessionConfig.builder().afterTimestamp(afterTimestamp).build();
+
+    // Act
+    TestObserver<Session> testObserver =
+        sessionService.getSession(APP_NAME, USER_ID, SESSION_ID, Optional.of(config)).test();
+
+    // Assert
+    testObserver.assertNoErrors();
+    testObserver.assertComplete();
+    testObserver.assertValue(session -> session.id().equals(SESSION_ID));
+    verify(mockQuery).whereGreaterThanOrEqualTo(Constants.KEY_TIMESTAMP, storedCursor);
+  }
+
+  private void assertAfterTimestampReturnsNoEvents(Instant afterTimestamp) {
+    // Arrange
+    stubSessionDocument();
+    GetSessionConfig config = GetSessionConfig.builder().afterTimestamp(afterTimestamp).build();
+
+    // Act
+    TestObserver<Session> testObserver =
+        sessionService.getSession(APP_NAME, USER_ID, SESSION_ID, Optional.of(config)).test();
+
+    // Assert
+    testObserver.assertNoErrors();
+    testObserver.assertComplete();
+    testObserver.assertValue(
+        session -> session.id().equals(SESSION_ID) && session.events().isEmpty());
+    verify(mockQuery, never()).get();
+  }
+
+  private void stubSessionDocument() {
     when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
     when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
     when(mockSessionSnapshot.exists()).thenReturn(true);
     when(mockSessionSnapshot.getReference()).thenReturn(mockSessionDocRef);
     when(mockSessionSnapshot.getData())
-        .thenReturn(ImmutableMap.of(Constants.KEY_APP_NAME, APP_NAME, "state", Map.of()));
-    when(mockQuery.whereGreaterThan(Constants.KEY_TIMESTAMP, timestamp.toString()))
+        .thenReturn(
+            ImmutableMap.of(
+                "id", SESSION_ID,
+                "appName", APP_NAME,
+                "userId", USER_ID,
+                "updateTime", NOW.toString(),
+                "state", Collections.emptyMap()));
+  }
+
+  private void stubEventsQuery() {
+    when(mockQuery.whereGreaterThanOrEqualTo(eq(Constants.KEY_TIMESTAMP), anyString()))
         .thenReturn(mockQuery);
     when(mockQuery.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
+    when(mockQuerySnapshot.getDocuments()).thenReturn(Collections.emptyList());
+  }
+
+  /** Tests that getSession returns events in time order even if they were stored out of order. */
+  @Test
+  void getSession_eventsStoredOutOfOrder_returnsEventsInTimeOrder() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    when(mockSessionSnapshot.exists()).thenReturn(true);
+    when(mockSessionSnapshot.getReference()).thenReturn(mockSessionDocRef);
+    when(mockSessionSnapshot.getData())
+        .thenReturn(
+            ImmutableMap.of(
+                "id", SESSION_ID,
+                "appName", APP_NAME,
+                "userId", USER_ID,
+                "updateTime", NOW.toString(),
+                "state", Collections.emptyMap()));
+    when(mockQuery.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
+    // Timestamps written before they had fixed millisecond digits, in Firestore's text order.
+    ImmutableList<QueryDocumentSnapshot> eventDocs =
+        ImmutableList.of(
+            eventSnapshot("2026-10-10T05:00:05.400Z"), eventSnapshot("2026-10-10T05:00:05Z"));
+    when(mockQuerySnapshot.getDocuments()).thenReturn(eventDocs);
 
     // Act
-    sessionService.getSession(APP_NAME, USER_ID, SESSION_ID, Optional.of(config)).test();
+    Session session =
+        sessionService.getSession(APP_NAME, USER_ID, SESSION_ID, Optional.empty()).blockingGet();
 
     // Assert
-    verify(mockQuery).whereGreaterThan(Constants.KEY_TIMESTAMP, timestamp.toString());
+    assertThat(session.events().stream().map(Event::timestamp).toList())
+        .containsExactly(
+            Instant.parse("2026-10-10T05:00:05Z").toEpochMilli(),
+            Instant.parse("2026-10-10T05:00:05.400Z").toEpochMilli())
+        .inOrder();
   }
 
   // --- createSession Tests ---
@@ -577,6 +696,43 @@ public class FirestoreSessionServiceTest {
     assertThat(eventCaptor.getValue()).containsEntry(Constants.KEY_AUTHOR, USER_ID);
     List<String> keywords = (List<String>) eventCaptor.getValue().get("keywords");
     assertThat(keywords).containsExactly("hello", "world");
+  }
+
+  /** Tests that appendEvent writes three fraction digits, so stored timestamps sort as text. */
+  @Test
+  @SuppressWarnings("unchecked")
+  void appendEvent_storesTimestampsWithThreeFractionDigits() {
+    // Arrange
+    Session session =
+        Session.builder(SESSION_ID)
+            .appName(APP_NAME)
+            .userId(USER_ID)
+            .state(new ConcurrentHashMap<>())
+            .build();
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockEventsCollection.document()).thenReturn(mockEventDocRef);
+    when(mockEventDocRef.getId()).thenReturn(EVENT_ID);
+    when(mockEventsCollection.document(EVENT_ID)).thenReturn(mockEventDocRef);
+
+    // Act
+    for (String time :
+        List.of("2026-10-10T05:00:05Z", "2026-10-10T05:00:05.400Z", "2026-10-10T05:00:06Z")) {
+      Event event =
+          Event.builder().author("agent").timestamp(Instant.parse(time).toEpochMilli()).build();
+      sessionService.appendEvent(session, event).blockingGet();
+    }
+
+    // Assert
+    ArgumentCaptor<Map<String, Object>> eventCaptor = ArgumentCaptor.forClass(Map.class);
+    verify(mockEventDocRef, times(3)).set(eventCaptor.capture());
+    List<String> storedTimestamps =
+        eventCaptor.getAllValues().stream()
+            .map(data -> (String) data.get(Constants.KEY_TIMESTAMP))
+            .toList();
+    assertThat(storedTimestamps)
+        .containsExactly(
+            "2026-10-10T05:00:05.000Z", "2026-10-10T05:00:05.400Z", "2026-10-10T05:00:06.000Z")
+        .inOrder();
   }
 
   /** Tests that appendAndGet correctly serializes and deserializes events with all part types. */
@@ -1220,6 +1376,34 @@ public class FirestoreSessionServiceTest {
         });
   }
 
+  /** Tests that listEvents returns events in time order even if they were stored out of order. */
+  @Test
+  void listEvents_eventsStoredOutOfOrder_returnsEventsInTimeOrder() {
+    // Arrange
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    when(mockSessionSnapshot.exists()).thenReturn(true);
+    when(mockSessionSnapshot.get(Constants.KEY_APP_NAME)).thenReturn(APP_NAME);
+    when(mockSessionSnapshot.getReference()).thenReturn(mockSessionDocRef);
+    when(mockQuery.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
+    // Timestamps written before they had fixed millisecond digits, in Firestore's text order.
+    ImmutableList<QueryDocumentSnapshot> eventDocs =
+        ImmutableList.of(
+            eventSnapshot("2026-10-10T05:00:05.400Z"), eventSnapshot("2026-10-10T05:00:05Z"));
+    when(mockQuerySnapshot.getDocuments()).thenReturn(eventDocs);
+
+    // Act
+    ListEventsResponse response =
+        sessionService.listEvents(APP_NAME, USER_ID, SESSION_ID).blockingGet();
+
+    // Assert
+    assertThat(response.events().stream().map(Event::timestamp).toList())
+        .containsExactly(
+            Instant.parse("2026-10-10T05:00:05Z").toEpochMilli(),
+            Instant.parse("2026-10-10T05:00:05.400Z").toEpochMilli())
+        .inOrder();
+  }
+
   /** Tests that listEvents throws SessionNotFoundException when the session does not exist. */
   @Test
   void listEvents_sessionDoesNotExist_throwsException() {
@@ -1397,5 +1581,20 @@ public class FirestoreSessionServiceTest {
         /* cause= */ null,
         GrpcStatusCode.of(Status.Code.ALREADY_EXISTS),
         /* retryable= */ false);
+  }
+
+  /** Returns a stored event document with the given timestamp and no content parts. */
+  private static QueryDocumentSnapshot eventSnapshot(String timestamp) {
+    QueryDocumentSnapshot snapshot = mock(QueryDocumentSnapshot.class);
+    when(snapshot.getData())
+        .thenReturn(
+            ImmutableMap.of(
+                Constants.KEY_AUTHOR,
+                "agent",
+                Constants.KEY_TIMESTAMP,
+                timestamp,
+                "content",
+                ImmutableMap.of("parts", ImmutableList.of())));
+    return snapshot;
   }
 }
