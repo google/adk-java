@@ -140,6 +140,21 @@ public final class WorkflowRetryTest {
   }
 
   @Test
+  public void aFailureOfASubtypeOfAListedExceptionClass_isRetried() {
+    RetryConfig onRuntimeExceptions =
+        instantRetry(3).toBuilder().exceptionClasses(RuntimeException.class).build();
+    CountingNode flaky =
+        new CountingNode(
+            "flaky",
+            NodeConfig.builder().retryConfig(onRuntimeExceptions).build(),
+            (ctx, run) -> run == 1 ? fail() : Flowable.just("recovered"));
+
+    new WorkflowSession(workflow(new Edge(START, flaky))).advance(go());
+
+    assertThat(flaky.runs()).isEqualTo(2);
+  }
+
+  @Test
   public void aRootNode_isRetried() {
     CountingNode flaky =
         new CountingNode(
