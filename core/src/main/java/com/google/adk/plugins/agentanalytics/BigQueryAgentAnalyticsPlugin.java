@@ -115,17 +115,19 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
           "hitl_input");
 
   private final BigQueryLoggerConfig config;
-  private final BigQuery bigQuery;
+  private final @Nullable BigQuery bigQuery;
   private final Object tableEnsuredLock = new Object();
   private final PluginState state;
   private volatile boolean tableEnsured = false;
-  // Set only on the public construction paths (see registerShutdownHook); null for the
-  // package-private test constructor. Deregistered in close() so an explicit close does not leave
-  // the hook pinning this plugin for the JVM's lifetime.
+  // Set only on enabled public construction paths (see registerShutdownHook); null for disabled
+  // configs (enabled(false)) and for the package-private test constructor. Deregistered in close()
+  // so an explicit close does not leave the hook pinning this plugin for the JVM's lifetime.
   private @Nullable Thread shutdownHook;
 
   public BigQueryAgentAnalyticsPlugin(BigQueryLoggerConfig config) throws IOException {
-    this(config, createBigQuery(config));
+    // A disabled plugin resolves no credentials and builds no BigQuery client.
+    this(config, config.enabled() ? createBigQuery(config) : null, new PluginState(config));
+    registerShutdownHook();
   }
 
   public BigQueryAgentAnalyticsPlugin(BigQueryLoggerConfig config, BigQuery bigQuery)
@@ -136,7 +138,8 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     registerShutdownHook();
   }
 
-  BigQueryAgentAnalyticsPlugin(BigQueryLoggerConfig config, BigQuery bigQuery, PluginState state) {
+  BigQueryAgentAnalyticsPlugin(
+      BigQueryLoggerConfig config, @Nullable BigQuery bigQuery, PluginState state) {
     super("bigquery_agent_analytics");
     this.config = config;
     this.bigQuery = bigQuery;
@@ -144,6 +147,9 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   }
 
   private void registerShutdownHook() {
+    if (!config.enabled()) {
+      return;
+    }
     shutdownHook =
         new Thread(
             () -> {
@@ -196,6 +202,9 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   }
 
   private void ensureTableExistsOnce() {
+    if (bigQuery == null) {
+      return;
+    }
     if (!tableEnsured) {
       synchronized (tableEnsuredLock) {
         if (!tableEnsured) {
@@ -275,11 +284,17 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   }
 
   private void processBigQueryException(BigQueryException e, String logMessage) {
-    if (e.getMessage().contains("invalid_grant")) {
+    String message = e.getMessage();
+    if (message != null && message.contains("invalid_grant")) {
       logger.log(Level.SEVERE, "Failed to authenticate with BigQuery.", e);
     } else {
       logger.log(Level.WARNING, logMessage, e);
     }
+  }
+
+  private static String formatErrorMessage(Throwable error) {
+    String message = error.getMessage();
+    return (message != null && !message.isEmpty()) ? message : error.getClass().getName();
   }
 
   private Completable logEvent(
@@ -565,6 +580,16 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     return state;
   }
 
+  @VisibleForTesting
+  @Nullable BigQuery getBigQuery() {
+    return bigQuery;
+  }
+
+  @VisibleForTesting
+  @Nullable Thread getShutdownHook() {
+    return shutdownHook;
+  }
+
   private Optional<EventData> getCompletedEventData(
       InvocationContext invocationContext, String expectedKindPrefix) {
     TraceManager traceManager = state.getTraceManager(invocationContext.invocationId());
@@ -595,7 +620,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   @Override
   public Maybe<Content> onUserMessageCallback(
       InvocationContext invocationContext, Content userMessage) {
-    if (state.isProcessed(invocationContext.invocationId())) {
+    if (!config.enabled() || state.isProcessed(invocationContext.invocationId())) {
       return Maybe.empty();
     }
     state.getTraceManager(invocationContext.invocationId()).ensureInvocationSpan(invocationContext);
@@ -663,7 +688,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
 
   @Override
   public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
-    if (state.isProcessed(invocationContext.invocationId())) {
+    if (!config.enabled() || state.isProcessed(invocationContext.invocationId())) {
       return Maybe.empty();
     }
     // Only emit STATE_DELTA when there is an actual state change, matching the Python plugin
@@ -851,7 +876,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
 
   @Override
   public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
-    if (state.isProcessed(invocationContext.invocationId())) {
+    if (!config.enabled() || state.isProcessed(invocationContext.invocationId())) {
       return Maybe.empty();
     }
     state.getTraceManager(invocationContext.invocationId()).ensureInvocationSpan(invocationContext);
@@ -861,6 +886,9 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
 
   @Override
   public Completable afterRunCallback(InvocationContext invocationContext) {
+    if (!config.enabled()) {
+      return Completable.complete();
+    }
     return logEvent(
             "INVOCATION_COMPLETED",
             invocationContext,
@@ -871,7 +899,8 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
 
   @Override
   public Maybe<Content> beforeAgentCallback(BaseAgent agent, CallbackContext callbackContext) {
-    if (state.isProcessed(callbackContext.invocationContext().invocationId())) {
+    if (!config.enabled()
+        || state.isProcessed(callbackContext.invocationContext().invocationId())) {
       return Maybe.empty();
     }
     state
@@ -883,6 +912,10 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
 
   @Override
   public Maybe<Content> afterAgentCallback(BaseAgent agent, CallbackContext callbackContext) {
+    if (!config.enabled()
+        || state.isProcessed(callbackContext.invocationContext().invocationId())) {
+      return Maybe.empty();
+    }
     return logEvent(
             "AGENT_COMPLETED",
             callbackContext.invocationContext(),
@@ -902,7 +935,8 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   @Override
   public Maybe<LlmResponse> beforeModelCallback(
       CallbackContext callbackContext, LlmRequest.Builder llmRequest) {
-    if (state.isProcessed(callbackContext.invocationContext().invocationId())) {
+    if (!config.enabled()
+        || state.isProcessed(callbackContext.invocationContext().invocationId())) {
       return Maybe.empty();
     }
     Map<String, Object> attributes = new HashMap<>();
@@ -971,7 +1005,8 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   @Override
   public Maybe<LlmResponse> afterModelCallback(
       CallbackContext callbackContext, LlmResponse llmResponse) {
-    if (state.isProcessed(callbackContext.invocationContext().invocationId())) {
+    if (!config.enabled()
+        || state.isProcessed(callbackContext.invocationContext().invocationId())) {
       return Maybe.empty();
     }
     TraceManager traceManager =
@@ -1063,7 +1098,8 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   @Override
   public Maybe<LlmResponse> onModelErrorCallback(
       CallbackContext callbackContext, LlmRequest.Builder llmRequest, Throwable error) {
-    if (state.isProcessed(callbackContext.invocationContext().invocationId())) {
+    if (!config.enabled()
+        || state.isProcessed(callbackContext.invocationContext().invocationId())) {
       return Maybe.empty();
     }
     TraceManager traceManager =
@@ -1076,7 +1112,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
     String parentSpanId = spanIds.spanId().orElse(null);
 
     EventData.Builder eventDataBuilder =
-        EventData.builder().setStatus("ERROR").setErrorMessage(error.getMessage());
+        EventData.builder().setStatus("ERROR").setErrorMessage(formatErrorMessage(error));
     if (popped.isPresent()) {
       eventDataBuilder.setLatency(popped.get().duration());
     }
@@ -1094,7 +1130,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   @Override
   public Maybe<Map<String, Object>> beforeToolCallback(
       BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext) {
-    if (state.isProcessed(toolContext.invocationContext().invocationId())) {
+    if (!config.enabled() || state.isProcessed(toolContext.invocationContext().invocationId())) {
       return Maybe.empty();
     }
     ImmutableMap<String, Object> contentMap =
@@ -1125,7 +1161,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
       Map<String, Object> toolArgs,
       ToolContext toolContext,
       Map<String, Object> result) {
-    if (state.isProcessed(toolContext.invocationContext().invocationId())) {
+    if (!config.enabled() || state.isProcessed(toolContext.invocationContext().invocationId())) {
       return Maybe.empty();
     }
     state
@@ -1167,7 +1203,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
   @Override
   public Maybe<Map<String, Object>> onToolErrorCallback(
       BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext, Throwable error) {
-    if (state.isProcessed(toolContext.invocationContext().invocationId())) {
+    if (!config.enabled() || state.isProcessed(toolContext.invocationContext().invocationId())) {
       return Maybe.empty();
     }
     state
@@ -1187,7 +1223,7 @@ public class BigQueryAgentAnalyticsPlugin extends BasePlugin {
             .buildOrThrow();
 
     EventData.Builder eventDataBuilder =
-        EventData.builder().setStatus("ERROR").setErrorMessage(error.getMessage());
+        EventData.builder().setStatus("ERROR").setErrorMessage(formatErrorMessage(error));
     if (popped.isPresent()) {
       eventDataBuilder.setLatency(popped.get().duration());
     }

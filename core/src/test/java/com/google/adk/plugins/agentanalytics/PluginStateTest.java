@@ -944,4 +944,24 @@ public final class PluginStateTest {
     // already-removed ones.
     assertEquals(1L, (long) stats.get("after_close"));
   }
+
+  @Test
+  public void constructor_disabledConfig_createsNoWriteClientOrOffloader() throws IOException {
+    BigQueryLoggerConfig disabledConfig =
+        config.toBuilder().enabled(false).gcsBucketName("test-bucket").build();
+    PluginState disabledState =
+        new PluginState(disabledConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            throw new AssertionError("A disabled plugin must not create a write client");
+          }
+
+          @Override
+          protected GcsOffloader getGcsOffloader(BigQueryLoggerConfig config) {
+            throw new AssertionError("A disabled plugin must not create a GCS offloader");
+          }
+        };
+
+    assertTrue(disabledState.close().blockingAwait(5, SECONDS));
+  }
 }

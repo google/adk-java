@@ -236,13 +236,34 @@ public abstract class BigQueryLoggerConfig {
         throw new IllegalArgumentException(
             "maxContentLength must be positive, got " + config.maxContentLength());
       }
+      if (toMillisOrThrow(config.batchFlushInterval(), "batchFlushInterval") < 1) {
+        throw new IllegalArgumentException(
+            "batchFlushInterval must be at least 1 ms, got " + config.batchFlushInterval());
+      }
+      if (toMillisOrThrow(config.shutdownTimeout(), "shutdownTimeout") < 1) {
+        throw new IllegalArgumentException(
+            "shutdownTimeout must be at least 1 ms, got " + config.shutdownTimeout());
+      }
       return config;
+    }
+  }
+
+  private static long toMillisOrThrow(Duration duration, String fieldName) {
+    try {
+      return duration.toMillis();
+    } catch (ArithmeticException e) {
+      throw new IllegalArgumentException(
+          fieldName + " overflows millisecond range, got " + duration, e);
     }
   }
 
   /** Retry configuration for BigQuery writes. */
   @AutoValue
   public abstract static class RetryConfig {
+    /**
+     * Maximum number of retry attempts after the initial write attempt ({@code 0} disables
+     * retries).
+     */
     public abstract int maxRetries();
 
     public abstract Duration initialDelay();
@@ -274,7 +295,39 @@ public abstract class BigQueryLoggerConfig {
       @CanIgnoreReturnValue
       public abstract Builder maxDelay(Duration maxDelay);
 
-      public abstract RetryConfig build();
+      abstract RetryConfig autoBuild();
+
+      public RetryConfig build() {
+        RetryConfig retry = autoBuild();
+        if (retry.maxRetries() < 0) {
+          throw new IllegalArgumentException(
+              "maxRetries must be non-negative, got " + retry.maxRetries());
+        }
+        // Write retries back off in whole milliseconds, so (0, 1 ms) would silently become 0.
+        validateRetryDelay(retry.initialDelay(), "initialDelay");
+        validateRetryDelay(retry.maxDelay(), "maxDelay");
+        if (retry.maxDelay().compareTo(retry.initialDelay()) < 0) {
+          throw new IllegalArgumentException(
+              "maxDelay ("
+                  + retry.maxDelay()
+                  + ") must be >= initialDelay ("
+                  + retry.initialDelay()
+                  + ")");
+        }
+        if (!Double.isFinite(retry.multiplier()) || retry.multiplier() < 1.0) {
+          throw new IllegalArgumentException(
+              "multiplier must be finite and >= 1.0, got " + retry.multiplier());
+        }
+        return retry;
+      }
+
+      private static void validateRetryDelay(Duration delay, String fieldName) {
+        long millis = toMillisOrThrow(delay, fieldName);
+        if (delay.isNegative() || (!delay.isZero() && millis < 1)) {
+          throw new IllegalArgumentException(
+              fieldName + " must be 0 or at least 1 ms, got " + delay);
+        }
+      }
     }
   }
 }

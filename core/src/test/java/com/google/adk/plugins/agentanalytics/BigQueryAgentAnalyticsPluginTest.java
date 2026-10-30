@@ -28,6 +28,7 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -54,6 +55,7 @@ import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.api.core.ApiFutures;
 import com.google.auth.Credentials;
 import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Field.Mode;
 import com.google.cloud.bigquery.FieldList;
@@ -2284,5 +2286,221 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertEquals("[REDACTED]", stateNode.get("api_key").asText());
     assertEquals("[UNSERIALIZABLE]", stateNode.get("bad").asText());
     assertEquals("visible", stateNode.get("ok").asText());
+  }
+
+  @Test
+  public void publicConstructor_disabledConfig_callbacksAndCloseAreNoOps() throws Exception {
+    // No credentials are set: an enabled plugin would resolve ADC and build clients here.
+    BigQueryLoggerConfig disabledConfig =
+        BigQueryLoggerConfig.builder()
+            .enabled(false)
+            .projectId("project")
+            .datasetId("dataset")
+            .build();
+    BigQueryAgentAnalyticsPlugin disabledPlugin = new BigQueryAgentAnalyticsPlugin(disabledConfig);
+    assertNull(disabledPlugin.getBigQuery());
+    assertNull(disabledPlugin.getShutdownHook());
+    PluginState disabledState = disabledPlugin.getState();
+    CallbackContext callbackContext = mock(CallbackContext.class);
+    when(callbackContext.invocationContext()).thenReturn(mockInvocationContext);
+    ToolContext toolContext = mock(ToolContext.class);
+    when(toolContext.invocationContext()).thenReturn(mockInvocationContext);
+    BaseTool tool = mock(BaseTool.class);
+    when(tool.name()).thenReturn("test_tool");
+    Content message = Content.fromParts(Part.fromText("hello"));
+    Event event = Event.builder().author("agent_name").content(message).build();
+    RuntimeException error = new RuntimeException("boom");
+
+    disabledPlugin.onUserMessageCallback(mockInvocationContext, message).test().assertResult();
+    disabledPlugin.onEventCallback(mockInvocationContext, event).test().assertResult();
+    disabledPlugin.beforeRunCallback(mockInvocationContext).test().assertResult();
+    disabledPlugin.beforeAgentCallback(fakeAgent, callbackContext).test().assertResult();
+    disabledPlugin.beforeModelCallback(callbackContext, LlmRequest.builder()).test().assertResult();
+    disabledPlugin
+        .afterModelCallback(callbackContext, LlmResponse.builder().build())
+        .test()
+        .assertResult();
+    disabledPlugin
+        .onModelErrorCallback(callbackContext, LlmRequest.builder(), error)
+        .test()
+        .assertResult();
+    disabledPlugin.beforeToolCallback(tool, ImmutableMap.of(), toolContext).test().assertResult();
+    disabledPlugin
+        .afterToolCallback(tool, ImmutableMap.of(), toolContext, ImmutableMap.of())
+        .test()
+        .assertResult();
+    disabledPlugin
+        .onToolErrorCallback(tool, ImmutableMap.of(), toolContext, error)
+        .test()
+        .assertResult();
+    disabledPlugin.afterAgentCallback(fakeAgent, callbackContext).test().assertResult();
+    // afterRun finalization would drop trace managers, so check for spans before it runs.
+    assertTrue(disabledState.getTraceManagers().isEmpty());
+    disabledPlugin.afterRunCallback(mockInvocationContext).test().assertResult();
+
+    assertFalse(disabledState.isProcessed("invocation_id"));
+    assertTrue(disabledState.getBatchProcessors().isEmpty());
+    assertTrue(disabledPlugin.close().blockingAwait(5_000, MILLISECONDS));
+  }
+
+  @Test
+  public void publicConstructor_enabledConfig_registersShutdownHookUntilClose() throws Exception {
+    // A mock's null metrics type would NPE in gax's ClientContext header builder.
+    when(config.credentials().getMetricsCredentialType()).thenCallRealMethod();
+    BigQueryAgentAnalyticsPlugin enabledPlugin = new BigQueryAgentAnalyticsPlugin(config);
+    Thread shutdownHook = enabledPlugin.getShutdownHook();
+    assertTrue(enabledPlugin.close().blockingAwait(5_000, MILLISECONDS));
+
+    assertNotNull(enabledPlugin.getBigQuery());
+    assertNotNull(shutdownHook);
+    // close() deregistered the hook, so removing it again finds nothing.
+    assertFalse(Runtime.getRuntime().removeShutdownHook(shutdownHook));
+  }
+
+  @Test
+  public void onModelErrorCallback_nullErrorMessage_recordsExceptionClassName() throws Exception {
+    CallbackContext mockCallbackContext = mock(CallbackContext.class);
+    when(mockCallbackContext.invocationContext()).thenReturn(mockInvocationContext);
+    state.getTraceManager("invocation_id").pushSpan(mockInvocationContext, "llm_request");
+
+    // An explicitly constructed NPE has a null message (helpful NPE text is JVM-raised only).
+    plugin
+        .onModelErrorCallback(
+            mockCallbackContext, mock(LlmRequest.Builder.class), new NullPointerException())
+        .blockingSubscribe();
+
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("Row not found in queue", row);
+    assertEquals("LLM_ERROR", row.get("event_type"));
+    assertEquals("java.lang.NullPointerException", row.get("error_message"));
+  }
+
+  @Test
+  public void onToolErrorCallback_nullErrorMessage_recordsExceptionClassName() throws Exception {
+    ToolContext mockToolContext = mock(ToolContext.class);
+    when(mockToolContext.invocationContext()).thenReturn(mockInvocationContext);
+    BaseTool mockTool = mock(BaseTool.class);
+    when(mockTool.name()).thenReturn("failing_tool");
+
+    plugin
+        .onToolErrorCallback(
+            mockTool, ImmutableMap.of(), mockToolContext, new NullPointerException())
+        .blockingSubscribe();
+
+    Map<String, Object> errorRow = drainRowsByEventType().get("TOOL_ERROR");
+    assertNotNull("TOOL_ERROR row not found", errorRow);
+    assertEquals("java.lang.NullPointerException", errorRow.get("error_message"));
+  }
+
+  @Test
+  public void onToolErrorCallback_emptyErrorMessage_recordsExceptionClassName() throws Exception {
+    ToolContext mockToolContext = mock(ToolContext.class);
+    when(mockToolContext.invocationContext()).thenReturn(mockInvocationContext);
+    BaseTool mockTool = mock(BaseTool.class);
+    when(mockTool.name()).thenReturn("failing_tool");
+
+    plugin
+        .onToolErrorCallback(
+            mockTool, ImmutableMap.of(), mockToolContext, new IllegalStateException(""))
+        .blockingSubscribe();
+
+    Map<String, Object> errorRow = drainRowsByEventType().get("TOOL_ERROR");
+    assertNotNull("TOOL_ERROR row not found", errorRow);
+    assertEquals("java.lang.IllegalStateException", errorRow.get("error_message"));
+  }
+
+  @Test
+  public void onModelErrorCallback_emptyErrorMessage_recordsExceptionClassName() throws Exception {
+    CallbackContext mockCallbackContext = mock(CallbackContext.class);
+    when(mockCallbackContext.invocationContext()).thenReturn(mockInvocationContext);
+    state.getTraceManager("invocation_id").pushSpan(mockInvocationContext, "llm_request");
+
+    plugin
+        .onModelErrorCallback(
+            mockCallbackContext, mock(LlmRequest.Builder.class), new IllegalStateException(""))
+        .blockingSubscribe();
+
+    Map<String, Object> row = state.getBatchProcessor("invocation_id").queue.poll();
+    assertNotNull("Row not found in queue", row);
+    assertEquals("LLM_ERROR", row.get("event_type"));
+    assertEquals("java.lang.IllegalStateException", row.get("error_message"));
+  }
+
+  @Test
+  public void afterAgentCallback_processedInvocation_doesNotRecreateTraceManager() {
+    CallbackContext callbackContext = mock(CallbackContext.class);
+    when(callbackContext.invocationContext()).thenReturn(mockInvocationContext);
+    // Finalization marks the invocation processed and removes its trace manager.
+    state.markProcessed("invocation_id");
+
+    plugin.afterAgentCallback(fakeAgent, callbackContext).test().assertResult();
+
+    assertTrue(state.getTraceManagers().isEmpty());
+  }
+
+  @Test
+  public void afterAgentCallback_alreadyProcessed_skipsSpanPopAndLogging() throws Exception {
+    CallbackContext callbackContext = mock(CallbackContext.class);
+    when(callbackContext.invocationContext()).thenReturn(mockInvocationContext);
+
+    plugin
+        .onUserMessageCallback(mockInvocationContext, Content.builder().build())
+        .blockingSubscribe();
+    plugin.beforeAgentCallback(fakeAgent, callbackContext).blockingSubscribe();
+    state.getBatchProcessor("invocation_id").queue.clear();
+    String agentSpanId =
+        state
+            .getTraceManager("invocation_id")
+            .getCurrentSpanAndParent(mockInvocationContext)
+            .spanId()
+            .orElseThrow();
+    state.markProcessed("invocation_id");
+
+    plugin.afterAgentCallback(fakeAgent, callbackContext).test().assertResult();
+
+    assertTrue(state.getBatchProcessor("invocation_id").queue.isEmpty());
+    assertEquals(
+        agentSpanId,
+        state
+            .getTraceManager("invocation_id")
+            .getCurrentSpanAndParent(mockInvocationContext)
+            .spanId()
+            .orElseThrow());
+  }
+
+  @Test
+  public void onUserMessageCallback_tableCheckErrorWithoutMessage_stillCompletes()
+      throws Exception {
+    when(mockBigQuery.getTable(any(TableId.class))).thenThrow(new BigQueryException(500, null));
+
+    plugin
+        .onUserMessageCallback(mockInvocationContext, Content.builder().build())
+        .test()
+        .assertResult();
+
+    verify(mockBigQuery).getTable(any(TableId.class));
+  }
+
+  @Test
+  public void onUserMessageCallback_withoutBigQueryClient_skipsTableSetupAndQueuesRow()
+      throws Exception {
+    BigQueryAgentAnalyticsPlugin pluginWithoutClient =
+        new BigQueryAgentAnalyticsPlugin(config, /* bigQuery= */ null, state);
+    Logger logger = Logger.getLogger(BigQueryAgentAnalyticsPlugin.class.getName());
+    Handler logHandler = mock(Handler.class);
+    logger.addHandler(logHandler);
+    try {
+      pluginWithoutClient
+          .onUserMessageCallback(mockInvocationContext, Content.fromParts(Part.fromText("hi")))
+          .test()
+          .assertResult();
+    } finally {
+      logger.removeHandler(logHandler);
+    }
+
+    assertNotNull(drainRowsByEventType().get("USER_MESSAGE_RECEIVED"));
+    // A table check against the missing client would log a WARNING on every event.
+    verify(logHandler, never())
+        .publish(argThat(record -> record.getLevel().intValue() >= Level.WARNING.intValue()));
   }
 }

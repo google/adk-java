@@ -87,7 +87,7 @@ class PluginState {
   private final ScheduledExecutorService executor;
   private final ExecutorService offloadExecutor;
   private final ThreadPoolExecutor writerCloseExecutor;
-  private final BigQueryWriteClient writeClient;
+  private final @Nullable BigQueryWriteClient writeClient;
   private static final AtomicLong threadCounter = new AtomicLong(0);
   // Map of invocation ID to BatchProcessor.
   private final ConcurrentHashMap<String, BatchProcessor> batchProcessors =
@@ -96,7 +96,7 @@ class PluginState {
   private final ConcurrentHashMap<String, TraceManager> traceManagers = new ConcurrentHashMap<>();
   // Cache of invocation ID to Boolean indicating invocation ID has been processed.
   private final Cache<String, Boolean> processedInvocations;
-  private final GcsOffloader offloader;
+  private final @Nullable GcsOffloader offloader;
   private final Parser parser;
   private final ConcurrentHashMap<String, Set<CompletableFuture<Void>>> pendingTasks =
       new ConcurrentHashMap<>();
@@ -229,13 +229,13 @@ class PluginState {
             new ThreadPoolExecutor.AbortPolicy());
     this.writerCloseExecutor.allowCoreThreadTimeOut(true);
     // One write client per plugin instance, shared by all invocations.
-    this.writeClient = createWriteClient(config);
+    this.writeClient = config.enabled() ? createWriteClient(config) : null;
     this.processedInvocations =
         CacheBuilder.newBuilder()
             .maximumSize(10000)
             .expireAfterWrite(java.time.Duration.ofMinutes(10))
             .build();
-    this.offloader = getGcsOffloader(config);
+    this.offloader = config.enabled() ? getGcsOffloader(config) : null;
     this.parser =
         new Parser(
             offloader,
@@ -285,6 +285,7 @@ class PluginState {
 
   protected StreamWriter createWriter() {
     BigQueryLoggerConfig.RetryConfig retryConfig = config.retryConfig();
+    // StreamWriter treats maxAttempts as a retry count; 0 disables retries.
     RetrySettings retrySettings =
         RetrySettings.newBuilder()
             .setMaxAttempts(retryConfig.maxRetries())
