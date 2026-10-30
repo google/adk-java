@@ -21,6 +21,7 @@ import static java.util.Objects.requireNonNullElse;
 import static java.util.stream.Collectors.joining;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.google.adk.JsonBaseModel;
 import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Callbacks.AfterAgentCallbackSync;
 import com.google.adk.agents.Callbacks.AfterModelCallback;
@@ -54,6 +55,7 @@ import com.google.adk.models.LlmRegistry;
 import com.google.adk.models.Model;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.BaseToolset;
+import com.google.adk.workflow.NodeInfo;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
@@ -102,6 +104,7 @@ public class LlmAgent extends BaseAgent {
   private final ImmutableList<BaseToolset> toolsets;
   private final Optional<GenerateContentConfig> generateContentConfig;
   private final IncludeContents includeContents;
+  private final boolean includeContentsExplicit;
 
   private final boolean planning;
   private final Optional<Integer> maxSteps;
@@ -118,6 +121,7 @@ public class LlmAgent extends BaseAgent {
   private final Optional<Executor> executor;
   private final Optional<String> outputKey;
   private final Optional<BaseCodeExecutor> codeExecutor;
+  private final @Nullable AgentMode mode;
 
   private volatile Model resolvedModel;
   private final BaseLlmFlow llmFlow;
@@ -135,6 +139,7 @@ public class LlmAgent extends BaseAgent {
         requireNonNullElse(builder.globalInstruction, new Instruction.Static(""));
     this.generateContentConfig = Optional.ofNullable(builder.generateContentConfig);
     this.includeContents = requireNonNullElse(builder.includeContents, IncludeContents.DEFAULT);
+    this.includeContentsExplicit = builder.includeContents != null;
     this.planning = requireNonNullElse(builder.planning, false);
     this.maxSteps = Optional.ofNullable(builder.maxSteps);
     this.disallowTransferToParent = requireNonNullElse(builder.disallowTransferToParent, false);
@@ -153,6 +158,7 @@ public class LlmAgent extends BaseAgent {
     this.toolsUnion = requireNonNullElse(builder.toolsUnion, ImmutableList.of());
     this.toolsets = extractToolsets(this.toolsUnion);
     this.codeExecutor = Optional.ofNullable(builder.codeExecutor);
+    this.mode = builder.mode;
 
     this.llmFlow = determineLlmFlow();
 
@@ -197,6 +203,7 @@ public class LlmAgent extends BaseAgent {
     private Executor executor;
     private String outputKey;
     private BaseCodeExecutor codeExecutor;
+    private AgentMode mode;
 
     @CanIgnoreReturnValue
     public Builder model(String model) {
@@ -253,6 +260,10 @@ public class LlmAgent extends BaseAgent {
       return this;
     }
 
+    /**
+     * Sets how much session history the agent sees. Unset, it is {@link IncludeContents#DEFAULT},
+     * except that a {@code SINGLE_TURN} workflow node then runs with {@link IncludeContents#NONE}.
+     */
     @CanIgnoreReturnValue
     public Builder includeContents(IncludeContents includeContents) {
       this.includeContents = includeContents;
@@ -577,6 +588,17 @@ public class LlmAgent extends BaseAgent {
       return this;
     }
 
+    /**
+     * Sets how this agent converses when it runs as a workflow node. An agent without a mode runs
+     * as it does outside a workflow.
+     */
+    @CanIgnoreReturnValue
+    @Experimental
+    public Builder mode(AgentMode mode) {
+      this.mode = mode;
+      return this;
+    }
+
     private static <B, A> @Nullable ImmutableList<A> convertCallbacks(
         @Nullable List<? extends B> callbacks, Function<B, A> converter, String callbackType) {
       return Optional.ofNullable(callbacks)
@@ -621,7 +643,7 @@ public class LlmAgent extends BaseAgent {
     }
   }
 
-  private void maybeSaveOutputToState(Event event) {
+  private void maybeSaveOutputToState(Event event, InvocationContext invocationContext) {
     // Events from another agent, e.g. a transfer target, must not overwrite this agent's output.
     if (!name().equals(event.author())) {
       logger.debug(
@@ -642,30 +664,36 @@ public class LlmAgent extends BaseAgent {
       return;
     }
 
-    // Concatenate text from all parts, excluding thoughts.
-    String rawResult =
-        parts.stream()
-            .filter(part -> !isThought(part))
-            .map(part -> part.text().orElse(""))
-            .collect(joining());
+    String rawResult = visibleText(event.content().get());
 
     Object output = rawResult;
     Optional<Schema> outputSchema = outputSchema();
-    if (outputSchema.isPresent()) {
+    if (outputSchema.isPresent() && runsSingleTurn(invocationContext)) {
+      try {
+        output = SchemaUtils.parseModelOutput(rawResult, outputSchema.get());
+      } catch (IllegalArgumentException e) {
+        // Like the node output, the saved value must match the schema.
+        return;
+      }
+      if (output == null) {
+        return;
+      }
+    } else if (outputSchema.isPresent()) {
       try {
         output = SchemaUtils.validateOutputSchema(rawResult, outputSchema.get());
       } catch (JsonProcessingException e) {
         logger.error(
             "LlmAgent output for outputKey '{}' was not valid JSON, despite an outputSchema being"
-                + " present. Saving raw output to state.",
+                + " present. Saving raw output to state. Cause: {}",
             outputKey().get(),
-            e);
+            // The exception's message can quote the model's output.
+            e.getClass().getSimpleName());
       } catch (IllegalArgumentException e) {
         logger.error(
             "LlmAgent output for outputKey '{}' did not match the outputSchema. Saving raw output"
-                + " to state.",
+                + " to state. Cause: {}",
             outputKey().get(),
-            e);
+            e.getClass().getSimpleName());
       }
     }
     event.actions().stateDelta().put(outputKey().get(), output);
@@ -675,10 +703,24 @@ public class LlmAgent extends BaseAgent {
     return part.thought().isPresent() && part.thought().get();
   }
 
+  /** Returns the text of the parts of {@code content} that are not thoughts. */
+  private static String visibleText(Content content) {
+    return content.parts().orElseGet(ImmutableList::of).stream()
+        .filter(part -> !isThought(part))
+        .map(part -> part.text().orElse(""))
+        .collect(joining());
+  }
+
+  private boolean runsSingleTurn(InvocationContext invocationContext) {
+    return invocationContext.agentMode(this).filter(AgentMode.SINGLE_TURN::equals).isPresent();
+  }
+
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
     if (!invocationContext.isResumable()) {
-      return llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+      return llmFlow
+          .run(invocationContext)
+          .doOnNext(event -> maybeSaveOutputToState(event, invocationContext));
     }
     return Flowable.defer(
         () -> {
@@ -708,7 +750,9 @@ public class LlmAgent extends BaseAgent {
           }
           // Normal path: emit an end-of-agent checkpoint so a later run can skip this agent.
           Flowable<Event> events =
-              llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+              llmFlow
+                  .run(invocationContext)
+                  .doOnNext(event -> maybeSaveOutputToState(event, invocationContext));
           AtomicBoolean paused = new AtomicBoolean(false);
           return events
               .doOnNext(
@@ -808,9 +852,167 @@ public class LlmAgent extends BaseAgent {
     return Optional.empty();
   }
 
+  /**
+   * Runs this agent as a workflow node. A {@link AgentMode#SINGLE_TURN} agent sees no history
+   * unless {@link Builder#includeContents} was set, gets the node input as its user turn, and gives
+   * its first final model turn as the node output. An agent without a mode runs as {@link
+   * BaseAgent#runNode} runs it.
+   */
+  @Experimental
+  @Override
+  public Flowable<Event> runNode(Context context, @Nullable Object nodeInput) {
+    if (mode != AgentMode.SINGLE_TURN) {
+      return super.runNode(context, nodeInput);
+    }
+    InvocationContext invocationContext = context.invocationContext();
+    Flowable<Event> run =
+        runAsNode(
+            context, invocationContext.toBuilder().agentMode(this, AgentMode.SINGLE_TURN).build());
+    // Eager disposal removes the input before the run ends, so a successor never sees it.
+    return Flowable.using(
+        () -> injectNodeInput(context, nodeInput),
+        unused -> {
+          // The first final turn with an output is the node's output; later content is not.
+          AtomicBoolean outputMarked = new AtomicBoolean();
+          return run.map(
+              event -> {
+                if (outputMarked.get()) {
+                  return event;
+                }
+                Optional<Event> marked = markOutputIfFinalTurn(event);
+                outputMarked.set(marked.isPresent());
+                return marked.orElse(event);
+              });
+        },
+        injected -> injected.ifPresent(event -> removeInput(invocationContext, event)),
+        /* eager= */ true);
+  }
+
+  /**
+   * Returns {@code event} carrying the node output when it is this agent's final model turn with
+   * text, or else empty. Without an output schema, the event's message is the output.
+   *
+   * @throws IllegalArgumentException if the text does not match the output schema
+   */
+  private Optional<Event> markOutputIfFinalTurn(Event event) {
+    Optional<Content> content =
+        event.content().filter(c -> c.role().filter(Role.MODEL::equals).isPresent());
+    if (!name().equals(event.author())
+        || !event.finalResponse()
+        || !event.functionCalls().isEmpty()
+        || content.isEmpty()) {
+      return Optional.empty();
+    }
+    String text = visibleText(content.get());
+    Optional<Schema> schema = outputSchema();
+    Object output =
+        schema.isPresent()
+            ? SchemaUtils.parseModelOutput(text, schema.get())
+            : (text.isBlank() ? null : text.trim());
+    if (output == null) {
+      return Optional.empty();
+    }
+    Event.Builder marked = event.toBuilder().output(output);
+    if (schema.isEmpty()) {
+      // The output field gives the successor the trimmed text; the stored event drops it.
+      marked.nodeInfo(
+          event
+              .nodeInfo()
+              .map(NodeInfo::toBuilder)
+              .orElseGet(NodeInfo::builder)
+              .messageAsOutput(true)
+              .build());
+    }
+    return Optional.of(marked.build());
+  }
+
+  /**
+   * Adds the node input to the session as the agent's user turn and returns it. A resuming node
+   * gets none, and the user message the runner already recorded is not added twice.
+   */
+  private static Optional<Event> injectNodeInput(Context context, @Nullable Object nodeInput) {
+    InvocationContext invocationContext = context.invocationContext();
+    if (nodeInput == null
+        || !context.resumeInputs().isEmpty()
+        || isRecordedUserMessage(invocationContext, nodeInput)) {
+      return Optional.empty();
+    }
+    Event event =
+        Event.builder()
+            .id(invocationContext.newUuid())
+            .invocationId(invocationContext.invocationId())
+            .author(Role.USER)
+            .content(nodeInputToUserContent(nodeInput))
+            .branch(invocationContext.branch().orElse(null))
+            .nodeInfo(NodeInfo.builder().path(context.requireNodeState().nodePath()).build())
+            .timestamp(invocationContext.now().toEpochMilli())
+            .build();
+    invocationContext.session().addEvent(event);
+    invocationContext.trackNodeInput(event, /* added= */ true);
+    return Optional.of(event);
+  }
+
+  // As in ADK Kotlin; Python ADK adds the user message again and relies on its no-history default.
+  private static boolean isRecordedUserMessage(
+      InvocationContext invocationContext, Object nodeInput) {
+    return invocationContext.userContent().filter(nodeInput::equals).isPresent()
+        && invocationContext.session().immutableEvents().stream()
+            .anyMatch(
+                event ->
+                    invocationContext.invocationId().equals(event.invocationId())
+                        && Objects.equals(event.author(), Role.USER)
+                        && event.nodeInfo().map(NodeInfo::path).orElse("").isEmpty()
+                        && event.content().filter(nodeInput::equals).isPresent());
+  }
+
+  /**
+   * Converts a node input into a user turn: a string or other scalar as its text, and any other
+   * value, such as a map, list or record, as JSON text, like Python ADK's {@code model_dump_json}.
+   * An object that JSON can't represent falls back to its {@code toString}.
+   *
+   * @throws IllegalArgumentException if a map or list holds a value that JSON cannot represent
+   */
+  @SuppressWarnings("UnusedException") // Jackson's message can quote the input, so it is dropped.
+  private static Content nodeInputToUserContent(Object nodeInput) {
+    if (nodeInput instanceof Content content) {
+      return content.toBuilder().role(Role.USER).build();
+    }
+    String text;
+    if (nodeInput instanceof String
+        || nodeInput instanceof Number
+        || nodeInput instanceof Boolean
+        || nodeInput instanceof Character
+        || nodeInput instanceof Enum<?>) {
+      text = String.valueOf(nodeInput);
+    } else {
+      try {
+        text = JsonBaseModel.getMapper().writeValueAsString(nodeInput);
+      } catch (JsonProcessingException e) {
+        if (nodeInput instanceof Map<?, ?> || nodeInput instanceof List<?>) {
+          throw new IllegalArgumentException(
+              "A node input map or list must hold only values that JSON can represent.");
+        }
+        text = String.valueOf(nodeInput);
+      }
+    }
+    return Content.fromParts(Part.fromText(text));
+  }
+
+  // Session has no remove helper, so this locks the event list as Session.addEvent does.
+  @SuppressWarnings("deprecation")
+  private static void removeInput(InvocationContext invocationContext, Event event) {
+    List<Event> events = invocationContext.session().events();
+    synchronized (events) {
+      events.removeIf(event::equals);
+    }
+    invocationContext.trackNodeInput(event, /* added= */ false);
+  }
+
   @Override
   protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
-    return llmFlow.runLive(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    return llmFlow
+        .runLive(invocationContext)
+        .doOnNext(event -> maybeSaveOutputToState(event, invocationContext));
   }
 
   /**
@@ -910,8 +1112,32 @@ public class LlmAgent extends BaseAgent {
     return generateContentConfig;
   }
 
+  /**
+   * Returns the configured history setting, {@link IncludeContents#DEFAULT} when unset. A {@code
+   * SINGLE_TURN} workflow node overrides an unset one; see {@link #canonicalIncludeContents}.
+   */
   public IncludeContents includeContents() {
     return includeContents;
+  }
+
+  /**
+   * Returns how much history this agent sees in {@code context}: a single-turn workflow node sees
+   * none unless {@link Builder#includeContents} was set.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public IncludeContents canonicalIncludeContents(InvocationContext context) {
+    if (!includeContentsExplicit && runsSingleTurn(context)) {
+      return IncludeContents.NONE;
+    }
+    return includeContents();
+  }
+
+  /** Returns how this agent converses when it runs as a workflow node, or empty without a mode. */
+  @Experimental
+  public Optional<AgentMode> mode() {
+    return Optional.ofNullable(mode);
   }
 
   public Single<List<BaseTool>> tools() {

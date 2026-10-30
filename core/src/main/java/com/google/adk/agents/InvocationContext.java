@@ -48,6 +48,7 @@ import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -79,6 +80,8 @@ public class InvocationContext {
   // Shared by reference so a sub-agent's checkpoint is visible to its parent and the runner.
   private final Map<String, Map<String, Object>> agentStates;
   private final Map<String, Boolean> endOfAgents;
+  // Shared by reference, so every context of the invocation sees the inputs that nodes inject.
+  private final Set<Event> nodeInputs;
   @Nullable private final Scheduler scheduler;
   private final InstantSource instantSource;
   private final UuidProvider uuidProvider;
@@ -86,6 +89,8 @@ public class InvocationContext {
   @Nullable private String branch;
   private BaseAgent agent;
   private final @Nullable Node node;
+  private final @Nullable AgentModeOverride agentModeOverride;
+  private final @Nullable String nodePath;
   private boolean endInvocation;
 
   protected InvocationContext(Builder builder) {
@@ -100,6 +105,8 @@ public class InvocationContext {
     this.invocationId = builder.resolveInvocationId();
     this.agent = builder.agent;
     this.node = builder.node;
+    this.agentModeOverride = builder.agentModeOverride;
+    this.nodePath = builder.nodePath;
     this.session = builder.session;
     this.userContent = builder.userContent;
     this.runConfig = builder.runConfig;
@@ -114,6 +121,7 @@ public class InvocationContext {
     this.callbackContextData = builder.callbackContextData;
     this.agentStates = builder.agentStates;
     this.endOfAgents = builder.endOfAgents;
+    this.nodeInputs = builder.nodeInputs;
     this.scheduler = builder.scheduler;
     this.instantSource = builder.instantSource;
     this.uuidProvider = builder.uuidProvider;
@@ -192,6 +200,49 @@ public class InvocationContext {
   @Experimental
   public Optional<Node> node() {
     return Optional.ofNullable(node);
+  }
+
+  /**
+   * Returns the mode {@code agent} runs in as a workflow node in this context, or empty when it
+   * runs without one.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public Optional<AgentMode> agentMode(BaseAgent agent) {
+    return agentModeOverride != null && agentModeOverride.agent().equals(agent)
+        ? Optional.of(agentModeOverride.mode())
+        : Optional.empty();
+  }
+
+  /**
+   * Returns the path of the workflow node that the agent runs as, which the agents it reaches
+   * share, or empty outside a workflow.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public Optional<String> nodePath() {
+    return Optional.ofNullable(nodePath);
+  }
+
+  /**
+   * Returns whether {@code event} is a user turn that a workflow node added as its input.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public boolean isNodeInput(Event event) {
+    return nodeInputs.contains(event);
+  }
+
+  /** Records {@code event} as a node's input, or forgets it once {@code added} is false. */
+  void trackNodeInput(Event event, boolean added) {
+    if (added) {
+      nodeInputs.add(event);
+    } else {
+      nodeInputs.remove(event);
+    }
   }
 
   /** Returns the session associated with this invocation. */
@@ -650,6 +701,11 @@ public class InvocationContext {
     }
   }
 
+  /**
+   * The mode one agent runs in, keyed to that agent so the sub-agents it reaches run without it.
+   */
+  private record AgentModeOverride(BaseAgent agent, AgentMode mode) {}
+
   /** Builder for {@link InvocationContext}. */
   public static class Builder {
 
@@ -667,6 +723,8 @@ public class InvocationContext {
       this.invocationIdSet = true;
       this.agent = context.agent;
       this.node = context.node;
+      this.agentModeOverride = context.agentModeOverride;
+      this.nodePath = context.nodePath;
       this.session = context.session;
       this.userContent = context.userContent;
       this.runConfig = context.runConfig;
@@ -682,6 +740,7 @@ public class InvocationContext {
       // Shared by reference, not copied: the checkpoints belong to the invocation, not a context.
       this.agentStates = context.agentStates;
       this.endOfAgents = context.endOfAgents;
+      this.nodeInputs = context.nodeInputs;
       this.scheduler = context.scheduler;
       this.instantSource = context.instantSource;
       this.uuidProvider = context.uuidProvider;
@@ -699,6 +758,8 @@ public class InvocationContext {
     private boolean invocationIdSet;
     private BaseAgent agent;
     private @Nullable Node node;
+    private @Nullable AgentModeOverride agentModeOverride;
+    private @Nullable String nodePath;
     private Session session;
     @Nullable private Content userContent = null;
     private RunConfig runConfig = RunConfig.builder().build();
@@ -710,6 +771,8 @@ public class InvocationContext {
     private Map<String, Object> callbackContextData = new ConcurrentHashMap<>();
     private Map<String, Map<String, Object>> agentStates = new ConcurrentHashMap<>();
     private Map<String, Boolean> endOfAgents = new ConcurrentHashMap<>();
+    private Set<Event> nodeInputs =
+        Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<>()));
     @Nullable private Scheduler scheduler = null;
     private InstantSource instantSource = InstantSource.system();
     private UuidProvider uuidProvider = UuidProvider.SYSTEM;
@@ -819,6 +882,20 @@ public class InvocationContext {
     @Experimental
     public Builder node(@Nullable Node node) {
       this.node = node;
+      return this;
+    }
+
+    /** Sets the path of the workflow node that the agent runs as. */
+    @CanIgnoreReturnValue
+    Builder nodePath(String nodePath) {
+      this.nodePath = nodePath;
+      return this;
+    }
+
+    /** Sets the mode {@code agent} runs in as a workflow node, replacing any earlier one. */
+    @CanIgnoreReturnValue
+    Builder agentMode(BaseAgent agent, AgentMode mode) {
+      this.agentModeOverride = new AgentModeOverride(agent, mode);
       return this;
     }
 
@@ -1024,6 +1101,8 @@ public class InvocationContext {
         && Objects.equals(invocationId, that.invocationId)
         && Objects.equals(agent, that.agent)
         && Objects.equals(node, that.node)
+        && Objects.equals(agentModeOverride, that.agentModeOverride)
+        && Objects.equals(nodePath, that.nodePath)
         && Objects.equals(session, that.session)
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
@@ -1050,6 +1129,8 @@ public class InvocationContext {
         invocationId,
         agent,
         node,
+        agentModeOverride,
+        nodePath,
         session,
         userContent,
         runConfig,

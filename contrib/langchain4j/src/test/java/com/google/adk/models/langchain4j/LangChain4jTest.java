@@ -21,8 +21,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.runner.InMemoryRunner;
+import com.google.adk.sessions.Session;
 import com.google.adk.tools.FunctionTool;
 import com.google.genai.types.*;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -39,6 +43,7 @@ import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.output.TokenUsage;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -340,14 +345,20 @@ class LangChain4jTest {
     final AiMessage aiMessage =
         AiMessage.builder().text("").toolExecutionRequests(List.of(toolExecutionRequest)).build();
 
-    final ChatResponse chatResponse = mock(ChatResponse.class);
-    when(chatResponse.aiMessage()).thenReturn(aiMessage);
-
     // Simulate completion with a function call
-    handler.onCompleteResponse(chatResponse);
+    handler.onCompleteResponse(ChatResponse.builder().aiMessage(aiMessage).build());
 
     // Then
     assertThat(responses).hasSize(5); // 4 partial responses + 1 function call
+
+    // Every response has the model role; the chunks are partial and the final response is not
+    assertThat(responses)
+        .allSatisfy(
+            response -> assertThat(response.content().orElseThrow().role()).hasValue("model"));
+    assertThat(responses.subList(0, 4).stream().map(LlmResponse::partial))
+        .containsExactly(
+            Optional.of(true), Optional.of(true), Optional.of(true), Optional.of(true));
+    assertThat(responses.get(4).partial()).isEmpty();
 
     // Verify the partial responses
     assertThat(responses.get(0).content().orElseThrow().text()).isEqualTo("Hello");
@@ -373,6 +384,136 @@ class LangChain4jTest {
     assertThat(functionCall.args().orElseThrow()).containsEntry("city", "Paris");
 
     disposable.dispose();
+  }
+
+  @Test
+  @DisplayName("Should end a streamed text turn with its full text")
+  void testGenerateContentWithStreamingChatModel_endsWithTheFullText() {
+    final StreamedTurn turn = startStreamedTurn();
+
+    turn.handler().onPartialResponse("Par");
+    turn.handler().onPartialResponse("is");
+    turn.handler()
+        .onCompleteResponse(
+            ChatResponse.builder()
+                .aiMessage(AiMessage.from("Paris"))
+                .tokenUsage(new TokenUsage(10, 5))
+                .build());
+
+    turn.subscriber().assertComplete();
+    final List<LlmResponse> responses = turn.subscriber().values();
+    assertThat(responses).hasSize(3);
+    final LlmResponse last = responses.get(2);
+    assertThat(last.partial()).isEmpty();
+    assertThat(last.content().orElseThrow().role()).hasValue("model");
+    assertThat(last.content().orElseThrow().text()).isEqualTo("Paris");
+    assertThat(last.usageMetadata().orElseThrow().promptTokenCount()).hasValue(10);
+  }
+
+  @Test
+  @DisplayName("Should end a streamed turn that has no text or calls with an empty response")
+  void testGenerateContentWithStreamingChatModel_endsAnEmptyTurnWithAResponse() {
+    final StreamedTurn turn = startStreamedTurn();
+
+    turn.handler()
+        .onCompleteResponse(ChatResponse.builder().aiMessage(AiMessage.builder().build()).build());
+
+    turn.subscriber().assertComplete();
+    final List<LlmResponse> responses = turn.subscriber().values();
+    assertThat(responses).hasSize(1);
+    assertThat(responses.get(0).partial()).isEmpty();
+    assertThat(responses.get(0).content().orElseThrow().parts().orElseThrow()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("Should end a streamed turn with an error when its calls can't be read")
+  void testGenerateContentWithStreamingChatModel_endsWithAnErrorForUnreadableCallArguments() {
+    final StreamedTurn turn = startStreamedTurn();
+
+    turn.handler()
+        .onCompleteResponse(
+            ChatResponse.builder()
+                .aiMessage(
+                    AiMessage.from(
+                        ToolExecutionRequest.builder()
+                            .id("c1")
+                            .name("getWeather")
+                            .arguments("not json")
+                            .build()))
+                .build());
+
+    turn.subscriber().assertError(RuntimeException.class);
+  }
+
+  @Test
+  @DisplayName("Should save the whole streamed answer to the agent's outputKey")
+  void testStreamingAgentRun_savesTheWholeAnswerToItsOutputKey() {
+    doAnswer(
+            invocation -> {
+              StreamingChatResponseHandler handler = invocation.getArgument(1);
+              handler.onPartialResponse("Par");
+              handler.onPartialResponse("is");
+              handler.onCompleteResponse(
+                  ChatResponse.builder().aiMessage(AiMessage.from("Paris")).build());
+              return null;
+            })
+        .when(streamingChatModel)
+        .chat(any(ChatRequest.class), any(StreamingChatResponseHandler.class));
+    final LlmAgent agent =
+        LlmAgent.builder().name("agent").model(streamingLangChain4j).outputKey("answer").build();
+    final InMemoryRunner runner = new InMemoryRunner(agent);
+    final Session session =
+        runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+
+    runner
+        .runAsync(
+            "user",
+            session.id(),
+            Content.fromParts(Part.fromText("What is the capital of France?")),
+            RunConfig.builder().streamingMode(RunConfig.StreamingMode.SSE).build())
+        .blockingSubscribe();
+
+    final Session updated =
+        runner
+            .sessionService()
+            .getSession(runner.appName(), "user", session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(updated.state()).containsEntry("answer", "Paris");
+  }
+
+  @Test
+  @DisplayName("Should end a streamed turn with its text and calls in one response")
+  void testGenerateContentWithStreamingChatModel_endsWithTextAndCallsInOneResponse() {
+    final StreamedTurn turn = startStreamedTurn();
+
+    turn.handler().onPartialResponse("Let me check.");
+    final AiMessage aiMessage =
+        AiMessage.builder()
+            .text("Let me check.")
+            .toolExecutionRequests(
+                List.of(
+                    ToolExecutionRequest.builder()
+                        .id("c1")
+                        .name("getWeather")
+                        .arguments("{\"city\":\"Paris\"}")
+                        .build(),
+                    ToolExecutionRequest.builder()
+                        .id("c2")
+                        .name("getWeather")
+                        .arguments("{\"city\":\"Rome\"}")
+                        .build()))
+            .build();
+    turn.handler().onCompleteResponse(ChatResponse.builder().aiMessage(aiMessage).build());
+
+    final List<LlmResponse> responses = turn.subscriber().values();
+    assertThat(responses).hasSize(2);
+    final LlmResponse last = responses.get(1);
+    assertThat(last.partial()).isEmpty();
+    final List<Part> parts = last.content().orElseThrow().parts().orElseThrow();
+    assertThat(parts).hasSize(3);
+    assertThat(parts.get(0).text()).hasValue("Let me check.");
+    assertThat(parts.subList(1, 3).stream().map(part -> part.functionCall().orElseThrow().id()))
+        .containsExactly(Optional.of("c1"), Optional.of("c2"));
   }
 
   @Test
@@ -1231,5 +1372,30 @@ class LangChain4jTest {
                 .streamingChatModel(streamingChatModel)
                 .build());
     assertThrows(IllegalStateException.class, () -> LangChain4j.builder().build());
+  }
+
+  /** A streamed turn: its subscriber and the handler the test drives, as the model would. */
+  private record StreamedTurn(
+      TestSubscriber<LlmResponse> subscriber, StreamingChatResponseHandler handler) {}
+
+  /** Starts a streamed turn and returns it before the model answers. */
+  private StreamedTurn startStreamedTurn() {
+    final StreamingChatResponseHandler[] handler = new StreamingChatResponseHandler[1];
+    doAnswer(
+            invocation -> {
+              handler[0] = invocation.getArgument(1);
+              return null;
+            })
+        .when(streamingChatModel)
+        .chat(any(ChatRequest.class), any(StreamingChatResponseHandler.class));
+    final TestSubscriber<LlmResponse> subscriber =
+        streamingLangChain4j
+            .generateContent(
+                LlmRequest.builder()
+                    .contents(List.of(Content.fromParts(Part.fromText("Hello"))))
+                    .build(),
+                true)
+            .test();
+    return new StreamedTurn(subscriber, handler[0]);
   }
 }
