@@ -217,30 +217,28 @@ public abstract class LangChain4j extends BaseLlm {
                       public void onPartialResponse(String s) {
                         emitter.onNext(
                             LlmResponse.builder()
-                                .content(Content.fromParts(Part.fromText(s)))
+                                .content(
+                                    Content.builder().role("model").parts(Part.fromText(s)).build())
+                                .partial(true)
                                 .build());
                       }
 
                       @Override
                       public void onCompleteResponse(ChatResponse chatResponse) {
-                        if (chatResponse.aiMessage().hasToolExecutionRequests()) {
-                          AiMessage aiMessage = chatResponse.aiMessage();
-                          toParts(aiMessage).stream()
-                              .map(Part::functionCall)
-                              .forEach(
-                                  functionCall -> {
-                                    functionCall.ifPresent(
-                                        function -> {
-                                          emitter.onNext(
-                                              LlmResponse.builder()
-                                                  .content(
-                                                      Content.fromParts(
-                                                          Part.fromFunctionCall(
-                                                              function.name().orElse(""),
-                                                              function.args().orElse(Map.of()))))
-                                                  .build());
-                                        });
-                                  });
+                        // The chunks were partial, so one response with the whole turn ends it.
+                        AiMessage aiMessage = chatResponse.aiMessage();
+                        List<Part> parts = new ArrayList<>();
+                        if (aiMessage.text() != null && !aiMessage.text().isEmpty()) {
+                          parts.add(Part.fromText(aiMessage.text()));
+                        }
+                        if (aiMessage.hasToolExecutionRequests()) {
+                          parts.addAll(toParts(aiMessage));
+                        }
+                        if (!parts.isEmpty()) {
+                          emitter.onNext(
+                              LlmResponse.builder()
+                                  .content(Content.builder().role("model").parts(parts).build())
+                                  .build());
                         }
                         emitter.onComplete();
                       }

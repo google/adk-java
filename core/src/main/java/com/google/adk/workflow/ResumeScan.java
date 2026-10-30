@@ -19,9 +19,8 @@ package com.google.adk.workflow;
 import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectReader;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.Role;
@@ -37,9 +36,6 @@ import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
-import com.google.genai.types.Type;
-import java.math.BigInteger;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -65,10 +61,6 @@ final class ResumeScan {
   private static final String RESULT_KEY = "result";
   // Stands for text that is not JSON, since the JSON text null reads as a null value.
   private static final Object NOT_JSON = new Object();
-  private static final ObjectReader STRICT_JSON =
-      JsonBaseModel.getMapper()
-          .readerFor(Object.class)
-          .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
   private ResumeScan() {}
 
@@ -206,7 +198,7 @@ final class ResumeScan {
     }
     Optional<Schema> schema = node.outputSchema();
     // Model text is raw rather than JSON-quoted, so it stays text when the schema accepts strings.
-    if (schema.isEmpty() || acceptsString(schema.get())) {
+    if (schema.isEmpty() || SchemaUtils.acceptsString(schema.get())) {
       return text;
     }
     Object value = readJson(text);
@@ -230,10 +222,10 @@ final class ResumeScan {
     if (schema == null) {
       return answer;
     }
-    String mismatch = valueMismatch(answer, schema);
-    if (mismatch != null) {
+    Optional<String> mismatch = SchemaUtils.findMismatch(answer, schema);
+    if (mismatch.isPresent()) {
       throw new IllegalArgumentException(
-          "Validation failed for interrupt " + interruptId + ": " + mismatch);
+          "Validation failed for interrupt " + interruptId + ": " + mismatch.get());
     }
     return answer;
   }
@@ -243,108 +235,20 @@ final class ResumeScan {
       return response;
     }
     Object value = map.get(RESULT_KEY);
-    if (!(value instanceof String text) || (schema != null && acceptsString(schema))) {
+    if (!(value instanceof String text) || (schema != null && SchemaUtils.acceptsString(schema))) {
       return value;
     }
     Object json = readJson(text);
     return json == NOT_JSON ? text : json;
   }
 
-  /** Returns whether {@code schema} accepts a string, directly or through an {@code anyOf}. */
-  private static boolean acceptsString(Schema schema) {
-    return typeOf(schema) == Type.Known.STRING
-        || schema.anyOf().orElse(ImmutableList.of()).stream().anyMatch(ResumeScan::acceptsString);
-  }
-
   /** Reads {@code text} as strict JSON, or returns {@link #NOT_JSON} if it is not JSON. */
   private static @Nullable Object readJson(String text) {
     try {
-      return STRICT_JSON.readValue(text);
+      return SchemaUtils.readStrictJson(text);
     } catch (JsonProcessingException e) {
       return NOT_JSON;
     }
-  }
-
-  /**
-   * Returns why {@code value} does not match {@code schema}, or null if it does. The reason names
-   * parts of the schema but never the value, which comes from the user.
-   */
-  private static @Nullable String valueMismatch(@Nullable Object value, Schema schema) {
-    if (value == null && schema.nullable().orElse(false)) {
-      return null;
-    }
-    // Check maps before anyOf so each member is validated as an object with its required keys.
-    if (value instanceof Map<?, ?> map) {
-      return mapMismatch(map, schema);
-    }
-    List<Schema> anyOf = schema.anyOf().orElse(ImmutableList.of());
-    if (!anyOf.isEmpty()
-        && anyOf.stream().allMatch(member -> valueMismatch(value, member) != null)) {
-      return "it matches none of the schema's anyOf alternatives";
-    }
-    Type.Known type = typeOf(schema);
-    if (type == null || type == Type.Known.TYPE_UNSPECIFIED) {
-      return null;
-    }
-    boolean matches =
-        switch (type) {
-          case STRING -> value instanceof String;
-          case INTEGER ->
-              value instanceof Integer
-                  || value instanceof Long
-                  || value instanceof Short
-                  || value instanceof Byte
-                  || value instanceof BigInteger;
-          case NUMBER -> value instanceof Number;
-          case BOOLEAN -> value instanceof Boolean;
-          case NULL -> value == null;
-          case ARRAY -> {
-            if (!(value instanceof Collection<?> items)) {
-              yield false;
-            }
-            Optional<Schema> itemSchema = schema.items();
-            yield itemSchema.isEmpty()
-                || items.stream().allMatch(item -> valueMismatch(item, itemSchema.get()) == null);
-          }
-          case OBJECT -> false;
-          default -> true;
-        };
-    return matches ? null : "it is not of the schema's type " + type;
-  }
-
-  /** Returns why {@code map} does not match {@code schema}, or null if it does. */
-  private static @Nullable String mapMismatch(Map<?, ?> map, Schema schema) {
-    Type.Known type = typeOf(schema);
-    if (type != null && type != Type.Known.OBJECT && type != Type.Known.TYPE_UNSPECIFIED) {
-      return "the schema's type is " + type + ", not an object";
-    }
-    List<Schema> anyOf = schema.anyOf().orElse(ImmutableList.of());
-    if (!anyOf.isEmpty() && anyOf.stream().allMatch(member -> mapMismatch(map, member) != null)) {
-      return "it matches none of the schema's anyOf alternatives";
-    }
-    Optional<Map<String, Schema>> properties = schema.properties();
-    if (properties.isPresent()) {
-      for (Map.Entry<?, ?> entry : map.entrySet()) {
-        Schema property = properties.get().get(String.valueOf(entry.getKey()));
-        // An undeclared key comes from the user, so the reason does not name it.
-        if (property == null) {
-          return "it has a key the schema does not declare";
-        }
-        if (valueMismatch(entry.getValue(), property) != null) {
-          return "property '" + entry.getKey() + "' does not match its schema";
-        }
-      }
-    }
-    for (String required : schema.required().orElse(ImmutableList.of())) {
-      if (!map.containsKey(required)) {
-        return "required property '" + required + "' is missing";
-      }
-    }
-    return null;
-  }
-
-  private static Type.@Nullable Known typeOf(Schema schema) {
-    return schema.type().map(Type::knownEnum).orElse(null);
   }
 
   /** Returns the text of the non-thought parts of {@code content}. */
