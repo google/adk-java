@@ -83,6 +83,9 @@ public final class ChatCompletionsResponse {
         && usage.completionTokensDetails.reasoningTokens != null) {
       builder.thoughtsTokenCount(usage.completionTokensDetails.reasoningTokens);
     }
+    if (usage.promptTokensDetails != null && usage.promptTokensDetails.cachedTokens != null) {
+      builder.cachedContentTokenCount(usage.promptTokensDetails.cachedTokens);
+    }
     return builder.build();
   }
 
