@@ -26,7 +26,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
-import io.reactivex.rxjava3.subjects.SingleSubject;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -66,7 +65,7 @@ public final class NodeExecutionState {
   private final ImmutableList<String> outputFor;
   private final Map<String, @Nullable Object> resumeInputs;
   private final ConcurrentMap<String, Integer> childRunCounts;
-  private final ConcurrentMap<String, SingleSubject<Context>> childRuns;
+  private final ConcurrentMap<String, NodeRunner.SharedChildRun> childRuns;
   // Paths of runs started but not finished in this turn, shared under one root and its attempts.
   private final Set<String> unfinishedNodePaths;
   // Paths of runs that failed this turn and have not finished cleanly since, shared the same way.
@@ -258,9 +257,17 @@ public final class NodeExecutionState {
     return outputFor;
   }
 
-  /** Returns whether this run's output is also its parent's output, as with {@code useAsOutput}. */
-  boolean outputCountsForParent() {
-    return outputParent != null;
+  /**
+   * Returns whether a non-workflow node takes this run's output, directly or through enclosing
+   * workflows, as with {@code useAsOutput}.
+   */
+  boolean isDelegatedToANode() {
+    for (NodeExecutionState parent = outputParent; parent != null; parent = parent.outputParent) {
+      if (!(parent.node instanceof Workflow)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Returns the next run ID for a child node named {@code name}, counting from {@code "1"}. */
@@ -272,7 +279,7 @@ public final class NodeExecutionState {
    * Returns the runs of the children this node runs itself, keyed by {@code name@runId}, which
    * calls with the same run ID share.
    */
-  ConcurrentMap<String, SingleSubject<Context>> childRuns() {
+  ConcurrentMap<String, NodeRunner.SharedChildRun> childRuns() {
     return childRuns;
   }
 

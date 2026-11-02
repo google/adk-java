@@ -229,8 +229,15 @@ final class Scheduler {
         } else {
           replayed.add(nodeName);
         }
+        InvocationContext scheduled =
+            NodeRunner.scheduledContext(
+                context.invocationContext(),
+                trigger.branch(),
+                trigger.useSubBranch(),
+                nodeName,
+                runId);
         Context replayContext =
-            ResumeScan.replayContext(context, node, runId, useAsOutput, interception);
+            ResumeScan.replayContext(context, scheduled, node, runId, useAsOutput, interception);
         // A replay counts as running until its completion is handled, as a run does.
         running.put(nodeName, Disposable.empty());
         completions.add(new Completion(nodeName, replayContext));
@@ -439,8 +446,8 @@ final class Scheduler {
     if (terminalOutputs.size() == 1) {
       String terminalNode = terminalOutputs.get(0);
       workflowState.produceOutput(nodeOutputs.get(terminalNode));
-      // A replayed terminal node did not carry the output for a delegating parent.
-      if (!replayedOutputs.contains(terminalNode) || !workflowState.outputCountsForParent()) {
+      // Unmarked so NodeRunner sends a replayed terminal node's output for the delegating node.
+      if (!replayedOutputs.contains(terminalNode) || !workflowState.isDelegatedToANode()) {
         workflowState.markOutputEmitted();
       }
     }

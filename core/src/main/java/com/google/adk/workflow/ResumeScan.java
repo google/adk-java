@@ -165,14 +165,20 @@ final class ResumeScan {
 
   /**
    * Returns the context that {@code node} would have finished with, carrying the replayed result of
-   * {@code interception} without running the node.
+   * {@code interception} without running the node. The node replays on the branch it recorded, or
+   * else on the branch of {@code scheduled}.
    */
   static Context replayContext(
-      Context parent, Node node, String runId, boolean useAsOutput, Interception interception) {
+      Context parent,
+      InvocationContext scheduled,
+      Node node,
+      String runId,
+      boolean useAsOutput,
+      Interception interception) {
     InvocationContext invocationContext =
         interception.branch() == null
-            ? parent.invocationContext()
-            : parent.invocationContext().toBuilder().branch(interception.branch()).build();
+            ? scheduled
+            : scheduled.toBuilder().branch(interception.branch()).build();
     Context context =
         new Context(
             invocationContext,
@@ -396,7 +402,7 @@ final class ResumeScan {
 
   /**
    * How a node that already ran resumes: whether it runs again with {@code resumeInputs}, keyed by
-   * interrupt ID, or replays its result on {@code branch}, where null keeps its parent's branch.
+   * interrupt ID, or replays its result on {@code branch}, where null keeps its scheduled branch.
    */
   record Interception(
       boolean shouldRun,
@@ -587,7 +593,8 @@ final class ResumeScan {
       }
       if (eventOutput != null) {
         node.output = eventOutput;
-        if (event.output().isPresent()) {
+        // A delegate's output event carries the delegate's branch, not this node's.
+        if (isDirect && event.output().isPresent()) {
           node.branch = event.branch().orElse(null);
         }
       }
