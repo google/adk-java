@@ -58,7 +58,12 @@ public abstract class BigQueryLoggerConfig {
   // Fields to cluster the table by.
   public abstract ImmutableList<String> clusteringFields();
 
-  // Whether to log multi-modal content.
+  /**
+   * Whether to log detailed content parts in the {@code content_parts} column. When {@code false},
+   * {@code content_parts} is written as {@code []} and GCS offloading ({@code gcsBucketName}) is
+   * disabled so large text remains inline (truncated at {@code maxContentLength}) and binary parts
+   * are recorded as placeholders.
+   */
   public abstract boolean logMultiModalContent();
 
   // Retry configuration for BigQuery writes.
@@ -92,7 +97,12 @@ public abstract class BigQueryLoggerConfig {
    */
   public abstract @Nullable BiFunction<Object, String, Object> contentFormatter();
 
-  // GCS bucket name to store multi-modal content.
+  /**
+   * GCS bucket name for offloading large text and binary content. Offloading only runs when {@code
+   * logMultiModalContent} is {@code true}; otherwise {@code GcsOffloader} is not created, a warning
+   * is logged, large text stays inline (truncated at {@code maxContentLength}), and binary parts
+   * are recorded as placeholders.
+   */
   public abstract String gcsBucketName();
 
   // Optional BigQuery connection ID for ObjectRef columns

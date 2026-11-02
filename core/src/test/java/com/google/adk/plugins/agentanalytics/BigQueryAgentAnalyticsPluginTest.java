@@ -1976,6 +1976,70 @@ public class BigQueryAgentAnalyticsPluginTest {
     assertTrue(contentParts.get(0).get("uri").asText().startsWith("gs://test-bucket/"));
   }
 
+  @Test
+  public void
+      onUserMessageCallback_gcsBucketWithLogMultiModalFalse_keepsLargeTextInlineAndWritesEmptyParts()
+          throws Exception {
+    BigQueryLoggerConfig gcsConfig =
+        config.toBuilder()
+            .gcsBucketName("test-bucket")
+            .logMultiModalContent(false)
+            .maxContentLength(100 * 1024)
+            .build();
+    GcsOffloader recordingOffloader = mock(GcsOffloader.class);
+    when(recordingOffloader.uploadContent(anyString(), anyString(), anyString()))
+        .thenReturn(CompletableFuture.completedFuture("gs://test-bucket/large.txt"));
+    List<GcsOffloader> builtOffloaders = new ArrayList<>();
+    PluginState gcsState =
+        new PluginState(gcsConfig) {
+          @Override
+          protected BigQueryWriteClient createWriteClient(BigQueryLoggerConfig config) {
+            return mockWriteClient;
+          }
+
+          @Override
+          protected StreamWriter createWriter() {
+            return mockWriter;
+          }
+
+          @Override
+          protected GcsOffloader getGcsOffloader(BigQueryLoggerConfig config) {
+            // Runs the real factory; a built offloader is swapped for a recording fake so a
+            // regression fails the assertions below without reaching GCS.
+            GcsOffloader offloader = super.getGcsOffloader(config);
+            if (offloader == null) {
+              return null;
+            }
+            builtOffloaders.add(offloader);
+            return recordingOffloader;
+          }
+        };
+    BigQueryAgentAnalyticsPlugin gcsPlugin =
+        new BigQueryAgentAnalyticsPlugin(gcsConfig, mockBigQuery, gcsState);
+    String largeText = "x".repeat(40 * 1024);
+
+    gcsPlugin
+        .onUserMessageCallback(mockInvocationContext, Content.fromParts(Part.fromText(largeText)))
+        .test()
+        .await()
+        .assertResult();
+    CompletableFuture.allOf(
+            gcsState
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+    Map<String, Object> row = gcsState.getBatchProcessor("invocation_id").queue.poll();
+
+    assertTrue("No GcsOffloader may be built", builtOffloaders.isEmpty());
+    verify(recordingOffloader, never()).uploadContent(anyString(), anyString(), anyString());
+    assertNotNull(row);
+    assertEquals("USER_MESSAGE_RECEIVED", row.get("event_type"));
+    assertEquals(ImmutableList.of(), row.get("content_parts"));
+    assertEquals(false, row.get("is_truncated"));
+    String textSummary = ((JsonNode) row.get("content")).get("text_summary").asText();
+    assertEquals(40 * 1024, textSummary.length());
+  }
+
   private static class FakeAgent extends BaseAgent {
     FakeAgent(String name) {
       super(name, "description", null, null, null);

@@ -571,6 +571,16 @@ class PluginState {
     if (config.gcsBucketName().isEmpty()) {
       return null;
     }
+    if (!config.logMultiModalContent()) {
+      logger.warning(
+          "GCS offload disabled: logMultiModalContent is false, so content_parts (which holds the"
+              + " offloaded object reference) is not persisted; large text is kept inline"
+              + " (truncated) and binary parts are recorded as placeholders instead of being"
+              + " uploaded to "
+              + config.gcsBucketName()
+              + ".");
+      return null;
+    }
     return new GcsOffloader(
         config.projectId(), config.gcsBucketName(), offloadExecutor, config.credentials(), null);
   }

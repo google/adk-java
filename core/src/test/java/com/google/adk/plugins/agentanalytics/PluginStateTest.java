@@ -16,6 +16,7 @@
 
 package com.google.adk.plugins.agentanalytics;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -34,6 +35,7 @@ import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
 import com.google.common.cache.Cache;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Uninterruptibles;
 import java.io.IOException;
@@ -119,6 +121,31 @@ public final class PluginStateTest {
   @Test
   public void getGcsOffloader_emptyBucketName_returnsNull() {
     assertNull(pluginState.getGcsOffloader(config));
+  }
+
+  @Test
+  public void getGcsOffloader_logMultiModalContentFalse_returnsNullAndLogsWarning() {
+    BigQueryLoggerConfig gcsConfig =
+        config.toBuilder().gcsBucketName("test-bucket").logMultiModalContent(false).build();
+
+    GcsOffloader offloader = pluginState.getGcsOffloader(gcsConfig);
+
+    assertNull(offloader);
+    ArgumentCaptor<LogRecord> captor = ArgumentCaptor.forClass(LogRecord.class);
+    verify(mockHandler, atLeastOnce()).publish(captor.capture());
+    ImmutableList<String> offloadWarnings =
+        captor.getAllValues().stream()
+            .filter(record -> record.getLevel().equals(Level.WARNING))
+            .map(LogRecord::getMessage)
+            .filter(message -> message.startsWith("GCS offload disabled"))
+            .collect(toImmutableList());
+    assertEquals(
+        ImmutableList.of(
+            "GCS offload disabled: logMultiModalContent is false, so content_parts (which holds the"
+                + " offloaded object reference) is not persisted; large text is kept inline"
+                + " (truncated) and binary parts are recorded as placeholders instead of being"
+                + " uploaded to test-bucket."),
+        offloadWarnings);
   }
 
   @Test

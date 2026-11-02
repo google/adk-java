@@ -63,17 +63,15 @@ final class Parser {
   private final @Nullable GcsOffloader offloader;
   private final int maxLength;
   private final @Nullable String connectionId;
-  private final boolean logMultiModalContent;
 
   Parser(
       @Nullable GcsOffloader offloader,
       int maxLength,
       @Nullable String connectionId,
       boolean logMultiModalContent) {
-    this.offloader = offloader;
+    this.offloader = logMultiModalContent ? offloader : null;
     this.maxLength = maxLength;
     this.connectionId = connectionId;
-    this.logMultiModalContent = logMultiModalContent;
   }
 
   @AutoValue
@@ -352,8 +350,10 @@ final class Parser {
     // CASE B: It is Binary/Inline Data (Image/Blob)
     if (part.inlineData().isPresent()) {
       Blob blob = part.inlineData().get();
-      String mimeType = blob.mimeType().orElse("application/octet-stream");
-      if (logMultiModalContent && offloader != null) {
+      String mimeType =
+          blob.mimeType().filter(m -> !m.isEmpty()).orElse("application/octet-stream");
+      partBuilder.setMimeType(mimeType);
+      if (offloader != null) {
         String ext = MimeTypeMapper.getExtension(mimeType);
         if (ext.isEmpty()) {
           ext = DEFAULT_EXTENSION;
@@ -378,7 +378,6 @@ final class Parser {
                     partBuilder
                         .setStorageMode("GCS_REFERENCE")
                         .setUri(uri)
-                        .setMimeType(mimeType)
                         .setText(MEDIA_OFFLOADED_MESSAGE)
                         .setObjectRef(
                             mapper.valueToTree(ObjectRef.create(uri, null, connectionId, details)));
@@ -386,7 +385,7 @@ final class Parser {
                   return TruncationResult.create(mapper.valueToTree(partBuilder.build()), false);
                 });
       } else {
-        partBuilder.setText(BINARY_DATA_MESSAGE).setMimeType(mimeType);
+        partBuilder.setText(BINARY_DATA_MESSAGE);
         return CompletableFuture.completedFuture(
             TruncationResult.create(mapper.valueToTree(partBuilder.build()), false));
       }
