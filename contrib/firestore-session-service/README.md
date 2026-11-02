@@ -16,13 +16,13 @@ If you're using Maven, add the following to your dependencies:
 <dependency>
   <groupId>com.google.adk</groupId>
   <artifactId>google-adk</artifactId>
-  <version>1.12.0</version>
+  <version>1.14.0</version>
 </dependency>
 <!-- Dev UI -->
 <dependency>
     <groupId>com.google.adk</groupId>
     <artifactId>google-adk-dev</artifactId>
-    <version>1.12.0</version>
+    <version>1.14.0</version>
 </dependency>
 ```
 
@@ -33,9 +33,9 @@ If you're using Maven, add the following to your dependencies:
 ```gradle
 dependencies {
     // ADK Core
-    implementation 'com.google.adk:google-adk:1.12.0'
+    implementation 'com.google.adk:google-adk:1.14.0'
     // Firestore Session Service
-    implementation 'com.google.adk:google-adk-firestore-session-service:1.12.0'
+    implementation 'com.google.adk:google-adk-firestore-session-service:1.14.0'
 }
 ```
 

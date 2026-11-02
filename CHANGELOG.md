@@ -1,5 +1,62 @@
 # Changelog
 
+## [1.14.0](https://github.com/google/adk-java/compare/v1.13.0...v1.14.0) (2026-11-02)
+
+
+### Features
+
+* add a Spring Boot chat app backed by an ADK agent ([bca0591](https://github.com/google/adk-java/commit/bca05915b244cfc23bfd738c4feadc2ae5f53f58))
+* add a Spring Boot chat that streams replies and mixes ADK and Spring AI tools ([7391fa8](https://github.com/google/adk-java/commit/7391fa836e8896787eb3f690875152f9f84bcec3))
+* add App.toBuilder() ([2e8dbea](https://github.com/google/adk-java/commit/2e8dbeada175adebab13f49bdc6cafe24ecd7341))
+* add bidirectional conversion between ADK and Spring AI ([9949265](https://github.com/google/adk-java/commit/9949265e6ca09ecfab888b608572a47b962db37f))
+* add Event.isolationScope ([86f3130](https://github.com/google/adk-java/commit/86f31308c96c41b15db63f870a12f05319c3ef55))
+* add NodeInfo.name, runId, and parentRunId, and Event.nodeName ([52f2be7](https://github.com/google/adk-java/commit/52f2be71c5aa703cb611bddd2cd299df86bf4d10))
+* add RunConfig.dollarEscapedPlaceholders to leave escaped placeholders in instructions as written ([72b4af8](https://github.com/google/adk-java/commit/72b4af893e06b05ef032f0cb4a63ca345760124f))
+* load apps, agents and workflows through AppLoader ([9c3d550](https://github.com/google/adk-java/commit/9c3d5509b32a9e0cedd5d594d6969b9c117d7d5e))
+* pause a workflow for user input ([8578068](https://github.com/google/adk-java/commit/85780688fb0c1cb02f8c89a4fcbd6ec7dc0eba03))
+* **plugins:** port DebugLoggingPlugin from adk-python ([3c3633e](https://github.com/google/adk-java/commit/3c3633e013ec46b2e930d818eb1004e6552aab7c))
+* **plugins:** port SaveFilesAsArtifactsPlugin from adk-python ([272ea6c](https://github.com/google/adk-java/commit/272ea6cbcc8f61311e810e79d23d7f08dad31563))
+* rebuild a workflow's node progress from session events ([7096019](https://github.com/google/adk-java/commit/7096019e4581da5899d5b41e6bdd8ba3c847db75))
+* reject node names that corrupt node paths ([08d4b62](https://github.com/google/adk-java/commit/08d4b62ab74057e35ff8799c5d808931e1b2a100))
+* resume a paused workflow from its session events ([2e88a6d](https://github.com/google/adk-java/commit/2e88a6de4c9735f104986d34a4d461a6a36e06be))
+* run a node once per item of a list input ([528a99d](https://github.com/google/adk-java/commit/528a99d4d79c73f5f654d7f0f7777b41e32fd46c))
+* run a tool as a workflow node ([8b560fc](https://github.com/google/adk-java/commit/8b560fcb363d95e7327624aecb651ff466904cf4))
+* run child nodes from a workflow node with Context.runNode ([e293898](https://github.com/google/adk-java/commit/e293898bbf528fb983ff3533fa6dfb7dd7ecf346))
+* serve an app's structure, including workflow graphs ([6fd21b5](https://github.com/google/adk-java/commit/6fd21b55965ca99f26e8e52cc779682b2e7ac53d))
+* share one run per Context.runNode run ID ([a313ce4](https://github.com/google/adk-java/commit/a313ce4af4844ae36ecfbd17db3d38fc16345723))
+* validate workflow graphs at construction time ([7674c2b](https://github.com/google/adk-java/commit/7674c2baf2ac8bfa517d358aa2580ad0ad51ae61))
+* **workflow:** add NodeExecutionException as the base of NodeTimeoutException ([a4c8ac1](https://github.com/google/adk-java/commit/a4c8ac1ef53543b3a00075899b6499b1874bc90d))
+* **workflow:** let RetryConfig match exceptions by class ([fb4c916](https://github.com/google/adk-java/commit/fb4c9160b359ee85a32c81da85289264c516b87d))
+
+
+### Bug Fixes
+
+* close the Gemini response stream after a read error ([461f7d6](https://github.com/google/adk-java/commit/461f7d6fd9d7fc1ee99e7bf3a788040810caf7d3))
+* drop a delegating node's own output, as Python ADK does ([5177269](https://github.com/google/adk-java/commit/5177269f54fd8ed7d42df9891ae5f8982f4e02b7))
+* enforce node retry policies and timeouts ([367b402](https://github.com/google/adk-java/commit/367b402db39f93ab430f473f48bce89a301bbb60))
+* fail a timed-out node with NodeTimeoutException ([0c661e1](https://github.com/google/adk-java/commit/0c661e11f76e6eb385930ecf14df6a222444d202))
+* **flows:** propagate downstream cancellation to the model stream ([cce02ae](https://github.com/google/adk-java/commit/cce02ae7914b289b81aae8128d1b3cebaad65786))
+* harden disabled mode, config checks and error capture ([64ce48c](https://github.com/google/adk-java/commit/64ce48c742eb423671f2c36696fcf3986f791c73))
+* keep context cache metadata in events and model responses ([2c84291](https://github.com/google/adk-java/commit/2c84291bc6601dbe61bbbba5a34743f356e65403))
+* keep event isolation scopes in an adapted Java session service ([c2ab2e3](https://github.com/google/adk-java/commit/c2ab2e3225c81b41897f5678f97d1eaca6b92ad9))
+* let a timeout cancel the node a workflow is starting ([a017879](https://github.com/google/adk-java/commit/a0178791015d388b3bad12b6a9f3bade6a6b302e))
+* **live:** replay stored transcriptions as conversation history ([9a15855](https://github.com/google/adk-java/commit/9a158552079bdba10f6d59a39d7c4bc62dbde485))
+* never retry a WorkflowConfigurationException ([fd8c360](https://github.com/google/adk-java/commit/fd8c3605cb30787d579fd83ad5f8ebe62be9a394))
+* restrict live `transfer_to_agent` to the agent, its sub-agents, parent, and peers ([f4d6de4](https://github.com/google/adk-java/commit/f4d6de4cc2e4d6765449753e1a3ddf94c579a7db))
+* restrict turn-based `transfer_to_agent` to declared targets ([9837e1b](https://github.com/google/adk-java/commit/9837e1b15bfb51ef2e20bea13612792f22f0b832))
+* resume Kotlin workflows behind an adapted Java session service ([aab51ef](https://github.com/google/adk-java/commit/aab51efa5ad765622858fd844b920756a65bcd88))
+* **runner:** keep callbackContextData on a resumed invocation ([08876c4](https://github.com/google/adk-java/commit/08876c43e098837f890e38d1bb899a65405614fd))
+* **skills:** remove unregistered script tool from default instructions ([9d68053](https://github.com/google/adk-java/commit/9d680532a3dd3e4a67d18c81f5795225e432f1dd))
+* store grounded events in an adapted Java session service ([beca776](https://github.com/google/adk-java/commit/beca7764d0e87c65267fa31b02b31e5d87f35ce3))
+* stream partial chunks, then one aggregated response ([3a4742e](https://github.com/google/adk-java/commit/3a4742e4162961b294d0e9c2afb51a3ced0e2d94))
+* **workflow:** fix replay branches and shared runs on resume ([a155d30](https://github.com/google/adk-java/commit/a155d300be53e3cb4ff6c7e4c1ca5d16606907cb))
+
+
+### Reverts
+
+* restrict live `transfer_to_agent` to the agent, its sub-agents, parent, and peers ([18554a1](https://github.com/google/adk-java/commit/18554a19295b603d4c6140bd790486b96c7c1bc1))
+* restrict turn-based `transfer_to_agent` to declared targets ([84bae34](https://github.com/google/adk-java/commit/84bae34a9ae4c133c7e6294faff5cb50f64a3474))
+
 ## [1.13.0](https://github.com/google/adk-java/compare/v1.12.0...v1.13.0) (2026-10-21)
 
 
