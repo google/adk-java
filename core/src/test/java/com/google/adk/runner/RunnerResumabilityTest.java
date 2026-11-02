@@ -49,6 +49,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.google.adk.agents.BaseAgent;
+import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.LoopAgent;
@@ -77,10 +79,13 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -484,6 +489,203 @@ public final class RunnerResumabilityTest {
     verify(resumePlugin, times(2)).beforeRunCallback(any());
     verify(resumePlugin, times(2)).afterRunCallback(any());
     verify(resumePlugin, atLeastOnce()).onEventCallback(any(), any());
+  }
+
+  // A resume hands beforeRunCallback and the agent the callback data stored in
+  // onUserMessageCallback, as a new invocation does.
+  @Test
+  public void runAsync_resume_keepsCallbackContextDataFromOnUserMessage() {
+    CallbackDataRelayPlugin plugin = new CallbackDataRelayPlugin();
+    LlmAgent agent = pausingAgent("agent", pauseThenSay("lro_call_id", "resumed and summarized"));
+    Runner runner = resumableRunner(agent, plugin);
+    Session session = newSession(runner);
+
+    runTurn(runner, session, "start");
+    answerCall(runner, session, "lro_call_id", "pendingTool", ImmutableMap.of("message", "hello"));
+
+    // First the new invocation, then the resume, whose callbacks used to see an empty map.
+    assertThat(plugin.seenBeforeRun).containsExactly("message-1", "message-2").inOrder();
+    assertThat(plugin.seenBeforeAgent)
+        .containsExactly("agent:message-1", "agent:message-2")
+        .inOrder();
+  }
+
+  // A resume routed past the root to the sub-agent that paused hands it the same callback data.
+  @Test
+  public void runAsync_resumeRoutedToSubAgent_keepsCallbackContextDataFromOnUserMessage() {
+    CallbackDataRelayPlugin plugin = new CallbackDataRelayPlugin();
+    Content transferCall =
+        Content.fromParts(
+            Part.fromFunctionCall(
+                "transfer_to_agent", ImmutableMap.of("agent_name", "sub_agent_1")));
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(transferCall),
+            createTextLlmResponse("sub-agent answer"),
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("resumed answer"));
+    LlmAgent subAgent1 =
+        createTestAgentBuilder(testLlm).name("sub_agent_1").tools(pendingFunctionTool()).build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    Runner runner = resumableRunner(rootAgent, plugin);
+    Session session = newSession(runner);
+
+    // The root transfers and the sub-agent answers; the next message goes to the sub-agent alone,
+    // which pauses, so the resume routes to it rather than re-entering the root.
+    runTurn(runner, session, "hi");
+    runTurn(runner, session, "start the job");
+    answerCall(runner, session, "lro_call_id", "pendingTool", ImmutableMap.of("message", "hello"));
+
+    assertThat(plugin.seenBeforeAgent)
+        .containsExactly(
+            "root_agent:message-1",
+            "sub_agent_1:message-1",
+            "sub_agent_1:message-2",
+            "sub_agent_1:message-3")
+        .inOrder();
+  }
+
+  // A plugin that ends the invocation in onUserMessageCallback ends a resume too, as a new
+  // invocation.
+  @Test
+  public void runAsync_resume_endInvocationFromOnUserMessage_skipsTheModel() {
+    TestLlm testLlm = pauseThenSay("lro_call_id", "should not be reached");
+    LlmAgent agent = pausingAgent("agent", testLlm);
+    Runner runner = resumableRunner(agent, new EndOnAnswerPlugin());
+    Session session = newSession(runner);
+
+    runTurn(runner, session, "start");
+    assertThat(testLlm.getRequests()).hasSize(1);
+
+    answerCall(runner, session, "lro_call_id", "pendingTool", ImmutableMap.of("message", "hello"));
+
+    // The plugin ended the resumed invocation, so the model is not asked again.
+    assertThat(testLlm.getRequests()).hasSize(1);
+  }
+
+  // A resume without a new message hands onRunErrorCallback the callback data stored in
+  // beforeRunCallback, as a new invocation does.
+  @Test
+  public void runAsync_resumeWithoutMessage_onRunErrorSeesBeforeRunData() {
+    assertThat(onRunErrorReadsOnFailedResume(/* stateDelta= */ null)).containsExactly("run-2");
+  }
+
+  // The same with only a state delta, which the resume stores as a content-less event first.
+  @Test
+  public void runAsync_resumeWithStateDeltaOnly_onRunErrorSeesBeforeRunData() {
+    assertThat(onRunErrorReadsOnFailedResume(ImmutableMap.<String, Object>of("key", "value")))
+        .containsExactly("run-2");
+  }
+
+  /** What onRunErrorCallback reads when a paused invocation resumes without a message and fails. */
+  private static ImmutableList<String> onRunErrorReadsOnFailedResume(
+      @Nullable Map<String, Object> stateDelta) {
+    FailAfterFirstRunPlugin plugin = new FailAfterFirstRunPlugin();
+    LlmAgent agent = pausingAgent("agent", pauseThenSay("lro_call_id", "should not be reached"));
+    Runner runner = resumableRunner(agent, plugin);
+    Session session = newSession(runner);
+    String invocationId = runTurn(runner, session, "start").get(0).invocationId();
+
+    resumeFlowable(runner, session, invocationId, /* newMessage= */ null, stateDelta)
+        .test()
+        .assertError(IllegalStateException.class);
+
+    return ImmutableList.copyOf(plugin.seenOnRunError);
+  }
+
+  /**
+   * Stores a numbered value before each run, fails every run after the first, and records what
+   * onRunErrorCallback reads back.
+   */
+  private static final class FailAfterFirstRunPlugin extends BasePlugin {
+    private static final String KEY = "run";
+    private static final String VALUE = "run-%d";
+
+    private final AtomicInteger runs = new AtomicInteger();
+    private final List<String> seenOnRunError = new ArrayList<>();
+
+    FailAfterFirstRunPlugin() {
+      super("fail-after-first-run");
+    }
+
+    @Override
+    public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
+      int run = runs.incrementAndGet();
+      invocationContext.callbackContextData().put(KEY, VALUE.formatted(run));
+      return run == 1 ? Maybe.empty() : Maybe.error(new IllegalStateException("run failed"));
+    }
+
+    @Override
+    public Completable onRunErrorCallback(InvocationContext invocationContext, Throwable error) {
+      seenOnRunError.add(String.valueOf(invocationContext.callbackContextData().get(KEY)));
+      return Completable.complete();
+    }
+  }
+
+  /** Ends the invocation when the message answers a call, so the pausing turn runs normally. */
+  private static final class EndOnAnswerPlugin extends BasePlugin {
+
+    EndOnAnswerPlugin() {
+      super("end-on-answer");
+    }
+
+    @Override
+    public Maybe<Content> onUserMessageCallback(
+        InvocationContext invocationContext, Content userMessage) {
+      if (answersACall(userMessage)) {
+        invocationContext.setEndInvocation(true);
+      }
+      return Maybe.empty();
+    }
+
+    private static boolean answersACall(Content message) {
+      return message.parts().stream()
+          .flatMap(List::stream)
+          .anyMatch(part -> part.functionResponse().isPresent());
+    }
+  }
+
+  /** Stores a numbered value for each user message and records what later callbacks read back. */
+  private static final class CallbackDataRelayPlugin extends BasePlugin {
+    private static final String KEY = "relay";
+    private static final String VALUE = "message-%d";
+    private static final String SEEN = "%s:%s";
+
+    private final AtomicInteger userMessages = new AtomicInteger();
+    private final List<String> seenBeforeRun = new ArrayList<>();
+    private final List<String> seenBeforeAgent = new ArrayList<>();
+
+    CallbackDataRelayPlugin() {
+      super("callback-data-relay");
+    }
+
+    @Override
+    public Maybe<Content> onUserMessageCallback(
+        InvocationContext invocationContext, Content userMessage) {
+      invocationContext
+          .callbackContextData()
+          .put(KEY, VALUE.formatted(userMessages.incrementAndGet()));
+      return Maybe.empty();
+    }
+
+    @Override
+    public Maybe<Content> beforeRunCallback(InvocationContext invocationContext) {
+      seenBeforeRun.add(String.valueOf(invocationContext.callbackContextData().get(KEY)));
+      return Maybe.empty();
+    }
+
+    @Override
+    public Maybe<Content> beforeAgentCallback(BaseAgent agent, CallbackContext callbackContext) {
+      seenBeforeAgent.add(
+          SEEN.formatted(
+              agent.name(), callbackContext.invocationContext().callbackContextData().get(KEY)));
+      return Maybe.empty();
+    }
   }
 
   // An unanswered call keeps the invocation paused: plain text and no message are both inert.
