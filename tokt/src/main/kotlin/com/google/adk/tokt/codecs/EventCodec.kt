@@ -37,7 +37,8 @@ import kotlin.jvm.optionals.getOrNull
  * `usageMetadata` ([UsageMetadataCodec]), `groundingMetadata` ([GroundingMetadataCodec]), context
  * `cacheMetadata` ([CacheMetadataCodec]), `avgLogProbs`, `modelVersion`, `customMetadata`, a
  * workflow node's `output` and `nodeInfo` ([WorkflowCodec]), long-running tool ids, the timestamp,
- * and the `isolationScope`. Every other field is dropped.
+ * and the `isolationScope`. Every other field is dropped; [reapplyJavaEvent] keeps them when a Java
+ * plugin returns an event.
  */
 internal object EventCodec {
 
@@ -130,4 +131,32 @@ internal object EventCodec {
       timestamp = event.timestamp(),
     )
   }
+}
+
+/**
+ * Re-applies the event a Java plugin returned onto the original Kotlin [event]: fields [EventCodec]
+ * converts come from the result, and every other field keeps [event]'s value. `partial`,
+ * `turnComplete`, `interrupted` and `usageMetadata` keep [event]'s values when the result leaves
+ * them unset, and `interactionStatus` stays only while the turn is complete. An `output` the plugin
+ * left as tokt sent it keeps its Kotlin value, such as a `JsonElement`.
+ */
+internal fun reapplyJavaEvent(event: KtEvent, javaResult: JavaEvent): KtEvent {
+  val result = EventCodec.fromJava(javaResult)
+  // fromJava reads unset flags as false, so check the Java values.
+  val turnComplete = javaResult.turnComplete().getOrNull() ?: event.turnComplete
+  return result.copy(
+    partial = javaResult.partial().getOrNull() ?: event.partial,
+    turnComplete = turnComplete,
+    interrupted = javaResult.interrupted().getOrNull() ?: event.interrupted,
+    usageMetadata = result.usageMetadata ?: event.usageMetadata,
+    output =
+      if (javaResult.output().getOrNull() == WorkflowCodec.outputToJava(event.output)) event.output
+      else result.output,
+    citationMetadata = event.citationMetadata,
+    turnCompleteReason = event.turnCompleteReason,
+    interactionStatus = event.interactionStatus.takeIf { turnComplete },
+    liveSessionId = event.liveSessionId,
+    liveSessionResumptionUpdate = event.liveSessionResumptionUpdate,
+    voiceActivity = event.voiceActivity,
+  )
 }

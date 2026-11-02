@@ -30,7 +30,7 @@ import kotlin.jvm.optionals.getOrNull
  * Carries content, error message, streaming flags, `turnComplete`, the live transcriptions, model
  * version, finish reason, usage metadata, grounding and context cache metadata, average log-probs,
  * error code, and custom metadata. Every other field, such as citation metadata and logprobs
- * results, is dropped.
+ * results, is dropped; [reapplyJavaResponse] keeps them when a Java plugin returns a response.
  */
 internal object LlmResponseCodec {
 
@@ -79,4 +79,32 @@ internal object LlmResponseCodec {
     response.customMetadata?.let { builder.customMetadata(CustomMetadataCodec.toJava(it)) }
     return builder.build()
   }
+}
+
+/**
+ * Re-applies the response a Java plugin returned onto the original Kotlin [response]: fields
+ * [LlmResponseCodec] converts come from the result, and every other field keeps [response]'s value.
+ * `partial`, `turnComplete` and `usageMetadata` keep [response]'s values when the result leaves
+ * them unset. `interactionStatus` stays only while the turn is complete.
+ */
+internal fun reapplyJavaResponse(
+  response: KtLlmResponse,
+  javaResult: JavaLlmResponse,
+): KtLlmResponse {
+  val result = LlmResponseCodec.fromJava(javaResult)
+  val turnComplete = result.turnComplete ?: response.turnComplete
+  return result.copy(
+    // fromJava reads an unset partial as false, so check the Java value.
+    partial = javaResult.partial().getOrNull() ?: response.partial,
+    turnComplete = turnComplete,
+    usageMetadata = result.usageMetadata ?: response.usageMetadata,
+    citationMetadata = response.citationMetadata,
+    logprobsResult = response.logprobsResult,
+    turnCompleteReason = response.turnCompleteReason,
+    interactionStatus = response.interactionStatus.takeIf { turnComplete == true },
+    liveSessionId = response.liveSessionId,
+    liveSessionResumptionUpdate = response.liveSessionResumptionUpdate,
+    goAway = response.goAway,
+    voiceActivity = response.voiceActivity,
+  )
 }

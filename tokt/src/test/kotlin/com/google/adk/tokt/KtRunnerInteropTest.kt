@@ -27,6 +27,7 @@ import com.google.adk.events.Event as JavaEvent
 import com.google.adk.events.EventActions as JavaEventActions
 import com.google.adk.events.EventCompaction as JavaEventCompaction
 import com.google.adk.kt.agents.BaseAgent as KtBaseAgent
+import com.google.adk.kt.agents.CallbackContext as KtCallbackContext
 import com.google.adk.kt.agents.Context as KtContext
 import com.google.adk.kt.agents.InvocationContext as KtInvocationContext
 import com.google.adk.kt.agents.LlmAgent as KtLlmAgent
@@ -40,6 +41,7 @@ import com.google.adk.kt.apps.App as KtApp
 import com.google.adk.kt.callbacks.AfterModelCallback as KtAfterModelCallback
 import com.google.adk.kt.events.Event as KtEvent
 import com.google.adk.kt.events.EventActions as KtEventActions
+import com.google.adk.kt.events.EventCompaction as KtEventCompaction
 import com.google.adk.kt.models.CacheMetadata as KtCacheMetadata
 import com.google.adk.kt.models.LlmRequest as KtLlmRequest
 import com.google.adk.kt.models.LlmResponse as KtLlmResponse
@@ -75,6 +77,7 @@ import com.google.adk.kt.types.HarmCategory as KtHarmCategory
 import com.google.adk.kt.types.InteractionStatus as KtInteractionStatus
 import com.google.adk.kt.types.LiveServerGoAway as KtLiveServerGoAway
 import com.google.adk.kt.types.LiveServerSessionResumptionUpdate as KtLiveServerSessionResumptionUpdate
+import com.google.adk.kt.types.LogprobsResult as KtLogprobsResult
 import com.google.adk.kt.types.MediaResolution as KtMediaResolution
 import com.google.adk.kt.types.Part as KtPart
 import com.google.adk.kt.types.PartialArgValue as KtPartialArgValue
@@ -90,6 +93,7 @@ import com.google.adk.kt.types.Transcription as KtTranscription
 import com.google.adk.kt.types.TurnCompleteReason as KtTurnCompleteReason
 import com.google.adk.kt.types.Type as KtType
 import com.google.adk.kt.types.UrlContext as KtUrlContext
+import com.google.adk.kt.types.UsageMetadata as KtUsageMetadata
 import com.google.adk.kt.types.VertexAISearch as KtVertexAISearch
 import com.google.adk.kt.types.VertexAISearchDataStoreSpec as KtVertexAISearchDataStoreSpec
 import com.google.adk.kt.types.VertexRagStore as KtVertexRagStore
@@ -135,6 +139,8 @@ import com.google.adk.tokt.codecs.SessionCodec
 import com.google.adk.tokt.codecs.TranscriptionCodec
 import com.google.adk.tokt.codecs.agentStateFromJava
 import com.google.adk.tokt.codecs.agentStateToJava
+import com.google.adk.tokt.codecs.reapplyJavaEvent
+import com.google.adk.tokt.codecs.reapplyJavaResponse
 import com.google.adk.tokt.codecs.stateValueFromJava
 import com.google.adk.tokt.codecs.typedDataFromJava
 import com.google.adk.tools.BaseTool as JavaBaseTool
@@ -181,6 +187,7 @@ import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Single
+import java.lang.reflect.Modifier
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.time.Instant
@@ -4698,6 +4705,444 @@ class KtRunnerInteropTest {
   }
 
   @Test
+  fun reapplyJavaEvent_unchangedJavaEvent_restoresEveryUnconvertedField() {
+    val original =
+      KtEvent(
+        author = "model",
+        invocationId = "inv-1",
+        turnComplete = true,
+        content = KtContent(role = "model", parts = listOf(KtPart(text = "hi"))),
+        actions =
+          KtEventActions(
+            transferToAgent = "child",
+            rewindBeforeInvocationId = "inv-0",
+            route = listOf(KtRoute.Tag("next")),
+            agentState = TypedData.MapValue(mapOf("phase" to TypedData.IntValue(2))),
+            compaction =
+              KtEventCompaction(
+                startTimestamp = 1_000L,
+                endTimestamp = 2_000L,
+                compactedContent =
+                  KtContent(role = "model", parts = listOf(KtPart(text = "summary"))),
+              ),
+          ),
+        errorCode = "MAX_TOKENS",
+        errorMessage = "cut short",
+        finishReason = KtFinishReason.STOP,
+        usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+        avgLogProbs = -0.5,
+        branch = "root.child",
+        groundingMetadata =
+          KtGroundingMetadata(webSearchQueries = listOf("q"), imageSearchQueries = listOf("i")),
+        modelVersion = "model-1",
+        customMetadata = mapOf("k" to "v"),
+        inputTranscription = ktTranscription("in"),
+        outputTranscription = ktTranscription("out"),
+        citationMetadata =
+          KtCitationMetadata(citationSources = listOf(KtCitation(title = "t", uri = "u"))),
+        cacheMetadata = KtCacheMetadata(fingerprint = "f", contentsCount = 2),
+        output = "the node's output",
+        nodeInfo = KtNodeInfo(path = "root/child"),
+        turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = KtInteractionStatus.IDLE,
+        liveSessionId = "live-1",
+        liveSessionResumptionUpdate = KtLiveServerSessionResumptionUpdate(newHandle = "handle"),
+        voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+        isolationScope = "scope-1",
+      )
+
+    // Every nullable field is set, so a field the re-apply forgets fails the last assertion.
+    assertThat(unsetFieldsOf(original)).isEmpty()
+    assertThat(unsetFieldsOf(original.actions)).isEmpty()
+
+    val result = reapplyJavaEvent(original, EventCodec.toJava(original))
+
+    assertThat(result).isEqualTo(original)
+  }
+
+  @Test
+  fun reapplyJavaResponse_unchangedJavaResponse_restoresEveryUnconvertedField() {
+    val original =
+      KtLlmResponse(
+        content = KtContent(role = "model", parts = listOf(KtPart(text = "hi"))),
+        usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+        finishReason = KtFinishReason.STOP,
+        errorMessage = "cut short",
+        modelVersion = "model-1",
+        groundingMetadata =
+          KtGroundingMetadata(webSearchQueries = listOf("q"), imageSearchQueries = listOf("i")),
+        errorCode = "MAX_TOKENS",
+        customMetadata = mapOf("k" to "v"),
+        avgLogprobs = -0.5,
+        turnComplete = true,
+        inputTranscription = ktTranscription("in"),
+        outputTranscription = ktTranscription("out"),
+        citationMetadata =
+          KtCitationMetadata(citationSources = listOf(KtCitation(title = "t", uri = "u"))),
+        logprobsResult = KtLogprobsResult(logProbabilitySum = -1.5),
+        cacheMetadata = KtCacheMetadata(fingerprint = "f", contentsCount = 2),
+        turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+        interactionStatus = KtInteractionStatus.IDLE,
+        liveSessionId = "live-1",
+        liveSessionResumptionUpdate = KtLiveServerSessionResumptionUpdate(newHandle = "handle"),
+        goAway = KtLiveServerGoAway(timeLeft = 5.seconds),
+        voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+      )
+
+    assertThat(unsetFieldsOf(original)).isEmpty()
+
+    val result = reapplyJavaResponse(original, LlmResponseCodec.toJava(original))
+
+    assertThat(result).isEqualTo(original)
+  }
+
+  /** The names of [value]'s null fields, so a fixture can prove it sets every nullable one. */
+  private fun unsetFieldsOf(value: Any): List<String> =
+    value.javaClass.declaredFields
+      .filterNot { Modifier.isStatic(it.modifiers) }
+      .onEach { it.isAccessible = true }
+      .filter { it.get(value) == null }
+      .map { it.name }
+
+  @Test
+  fun javaPluginAfterModel_override_keepsTheUnconvertedFields() {
+    runBlocking {
+      val plugin = ResponseOverridingJavaPlugin {
+        it.toBuilder().content(modelText("replaced")).build()
+      }
+      val response =
+        KtLlmResponse(
+          content = ContentCodec.fromJava(modelText("original")),
+          goAway = KtLiveServerGoAway(timeLeft = 5.seconds),
+          liveSessionResumptionUpdate = KtLiveServerSessionResumptionUpdate(newHandle = "handle"),
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+      assertThat(result.content).isEqualTo(ContentCodec.fromJava(modelText("replaced")))
+      assertThat(result.goAway).isEqualTo(response.goAway)
+      assertThat(result.liveSessionResumptionUpdate).isEqualTo(response.liveSessionResumptionUpdate)
+    }
+  }
+
+  @Test
+  fun javaPluginAfterModel_override_takesTheValuesJavaChanged() {
+    runBlocking {
+      val plugin = ResponseOverridingJavaPlugin {
+        it
+          .toBuilder()
+          .content(modelText("replaced"))
+          .partial(false)
+          .turnComplete(false)
+          .usageMetadata(GenaiUsageMetadata.builder().promptTokenCount(7).build())
+          .build()
+      }
+      val response =
+        KtLlmResponse(
+          content = ContentCodec.fromJava(modelText("original")),
+          partial = true,
+          turnComplete = true,
+          usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+      assertThat(result.content).isEqualTo(ContentCodec.fromJava(modelText("replaced")))
+      assertThat(result.partial).isFalse()
+      assertThat(result.turnComplete).isFalse()
+      assertThat(result.usageMetadata).isEqualTo(KtUsageMetadata(promptTokenCount = 7))
+    }
+  }
+
+  @Test
+  fun javaPluginAfterModel_override_takesItsCacheMetadata() {
+    runBlocking {
+      val plugin = ResponseOverridingJavaPlugin {
+        it
+          .toBuilder()
+          .cacheMetadata(JavaCacheMetadata.builder().fingerprint("plugin").contentsCount(1).build())
+          .build()
+      }
+      val response =
+        KtLlmResponse(cacheMetadata = KtCacheMetadata(fingerprint = "original", contentsCount = 2))
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+      assertThat(result.cacheMetadata)
+        .isEqualTo(KtCacheMetadata(fingerprint = "plugin", contentsCount = 1))
+    }
+  }
+
+  @Test
+  fun javaPluginAfterModel_freshResponse_inheritsPartialTurnCompleteAndUsage() {
+    runBlocking {
+      val plugin = ResponseOverridingJavaPlugin {
+        JavaLlmResponse.builder().content(modelText("replaced")).build()
+      }
+      val response =
+        KtLlmResponse(
+          content = ContentCodec.fromJava(modelText("original")),
+          partial = true,
+          turnComplete = true,
+          usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+      assertThat(result.content).isEqualTo(ContentCodec.fromJava(modelText("replaced")))
+      assertThat(result.partial).isTrue()
+      assertThat(result.turnComplete).isTrue()
+      assertThat(result.usageMetadata).isEqualTo(response.usageMetadata)
+    }
+  }
+
+  @Test
+  fun javaPluginAfterModel_overrideThatReopensTheTurn_keepsTheReasonAndDropsTheStatus() {
+    runBlocking {
+      val plugin = ResponseOverridingJavaPlugin { it.toBuilder().turnComplete(false).build() }
+      val response =
+        KtLlmResponse(
+          turnComplete = true,
+          turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+          interactionStatus = KtInteractionStatus.IDLE,
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+      assertThat(result.turnComplete).isFalse()
+      assertThat(result.turnCompleteReason).isEqualTo(KtTurnCompleteReason.NEED_MORE_INPUT)
+      assertThat(result.interactionStatus).isNull()
+    }
+  }
+
+  @Test
+  fun javaPluginAfterModel_unchangedContentResponse_keepsTheTurnCompleteReason() {
+    runBlocking {
+      // Core puts the reason on content responses whose turnComplete is unset.
+      val plugin = ResponseOverridingJavaPlugin { it }
+      val response =
+        KtLlmResponse(
+          content = ContentCodec.fromJava(modelText("original")),
+          turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).afterModel(ktCallbackContext(), response)
+
+      assertThat(result.turnComplete).isNull()
+      assertThat(result.turnCompleteReason).isEqualTo(KtTurnCompleteReason.NEED_MORE_INPUT)
+    }
+  }
+
+  @Test
+  fun javaPluginOnEvent_replacementThatReopensTheTurn_keepsTheReasonAndDropsTheStatus() {
+    runBlocking {
+      val plugin = EventOverridingJavaPlugin { it.toBuilder().turnComplete(false).build() }
+      val event =
+        KtEvent(
+          author = "model",
+          turnComplete = true,
+          turnCompleteReason = KtTurnCompleteReason.NEED_MORE_INPUT,
+          interactionStatus = KtInteractionStatus.IDLE,
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+      assertThat(result.turnComplete).isFalse()
+      assertThat(result.turnCompleteReason).isEqualTo(KtTurnCompleteReason.NEED_MORE_INPUT)
+      assertThat(result.interactionStatus).isNull()
+    }
+  }
+
+  @Test
+  fun javaPluginOnEvent_replacement_takesItsContentAndKeepsTheVoiceActivity() {
+    runBlocking {
+      val plugin = EventOverridingJavaPlugin {
+        it.toBuilder().content(modelText("replaced")).build()
+      }
+      val event =
+        KtEvent(
+          author = "model",
+          content = ContentCodec.fromJava(modelText("original")),
+          voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+      assertThat(result.content).isEqualTo(ContentCodec.fromJava(modelText("replaced")))
+      assertThat(result.voiceActivity).isEqualTo(event.voiceActivity)
+    }
+  }
+
+  @Test
+  fun javaPluginOnEvent_replacement_takesItsWorkflowFields() {
+    runBlocking {
+      val plugin = EventOverridingJavaPlugin {
+        it
+          .toBuilder()
+          .output("the plugin's output")
+          .actions(JavaEventActions.builder().route(listOf(JavaRoute.Tag("other"))).build())
+          .nodeInfo(JavaNodeInfo.builder().path("plugin/node").build())
+          .build()
+      }
+      val event =
+        KtEvent(
+          author = "model",
+          actions = KtEventActions(route = listOf(KtRoute.Tag("next"))),
+          output = "the node's output",
+          nodeInfo = KtNodeInfo(path = "root/node"),
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+      assertThat(result.output).isEqualTo("the plugin's output")
+      assertThat(result.actions.route).isEqualTo(listOf(KtRoute.Tag("other")))
+      assertThat(result.nodeInfo).isEqualTo(KtNodeInfo(path = "plugin/node"))
+    }
+  }
+
+  @Test
+  fun javaPluginOnEvent_replacement_takesItsCacheMetadata() {
+    runBlocking {
+      val plugin = EventOverridingJavaPlugin {
+        it
+          .toBuilder()
+          .cacheMetadata(JavaCacheMetadata.builder().fingerprint("plugin").contentsCount(1).build())
+          .build()
+      }
+      val event =
+        KtEvent(
+          author = "model",
+          cacheMetadata = KtCacheMetadata(fingerprint = "original", contentsCount = 2),
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+      assertThat(result.cacheMetadata)
+        .isEqualTo(KtCacheMetadata(fingerprint = "plugin", contentsCount = 1))
+    }
+  }
+
+  @Test
+  @OptIn(FrameworkInternalApi::class)
+  fun javaPluginOnEvent_unchangedEvent_keepsATypedOutput() {
+    runBlocking {
+      val plugin = EventOverridingJavaPlugin { it.toBuilder().build() }
+      val event = KtEvent(author = "model", output = anyToJsonElement(mapOf("k" to 1)))
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+      assertThat(result.output).isSameInstanceAs(event.output)
+    }
+  }
+
+  @Test
+  fun javaPluginOnEvent_freshEvent_inheritsTheUnsetFlagsAndUsage() {
+    runBlocking {
+      val plugin = EventOverridingJavaPlugin {
+        JavaEvent.builder().author("model").content(modelText("replaced")).build()
+      }
+      val event =
+        KtEvent(
+          author = "model",
+          content = ContentCodec.fromJava(modelText("original")),
+          partial = true,
+          turnComplete = true,
+          interrupted = true,
+          usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+      assertThat(result.content).isEqualTo(ContentCodec.fromJava(modelText("replaced")))
+      assertThat(result.partial).isTrue()
+      assertThat(result.turnComplete).isTrue()
+      assertThat(result.interrupted).isTrue()
+      assertThat(result.usageMetadata).isEqualTo(event.usageMetadata)
+    }
+  }
+
+  @Test
+  fun javaPluginOnEvent_replacement_takesTheValuesJavaChanged() {
+    runBlocking {
+      val plugin = EventOverridingJavaPlugin {
+        it
+          .toBuilder()
+          .partial(false)
+          .interrupted(false)
+          .usageMetadata(GenaiUsageMetadata.builder().promptTokenCount(7).build())
+          .build()
+      }
+      val event =
+        KtEvent(
+          author = "model",
+          partial = true,
+          interrupted = true,
+          usageMetadata = KtUsageMetadata(promptTokenCount = 3),
+        )
+
+      val result = JavaAdkToKt.asKtPlugin(plugin).onEvent(ktInvocationContext(), event)
+
+      assertThat(result.partial).isFalse()
+      assertThat(result.interrupted).isFalse()
+      assertThat(result.usageMetadata).isEqualTo(KtUsageMetadata(promptTokenCount = 7))
+    }
+  }
+
+  @Test
+  fun ktRunner_javaPluginReplacingAnEvent_keepsTheUnconvertedFields() {
+    runBlocking {
+      val plugin = EventOverridingJavaPlugin {
+        it.toBuilder().content(modelText("replaced")).build()
+      }
+      val runner =
+        KtInMemoryRunner(
+          app =
+            KtApp(
+              appName = "app",
+              rootAgent = VoiceActivityKtAgent(),
+              plugins = listOf(JavaAdkToKt.asKtPlugin(plugin)),
+            )
+        )
+
+      val emitted = runner.turn().single { it.author == "voice" }
+      val stored =
+        runner.sessionService.getSession(KtSessionKey("app", "u", "s"))!!.events.single {
+          it.author == "voice"
+        }
+
+      assertThat(emitted.content).isEqualTo(ContentCodec.fromJava(modelText("replaced")))
+      assertThat(emitted.voiceActivity).isEqualTo(KtVoiceActivity(audioOffset = 1.seconds))
+      assertThat(stored.content).isEqualTo(ContentCodec.fromJava(modelText("replaced")))
+      assertThat(stored.voiceActivity).isEqualTo(KtVoiceActivity(audioOffset = 1.seconds))
+    }
+  }
+
+  @Test
+  fun javaPluginAfterModel_withoutAnOverride_returnsTheOriginal() {
+    runBlocking {
+      val plugin = JavaAdkToKt.asKtPlugin(ResponseOverridingJavaPlugin { null })
+      val response = KtLlmResponse(goAway = KtLiveServerGoAway(timeLeft = 5.seconds))
+
+      val result = plugin.afterModel(ktCallbackContext(), response)
+
+      assertThat(result).isSameInstanceAs(response)
+    }
+  }
+
+  @Test
+  fun javaPluginOnEvent_withoutAnOverride_returnsTheOriginal() {
+    runBlocking {
+      val plugin = JavaAdkToKt.asKtPlugin(EventOverridingJavaPlugin { null })
+      val event =
+        KtEvent(author = "model", voiceActivity = KtVoiceActivity(audioOffset = 1.seconds))
+
+      val result = plugin.onEvent(ktInvocationContext(), event)
+
+      assertThat(result).isSameInstanceAs(event)
+    }
+  }
+
+  @Test
   fun schemaCodec_carriesEveryFacet_roundTrips() {
     // Every facet the Kotlin Schema models must survive Java -> Kotlin -> Java, or structured
     // output (responseSchema) and tool parameter constraints are silently lost.
@@ -5553,5 +5998,49 @@ class KtRunnerInteropTest {
           )
         )
         .build()
+
+    /** A Kotlin invocation context on a fresh session, for driving a plugin adapter directly. */
+    fun ktInvocationContext() =
+      KtInvocationContext(
+        session = KtSession(KtSessionKey("app", "u", "s")),
+        agent =
+          KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+      )
+
+    /** A Kotlin callback context over [ktInvocationContext]. */
+    fun ktCallbackContext() = KtCallbackContext(ktInvocationContext())
+  }
+
+  /** A Java plugin whose afterModel returns what [override] makes of the response, or nothing. */
+  private class ResponseOverridingJavaPlugin(
+    private val override: (JavaLlmResponse) -> JavaLlmResponse?
+  ) : JavaBasePlugin("response_overriding_plugin") {
+    override fun afterModelCallback(
+      callbackContext: JavaCallbackContext,
+      llmResponse: JavaLlmResponse,
+    ): Maybe<JavaLlmResponse> = override(llmResponse)?.let { Maybe.just(it) } ?: Maybe.empty()
+  }
+
+  /** A Java plugin whose onEvent returns what [override] makes of the event, or nothing. */
+  private class EventOverridingJavaPlugin(private val override: (JavaEvent) -> JavaEvent?) :
+    JavaBasePlugin("event_overriding_plugin") {
+    override fun onEventCallback(
+      invocationContext: JavaInvocationContext,
+      event: JavaEvent,
+    ): Maybe<JavaEvent> = override(event)?.let { Maybe.just(it) } ?: Maybe.empty()
+  }
+
+  /** A native Kotlin agent emitting one event with fields [EventCodec] doesn't convert. */
+  private class VoiceActivityKtAgent : KtBaseAgent(name = "voice") {
+    override fun runAsyncImpl(context: KtInvocationContext): Flow<KtEvent> = flow {
+      emit(
+        KtEvent(
+          invocationId = context.invocationId,
+          author = name,
+          content = ContentCodec.fromJava(modelText("original")),
+          voiceActivity = KtVoiceActivity(audioOffset = 1.seconds),
+        )
+      )
+    }
   }
 }
