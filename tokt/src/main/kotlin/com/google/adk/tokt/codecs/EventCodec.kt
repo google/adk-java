@@ -33,10 +33,11 @@ import kotlin.jvm.optionals.getOrNull
  * skipSummarization, endOfAgent - the requested tool confirmations, the context-compaction summary,
  * the resumable-run `agentState`, the rewind marker `rewindBeforeInvocationId`, and the workflow
  * `route`), the streaming/error signals (`partial`, `turnComplete`, `interrupted`, `errorMessage`,
- * `errorCode`, `finishReason`), the token `usageMetadata` ([UsageMetadataCodec]),
- * `groundingMetadata` ([GroundingMetadataCodec]) and context `cacheMetadata`
- * ([CacheMetadataCodec]), a workflow node's `output` and `nodeInfo` ([WorkflowCodec]), long-running
- * tool ids, the timestamp, and the `isolationScope`.
+ * `errorCode`, `finishReason`), the live transcriptions ([TranscriptionCodec]), the token
+ * `usageMetadata` ([UsageMetadataCodec]), `groundingMetadata` ([GroundingMetadataCodec]), context
+ * `cacheMetadata` ([CacheMetadataCodec]), `avgLogProbs`, `modelVersion`, `customMetadata`, a
+ * workflow node's `output` and `nodeInfo` ([WorkflowCodec]), long-running tool ids, the timestamp,
+ * and the `isolationScope`. Every other field is dropped.
  */
 internal object EventCodec {
 
@@ -57,6 +58,8 @@ internal object EventCodec {
     if (event.partial) builder.partial(true)
     if (event.turnComplete) builder.turnComplete(true)
     if (event.interrupted) builder.interrupted(true)
+    event.inputTranscription?.let { builder.inputTranscription(TranscriptionCodec.toJava(it)) }
+    event.outputTranscription?.let { builder.outputTranscription(TranscriptionCodec.toJava(it)) }
     event.errorMessage?.let { builder.errorMessage(it) }
     event.errorCode?.let { builder.errorCode(GenaiFinishReason(it)) }
     event.finishReason?.let { builder.finishReason(it.toGenai()) }
@@ -106,6 +109,10 @@ internal object EventCodec {
       partial = event.partial().getOrNull() ?: false,
       turnComplete = event.turnComplete().getOrNull() ?: false,
       interrupted = event.interrupted().getOrNull() ?: false,
+      inputTranscription =
+        event.inputTranscription().getOrNull()?.let { TranscriptionCodec.fromJava(it) },
+      outputTranscription =
+        event.outputTranscription().getOrNull()?.let { TranscriptionCodec.fromJava(it) },
       errorMessage = event.errorMessage().getOrNull(),
       // toString() preserves the raw value; knownEnum().name would collapse an unrecognized code to
       // FINISH_REASON_UNSPECIFIED (errorCode is a free-form String on the Kotlin side).
