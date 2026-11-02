@@ -17,12 +17,15 @@
 package com.google.adk.web.controller;
 
 import com.google.adk.agents.BaseAgent;
+import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
+import com.google.adk.memory.InMemoryMemoryService;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.web.AgentGraphGenerator;
 import com.google.adk.web.AgentLoader;
 import com.google.adk.web.dto.GraphResponse;
+import com.google.adk.web.service.RunnerService;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -48,12 +51,32 @@ public class GraphController {
   private static final Logger log = LoggerFactory.getLogger(GraphController.class);
 
   private final BaseSessionService sessionService;
-  private final AgentLoader agentProvider;
+  private final RunnerService runnerService;
 
   @Autowired
-  public GraphController(BaseSessionService sessionService, AgentLoader agentProvider) {
+  public GraphController(BaseSessionService sessionService, RunnerService runnerService) {
     this.sessionService = sessionService;
-    this.agentProvider = agentProvider;
+    this.runnerService = runnerService;
+  }
+
+  /**
+   * Constructs a GraphController that draws only the agents of {@code agentProvider}.
+   *
+   * @param sessionService The service holding the sessions whose events are drawn.
+   * @param agentProvider The provider for loading agents.
+   * @deprecated Use {@link #GraphController(BaseSessionService, RunnerService)} instead.
+   */
+  @Deprecated
+  public GraphController(BaseSessionService sessionService, AgentLoader agentProvider) {
+    // Loading an app's root reads only the loader, so these runner services are never used.
+    this(
+        sessionService,
+        new RunnerService(
+            agentProvider,
+            new InMemoryArtifactService(),
+            sessionService,
+            new InMemoryMemoryService(),
+            ImmutableList.of()));
   }
 
   /**
@@ -124,18 +147,25 @@ public class GraphController {
         sessionId,
         eventId);
 
-    BaseAgent currentAppAgent;
+    Optional<BaseAgent> rootAgent;
     try {
-      currentAppAgent = agentProvider.loadAgent(appName);
-    } catch (java.util.NoSuchElementException e) {
-      log.warn("Agent app '{}' not found for graph generation.", appName);
-      return ResponseEntity.status(HttpStatus.NOT_FOUND)
-          .body(new GraphResponse("Agent app not found: " + appName));
-    } catch (IllegalStateException e) {
-      log.warn("Agent app '{}' failed to load for graph generation: {}", appName, e.getMessage());
+      // This route draws agent trees only, so an app that runs a workflow node has no graph here.
+      rootAgent =
+          runnerService
+              .loadRoot(appName)
+              .filter(BaseAgent.class::isInstance)
+              .map(BaseAgent.class::cast);
+    } catch (RuntimeException e) {
+      log.warn("The requested agent app failed to load for graph generation.", e);
       return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-          .body(new GraphResponse("Agent app failed to load: " + appName));
+          .body(new GraphResponse("Agent app not loaded"));
     }
+    if (rootAgent.isEmpty()) {
+      log.warn("No agent app is served under the requested name for graph generation.");
+      return ResponseEntity.status(HttpStatus.NOT_FOUND)
+          .body(new GraphResponse("Agent app not found"));
+    }
+    BaseAgent currentAppAgent = rootAgent.get();
 
     Session session = findSessionOrThrow(appName, userId, sessionId);
     Event event =

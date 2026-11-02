@@ -18,7 +18,11 @@ package com.google.adk.web.controller;
 
 import static java.util.stream.Collectors.toList;
 
+import com.google.adk.artifacts.InMemoryArtifactService;
+import com.google.adk.memory.InMemoryMemoryService;
+import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.web.AgentLoader;
+import com.google.adk.web.service.RunnerService;
 import com.google.common.collect.ImmutableList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -33,34 +37,52 @@ public class AgentController {
 
   private static final Logger log = LoggerFactory.getLogger(AgentController.class);
 
-  private final AgentLoader agentProvider;
+  private final RunnerService runnerService;
 
   /**
    * Constructs the AgentController.
    *
-   * @param agentProvider The provider for loading agents.
+   * @param runnerService The service serving the configured apps.
    */
   @Autowired
-  public AgentController(AgentLoader agentProvider) {
-    this.agentProvider = agentProvider;
-    ImmutableList<String> agentNames = this.agentProvider.listAgents();
+  public AgentController(RunnerService runnerService) {
+    this.runnerService = runnerService;
+    ImmutableList<String> agentNames = runnerService.listApps();
     log.info(
         "AgentController initialized with {} dynamic agents: {}", agentNames.size(), agentNames);
     if (agentNames.isEmpty()) {
       log.warn(
-          "Agent registry is empty. Check 'adk.agents.source-dir' property and compilation"
-              + " logs.");
+          "No apps are served. Check the configured loader, such as the 'adk.agents.source-dir'"
+              + " property and compilation logs for compiled agents.");
     }
   }
 
   /**
-   * Lists available applications. Currently returns only the configured root agent's name.
+   * Constructs an AgentController that serves only the agents of {@code agentProvider}.
    *
-   * @return A list containing the root agent's name.
+   * @param agentProvider The provider for loading agents.
+   * @deprecated Use {@link #AgentController(RunnerService)} instead.
+   */
+  @Deprecated
+  public AgentController(AgentLoader agentProvider) {
+    // Listing apps reads only the loader, so these runner services are never used.
+    this(
+        new RunnerService(
+            agentProvider,
+            new InMemoryArtifactService(),
+            new InMemorySessionService(),
+            new InMemoryMemoryService(),
+            ImmutableList.of()));
+  }
+
+  /**
+   * Lists the available applications.
+   *
+   * @return The names of the served apps, sorted.
    */
   @GetMapping("/list-apps")
   public List<String> listApps() {
-    ImmutableList<String> agentNames = agentProvider.listAgents();
+    ImmutableList<String> agentNames = runnerService.listApps();
     log.info("Listing apps from dynamic registry. Found: {}", agentNames);
     return agentNames.stream().sorted().collect(toList());
   }
