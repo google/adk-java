@@ -51,6 +51,16 @@ public final class JoinNode extends BaseNode {
     return new Builder();
   }
 
+  /**
+   * Returns a join node with only a name, equivalent to {@code builder().name(name).build()}.
+   *
+   * @throws IllegalArgumentException if the name is empty or contains {@code /}, {@code @}, or
+   *     {@code .}
+   */
+  public static JoinNode create(String name) {
+    return builder().name(name).build();
+  }
+
   @Override
   public boolean requiresAllPredecessors() {
     return true;

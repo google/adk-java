@@ -92,6 +92,24 @@ public final class JoinNodeTest {
   }
 
   @Test
+  public void create_setsOnlyTheName() {
+    JoinNode join = JoinNode.create("gather");
+
+    assertThat(join.name()).isEqualTo("gather");
+    assertThat(join.description()).isEmpty();
+    assertThat(join.inputSchema()).isEmpty();
+    assertThat(join.outputSchema()).isEmpty();
+  }
+
+  @Test
+  public void create_rejectsANameThatANodePathCannotCarry() {
+    IllegalArgumentException e =
+        assertThrows(IllegalArgumentException.class, () -> JoinNode.create("gather@1"));
+
+    assertThat(e).hasMessageThat().contains("but 'gather@1' does");
+  }
+
+  @Test
   public void name_rejectsNull() {
     JoinNode.Builder builder = JoinNode.builder();
 
