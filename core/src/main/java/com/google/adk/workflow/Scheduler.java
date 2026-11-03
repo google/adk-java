@@ -19,8 +19,10 @@ package com.google.adk.workflow;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
@@ -32,6 +34,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.processors.FlowableProcessor;
@@ -68,8 +71,8 @@ final class Scheduler {
   private final ImmutableMap<String, RecoveredNode> recovered;
   // The nodes replayed from history whose completion is not handled yet.
   private final Set<String> replayed = new HashSet<>();
-  // The nodes whose latest output was replayed, so no event in this turn carried it in outputFor.
-  private final Set<String> replayedOutputs = new HashSet<>();
+  // The nodes whose latest output no event in this turn carried for the workflow.
+  private final Set<String> outputsNotCarried = new HashSet<>();
 
   Scheduler(Workflow workflow, Graph graph, Context context) {
     this.workflow = workflow;
@@ -185,6 +188,10 @@ final class Scheduler {
     }
 
     private void scheduleReady() {
+      // As in Python ADK, no other node starts while a task node waits on the user.
+      if (hasWaitingTaskNode()) {
+        return;
+      }
       Optional<Integer> maxConcurrency = workflow.maxConcurrency();
       for (String nodeName : triggerQueue.queuedNodeNames()) {
         // A cancel can arrive while a node blocks as it starts.
@@ -208,6 +215,14 @@ final class Scheduler {
       }
     }
 
+    private boolean hasWaitingTaskNode() {
+      return nodeStates.entrySet().stream()
+          .anyMatch(entry ->
+              entry.getValue().status == NodeStatus.WAITING
+                  && graph.node(entry.getKey()) instanceof LlmAgent agent
+                  && agent.mode().orElse(null) == AgentMode.TASK);
+    }
+
     private void start(String nodeName, Trigger trigger) {
       String runId = workflowState.nextChildRunId(nodeName);
       nodeStates.put(nodeName, new NodeState(NodeStatus.RUNNING));
@@ -222,17 +237,8 @@ final class Scheduler {
               /* dynamic= */ false,
               workflowState.childCanceledMidRun(childKey),
               workflowState.childFailedThisTurn(childKey));
+      Single<Context> nodeRun;
       if (recoveredNode != null && !interception.shouldRun()) {
-        // Only a replay that completes an answered transfer marks a new step, as a run does.
-        boolean completesTransfer =
-            interception.transferToAgent() != null
-                && !recoveredNode.interruptIds.isEmpty()
-                && recoveredNode.unresolved().isEmpty();
-        if (completesTransfer) {
-          emitCheckpoint();
-        } else {
-          replayed.add(nodeName);
-        }
         InvocationContext scheduled =
             NodeRunner.scheduledContext(
                 context.invocationContext(),
@@ -242,40 +248,63 @@ final class Scheduler {
                 runId);
         Context replayContext =
             ResumeScan.replayContext(context, scheduled, node, runId, useAsOutput, interception);
-        // A replay counts as running until its completion is handled, as a run does.
-        running.put(nodeName, Disposable.empty());
-        completions.add(new Completion(nodeName, replayContext));
-        wakeUps.onNext(true);
-        return;
+        // Only a replay that completes an answered transfer marks a new step, as a run does.
+        boolean completesTransfer =
+            interception.transferToAgent() != null
+                && !recoveredNode.interruptIds.isEmpty()
+                && recoveredNode.unresolved().isEmpty();
+        if (!completesTransfer || !TransferTarget.handsOff(node)) {
+          if (completesTransfer) {
+            emitCheckpoint();
+          } else {
+            replayed.add(nodeName);
+          }
+          // A replay counts as running until its completion is handled, as a run does.
+          running.put(nodeName, Disposable.empty());
+          completions.add(new Completion(nodeName, replayContext));
+          wakeUps.onNext(true);
+          return;
+        }
+        // The node does not run again, but its handoff goes on to a target that waits on answers.
+        nodeRun = Single.just(replayContext);
+      } else {
+        nodeRun =
+            NodeRunner.builder()
+                .node(node)
+                .parent(context)
+                .runId(runId)
+                .useAsOutput(useAsOutput)
+                .useSubBranch(trigger.useSubBranch())
+                .overrideBranch(trigger.branch())
+                .resumeInputs(interception.resumeInputs())
+                .build()
+                .run(trigger.input())
+                .compose(Tracing.withContext(traceContext));
       }
       Completable checkpointed = checkpoint();
       // Processing the checkpoint can end the run, as when the caller stops after that event.
       if (childRuns.isDisposed()) {
         return;
       }
+      RunNodeConfig handoffConfig =
+          RunNodeConfig.builder()
+              .useAsOutput(useAsOutput)
+              .useSubBranch(trigger.useSubBranch())
+              .overrideBranch(trigger.branch())
+              .build();
       // The node starts once its checkpoint is processed, as each of its own events is.
       Disposable run =
           checkpointed
               // Off the loop thread, so a node that blocks its thread cannot hold up the others.
               .andThen(NodeRunner.completeOn(context.invocationContext().scheduler()))
-              .andThen(
-                  NodeRunner.builder()
-                      .node(node)
-                      .parent(context)
-                      .runId(runId)
-                      .useAsOutput(useAsOutput)
-                      .useSubBranch(trigger.useSubBranch())
-                      .overrideBranch(trigger.branch())
-                      .resumeInputs(interception.resumeInputs())
-                      .build()
-                      .run(trigger.input())
-                      .compose(Tracing.withContext(traceContext)))
+              .andThen(nodeRun)
+              .flatMap(first -> NodeRunner.followHandoffs(context, node, first, handoffConfig))
               .subscribe(
                   childContext -> {
                     completions.add(new Completion(nodeName, childContext));
                     wakeUps.onNext(true);
                   },
-                  // A node's exception fails only that node, so this is an Error.
+                  // An Error, or a handoff that cannot be followed, fails the workflow.
                   wakeUps::onError,
                   // Added before it subscribes, so a cancel reaches a node blocked as it starts.
                   childRuns);
@@ -307,10 +336,11 @@ final class Scheduler {
     Optional<Object> output = childState.output();
     if (output.isPresent()) {
       nodeOutputs.put(nodeName, output.get());
-      if (wasReplayed) {
-        replayedOutputs.add(nodeName);
+      // A replay or a handoff target emits no output for the workflow.
+      if (wasReplayed || !childState.outputFor().contains(workflowState.nodePath())) {
+        outputsNotCarried.add(nodeName);
       } else {
-        replayedOutputs.remove(nodeName);
+        outputsNotCarried.remove(nodeName);
       }
     }
     if (wasReplayed) {
@@ -453,8 +483,8 @@ final class Scheduler {
     if (terminalOutputs.size() == 1) {
       String terminalNode = terminalOutputs.get(0);
       workflowState.produceOutput(nodeOutputs.get(terminalNode));
-      // Unmarked so NodeRunner sends a replayed terminal node's output for the delegating node.
-      if (!replayedOutputs.contains(terminalNode) || !workflowState.isDelegatedToANode()) {
+      // Unmarked so NodeRunner sends an output that no node event carried for the delegating node.
+      if (!outputsNotCarried.contains(terminalNode) || !workflowState.isDelegatedToANode()) {
         workflowState.markOutputEmitted();
       }
     }

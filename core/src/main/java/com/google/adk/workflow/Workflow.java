@@ -83,9 +83,10 @@ public final class Workflow extends BaseNode {
 
   /**
    * Runs the graph from its start node, which hands {@code nodeInput} to its successors. The output
-   * of the sole terminal node that produces one becomes the workflow's output. If more than one
-   * terminal node produces an output, the returned {@code Flowable} fails with {@link
-   * WorkflowConfigurationException}.
+   * of the sole terminal node that produces one becomes the workflow's output. The returned {@code
+   * Flowable} fails with {@link WorkflowConfigurationException} if more than one terminal node
+   * produces an output, or with {@link GraphValidationException}, before any node runs, if a chat
+   * agent follows a node other than {@link Start} or the workflow runs inside another one.
    */
   @Override
   public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
@@ -95,11 +96,29 @@ public final class Workflow extends BaseNode {
     }
     return Completable.defer(
             () -> {
+              GraphValidation.validateChatAgentWiring(runGraph.edges());
+              // A nested workflow ends with its chat agent still open, so its successors would
+              // run while the conversation goes on.
+              if (nestedInWorkflow(context)) {
+                GraphValidation.validateNoChatAgentInNestedWorkflow(name(), runGraph.edges());
+              }
               // Inner nodes inherit the workflow as event author; agent nodes keep their own.
               context.requireNodeState().eventAuthor(name());
               return new Scheduler(this, runGraph, context).run(nodeInput);
             })
         .toFlowable();
+  }
+
+  /** Returns whether a workflow is among the nodes that {@code context}'s run is nested in. */
+  private static boolean nestedInWorkflow(Context context) {
+    Optional<Context> parent = context.requireNodeState().parent();
+    while (parent.isPresent()) {
+      if (parent.get().requireNodeState().node() instanceof Workflow) {
+        return true;
+      }
+      parent = parent.get().requireNodeState().parent();
+    }
+    return false;
   }
 
   /**

@@ -22,6 +22,7 @@ import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
@@ -100,6 +101,25 @@ public final class BasicTest {
     assertThat(updatedRequest.liveConnectConfig()).isNotNull();
     assertThat(updatedRequest.liveConnectConfig().responseModalities().get()).isEmpty();
     assertThat(result.events()).isEmpty();
+  }
+
+  @Test
+  public void processRequest_taskAgentOutsideATaskNode_keepsItsOutputSchema() {
+    LlmAgent taskAgent =
+        LlmAgent.builder()
+            .name("taskAgent")
+            .model(testLlm)
+            .mode(AgentMode.TASK)
+            .outputSchema(TEST_OUTPUT_SCHEMA)
+            .build();
+
+    RequestProcessingResult result =
+        basicProcessor
+            .processRequest(createInvocationContext(taskAgent), initialRequest)
+            .blockingGet();
+
+    assertThat(result.updatedRequest().config().flatMap(config -> config.responseSchema()))
+        .hasValue(TEST_OUTPUT_SCHEMA);
   }
 
   @Test

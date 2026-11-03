@@ -21,8 +21,10 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.common.collect.ImmutableList;
@@ -67,6 +69,7 @@ public final class NodeExecutionState {
   private final int attemptCount;
   private final String nodePath;
   private final ImmutableList<String> outputFor;
+  private final @Nullable String isolationScope;
   private final Map<String, @Nullable Object> resumeInputs;
   private final ConcurrentMap<String, Integer> childRunCounts;
   private final ConcurrentMap<String, NodeRunner.SharedChildRun> childRuns;
@@ -74,6 +77,8 @@ public final class NodeExecutionState {
   private final Set<String> unfinishedNodePaths;
   // Paths of runs that failed this turn and have not finished cleanly since, shared the same way.
   private final Set<String> failedNodePaths;
+  // Run counts of the nodes that run beside this run's root, shared under the root.
+  private final ConcurrentMap<String, Integer> topLevelRunCounts;
   private final Set<String> interruptIds = new CopyOnWriteArraySet<>();
   private final AtomicReference<OutputState> outputState = new AtomicReference<>(NO_OUTPUT);
   // Set once the node drops its own output because a useAsOutput child holds the output.
@@ -109,6 +114,14 @@ public final class NodeExecutionState {
             ? ImmutableList.<String>builder().add(nodePath).addAll(outputParent.outputFor).build()
             : ImmutableList.of(nodePath);
     this.eventAuthor = parentState == null ? "" : parentState.eventAuthor;
+    if (builder.isolationScope != null) {
+      this.isolationScope = builder.isolationScope;
+    } else if (node instanceof LlmAgent agent && agent.hasMode(AgentMode.TASK)) {
+      // A task works in a scope of its own, named by its node path.
+      this.isolationScope = nodePath;
+    } else {
+      this.isolationScope = parentState == null ? null : parentState.isolationScope;
+    }
     NodeExecutionState previousAttempt = builder.previousAttempt;
     this.attemptCount = previousAttempt == null ? 1 : previousAttempt.attemptCount + 1;
     NodeExecutionState turnRecords = parentState != null ? parentState : previousAttempt;
@@ -116,6 +129,11 @@ public final class NodeExecutionState {
         turnRecords == null ? ConcurrentHashMap.newKeySet() : turnRecords.unfinishedNodePaths;
     this.failedNodePaths =
         turnRecords == null ? ConcurrentHashMap.newKeySet() : turnRecords.failedNodePaths;
+    // Seeded with the root's own run, so a top-level hop named like the root gets the next ID.
+    this.topLevelRunCounts =
+        turnRecords == null
+            ? new ConcurrentHashMap<>(ImmutableMap.of(node.name(), 1))
+            : turnRecords.topLevelRunCounts;
     this.resumeInputs = Collections.unmodifiableMap(new LinkedHashMap<>(builder.resumeInputs));
     // A retried workflow restarts its node numbering, so its finished nodes replay.
     boolean continuesChildRuns = previousAttempt != null && !(node instanceof Workflow);
@@ -155,6 +173,14 @@ public final class NodeExecutionState {
   /** Returns the context of the node that ran this node, or empty if this is a root node. */
   public Optional<Context> parent() {
     return Optional.ofNullable(parent);
+  }
+
+  /**
+   * Returns the isolation scope this run's events carry unless they set their own, or empty when
+   * unscoped. A run takes its parent's scope unless it was started with its own.
+   */
+  public Optional<String> isolationScope() {
+    return Optional.ofNullable(isolationScope);
   }
 
   /**
@@ -307,6 +333,14 @@ public final class NodeExecutionState {
   /** Returns the next run ID for a child node named {@code name}, counting from {@code "1"}. */
   String nextChildRunId(String name) {
     return String.valueOf(childRunCounts.merge(name, 1, Integer::sum));
+  }
+
+  /**
+   * Returns the next run ID for a node named {@code name} that runs at the top of the invocation,
+   * beside this run's root.
+   */
+  String nextTopLevelRunId(String name) {
+    return String.valueOf(topLevelRunCounts.merge(name, 1, Integer::sum));
   }
 
   /**
@@ -571,6 +605,7 @@ public final class NodeExecutionState {
     private @Nullable Context parent;
     private @Nullable String runId;
     private boolean useAsOutput;
+    private @Nullable String isolationScope;
     private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
     private @Nullable NodeExecutionState previousAttempt;
 
@@ -611,6 +646,13 @@ public final class NodeExecutionState {
     @CanIgnoreReturnValue
     Builder useAsOutput(boolean useAsOutput) {
       this.useAsOutput = useAsOutput;
+      return this;
+    }
+
+    /** Sets the isolation scope of the run, or null to take the parent's. */
+    @CanIgnoreReturnValue
+    Builder isolationScope(@Nullable String isolationScope) {
+      this.isolationScope = isolationScope;
       return this;
     }
 
