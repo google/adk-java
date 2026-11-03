@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalLiveApi::class)
+
 package com.google.adk.tokt
 
 import com.google.adk.agents.BaseAgent as JavaBaseAgent
@@ -30,11 +32,13 @@ import com.google.adk.kt.agents.BaseAgent as KtBaseAgent
 import com.google.adk.kt.agents.CallbackContext as KtCallbackContext
 import com.google.adk.kt.agents.Context as KtContext
 import com.google.adk.kt.agents.InvocationContext as KtInvocationContext
+import com.google.adk.kt.agents.LiveRunConfig as KtLiveRunConfig
 import com.google.adk.kt.agents.LlmAgent as KtLlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig as KtResumabilityConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
 import com.google.adk.kt.agents.TypedData
+import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
 import com.google.adk.kt.annotations.FrameworkInternalApi
 import com.google.adk.kt.apps.App as KtApp
@@ -56,6 +60,8 @@ import com.google.adk.kt.sessions.SessionService as KtSessionService
 import com.google.adk.kt.sessions.State as KtState
 import com.google.adk.kt.tools.BaseTool as KtBaseTool
 import com.google.adk.kt.tools.ToolContext as KtToolContext
+import com.google.adk.kt.types.AudioTranscriptionConfig as KtAudioTranscriptionConfig
+import com.google.adk.kt.types.AudioTranscriptionConfigMode as KtAudioTranscriptionConfigMode
 import com.google.adk.kt.types.Blob as KtBlob
 import com.google.adk.kt.types.Citation as KtCitation
 import com.google.adk.kt.types.CitationMetadata as KtCitationMetadata
@@ -79,12 +85,18 @@ import com.google.adk.kt.types.LiveServerGoAway as KtLiveServerGoAway
 import com.google.adk.kt.types.LiveServerSessionResumptionUpdate as KtLiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.LogprobsResult as KtLogprobsResult
 import com.google.adk.kt.types.MediaResolution as KtMediaResolution
+import com.google.adk.kt.types.Modality as KtModality
+import com.google.adk.kt.types.MultiSpeakerVoiceConfig as KtMultiSpeakerVoiceConfig
 import com.google.adk.kt.types.Part as KtPart
 import com.google.adk.kt.types.PartialArgValue as KtPartialArgValue
+import com.google.adk.kt.types.PrebuiltVoiceConfig as KtPrebuiltVoiceConfig
+import com.google.adk.kt.types.ReplicatedVoiceConfig as KtReplicatedVoiceConfig
 import com.google.adk.kt.types.Retrieval as KtRetrieval
 import com.google.adk.kt.types.SafetySetting as KtSafetySetting
 import com.google.adk.kt.types.Schema as KtSchema
 import com.google.adk.kt.types.ServiceTier as KtServiceTier
+import com.google.adk.kt.types.SpeakerVoiceConfig as KtSpeakerVoiceConfig
+import com.google.adk.kt.types.SpeechConfig as KtSpeechConfig
 import com.google.adk.kt.types.ThinkingConfig as KtThinkingConfig
 import com.google.adk.kt.types.ThinkingLevel as KtThinkingLevel
 import com.google.adk.kt.types.Tool as KtTool
@@ -99,6 +111,8 @@ import com.google.adk.kt.types.VertexAISearchDataStoreSpec as KtVertexAISearchDa
 import com.google.adk.kt.types.VertexRagStore as KtVertexRagStore
 import com.google.adk.kt.types.VertexRagStoreRagResource as KtVertexRagStoreRagResource
 import com.google.adk.kt.types.VoiceActivity as KtVoiceActivity
+import com.google.adk.kt.types.VoiceConfig as KtVoiceConfig
+import com.google.adk.kt.types.VoiceConsentSignature as KtVoiceConsentSignature
 import com.google.adk.kt.types.WordInfo as KtWordInfo
 import com.google.adk.kt.workflow.Edge as KtEdge
 import com.google.adk.kt.workflow.Node as KtNode
@@ -142,7 +156,10 @@ import com.google.adk.tokt.codecs.agentStateToJava
 import com.google.adk.tokt.codecs.reapplyJavaEvent
 import com.google.adk.tokt.codecs.reapplyJavaResponse
 import com.google.adk.tokt.codecs.stateValueFromJava
+import com.google.adk.tokt.codecs.toGenai
+import com.google.adk.tokt.codecs.toKt
 import com.google.adk.tokt.codecs.typedDataFromJava
+import com.google.adk.tokt.codecs.unsupportedFields
 import com.google.adk.tools.BaseTool as JavaBaseTool
 import com.google.adk.tools.BaseToolset as JavaBaseToolset
 import com.google.adk.tools.ToolContext as JavaToolContext
@@ -150,6 +167,8 @@ import com.google.adk.workflow.NodeInfo as JavaNodeInfo
 import com.google.adk.workflow.Route as JavaRoute
 import com.google.common.truth.Truth.assertThat
 import com.google.errorprone.annotations.CanIgnoreReturnValue
+import com.google.genai.types.AudioTranscriptionConfig as GenaiAudioTranscriptionConfig
+import com.google.genai.types.AudioTranscriptionConfigMode as GenaiAudioTranscriptionConfigMode
 import com.google.genai.types.CodeExecutionResult as GenaiCodeExecutionResult
 import com.google.genai.types.Content as GenaiContent
 import com.google.genai.types.CustomMetadata as GenaiCustomMetadata
@@ -167,21 +186,31 @@ import com.google.genai.types.GroundingChunkRetrievedContext as GenaiGroundingCh
 import com.google.genai.types.GroundingChunkWeb as GenaiGroundingChunkWeb
 import com.google.genai.types.GroundingMetadata as GenaiGroundingMetadata
 import com.google.genai.types.GroundingSupport as GenaiGroundingSupport
+import com.google.genai.types.LanguageAuto as GenaiLanguageAuto
+import com.google.genai.types.LanguageHints as GenaiLanguageHints
 import com.google.genai.types.MediaModality as GenaiMediaModality
+import com.google.genai.types.Modality as GenaiModality
 import com.google.genai.types.ModalityTokenCount as GenaiModalityTokenCount
+import com.google.genai.types.MultiSpeakerVoiceConfig as GenaiMultiSpeakerVoiceConfig
 import com.google.genai.types.Part as GenaiPart
 import com.google.genai.types.PartMediaResolution as GenaiPartMediaResolution
 import com.google.genai.types.PartialArg as GenaiPartialArg
+import com.google.genai.types.PrebuiltVoiceConfig as GenaiPrebuiltVoiceConfig
+import com.google.genai.types.ReplicatedVoiceConfig as GenaiReplicatedVoiceConfig
 import com.google.genai.types.RetrievalMetadata as GenaiRetrievalMetadata
 import com.google.genai.types.Schema as GenaiSchema
 import com.google.genai.types.SearchEntryPoint as GenaiSearchEntryPoint
 import com.google.genai.types.Segment as GenaiSegment
+import com.google.genai.types.SpeakerVoiceConfig as GenaiSpeakerVoiceConfig
+import com.google.genai.types.SpeechConfig as GenaiSpeechConfig
 import com.google.genai.types.ToolCall as GenaiToolCall
 import com.google.genai.types.ToolConfig as GenaiToolConfig
 import com.google.genai.types.ToolResponse as GenaiToolResponse
 import com.google.genai.types.TrafficType as GenaiTrafficType
 import com.google.genai.types.Transcription as GenaiTranscription
 import com.google.genai.types.VideoMetadata as GenaiVideoMetadata
+import com.google.genai.types.VoiceConfig as GenaiVoiceConfig
+import com.google.genai.types.VoiceConsentSignature as GenaiVoiceConsentSignature
 import com.google.genai.types.WordInfo as GenaiWordInfo
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
@@ -2031,6 +2060,142 @@ class KtRunnerInteropTest {
     assertLiveUnsupported {
       javaRunner.runLive(key, LiveRequestQueue(), JavaRunConfig.builder().build())
     }
+  }
+
+  @Test
+  fun runConfigToJava_bidiWithLiveSettings_showsLiveSettings() {
+    val kt =
+      KtRunConfig(
+        streamingMode = KtStreamingMode.BIDI,
+        live =
+          KtLiveRunConfig(
+            responseModalities = listOf(KtModality.TEXT),
+            speechConfig = ktSpeechConfig(),
+            outputAudioTranscription = ktTranscriptionConfig(),
+            inputAudioTranscription = KtAudioTranscriptionConfig(languageCodes = listOf("de-DE")),
+          ),
+      )
+
+    val java = RunConfigCodec.toJava(kt)
+
+    assertThat(java.streamingMode()).isEqualTo(JavaRunConfig.StreamingMode.BIDI)
+    assertThat(java.responseModalities()).containsExactly(GenaiModality(GenaiModality.Known.TEXT))
+    assertThat(java.speechConfig()).isNotNull()
+    assertThat(java.speechConfig()?.toJson()).isEqualTo(genaiSpeechConfig().toJson())
+    assertThat(java.outputAudioTranscription()).isEqualTo(genaiTranscriptionConfig())
+    assertThat(java.inputAudioTranscription())
+      .isEqualTo(GenaiAudioTranscriptionConfig.builder().languageCodes(listOf("de-DE")).build())
+  }
+
+  @Test
+  fun runConfigToJava_bidiWithoutModalities_showsAudio() {
+    val java = RunConfigCodec.toJava(KtRunConfig(streamingMode = KtStreamingMode.BIDI))
+
+    assertThat(java.responseModalities()).containsExactly(GenaiModality(GenaiModality.Known.AUDIO))
+  }
+
+  @Test
+  fun runConfigToJava_bidiWithDefaultTranscription_showsEmptyTranscriptionConfigs() {
+    // Kotlin turns transcription on by default, as an empty config.
+    val java = RunConfigCodec.toJava(KtRunConfig(streamingMode = KtStreamingMode.BIDI))
+
+    assertThat(java.outputAudioTranscription())
+      .isEqualTo(GenaiAudioTranscriptionConfig.builder().build())
+    assertThat(java.inputAudioTranscription())
+      .isEqualTo(GenaiAudioTranscriptionConfig.builder().build())
+  }
+
+  @Test
+  fun runConfigToJava_bidiWithTranscriptionOff_showsNoTranscriptionConfigs() {
+    val java =
+      RunConfigCodec.toJava(
+        KtRunConfig(
+          streamingMode = KtStreamingMode.BIDI,
+          live = KtLiveRunConfig(outputAudioTranscription = null, inputAudioTranscription = null),
+        )
+      )
+
+    assertThat(java.outputAudioTranscription()).isNull()
+    assertThat(java.inputAudioTranscription()).isNull()
+  }
+
+  @Test
+  fun runConfigToJava_defaultConfig_showsNoLiveSettings() {
+    // Kotlin turns transcription on by default; a turn-based Java view hides it.
+    val java = RunConfigCodec.toJava(KtRunConfig())
+
+    assertThat(java.responseModalities()).isEmpty()
+    assertThat(java.speechConfig()).isNull()
+    assertThat(java.outputAudioTranscription()).isNull()
+    assertThat(java.inputAudioTranscription()).isNull()
+  }
+
+  @Test
+  fun runConfigToJava_sseWithLiveSettings_showsNoLiveSettings() {
+    val java =
+      RunConfigCodec.toJava(
+        KtRunConfig(
+          streamingMode = KtStreamingMode.SSE,
+          live =
+            KtLiveRunConfig(
+              responseModalities = listOf(KtModality.TEXT),
+              speechConfig = ktSpeechConfig(),
+            ),
+        )
+      )
+
+    assertThat(java.responseModalities()).isEmpty()
+    assertThat(java.speechConfig()).isNull()
+    assertThat(java.outputAudioTranscription()).isNull()
+    assertThat(java.inputAudioTranscription()).isNull()
+  }
+
+  @Test
+  fun runConfigFromJava_javaViewOfDefaultConfig_returnsDefaultConfig() {
+    val java = RunConfigCodec.toJava(KtRunConfig())
+
+    assertThat(RunConfigCodec.fromJava(java)).isEqualTo(KtRunConfig())
+  }
+
+  @Test
+  fun audioTranscriptionConfigUnsupportedFields_genaiOnlyFieldsSet_namesEachField() {
+    val transcription =
+      GenaiAudioTranscriptionConfig.builder()
+        .languageAuto(GenaiLanguageAuto.builder().build())
+        .languageHints(GenaiLanguageHints.builder().languageCodes(listOf("pl-PL")).build())
+        .adaptationPhrases(listOf("ADK"))
+        .mode(GenaiAudioTranscriptionConfigMode("m"))
+        .build()
+
+    assertThat(transcription.unsupportedFields)
+      .containsExactly("languageAuto", "languageHints", "adaptationPhrases", "mode")
+      .inOrder()
+  }
+
+  @Test
+  fun audioTranscriptionConfigUnsupportedFields_fullyMappedConfig_namesNothing() {
+    assertThat(genaiTranscriptionConfig().unsupportedFields).isEmpty()
+  }
+
+  @Test
+  fun speechConfigToGenai_everyFieldSet_convertsEveryField() {
+    // As JSON: genai's equals compares the voice sample byte arrays by reference.
+    assertThat(ktSpeechConfig().toGenai().toJson()).isEqualTo(genaiSpeechConfig().toJson())
+  }
+
+  @Test
+  fun speechConfigToKt_everyFieldSet_convertsEveryField() {
+    assertThat(genaiSpeechConfig().toKt()).isEqualTo(ktSpeechConfig())
+  }
+
+  @Test
+  fun audioTranscriptionConfigToGenai_everyFieldSet_convertsEveryField() {
+    assertThat(ktTranscriptionConfig().toGenai()).isEqualTo(genaiTranscriptionConfig())
+  }
+
+  @Test
+  fun audioTranscriptionConfigToKt_everyFieldSet_convertsEveryField() {
+    assertThat(genaiTranscriptionConfig().toKt()).isEqualTo(ktTranscriptionConfig())
   }
 
   @Test
@@ -6009,6 +6174,112 @@ class KtRunnerInteropTest {
 
     /** A Kotlin callback context over [ktInvocationContext]. */
     fun ktCallbackContext() = KtCallbackContext(ktInvocationContext())
+
+    /** A speech setting with every field set, including a replicated voice and two speakers. */
+    fun ktSpeechConfig() =
+      KtSpeechConfig(
+        voiceConfig =
+          KtVoiceConfig(
+            prebuiltVoiceConfig = KtPrebuiltVoiceConfig(voiceName = "Kore"),
+            voice = "voice-1",
+          ),
+        languageCode = "pl-PL",
+        multiSpeakerVoiceConfig =
+          KtMultiSpeakerVoiceConfig(
+            speakerVoiceConfigs =
+              listOf(
+                KtSpeakerVoiceConfig(
+                  speaker = "a",
+                  voiceConfig =
+                    KtVoiceConfig(
+                      prebuiltVoiceConfig = KtPrebuiltVoiceConfig(voiceName = "Puck"),
+                      voice = "voice-a",
+                    ),
+                ),
+                KtSpeakerVoiceConfig(
+                  speaker = "b",
+                  voiceConfig =
+                    KtVoiceConfig(
+                      replicatedVoiceConfig =
+                        KtReplicatedVoiceConfig(
+                          mimeType = "audio/wav",
+                          voiceSampleAudio = byteArrayOf(1),
+                          consentAudio = byteArrayOf(2),
+                          voiceConsentSignature = KtVoiceConsentSignature(signature = "sig"),
+                        )
+                    ),
+                ),
+              )
+          ),
+      )
+
+    /** The genai twin of [ktSpeechConfig], built without the codec. */
+    fun genaiSpeechConfig(): GenaiSpeechConfig =
+      GenaiSpeechConfig.builder()
+        .voiceConfig(
+          GenaiVoiceConfig.builder()
+            .prebuiltVoiceConfig(GenaiPrebuiltVoiceConfig.builder().voiceName("Kore").build())
+            .voice("voice-1")
+            .build()
+        )
+        .languageCode("pl-PL")
+        .multiSpeakerVoiceConfig(
+          GenaiMultiSpeakerVoiceConfig.builder()
+            .speakerVoiceConfigs(
+              listOf(
+                GenaiSpeakerVoiceConfig.builder()
+                  .speaker("a")
+                  .voiceConfig(
+                    GenaiVoiceConfig.builder()
+                      .prebuiltVoiceConfig(
+                        GenaiPrebuiltVoiceConfig.builder().voiceName("Puck").build()
+                      )
+                      .voice("voice-a")
+                      .build()
+                  )
+                  .build(),
+                GenaiSpeakerVoiceConfig.builder()
+                  .speaker("b")
+                  .voiceConfig(
+                    GenaiVoiceConfig.builder()
+                      .replicatedVoiceConfig(
+                        GenaiReplicatedVoiceConfig.builder()
+                          .mimeType("audio/wav")
+                          .voiceSampleAudio(byteArrayOf(1))
+                          .consentAudio(byteArrayOf(2))
+                          .voiceConsentSignature(
+                            GenaiVoiceConsentSignature.builder().signature("sig").build()
+                          )
+                          .build()
+                      )
+                      .build()
+                  )
+                  .build(),
+              )
+            )
+            .build()
+        )
+        .build()
+
+    /** A transcription setting with every Kotlin field set. */
+    fun ktTranscriptionConfig() =
+      KtAudioTranscriptionConfig(
+        languageCodes = listOf("pl-PL", "en-US"),
+        customVocabulary = listOf("ADK"),
+        diarization = true,
+        wordTimestamp = false,
+        mode = KtAudioTranscriptionConfigMode.VERBATIM,
+      )
+
+    /** The genai twin of [ktTranscriptionConfig], built without the codec. */
+    fun genaiTranscriptionConfig(): GenaiAudioTranscriptionConfig =
+      GenaiAudioTranscriptionConfig.builder()
+        .languageCodes(listOf("pl-PL", "en-US"))
+        .customVocabulary(listOf("ADK"))
+        .diarization(true)
+        .wordTimestamp(false)
+        .mode(GenaiAudioTranscriptionConfigMode(GenaiAudioTranscriptionConfigMode.Known.VERBATIM))
+        .build()
   }
 
   /** A Java plugin whose afterModel returns what [override] makes of the response, or nothing. */
