@@ -52,5 +52,47 @@ List<Event> events =
         .blockingGet();
 ```
 
+## Run a live conversation
+
+Live runs are experimental: they build on the ADK Kotlin live API, which may
+change without notice.
+
+`runLive` runs a live (bidirectional) conversation on the Kotlin engine, fed
+from an ADK Java `LiveRequestQueue`. The agent's model must support live
+connections, as the Kotlin engine's `Gemini` does:
+
+```java
+import com.google.adk.agents.LiveRequestQueue; // ADK Java queue
+
+LlmAgent liveAgent =
+    LlmAgent.builder()
+        .name("voice_assistant")
+        .model(new com.google.adk.kt.models.Gemini("gemini-3.8-live"))
+        .build();
+Runner liveRunner =
+    KotlinAdkToJava.asJavaRunner(
+        InMemoryRunner.builder()
+            .app(App.builder().appName("voice").rootAgent(liveAgent).build())
+            .build());
+
+LiveRequestQueue queue = new LiveRequestQueue();
+queue.content(Content.fromParts(Part.fromText("Hello!")));
+liveRunner
+    .runLive("user", "session", queue, RunConfig.builder().autoCreateSession(true).build())
+    .blockingSubscribe(
+        event -> {
+          event.outputTranscription().flatMap(Transcription::text).ifPresent(System.out::println);
+          if (event.turnComplete().orElse(false)) {
+            queue.close(); // Ends the run and closes the connection.
+          }
+        });
+```
+
+-   Events arrive on the runner's dispatcher (`Dispatchers.IO` unless you pass
+    one to `asJavaRunner`), never on the thread that sends to the queue.
+-   Blobs sent to the Java `LiveRequestQueue` are dropped with a warning.
+-   `RunConfig` settings the Kotlin engine cannot honor fail the stream rather
+    than being dropped.
+
 See the `JavaAdkToKt` KDoc for the full set of adapters (including session,
 artifact, and memory services) and the documented interop limits.

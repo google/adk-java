@@ -21,6 +21,7 @@ package com.google.adk.tokt
 import com.google.adk.agents.BaseAgent as JavaBaseAgent
 import com.google.adk.agents.CallbackContext as JavaCallbackContext
 import com.google.adk.agents.InvocationContext as JavaInvocationContext
+import com.google.adk.agents.LiveRequest as JavaLiveRequest
 import com.google.adk.agents.LiveRequestQueue
 import com.google.adk.agents.ReadonlyContext as JavaReadonlyContext
 import com.google.adk.agents.RunConfig as JavaRunConfig
@@ -47,8 +48,11 @@ import com.google.adk.kt.events.Event as KtEvent
 import com.google.adk.kt.events.EventActions as KtEventActions
 import com.google.adk.kt.events.EventCompaction as KtEventCompaction
 import com.google.adk.kt.models.CacheMetadata as KtCacheMetadata
+import com.google.adk.kt.models.LiveConnection as KtLiveConnection
 import com.google.adk.kt.models.LlmRequest as KtLlmRequest
 import com.google.adk.kt.models.LlmResponse as KtLlmResponse
+import com.google.adk.kt.models.Model as KtModel
+import com.google.adk.kt.models.RealtimeInput as KtRealtimeInput
 import com.google.adk.kt.runners.InMemoryRunner as KtInMemoryRunner
 import com.google.adk.kt.runners.Runner as KtRunner
 import com.google.adk.kt.serialization.anyToJsonElement
@@ -169,6 +173,8 @@ import com.google.common.truth.Truth.assertThat
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import com.google.genai.types.AudioTranscriptionConfig as GenaiAudioTranscriptionConfig
 import com.google.genai.types.AudioTranscriptionConfigMode as GenaiAudioTranscriptionConfigMode
+import com.google.genai.types.AvatarConfig as GenaiAvatarConfig
+import com.google.genai.types.Blob as GenaiBlob
 import com.google.genai.types.CodeExecutionResult as GenaiCodeExecutionResult
 import com.google.genai.types.Content as GenaiContent
 import com.google.genai.types.CustomMetadata as GenaiCustomMetadata
@@ -212,10 +218,15 @@ import com.google.genai.types.VideoMetadata as GenaiVideoMetadata
 import com.google.genai.types.VoiceConfig as GenaiVoiceConfig
 import com.google.genai.types.VoiceConsentSignature as GenaiVoiceConsentSignature
 import com.google.genai.types.WordInfo as GenaiWordInfo
+import io.opentelemetry.api.trace.Span
+import io.opentelemetry.api.trace.SpanContext
+import io.opentelemetry.api.trace.TraceFlags
+import io.opentelemetry.api.trace.TraceState
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Single
+import io.reactivex.rxjava3.processors.FlowableProcessor
 import java.lang.reflect.Modifier
 import java.math.BigDecimal
 import java.math.BigInteger
@@ -224,9 +235,12 @@ import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import kotlin.jvm.optionals.getOrNull
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -240,7 +254,9 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
@@ -2029,37 +2045,568 @@ class KtRunnerInteropTest {
   }
 
   @Test
-  fun asJavaRunner_runLiveErrors_andAgentReturnsAnInspectionView() {
+  fun asJavaRunner_agent_isAnInspectionViewOfTheKotlinAgent() {
     val ktRunner =
       KtInMemoryRunner(
         agent =
           KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
         appName = "app",
       )
-    val javaRunner = KotlinAdkToJava.asJavaRunner(ktRunner)
-    // Checks the adapter's own error, not the one the inspection-only agent view would raise.
-    fun assertLiveUnsupported(run: () -> Flowable<JavaEvent>) {
-      val error = assertFailsWith<UnsupportedOperationException> { run().toList().blockingGet() }
-      assertEquals("Live mode is not supported when running on the Kotlin engine.", error.message)
+
+    assertThat(KotlinAdkToJava.asJavaRunner(ktRunner).agent().name()).isEqualTo("a")
+  }
+
+  @Test
+  fun asJavaRunner_runLive_javaQueueDrivesAKotlinLiveTurn() {
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+
+    queue.content(userText("hi"))
+    try {
+      awaitTrue("the echo should arrive") { events.values().size >= 2 }
+    } finally {
+      queue.close()
     }
 
-    // Live mode is not bridged; it must fail loudly through the stream (like the base Runner), not
-    // throw eagerly at the call site.
-    assertLiveUnsupported {
-      javaRunner.runLive("u", "s", LiveRequestQueue(), JavaRunConfig.builder().build())
-    }
-    // agent() returns an inspection-only view of the Kotlin agent - readable, but not runnable.
-    assertEquals("a", javaRunner.agent().name(), "agent() should expose the Kotlin agent's name")
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    val replies =
+      events.values().mapNotNull { it.outputTranscription().getOrNull()?.text()?.getOrNull() }
+    assertThat(replies).contains("echo: hi")
+    assertThat(events.values().map { it.turnComplete().getOrNull() }).contains(true)
+    val connection = model.connections.single()
+    assertThat(connection.sent).containsExactly(ContentCodec.fromJava(userText("hi")))
+    assertThat(connection.closed).isTrue()
+  }
 
-    // The session-based and SessionKey runLive overloads must fail the same way.
-    val key = JavaSessionKey("app", "u", "s")
-    val session = javaRunner.sessionService().createSession(key).blockingGet()
-    assertLiveUnsupported {
-      javaRunner.runLive(session, LiveRequestQueue(), JavaRunConfig.builder().build())
+  @Test
+  fun asJavaRunner_runLive_blob_isDroppedAndTheRunGoesOn() {
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+
+    queue.realtime(blob("audio/pcm"))
+    queue.content(userText("hi"))
+    try {
+      awaitTrue("the echo should arrive") { events.values().size >= 2 }
+    } finally {
+      queue.close()
     }
-    assertLiveUnsupported {
-      javaRunner.runLive(key, LiveRequestQueue(), JavaRunConfig.builder().build())
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    assertThat(model.connections.single().sent)
+      .containsExactly(ContentCodec.fromJava(userText("hi")))
+  }
+
+  @Test
+  fun asJavaRunner_runLive_emptyRoleContent_reachesTheModelAsUser() {
+    // The engine defaults only a missing role, so an empty one is the adapter's to fix.
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+
+    queue.content(GenaiContent.builder().role("").parts(listOf(GenaiPart.fromText("hi"))).build())
+    try {
+      awaitTrue("the echo should arrive") { events.values().size >= 2 }
+    } finally {
+      queue.close()
     }
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertNoErrors()
+    assertThat((model.connections.single().sent.single() as KtContent).role).isEqualTo("user")
+  }
+
+  @Test
+  fun asJavaRunner_runLive_emptyRequest_closesTheRun() {
+    // Neither content nor a blob, and not a close: the run treats it as a close.
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+
+    queue.send(JavaLiveRequest.builder().build())
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    awaitTrue("the connection should close") { model.connections.single().closed }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_requestsSentBeforeSubscribing_areDelivered() {
+    // The Java queue buffers until the stream subscribes, so nothing sent first is lost.
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    queue.content(userText("early"))
+    queue.close()
+
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    assertThat(model.connections.single().sent)
+      .containsExactly(ContentCodec.fromJava(userText("early")))
+  }
+
+  @Test
+  fun asJavaRunner_runLive_contentWithClose_reachesTheModelThenCloses() {
+    // A closing request's content is still sent before the run closes.
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+
+    queue.send(JavaLiveRequest.builder().content(userText("bye")).close(true).build())
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    val connection = model.connections.single()
+    assertThat(connection.sent).containsExactly(ContentCodec.fromJava(userText("bye")))
+    awaitTrue("the connection should close") { connection.closed }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_functionCallContent_failsTheStream() {
+    // The Kotlin queue rejects user content that holds a function call before sending it.
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+
+    queue.content(modelFunctionCall("f", emptyMap()))
+
+    events.awaitDone(10, TimeUnit.SECONDS)
+    events.assertError { it is IllegalArgumentException }
+    assertThat(model.connections.flatMap { it.sent }).isEmpty()
+    awaitTrue("the pump should stop reading the Java queue") { !queue.hasReader }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_burstWhileThePumpCannotRun_reachesTheModelInFull() {
+    // More requests than the Java queue's 128-slot buffer arrive while the dispatcher is busy.
+    val executor = Executors.newSingleThreadExecutor()
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events =
+      liveJavaRunner(model, executor.asCoroutineDispatcher())
+        .runLive("u", "s", queue, autoCreateSessionConfig())
+        .test()
+    try {
+      awaitTrue("the pump should subscribe") { queue.hasReader }
+      val busy = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      executor.execute {
+        busy.countDown()
+        release.await()
+      }
+      busy.await()
+
+      try {
+        repeat(300) { queue.content(userText("m$it")) }
+      } finally {
+        release.countDown()
+      }
+
+      awaitTrue("every request should reach the model") {
+        model.connections.singleOrNull()?.sent?.size == 300
+      }
+      queue.close()
+      events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    } finally {
+      events.cancel()
+      executor.shutdown()
+    }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_javaQueueError_failsTheStreamAndClosesTheConnection() {
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+    queue.content(userText("hi"))
+    try {
+      awaitTrue("the echo should arrive") { events.values().size >= 2 }
+    } finally {
+      (queue.get() as FlowableProcessor<*>).onError(IllegalStateException("queue broke"))
+    }
+
+    events.awaitDone(10, TimeUnit.SECONDS)
+    events.assertError { it is IllegalStateException && it.message == "queue broke" }
+    awaitTrue("the connection should close") { model.connections.single().closed }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_modelEndsTheSession_completesAndStopsReadingTheQueue() {
+    // The Java queue stays open; the run ending on its own must still complete the stream.
+    val model = EchoLiveModel(endAfterFirstTurn = true)
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+
+    queue.content(userText("hi"))
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    awaitTrue("the pump should stop reading the Java queue") { !queue.hasReader }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_connectFailure_failsTheStream() {
+    val model = EchoLiveModel(connectFailure = IllegalStateException("model failed"))
+
+    val events =
+      liveJavaRunner(model).runLive("u", "s", LiveRequestQueue(), autoCreateSessionConfig()).test()
+
+    events.awaitDone(10, TimeUnit.SECONDS)
+    events.assertError { it is IllegalStateException && it.message == "model failed" }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_receiveFailure_failsTheStream() {
+    val model = EchoLiveModel(receiveFailure = IllegalStateException("model failed"))
+
+    val events =
+      liveJavaRunner(model).runLive("u", "s", LiveRequestQueue(), autoCreateSessionConfig()).test()
+
+    events.awaitDone(10, TimeUnit.SECONDS)
+    events.assertError { it is IllegalStateException && it.message == "model failed" }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_unsupportedRunConfig_returnsWithoutConnectingOrReading() {
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val config =
+      JavaRunConfig.builder()
+        .autoCreateSession(true)
+        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+        .build()
+
+    val unused = liveJavaRunner(model).runLive("u", "s", queue, config)
+
+    assertThat(model.connectRequests).isEmpty()
+    assertThat(queue.hasReader).isFalse()
+  }
+
+  @Test
+  fun asJavaRunner_runLive_unsupportedRunConfig_failsTheStreamNamingTheSetting() {
+    val config =
+      JavaRunConfig.builder()
+        .autoCreateSession(true)
+        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+        .build()
+
+    val events =
+      liveJavaRunner(EchoLiveModel()).runLive("u", "s", LiveRequestQueue(), config).test()
+
+    events.awaitDone(10, TimeUnit.SECONDS)
+    events.assertError {
+      it is IllegalArgumentException && "toolExecutionMode" in it.message.orEmpty()
+    }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_cancelledBeforeRequesting_opensNothing() {
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+
+    liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test(0L).cancel()
+    Thread.sleep(200)
+
+    assertThat(model.connectRequests).isEmpty()
+    assertThat(queue.hasReader).isFalse()
+  }
+
+  @Test
+  fun asJavaRunner_runLive_cancelled_closesTheConnectionAndStopsReadingTheQueue() {
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+    queue.content(userText("hi"))
+    try {
+      awaitTrue("the echo should arrive") { events.values().size >= 2 }
+    } finally {
+      events.cancel()
+    }
+
+    awaitTrue("cancelling should close the connection") { model.connections.single().closed }
+    awaitTrue("cancelling should stop reading the Java queue") { !queue.hasReader }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_missingSessionWithoutAutoCreate_failsTheStream() {
+    val events =
+      liveJavaRunner(EchoLiveModel())
+        .runLive("u", "absent", LiveRequestQueue(), JavaRunConfig.builder().build())
+        .test()
+
+    events.awaitDone(10, TimeUnit.SECONDS)
+    events.assertError {
+      it is IllegalArgumentException &&
+        it.message == "Session not found and autoCreateSession=false"
+    }
+  }
+
+  @Test
+  fun asJavaRunner_runLiveOnASession_isUnsupported() {
+    val javaRunner = liveJavaRunner(EchoLiveModel())
+    val session =
+      javaRunner.sessionService().createSession(JavaSessionKey("app", "u", "s")).blockingGet()
+
+    val events =
+      javaRunner.runLive(session, LiveRequestQueue(), JavaRunConfig.builder().build()).test()
+
+    events.awaitDone(10, TimeUnit.SECONDS)
+    events.assertError {
+      it is UnsupportedOperationException &&
+        it.message ==
+          "runLive(Session) is not supported on the Kotlin engine; " +
+            "use runLive(userId, sessionId, ...)"
+    }
+  }
+
+  @Test
+  fun asJavaRunner_runLiveOnASessionKey_runs() {
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events =
+      liveJavaRunner(model)
+        .runLive(JavaSessionKey("app", "u", "s"), queue, autoCreateSessionConfig())
+        .test()
+
+    queue.content(userText("hi"))
+    try {
+      awaitTrue("the echo should arrive") { events.values().size >= 2 }
+    } finally {
+      queue.close()
+    }
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    assertThat(model.connections.single().sent)
+      .containsExactly(ContentCodec.fromJava(userText("hi")))
+  }
+
+  @Test
+  fun asJavaRunner_runLive_runsOnTheRunnersDispatcherNotTheSendersThread() {
+    // Model sends and Java signals run on the runner's dispatcher, never on the sender's thread.
+    val executor = Executors.newFixedThreadPool(2) { Thread(it, "tokt-live-dispatcher") }
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val signalThreads = CopyOnWriteArrayList<String>()
+    val events =
+      liveJavaRunner(model, executor.asCoroutineDispatcher())
+        .runLive("u", "s", queue, autoCreateSessionConfig())
+        .doOnEach { signalThreads += Thread.currentThread().name }
+        .test()
+    try {
+      thread(name = "java-sender") { queue.content(userText("hi")) }.join()
+      awaitTrue("the echo should arrive") { events.values().size >= 2 }
+      queue.close()
+
+      events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+      assertThat(model.connections.single().sendThreads.single()).startsWith("tokt-live-dispatcher")
+      assertThat(signalThreads.size).isAtLeast(3)
+      assertThat(signalThreads.filterNot { it.startsWith("tokt-live-dispatcher") }).isEmpty()
+    } finally {
+      events.cancel()
+      executor.shutdown()
+    }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_carriesTheLiveRunConfigToTheConnection() {
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val config =
+      JavaRunConfig.builder()
+        .autoCreateSession(true)
+        .responseModalities(listOf(GenaiModality(GenaiModality.Known.TEXT)))
+        .inputAudioTranscription(
+          GenaiAudioTranscriptionConfig.builder().languageCodes(listOf("pl-PL")).build()
+        )
+        .build()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, config).test()
+
+    queue.content(userText("hi"))
+    try {
+      awaitTrue("the echo should arrive") { events.values().size >= 2 }
+    } finally {
+      queue.close()
+    }
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    val liveConfig = model.connectRequests.single().liveConnectConfig
+    assertThat(liveConfig.responseModalities).containsExactly(KtModality.TEXT)
+    assertThat(liveConfig.inputAudioTranscription).isNotNull()
+    assertThat(liveConfig.inputAudioTranscription?.languageCodes).containsExactly("pl-PL")
+    assertThat(liveConfig.outputAudioTranscription).isNull()
+  }
+
+  @Test
+  fun asJavaRunner_runLive_connectsInTheSubscribersTrace() {
+    // Like runAsync, the run joins the trace that is current when it is subscribed.
+    val parent =
+      Span.wrap(
+        SpanContext.create(
+          "0af7651916cd43dd8448eb211c80319c",
+          "b7ad6b7169203331",
+          TraceFlags.getSampled(),
+          TraceState.getDefault(),
+        )
+      )
+    val connectTraceIds = CopyOnWriteArrayList<String>()
+    val model =
+      object : KtModel {
+        override val name = "trace-probe"
+
+        override fun generateContent(request: KtLlmRequest, stream: Boolean): Flow<KtLlmResponse> =
+          throw UnsupportedOperationException("live only")
+
+        override suspend fun connect(request: KtLlmRequest): KtLiveConnection {
+          connectTraceIds += Span.current().spanContext.traceId
+          throw IllegalStateException("connect recorded")
+        }
+      }
+
+    val events =
+      parent.makeCurrent().use {
+        liveJavaRunner(model)
+          .runLive("u", "s", LiveRequestQueue(), autoCreateSessionConfig())
+          .test()
+      }
+
+    events.awaitDone(10, TimeUnit.SECONDS)
+    assertThat(connectTraceIds).containsExactly(parent.spanContext.traceId)
+  }
+
+  @Test
+  fun runConfigFromJavaLive_appliesTheJavaRunnersLiveDefaults() {
+    val audio = RunConfigCodec.fromJavaLive(JavaRunConfig.builder().build())
+    val text =
+      RunConfigCodec.fromJavaLive(
+        JavaRunConfig.builder()
+          .responseModalities(listOf(GenaiModality(GenaiModality.Known.TEXT)))
+          .build()
+      )
+
+    assertEquals(KtStreamingMode.BIDI, audio.streamingMode)
+    assertEquals(listOf(KtModality.AUDIO), audio.live.responseModalities, "no modality means AUDIO")
+    assertEquals(KtAudioTranscriptionConfig(), audio.live.inputAudioTranscription)
+    assertEquals(KtAudioTranscriptionConfig(), audio.live.outputAudioTranscription)
+    assertNull(audio.live.speechConfig)
+    assertNull(audio.customMetadata)
+    assertEquals(listOf(KtModality.TEXT), text.live.responseModalities)
+    assertEquals(KtAudioTranscriptionConfig(), text.live.inputAudioTranscription)
+    assertNull(text.live.outputAudioTranscription, "a text reply turns output transcription off")
+  }
+
+  @Test
+  fun runConfigFromJavaLive_speechAndTranscriptionSettings_convert() {
+    val java =
+      JavaRunConfig.builder()
+        .speechConfig(genaiSpeechConfig())
+        .outputAudioTranscription(genaiTranscriptionConfig())
+        .inputAudioTranscription(
+          GenaiAudioTranscriptionConfig.builder().languageCodes(listOf("de-DE")).build()
+        )
+        .build()
+
+    val kt = RunConfigCodec.fromJavaLive(java)
+
+    assertEquals(ktSpeechConfig(), kt.live.speechConfig)
+    assertEquals(ktTranscriptionConfig(), kt.live.outputAudioTranscription)
+    assertEquals(
+      KtAudioTranscriptionConfig(languageCodes = listOf("de-DE")),
+      kt.live.inputAudioTranscription,
+    )
+  }
+
+  @Test
+  @Suppress("DEPRECATION") // Sets the deprecated grouping override to check that it is rejected.
+  fun runConfigFromJavaLive_settingsTheEngineCannotHonor_failNamingThem() {
+    val java =
+      JavaRunConfig.builder()
+        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+        .avatarConfig(GenaiAvatarConfig.builder().avatarName("a").build())
+        .groupFunctionResponsesInHistoryOverride(Optional.of(true))
+        .dollarEscapedPlaceholders(true)
+        .outputAudioTranscription(
+          GenaiAudioTranscriptionConfig.builder()
+            .languageAuto(GenaiLanguageAuto.builder().build())
+            .languageHints(GenaiLanguageHints.builder().languageCodes(listOf("pl-PL")).build())
+            .adaptationPhrases(listOf("ADK"))
+            .mode(GenaiAudioTranscriptionConfigMode("m"))
+            .build()
+        )
+        .inputAudioTranscription(
+          GenaiAudioTranscriptionConfig.builder().adaptationPhrases(listOf("ADK")).build()
+        )
+        .build()
+
+    val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJavaLive(java) }
+
+    assertEquals(
+      "RunConfig settings not supported by the ADK Kotlin engine: [toolExecutionMode, " +
+        "avatarConfig, groupFunctionResponsesInHistoryOverride, dollarEscapedPlaceholders, " +
+        "outputAudioTranscription.languageAuto, outputAudioTranscription.languageHints, " +
+        "outputAudioTranscription.adaptationPhrases, outputAudioTranscription.mode, " +
+        "inputAudioTranscription.adaptationPhrases]",
+      failure.message,
+    )
+  }
+
+  @Test
+  fun runConfigFromJavaLive_ignoresSaveInputBlobsAsArtifacts() {
+    // ADK Java's own live run never reads it, so a live run it would start must start here too.
+    val kt =
+      RunConfigCodec.fromJavaLive(JavaRunConfig.builder().saveInputBlobsAsArtifacts(true).build())
+
+    assertEquals(KtStreamingMode.BIDI, kt.streamingMode)
+  }
+
+  @Test
+  fun runConfigFromJavaLive_unknownModality_fails() {
+    // genai reads a name it does not know as MODALITY_UNSPECIFIED, which must not reach the model.
+    val java = JavaRunConfig.builder().responseModalities(listOf(GenaiModality("DOCUMENT"))).build()
+
+    val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJavaLive(java) }
+
+    assertEquals("Response modality not supported by the ADK Kotlin engine", failure.message)
+  }
+
+  @Test
+  fun runConfigFromJavaLive_carriesTheCallBudgetAndMetadata() {
+    val kt =
+      RunConfigCodec.fromJavaLive(
+        JavaRunConfig.builder().maxLlmCalls(7).customMetadata(mapOf("k" to "v")).build()
+      )
+
+    assertEquals(7, kt.maxLlmCalls)
+    assertEquals<Map<String, Any?>?>(mapOf("k" to "v"), kt.customMetadata)
+  }
+
+  @Test
+  fun runConfigFromJavaLive_outputTranscriptionDefault_followsTheJavaRunnersTextRule() {
+    // Keep an explicit setting with TEXT, and apply a default only when no modality is TEXT.
+    val textWithOutput =
+      RunConfigCodec.fromJavaLive(
+        JavaRunConfig.builder()
+          .responseModalities(listOf(GenaiModality(GenaiModality.Known.TEXT)))
+          .outputAudioTranscription(genaiTranscriptionConfig())
+          .build()
+      )
+    val audioAndText =
+      RunConfigCodec.fromJavaLive(
+        JavaRunConfig.builder()
+          .responseModalities(
+            listOf(
+              GenaiModality(GenaiModality.Known.AUDIO),
+              GenaiModality(GenaiModality.Known.TEXT),
+            )
+          )
+          .build()
+      )
+    val audioOnly =
+      RunConfigCodec.fromJavaLive(
+        JavaRunConfig.builder()
+          .responseModalities(listOf(GenaiModality(GenaiModality.Known.AUDIO)))
+          .build()
+      )
+
+    assertEquals(ktTranscriptionConfig(), textWithOutput.live.outputAudioTranscription)
+    assertNull(audioAndText.live.outputAudioTranscription)
+    assertEquals(KtAudioTranscriptionConfig(), audioOnly.live.outputAudioTranscription)
   }
 
   @Test
@@ -6070,6 +6617,26 @@ class KtRunnerInteropTest {
   }
 
   @Test
+  @Suppress("DEPRECATION") // Sets the deprecated grouping override to check that it is rejected.
+  fun runConfigFromJava_settingsNoRunCanHonor_failNamingThem() {
+    val java =
+      JavaRunConfig.builder()
+        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+        .avatarConfig(GenaiAvatarConfig.builder().avatarName("a").build())
+        .groupFunctionResponsesInHistoryOverride(Optional.of(true))
+        .dollarEscapedPlaceholders(true)
+        .build()
+
+    val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJava(java) }
+
+    assertEquals(
+      "RunConfig settings not supported by the ADK Kotlin engine: [toolExecutionMode, " +
+        "avatarConfig, groupFunctionResponsesInHistoryOverride, dollarEscapedPlaceholders]",
+      failure.message,
+    )
+  }
+
+  @Test
   fun runConfigFromJava_unsupportedField_failsRatherThanDroppingIt() {
     val java = JavaRunConfig.builder().maxLlmCalls(5).saveInputBlobsAsArtifacts(true).build()
 
@@ -6100,8 +6667,8 @@ class KtRunnerInteropTest {
     val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJava(java) }
 
     assertTrue(
-      failure.message?.contains("streamingMode=BIDI") == true,
-      "the failure should name BIDI, got ${failure.message}",
+      "streamingMode=BIDI (use runLive)" in failure.message.orEmpty(),
+      "the failure should name BIDI and point to runLive, got ${failure.message}",
     )
   }
 
@@ -6119,6 +6686,77 @@ class KtRunnerInteropTest {
     assertEquals(5, kt.maxLlmCalls)
     assertEquals(KtStreamingMode.SSE, kt.streamingMode)
     assertEquals<Map<String, Any?>?>(mapOf("k" to "v"), kt.customMetadata)
+  }
+
+  /**
+   * A local live model: each user content gets an echoed reply with its output transcription, then
+   * a turnComplete. It records its connect requests, what each connection was sent, from which
+   * thread, and whether it was closed; it can end the session after a turn, or fail.
+   */
+  private class EchoLiveModel(
+    private val endAfterFirstTurn: Boolean = false,
+    private val connectFailure: Throwable? = null,
+    private val receiveFailure: Throwable? = null,
+  ) : KtModel {
+    override val name = "echo-live-model"
+    val connectRequests = CopyOnWriteArrayList<KtLlmRequest>()
+    val connections = CopyOnWriteArrayList<EchoLiveConnection>()
+
+    override fun generateContent(request: KtLlmRequest, stream: Boolean): Flow<KtLlmResponse> =
+      throw UnsupportedOperationException("EchoLiveModel answers live connections only")
+
+    override suspend fun connect(request: KtLlmRequest): KtLiveConnection {
+      connectRequests += request
+      if (connectFailure != null) throw connectFailure
+      return EchoLiveConnection(endAfterFirstTurn, receiveFailure).also { connections += it }
+    }
+  }
+
+  private class EchoLiveConnection(
+    private val endAfterFirstTurn: Boolean,
+    private val receiveFailure: Throwable?,
+  ) : KtLiveConnection {
+    val sent = CopyOnWriteArrayList<Any>()
+    val sendThreads = CopyOnWriteArrayList<String>()
+    @Volatile
+    var closed = false
+      private set
+
+    private val replies = Channel<KtLlmResponse>(Channel.UNLIMITED)
+
+    override suspend fun sendHistory(history: List<KtContent>) {}
+
+    override suspend fun sendContent(content: KtContent, partial: Boolean) {
+      sent += content
+      sendThreads += Thread.currentThread().name
+      val text = "echo: " + content.parts.mapNotNull { it.text }.joinToString("")
+      replies.send(
+        KtLlmResponse(
+          content = KtContent(role = "model", parts = listOf(KtPart(text = text))),
+          outputTranscription = KtTranscription(text = text, finished = true),
+        )
+      )
+      replies.send(KtLlmResponse(turnComplete = true))
+      if (endAfterFirstTurn) replies.close()
+    }
+
+    override suspend fun sendRealtime(input: KtRealtimeInput) {
+      sent += input
+      sendThreads += Thread.currentThread().name
+    }
+
+    override fun receive(): Flow<KtLlmResponse> = flow {
+      if (receiveFailure != null) throw receiveFailure
+      for (reply in replies) {
+        emit(reply)
+        if (reply.turnComplete == true) return@flow
+      }
+    }
+
+    override suspend fun closeSession() {
+      closed = true
+      replies.close()
+    }
   }
 
   private companion object {
@@ -6174,6 +6812,38 @@ class KtRunnerInteropTest {
 
     /** A Kotlin callback context over [ktInvocationContext]. */
     fun ktCallbackContext() = KtCallbackContext(ktInvocationContext())
+
+    /** A Java runner on [dispatcher] whose in-memory Kotlin agent talks to [model] live. */
+    fun liveJavaRunner(
+      model: KtModel,
+      dispatcher: CoroutineDispatcher = InteropDispatcher,
+    ): JavaRunner =
+      KotlinAdkToJava.asJavaRunner(
+        KtInMemoryRunner(agent = KtLlmAgent(name = "a", model = model), appName = "app"),
+        dispatcher,
+      )
+
+    /** Whether a live run is reading this queue. */
+    val LiveRequestQueue.hasReader: Boolean
+      get() = (get() as FlowableProcessor<*>).hasSubscribers()
+
+    fun autoCreateSessionConfig(): JavaRunConfig =
+      JavaRunConfig.builder().autoCreateSession(true).build()
+
+    /** Waits up to 10 seconds for [condition], failing with [message] if it never holds. */
+    fun awaitTrue(message: String, condition: () -> Boolean) {
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+      while (!condition()) {
+        if (System.nanoTime() > deadline) fail(message)
+        Thread.sleep(10)
+      }
+    }
+
+    fun userText(text: String): GenaiContent =
+      GenaiContent.builder().role("user").parts(GenaiPart.builder().text(text).build()).build()
+
+    fun blob(mimeType: String): GenaiBlob =
+      GenaiBlob.builder().mimeType(mimeType).data(byteArrayOf(1, 2)).build()
 
     /** A speech setting with every field set, including a replicated voice and two speakers. */
     fun ktSpeechConfig() =
