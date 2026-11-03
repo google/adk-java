@@ -169,6 +169,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.errorprone.annotations.CanIgnoreReturnValue
 import com.google.genai.types.AudioTranscriptionConfig as GenaiAudioTranscriptionConfig
 import com.google.genai.types.AudioTranscriptionConfigMode as GenaiAudioTranscriptionConfigMode
+import com.google.genai.types.AvatarConfig as GenaiAvatarConfig
 import com.google.genai.types.CodeExecutionResult as GenaiCodeExecutionResult
 import com.google.genai.types.Content as GenaiContent
 import com.google.genai.types.CustomMetadata as GenaiCustomMetadata
@@ -2060,6 +2061,145 @@ class KtRunnerInteropTest {
     assertLiveUnsupported {
       javaRunner.runLive(key, LiveRequestQueue(), JavaRunConfig.builder().build())
     }
+  }
+
+  @Test
+  fun runConfigFromJavaLive_appliesTheJavaRunnersLiveDefaults() {
+    val audio = RunConfigCodec.fromJavaLive(JavaRunConfig.builder().build())
+    val text =
+      RunConfigCodec.fromJavaLive(
+        JavaRunConfig.builder()
+          .responseModalities(listOf(GenaiModality(GenaiModality.Known.TEXT)))
+          .build()
+      )
+
+    assertEquals(KtStreamingMode.BIDI, audio.streamingMode)
+    assertEquals(listOf(KtModality.AUDIO), audio.live.responseModalities, "no modality means AUDIO")
+    assertEquals(KtAudioTranscriptionConfig(), audio.live.inputAudioTranscription)
+    assertEquals(KtAudioTranscriptionConfig(), audio.live.outputAudioTranscription)
+    assertNull(audio.live.speechConfig)
+    assertNull(audio.customMetadata)
+    assertEquals(listOf(KtModality.TEXT), text.live.responseModalities)
+    assertEquals(KtAudioTranscriptionConfig(), text.live.inputAudioTranscription)
+    assertNull(text.live.outputAudioTranscription, "a text reply turns output transcription off")
+  }
+
+  @Test
+  fun runConfigFromJavaLive_speechAndTranscriptionSettings_convert() {
+    val java =
+      JavaRunConfig.builder()
+        .speechConfig(genaiSpeechConfig())
+        .outputAudioTranscription(genaiTranscriptionConfig())
+        .inputAudioTranscription(
+          GenaiAudioTranscriptionConfig.builder().languageCodes(listOf("de-DE")).build()
+        )
+        .build()
+
+    val kt = RunConfigCodec.fromJavaLive(java)
+
+    assertEquals(ktSpeechConfig(), kt.live.speechConfig)
+    assertEquals(ktTranscriptionConfig(), kt.live.outputAudioTranscription)
+    assertEquals(
+      KtAudioTranscriptionConfig(languageCodes = listOf("de-DE")),
+      kt.live.inputAudioTranscription,
+    )
+  }
+
+  @Test
+  @Suppress("DEPRECATION") // Sets the deprecated grouping override to check that it is rejected.
+  fun runConfigFromJavaLive_settingsTheEngineCannotHonor_failNamingThem() {
+    val java =
+      JavaRunConfig.builder()
+        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+        .avatarConfig(GenaiAvatarConfig.builder().avatarName("a").build())
+        .groupFunctionResponsesInHistoryOverride(Optional.of(true))
+        .dollarEscapedPlaceholders(true)
+        .outputAudioTranscription(
+          GenaiAudioTranscriptionConfig.builder()
+            .languageAuto(GenaiLanguageAuto.builder().build())
+            .languageHints(GenaiLanguageHints.builder().languageCodes(listOf("pl-PL")).build())
+            .adaptationPhrases(listOf("ADK"))
+            .mode(GenaiAudioTranscriptionConfigMode("m"))
+            .build()
+        )
+        .inputAudioTranscription(
+          GenaiAudioTranscriptionConfig.builder().adaptationPhrases(listOf("ADK")).build()
+        )
+        .build()
+
+    val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJavaLive(java) }
+
+    assertEquals(
+      "RunConfig settings not supported by the ADK Kotlin engine: [toolExecutionMode, " +
+        "avatarConfig, groupFunctionResponsesInHistoryOverride, dollarEscapedPlaceholders, " +
+        "outputAudioTranscription.languageAuto, outputAudioTranscription.languageHints, " +
+        "outputAudioTranscription.adaptationPhrases, outputAudioTranscription.mode, " +
+        "inputAudioTranscription.adaptationPhrases]",
+      failure.message,
+    )
+  }
+
+  @Test
+  fun runConfigFromJavaLive_ignoresSaveInputBlobsAsArtifacts() {
+    // ADK Java's own live run never reads it, so a live run it would start must start here too.
+    val kt =
+      RunConfigCodec.fromJavaLive(JavaRunConfig.builder().saveInputBlobsAsArtifacts(true).build())
+
+    assertEquals(KtStreamingMode.BIDI, kt.streamingMode)
+  }
+
+  @Test
+  fun runConfigFromJavaLive_unknownModality_fails() {
+    // genai reads a name it does not know as MODALITY_UNSPECIFIED, which must not reach the model.
+    val java = JavaRunConfig.builder().responseModalities(listOf(GenaiModality("DOCUMENT"))).build()
+
+    val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJavaLive(java) }
+
+    assertEquals("Response modality not supported by the ADK Kotlin engine", failure.message)
+  }
+
+  @Test
+  fun runConfigFromJavaLive_carriesTheCallBudgetAndMetadata() {
+    val kt =
+      RunConfigCodec.fromJavaLive(
+        JavaRunConfig.builder().maxLlmCalls(7).customMetadata(mapOf("k" to "v")).build()
+      )
+
+    assertEquals(7, kt.maxLlmCalls)
+    assertEquals<Map<String, Any?>?>(mapOf("k" to "v"), kt.customMetadata)
+  }
+
+  @Test
+  fun runConfigFromJavaLive_outputTranscriptionDefault_followsTheJavaRunnersTextRule() {
+    // Keep an explicit setting with TEXT, and apply a default only when no modality is TEXT.
+    val textWithOutput =
+      RunConfigCodec.fromJavaLive(
+        JavaRunConfig.builder()
+          .responseModalities(listOf(GenaiModality(GenaiModality.Known.TEXT)))
+          .outputAudioTranscription(genaiTranscriptionConfig())
+          .build()
+      )
+    val audioAndText =
+      RunConfigCodec.fromJavaLive(
+        JavaRunConfig.builder()
+          .responseModalities(
+            listOf(
+              GenaiModality(GenaiModality.Known.AUDIO),
+              GenaiModality(GenaiModality.Known.TEXT),
+            )
+          )
+          .build()
+      )
+    val audioOnly =
+      RunConfigCodec.fromJavaLive(
+        JavaRunConfig.builder()
+          .responseModalities(listOf(GenaiModality(GenaiModality.Known.AUDIO)))
+          .build()
+      )
+
+    assertEquals(ktTranscriptionConfig(), textWithOutput.live.outputAudioTranscription)
+    assertNull(audioAndText.live.outputAudioTranscription)
+    assertEquals(KtAudioTranscriptionConfig(), audioOnly.live.outputAudioTranscription)
   }
 
   @Test
@@ -6066,6 +6206,26 @@ class KtRunnerInteropTest {
     assertTrue(
       failure.message?.contains("requestedAuthConfigs") == true,
       "the failure should name the unsupported field, got ${failure.message}",
+    )
+  }
+
+  @Test
+  @Suppress("DEPRECATION") // Sets the deprecated grouping override to check that it is rejected.
+  fun runConfigFromJava_settingsNoRunCanHonor_failNamingThem() {
+    val java =
+      JavaRunConfig.builder()
+        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+        .avatarConfig(GenaiAvatarConfig.builder().avatarName("a").build())
+        .groupFunctionResponsesInHistoryOverride(Optional.of(true))
+        .dollarEscapedPlaceholders(true)
+        .build()
+
+    val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJava(java) }
+
+    assertEquals(
+      "RunConfig settings not supported by the ADK Kotlin engine: [toolExecutionMode, " +
+        "avatarConfig, groupFunctionResponsesInHistoryOverride, dollarEscapedPlaceholders]",
+      failure.message,
     )
   }
 
