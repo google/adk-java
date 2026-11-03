@@ -23,4 +23,13 @@ import com.google.adk.annotations.Experimental;
 public enum AgentMode {
   /** Answers one input with one response, without conversing with the user. */
   SINGLE_TURN,
+
+  /** Holds a multi-turn conversation with the user over the shared session history. */
+  CHAT,
+
+  /**
+   * Works on a task in its own isolated history until it calls {@code finish_task} with an output
+   * that matches its output schema.
+   */
+  TASK,
 }

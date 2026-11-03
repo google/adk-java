@@ -193,13 +193,17 @@ final class WorkflowResumeTesting {
     }
 
     ImmutableList<Event> resume(String invocationId) {
+      return resume(invocationId, /* message= */ null);
+    }
+
+    ImmutableList<Event> resume(String invocationId, @Nullable Content message) {
       return ImmutableList.copyOf(
           runner
               .runAsync(
                   USER,
                   sessionId,
                   invocationId,
-                  /* newMessage= */ null,
+                  message,
                   RunConfig.builder().build(),
                   /* stateDelta= */ null)
               .timeout(30, SECONDS)
@@ -236,15 +240,15 @@ final class WorkflowResumeTesting {
     }
 
     ImmutableList<String> invocationIds() {
+      return storedEvents().stream().map(Event::invocationId).distinct().collect(toImmutableList());
+    }
+
+    ImmutableList<Event> storedEvents() {
       return runner
           .sessionService()
           .getSession(APP, USER, sessionId, Optional.empty())
           .blockingGet()
-          .immutableEvents()
-          .stream()
-          .map(Event::invocationId)
-          .distinct()
-          .collect(toImmutableList());
+          .immutableEvents();
     }
   }
 

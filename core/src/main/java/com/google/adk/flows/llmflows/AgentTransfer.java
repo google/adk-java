@@ -45,15 +45,18 @@ public final class AgentTransfer implements RequestProcessor {
           "Base agent in InvocationContext is not an instance of Agent.");
     }
 
-    List<BaseAgent> targets = transferTargets(agent);
+    List<BaseAgent> targets = agent.transferTargets(context);
     if (targets.isEmpty()) {
       return Single.just(
           RequestProcessor.RequestProcessingResult.create(request, ImmutableList.of()));
     }
 
     LlmRequest.Builder builder = request.toBuilder();
-    // As in Python ADK, a single-turn node can transfer but is not told to.
-    if (context.agentMode(agent).filter(AgentMode.SINGLE_TURN::equals).isEmpty()) {
+    // As in Python ADK, a task or single-turn node can transfer but is not told to.
+    if (context
+        .agentMode(agent)
+        .filter(mode -> mode == AgentMode.SINGLE_TURN || mode == AgentMode.TASK)
+        .isEmpty()) {
       builder.appendInstructions(ImmutableList.of(buildTargetAgentsInstructions(agent, targets)));
     }
 
@@ -121,29 +124,9 @@ public final class AgentTransfer implements RequestProcessor {
     return sb.toString();
   }
 
-  /**
-   * Returns the agents {@code agent} may transfer to: its sub-agents, plus its parent and peers
-   * unless disallowed. Transfer to a parent or peer needs an {@link LlmAgent} parent. Order is
-   * load-bearing: it is the order the target list is rendered to the model in. {@code LlmAgent}
-   * keeps the same rule for its own use, since it cannot reach this one.
-   */
+  /** Returns the agents {@code agent} may transfer to, as {@link LlmAgent#transferTargets} says. */
   static ImmutableList<BaseAgent> transferTargets(LlmAgent agent) {
-    List<BaseAgent> targets = new ArrayList<>(agent.subAgents());
-    BaseAgent parent = agent.parentAgent();
-    if (!(parent instanceof LlmAgent)) {
-      return ImmutableList.copyOf(targets);
-    }
-    if (!agent.disallowTransferToParent()) {
-      targets.add(parent);
-    }
-    if (!agent.disallowTransferToPeers()) {
-      for (BaseAgent peer : parent.subAgents()) {
-        if (!peer.name().equals(agent.name())) {
-          targets.add(peer);
-        }
-      }
-    }
-    return ImmutableList.copyOf(targets);
+    return agent.transferTargets();
   }
 
   @Schema(

@@ -19,8 +19,10 @@ package com.google.adk.workflow;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
@@ -185,6 +187,10 @@ final class Scheduler {
     }
 
     private void scheduleReady() {
+      // As in Python ADK, no other node starts while a task node waits on the user.
+      if (hasWaitingTaskNode()) {
+        return;
+      }
       Optional<Integer> maxConcurrency = workflow.maxConcurrency();
       for (String nodeName : triggerQueue.queuedNodeNames()) {
         // A cancel can arrive while a node blocks as it starts.
@@ -206,6 +212,14 @@ final class Scheduler {
         }
         triggerQueue.poll(nodeName).ifPresent(trigger -> start(nodeName, trigger));
       }
+    }
+
+    private boolean hasWaitingTaskNode() {
+      return nodeStates.entrySet().stream()
+          .anyMatch(entry ->
+              entry.getValue().status == NodeStatus.WAITING
+                  && graph.node(entry.getKey()) instanceof LlmAgent agent
+                  && agent.mode().orElse(null) == AgentMode.TASK);
     }
 
     private void start(String nodeName, Trigger trigger) {

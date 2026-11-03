@@ -88,6 +88,7 @@ public final class NodeRunner {
   private final boolean useAsOutput;
   private final boolean useSubBranch;
   private final @Nullable String overrideBranch;
+  private final @Nullable String overrideIsolationScope;
   private final Map<String, @Nullable Object> resumeInputs;
 
   private NodeRunner(Builder builder) {
@@ -111,7 +112,19 @@ public final class NodeRunner {
     this.useAsOutput = builder.useAsOutput;
     this.useSubBranch = builder.useSubBranch;
     this.overrideBranch = builder.overrideBranch;
+    this.overrideIsolationScope = builder.overrideIsolationScope;
     this.resumeInputs = builder.resumeInputs;
+  }
+
+  /**
+   * Returns whether {@code error} signals that a child node waits, which must end its caller's run
+   * so the caller waits too, rather than count as a failure.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean isWaitSignal(Throwable error) {
+    return error instanceof NodeInterruptedException;
   }
 
   /** Returns a builder for a runner of one node. */
@@ -334,6 +347,12 @@ public final class NodeRunner {
         .useAsOutput(config.useAsOutput())
         .useSubBranch(config.useSubBranch())
         .overrideBranch(config.overrideBranch().orElse(null))
+        // As in Python, a rerun keeps the scope it ran in, so a caller that picks a fresh scope
+        // each turn does not split the child's history.
+        .overrideIsolationScope(
+            recovered != null && recovered.isolationScope != null
+                ? recovered.isolationScope.orElse(null)
+                : config.overrideIsolationScope().orElse(null))
         .resumeInputs(interception.resumeInputs())
         .build()
         .run(nodeInput);
@@ -474,6 +493,7 @@ public final class NodeRunner {
             .parent(parent)
             .runId(runId)
             .useAsOutput(useAsOutput)
+            .isolationScope(overrideIsolationScope)
             .resumeInputs(resumeInputs)
             .previousAttempt(previousAttempt)
             .build());
@@ -754,6 +774,7 @@ public final class NodeRunner {
           .author(author.isEmpty() ? node.name() : author)
           .invocationId(eventContext.invocationId())
           .branch(event.branch().orElse(eventContext.branch().orElse(null)))
+          .isolationScope(event.isolationScope().orElse(nodeState.isolationScope().orElse(null)))
           .nodeInfo(
               nodeInfo.toBuilder()
                   .path(nodeState.nodePath())
@@ -881,6 +902,7 @@ public final class NodeRunner {
     private boolean useAsOutput;
     private boolean useSubBranch;
     private @Nullable String overrideBranch;
+    private @Nullable String overrideIsolationScope;
     private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
 
     private Builder() {}
@@ -944,6 +966,16 @@ public final class NodeRunner {
     @CanIgnoreReturnValue
     Builder overrideBranch(@Nullable String overrideBranch) {
       this.overrideBranch = overrideBranch;
+      return this;
+    }
+
+    /**
+     * Sets the isolation scope that replaces the inherited one, or null to keep the inherited
+     * scope.
+     */
+    @CanIgnoreReturnValue
+    Builder overrideIsolationScope(@Nullable String overrideIsolationScope) {
+      this.overrideIsolationScope = overrideIsolationScope;
       return this;
     }
 

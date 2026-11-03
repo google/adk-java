@@ -156,6 +156,35 @@ public final class InvocationContextTest {
     assertThat(context.node()).isEmpty();
   }
 
+  @Test
+  public void contextsWithTheSameAgentMode_areEqual() {
+    InvocationContext first =
+        contextWith(/* resumabilityConfig= */ null).toBuilder()
+            .agentMode(mockAgent, AgentMode.CHAT)
+            .build();
+    InvocationContext second =
+        contextWith(/* resumabilityConfig= */ null).toBuilder()
+            .agentMode(mockAgent, AgentMode.CHAT)
+            .build();
+
+    assertThat(first).isEqualTo(second);
+    assertThat(first.hashCode()).isEqualTo(second.hashCode());
+  }
+
+  @Test
+  public void incrementLlmCallsCount_countsAStepOfTheNodesAgentInContextsCopiedFromIt()
+      throws Exception {
+    InvocationContext context =
+        contextWith(/* resumabilityConfig= */ null).toBuilder()
+            .agentMode(mockAgent, AgentMode.CHAT)
+            .build();
+    InvocationContext copy = context.toBuilder().build();
+
+    context.incrementLlmCallsCount();
+
+    assertThat(copy.stepsTaken(mockAgent)).isEqualTo(1);
+  }
+
   private InvocationContext contextWith(ResumabilityConfig resumabilityConfig) {
     return InvocationContext.builder()
         .sessionService(mockSessionService)
