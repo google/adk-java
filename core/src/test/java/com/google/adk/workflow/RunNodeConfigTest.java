@@ -34,6 +34,7 @@ public final class RunNodeConfigTest {
     assertThat(config.useAsOutput()).isFalse();
     assertThat(config.useSubBranch()).isFalse();
     assertThat(config.overrideBranch()).isEmpty();
+    assertThat(config.overrideIsolationScope()).isEmpty();
     assertThat(config.raiseOnWait()).isFalse();
   }
 
@@ -45,6 +46,7 @@ public final class RunNodeConfigTest {
             .useAsOutput(true)
             .useSubBranch(true)
             .overrideBranch("tool.call@1")
+            .overrideIsolationScope("task-1")
             .raiseOnWait(true)
             .build();
 
@@ -52,6 +54,7 @@ public final class RunNodeConfigTest {
     assertThat(config.useAsOutput()).isTrue();
     assertThat(config.useSubBranch()).isTrue();
     assertThat(config.overrideBranch()).hasValue("tool.call@1");
+    assertThat(config.overrideIsolationScope()).hasValue("task-1");
     assertThat(config.raiseOnWait()).isTrue();
   }
 
@@ -63,6 +66,7 @@ public final class RunNodeConfigTest {
             .useAsOutput(true)
             .useSubBranch(true)
             .overrideBranch("tool.call@1")
+            .overrideIsolationScope("task-1")
             .raiseOnWait(true)
             .build();
 
