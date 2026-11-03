@@ -69,7 +69,9 @@ internal object RunConfigCodec {
   /** Returns the Kotlin [KtRunConfig] view of the Java [config]. */
   fun fromJava(config: JavaRunConfig): KtRunConfig {
     val unsupported = buildList {
-      if (config.streamingMode() == JavaRunConfig.StreamingMode.BIDI) add("streamingMode=BIDI")
+      if (config.streamingMode() == JavaRunConfig.StreamingMode.BIDI) {
+        add("streamingMode=BIDI (use runLive)")
+      }
       if (config.saveInputBlobsAsArtifacts()) add("saveInputBlobsAsArtifacts")
       addUnsupportedByEveryRun(config)
       if (config.responseModalities().isNotEmpty()) add("responseModalities")

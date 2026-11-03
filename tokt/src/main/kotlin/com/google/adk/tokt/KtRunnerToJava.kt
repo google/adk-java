@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalLiveApi::class)
+
 package com.google.adk.tokt
 
 import com.google.adk.agents.LiveRequestQueue
@@ -22,6 +24,9 @@ import com.google.adk.annotations.Experimental
 import com.google.adk.artifacts.BaseArtifactService as JavaArtifactService
 import com.google.adk.artifacts.InMemoryArtifactService as JavaInMemoryArtifactService
 import com.google.adk.events.Event as JavaEvent
+import com.google.adk.kt.agents.LiveRequestQueue as KtLiveRequestQueue
+import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.logging.LoggerFactory
 import com.google.adk.kt.runners.Runner as KtRunner
 import com.google.adk.kt.types.Content as KtContent
 import com.google.adk.kt.types.Role as KtRole
@@ -41,25 +46,33 @@ import com.google.genai.types.Content as GenaiContent
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
 import java.util.Optional
+import kotlin.jvm.optionals.getOrNull
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.rx3.asFlowable
 
 /**
  * A [JavaRunner] that delegates to a Kotlin-engine [KtRunner], so a Kotlin runner can be dropped
- * into code written against the ADK Java [JavaRunner]: `runAsync` converts the request in and each
- * event out, running on the Kotlin engine against its own services and plugins. It honors the Java
- * `RunConfig.autoCreateSession` contract (erroring on a missing session unless it is set), but
- * per-session request sequencing follows the Kotlin engine, not the Java runner; live mode is not
- * bridged, so [runLive] returns a failed stream. [agent], [sessionService], [memoryService],
- * [artifactService] and [pluginManager] read the Kotlin runner's own components back through the
- * reverse adapters ([memoryService] / [artifactService] return `null` when absent; [pluginManager]
- * is read-only and throws on registration). The reverse service adapters bridge Java RxJava calls
- * onto the Kotlin engine via `dispatcher`.
+ * into code written against the ADK Java [JavaRunner]; `runAsync` and [runLive] run on the Kotlin
+ * engine against its own services and plugins. It honors the Java `RunConfig.autoCreateSession`
+ * contract, but per-session request sequencing follows the Kotlin engine, not the Java runner.
+ * [agent], [sessionService], [memoryService], [artifactService] and [pluginManager] read the Kotlin
+ * runner's own components back through reverse adapters on `dispatcher` ([memoryService] and
+ * [artifactService] return `null` when absent; [pluginManager] is read-only).
  */
 // Subclassing Runner via its @Deprecated 8-arg super-constructor is intended here.
 @Suppress("DEPRECATION")
-internal class KtRunnerToJava(private val ktRunner: KtRunner, dispatcher: CoroutineDispatcher) :
+internal class KtRunnerToJava(
+  private val ktRunner: KtRunner,
+  private val dispatcher: CoroutineDispatcher,
+) :
   JavaRunner(
     // A Java view of the Kotlin runner's agent so agent() reads back; never run (see runAsync).
     ktAgentAsJava(ktRunner.agent),
@@ -122,37 +135,115 @@ internal class KtRunnerToJava(private val ktRunner: KtRunner, dispatcher: Corout
           )
           .map { EventCodec.toJava(it) }
           .asFlowable()
-      // The Kotlin engine always creates a missing session; the Java Runner errors unless
-      // autoCreateSession is set, so honor that contract before delegating.
-      if (runConfig.autoCreateSession()) return@defer events
-      sessionService()
-        .getSession(appName(), userId, sessionId, Optional.empty())
-        .map { true }
-        .defaultIfEmpty(false)
-        .flatMapPublisher { exists ->
-          if (exists) events
-          else
-            Flowable.error(
-              IllegalArgumentException("Session not found and autoCreateSession=false")
-            )
-        }
+      honoringAutoCreate(userId, sessionId, runConfig, events)
     }
   }
 
-  // Live mode is unsupported; surface it through the stream (like the base Runner) rather than
-  // throwing eagerly, so callers on the reactive path see it via onError.
+  // Not bridged for a Session: fails through the stream, like the base Runner, not eagerly.
   override fun runLive(
     session: JavaSession,
     liveRequestQueue: LiveRequestQueue,
     runConfig: JavaRunConfig,
   ): Flowable<JavaEvent> = Flowable.error(liveUnsupported())
 
+  /**
+   * Runs a live conversation on the Kotlin engine: the Java queue's requests feed it, and its
+   * events arrive on `dispatcher`'s threads, never the sender's, until the queue closes or the
+   * stream is cancelled, which closes the connection.
+   */
   override fun runLive(
     userId: String,
     sessionId: String,
     liveRequestQueue: LiveRequestQueue,
     runConfig: JavaRunConfig,
-  ): Flowable<JavaEvent> = Flowable.error(liveUnsupported())
+  ): Flowable<JavaEvent> = Flowable.defer {
+    honoringAutoCreate(
+      userId,
+      sessionId,
+      runConfig,
+      liveEvents(userId, sessionId, liveRequestQueue, runConfig),
+    )
+  }
+
+  /**
+   * Returns [events], first checking that the session exists unless [runConfig] auto-creates it:
+   * the Kotlin engine always creates a missing session, while the Java Runner errors unless told
+   * otherwise.
+   */
+  private fun honoringAutoCreate(
+    userId: String,
+    sessionId: String,
+    runConfig: JavaRunConfig,
+    events: Flowable<JavaEvent>,
+  ): Flowable<JavaEvent> =
+    if (runConfig.autoCreateSession()) {
+      events
+    } else {
+      whenSessionExists(userId, sessionId, events)
+    }
+
+  /** Returns [events] if the Kotlin runner's service holds the session, else a failed stream. */
+  private fun whenSessionExists(
+    userId: String,
+    sessionId: String,
+    events: Flowable<JavaEvent>,
+  ): Flowable<JavaEvent> =
+    sessionService()
+      .getSession(appName(), userId, sessionId, Optional.empty())
+      .map { true }
+      .defaultIfEmpty(false)
+      .flatMapPublisher { exists ->
+        if (exists) events else Flowable.error(IllegalArgumentException(SESSION_MISSING))
+      }
+
+  private fun liveEvents(
+    userId: String,
+    sessionId: String,
+    javaQueue: LiveRequestQueue,
+    runConfig: JavaRunConfig,
+  ): Flowable<JavaEvent> {
+    val ktRunConfig = RunConfigCodec.fromJavaLive(runConfig)
+    val ktQueue = KtLiveRequestQueue()
+    // Called at subscribe time so the Kotlin runner captures the subscriber's trace context.
+    val ktEvents = ktRunner.runLive(userId, sessionId, ktQueue, ktRunConfig)
+    return flow {
+        coroutineScope {
+          // Safe: both queues are thread-safe, and the Kotlin one never blocks the pump.
+          @Suppress("UnsafeCoroutineCrossing")
+          val pump = launch { pumpRequests(javaQueue, ktQueue) }
+          try {
+            emitAll(ktEvents.map { EventCodec.toJava(it) })
+          } finally {
+            pump.cancel()
+            ktQueue.close()
+          }
+        }
+      }
+      // The runner's dispatcher, not Unconfined, so a Java sender never runs the live loop.
+      .asFlowable(dispatcher)
+  }
+
+  /**
+   * Feeds the Java queue's requests to [ktQueue], closing it once the Java queue closes or ends.
+   */
+  private suspend fun pumpRequests(javaQueue: LiveRequestQueue, ktQueue: KtLiveRequestQueue) {
+    try {
+      // Unbounded, so a burst can't overflow the Java queue.
+      javaQueue.get().asFlow().buffer(Channel.UNLIMITED).collect { request ->
+        val content = request.content().getOrNull()
+        val blob = request.blob().getOrNull()
+        // Content wins over a blob, and an empty request closes the run.
+        when {
+          content != null -> ktQueue.sendContent(withUserRole(ContentCodec.fromJava(content)))
+          blob != null -> logger.warn { "Live input blob not sent: blobs are not supported" }
+          else -> ktQueue.close()
+        }
+        if (request.shouldClose()) ktQueue.close()
+      }
+    } finally {
+      ktQueue.close()
+    }
+  }
 
   // A read-only Java view of the Kotlin runner's plugins (adapted Java plugins unwrapped); the
   // engine's plugins are fixed at construction, so the returned manager throws on registration.
@@ -172,7 +263,9 @@ internal class KtRunnerToJava(private val ktRunner: KtRunner, dispatcher: Corout
     Completable.mergeArrayDelayError(super.close(), Completable.fromAction { ktRunner.close() })
 
   private fun liveUnsupported() =
-    UnsupportedOperationException("Live mode is not supported when running on the Kotlin engine.")
+    UnsupportedOperationException(
+      "runLive(Session) is not supported on the Kotlin engine; use runLive(userId, sessionId, ...)"
+    )
 
   /**
    * Defaults a role-less message to the user role, as Python does, since model requests omit
@@ -180,4 +273,9 @@ internal class KtRunnerToJava(private val ktRunner: KtRunner, dispatcher: Corout
    */
   private fun withUserRole(content: KtContent): KtContent =
     if (content.role.isNullOrEmpty()) content.copy(role = KtRole.USER) else content
+
+  companion object {
+    private val logger = LoggerFactory.getLogger(KtRunnerToJava::class)
+    private const val SESSION_MISSING = "Session not found and autoCreateSession=false"
+  }
 }
