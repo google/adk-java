@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -70,6 +71,7 @@ import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.Storage.BlobTargetOption;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -1966,7 +1968,8 @@ public class BigQueryAgentAnalyticsPluginTest {
     Content content = Content.fromParts(Part.fromText(largeText));
     gcsPlugin.onUserMessageCallback(mockInvocationContext, content).blockingSubscribe();
 
-    verify(mockStorage, atLeastOnce()).create(any(BlobInfo.class), any(byte[].class));
+    verify(mockStorage, atLeastOnce())
+        .create(any(BlobInfo.class), any(byte[].class), eq(BlobTargetOption.doesNotExist()));
 
     Map<String, Object> row = gcsState.getBatchProcessor("invocation_id").queue.poll();
     assertNotNull(row);
