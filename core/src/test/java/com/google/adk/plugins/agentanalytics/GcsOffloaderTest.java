@@ -21,13 +21,17 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.Storage.BlobTargetOption;
+import com.google.cloud.storage.StorageException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -74,7 +78,8 @@ public final class GcsOffloaderTest {
     assertEquals("gs://" + BUCKET_NAME + "/" + PATH, result);
 
     ArgumentCaptor<BlobInfo> blobInfoCaptor = ArgumentCaptor.forClass(BlobInfo.class);
-    verify(mockStorage).create(blobInfoCaptor.capture(), any(byte[].class));
+    verify(mockStorage)
+        .create(blobInfoCaptor.capture(), any(byte[].class), eq(BlobTargetOption.doesNotExist()));
 
     BlobInfo blobInfo = blobInfoCaptor.getValue();
     assertEquals(BlobId.of(BUCKET_NAME, PATH), blobInfo.getBlobId());
@@ -91,11 +96,25 @@ public final class GcsOffloaderTest {
     assertEquals("gs://" + BUCKET_NAME + "/" + PATH, result);
 
     ArgumentCaptor<BlobInfo> blobInfoCaptor = ArgumentCaptor.forClass(BlobInfo.class);
-    verify(mockStorage).create(blobInfoCaptor.capture(), any(byte[].class));
+    verify(mockStorage)
+        .create(blobInfoCaptor.capture(), any(byte[].class), eq(BlobTargetOption.doesNotExist()));
 
     BlobInfo blobInfo = blobInfoCaptor.getValue();
     assertEquals(BlobId.of(BUCKET_NAME, PATH), blobInfo.getBlobId());
     assertEquals(CONTENT_TYPE, blobInfo.getContentType());
+  }
+
+  @Test
+  public void uploadContent_existingObject_returnsFailedFuture() {
+    when(mockStorage.create(
+            any(BlobInfo.class), any(byte[].class), eq(BlobTargetOption.doesNotExist())))
+        .thenThrow(new StorageException(412, "Precondition Failed"));
+
+    CompletableFuture<String> future =
+        gcsOffloader.uploadContent("data".getBytes(UTF_8), CONTENT_TYPE, PATH);
+
+    ExecutionException e = assertThrows(ExecutionException.class, future::get);
+    assertEquals(412, ((StorageException) e.getCause()).getCode());
   }
 
   @Test

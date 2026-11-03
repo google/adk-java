@@ -22,6 +22,7 @@ import com.google.auth.Credentials;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.Storage.BlobTargetOption;
 import com.google.cloud.storage.StorageOptions;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -63,7 +64,10 @@ class GcsOffloader {
           () -> {
             BlobId blobId = BlobId.of(bucketName, path);
             BlobInfo blobInfo = BlobInfo.newBuilder(blobId).setContentType(contentType).build();
-            storage.create(blobInfo, data);
+            // Create-only (ifGenerationMatch=0) makes the insert idempotent, so the client retries
+            // transient errors. Object names are unique, so a collision fails the upload instead
+            // of rebinding an existing row to another event's bytes.
+            storage.create(blobInfo, data, BlobTargetOption.doesNotExist());
             return String.format("gs://%s/%s", bucketName, path);
           },
           executor);
