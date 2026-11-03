@@ -25,6 +25,7 @@ import com.google.adk.JsonBaseModel;
 import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
@@ -152,6 +153,12 @@ final class ResumeScan {
     if (!recovered.interruptIds.isEmpty() && !node.rerunOnResume()) {
       Object answers = resolved.size() == 1 ? resolved.values().iterator().next() : resolved;
       return Interception.replay(answers, /* route= */ null, branch, /* transferToAgent= */ null);
+    }
+    // An agent node that already replied in this invocation waits for the next turn, so a sibling's
+    // resume does not call its model again.
+    if (node instanceof LlmAgent && node.waitForOutput() && recovered.finishedAfterResume) {
+      return Interception.replay(
+          /* output= */ null, /* route= */ null, branch, /* transferToAgent= */ null);
     }
     // A rerun node that finished without an output stays done, so its side effects don't repeat.
     boolean shouldRun =
@@ -298,6 +305,13 @@ final class ResumeScan {
     @Nullable ImmutableList<Route> route;
     @Nullable String branch;
     @Nullable String transferToAgent;
+
+    /**
+     * The scope the node ran in, empty for none, so a rerun keeps it even if its caller would pick
+     * another; null until one of the node's own events is seen.
+     */
+    @Nullable Optional<String> isolationScope;
+
     final Set<String> interruptIds = new LinkedHashSet<>();
     final Map<String, @Nullable Object> resolvedResponses = new LinkedHashMap<>();
 
@@ -422,6 +436,9 @@ final class ResumeScan {
       // False for an event that a descendant of the owner emitted.
       boolean isDirect = eventPath.equals(ownerPath);
       RecoveredNode node = recovered.computeIfAbsent(key, unused -> new RecoveredNode());
+      if (isDirect) {
+        node.isolationScope = event.isolationScope();
+      }
       // The finish check below reads the failure and the interrupts that these record.
       recordOutcome(event, isDirect, ownerPath, node);
       boolean raisedAny = recordRaisedInterrupts(event, node);

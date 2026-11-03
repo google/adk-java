@@ -92,6 +92,8 @@ public class InvocationContext {
   private final @Nullable Node node;
   private final @Nullable AgentModeOverride agentModeOverride;
   private final @Nullable String nodePath;
+  private final @Nullable String isolationScope;
+  private final @Nullable Context nodeContext;
   private boolean endInvocation;
 
   protected InvocationContext(Builder builder) {
@@ -108,6 +110,8 @@ public class InvocationContext {
     this.node = builder.node;
     this.agentModeOverride = builder.agentModeOverride;
     this.nodePath = builder.nodePath;
+    this.isolationScope = builder.isolationScope;
+    this.nodeContext = builder.nodeContext;
     this.session = builder.session;
     this.userContent = builder.userContent;
     this.runConfig = builder.runConfig;
@@ -217,6 +221,28 @@ public class InvocationContext {
   }
 
   /**
+   * Returns the model steps {@code agent} has taken in its workflow node run, which its delegation
+   * rounds share, or 0 outside such a run.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public int stepsTaken(BaseAgent agent) {
+    return agentModeOverride != null && agentModeOverride.agent().equals(agent)
+        ? agentModeOverride.steps().count.get()
+        : 0;
+  }
+
+  /**
+   * Counts a model call of {@code agent} in its workflow node run, and does nothing outside one.
+   */
+  private void countStep(BaseAgent agent) {
+    if (agentModeOverride != null && agentModeOverride.agent().equals(agent)) {
+      agentModeOverride.steps().count.incrementAndGet();
+    }
+  }
+
+  /**
    * Returns the path of the workflow node the agent runs as, or empty outside a workflow.
    * Sub-agents of the node share this path.
    *
@@ -225,6 +251,25 @@ public class InvocationContext {
   @Experimental
   public Optional<String> nodePath() {
     return Optional.ofNullable(nodePath);
+  }
+
+  /**
+   * Returns the isolation scope of the workflow node that the agent runs as, or empty when the node
+   * is unscoped or outside a workflow.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public Optional<String> isolationScope() {
+    return Optional.ofNullable(isolationScope);
+  }
+
+  /**
+   * Returns the context of the workflow node that the agent runs as, so its tools can run a
+   * sub-agent as a child node, or empty outside a workflow and for the node agent's sub-agents.
+   */
+  Optional<Context> nodeContext() {
+    return Optional.ofNullable(nodeContext);
   }
 
   /**
@@ -416,12 +461,14 @@ public class InvocationContext {
 
   /**
    * Increments the count of LLM calls made during this invocation and throws an exception if the
-   * limit defined in {@link RunConfig} is exceeded.
+   * limit defined in {@link RunConfig} is exceeded. In a workflow node run it also counts a model
+   * step of the node's agent, which its delegation rounds share.
    *
    * @throws LlmCallsLimitExceededException if the call limit is exceeded
    */
   public void incrementLlmCallsCount() throws LlmCallsLimitExceededException {
     this.invocationCostManager.incrementAndEnforceLlmCallsLimit(this.runConfig);
+    countStep(agent);
   }
 
   /** Returns the events compaction configuration for the current agent run. */
@@ -713,9 +760,28 @@ public class InvocationContext {
   }
 
   /**
-   * The mode one agent runs in, keyed to that agent so the sub-agents it reaches run without it.
+   * The mode a workflow node runs its agent in, keyed to that agent so the sub-agents it reaches
+   * run without it, and the model steps it took in the node run.
    */
-  private record AgentModeOverride(BaseAgent agent, AgentMode mode) {}
+  private record AgentModeOverride(BaseAgent agent, AgentMode mode, StepCounter steps) {}
+
+  /**
+   * The model steps an agent took in its node run, shared by the contexts copied from it. Equal by
+   * value, as {@link InvocationCostManager} is, so it keeps {@link InvocationContext#equals}.
+   */
+  private static final class StepCounter {
+    private final AtomicInteger count = new AtomicInteger();
+
+    @Override
+    public boolean equals(Object o) {
+      return this == o || (o instanceof StepCounter that && count.get() == that.count.get());
+    }
+
+    @Override
+    public int hashCode() {
+      return Integer.hashCode(count.get());
+    }
+  }
 
   /** Builder for {@link InvocationContext}. */
   public static class Builder {
@@ -736,6 +802,8 @@ public class InvocationContext {
       this.node = context.node;
       this.agentModeOverride = context.agentModeOverride;
       this.nodePath = context.nodePath;
+      this.isolationScope = context.isolationScope;
+      this.nodeContext = context.nodeContext;
       this.session = context.session;
       this.userContent = context.userContent;
       this.runConfig = context.runConfig;
@@ -771,6 +839,8 @@ public class InvocationContext {
     private @Nullable Node node;
     private @Nullable AgentModeOverride agentModeOverride;
     private @Nullable String nodePath;
+    private @Nullable String isolationScope;
+    private @Nullable Context nodeContext;
     private Session session;
     @Nullable private Content userContent = null;
     private RunConfig runConfig = RunConfig.builder().build();
@@ -903,10 +973,24 @@ public class InvocationContext {
       return this;
     }
 
+    /** Sets the isolation scope of the workflow node that the agent runs as. */
+    @CanIgnoreReturnValue
+    Builder isolationScope(@Nullable String isolationScope) {
+      this.isolationScope = isolationScope;
+      return this;
+    }
+
+    /** Sets the context of the workflow node that the agent runs as. */
+    @CanIgnoreReturnValue
+    Builder nodeContext(@Nullable Context nodeContext) {
+      this.nodeContext = nodeContext;
+      return this;
+    }
+
     /** Sets the mode {@code agent} runs in as a workflow node, replacing any earlier one. */
     @CanIgnoreReturnValue
     Builder agentMode(BaseAgent agent, AgentMode mode) {
-      this.agentModeOverride = new AgentModeOverride(agent, mode);
+      this.agentModeOverride = new AgentModeOverride(agent, mode, new StepCounter());
       return this;
     }
 
@@ -1114,6 +1198,8 @@ public class InvocationContext {
         && Objects.equals(node, that.node)
         && Objects.equals(agentModeOverride, that.agentModeOverride)
         && Objects.equals(nodePath, that.nodePath)
+        && Objects.equals(isolationScope, that.isolationScope)
+        && Objects.equals(nodeContext, that.nodeContext)
         && Objects.equals(session, that.session)
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
@@ -1142,6 +1228,8 @@ public class InvocationContext {
         node,
         agentModeOverride,
         nodePath,
+        isolationScope,
+        nodeContext,
         session,
         userContent,
         runConfig,
