@@ -114,7 +114,10 @@ public class SequentialAgent extends BaseAgent {
       return runAsyncLegacyResumption(invocationContext, subAgents);
     }
     return Flowable.fromIterable(subAgents)
-        .concatMap(subAgent -> subAgent.runAsync(invocationContext));
+        .concatMap(
+            subAgent ->
+                completeAfterPersisted(
+                    invocationContext, "sequential step", subAgent.runAsync(invocationContext)));
   }
 
   /**
@@ -132,14 +135,17 @@ public class SequentialAgent extends BaseAgent {
             subAgent ->
                 paused.get()
                     ? Flowable.<Event>empty()
-                    : subAgent
-                        .runAsync(invocationContext)
-                        .doOnNext(
-                            event -> {
-                              if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
-                                paused.set(true);
-                              }
-                            }));
+                    : completeAfterPersisted(
+                        invocationContext,
+                        "sequential step",
+                        subAgent
+                            .runAsync(invocationContext)
+                            .doOnNext(
+                                event -> {
+                                  if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
+                                    paused.set(true);
+                                  }
+                                })));
   }
 
   /**
@@ -198,7 +204,8 @@ public class SequentialAgent extends BaseAgent {
                                             paused.set(true);
                                           }
                                         });
-                            return checkpoint.concatWith(run);
+                            return completeAfterPersisted(
+                                invocationContext, "sequential step", checkpoint.concatWith(run));
                           }))
               .concatWith(
                   Flowable.defer(

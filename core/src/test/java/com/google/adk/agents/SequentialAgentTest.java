@@ -20,21 +20,36 @@ import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createResumableInvocationContext;
+import static com.google.adk.testing.TestUtils.createStreamingTextLlmResponses;
 import static com.google.adk.testing.TestUtils.createSubAgent;
 import static com.google.adk.testing.TestUtils.createTestAgent;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
+import static com.google.adk.testing.TestUtils.runRequestingLate;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.junit.Assert.assertThrows;
+import static org.mockito.AdditionalAnswers.delegatesTo;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 
+import com.google.adk.agents.Callbacks.BeforeAgentCallback;
+import com.google.adk.apps.App;
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
+import com.google.adk.runner.Runner;
+import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.testing.RecordingScheduler;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestLlm;
 import com.google.common.collect.ImmutableList;
@@ -44,9 +59,23 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
+import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.functions.Consumer;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.UnaryOperator;
+import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -54,6 +83,11 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link SequentialAgent}. */
 @RunWith(JUnit4.class)
 public final class SequentialAgentTest {
+
+  private static final String APP_NAME = "app";
+  private static final String NOT_RUN = "<reader did not run>";
+  private static final RunConfig SSE =
+      RunConfig.builder().streamingMode(RunConfig.StreamingMode.SSE).build();
 
   @Test
   public void runAsync_withNoSubAgents_returnsEmptyEvents() {
@@ -506,5 +540,394 @@ public final class SequentialAgentTest {
     assertThat(agent1.getInvocationCount()).isEqualTo(0);
     assertThat(agent2.getInvocationCount()).isEqualTo(1);
     assertThat(agent3.getInvocationCount()).isEqualTo(1);
+  }
+
+  // ---- Through a Runner, the next sub-agent sees the state the previous one saved. ----
+
+  @Test
+  public void runAsync_inParallelAgentWithSlowAppend_nextSubAgentSeesOutputKey() {
+    LlmAgent writer =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("upstream output")))
+            .name("writer")
+            .outputKey("k")
+            .build();
+    AtomicReference<@Nullable Object> seen = new AtomicReference<>(NOT_RUN);
+    // "silent" covers a sub-agent with no event to wait for.
+    ParallelAgent root =
+        ParallelAgent.builder()
+            .name("parallel")
+            .subAgents(
+                SequentialAgent.builder()
+                    .name("sequence")
+                    .subAgents(createSubAgent("silent"), writer, stateReader("k", seen))
+                    .build())
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name(APP_NAME).rootAgent(root).build())
+            .sessionService(appendDelayingSessionService())
+            .build();
+
+    runRequestingLate(runner, RunConfig.builder().build()).assertComplete();
+
+    assertThat(seen.get()).isEqualTo("upstream output");
+  }
+
+  @Test
+  public void runAsync_afterParallelAgentWithSlowAppend_nextSubAgentSeesEveryBranchOutputKey() {
+    TestLlm aggregatorLlm = createTestLlm(createTextLlmResponse("combined"));
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name(APP_NAME).rootAgent(fanOutThenAggregate(aggregatorLlm)).build())
+            .sessionService(appendDelayingSessionService())
+            .build();
+
+    runRequestingLate(runner, RunConfig.builder().build()).assertComplete();
+
+    assertThat(String.join("\n", aggregatorLlm.getLastRequest().getSystemInstructions()))
+        .contains("Combine: from a and from b");
+  }
+
+  @Test
+  public void runAsync_withLateConsumer_nextAgentInstructionSeesOutputKey() {
+    TestLlm editorLlm = createTestLlm(createTextLlmResponse("edited"));
+    LlmAgent editor =
+        createTestAgentBuilder(editorLlm).name("editor").instruction("Rewrite: {k}").build();
+    SequentialAgent pipeline =
+        SequentialAgent.builder()
+            .name("pipeline")
+            .subAgents(streamingWriter("k", "first draft"), editor)
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name(APP_NAME).rootAgent(pipeline).build()).build();
+
+    runRequestingLate(runner, SSE).assertComplete();
+
+    assertThat(String.join("\n", editorLlm.getLastRequest().getSystemInstructions()))
+        .contains("Rewrite: first draft");
+  }
+
+  @Test
+  public void runAsync_resumableWithLateConsumer_nextSubAgentSeesOutputKey() {
+    ResumabilityConfig resumable = ResumabilityConfig.builder().resumable(true).build();
+
+    assertThat(outputKeySeenByNextSubAgent("saved", resumable)).isEqualTo("saved");
+  }
+
+  @Test
+  @SuppressWarnings("deprecation") // The legacy shim is deprecated by design.
+  public void runAsync_legacyResumptionWithLateConsumer_nextSubAgentSeesOutputKey() {
+    ResumabilityConfig legacy =
+        ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build();
+
+    assertThat(outputKeySeenByNextSubAgent("saved", legacy)).isEqualTo("saved");
+  }
+
+  // A wrapper may drop partial events before they reach the Runner, so the wait must skip them.
+  @Test
+  public void runAsync_trailingPartialDroppedBeforeRunner_nextSubAgentStillRuns() {
+    Event saved = savedEvent();
+    Event trailingChunk = createEvent("chunk").toBuilder().author("writer").partial(true).build();
+    AtomicReference<@Nullable Object> seen = new AtomicReference<>(NOT_RUN);
+    SequentialAgent sequence =
+        SequentialAgent.builder()
+            .name("sequence")
+            .subAgents(createSubAgent("writer", saved, trailingChunk), stateReader("k", seen))
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name(APP_NAME)
+                    .rootAgent(
+                        new TransformingAgent(
+                            sequence, events -> events.filter(e -> !e.partial().orElse(false))))
+                    .build())
+            .build();
+
+    runRequestingLate(runner, RunConfig.builder().build()).assertComplete();
+
+    assertThat(seen.get()).isEqualTo("saved value");
+  }
+
+  // A wrapper that drops, re-ids or holds back events must not hang the run.
+  @Test
+  public void runAsync_underAgentDroppingEvents_stopsWaitingAfterTimeout() {
+    assertSequenceStopsWaitingUnder(events -> events.ignoreElements().<Event>toFlowable());
+  }
+
+  @Test
+  public void runAsync_underAgentReIdingEvents_stopsWaitingAfterTimeout() {
+    assertSequenceStopsWaitingUnder(
+        events -> events.map(e -> e.toBuilder().id(UUID.randomUUID().toString()).build()));
+  }
+
+  @Test
+  public void runAsync_underAgentBufferingEvents_stopsWaitingAfterTimeout() {
+    assertSequenceStopsWaitingUnder(events -> events.toList().flattenAsFlowable(list -> list));
+  }
+
+  @Test
+  public void runAsync_appendFails_failsOnceWithoutRunningNextSubAgent() {
+    RuntimeException failure = new RuntimeException("append failed");
+    BaseSessionService failingService =
+        mock(BaseSessionService.class, delegatesTo(new InMemorySessionService()));
+    // doReturn, because when(...) would call the delegate's real appendEvent.
+    doReturn(Single.error(failure))
+        .when(failingService)
+        .appendEvent(any(), argThat(event -> event.author().equals("writer")));
+    AtomicReference<@Nullable Object> seen = new AtomicReference<>(NOT_RUN);
+    SequentialAgent sequence =
+        SequentialAgent.builder()
+            .name("sequence")
+            .subAgents(streamingWriter("k", "upstream output"), stateReader("k", seen))
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name(APP_NAME).rootAgent(sequence).build())
+            .sessionService(failingService)
+            .build();
+    List<Throwable> undelivered = new CopyOnWriteArrayList<>();
+    Consumer<? super Throwable> previousHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undelivered::add);
+    try {
+      runRequestingLate(runner, SSE).assertError(failure);
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousHandler);
+    }
+
+    assertThat(seen.get()).isEqualTo(NOT_RUN);
+    assertThat(undelivered).isEmpty();
+  }
+
+  // An event without an id cannot be tracked, so the wait uses the last event that has one.
+  @Test
+  public void runAsync_lastEventHasNoId_nextSubAgentWaitsForLastEventWithId() {
+    // With no demand yet, "saved" stays queued, unpersisted, behind "first".
+    Event first = createEvent("first").toBuilder().author("writer").build();
+    Event saved = savedEvent();
+    Event withoutId = createEvent("unused").toBuilder().id(null).author("writer").build();
+    AtomicReference<@Nullable Object> seen = new AtomicReference<>(NOT_RUN);
+    SequentialAgent sequence =
+        SequentialAgent.builder()
+            .name("sequence")
+            .subAgents(createSubAgent("writer", first, saved, withoutId), stateReader("k", seen))
+            .build();
+    Runner runner =
+        Runner.builder().app(App.builder().name(APP_NAME).rootAgent(sequence).build()).build();
+
+    runRequestingLate(runner, RunConfig.builder().build()).assertComplete();
+
+    assertThat(seen.get()).isEqualTo("saved value");
+  }
+
+  // A late append completes on its own thread, which must not run the next sub-agent's model call.
+  @Test
+  public void runAsync_afterSlowAppend_nextSubAgentStartsOnInvocationScheduler() {
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(runnable -> new Thread(runnable, "invocation-scheduler"));
+    try {
+      AtomicReference<String> readerThread = new AtomicReference<>();
+      BeforeAgentCallback recordThread =
+          callbackContext -> {
+            readerThread.set(Thread.currentThread().getName());
+            return Maybe.empty();
+          };
+      SequentialAgent sequence =
+          SequentialAgent.builder()
+              .name("sequence")
+              .subAgents(
+                  createSubAgent("writer", savedEvent()),
+                  new TestBaseAgent(
+                      "reader",
+                      "description",
+                      ImmutableList.of(recordThread),
+                      ImmutableList.of(),
+                      Flowable::empty))
+              .build();
+      Runner runner =
+          Runner.builder()
+              .app(App.builder().name(APP_NAME).rootAgent(sequence).build())
+              .sessionService(appendDelayingSessionService())
+              .scheduler(Schedulers.from(executor))
+              .build();
+
+      runRequestingLate(runner, RunConfig.builder().build()).assertComplete();
+
+      assertThat(readerThread.get()).isEqualTo("invocation-scheduler");
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void runAsync_eventAlreadyPersisted_nextSubAgentStartsWithoutSchedulerHop() {
+    RecordingScheduler scheduler = new RecordingScheduler(Schedulers.trampoline());
+    AtomicReference<@Nullable Object> seen = new AtomicReference<>(NOT_RUN);
+    SequentialAgent sequence =
+        SequentialAgent.builder()
+            .name("sequence")
+            .subAgents(createSubAgent("writer", savedEvent()), stateReader("k", seen))
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name(APP_NAME).rootAgent(sequence).build())
+            .scheduler(scheduler)
+            .build();
+
+    runRequestingLate(runner, RunConfig.builder().build()).assertComplete();
+
+    assertThat(seen.get()).isEqualTo("saved value");
+    assertThat(scheduler.workersCreated()).isEqualTo(0);
+  }
+
+  /**
+   * Runs a writer streaming {@code text} to state, then a state reader, with {@code resumability};
+   * returns what the reader saw.
+   */
+  private static @Nullable Object outputKeySeenByNextSubAgent(
+      String text, ResumabilityConfig resumability) {
+    AtomicReference<@Nullable Object> seen = new AtomicReference<>(NOT_RUN);
+    SequentialAgent sequence =
+        SequentialAgent.builder()
+            .name("sequence")
+            .subAgents(streamingWriter("k", text), stateReader("k", seen))
+            .build();
+    Runner runner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name(APP_NAME)
+                    .rootAgent(sequence)
+                    .resumabilityConfig(resumability)
+                    .build())
+            .build();
+
+    runRequestingLate(runner, SSE).assertComplete();
+    return seen.get();
+  }
+
+  /**
+   * Returns a SequentialAgent that runs a ParallelAgent, whose branches save "from a" to "a" and
+   * "from b" to "b", then an aggregator that sends {@code aggregatorLlm} "Combine: {a} and {b}".
+   */
+  private static SequentialAgent fanOutThenAggregate(TestLlm aggregatorLlm) {
+    ParallelAgent fanOut =
+        ParallelAgent.builder()
+            .name("fan_out")
+            .subAgents(
+                createTestAgentBuilder(createTestLlm(createTextLlmResponse("from a")))
+                    .name("writer_a")
+                    .outputKey("a")
+                    .build(),
+                createTestAgentBuilder(createTestLlm(createTextLlmResponse("from b")))
+                    .name("writer_b")
+                    .outputKey("b")
+                    .build())
+            .build();
+    LlmAgent aggregator =
+        createTestAgentBuilder(aggregatorLlm)
+            .name("aggregator")
+            .instruction("Combine: {a} and {b}")
+            .build();
+    return SequentialAgent.builder().name("sequence").subAgents(fanOut, aggregator).build();
+  }
+
+  /** Returns an in-memory session service whose {@code appendEvent} completes 50 ms later. */
+  private static BaseSessionService appendDelayingSessionService() {
+    InMemorySessionService delegate = new InMemorySessionService();
+    BaseSessionService service = mock(BaseSessionService.class, delegatesTo(delegate));
+    doAnswer(
+            invocation ->
+                Single.timer(50, MILLISECONDS)
+                    .flatMap(
+                        unused ->
+                            delegate.appendEvent(
+                                invocation.getArgument(0), invocation.getArgument(1))))
+        .when(service)
+        .appendEvent(any(), any());
+    return service;
+  }
+
+  /** Returns an LLM agent that streams {@code text}, then saves it to {@code key}. */
+  private static LlmAgent streamingWriter(String key, String text) {
+    return createTestAgentBuilder(createTestLlm(createStreamingTextLlmResponses(text)))
+        .name("writer")
+        .outputKey(key)
+        .build();
+  }
+
+  /** Returns an agent that records what session state holds under {@code key} when it starts. */
+  private static TestBaseAgent stateReader(String key, AtomicReference<@Nullable Object> seen) {
+    BeforeAgentCallback readState =
+        callbackContext -> {
+          seen.set(callbackContext.state().get(key));
+          return Maybe.empty();
+        };
+    return new TestBaseAgent(
+        "reader", "description", ImmutableList.of(readState), ImmutableList.of(), Flowable::empty);
+  }
+
+  /**
+   * Runs a writer then a state reader under an agent that applies {@code transform}, with a 200 ms
+   * bound on the wait, and checks that the run completes, the reader runs, and the run takes at
+   * least the bound.
+   */
+  private static void assertSequenceStopsWaitingUnder(UnaryOperator<Flowable<Event>> transform) {
+    Duration defaultTimeout = BaseAgent.persistWaitTimeout;
+    BaseAgent.persistWaitTimeout = Duration.ofMillis(200);
+    try {
+      Event saved = savedEvent();
+      AtomicReference<@Nullable Object> seen = new AtomicReference<>(NOT_RUN);
+      SequentialAgent sequence =
+          SequentialAgent.builder()
+              .name("sequence")
+              .subAgents(createSubAgent("writer", saved), stateReader("k", seen))
+              .build();
+      Runner runner =
+          Runner.builder()
+              .app(
+                  App.builder()
+                      .name(APP_NAME)
+                      .rootAgent(new TransformingAgent(sequence, transform))
+                      .build())
+              .build();
+      long start = System.nanoTime();
+
+      runRequestingLate(runner, RunConfig.builder().build()).assertComplete();
+
+      assertThat(seen.get()).isNotEqualTo(NOT_RUN);
+      assertThat(Duration.ofNanos(System.nanoTime() - start)).isAtLeast(Duration.ofMillis(200));
+    } finally {
+      BaseAgent.persistWaitTimeout = defaultTimeout;
+    }
+  }
+
+  /** Returns a "writer" event that saves "saved value" to "k". */
+  private static Event savedEvent() {
+    return createEvent("saved").toBuilder()
+        .author("writer")
+        .actions(EventActions.builder().stateDelta(ImmutableMap.of("k", "saved value")).build())
+        .build();
+  }
+
+  /** An agent that passes its only sub-agent's events through {@code transform}. */
+  private static final class TransformingAgent extends BaseAgent {
+    private final UnaryOperator<Flowable<Event>> transform;
+
+    TransformingAgent(BaseAgent subAgent, UnaryOperator<Flowable<Event>> transform) {
+      super("wrapper", "description", ImmutableList.of(subAgent), null, null);
+      this.transform = transform;
+    }
+
+    @Override
+    protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
+      return transform.apply(subAgents().get(0).runAsync(invocationContext));
+    }
+
+    @Override
+    protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
+      return Flowable.empty();
+    }
   }
 }

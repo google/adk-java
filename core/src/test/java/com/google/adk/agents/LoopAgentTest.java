@@ -20,15 +20,22 @@ import static com.google.adk.testing.TestUtils.createEscalateEvent;
 import static com.google.adk.testing.TestUtils.createEvent;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createResumableInvocationContext;
+import static com.google.adk.testing.TestUtils.createStreamingTextLlmResponses;
 import static com.google.adk.testing.TestUtils.createSubAgent;
+import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
+import static com.google.adk.testing.TestUtils.createTestLlm;
+import static com.google.adk.testing.TestUtils.runRequestingLate;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
+import com.google.adk.apps.App;
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
+import com.google.adk.runner.Runner;
 import com.google.adk.testing.TestBaseAgent;
+import com.google.adk.testing.TestLlm;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -40,6 +47,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -440,5 +448,55 @@ public final class LoopAgentTest {
         .resumabilityConfig(
             ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build())
         .build();
+  }
+
+  // ---- Through a Runner, the next iteration sees the state the previous one saved. ----
+
+  @Test
+  public void runAsync_withLateConsumer_nextIterationSeesOutputKey() {
+    assertThat(secondIterationInstruction("v1", /* resumability= */ null)).contains("Improve: v1");
+  }
+
+  @Test
+  public void runAsync_resumableWithLateConsumer_nextIterationSeesOutputKey() {
+    ResumabilityConfig resumable = ResumabilityConfig.builder().resumable(true).build();
+
+    assertThat(secondIterationInstruction("v1", resumable)).contains("Improve: v1");
+  }
+
+  @Test
+  @SuppressWarnings("deprecation") // The legacy resumption flow is deprecated by design.
+  public void runAsync_legacyResumptionWithLateConsumer_nextIterationSeesOutputKey() {
+    ResumabilityConfig legacy =
+        ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build();
+
+    assertThat(secondIterationInstruction("v1", legacy)).contains("Improve: v1");
+  }
+
+  /**
+   * Loops twice over a writer with instruction "Improve: {draft?}" that streams {@code firstDraft}
+   * and saves it to "draft", consuming the run late; returns the instruction of the second request.
+   */
+  private static String secondIterationInstruction(
+      String firstDraft, @Nullable ResumabilityConfig resumability) {
+    TestLlm writerLlm =
+        createTestLlm(
+            createStreamingTextLlmResponses(firstDraft), createStreamingTextLlmResponses("v2"));
+    LlmAgent writer =
+        createTestAgentBuilder(writerLlm)
+            .name("writer")
+            .instruction("Improve: {draft?}")
+            .outputKey("draft")
+            .build();
+    LoopAgent loop = LoopAgent.builder().name("loop").subAgents(writer).maxIterations(2).build();
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name("app").rootAgent(loop).resumabilityConfig(resumability).build())
+            .build();
+
+    runRequestingLate(
+            runner, RunConfig.builder().streamingMode(RunConfig.StreamingMode.SSE).build())
+        .assertComplete();
+    return String.join("\n", writerLlm.getRequests().get(1).getSystemInstructions());
   }
 }

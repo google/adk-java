@@ -21,12 +21,14 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.String.format;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 import com.google.adk.agents.Callbacks.AfterAgentCallback;
 import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.flows.llmflows.PersistBarrier;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.telemetry.Instrumentation;
 import com.google.adk.telemetry.Instrumentation.AgentInvocation;
@@ -34,30 +36,43 @@ import com.google.adk.telemetry.Tracing;
 import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.adk.workflow.BaseNode;
 import com.google.adk.workflow.NodeExecutionState;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.DoNotCall;
 import com.google.genai.types.Content;
 import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.CompletableObserver;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Scheduler;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Base class for all agents. */
 public abstract class BaseAgent extends BaseNode {
 
+  private static final Logger logger = LoggerFactory.getLogger(BaseAgent.class);
+
   // Pattern for valid agent names.
   private static final String IDENTIFIER_REGEX = "^_?[a-zA-Z0-9]*([. _-][a-zA-Z0-9]+)*$";
   private static final Pattern IDENTIFIER_PATTERN = Pattern.compile(IDENTIFIER_REGEX);
+
+  /** How long a workflow agent waits for the {@code Runner} to persist a sub-agent's events. */
+  @VisibleForTesting static volatile Duration persistWaitTimeout = Duration.ofSeconds(30);
 
   /**
    * The parent agent in the agent tree. Note that one agent cannot be added to two different
@@ -497,6 +512,84 @@ public abstract class BaseAgent extends BaseNode {
   }
 
   /**
+   * Returns a stream that re-emits {@code events} and completes once the {@code Runner} has
+   * persisted the last of them that has an id and is not partial, so the next sub-agent reads their
+   * state. It waits only when a {@code Runner} drives the invocation; see {@link PersistBarrier}.
+   * It waits at most {@link #persistWaitTimeout}, then logs a warning and continues, since the
+   * {@code Runner} may be slow or an agent above may never pass the event on.
+   */
+  static Flowable<Event> completeAfterPersisted(
+      InvocationContext context, String waitingPoint, Flowable<Event> events) {
+    return Flowable.defer(
+        () -> {
+          // An append can complete on its own thread; the next sub-agent must stay in this trace.
+          Context spanContext = Context.current();
+          AtomicReference<Event> lastTracked = new AtomicReference<>();
+          return events
+              .doOnNext(
+                  event -> {
+                    if (!event.partial().orElse(false) && event.id() != null) {
+                      lastTracked.set(event);
+                    }
+                  })
+              .concatWith(
+                  Completable.defer(
+                          () -> {
+                            Event last = lastTracked.get();
+                            if (last == null) {
+                              return Completable.complete();
+                            }
+                            Duration timeout = persistWaitTimeout;
+                            return resumeOnSchedulerIfLate(
+                                PersistBarrier.awaitPersisted(context, ImmutableList.of(last))
+                                    .timeout(
+                                        timeout.toMillis(),
+                                        MILLISECONDS,
+                                        Completable.fromAction(
+                                            () ->
+                                                logger.warn(
+                                                    "{} ({}): event {} was not persisted within {}"
+                                                        + " ms, so the next sub-agent starts"
+                                                        + " anyway. The Runner may be slow, or an"
+                                                        + " agent above may drop, re-id or hold"
+                                                        + " back events.",
+                                                    context.agent().name(),
+                                                    waitingPoint,
+                                                    last.id(),
+                                                    timeout.toMillis())))
+                                    // A failed append stops the timer; the Runner reports it.
+                                    .onErrorResumeWith(Completable.never()),
+                                context.scheduler());
+                          })
+                      .compose(Tracing.withContext(spanContext)));
+        });
+  }
+
+  /**
+   * Returns a completable that completes with {@code barrier}: inline if the barrier completes
+   * while it is being subscribed, otherwise on {@code scheduler}. A late completion comes on the
+   * thread that persisted the event, which must not run the next sub-agent's model call.
+   */
+  private static Completable resumeOnSchedulerIfLate(Completable barrier, Scheduler scheduler) {
+    return new Completable() {
+      @Override
+      protected void subscribeActual(CompletableObserver observer) {
+        AtomicBoolean subscribing = new AtomicBoolean(true);
+        Thread subscriber = Thread.currentThread();
+        barrier
+            .andThen(
+                Completable.defer(
+                    () ->
+                        subscribing.get() && Thread.currentThread() == subscriber
+                            ? Completable.complete()
+                            : Completable.complete().observeOn(scheduler)))
+            .subscribe(observer);
+        subscribing.set(false);
+      }
+    };
+  }
+
+  /**
    * Runs this agent as a workflow node, on the node's branch so the nodes after it see its events.
    * It runs the callbacks and {@link #runAsyncImpl} that {@link #runAsync} runs, but does not call
    * an override of {@link #runAsync}. The node input is not used, and each event's author is copied
@@ -520,7 +613,10 @@ public abstract class BaseAgent extends BaseNode {
   }
 
   /**
-   * Agent-specific asynchronous logic.
+   * Agent-specific asynchronous logic. An implementation that runs sub-agents itself should emit
+   * their events as they arrive, with ids unchanged: multi-step {@link LlmAgent}s wait until the
+   * {@code Runner} has persisted those events, and workflow agents wait up to 30 seconds, then log
+   * a warning and continue.
    *
    * @param invocationContext Current invocation context.
    * @return stream of agent-generated events.

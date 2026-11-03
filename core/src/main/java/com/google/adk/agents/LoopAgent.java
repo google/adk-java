@@ -161,7 +161,10 @@ public class LoopAgent extends BaseAgent {
 
     if (!invocationContext.isResumable()) {
       return Flowable.fromIterable(subAgents)
-          .concatMap(subAgent -> subAgent.runAsync(invocationContext))
+          .concatMap(
+              subAgent ->
+                  completeAfterPersisted(
+                      invocationContext, "loop step", subAgent.runAsync(invocationContext)))
           .repeat(maxIterations != null ? maxIterations : Integer.MAX_VALUE)
           .takeUntil(LoopAgent::hasEscalateAction);
     }
@@ -193,14 +196,17 @@ public class LoopAgent extends BaseAgent {
             subAgent ->
                 paused.get()
                     ? Flowable.<Event>empty()
-                    : subAgent
-                        .runAsync(invocationContext)
-                        .doOnNext(
-                            event -> {
-                              if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
-                                paused.set(true);
-                              }
-                            }))
+                    : completeAfterPersisted(
+                        invocationContext,
+                        "loop step",
+                        subAgent
+                            .runAsync(invocationContext)
+                            .doOnNext(
+                                event -> {
+                                  if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
+                                    paused.set(true);
+                                  }
+                                })))
         .repeatUntil(
             () ->
                 paused.get()
@@ -302,7 +308,8 @@ public class LoopAgent extends BaseAgent {
                                                 state.paused.set(true);
                                               }
                                             });
-                                return checkpoint.concatWith(run);
+                                return completeAfterPersisted(
+                                    context, "loop step", checkpoint.concatWith(run));
                               }));
           return iteration.concatWith(
               Flowable.defer(

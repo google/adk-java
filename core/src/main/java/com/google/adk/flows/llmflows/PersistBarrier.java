@@ -31,8 +31,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * persister -- has appended the current step's events, so the next step's request (built from
  * {@code session.events()} by {@link Contents}) is not assembled from a stale session. The {@code
  * Runner} calls {@link #markPersisted} (or {@link #markFailed}) after each append; the flow calls
- * {@link #awaitPersisted} between steps. State lives in the per-invocation {@link
- * InvocationContext#callbackContextData()} map, shared across the agent tree.
+ * {@link #awaitPersisted} between steps, and workflow agents between sub-agents. State lives in the
+ * per-invocation {@link InvocationContext#callbackContextData()} map, shared across the agent tree.
  *
  * <p>Each event id maps to a {@link CompletableSubject}: pending until its append finishes, then
  * terminally completed or failed. The subject retains its terminal state, so {@code
@@ -60,6 +60,8 @@ public final class PersistBarrier {
    */
   public static void enable(InvocationContext context) {
     context.callbackContextData().put(ENABLED_KEY, true);
+    // Created now, so a shallow copy of callbackContextData still shares the Runner's marks.
+    var unused = barriers(context);
   }
 
   /**
