@@ -24,6 +24,7 @@ import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
+import java.util.List;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 
@@ -115,6 +116,23 @@ public abstract class BaseNode implements Node {
   @Override
   public Optional<Schema> stateSchema() {
     return Optional.ofNullable(stateSchema);
+  }
+
+  /**
+   * Returns why the {@code edges} leaving this node are invalid for it, or empty if they are valid,
+   * which is the default. Building the workflow graph throws {@link GraphValidationException} with
+   * the problem.
+   */
+  protected Optional<String> findOutgoingEdgeProblem(List<Edge> edges) {
+    return Optional.empty();
+  }
+
+  /**
+   * Throws {@link IllegalArgumentException} if {@code name} is empty or contains {@code /},
+   * {@code @}, or {@code .}, which separate node paths and branches.
+   */
+  protected static void validateNodeName(String name) {
+    NodeNames.validate(name);
   }
 
   /**
