@@ -23,3 +23,5 @@ contains more complete end-to-end samples for customers to use or modify.
     agent that calls its model through Spring AI.
 -   [`spring_chat_advanced`](spring_chat_advanced/README.md): the Spring Boot
     chat with streamed replies, mixing ADK tools with Spring AI `@Tool` methods.
+-   [`workflows`](workflows/README.md): workflow graphs built with the ADK
+    workflow API, most of them ports of adk-python's workflow samples.
