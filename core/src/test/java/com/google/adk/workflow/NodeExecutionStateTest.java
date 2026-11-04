@@ -60,7 +60,8 @@ public final class NodeExecutionStateTest {
     Workflow wf = workflow("wf", new Edge(START, TestNode.of("a")));
     NodeExecutionState first =
         NodeExecutionState.builder().node(wf).eventSink(SINK).runId("1").build();
-    String unused = first.nextTopLevelRunId("coordinator");
+    String unused =
+        NodeExecutionState.nextTopLevelRunId(first.topLevelRunCounts(), null, "coordinator");
     NodeExecutionState retry =
         NodeExecutionState.builder()
             .node(wf)
@@ -70,7 +71,8 @@ public final class NodeExecutionStateTest {
             .build();
 
     // As its node numbering restarts, a retry's top-level hops get the same IDs again.
-    assertThat(retry.nextTopLevelRunId("coordinator")).isEqualTo("1");
+    assertThat(NodeExecutionState.nextTopLevelRunId(retry.topLevelRunCounts(), null, "coordinator"))
+        .isEqualTo("1");
   }
 
   @Test
@@ -81,12 +83,14 @@ public final class NodeExecutionStateTest {
         NodeExecutionState.builder()
             .node(TestNode.of("parent"))
             .eventSink(SINK)
-            .runId(root.nextTopLevelRunId("parent"))
+            .runId(NodeExecutionState.nextTopLevelRunId(root.topLevelRunCounts(), null, "parent"))
             .topLevelPeer(root)
             .build();
 
-    assertThat(peer.nextTopLevelRunId("wf")).isEqualTo("2");
-    assertThat(root.nextTopLevelRunId("parent")).isEqualTo("2");
+    assertThat(NodeExecutionState.nextTopLevelRunId(peer.topLevelRunCounts(), null, "wf"))
+        .isEqualTo("2");
+    assertThat(NodeExecutionState.nextTopLevelRunId(root.topLevelRunCounts(), null, "parent"))
+        .isEqualTo("2");
   }
 
   @Test

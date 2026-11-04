@@ -18,16 +18,20 @@ package com.google.adk.runner;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.stream.Collectors.toCollection;
 
 import com.google.adk.agents.ActiveStreamingTool;
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.ContextCacheConfig;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.NodeViewAgent;
+import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
@@ -107,6 +111,9 @@ public class Runner {
 
   private final BaseAgent agent;
   private final @Nullable Node node;
+  // The LlmAgent passed as the app's root node, whose agent tree runs on the node path, or null.
+  private final @Nullable LlmAgent rootLlmAgent;
+  private final boolean rootOnNodePath;
   private final String appName;
   private final BaseArtifactService artifactService;
   private final BaseSessionService sessionService;
@@ -425,6 +432,14 @@ public class Runner {
         "A node view agent cannot run on its own; run its node through an app's root node.");
     this.agent = agent;
     this.node = node;
+    this.rootLlmAgent = node instanceof LlmAgent llmAgent ? llmAgent : null;
+    this.rootOnNodePath = rootLlmAgent != null;
+    if (rootLlmAgent != null) {
+      checkArgument(
+          !rootLlmAgent.hasMode(AgentMode.SINGLE_TURN),
+          "LlmAgent as root agent must have mode='chat' or 'task', but got mode='single_turn'.");
+      validateNodeNames(rootLlmAgent);
+    }
     this.appName = appName;
     this.artifactService = artifactService;
     this.sessionService = sessionService;
@@ -672,8 +687,9 @@ public class Runner {
    * is resolved from {@code invocationId}, or from a function response carried by {@code
    * newMessage}; for a workflow node root, a plain message instead joins the invocation of a task
    * that waits on the user. Agent checkpoints are rehydrated from history and an invocation whose
-   * active agent already finished resolves to a no-op, while a workflow node root rebuilds its
-   * progress from the invocation's events even when the app is not resumable.
+   * active agent already finished resolves to a no-op, while a workflow node root, or an {@link
+   * LlmAgent} passed as the app's root node, rebuilds its progress from the invocation's events
+   * even when the app is not resumable.
    *
    * @param userId the user id of the session.
    * @param sessionId the session id.
@@ -684,7 +700,8 @@ public class Runner {
    * @param stateDelta optional state updates to merge into the session for this run.
    * @return the events generated while resuming, or an empty stream when there is nothing to
    *     resume.
-   * @throws IllegalStateException if the app is not resumable and its root is an agent.
+   * @throws IllegalStateException if the app is not resumable and its root is an agent rather than
+   *     a node.
    * @throws IllegalArgumentException if the invocation cannot be resolved.
    */
   @Experimental
@@ -696,7 +713,7 @@ public class Runner {
       RunConfig runConfig,
       @Nullable Map<String, Object> stateDelta) {
     checkState(
-        isResumable() || node != null,
+        isResumable() || runsOnNodePath(),
         "Resuming an invocation requires an App configured with a resumable ResumabilityConfig.");
     Flowable<Event> result =
         Flowable.defer(() ->
@@ -782,7 +799,7 @@ public class Runner {
     Preconditions.checkNotNull(newMessage, "newMessage cannot be null");
     Preconditions.checkNotNull(runConfig, "runConfig cannot be null");
     // A node root rebuilds its progress from its invocation's events, so it resumes on any app.
-    if (isResumable() || node != null) {
+    if (isResumable() || runsOnNodePath()) {
       return runResumableFromSession(
           session, /* providedInvocationId= */ null, newMessage, runConfig, stateDelta);
     }
@@ -803,7 +820,7 @@ public class Runner {
     return Flowable.defer(
             () -> {
               Context capturedContext = Context.current();
-              BaseAgent rootAgent = this.agent;
+              BaseAgent rootAgent = routingRoot();
               String invocationId =
                   pausedTask != null
                       ? pausedTask.invocationId()
@@ -901,7 +918,7 @@ public class Runner {
                     updatedSession,
                     initialContext.invocationId(),
                     event.content().orElseGet(Content::fromParts)))
-            .branch(routedAgentParentBranch(updatedSession, agentToRun, rootAgent))
+            .branch(routedAgentParentBranch(updatedSession, agentToRun, rootAgent, rootOnNodePath))
             .build();
 
     // If beforeRunCallback returns content, emit it and skip agent.
@@ -972,14 +989,61 @@ public class Runner {
     });
   }
 
-  /** Runs an agent root through its own lifecycle, and any other node root through NodeRunner. */
-  private static Flowable<Event> runRoot(
+  /**
+   * Runs the root through NodeRunner when it runs on the node path, and otherwise runs the root
+   * agent through its own lifecycle. On the node path, an agent root is the agent picked for this
+   * turn from the root agent's tree.
+   */
+  private Flowable<Event> runRoot(
       InvocationContext context, Function<Event, Single<Event>> processEvent) {
     Node root = context.node().orElse(context.agent());
-    if (root instanceof BaseAgent agent) {
+    if (root instanceof BaseAgent agent && !rootOnNodePath) {
       return agent.runAsync(context).concatMapSingle(processEvent::apply);
     }
     return NodeRunner.runRoot(root, context, processEvent);
+  }
+
+  /**
+   * Whether the root runs through NodeRunner: a workflow or other node does, and so does an {@link
+   * LlmAgent} passed as the app's root node.
+   */
+  private boolean runsOnNodePath() {
+    return node != null;
+  }
+
+  /** Returns the agent whose tree routes each turn: the root LlmAgent node, else the root agent. */
+  private BaseAgent routingRoot() {
+    return rootLlmAgent != null ? rootLlmAgent : agent;
+  }
+
+  /**
+   * Checks that every name in {@code rootAgent}'s tree fits in a node path.
+   *
+   * @throws IllegalArgumentException if a name contains '.', which node paths and branches can't
+   *     hold
+   */
+  private static void validateNodeNames(BaseAgent rootAgent) {
+    ImmutableList<String> dottedNames =
+        agentTree(rootAgent).stream()
+            .map(BaseAgent::name)
+            .filter(name -> name.contains("."))
+            .sorted()
+            .distinct()
+            .collect(toImmutableList());
+    checkArgument(
+        dottedNames.isEmpty(),
+        "Agents %s run as workflow nodes, so their names must not contain '.'.",
+        dottedNames);
+  }
+
+  /** Returns {@code rootAgent} and every agent below it, depth first. */
+  private static ImmutableList<BaseAgent> agentTree(BaseAgent rootAgent) {
+    ImmutableList.Builder<BaseAgent> tree = ImmutableList.builder();
+    tree.add(rootAgent);
+    for (BaseAgent subAgent : rootAgent.subAgents()) {
+      tree.addAll(agentTree(subAgent));
+    }
+    return tree.build();
   }
 
   private Completable compactEvents(Session session) {
@@ -1041,8 +1105,9 @@ public class Runner {
 
   /**
    * Resumes an existing invocation when one resolves from {@code providedInvocationId} or a
-   * function response in {@code rawMessage}; otherwise a node root's plain message joins a waiting
-   * task's invocation, or a new invocation starts. Requires resumability or a workflow node root.
+   * function response in {@code rawMessage}; otherwise a plain message to a workflow node root
+   * joins a waiting task's invocation, or a new invocation starts. Requires resumability or a root
+   * on the node path.
    */
   private Flowable<Event> runResumableFromSession(
       Session session,
@@ -1054,20 +1119,20 @@ public class Runner {
     Content newMessage = withUserRole(rawMessage);
     return Flowable.defer(() -> {
       // Rejected before the invocation-id fallback; defer turns the throw into an error signal.
-      if (node != null) {
+      if (runsOnNodePath()) {
         checkNoTextWithFunctionResponses(newMessage);
       }
       if (newMessage != null) {
         validateResumeMessage(
             session,
             newMessage,
-            /* requireFirstId= */ node == null || providedInvocationId != null);
+            /* requireFirstId= */ !runsOnNodePath() || providedInvocationId != null);
       }
       String resolvedInvocationId = resolveInvocationId(session, newMessage, providedInvocationId);
       // A plain reply continues the task that waits on the user, as in ADK Kotlin.
       Event pausedTask =
           newMessage != null
-                  && node != null
+                  && runsOnNodePath()
                   && functionResponseIds(newMessage).stream().allMatch(String::isEmpty)
               ? pausedTaskEvent(session.immutableEvents()).orElse(null)
               : null;
@@ -1112,7 +1177,8 @@ public class Runner {
               && !carriesFunctionResponse(newMessage)
               && findOriginalUserMessage(session, resolvedInvocationId).isPresent();
       Content message = supersededByOriginalMessage ? null : newMessage;
-      Map<String, Object> delta = supersededByOriginalMessage && node == null ? null : stateDelta;
+      Map<String, Object> delta =
+          supersededByOriginalMessage && !runsOnNodePath() ? null : stateDelta;
 
       // Merged eagerly so the on-user-message callback sees it.
       if (delta != null && !delta.isEmpty()) {
@@ -1136,7 +1202,7 @@ public class Runner {
                 .defaultIfEmpty(message)
                 .flatMap(content -> {
                   // A plugin's message must not mix answers and text either.
-                  if (node != null) {
+                  if (runsOnNodePath()) {
                     checkNoTextWithFunctionResponses(content);
                   }
                   // A plugin's answers must still resume the invocation this run resumes.
@@ -1197,7 +1263,7 @@ public class Runner {
       InvocationContext initialContext, @Nullable Content userContent) {
     return Flowable.defer(() -> {
       Session session = initialContext.session();
-      BaseAgent rootAgent = this.agent;
+      BaseAgent rootAgent = routingRoot();
       InvocationContext rootContext =
           initialContext.toBuilder()
               .agent(rootAgent)
@@ -1205,8 +1271,10 @@ public class Runner {
               .build();
       // Rehydrate before routing, as Python does, so a root that checkpointed re-enters itself.
       rootContext.populateInvocationAgentStates();
+      // A root agent on the node path routes an answer to the agent it answers, as on a new
+      // invocation, even when the root checkpointed.
       BaseAgent resumeAgent =
-          rootContext.endOfAgents().containsKey(rootAgent.name())
+          !rootOnNodePath && rootContext.endOfAgents().containsKey(rootAgent.name())
               ? rootAgent
               : findAgentToRun(session, rootAgent);
       InvocationContext context =
@@ -1214,11 +1282,13 @@ public class Runner {
               ? rootContext
               : rootContext.toBuilder()
                   .agent(resumeAgent)
-                  .branch(resumeParentBranch(session, initialContext.invocationId(), resumeAgent))
+                  .branch(
+                      resumeParentBranch(
+                          session, initialContext.invocationId(), resumeAgent, rootOnNodePath))
                   .build();
 
-      // No-op guard: a completed invocation (its active agent already finished) is not re-run.
-      if (context.endOfAgents().getOrDefault(context.agent().name(), false)) {
+      // No-op guard: a finished invocation is not re-run; a node-path task is done when it ends.
+      if (isFinished(session, context)) {
         return Flowable.<Event>empty();
       }
 
@@ -1233,10 +1303,11 @@ public class Runner {
    * Branch to seed a new invocation with so a routed sub-agent runs where it ran before, or {@code
    * null} when {@code agentToRun} is the root. A function response restores the branch of the call
    * it answers, since a Java agent's branch depends on the transfer path that reached it; other
-   * routing restores the agent's latest branch, as Python does.
+   * routing restores the agent's latest branch, as Python does. With {@code keepsOwnBranch}, the
+   * agent runs as a node, which adds no segment of its own, so its own segment stays.
    */
   private static @Nullable String routedAgentParentBranch(
-      Session session, BaseAgent agentToRun, BaseAgent rootAgent) {
+      Session session, BaseAgent agentToRun, BaseAgent rootAgent, boolean keepsOwnBranch) {
     if (agentToRun.equals(rootAgent)) {
       return null;
     }
@@ -1245,20 +1316,25 @@ public class Runner {
     if (answeredCall.isPresent()) {
       String ownSuffix = sequentialBranchSuffix(agentToRun, answeredCall.get().author());
       if (ownSuffix != null) {
-        return parentBranch(answeredCall.get().branch().orElse(null), ownSuffix);
+        return seedBranch(
+            answeredCall.get().branch().orElse(null), ownSuffix, agentToRun, keepsOwnBranch);
       }
     }
-    return resumeParentBranch(session, /* invocationId= */ null, agentToRun);
+    return resumeParentBranch(session, /* invocationId= */ null, agentToRun, keepsOwnBranch);
   }
 
   /**
    * Branch to seed a context with so {@code resumeAgent} runs under the branch it last ran on: the
    * parent branch of the newest event by {@code resumeAgent}, or by an agent it reaches through
    * SequentialAgents, with a non-empty branch. A non-null {@code invocationId} limits the search to
-   * that invocation; {@code null} is returned for the root branch.
+   * that invocation; {@code null} is returned for the root branch. With {@code keepsOwnBranch}, the
+   * agent's own segment stays, as in {@link #routedAgentParentBranch}.
    */
   private static @Nullable String resumeParentBranch(
-      Session session, @Nullable String invocationId, BaseAgent resumeAgent) {
+      Session session,
+      @Nullable String invocationId,
+      BaseAgent resumeAgent,
+      boolean keepsOwnBranch) {
     ImmutableList<Event> events = session.immutableEvents();
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
@@ -1266,11 +1342,27 @@ public class Runner {
           && event.branch().filter(branch -> !branch.isEmpty()).isPresent()) {
         String ownSuffix = sequentialBranchSuffix(resumeAgent, event.author());
         if (ownSuffix != null) {
-          return parentBranch(event.branch().get(), ownSuffix);
+          return seedBranch(event.branch().get(), ownSuffix, resumeAgent, keepsOwnBranch);
         }
       }
     }
     return null;
+  }
+
+  /**
+   * Returns the branch to seed {@code agent} with from {@code branch}, the branch of an event that
+   * {@code agent} or a step it reaches through SequentialAgents wrote, where {@code ownSuffix} is
+   * the agent's segment and the steps' segments. Only {@code keepsOwnBranch} keeps the agent's own.
+   */
+  private static @Nullable String seedBranch(
+      @Nullable String branch, String ownSuffix, BaseAgent agent, boolean keepsOwnBranch) {
+    if (!keepsOwnBranch) {
+      return parentBranch(branch, ownSuffix);
+    }
+    if (ownSuffix.equals(agent.name())) {
+      return emptyToNull(branch);
+    }
+    return parentBranch(branch, ownSuffix.substring(agent.name().length() + 1));
   }
 
   /**
@@ -1438,9 +1530,9 @@ public class Runner {
   }
 
   /**
-   * Rejects a message for a node root if the message mixes text with function responses that carry
-   * an id: the responses resume an existing invocation, while the text starts a new one. Python's
-   * node path rejects such a message too; its agent path accepts it.
+   * Rejects a message for a root on the node path if it mixes text with function responses that
+   * carry an id: the responses resume an existing invocation, while the text starts a new one.
+   * Python's node path rejects such a message too; its agent path accepts it.
    *
    * @throws IllegalArgumentException if {@code message} mixes them.
    */
@@ -1470,7 +1562,7 @@ public class Runner {
    */
   private InvocationContext resolveNodeRootContext(
       Session session, InvocationContext context, Content message) {
-    if (node == null) {
+    if (!runsOnNodePath()) {
       return context;
     }
     checkNoTextWithFunctionResponses(message);
@@ -1563,7 +1655,7 @@ public class Runner {
 
   /**
    * Returns the user content for a run of {@code invocationId}: {@code message}, or the message
-   * that started the invocation when there is none. As in Python, a workflow node root also gets
+   * that started the invocation when there is none. As in Python, a root on the node path also gets
    * that message when {@code message} answers calls.
    *
    * @throws IllegalArgumentException if there is no message and the invocation has no user message
@@ -1572,7 +1664,7 @@ public class Runner {
     if (message == null) {
       return originalUserMessage(session, invocationId);
     }
-    if (node != null && carriesFunctionResponse(message)) {
+    if (runsOnNodePath() && carriesFunctionResponse(message)) {
       return findOriginalUserMessage(session, invocationId).orElse(message);
     }
     return message;
@@ -1629,19 +1721,22 @@ public class Runner {
         runConfigBuilder.inputAudioTranscription(AudioTranscriptionConfig.builder().build());
       }
     }
-    BaseAgent agentToRun = findAgentToRun(session, this.agent);
+    // A live run takes the classic flow, so it routes as that flow does.
+    BaseAgent agentToRun = findAgentToRun(session, this.agent, /* asNode= */ false);
     InvocationContext.Builder builder =
         newInvocationContextBuilder(session, agentToRun)
             .runConfig(runConfigBuilder.build())
             .userContent(Content.fromParts())
             .liveRequestQueue(liveRequestQueue)
-            .branch(routedAgentParentBranch(session, agentToRun, this.agent));
+            .branch(
+                routedAgentParentBranch(
+                    session, agentToRun, this.agent, /* keepsOwnBranch= */ false));
 
     return builder.build();
   }
 
   private InvocationContext.Builder newInvocationContextBuilder(Session session) {
-    return newInvocationContextBuilder(session, this.findAgentToRun(session, this.agent));
+    return newInvocationContextBuilder(session, this.findAgentToRun(session, routingRoot()));
   }
 
   /** Overload for callers that already resolved the agent, so the walk is not repeated. */
@@ -1659,7 +1754,9 @@ public class Runner {
         .instantSource(this.instantSource)
         .uuidProvider(this.uuidProvider)
         .agent(agent)
-        .node(node);
+        // Under a root LlmAgent node, the agent picked from its tree runs in place of the node.
+        .node(rootOnNodePath ? null : node)
+        .rootAgentNode(rootLlmAgent);
   }
 
   /**
@@ -1848,9 +1945,71 @@ public class Runner {
     return resumabilityConfig != null && resumabilityConfig.isPlainTextContinuationAutoResume();
   }
 
+  /** Returns whether {@code agent} is a task agent under a root agent that runs as a node. */
+  private boolean isTaskOnNodePath(BaseAgent agent) {
+    return rootOnNodePath && agent instanceof LlmAgent llmAgent && llmAgent.hasMode(AgentMode.TASK);
+  }
+
+  /**
+   * Returns whether {@code context}'s invocation is done: a task on the node path once it ends, any
+   * other root on the node path never, as it rebuilds its progress, and other agents once they end.
+   */
+  private boolean isFinished(Session session, InvocationContext context) {
+    if (isTaskOnNodePath(context.agent())) {
+      return taskEnded(session, context.invocationId(), context.agent());
+    }
+    return !rootOnNodePath && context.endOfAgents().getOrDefault(context.agent().name(), false);
+  }
+
+  /**
+   * Returns whether {@code agent} ended its own task in {@code invocationId}, with a successful
+   * {@code finish_task} or, as in {@link #pausedTaskEvent}, an execution error that no later
+   * content of its run follows.
+   */
+  private static boolean taskEnded(Session session, String invocationId, BaseAgent agent) {
+    boolean failed = false;
+    for (Event event : session.immutableEvents()) {
+      if (!agent.name().equals(event.author()) || !invocationId.equals(event.invocationId())) {
+        continue;
+      }
+      if (LlmAgent.finishesTask(event)) {
+        return true;
+      }
+      if (LlmAgent.endsTaskWithError(event)) {
+        failed = true;
+      } else if (event.content().isPresent() && !event.partial().orElse(false)) {
+        // The run went on after the error, as after a retry.
+        failed = false;
+      }
+    }
+    return failed;
+  }
+
+  /**
+   * Returns the agent that called the outermost task or single-turn agent that {@code agent} runs
+   * inside, or {@code agent} when there is none. That caller resumes the run, as in Python's {@code
+   * _resolve_task_delegator}.
+   */
+  private static BaseAgent taskDelegator(BaseAgent agent, BaseAgent rootAgent) {
+    BaseAgent delegator = agent;
+    for (BaseAgent current = agent;
+        !current.equals(rootAgent) && current.parentAgent() != null;
+        current = current.parentAgent()) {
+      if (LlmAgent.runsAsTool(current)) {
+        delegator = current.parentAgent();
+      }
+    }
+    return delegator;
+  }
+
   /** Returns the agent that should handle the next request based on session history. */
   private BaseAgent findAgentToRun(Session session, BaseAgent rootAgent) {
-    if (node != null) {
+    return findAgentToRun(session, rootAgent, rootOnNodePath);
+  }
+
+  /** As above, routing as a root agent that runs as a node does when {@code asNode}. */
+  private BaseAgent findAgentToRun(Session session, BaseAgent rootAgent, boolean asNode) {
+    if (node != null && !rootOnNodePath) {
       // A node root has no agent tree to pick a sub-agent from, so it always runs itself.
       return rootAgent;
     }
@@ -1863,6 +2022,15 @@ public class Runner {
             .flatMap(event -> rootAgent.findAgent(event.author()));
     if (functionCallAuthor.isPresent()) {
       BaseAgent author = functionCallAuthor.get();
+      if (asNode) {
+        BaseAgent delegator = taskDelegator(author, rootAgent);
+        // A resumable workflow agent, or a legacy sequence, stopped before its later steps, so it
+        // takes the answer; a non-resumable one ran them, so only the delegator goes on.
+        if (isResumable()) {
+          return topmostWorkflowAgentAncestor(delegator);
+        }
+        return isLegacyResumability() ? topmostSequentialAncestor(delegator) : delegator;
+      }
       if (isLegacyResumability()) {
         return topmostSequentialAncestor(author);
       }
@@ -1897,7 +2065,7 @@ public class Runner {
       }
 
       if (this.isTransferableAcrossAgentTree(agent.get())) {
-        return agent.get();
+        return asNode ? taskDelegator(agent.get(), rootAgent) : agent.get();
       }
     }
 
@@ -1907,8 +2075,27 @@ public class Runner {
   /**
    * Returns the top-most ancestor reachable from {@code agent} through {@link SequentialAgent}
    * parents, or {@code agent} itself otherwise. Used by the deprecated legacy flow, whose only
-   * resume-aware workflow agent is SequentialAgent.
+   * resume-aware workflow agent is SequentialAgent, and by a root agent that runs as a node.
    */
+  /**
+   * Returns the outermost workflow agent ({@link SequentialAgent}, {@link LoopAgent} or {@link
+   * ParallelAgent}) above {@code agent}, also past {@link LlmAgent} steps that handed off to it, or
+   * {@code agent} if there is none below the root.
+   */
+  private static BaseAgent topmostWorkflowAgentAncestor(BaseAgent agent) {
+    BaseAgent result = agent;
+    for (BaseAgent parent = agent.parentAgent();
+        parent != null && parent.parentAgent() != null;
+        parent = parent.parentAgent()) {
+      if (parent instanceof SequentialAgent
+          || parent instanceof LoopAgent
+          || parent instanceof ParallelAgent) {
+        result = parent;
+      }
+    }
+    return result;
+  }
+
   private static BaseAgent topmostSequentialAncestor(BaseAgent agent) {
     BaseAgent result = agent;
     BaseAgent parent = agent.parentAgent();
