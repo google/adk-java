@@ -113,9 +113,29 @@ public final class Contents implements RequestProcessor {
       List<Event> events,
       String agentName,
       boolean groupFunctionResponses) {
+    Set<String> visibleCallIds = new HashSet<>();
+    for (Event event : events) {
+      if (shouldIncludeEventInContext(currentBranch, event)) {
+        visibleCallIds.addAll(callIds(event));
+      }
+    }
+    // A user's answer to a visible call continues that call's turn instead of starting one.
+    Set<String> unmatchedAnswerIds = new HashSet<>();
     // Find the latest event that starts the current turn and process from there.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
+      if (shouldIncludeEventInContext(currentBranch, event)) {
+        callIds(event).forEach(unmatchedAnswerIds::remove);
+        if (event.author().equals(Role.USER)) {
+          event.functionResponses().stream()
+              .flatMap(response -> response.id().stream())
+              .filter(visibleCallIds::contains)
+              .forEach(unmatchedAnswerIds::add);
+        }
+      }
+      if (!unmatchedAnswerIds.isEmpty()) {
+        continue;
+      }
       TranscriptionKind kind = transcriptionKind(event);
       int start = -1;
       if (kind != null) {
@@ -185,14 +205,19 @@ public final class Contents implements RequestProcessor {
     }
 
     // Merge after compaction, which may end mid-run, and before other agents are narrated.
+    Set<String> narratedCallIds = new HashSet<>();
     List<Event> resultEvents = new ArrayList<>();
     for (Event event : mergeTranscriptions(filteredEvents)) {
-      if (isOtherAgentReply(agentName, event)) {
+      // The user's answer to another agent's call is narrated with that call.
+      if (isOtherAgentReply(agentName, event) || respondsToAny(event, narratedCallIds)) {
+        narratedCallIds.addAll(callIds(event));
         Event foreignEvent = convertForeignEvent(event);
         if (foreignEvent != null) {
           resultEvents.add(foreignEvent);
         }
       } else {
+        // The agent's own call keeps its answer, even if it reuses another agent's call ID.
+        callIds(event).forEach(narratedCallIds::remove);
         resultEvents.add(event);
       }
     }
@@ -610,6 +635,20 @@ public final class Contents implements RequestProcessor {
       result.add(event);
     }
     return result;
+  }
+
+  /** The non-empty IDs of {@code event}'s function calls. */
+  private static ImmutableList<String> callIds(Event event) {
+    return event.functionCalls().stream()
+        .flatMap(call -> call.id().stream())
+        .filter(id -> !id.isEmpty())
+        .collect(toImmutableList());
+  }
+
+  /** Whether {@code event} has a function response whose ID is in {@code callIds}. */
+  private static boolean respondsToAny(Event event, Set<String> callIds) {
+    return event.functionResponses().stream()
+        .anyMatch(response -> response.id().map(callIds::contains).orElse(false));
   }
 
   /** Whether the event is a reply from another agent. */
