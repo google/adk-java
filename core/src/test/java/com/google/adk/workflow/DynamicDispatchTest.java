@@ -475,6 +475,17 @@ public final class DynamicDispatchTest {
   }
 
   @Test
+  public void runChild_raiseOnWaitWithAChildWhoseOwnChildWaits_letsTheCallerCarryOn() {
+    Node middle = continuing("middle", waitingForOutput("leaf"), RAISE_ON_WAIT);
+    Node dispatcher = continuing("dispatcher", middle, RAISE_ON_WAIT);
+
+    Context context = run(workflow(new Edge(START, dispatcher)));
+
+    // Only the started node's own wait ends the caller, so a wait two levels down does not.
+    assertThat(context.requireNodeState().output()).hasValue("AFTER_WAIT");
+  }
+
+  @Test
   public void runChild_raiseOnWaitWithAChildThatHasAnOutput_letsTheCallerCarryOn() {
     Node dispatcher = continuing("dispatcher", emitter("child", "C"), RAISE_ON_WAIT);
 

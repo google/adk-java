@@ -23,6 +23,7 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.base.Strings.nullToEmpty;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
+import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
@@ -30,6 +31,7 @@ import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.telemetry.Tracing;
 import com.google.adk.workflow.ResumeScan.Interception;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -47,6 +49,8 @@ import io.reactivex.rxjava3.processors.UnicastProcessor;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subjects.SingleSubject;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
@@ -94,6 +98,7 @@ public final class NodeRunner {
   private final ImmutableSet<String> openInterrupts;
   private final boolean checkInput;
   private final @Nullable NodeExecutionState topLevelPeer;
+  private final @Nullable String basePath;
 
   private NodeRunner(Builder builder) {
     checkState(builder.node != null, "A node runner needs a node.");
@@ -121,6 +126,7 @@ public final class NodeRunner {
     this.openInterrupts = builder.openInterrupts;
     this.checkInput = builder.checkInput;
     this.topLevelPeer = builder.topLevelPeer;
+    this.basePath = builder.basePath;
   }
 
   /**
@@ -155,61 +161,48 @@ public final class NodeRunner {
     checkNotNull(node);
     checkNotNull(context);
     checkNotNull(processEvent);
-    return Flowable.defer(
-        () -> {
-          // App checks a root node's name only against the agent-name rule, which allows '.'.
-          NodeNames.validate(node.name());
-          FlowableProcessor<QueuedEvent> queue =
-              UnicastProcessor.<QueuedEvent>create().toSerialized();
-          Queue<Exception> unprocessedFailures = new ConcurrentLinkedQueue<>();
-          EventSink sink =
-              (event, nodeFailure) -> {
-                CompletableSubject processed = CompletableSubject.create();
-                if (nodeFailure != null) {
-                  unprocessedFailures.add(nodeFailure);
-                }
-                queue.onNext(new QueuedEvent(event, processed, nodeFailure));
-                return event.partial().orElse(false) ? Completable.complete() : processed;
-              };
-          Completable nodeRun =
-              builder()
-                  .node(node)
-                  .invocationContext(context)
-                  .eventSink(sink)
-                  .build()
-                  .run(context.userContent().orElse(null))
-                  .doOnSuccess(
-                      nodeContext ->
-                          nodeContext
-                              .requireNodeState()
-                              .failure()
-                              .ifPresentOrElse(queue::onError, queue::onComplete))
-                  .doOnError(queue::onError)
-                  .ignoreElement()
-                  .onErrorComplete();
-          return queue
-              .concatMap(
-                  queued ->
-                      processEvent
-                          .apply(queued.event())
-                          .doOnError(
-                              error -> {
-                                // As in Kotlin, keep the failures of unprocessed error events.
-                                if (error instanceof Exception) {
-                                  unprocessedFailures.forEach(error::addSuppressed);
-                                }
-                              })
-                          .toFlowable()
-                          // The node proceeds only after the caller receives the processed event.
-                          .doAfterNext(
-                              unused -> {
-                                if (queued.nodeFailure() != null) {
-                                  unprocessedFailures.remove(queued.nodeFailure());
-                                }
-                                queued.processed().onComplete();
-                              }))
-              .mergeWith(nodeRun);
-        });
+    return Flowable.defer(() -> {
+      FlowableProcessor<QueuedEvent> queue = UnicastProcessor.<QueuedEvent>create().toSerialized();
+      Queue<Exception> unprocessedFailures = new ConcurrentLinkedQueue<>();
+      EventSink sink =
+          (event, nodeFailure) -> {
+            CompletableSubject processed = CompletableSubject.create();
+            if (nodeFailure != null) {
+              unprocessedFailures.add(nodeFailure);
+            }
+            queue.onNext(new QueuedEvent(event, processed, nodeFailure));
+            return event.partial().orElse(false) ? Completable.complete() : processed;
+          };
+      Completable nodeRun =
+          runRootNode(node, context, sink)
+              .doOnSuccess(nodeContext ->
+                  nodeContext
+                      .requireNodeState()
+                      .failure()
+                      .ifPresentOrElse(queue::onError, queue::onComplete))
+              .doOnError(queue::onError)
+              .ignoreElement()
+              .onErrorComplete();
+      return queue
+          .concatMap(queued ->
+              processEvent
+                  .apply(queued.event())
+                  .doOnError(error -> {
+                    // As in Kotlin, keep the failures of unprocessed error events.
+                    if (error instanceof Exception) {
+                      unprocessedFailures.forEach(error::addSuppressed);
+                    }
+                  })
+                  .toFlowable()
+                  // The node proceeds only after the caller receives the processed event.
+                  .doAfterNext(unused -> {
+                    if (queued.nodeFailure() != null) {
+                      unprocessedFailures.remove(queued.nodeFailure());
+                    }
+                    queued.processed().onComplete();
+                  }))
+          .mergeWith(nodeRun);
+    });
   }
 
   /**
@@ -277,7 +270,8 @@ public final class NodeRunner {
             parentState.releaseOutputDelegation();
           }
         })
-        .flatMapMaybe(child -> childResult(parent, child, delegatesOutput, config.raiseOnWait()));
+        .flatMapMaybe(
+            child -> childResult(parent, node, child, delegatesOutput, config.raiseOnWait()));
   }
 
   /**
@@ -344,7 +338,8 @@ public final class NodeRunner {
             recovered,
             /* dynamic= */ true,
             parentState.childCanceledMidRun(childKey),
-            parentState.childFailedThisTurn(childKey));
+            parentState.childFailedThisTurn(childKey),
+            parent.invocationContext());
     if (!interception.shouldRun()) {
       // A handoff target resumes under the replayed node, so the node keeps its branch.
       InvocationContext scheduled =
@@ -397,8 +392,6 @@ public final class NodeRunner {
         first,
         target -> {
           String name = target.agent().name();
-          // An agent name may contain '.', which no node path or branch can hold.
-          NodeNames.validate(name);
           RunNodeConfig scoped =
               config.toBuilder()
                   .overrideIsolationScope(scope.get())
@@ -409,6 +402,8 @@ public final class NodeRunner {
           if (parent == null) {
             hop = runAtTopLevel(target.agent(), caller, scoped);
           } else {
+            // An agent name may contain '.', which no node path or branch can hold.
+            NodeNames.validate(name);
             String runId = parent.requireNodeState().nextChildRunId(name);
             // Only a run under the caller takes the caller's output.
             RunNodeConfig child =
@@ -425,26 +420,226 @@ public final class NodeRunner {
   }
 
   /**
-   * Runs {@code node} at the top of the invocation, beside the root node above {@code context}, or
+   * Runs {@code agent} at the top of the invocation, beside the root node above {@code context}, or
    * replays it from history, with the branch and isolation settings of {@code config}.
    */
-  private static Single<Context> runAtTopLevel(Node node, Context context, RunNodeConfig config) {
+  private static Single<Context> runAtTopLevel(
+      BaseAgent agent, Context context, RunNodeConfig config) {
     Context root = context;
     while (root.requireNodeState().parent().isPresent()) {
       root = root.requireNodeState().parent().get();
     }
     NodeExecutionState rootState = root.requireNodeState();
+    return runTopLevelHop(
+        agent,
+        root.invocationContext(),
+        rootState.eventSink(),
+        rootState,
+        config,
+        ancestorAgentPath(agent),
+        /* firstRunId= */ "1");
+  }
+
+  /**
+   * Runs {@code node} as the root of an invocation: a workflow or other node on the user content,
+   * or an agent picked from the tree of a root agent that runs as a node, as {@link #runRootLoop}
+   * does.
+   */
+  private static Single<Context> runRootNode(Node node, InvocationContext context, EventSink sink) {
+    if (node instanceof BaseAgent agent) {
+      return runRootLoop(agent, context, sink);
+    }
+    // App checks a root node's name only against the agent-name rule, which allows '.'.
+    NodeNames.validate(node.name());
     return builder()
         .node(node)
-        .invocationContext(root.invocationContext())
-        .eventSink(rootState.eventSink())
-        .runId(rootState.nextTopLevelRunId(node.name()))
-        .topLevelPeer(rootState)
+        .invocationContext(context)
+        .eventSink(sink)
+        .build()
+        .run(context.userContent().orElse(null));
+  }
+
+  /**
+   * Runs {@code agent}, the agent that takes this turn under a root agent that runs as a node, at
+   * the top of the invocation, and follows the handoffs it requests until an agent fails, waits, or
+   * finishes without one. An agent below the root runs under its ancestor agents' path.
+   */
+  private static Single<Context> runRootLoop(
+      BaseAgent agent, InvocationContext context, EventSink sink) {
+    // A resumed agent keeps the path and run it last had in this invocation, so it finds its
+    // progress; the runs on that path count as taken, so a later hop to one gets a new ID.
+    String lastPath = lastPath(agent, context);
+    String resumedParentPath = lastPath == null ? null : pathAbove(lastPath);
+    AtomicReference<Context> latestHop = new AtomicReference<>();
+    return runTopLevelHop(
+            agent,
+            context,
+            sink,
+            /* topLevelPeer= */ null,
+            RunNodeConfig.builder().build(),
+            resumedParentPath != null ? resumedParentPath : ancestorAgentPath(agent),
+            lastPath == null ? "1" : ownRunId(agent, lastPath))
+        .flatMap(first -> {
+          latestHop.set(first);
+          // The hops after the resumed agent are new work, so each takes a run not yet recorded.
+          takeRecordedRuns(first.requireNodeState().topLevelRunCounts(), context);
+          return TransferTarget.followHandoffs(
+              agent,
+              first,
+              target -> {
+                Context parent = target.parent();
+                Single<Context> hop;
+                if (parent == null) {
+                  // A top hop keeps the handing-off agent's scope, such as a task root's.
+                  String scope = latestHop.get().requireNodeState().isolationScope().orElse(null);
+                  hop =
+                      runTopLevelHop(
+                          target.agent(),
+                          context,
+                          sink,
+                          first.requireNodeState(),
+                          RunNodeConfig.builder().overrideIsolationScope(scope).build(),
+                          topLevelParentPath(target.agent(), latestHop.get()),
+                          /* firstRunId= */ "1");
+                } else {
+                  String name = target.agent().name();
+                  NodeNames.validate(name);
+                  hop =
+                      runOrReplayChild(
+                          parent,
+                          target.agent(),
+                          /* nodeInput= */ null,
+                          parent.requireNodeState().nextChildRunId(name),
+                          RunNodeConfig.builder().build());
+                }
+                return hop.doOnSuccess(latestHop::set);
+              });
+        });
+  }
+
+  /**
+   * Returns the path that {@code target}, a handoff target that runs at the top of the invocation,
+   * runs under: a peer of the agent that ran {@code latestHop} at the top runs beside it, and any
+   * other target under its ancestor agents' first runs.
+   */
+  private static @Nullable String topLevelParentPath(BaseAgent target, Context latestHop) {
+    NodeExecutionState latest = latestHop.requireNodeState();
+    if (latest.parent().isEmpty()
+        && latest.node() instanceof BaseAgent latestAgent
+        && latestAgent.parentAgent() != null
+        && latestAgent.parentAgent().equals(target.parentAgent())) {
+      return pathAbove(latest.nodePath());
+    }
+    return ancestorAgentPath(target);
+  }
+
+  /** Records the runs on the node paths of this invocation's events in {@code runCounts}. */
+  private static void takeRecordedRuns(
+      ConcurrentMap<String, Integer> runCounts, InvocationContext context) {
+    for (Event event : context.session().immutableEvents()) {
+      if (context.invocationId().equals(event.invocationId())) {
+        event
+            .nodeInfo()
+            .map(NodeInfo::path)
+            .filter(path -> !path.isEmpty())
+            .ifPresent(path -> NodeExecutionState.takeRunsOnPath(runCounts, path));
+      }
+    }
+  }
+
+  /** Returns the path above the last segment of {@code nodePath}, or null if it has one segment. */
+  private static @Nullable String pathAbove(String nodePath) {
+    int slash = nodePath.lastIndexOf('/');
+    return slash < 0 ? null : nodePath.substring(0, slash);
+  }
+
+  /**
+   * Runs {@code agent} at the top of the invocation, under {@code parentPath}, or replays it from
+   * history. A hop beside {@code topLevelPeer} shares its run counts and records; the first hop,
+   * without one, gets {@code firstRunId}.
+   */
+  private static Single<Context> runTopLevelHop(
+      BaseAgent agent,
+      InvocationContext context,
+      EventSink sink,
+      @Nullable NodeExecutionState topLevelPeer,
+      RunNodeConfig config,
+      @Nullable String parentPath,
+      String firstRunId) {
+    // An agent name may contain '.', which no node path or branch can hold.
+    NodeNames.validate(agent.name());
+    String runId =
+        topLevelPeer == null
+            ? firstRunId
+            : NodeExecutionState.nextTopLevelRunId(
+                topLevelPeer.topLevelRunCounts(), parentPath, agent.name());
+    return builder()
+        .node(agent)
+        .invocationContext(context)
+        .eventSink(sink)
+        .runId(runId)
+        .basePath(parentPath)
+        .topLevelPeer(topLevelPeer)
         .useSubBranch(config.useSubBranch())
         .overrideBranch(config.overrideBranch().orElse(null))
         .overrideIsolationScope(config.overrideIsolationScope().orElse(null))
         .build()
         .run(/* nodeInput= */ null);
+  }
+
+  /** Returns the path of {@code agent}'s ancestor agents, each with run ID 1, or null for none. */
+  private static @Nullable String ancestorAgentPath(BaseAgent agent) {
+    String path = null;
+    for (BaseAgent ancestor : ancestorsFromRoot(agent)) {
+      // An agent name may contain '.', which no node path can hold.
+      NodeNames.validate(ancestor.name());
+      path = appendSegment(path, ancestor.name(), "1", '/');
+    }
+    return path;
+  }
+
+  /**
+   * Returns the run ID that {@code lastPath}, from an event of {@code agent}, gives the agent: its
+   * last segment's run when that segment is the agent's own, as a sequence step's is not, else 1.
+   */
+  private static String ownRunId(BaseAgent agent, String lastPath) {
+    String segment = lastPath.substring(lastPath.lastIndexOf('/') + 1);
+    int at = segment.lastIndexOf('@');
+    return at > 0 && segment.substring(0, at).equals(agent.name())
+        ? segment.substring(at + 1)
+        : "1";
+  }
+
+  /**
+   * Returns the node path of {@code agent}'s latest event in this invocation, or null if it has not
+   * run in it.
+   */
+  private static @Nullable String lastPath(BaseAgent agent, InvocationContext context) {
+    ImmutableList<Event> events = context.session().immutableEvents();
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event event = events.get(i);
+      if (!context.invocationId().equals(event.invocationId())
+          || !agent.name().equals(event.author())) {
+        continue;
+      }
+      Optional<String> path = event.nodeInfo().map(NodeInfo::path).filter(p -> !p.isEmpty());
+      if (path.isEmpty()) {
+        continue;
+      }
+      return path.get();
+    }
+    return null;
+  }
+
+  /** Returns the ancestor agents of {@code agent}, starting at the root of its tree. */
+  private static ImmutableList<BaseAgent> ancestorsFromRoot(BaseAgent agent) {
+    List<BaseAgent> ancestors = new ArrayList<>();
+    for (BaseAgent ancestor = agent.parentAgent();
+        ancestor != null;
+        ancestor = ancestor.parentAgent()) {
+      ancestors.add(ancestor);
+    }
+    return ImmutableList.copyOf(ancestors).reverse();
   }
 
   /**
@@ -468,7 +663,11 @@ public final class NodeRunner {
    * caller takes on as its own.
    */
   private static Maybe<Object> childResult(
-      Context parent, Context child, boolean delegatesOutput, boolean raiseOnWait) {
+      Context parent,
+      Node startedNode,
+      Context child,
+      boolean delegatesOutput,
+      boolean raiseOnWait) {
     NodeExecutionState parentState = parent.requireNodeState();
     NodeExecutionState childState = child.requireNodeState();
     if (child.eventActions().skipSummarization().orElse(false)) {
@@ -491,10 +690,17 @@ public final class NodeRunner {
       return Maybe.error(new NodeInterruptedException());
     }
     Node childNode = childState.node();
-    if (raiseOnWait
-        && childState.output().isEmpty()
-        && child.eventActions().transferToAgent().isEmpty()
-        && (childNode instanceof Workflow || childNode.waitForOutput())) {
+    // After a handoff, the child context holds the target rather than the started node.
+    boolean isStartedNode = childNode.equals(startedNode);
+    // A handoff target need not give an output; only the started node leaves one unfinished.
+    boolean leftWaiting =
+        isStartedNode
+            && childState.output().isEmpty()
+            && child.eventActions().transferToAgent().isEmpty()
+            && (childNode instanceof Workflow || childNode.waitForOutput());
+    // A handoff target that stopped on a waiting child, such as a task that asks, still waits.
+    boolean targetWaits = !isStartedNode && childState.waitsOnChild();
+    if (raiseOnWait && (leftWaiting || targetWaits)) {
       return Maybe.error(new NodeInterruptedException());
     }
     // No event of this run carries a delegate's replayed or shared output, so the caller emits it.
@@ -520,21 +726,28 @@ public final class NodeRunner {
   Single<Context> run(@Nullable Object nodeInput) {
     return Single.defer(() -> {
       if (parent != null) {
-        return runAttempts(nodeInput, resumeInputs, openInterrupts);
+        return runAttempts(nodeInput, resumeInputs, openInterrupts, overrideIsolationScope);
       }
       // A root scans its own progress and resumes like a dynamic child.
       String path = segment(node.name(), runId);
       ResumeScan.RecoveredNode recovered =
-          ResumeScan.scan(invocationContext, /* basePath= */ "").get(path);
+          ResumeScan.scan(invocationContext, nullToEmpty(basePath)).get(path);
       Interception interception =
           ResumeScan.intercept(
               node,
               recovered,
               /* dynamic= */ true,
               topLevelPeer != null && topLevelPeer.runCanceledMidRun(path),
-              topLevelPeer != null && topLevelPeer.runFailedThisTurn(path));
+              topLevelPeer != null && topLevelPeer.runFailedThisTurn(path),
+              invocationContext);
+      // Without a scope of its own, a resumed root keeps the scope it ran in, as a child does.
+      String scope =
+          overrideIsolationScope == null && recovered != null
+              ? recovered.isolationScope
+              : overrideIsolationScope;
       if (!interception.shouldRun()) {
-        Context context = newContext(interception.resumeInputs(), /* previousAttempt= */ null);
+        Context context =
+            newContext(interception.resumeInputs(), /* previousAttempt= */ null, scope);
         interception.replayOn(context);
         // A hop at the top does not resend what an earlier turn's events carried.
         if (topLevelPeer != null && recovered != null) {
@@ -548,14 +761,15 @@ public final class NodeRunner {
         }
         return new Activation(context).flushPending().toSingleDefault(context);
       }
-      return runAttempts(nodeInput, interception.resumeInputs(), interception.interrupts());
+      return runAttempts(nodeInput, interception.resumeInputs(), interception.interrupts(), scope);
     });
   }
 
   private Single<Context> runAttempts(
       @Nullable Object nodeInput,
       Map<String, @Nullable Object> resumeInputs,
-      ImmutableSet<String> openInterrupts) {
+      ImmutableSet<String> openInterrupts,
+      @Nullable String isolationScope) {
     RetryConfig policy = node.config().retryConfig().orElse(null);
     int maxAttempts = policy == null ? 1 : Math.max(1, policy.maxAttempts());
     AtomicReference<@Nullable NodeExecutionState> previousAttempt = new AtomicReference<>();
@@ -568,7 +782,8 @@ public final class NodeRunner {
                 .andThen(
                     Single.defer(
                             () -> {
-                              Context context = newContext(resumeInputs, previousAttempt.get());
+                              Context context =
+                                  newContext(resumeInputs, previousAttempt.get(), isolationScope);
                               previousAttempt.set(context.requireNodeState());
                               Activation activation = new Activation(context);
                               return activation.run(nodeInput).toSingleDefault(activation);
@@ -606,7 +821,9 @@ public final class NodeRunner {
   }
 
   private Context newContext(
-      Map<String, @Nullable Object> resumeInputs, @Nullable NodeExecutionState previousAttempt) {
+      Map<String, @Nullable Object> resumeInputs,
+      @Nullable NodeExecutionState previousAttempt,
+      @Nullable String isolationScope) {
     return new Context(
         childInvocationContext(),
         NodeExecutionState.builder()
@@ -615,10 +832,11 @@ public final class NodeRunner {
             .parent(parent)
             .runId(runId)
             .useAsOutput(useAsOutput)
-            .isolationScope(overrideIsolationScope)
+            .isolationScope(isolationScope)
             .resumeInputs(resumeInputs)
             .previousAttempt(previousAttempt)
             .topLevelPeer(topLevelPeer)
+            .basePath(basePath)
             .build());
   }
 
@@ -720,7 +938,11 @@ public final class NodeRunner {
     private Completable onError(Throwable error) {
       if (error instanceof NodeInterruptedException pause) {
         // A waiting child's interrupt IDs are already recorded; ask sends and records a request's.
-        return pause.request() == null ? flushPending() : ask(pause.request());
+        if (pause.request() == null) {
+          nodeState.markWaitsOnChild();
+          return flushPending();
+        }
+        return ask(pause.request());
       }
       if (error instanceof DynamicNodeFailedException childFailure) {
         // The child already sent an error event, so the node takes on its failure without one.
@@ -1065,6 +1287,7 @@ public final class NodeRunner {
     private ImmutableSet<String> openInterrupts = ImmutableSet.of();
     private boolean checkInput = true;
     private @Nullable NodeExecutionState topLevelPeer;
+    private @Nullable String basePath;
 
     private Builder() {}
 
@@ -1154,6 +1377,13 @@ public final class NodeRunner {
     @CanIgnoreReturnValue
     Builder topLevelPeer(@Nullable NodeExecutionState topLevelPeer) {
       this.topLevelPeer = topLevelPeer;
+      return this;
+    }
+
+    /** Sets the node path a run at the root extends, or null to start a new path. */
+    @CanIgnoreReturnValue
+    Builder basePath(@Nullable String basePath) {
+      this.basePath = basePath;
       return this;
     }
 

@@ -619,10 +619,10 @@ public class LlmAgent extends BaseAgent {
 
     /**
      * Sets how this agent converses when it runs as a workflow node. An agent without a mode runs
-     * as {@link AgentMode#CHAT} when another agent in its tree sets a mode, and otherwise as it
-     * does outside a workflow. A {@link AgentMode#TASK} or {@link AgentMode#SINGLE_TURN} agent runs
-     * as a child node, so building its parent throws {@link IllegalArgumentException} if its name
-     * contains '.'.
+     * as {@link AgentMode#CHAT} when another agent in its tree sets a mode or its tree's root is
+     * the app's root node, and otherwise as it does outside a workflow. A {@link AgentMode#TASK} or
+     * {@link AgentMode#SINGLE_TURN} agent runs as a child node, so building its parent throws
+     * {@link IllegalArgumentException} if its name contains '.'.
      */
     @CanIgnoreReturnValue
     @Experimental
@@ -944,15 +944,16 @@ public class LlmAgent extends BaseAgent {
     if (hasMode(AgentMode.TASK)) {
       return runTask(context, nodeInput);
     }
+    AgentMode nodeMode = nodeMode(context.invocationContext());
     // A chat agent that can delegate runs delegation rounds; one that can't runs one flow.
-    if (defaultMode() == AgentMode.CHAT
+    if (nodeMode == AgentMode.CHAT
         && toolsUnion.stream().anyMatch(TaskAgentTool.class::isInstance)) {
       return runWithDelegations(
           context,
           context.invocationContext().toBuilder().agentMode(this, AgentMode.CHAT).build(),
           /* finishTool= */ null);
     }
-    if (defaultMode() == AgentMode.CHAT) {
+    if (nodeMode == AgentMode.CHAT) {
       // Its flow stops at a handoff, and the workflow runs the target as its own node.
       return runAsNode(
           context, context.invocationContext().toBuilder().agentMode(this, AgentMode.CHAT).build());
@@ -1770,6 +1771,25 @@ public class LlmAgent extends BaseAgent {
     return setsMode(rootAgent()) ? AgentMode.CHAT : null;
   }
 
+  /** Returns the mode this agent runs in as a node in {@code context}, as {@link #runNode} says. */
+  private @Nullable AgentMode nodeMode(InvocationContext context) {
+    AgentMode defaultMode = defaultMode();
+    return defaultMode == null && runsTreeAsNodes(this, context) ? AgentMode.CHAT : defaultMode;
+  }
+
+  /**
+   * Returns whether the agents in {@code agent}'s tree run as workflow nodes in {@code context}:
+   * one in the tree sets a mode, or the tree's root is the app's root node.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean runsTreeAsNodes(BaseAgent agent, @Nullable InvocationContext context) {
+    BaseAgent root = agent.rootAgent();
+    return setsMode(root)
+        || (context != null && context.rootAgentNode().filter(root::equals).isPresent());
+  }
+
   /**
    * Returns whether {@code agent} runs as a {@link AgentMode#TASK} workflow node in {@code
    * context}, so it ends its task with {@code finish_task}. A task agent run any other way runs as
@@ -1869,8 +1889,11 @@ public class LlmAgent extends BaseAgent {
   }
 
   private static boolean setsMode(BaseAgent agent) {
-    return (agent instanceof LlmAgent llmAgent && llmAgent.mode.isPresent())
-        || agent.subAgents().stream().anyMatch(LlmAgent::setsMode);
+    // Reads mode() rather than the field, so a mock agent, whose fields stay null, is safe.
+    return (agent instanceof LlmAgent llmAgent
+            && llmAgent.mode() != null
+            && llmAgent.mode().isPresent())
+        || (agent.subAgents() != null && agent.subAgents().stream().anyMatch(LlmAgent::setsMode));
   }
 
   public Single<List<BaseTool>> tools() {
