@@ -94,6 +94,9 @@ liveRunner
     `image/*` as a video frame. Any other blob, or one with no MIME type, is
     dropped with a warning, because the Kotlin engine has no untyped media
     input.
+-   An ADK Java `FunctionTool` that returns a `Flowable` streams its items to
+    the model in a live run; its `inputStream` parameter, if any, receives
+    `null`.
 -   `RunConfig` settings the Kotlin engine cannot honor fail the stream rather
     than being dropped.
 -   `runLive(session, ...)` runs the copy of that session the Kotlin runner's

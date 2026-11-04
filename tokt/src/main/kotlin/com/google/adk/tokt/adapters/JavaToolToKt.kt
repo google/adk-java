@@ -21,19 +21,27 @@ import com.google.adk.kt.tools.BaseTool
 import com.google.adk.kt.tools.ToolContext
 import com.google.adk.kt.types.FunctionDeclaration
 import com.google.adk.tokt.codecs.FunctionDeclarationCodec
+import com.google.adk.tokt.codecs.WorkflowCodec
 import com.google.adk.tokt.context.ktToolContextToJava
 import com.google.adk.tools.BaseTool as JavaBaseTool
+import com.google.adk.tools.FunctionTool as JavaFunctionTool
+import io.reactivex.rxjava3.core.Flowable
+import java.lang.reflect.InvocationTargetException
 import kotlin.jvm.optionals.getOrNull
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.reactive.awaitFirstOrNull
 import kotlinx.coroutines.reactive.awaitSingle
 import kotlinx.coroutines.withContext
 
 /**
  * Exposes a Java [JavaBaseTool] as a Kotlin [BaseTool] so the Kotlin engine can invoke it. [run]
- * awaits the tool's RxJava result off the engine dispatcher (`dispatcher`), with actions delegating
- * live to the Kotlin context. [processLlmRequest] re-applies a tool's request edits while
- * preserving Kotlin-only fields (model, toolsDict).
+ * awaits the tool's RxJava result off the engine dispatcher (`dispatcher`), or returns a streaming
+ * `FunctionTool`'s items as a Flow, with actions delegating live to the Kotlin context.
+ * [processLlmRequest] re-applies a tool's request edits while preserving Kotlin-only fields (model,
+ * toolsDict).
  */
 internal class JavaToolToKt(
   internal val javaTool: JavaBaseTool,
@@ -51,6 +59,21 @@ internal class JavaToolToKt(
 
   override suspend fun run(context: ToolContext, args: Map<String, Any?>): Any {
     val javaContext = ktToolContextToJava(context, dispatcher)
+    if (javaTool is JavaFunctionTool && javaTool.isStreaming) {
+      // Returned in any mode: the engine owns the Flow, and a live run streams it to the model.
+      val items: Flowable<*> =
+        withContext(dispatcher) {
+          try {
+            javaTool.callLive(args, javaContext, javaContext.invocationContext())
+          } catch (e: InvocationTargetException) {
+            // Surface the tool's own exception, as calling its method directly would.
+            throw e.cause ?: e
+          }
+        }
+      // What the body set before returning still reaches the call's answer.
+      reconcileActionsToKt(javaContext.actions(), context.actions)
+      return items.asFlow().map { WorkflowCodec.outputFromJava(it) }.flowOn(dispatcher)
+    }
     // Run off the engine dispatcher so synchronous RxJava or blocking tool I/O cannot stall the
     // agent loop; the live actions view is backed by concurrent maps, so another thread is safe.
     val result =

@@ -33,6 +33,7 @@ import com.google.adk.kt.agents.BaseAgent as KtBaseAgent
 import com.google.adk.kt.agents.CallbackContext as KtCallbackContext
 import com.google.adk.kt.agents.Context as KtContext
 import com.google.adk.kt.agents.InvocationContext as KtInvocationContext
+import com.google.adk.kt.agents.LiveRequestQueue as KtLiveRequestQueue
 import com.google.adk.kt.agents.LiveRunConfig as KtLiveRunConfig
 import com.google.adk.kt.agents.LlmAgent as KtLlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig as KtResumabilityConfig
@@ -72,6 +73,7 @@ import com.google.adk.kt.types.CitationMetadata as KtCitationMetadata
 import com.google.adk.kt.types.Content as KtContent
 import com.google.adk.kt.types.FileData as KtFileData
 import com.google.adk.kt.types.FinishReason as KtFinishReason
+import com.google.adk.kt.types.FunctionCall as KtFunctionCall
 import com.google.adk.kt.types.FunctionCallingConfig as KtFunctionCallingConfig
 import com.google.adk.kt.types.FunctionCallingConfigMode as KtFunctionCallingConfigMode
 import com.google.adk.kt.types.FunctionResponse as KtFunctionResponse
@@ -164,8 +166,10 @@ import com.google.adk.tokt.codecs.toGenai
 import com.google.adk.tokt.codecs.toKt
 import com.google.adk.tokt.codecs.typedDataFromJava
 import com.google.adk.tokt.codecs.unsupportedFields
+import com.google.adk.tools.Annotations.Schema
 import com.google.adk.tools.BaseTool as JavaBaseTool
 import com.google.adk.tools.BaseToolset as JavaBaseToolset
+import com.google.adk.tools.FunctionTool as JavaFunctionTool
 import com.google.adk.tools.ToolContext as JavaToolContext
 import com.google.adk.workflow.NodeInfo as JavaNodeInfo
 import com.google.adk.workflow.Route as JavaRoute
@@ -248,6 +252,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -2870,6 +2875,144 @@ class KtRunnerInteropTest {
   @Test
   fun audioTranscriptionConfigToKt_everyFieldSet_convertsEveryField() {
     assertThat(genaiTranscriptionConfig().toKt()).isEqualTo(ktTranscriptionConfig())
+  }
+
+  @Test
+  fun asKtTool_streamingJavaTool_returnsItsItemsAsAFlow(): Unit = runBlocking {
+    // Returned in any mode: the engine owns the Flow, and a live run streams it to the model.
+    val tool =
+      JavaAdkToKt.asKtTool(JavaFunctionTool.create(StreamingJavaTools::class.java, "countUp"))
+
+    val result = tool.run(KtToolContext(ktInvocationContext()), emptyMap())
+
+    assertEquals(listOf("1", "2"), assertIs<Flow<*>>(result).toList())
+  }
+
+  @Test
+  fun asKtTool_nonStreamingJavaTool_runsInALiveRun(): Unit = runBlocking {
+    // Only a Flowable return streams; a queue parameter alone doesn't.
+    val tool =
+      JavaAdkToKt.asKtTool(JavaFunctionTool.create(StreamingJavaTools::class.java, "listen"))
+    val live = ktInvocationContext(KtRunConfig(streamingMode = KtStreamingMode.BIDI))
+
+    val result = tool.run(KtToolContext(live), emptyMap())
+
+    assertEquals(mapOf("result" to "heard"), result)
+  }
+
+  @Test
+  fun asKtTool_streamingJavaTool_carriesTheActionsItsBodySets(): Unit = runBlocking {
+    val tool =
+      JavaAdkToKt.asKtTool(
+        JavaFunctionTool.create(StreamingJavaTools::class.java, "countUpQuietly")
+      )
+    val context = KtToolContext(ktInvocationContext())
+
+    val result = tool.run(context, emptyMap())
+
+    assertEquals(listOf("1"), assertIs<Flow<*>>(result).toList())
+    assertTrue(context.actions.skipSummarization)
+  }
+
+  @Test
+  fun asKtTool_streamingJavaToolWithAQueueParameter_getsNoQueue(): Unit = runBlocking {
+    val tool =
+      JavaAdkToKt.asKtTool(JavaFunctionTool.create(StreamingJavaTools::class.java, "countHeard"))
+
+    val result = tool.run(KtToolContext(ktInvocationContext()), emptyMap())
+
+    assertEquals(listOf("no queue"), assertIs<Flow<*>>(result).toList())
+  }
+
+  @Test
+  fun asKtTool_streamingJavaToolThatThrows_failsWithItsOwnException(): Unit = runBlocking {
+    val tool =
+      JavaAdkToKt.asKtTool(JavaFunctionTool.create(StreamingJavaTools::class.java, "failToStart"))
+
+    assertFailsWith<IllegalStateException> {
+      tool.run(KtToolContext(ktInvocationContext()), emptyMap())
+    }
+  }
+
+  @Test
+  fun asKtTool_streamingJavaTool_runsAndEmitsOnTheDispatcher(): Unit = runBlocking {
+    val executor = Executors.newSingleThreadExecutor { Thread(it, "tool-dispatcher") }
+    try {
+      val tool =
+        JavaAdkToKt.asKtTool(
+          JavaFunctionTool.create(StreamingJavaTools::class.java, "threadNames"),
+          executor.asCoroutineDispatcher(),
+        )
+
+      val result = tool.run(KtToolContext(ktInvocationContext()), emptyMap())
+
+      // Coroutine debug mode adds " @coroutine#n" to thread names.
+      val threads = assertIs<Flow<*>>(result).toList().map { "$it".substringBefore(" @") }
+      assertEquals(listOf("tool-dispatcher", "tool-dispatcher"), threads)
+    } finally {
+      executor.shutdown()
+    }
+  }
+
+  @Test
+  fun asJavaRunner_runLive_streamingJavaTool_streamsItsItemsToTheModel() {
+    val model = ToolCallLiveModel("countUp")
+    val countUp =
+      JavaAdkToKt.asKtTool(JavaFunctionTool.create(StreamingJavaTools::class.java, "countUp"))
+    val queue = LiveRequestQueue()
+    val events =
+      KotlinAdkToJava.asJavaRunner(
+          KtInMemoryRunner(
+            agent = KtLlmAgent(name = "a", model = model, tools = listOf(countUp)),
+            appName = "app",
+          )
+        )
+        .runLive("u", "s", queue, autoCreateSessionConfig())
+        .test()
+
+    try {
+      awaitTrue("both items should reach the model") {
+        model.results().containsAll(listOf("1", "2"))
+      }
+    } finally {
+      queue.close()
+    }
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+  }
+
+  @Test
+  fun ktRunner_runLive_streamingJavaToolInStreamingModeNone_streamsItsItems() {
+    // A native live run keeps the caller's RunConfig, NONE by default; the engine still streams.
+    val model = ToolCallLiveModel("countUp")
+    val countUp =
+      JavaAdkToKt.asKtTool(JavaFunctionTool.create(StreamingJavaTools::class.java, "countUp"))
+    val runner =
+      KtInMemoryRunner(
+        agent = KtLlmAgent(name = "a", model = model, tools = listOf(countUp)),
+        appName = "app",
+      )
+    val queue = KtLiveRequestQueue()
+    val failure = AtomicReference<Throwable?>()
+    val run = thread {
+      try {
+        runBlocking { runner.runLive("u", "s", queue, KtRunConfig()).toList() }
+      } catch (e: Throwable) {
+        failure.set(e)
+      }
+    }
+
+    try {
+      awaitTrue("both items should reach the model") {
+        model.results().containsAll(listOf("1", "2"))
+      }
+    } finally {
+      queue.close()
+    }
+
+    run.join(TimeUnit.SECONDS.toMillis(10))
+    assertFalse(run.isAlive, "the run should end once its queue closes")
+    assertNull(failure.get())
   }
 
   @Test
@@ -6888,6 +7031,80 @@ class KtRunnerInteropTest {
     }
   }
 
+  /** Static methods FunctionTool can wrap: those returning a Flowable stream; [listen] doesn't. */
+  object StreamingJavaTools {
+    @JvmStatic fun countUp(): Flowable<String> = Flowable.just("1", "2")
+
+    @JvmStatic
+    fun countUpQuietly(
+      @Schema(name = "toolContext") toolContext: JavaToolContext
+    ): Flowable<String> {
+      toolContext.actions().setSkipSummarization(true)
+      return Flowable.just("1")
+    }
+
+    @JvmStatic
+    fun countHeard(@Schema(name = "inputStream") inputStream: LiveRequestQueue?): Flowable<String> =
+      Flowable.just(if (inputStream == null) "no queue" else "queue")
+
+    @JvmStatic fun failToStart(): Flowable<String> = throw IllegalStateException("cannot start")
+
+    /** Emits the thread that called it, then the thread that emits. */
+    @JvmStatic
+    fun threadNames(): Flowable<String> {
+      val caller = Thread.currentThread().name
+      return Flowable.fromCallable { Thread.currentThread().name }.startWithItem(caller)
+    }
+
+    @JvmStatic
+    fun listen(@Schema(name = "inputStream") inputStream: LiveRequestQueue?): String = "heard"
+  }
+
+  /** A live model that calls [toolName] once, then records every function response it is sent. */
+  private class ToolCallLiveModel(private val toolName: String) : KtModel {
+    override val name = "tool-call-live-model"
+    private val responses = CopyOnWriteArrayList<KtFunctionResponse>()
+
+    /** The `result` value of each function response so far. */
+    fun results(): List<Any?> = responses.mapNotNull { it.response?.get("result") }
+
+    override fun generateContent(request: KtLlmRequest, stream: Boolean): Flow<KtLlmResponse> =
+      throw UnsupportedOperationException("ToolCallLiveModel answers live connections only")
+
+    override suspend fun connect(request: KtLlmRequest): KtLiveConnection =
+      object : KtLiveConnection {
+        private val turns = AtomicInteger()
+        private val untilClosed = Channel<KtLlmResponse>()
+
+        override suspend fun sendHistory(history: List<KtContent>) {}
+
+        override suspend fun sendContent(content: KtContent, partial: Boolean) {
+          responses += content.parts.mapNotNull { it.functionResponse }
+        }
+
+        override suspend fun sendRealtime(input: KtRealtimeInput) {}
+
+        override fun receive(): Flow<KtLlmResponse> = flow {
+          // The first turn asks for the tool; a later one waits for the session to close.
+          if (turns.getAndIncrement() == 0) {
+            val call = KtFunctionCall(name = toolName, id = "call-1")
+            emit(
+              KtLlmResponse(
+                content = KtContent(role = "model", parts = listOf(KtPart(functionCall = call)))
+              )
+            )
+            emit(KtLlmResponse(turnComplete = true))
+          } else {
+            for (reply in untilClosed) emit(reply)
+          }
+        }
+
+        override suspend fun closeSession() {
+          untilClosed.close()
+        }
+      }
+  }
+
   private companion object {
     fun modelFunctionCall(name: String, args: Map<String, Any>): GenaiContent =
       GenaiContent.builder()
@@ -6932,11 +7149,12 @@ class KtRunnerInteropTest {
         .build()
 
     /** A Kotlin invocation context on a fresh session, for driving a plugin adapter directly. */
-    fun ktInvocationContext() =
+    fun ktInvocationContext(runConfig: KtRunConfig? = null) =
       KtInvocationContext(
         session = KtSession(KtSessionKey("app", "u", "s")),
         agent =
           KtLlmAgent(name = "a", model = JavaAdkToKt.asKtModel(SequentialJavaModel(emptyList()))),
+        runConfig = runConfig,
       )
 
     /** A Kotlin callback context over [ktInvocationContext]. */
