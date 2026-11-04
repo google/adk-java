@@ -25,6 +25,7 @@ import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
+import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
@@ -175,6 +176,33 @@ public final class LlmAgentTest {
     assertThat(events.get(0).finalResponse()).isTrue();
 
     assertThat(events.get(0).actions().stateDelta()).containsEntry("myOutput", "Saved output");
+  }
+
+  @Test
+  public void testRun_withOutputKey_doesNotSaveTheOutputOfATransferredToAgent() {
+    LlmAgent subAgent =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("Sub-agent answer")))
+            .name("sub_agent")
+            .outputKey("subAgentOutput")
+            .build();
+    Content transferCall =
+        Content.fromParts(
+            Part.fromFunctionCall("transfer_to_agent", ImmutableMap.of("agent_name", "sub_agent")));
+    LlmAgent agent =
+        createTestAgentBuilder(createTestLlm(createLlmResponse(transferCall)))
+            .outputKey("myOutput")
+            .subAgents(subAgent)
+            .build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    Event subAgentAnswer = getLast(events);
+    assertThat(subAgentAnswer.author()).isEqualTo("sub_agent");
+    assertThat(subAgentAnswer.finalResponse()).isTrue();
+    assertThat(subAgentAnswer.actions().stateDelta()).doesNotContainKey("myOutput");
+    assertThat(subAgentAnswer.actions().stateDelta())
+        .containsEntry("subAgentOutput", "Sub-agent answer");
   }
 
   @Test
