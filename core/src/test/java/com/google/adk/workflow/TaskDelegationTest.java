@@ -477,7 +477,7 @@ public final class TaskDelegationTest {
   }
 
   @Test
-  public void transferBesideADelegation_isAnsweredWithAnErrorAndDoesNotHandOff() {
+  public void transferBesideADelegation_handsOffOnceTheTaskAnswers() {
     TestLlm otherModel = TestLlm.create(createTextLlmResponse("Hi from other."));
     LlmAgent other = LlmAgent.builder().name("other").model(otherModel).build();
     Content delegateAndTransfer =
@@ -512,10 +512,11 @@ public final class TaskDelegationTest {
     ImmutableList<Event> events =
         new WorkflowSession(workflow(new Edge(START, coordinator))).turn(go());
 
-    assertThat(otherModel.getRequests()).isEmpty();
+    assertThat(otherModel.getRequests()).hasSize(1);
+    assertThat(model.getRequests()).hasSize(1);
     assertThat(responsesTo("t1", events)).containsExactly(ImmutableMap.of("result", "Booked."));
     assertThat(responsesTo("x1", events)).hasSize(1);
-    assertThat(responsesTo("x1", events).get(0)).containsKey("error");
+    assertThat(responsesTo("x1", events).get(0)).doesNotContainKey("error");
   }
 
   @Test

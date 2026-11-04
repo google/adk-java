@@ -119,6 +119,24 @@ public class SlidingWindowEventCompactorTest {
   }
 
   @Test
+  public void compaction_leavesScopedEventsOut() {
+    EventCompactor compactor =
+        new SlidingWindowEventCompactor(new EventsCompactionConfig(2, 1, mockSummarizer));
+    Event first = Event.builder().invocationId("1").timestamp(1).build();
+    Event second = Event.builder().invocationId("2").timestamp(3).build();
+    Event taskTurn = Event.builder().invocationId("2").timestamp(2).isolationScope("t1").build();
+    Session session =
+        Session.builder("id").events(ImmutableList.of(first, taskTurn, second)).build();
+    Event compactedEvent = createCompactedEvent(1, 3, "Summary 1-2");
+    when(mockSummarizer.summarizeEvents(any())).thenReturn(Maybe.just(compactedEvent));
+    when(mockSessionService.appendEvent(any(), any())).then(i -> Single.just(i.getArgument(1)));
+
+    compactor.compact(session, mockSessionService).blockingSubscribe();
+
+    verify(mockSummarizer).summarizeEvents(eq(ImmutableList.of(first, second)));
+  }
+
+  @Test
   public void compaction_withOverlap() {
     EventCompactor compactor =
         new SlidingWindowEventCompactor(new EventsCompactionConfig(2, 1, mockSummarizer));

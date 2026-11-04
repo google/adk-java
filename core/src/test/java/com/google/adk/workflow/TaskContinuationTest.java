@@ -37,6 +37,8 @@ import static com.google.common.truth.Truth.assertThat;
 import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.events.EventActions;
+import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
@@ -253,7 +255,7 @@ public final class TaskContinuationTest {
   }
 
   @Test
-  public void delegatedTaskThatHandedOff_passesLaterMessagesToItsTarget() {
+  public void delegatedTaskThatHandedOff_doesNotTakeLaterMessages() {
     TestLlm otherModel =
         TestLlm.create(createTextLlmResponse("Other here."), createTextLlmResponse("Other again."));
     LlmAgent worker =
@@ -284,10 +286,10 @@ public final class TaskContinuationTest {
 
     session.advance(userText("Thanks"));
 
-    // The handoff target runs as a node and gives no output, so the delegation stays open and the
-    // reply goes to that target in the task's invocation.
-    assertThat(session.invocationIds()).hasSize(1);
-    assertThat(otherModel.getLastRequest().contents()).contains(userText("Thanks"));
+    // The target answered, so the delegation was answered and the reply starts a new turn.
+    assertThat(session.invocationIds()).hasSize(2);
+    assertThat(model.getLastRequest().contents()).contains(userText("Thanks"));
+    assertThat(otherModel.getRequests()).hasSize(1);
   }
 
   @Test
@@ -363,6 +365,45 @@ public final class TaskContinuationTest {
     session.advance(userText("again"));
 
     // The failed task ended, so the coordinator answers instead of waiting on it.
+    assertThat(model.getRequests()).hasSize(2);
+  }
+
+  @Test
+  public void failedDelegatedTaskWithACompactionSummaryInItsScope_letsTheCoordinatorAnswer() {
+    TestLlm model =
+        TestLlm.create(
+            createFunctionCallLlmResponse("t1", "worker", ImmutableMap.of("request", "Book.")),
+            createTextLlmResponse("Sorry, try again."));
+    LlmAgent coordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .model(model)
+            .mode(AgentMode.CHAT)
+            .subAgents(
+                task("worker", TestLlm.create(null, new IllegalStateException("model down"))))
+            .build();
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, coordinator)));
+    var unused = session.failingTurn(go());
+    // A summary carries an invocation ID of its own, so it must not read as the task waiting.
+    session.store(
+        Event.builder()
+            .id("summary")
+            .invocationId("summary_invocation")
+            .author("user")
+            .isolationScope("t1")
+            .actions(
+                EventActions.builder()
+                    .compaction(
+                        EventCompaction.builder()
+                            .startTimestamp(0L)
+                            .endTimestamp(1L)
+                            .compactedContent(Content.fromParts(Part.fromText("Summary.")))
+                            .build())
+                    .build())
+            .build());
+
+    session.advance(userText("again"));
+
     assertThat(model.getRequests()).hasSize(2);
   }
 

@@ -47,8 +47,14 @@ public class Compaction implements RequestProcessor {
     int tokenThreshold = config.tokenThreshold();
 
     // Summarizer will not be missing since the runner will always add a default one if missing.
+    // Each scope keeps a history of its own, so it is measured and summarized alone.
     TailRetentionEventCompactor compactor =
-        new TailRetentionEventCompactor(config.summarizer(), retentionSize, tokenThreshold);
+        new TailRetentionEventCompactor(
+            config.summarizer(),
+            retentionSize,
+            tokenThreshold,
+            context.isolationScope().orElse(null),
+            context.agent().name());
 
     return compactor
         .compact(context.session(), context.sessionService())

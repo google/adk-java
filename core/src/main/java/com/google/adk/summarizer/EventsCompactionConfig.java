@@ -23,6 +23,10 @@ import org.jspecify.annotations.Nullable;
 /**
  * Configuration for event compaction.
  *
+ * <p>Token-threshold compaction summarizes the history of each isolation scope on its own, such as
+ * a {@link com.google.adk.agents.AgentMode#TASK} agent's, while compaction by invocation count
+ * summarizes only events outside isolation scopes.
+ *
  * @param compactionInterval The number of <b>new</b> user-initiated invocations that, once fully
  *     represented in the session's events, will trigger a compaction.
  * @param overlapSize The number of preceding invocations to include from the end of the last

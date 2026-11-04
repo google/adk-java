@@ -619,10 +619,10 @@ public class LlmAgent extends BaseAgent {
 
     /**
      * Sets how this agent converses when it runs as a workflow node. An agent without a mode runs
-     * as {@link AgentMode#CHAT} when another agent in its tree sets a mode, and otherwise as it
-     * does outside a workflow. A {@link AgentMode#TASK} or {@link AgentMode#SINGLE_TURN} agent runs
-     * as a child node, so building its parent throws {@link IllegalArgumentException} if its name
-     * contains '.'.
+     * as {@link AgentMode#CHAT} when another agent in its tree sets a mode or its tree's root is
+     * the app's root node, and otherwise as it does outside a workflow. A {@link AgentMode#TASK} or
+     * {@link AgentMode#SINGLE_TURN} agent runs as a child node, so building its parent throws
+     * {@link IllegalArgumentException} if its name contains '.'.
      */
     @CanIgnoreReturnValue
     @Experimental
@@ -944,15 +944,16 @@ public class LlmAgent extends BaseAgent {
     if (hasMode(AgentMode.TASK)) {
       return runTask(context, nodeInput);
     }
+    AgentMode nodeMode = nodeMode(context.invocationContext());
     // A chat agent that can delegate runs delegation rounds; one that can't runs one flow.
-    if (defaultMode() == AgentMode.CHAT
+    if (nodeMode == AgentMode.CHAT
         && toolsUnion.stream().anyMatch(TaskAgentTool.class::isInstance)) {
       return runWithDelegations(
           context,
           context.invocationContext().toBuilder().agentMode(this, AgentMode.CHAT).build(),
           /* finishTool= */ null);
     }
-    if (defaultMode() == AgentMode.CHAT) {
+    if (nodeMode == AgentMode.CHAT) {
       // Its flow stops at a handoff, and the workflow runs the target as its own node.
       return runAsNode(
           context, context.invocationContext().toBuilder().agentMode(this, AgentMode.CHAT).build());
@@ -1012,11 +1013,13 @@ public class LlmAgent extends BaseAgent {
    * agent until the model delegates tasks or ends; the delegated tasks then run as child nodes,
    * each in the scope of its call, and their answers start the next round. With a {@code
    * finishTool}, the run ends once a {@code finish_task} call succeeds; the flow stops at a handoff
-   * too, so the workflow runs the target as a node.
+   * too, once any delegations beside it answer, so the workflow runs the target as a node.
    */
   private Flowable<Event> runWithDelegations(
       Context context, InvocationContext agentContext, @Nullable FinishTaskTool finishTool) {
     return Flowable.defer(() -> {
+      // A node starts with its parent's author, such as a workflow's, so this agent takes it over.
+      context.requireNodeState().eventAuthor(name());
       ImmutableMap<String, BaseTool> tools =
           toolsUnion.stream()
               .filter(BaseTool.class::isInstance)
@@ -1024,8 +1027,8 @@ public class LlmAgent extends BaseAgent {
               .collect(
                   toImmutableMap(BaseTool::name, Function.identity(), (first, unused) -> first));
       // A task resumes only its own delegations; a chat agent's may sit in any scope.
-      ImmutableList<FunctionCall> pending =
-          unansweredDelegations(context, tools, /* ownScopeOnly= */ finishTool != null);
+      boolean ownScopeOnly = finishTool != null;
+      ImmutableList<FunctionCall> pending = unansweredDelegations(context, tools, ownScopeOnly);
       Map<TaskState, List<FunctionCall>> byState = new EnumMap<>(TaskState.class);
       for (FunctionCall call : pending) {
         byState.computeIfAbsent(taskState(context, call), unused -> new ArrayList<>()).add(call);
@@ -1043,8 +1046,12 @@ public class LlmAgent extends BaseAgent {
       if (byState.containsKey(TaskState.WAITING)) {
         return answers;
       }
+      DelegationRun run = new DelegationRun(context, agentContext, tools, finishTool);
       return answers.concatWith(
-          delegationRounds(new DelegationRun(context, agentContext, tools, finishTool)));
+          Flowable.defer(() ->
+              unansweredDeferredTransfer(context, tools, ownScopeOnly)
+                  .map(transfer -> handOffAfterDelegations(run, transfer))
+                  .orElseGet(() -> delegationRounds(run))));
     });
   }
 
@@ -1077,7 +1084,9 @@ public class LlmAgent extends BaseAgent {
     Event latest = null;
     boolean finished = false;
     for (Event event : context.invocationContext().session().immutableEvents()) {
-      if (event.isolationScope().filter(callId::equals).isPresent()) {
+      // A summary in the scope says nothing about the task's own run, as in Python.
+      if (event.isolationScope().filter(callId::equals).isPresent()
+          && event.actions().compaction().isEmpty()) {
         latest = event;
         finished |= finishesTask(event);
       }
@@ -1114,10 +1123,14 @@ public class LlmAgent extends BaseAgent {
     }
   }
 
+  /** A handoff that waits for the delegations beside it, with the responses that make it. */
+  private record DeferredTransfer(ImmutableList<Part> responses, String target) {}
+
   /** What one delegation round has seen so far. */
   private static final class DelegationRound {
     ImmutableList<FunctionCall> delegations = ImmutableList.of();
     ImmutableList<FunctionCall> rejectedCalls = ImmutableList.of();
+    @Nullable DeferredTransfer deferredTransfer;
     final Set<String> pendingLongRunningCalls = new HashSet<>();
     boolean ended;
     boolean handedOff;
@@ -1133,7 +1146,8 @@ public class LlmAgent extends BaseAgent {
               .takeWhile(
                   event -> round.delegations.isEmpty() || !startsModelStep(event, run.branch()))
               .map(event -> roundEvent(run, round, event))
-              .takeUntil((Event event) -> round.ended);
+              .takeUntil((Optional<Event> unused) -> round.ended)
+              .concatMap(Flowable::fromOptional);
       return roundEvents.concatWith(
           Flowable.defer(() -> {
             if (round.handedOff) {
@@ -1146,30 +1160,37 @@ public class LlmAgent extends BaseAgent {
             return rejectCalls(context, round.rejectedCalls)
                 .concatWith(answerDelegations(context, round.delegations))
                 .concatWith(
-                    Flowable.defer(() ->
-                        round.pendingLongRunningCalls.isEmpty()
-                                && maxSteps
-                                    .map(max -> run.agentContext().stepsTaken(this) < max)
-                                    .orElse(true)
-                            ? delegationRounds(run)
-                            : Flowable.empty()));
+                    Flowable.defer(() -> {
+                      // A long-running call beside the handoff holds it, as it holds the round.
+                      if (round.deferredTransfer != null) {
+                        return round.pendingLongRunningCalls.isEmpty()
+                            ? handOffAfterDelegations(run, round.deferredTransfer)
+                            : Flowable.empty();
+                      }
+                      return round.pendingLongRunningCalls.isEmpty()
+                              && maxSteps
+                                  .map(max -> run.agentContext().stepsTaken(this) < max)
+                                  .orElse(true)
+                          ? delegationRounds(run)
+                          : Flowable.empty();
+                    }));
           }));
     });
   }
 
   /**
    * Returns {@code event} as one round emits it, updating {@code round}: after the model delegates,
-   * the round keeps only that step's tool responses, and a task run ends on the {@code finish_task}
-   * response that succeeds.
+   * the round keeps only that step's tool responses, holding back a handoff's until the delegations
+   * answer, and a task run ends on the {@code finish_task} response that succeeds.
    */
-  private Event roundEvent(DelegationRun run, DelegationRound round, Event event) {
+  private Optional<Event> roundEvent(DelegationRun run, DelegationRound round, Event event) {
     Context context = run.context();
     Map<String, BaseTool> tools = run.tools();
     FinishTaskTool finishTool = run.finishTool();
     AtomicReference<Map<String, Object>> finishArgs = run.finishArgs();
     // A sub-agent's events, such as a single-turn tool's, pass through; its calls are not ours.
     if (!isOwnStep(event, run.branch())) {
-      return event;
+      return Optional.of(event);
     }
     // A partial chunk never runs its calls, and its IDs can differ from the final one's.
     if (!event.partial().orElse(false)) {
@@ -1187,7 +1208,8 @@ public class LlmAgent extends BaseAgent {
       // The tools' responses end the step, unless they answered every delegation, so the model
       // is not called again while a delegation is open.
       round.ended = !round.delegations.isEmpty() && !event.functionResponses().isEmpty();
-      return FinishTaskTool.withRejectedResponses(event);
+      Event kept = FinishTaskTool.withRejectedResponses(event);
+      return round.delegations.isEmpty() ? Optional.of(kept) : deferringTransfer(kept, round);
     }
     ImmutableList<FunctionCall> delegations = taskDelegationsIn(event, tools);
     if (finishTool != null) {
@@ -1204,7 +1226,7 @@ public class LlmAgent extends BaseAgent {
         round.ended = true;
         Object output = finishTool.taskOutput(finishArgs.get());
         if (output == null) {
-          return event;
+          return Optional.of(event);
         }
         if (outputKey().isPresent()) {
           var unused = context.state().put(outputKey().get(), output);
@@ -1214,18 +1236,18 @@ public class LlmAgent extends BaseAgent {
             outputSchema()
                 .map(schema -> SchemaUtils.valueWithDefaults(output, schema))
                 .orElse(output);
-        return event.toBuilder().output(nodeOutput).build();
+        return Optional.of(event.toBuilder().output(nodeOutput).build());
       }
     }
     if (handsOff(event)) {
       round.handedOff = true;
-      return event;
+      return Optional.of(event);
     }
     round.delegations = delegations;
     if (!round.delegations.isEmpty()) {
-      // A call no tool runs, such as a transfer, must not run with the step's tools, so the step
-      // ends before them and every other call is answered with an error. Python instead runs the
-      // other calls and answers only an unknown tool with an error.
+      // A call no tool runs, such as an unknown tool, must not run with the step's tools, so the
+      // step ends before them and every other call is answered with an error. Python instead runs
+      // the other calls and answers only an unknown tool with an error.
       if (!callsNoToolRuns(event, tools).isEmpty()) {
         round.rejectedCalls = callsBesideDelegations(event, round.delegations);
         round.ended = true;
@@ -1235,24 +1257,24 @@ public class LlmAgent extends BaseAgent {
       }
     }
 
-    return event;
+    return Optional.of(event);
   }
 
   /**
-   * Returns the calls in {@code event} that no tool of this agent answers, such as a {@code
-   * transfer_to_agent} beside a delegation, which the delegation's round answers with an error.
+   * Returns the calls in {@code event} that no tool of this agent answers, such as an unknown tool
+   * beside a delegation, which the delegation's round answers with an error. An offered {@code
+   * transfer_to_agent} runs, and its handoff waits for the delegations.
    */
   private ImmutableList<FunctionCall> callsNoToolRuns(Event event, Map<String, BaseTool> tools) {
+    boolean transferOffered = !transferTargets().isEmpty();
     // A toolset's tools are resolved per request, so they are known only by the step's own tools.
-    if (toolsUnion.stream().anyMatch(BaseToolset.class::isInstance)) {
-      return event.functionCalls().stream()
-          .filter(call -> call.id().filter(id -> !id.isEmpty()).isPresent())
-          .filter(call -> call.name().filter(TRANSFER_TO_AGENT_TOOL::equals).isPresent())
-          .collect(toImmutableList());
-    }
+    boolean toolsKnown = toolsUnion.stream().noneMatch(BaseToolset.class::isInstance);
     return event.functionCalls().stream()
         .filter(call -> call.id().filter(id -> !id.isEmpty()).isPresent())
-        .filter(call -> call.name().map(tools::get).isEmpty())
+        .filter(call -> {
+          boolean transfer = call.name().filter(TRANSFER_TO_AGENT_TOOL::equals).isPresent();
+          return transfer ? !transferOffered : toolsKnown && call.name().map(tools::get).isEmpty();
+        })
         .collect(toImmutableList());
   }
 
@@ -1304,6 +1326,132 @@ public class LlmAgent extends BaseAgent {
         .filter(entry -> !answered.contains(entry.getKey()))
         .map(Map.Entry::getValue)
         .collect(toImmutableList());
+  }
+
+  /** Returns the {@code transfer_to_agent} call in {@code event}, if there is one. */
+  private static Optional<FunctionCall> transferCallIn(Event event) {
+    return event.functionCalls().stream()
+        .filter(call -> call.name().filter(TRANSFER_TO_AGENT_TOOL::equals).isPresent())
+        .filter(call -> call.id().filter(id -> !id.isEmpty()).isPresent())
+        .findFirst();
+  }
+
+  /**
+   * Returns the latest {@code transfer_to_agent} call this agent made beside task delegations, once
+   * every other call of its step has answered, as the handoff it defers. With {@code ownScopeOnly},
+   * only calls made in this node's scope count. A call made by another run still in progress is
+   * that run's.
+   */
+  private Optional<DeferredTransfer> unansweredDeferredTransfer(
+      Context context, Map<String, BaseTool> tools, boolean ownScopeOnly) {
+    NodeExecutionState nodeState = context.requireNodeState();
+    Optional<String> nodeScope = nodeState.isolationScope();
+    Event latest = null;
+    Set<String> answered = new HashSet<>();
+    for (Event event : context.invocationContext().session().immutableEvents()) {
+      boolean inScope = !ownScopeOnly || event.isolationScope().equals(nodeScope);
+      boolean delegatorRuns =
+          event.nodeInfo().map(NodeInfo::path).filter(nodeState::otherRunInProgress).isPresent();
+      if (name().equals(event.author())
+          && inScope
+          && !delegatorRuns
+          && !taskDelegationsIn(event, tools).isEmpty()
+          && transferCallIn(event).isPresent()) {
+        latest = event;
+      }
+      event.functionResponses().forEach(response -> response.id().ifPresent(answered::add));
+    }
+    if (latest == null) {
+      return Optional.empty();
+    }
+    FunctionCall transfer = transferCallIn(latest).orElseThrow();
+    String transferId = transfer.id().orElseThrow();
+    // The step's other calls, such as a single-turn agent's that waits on the user, answer first.
+    boolean othersAnswered =
+        latest.functionCalls().stream()
+            .flatMap(call -> call.id().stream())
+            .filter(id -> !id.isEmpty() && !id.equals(transferId))
+            .allMatch(answered::contains);
+    return othersAnswered && !answered.contains(transferId)
+        ? deferredTransferOf(transfer)
+        : Optional.empty();
+  }
+
+  /**
+   * Returns the handoff that an unanswered {@code transfer_to_agent} {@code call} makes, if this
+   * agent offers transfers, as only then did the call run. The workflow checks the target as it
+   * does for any handoff.
+   */
+  private Optional<DeferredTransfer> deferredTransferOf(FunctionCall call) {
+    if (!(call.args().orElse(ImmutableMap.of()).get("agent_name") instanceof String target)
+        || transferTargets().isEmpty()) {
+      return Optional.empty();
+    }
+    Part response =
+        Part.builder()
+            .functionResponse(
+                FunctionResponse.builder()
+                    .id(call.id().orElseThrow())
+                    .name(TRANSFER_TO_AGENT_TOOL)
+                    .response(ImmutableMap.of())
+                    .build())
+            .build();
+    return Optional.of(new DeferredTransfer(ImmutableList.of(response), target));
+  }
+
+  /**
+   * Returns {@code event} without the {@code transfer_to_agent} responses of the handoff it makes,
+   * which {@code round} keeps until the delegations answer, or empty when nothing else is left.
+   */
+  private Optional<Event> deferringTransfer(Event event, DelegationRound round) {
+    if (!handsOff(event)) {
+      return Optional.of(event);
+    }
+    List<Part> parts = event.content().flatMap(Content::parts).orElse(ImmutableList.of());
+    ImmutableList<Part> transferResponses =
+        parts.stream().filter(LlmAgent::isTransferResponse).collect(toImmutableList());
+    if (transferResponses.isEmpty()) {
+      return Optional.of(event);
+    }
+    round.deferredTransfer =
+        new DeferredTransfer(transferResponses, event.actions().transferToAgent().get());
+    EventActions rest = event.actions().toBuilder().transferToAgent(null).build();
+    if (transferResponses.size() == parts.size()) {
+      // A tool's state or artifact writes still go out, without the held-back responses.
+      return rest.stateDelta().isEmpty() && rest.artifactDelta().isEmpty()
+          ? Optional.empty()
+          : Optional.of(event.toBuilder().content(null).actions(rest).build());
+    }
+    ImmutableList<Part> kept =
+        parts.stream().filter(part -> !isTransferResponse(part)).collect(toImmutableList());
+    return Optional.of(
+        event.toBuilder()
+            .content(event.content().get().toBuilder().parts(kept).build())
+            .actions(rest)
+            .build());
+  }
+
+  private static boolean isTransferResponse(Part part) {
+    return part.functionResponse()
+        .flatMap(FunctionResponse::name)
+        .filter(TRANSFER_TO_AGENT_TOOL::equals)
+        .isPresent();
+  }
+
+  /**
+   * Emits the responses of a {@code transfer} that waited for this agent's delegations and ends the
+   * run at its handoff, so the workflow runs the target agent as a node.
+   */
+  private Flowable<Event> handOffAfterDelegations(DelegationRun run, DeferredTransfer transfer) {
+    Event response =
+        functionResponseEvent(run.context(), name(), transfer.responses())
+            .actions(EventActions.builder().transferToAgent(transfer.target()).build())
+            .build();
+    // As a handoff in the flow does, this one finishes the agent, so a resume does not re-enter it.
+    InvocationContext agentContext = run.agentContext();
+    return Flowable.just(response)
+        .concatWith(
+            agentContext.isResumable() ? endOfAgentAndRecord(agentContext) : Flowable.empty());
   }
 
   /** Runs the task agent each delegation names and emits the response that answers the call. */
@@ -1383,26 +1531,28 @@ public class LlmAgent extends BaseAgent {
     } else {
       response.put("output", output);
     }
+    Part part =
+        Part.builder()
+            .functionResponse(
+                FunctionResponse.builder()
+                    .id(call.id().orElseThrow())
+                    .name(call.name().orElseThrow())
+                    .response(response)
+                    .build())
+            .build();
+    return functionResponseEvent(context, Role.USER, ImmutableList.of(part)).build();
+  }
+
+  /** Returns a builder for an event of {@code author} that holds the function {@code responses}. */
+  private static Event.Builder functionResponseEvent(
+      Context context, String author, List<Part> responses) {
     InvocationContext invocationContext = context.invocationContext();
     return Event.builder()
         .id(invocationContext.newUuid())
         .invocationId(invocationContext.invocationId())
-        .author(Role.USER)
-        .content(
-            Content.builder()
-                .role(Role.USER)
-                .parts(
-                    Part.builder()
-                        .functionResponse(
-                            FunctionResponse.builder()
-                                .id(call.id().orElseThrow())
-                                .name(call.name().orElseThrow())
-                                .response(response)
-                                .build())
-                        .build())
-                .build())
-        .timestamp(invocationContext.now().toEpochMilli())
-        .build();
+        .author(author)
+        .content(Content.builder().role(Role.USER).parts(responses).build())
+        .timestamp(invocationContext.now().toEpochMilli());
   }
 
   /** Returns whether {@code event} starts a model step of this agent's own on {@code branch}. */
@@ -1770,6 +1920,25 @@ public class LlmAgent extends BaseAgent {
     return setsMode(rootAgent()) ? AgentMode.CHAT : null;
   }
 
+  /** Returns the mode this agent runs in as a node in {@code context}, as {@link #runNode} says. */
+  private @Nullable AgentMode nodeMode(InvocationContext context) {
+    AgentMode defaultMode = defaultMode();
+    return defaultMode == null && runsTreeAsNodes(this, context) ? AgentMode.CHAT : defaultMode;
+  }
+
+  /**
+   * Returns whether the agents in {@code agent}'s tree run as workflow nodes in {@code context}:
+   * one in the tree sets a mode, or the tree's root is the app's root node.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean runsTreeAsNodes(BaseAgent agent, @Nullable InvocationContext context) {
+    BaseAgent root = agent.rootAgent();
+    return setsMode(root)
+        || (context != null && context.rootAgentNode().filter(root::equals).isPresent());
+  }
+
   /**
    * Returns whether {@code agent} runs as a {@link AgentMode#TASK} workflow node in {@code
    * context}, so it ends its task with {@code finish_task}. A task agent run any other way runs as
@@ -1869,8 +2038,11 @@ public class LlmAgent extends BaseAgent {
   }
 
   private static boolean setsMode(BaseAgent agent) {
-    return (agent instanceof LlmAgent llmAgent && llmAgent.mode.isPresent())
-        || agent.subAgents().stream().anyMatch(LlmAgent::setsMode);
+    // Reads mode() rather than the field, so a mock agent, whose fields stay null, is safe.
+    return (agent instanceof LlmAgent llmAgent
+            && llmAgent.mode() != null
+            && llmAgent.mode().isPresent())
+        || (agent.subAgents() != null && agent.subAgents().stream().anyMatch(LlmAgent::setsMode));
   }
 
   public Single<List<BaseTool>> tools() {
