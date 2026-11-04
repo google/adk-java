@@ -2080,12 +2080,41 @@ class KtRunnerInteropTest {
   }
 
   @Test
-  fun asJavaRunner_runLive_blob_isDroppedAndTheRunGoesOn() {
+  fun asJavaRunner_runLive_mapsEachBlobByItsMimeType() {
     val model = EchoLiveModel()
     val queue = LiveRequestQueue()
     val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
 
-    queue.realtime(blob("audio/pcm"))
+    queue.realtime(blob("audio/pcm;rate=16000"))
+    queue.realtime(blob("image/jpeg").toBuilder().displayName("frame").build())
+    // A request carrying both content and a blob sends only the content.
+    queue.send(JavaLiveRequest.builder().content(userText("both")).blob(blob("audio/pcm")).build())
+    try {
+      awaitTrue("the echo should arrive") { events.values().size >= 2 }
+    } finally {
+      queue.close()
+    }
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    assertThat(model.connections.single().sent)
+      .containsExactly(
+        KtRealtimeInput.Audio(blobKt("audio/pcm;rate=16000")),
+        KtRealtimeInput.Video(blobKt("image/jpeg").copy(displayName = "frame")),
+        ContentCodec.fromJava(userText("both")),
+      )
+      .inOrder()
+  }
+
+  @Test
+  fun asJavaRunner_runLive_blobOfAnotherMimeType_isDroppedAndTheRunGoesOn() {
+    // Only `audio/` and `image/` blobs are sent; `video/`, `text/` and untyped blobs are dropped.
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+
+    queue.realtime(blob("video/mp4"))
+    queue.realtime(blob("text/plain"))
+    queue.realtime(GenaiBlob.builder().data(byteArrayOf(1)).build())
     queue.content(userText("hi"))
     try {
       awaitTrue("the echo should arrive") { events.values().size >= 2 }
@@ -2096,6 +2125,57 @@ class KtRunnerInteropTest {
     events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
     assertThat(model.connections.single().sent)
       .containsExactly(ContentCodec.fromJava(userText("hi")))
+  }
+
+  @Test
+  fun asJavaRunner_runLive_partialContent_reachesTheModelAsPartial() {
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+
+    queue.content(userText("hel"), /* partial= */ true)
+    queue.content(userText("lo"))
+    try {
+      awaitTrue("both sends should arrive") {
+        model.connections.singleOrNull()?.partials?.size == 2
+      }
+    } finally {
+      queue.close()
+    }
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    assertThat(model.connections.single().partials).containsExactly(true, false).inOrder()
+  }
+
+  @Test
+  fun asJavaRunner_runLive_partialFunctionResponse_reachesTheModelAsComplete() {
+    // A function response has no partial form, so the flag is dropped instead of failing the run.
+    val model = EchoLiveModel()
+    val queue = LiveRequestQueue()
+    val events = liveJavaRunner(model).runLive("u", "s", queue, autoCreateSessionConfig()).test()
+    val response =
+      GenaiContent.builder()
+        .role("user")
+        .parts(
+          GenaiPart.builder()
+            .functionResponse(
+              GenaiFunctionResponse.builder().name("lookup").response(mapOf("ok" to true)).build()
+            )
+            .build()
+        )
+        .build()
+
+    queue.content(response, /* partial= */ true)
+    try {
+      awaitTrue("the response should arrive") {
+        model.connections.singleOrNull()?.partials?.size == 1
+      }
+    } finally {
+      queue.close()
+    }
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    assertThat(model.connections.single().partials).containsExactly(false)
   }
 
   @Test
@@ -2339,20 +2419,41 @@ class KtRunnerInteropTest {
   }
 
   @Test
-  fun asJavaRunner_runLiveOnASession_isUnsupported() {
+  fun asJavaRunner_runLiveOnASessionTheKotlinServiceLacks_failsEvenWithAutoCreate() {
     val javaRunner = liveJavaRunner(EchoLiveModel())
-    val session =
-      javaRunner.sessionService().createSession(JavaSessionKey("app", "u", "s")).blockingGet()
+    val stranger =
+      JavaInMemorySessionService().createSession(JavaSessionKey("app", "u", "s")).blockingGet()
 
-    val events =
-      javaRunner.runLive(session, LiveRequestQueue(), JavaRunConfig.builder().build()).test()
+    val events = javaRunner.runLive(stranger, LiveRequestQueue(), autoCreateSessionConfig()).test()
 
     events.awaitDone(10, TimeUnit.SECONDS)
     events.assertError {
-      it is UnsupportedOperationException &&
+      it is IllegalArgumentException &&
         it.message ==
-          "runLive(Session) is not supported on the Kotlin engine; " +
-            "use runLive(userId, sessionId, ...)"
+          "Session not found under this runner's app in the Kotlin runner's session service"
+    }
+  }
+
+  @Test
+  fun asJavaRunner_runLiveOnAnotherAppsSession_failsTheStream() {
+    // The Kotlin service holds (u, s) under "app", which must not stand in for "other"'s session.
+    val javaRunner = liveJavaRunner(EchoLiveModel())
+    javaRunner
+      .sessionService()
+      .createSession(JavaSessionKey("app", "u", "s"))
+      .ignoreElement()
+      .blockingAwait()
+    val otherApp =
+      JavaInMemorySessionService().createSession(JavaSessionKey("other", "u", "s")).blockingGet()
+
+    val events =
+      javaRunner.runLive(otherApp, LiveRequestQueue(), JavaRunConfig.builder().build()).test()
+
+    events.awaitDone(10, TimeUnit.SECONDS)
+    events.assertError {
+      it is IllegalArgumentException &&
+        it.message ==
+          "Session not found under this runner's app in the Kotlin runner's session service"
     }
   }
 
@@ -2375,6 +2476,32 @@ class KtRunnerInteropTest {
     events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
     assertThat(model.connections.single().sent)
       .containsExactly(ContentCodec.fromJava(userText("hi")))
+  }
+
+  @Test
+  fun asJavaRunner_runLiveOnAHeldSession_runs() {
+    val model = EchoLiveModel()
+    val javaRunner = liveJavaRunner(model)
+    val session =
+      javaRunner.sessionService().createSession(JavaSessionKey("app", "u", "s")).blockingGet()
+    val queue = LiveRequestQueue()
+
+    val events = javaRunner.runLive(session, queue, JavaRunConfig.builder().build()).test()
+    try {
+      queue.content(userText("hi"))
+      awaitTrue("the echo should arrive") { events.values().size >= 2 }
+    } finally {
+      queue.close()
+    }
+
+    events.awaitDone(10, TimeUnit.SECONDS).assertComplete().assertNoErrors()
+    assertThat(model.connections.single().sent)
+      .containsExactly(ContentCodec.fromJava(userText("hi")))
+    // The turn lands on the stored copy, not on the caller's object.
+    val stored =
+      javaRunner.sessionService().getSession("app", "u", "s", Optional.empty()).blockingGet()
+    assertThat(assertNotNull(stored).immutableEvents()).isNotEmpty()
+    assertThat(session.immutableEvents()).isEmpty()
   }
 
   @Test
@@ -6717,6 +6844,7 @@ class KtRunnerInteropTest {
     private val receiveFailure: Throwable?,
   ) : KtLiveConnection {
     val sent = CopyOnWriteArrayList<Any>()
+    val partials = CopyOnWriteArrayList<Boolean>()
     val sendThreads = CopyOnWriteArrayList<String>()
     @Volatile
     var closed = false
@@ -6728,6 +6856,7 @@ class KtRunnerInteropTest {
 
     override suspend fun sendContent(content: KtContent, partial: Boolean) {
       sent += content
+      partials += partial
       sendThreads += Thread.currentThread().name
       val text = "echo: " + content.parts.mapNotNull { it.text }.joinToString("")
       replies.send(
@@ -6844,6 +6973,8 @@ class KtRunnerInteropTest {
 
     fun blob(mimeType: String): GenaiBlob =
       GenaiBlob.builder().mimeType(mimeType).data(byteArrayOf(1, 2)).build()
+
+    fun blobKt(mimeType: String) = KtBlob(mimeType = mimeType, data = byteArrayOf(1, 2))
 
     /** A speech setting with every field set, including a replicated voice and two speakers. */
     fun ktSpeechConfig() =

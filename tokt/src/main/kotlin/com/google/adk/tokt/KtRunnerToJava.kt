@@ -27,6 +27,7 @@ import com.google.adk.events.Event as JavaEvent
 import com.google.adk.kt.agents.LiveRequestQueue as KtLiveRequestQueue
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.logging.LoggerFactory
+import com.google.adk.kt.models.RealtimeInput
 import com.google.adk.kt.runners.Runner as KtRunner
 import com.google.adk.kt.types.Content as KtContent
 import com.google.adk.kt.types.Role as KtRole
@@ -37,11 +38,13 @@ import com.google.adk.tokt.adapters.ktAgentAsJava
 import com.google.adk.tokt.adapters.ktPluginManagerAsJava
 import com.google.adk.tokt.codecs.ContentCodec
 import com.google.adk.tokt.codecs.EventCodec
+import com.google.adk.tokt.codecs.PartCodec
 import com.google.adk.tokt.codecs.RunConfigCodec
 import com.google.adk.tokt.codecs.stateDeltaFromJava
 import com.google.adk.tokt.services.ktArtifactServiceAsJava
 import com.google.adk.tokt.services.ktMemoryServiceAsJava
 import com.google.adk.tokt.services.ktSessionServiceAsJava
+import com.google.genai.types.Blob as GenaiBlob
 import com.google.genai.types.Content as GenaiContent
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Flowable
@@ -139,12 +142,25 @@ internal class KtRunnerToJava(
     }
   }
 
-  // Not bridged for a Session: fails through the stream, like the base Runner, not eagerly.
+  /**
+   * Runs [session]'s conversation live on the Kotlin engine, which reads the session from its own
+   * service by app, user and id, and writes events to that stored copy rather than [session]. A
+   * session of another app, or one that service lacks, fails the stream even when [runConfig] sets
+   * `autoCreateSession`.
+   */
   override fun runLive(
     session: JavaSession,
     liveRequestQueue: LiveRequestQueue,
     runConfig: JavaRunConfig,
-  ): Flowable<JavaEvent> = Flowable.error(liveUnsupported())
+  ): Flowable<JavaEvent> = Flowable.defer {
+    require(session.appName() == appName()) { SESSION_NOT_HELD }
+    whenSessionExists(
+      session.userId(),
+      session.id(),
+      SESSION_NOT_HELD,
+      liveEvents(session.userId(), session.id(), liveRequestQueue, runConfig),
+    )
+  }
 
   /**
    * Runs a live conversation on the Kotlin engine: the Java queue's requests feed it, and its
@@ -179,13 +195,17 @@ internal class KtRunnerToJava(
     if (runConfig.autoCreateSession()) {
       events
     } else {
-      whenSessionExists(userId, sessionId, events)
+      whenSessionExists(userId, sessionId, SESSION_MISSING, events)
     }
 
-  /** Returns [events] if the Kotlin runner's service holds the session, else a failed stream. */
+  /**
+   * Returns [events] if the Kotlin runner's service holds the session, else a stream failing with
+   * [notFoundMessage].
+   */
   private fun whenSessionExists(
     userId: String,
     sessionId: String,
+    notFoundMessage: String,
     events: Flowable<JavaEvent>,
   ): Flowable<JavaEvent> =
     sessionService()
@@ -193,7 +213,7 @@ internal class KtRunnerToJava(
       .map { true }
       .defaultIfEmpty(false)
       .flatMapPublisher { exists ->
-        if (exists) events else Flowable.error(IllegalArgumentException(SESSION_MISSING))
+        if (exists) events else Flowable.error(IllegalArgumentException(notFoundMessage))
       }
 
   private fun liveEvents(
@@ -234,14 +254,37 @@ internal class KtRunnerToJava(
         val blob = request.blob().getOrNull()
         // Content wins over a blob, and an empty request closes the run.
         when {
-          content != null -> ktQueue.sendContent(withUserRole(ContentCodec.fromJava(content)))
-          blob != null -> logger.warn { "Live input blob not sent: blobs are not supported" }
+          content != null -> {
+            val ktContent = withUserRole(ContentCodec.fromJava(content))
+            // A function response goes out as a tool response, which has no partial form.
+            val partial =
+              request.isPartial() && ktContent.parts.none { it.functionResponse != null }
+            ktQueue.sendContent(ktContent, partial)
+          }
+          blob != null -> blob.toRealtimeInput()?.let { ktQueue.sendRealtime(it) }
           else -> ktQueue.close()
         }
         if (request.shouldClose()) ktQueue.close()
       }
     } finally {
       ktQueue.close()
+    }
+  }
+
+  /**
+   * Maps a blob with an `audio/` MIME type to audio input and one with `image/` to a video frame,
+   * or drops any other blob with a warning.
+   */
+  private fun GenaiBlob.toRealtimeInput(): RealtimeInput? {
+    val ktBlob = PartCodec.blobFromJava(this)
+    val mimeType = ktBlob.mimeType.orEmpty()
+    return when {
+      mimeType.startsWith("audio/") -> RealtimeInput.Audio(ktBlob)
+      mimeType.startsWith("image/") -> RealtimeInput.Video(ktBlob)
+      else -> {
+        logger.warn { "Live input blob not sent, MIME type not supported: \"$mimeType\"" }
+        null
+      }
     }
   }
 
@@ -262,11 +305,6 @@ internal class KtRunnerToJava(
   override fun close(): Completable =
     Completable.mergeArrayDelayError(super.close(), Completable.fromAction { ktRunner.close() })
 
-  private fun liveUnsupported() =
-    UnsupportedOperationException(
-      "runLive(Session) is not supported on the Kotlin engine; use runLive(userId, sessionId, ...)"
-    )
-
   /**
    * Defaults a role-less message to the user role, as Python does, since model requests omit
    * role-less content.
@@ -277,5 +315,7 @@ internal class KtRunnerToJava(
   companion object {
     private val logger = LoggerFactory.getLogger(KtRunnerToJava::class)
     private const val SESSION_MISSING = "Session not found and autoCreateSession=false"
+    private const val SESSION_NOT_HELD =
+      "Session not found under this runner's app in the Kotlin runner's session service"
   }
 }
