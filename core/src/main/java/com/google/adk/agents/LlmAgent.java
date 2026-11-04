@@ -737,13 +737,22 @@ public class LlmAgent extends BaseAgent {
    * Python ADK, so a callback that sets the action on an unrelated event does not read as one.
    */
   private Optional<String> transferTargetNameFrom(Event event) {
-    if (!name().equals(event.author())
-        || event.functionResponses().stream()
-            .noneMatch(
-                response -> response.name().filter(TRANSFER_TO_AGENT_TOOL::equals).isPresent())) {
+    if (!name().equals(event.author()) || !hasTransferResponse(event)) {
       return Optional.empty();
     }
     return event.actions().transferToAgent().filter(target -> !target.equals(name()));
+  }
+
+  /** Whether {@code event} is another agent's transfer to this agent. */
+  private boolean isTransferToThisAgent(Event event) {
+    return !name().equals(event.author())
+        && hasTransferResponse(event)
+        && event.actions().transferToAgent().filter(name()::equals).isPresent();
+  }
+
+  private static boolean hasTransferResponse(Event event) {
+    return event.functionResponses().stream()
+        .anyMatch(response -> response.name().filter(TRANSFER_TO_AGENT_TOOL::equals).isPresent());
   }
 
   /**
@@ -799,8 +808,13 @@ public class LlmAgent extends BaseAgent {
       }
     }
     // A user event answering no call falls through; Python fails the resume instead.
-    for (int i = events.size() - 2; i >= 0; i--) {
-      Optional<String> targetName = transferTargetNameFrom(events.get(i));
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event event = events.get(i);
+      // Control returned to this agent after its last transfer, so it continues itself.
+      if (isTransferToThisAgent(event)) {
+        return Optional.empty();
+      }
+      Optional<String> targetName = transferTargetNameFrom(event);
       if (targetName.isPresent()) {
         return Optional.of(resolveTransferTarget(targetName.get()));
       }
