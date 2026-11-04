@@ -31,7 +31,10 @@ import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.BaseEventSummarizer;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Content;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Optional;
@@ -82,13 +85,9 @@ public class CompactionTest {
     when(context.eventsCompactionConfig()).thenReturn(Optional.of(config));
 
     // Setup events with usage > 100 to trigger compaction
-    Event event1 = mock(Event.class);
-    Event event2 = mock(Event.class);
-    Event event3 = mock(Event.class);
-    when(event3.usageMetadata())
-        .thenReturn(
-            Optional.of(
-                GenerateContentResponseUsageMetadata.builder().promptTokenCount(200).build()));
+    Event event1 = Event.builder().timestamp(1).build();
+    Event event2 = Event.builder().timestamp(2).build();
+    Event event3 = eventWithPromptTokenCount(3, 200);
 
     session =
         Session.builder("test-session").events(ImmutableList.of(event1, event2, event3)).build();
@@ -117,11 +116,7 @@ public class CompactionTest {
     when(context.eventsCompactionConfig()).thenReturn(Optional.of(config));
 
     // Setup events with usage 200 (below 500)
-    Event event3 = mock(Event.class);
-    when(event3.usageMetadata())
-        .thenReturn(
-            Optional.of(
-                GenerateContentResponseUsageMetadata.builder().promptTokenCount(200).build()));
+    Event event3 = eventWithPromptTokenCount(3, 200);
 
     session = Session.builder("test-session").events(ImmutableList.of(event3)).build();
     when(context.session()).thenReturn(session);
@@ -135,6 +130,41 @@ public class CompactionTest {
 
     // Verify NO compaction
     verify(sessionService, never()).appendEvent(any(), any());
+  }
+
+  @Test
+  public void processRequest_withConfig_toolResponseAfterTokenUsage_triggersCompaction() {
+    // Threshold 300: the reported count of 200 alone is within it, but the function response
+    // appended after it (an 800-character result, over 200 tokens) pushes the estimate above.
+    EventsCompactionConfig config = new EventsCompactionConfig(5, 1, summarizer, 300, 2);
+    when(context.eventsCompactionConfig()).thenReturn(Optional.of(config));
+
+    Event event1 = Event.builder().timestamp(1).build();
+    Event event2 = eventWithPromptTokenCount(2, 200);
+    Event event3 =
+        Event.builder()
+            .timestamp(3)
+            .content(
+                Content.fromParts(
+                    Part.fromFunctionResponse("tool", ImmutableMap.of("result", "x".repeat(800)))))
+            .build();
+
+    session =
+        Session.builder("test-session").events(ImmutableList.of(event1, event2, event3)).build();
+    when(context.session()).thenReturn(session);
+
+    Event summaryEvent = mock(Event.class);
+    when(summarizer.summarizeEvents(any())).thenReturn(Maybe.just(summaryEvent));
+    when(sessionService.appendEvent(any(), any())).thenReturn(Single.just(summaryEvent));
+
+    Compaction compaction = new Compaction();
+    compaction
+        .processRequest(context, request)
+        .test()
+        .assertNoErrors()
+        .assertValue(r -> r.updatedRequest() == request);
+
+    verify(sessionService).appendEvent(eq(session), eq(summaryEvent));
   }
 
   @Test
@@ -153,5 +183,15 @@ public class CompactionTest {
     // Verify NO compaction and session.events() is not called
     verify(sessionService, never()).appendEvent(any(), any());
     verify(context, never()).session();
+  }
+
+  private static Event eventWithPromptTokenCount(long timestamp, int promptTokenCount) {
+    return Event.builder()
+        .timestamp(timestamp)
+        .usageMetadata(
+            GenerateContentResponseUsageMetadata.builder()
+                .promptTokenCount(promptTokenCount)
+                .build())
+        .build();
   }
 }
