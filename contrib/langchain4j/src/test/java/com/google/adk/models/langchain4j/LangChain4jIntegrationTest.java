@@ -375,6 +375,7 @@ class LangChain4jIntegrationTest {
             "",
             responses
                 .blockingStream()
+                .filter(llmResponse -> !llmResponse.partial().orElse(false))
                 .map(llmResponse -> llmResponse.content().get().text())
                 .toList());
 
@@ -430,15 +431,30 @@ class LangChain4jIntegrationTest {
     // when
     List<Event> eventsHi = askAgentStreaming(agent, "Hi");
     String responseToHi =
-        String.join("", eventsHi.stream().map(event -> event.content().get().text()).toList());
+        String.join(
+            "",
+            eventsHi.stream()
+                .filter(event -> !event.partial().orElse(false))
+                .map(event -> event.content().get().text())
+                .toList());
 
     List<Event> eventsQubit = askAgentStreaming(agent, "Tell me about qubits");
     String responseToQubit =
-        String.join("", eventsQubit.stream().map(event -> event.content().get().text()).toList());
+        String.join(
+            "",
+            eventsQubit.stream()
+                .filter(event -> !event.partial().orElse(false))
+                .map(event -> event.content().get().text())
+                .toList());
 
     List<Event> eventsWeather = askAgentStreaming(agent, "What's the weather in Paris?");
     String responseToWeather =
-        String.join("", eventsWeather.stream().map(Event::stringifyContent).toList());
+        String.join(
+            "",
+            eventsWeather.stream()
+                .filter(event -> !event.partial().orElse(false))
+                .map(Event::stringifyContent)
+                .toList());
 
     // then
 
