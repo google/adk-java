@@ -21,6 +21,7 @@ import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.tools.SetModelResponseTool;
 import com.google.adk.tools.ToolContext;
@@ -40,6 +41,8 @@ public final class OutputSchema implements RequestProcessor {
 
   private static final Logger logger = LoggerFactory.getLogger(OutputSchema.class);
 
+  private static final String CLAUDE_CLASS = "com.google.adk.models.Claude";
+
   public OutputSchema() {}
 
   @Override
@@ -51,9 +54,7 @@ public final class OutputSchema implements RequestProcessor {
     LlmAgent agent = (LlmAgent) context.agent();
     String modelName = request.model().orElse("");
 
-    if (agent.outputSchema().isEmpty()
-        || agent.toolsUnion().isEmpty()
-        || ModelNameUtils.canUseOutputSchemaWithTools(modelName)) {
+    if (agent.outputSchema().isEmpty() || !needsSetModelResponseTool(agent, modelName)) {
       return Single.just(RequestProcessingResult.create(request, ImmutableList.of()));
     }
 
@@ -75,6 +76,33 @@ public final class OutputSchema implements RequestProcessor {
                               + " final answer in the specified schema format."));
                   return RequestProcessingResult.create(builder.build(), ImmutableList.of());
                 }));
+  }
+
+  /**
+   * Returns true if the agent's output schema needs the set_model_response tool. This is needed
+   * when its requests declare function tools, counting the transfer_to_agent tool that agent
+   * transfer adds, and its model cannot take a response schema alongside them. ADK's Claude model
+   * never can, as in ADK Python.
+   */
+  static boolean needsSetModelResponseTool(LlmAgent agent, String modelName) {
+    boolean hasFunctionTools =
+        !agent.toolsUnion().isEmpty() || !AgentTransfer.transferTargets(agent).isEmpty();
+    return hasFunctionTools
+        && (!ModelNameUtils.canUseOutputSchemaWithTools(modelName)
+            || agent.resolvedModel().model().map(OutputSchema::isClaude).orElse(false));
+  }
+
+  /**
+   * Returns true if {@code llm} is ADK's Claude model or a subclass of it. Checks by class name
+   * because not every ADK build includes the Claude class.
+   */
+  private static boolean isClaude(BaseLlm llm) {
+    for (Class<?> clazz = llm.getClass(); clazz != null; clazz = clazz.getSuperclass()) {
+      if (clazz.getName().equals(CLAUDE_CLASS)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

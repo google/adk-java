@@ -41,6 +41,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
@@ -75,6 +76,21 @@ public final class OutputSchemaTest {
     outputSchemaProcessor = new OutputSchema();
     testLlm = createTestLlm(LlmResponse.builder().build());
     initialRequest = LlmRequest.builder().model("gemini-2.0-pro").build();
+  }
+
+  /** A model named like Gemini 2, which cannot take a response schema alongside tools. */
+  private static BaseLlm gemini2Llm() {
+    return new BaseLlm("gemini-2.0-pro") {
+      @Override
+      public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+        return Flowable.empty();
+      }
+
+      @Override
+      public BaseLlmConnection connect(LlmRequest llmRequest) {
+        throw new UnsupportedOperationException();
+      }
+    };
   }
 
   public static class TestTool extends BaseTool {
@@ -132,6 +148,62 @@ public final class OutputSchemaTest {
 
     assertThat(result.updatedRequest()).isEqualTo(initialRequest);
     assertThat(result.events()).isEmpty();
+  }
+
+  @Test
+  public void processRequest_withOutputSchemaAndSubAgents_addsSetModelResponseTool() {
+    // Agent transfer declares the transfer_to_agent tool, so it counts as a tool.
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(testLlm)
+            .outputSchema(TEST_OUTPUT_SCHEMA)
+            .subAgents(LlmAgent.builder().name("helper").model(testLlm).build())
+            .build();
+    InvocationContext context = createInvocationContext(agent);
+
+    RequestProcessingResult result =
+        outputSchemaProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().tools()).containsKey(SetModelResponseTool.NAME);
+  }
+
+  @Test
+  public void processRequest_withOutputSchemaUnderAnLlmAgentParent_addsSetModelResponseTool() {
+    // A sub-agent can transfer back to its parent, so its requests declare transfer_to_agent.
+    LlmAgent leaf =
+        LlmAgent.builder().name("leaf").model(testLlm).outputSchema(TEST_OUTPUT_SCHEMA).build();
+    LlmAgent unused = LlmAgent.builder().name("root").model(testLlm).subAgents(leaf).build();
+    InvocationContext context = createInvocationContext(leaf);
+
+    RequestProcessingResult result =
+        outputSchemaProcessor.processRequest(context, initialRequest).blockingGet();
+
+    assertThat(result.updatedRequest().tools()).containsKey(SetModelResponseTool.NAME);
+  }
+
+  @Test
+  public void processRequest_withOutputSchemaAndTransfersDisallowed_keepsTheResponseSchema() {
+    // With both transfers disallowed, the sub-agent declares no transfer_to_agent tool.
+    LlmAgent leaf =
+        LlmAgent.builder()
+            .name("leaf")
+            .model(gemini2Llm())
+            .outputSchema(TEST_OUTPUT_SCHEMA)
+            .disallowTransferToParent(true)
+            .disallowTransferToPeers(true)
+            .build();
+    LlmAgent unused = LlmAgent.builder().name("root").model(testLlm).subAgents(leaf).build();
+    InvocationContext context = createInvocationContext(leaf);
+
+    LlmRequest basicRequest =
+        new Basic().processRequest(context, initialRequest).blockingGet().updatedRequest();
+    RequestProcessingResult result =
+        outputSchemaProcessor.processRequest(context, basicRequest).blockingGet();
+
+    assertThat(basicRequest.config().flatMap(GenerateContentConfig::responseSchema))
+        .hasValue(TEST_OUTPUT_SCHEMA);
+    assertThat(result.updatedRequest().tools()).doesNotContainKey(SetModelResponseTool.NAME);
   }
 
   @Test
