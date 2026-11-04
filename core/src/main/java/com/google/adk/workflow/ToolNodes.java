@@ -20,10 +20,9 @@ import static com.google.common.base.Strings.nullToEmpty;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectReader;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
@@ -84,11 +83,6 @@ public final class ToolNodes {
   }
 
   private static final class ToolNode extends BaseNode {
-
-    private static final ObjectReader JSON_READER =
-        JsonBaseModel.getMapper()
-            .readerFor(Object.class)
-            .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
     private final BaseTool tool;
 
@@ -226,7 +220,7 @@ public final class ToolNodes {
         return null;
       }
       try {
-        Object json = JSON_READER.readValue(text);
+        Object json = SchemaUtils.readStrictJson(text);
         return json instanceof Map ? json : text;
       } catch (JsonProcessingException e) {
         return text;
