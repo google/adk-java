@@ -90,6 +90,7 @@ public class InvocationContext {
   @Nullable private String branch;
   private BaseAgent agent;
   private final @Nullable Node node;
+  private final @Nullable LlmAgent rootAgentNode;
   private final @Nullable AgentModeOverride agentModeOverride;
   private final @Nullable String nodePath;
   private final @Nullable String isolationScope;
@@ -108,6 +109,7 @@ public class InvocationContext {
     this.invocationId = builder.resolveInvocationId();
     this.agent = builder.agent;
     this.node = builder.node;
+    this.rootAgentNode = builder.rootAgentNode;
     this.agentModeOverride = builder.agentModeOverride;
     this.nodePath = builder.nodePath;
     this.isolationScope = builder.isolationScope;
@@ -205,6 +207,17 @@ public class InvocationContext {
   @Experimental
   public Optional<Node> node() {
     return Optional.ofNullable(node);
+  }
+
+  /**
+   * Returns the {@link LlmAgent} passed as the app's root node, whose agent tree runs on the node
+   * path, or empty when the app has none.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public Optional<LlmAgent> rootAgentNode() {
+    return Optional.ofNullable(rootAgentNode);
   }
 
   /**
@@ -800,6 +813,7 @@ public class InvocationContext {
       this.invocationIdSet = true;
       this.agent = context.agent;
       this.node = context.node;
+      this.rootAgentNode = context.rootAgentNode;
       this.agentModeOverride = context.agentModeOverride;
       this.nodePath = context.nodePath;
       this.isolationScope = context.isolationScope;
@@ -837,6 +851,7 @@ public class InvocationContext {
     private boolean invocationIdSet;
     private BaseAgent agent;
     private @Nullable Node node;
+    private @Nullable LlmAgent rootAgentNode;
     private @Nullable AgentModeOverride agentModeOverride;
     private @Nullable String nodePath;
     private @Nullable String isolationScope;
@@ -963,6 +978,18 @@ public class InvocationContext {
     @Experimental
     public Builder node(@Nullable Node node) {
       this.node = node;
+      return this;
+    }
+
+    /**
+     * Sets the {@link LlmAgent} passed as the app's root node, or null when the app has none.
+     *
+     * <p>This method is only for use by Agent Development Kit.
+     */
+    @CanIgnoreReturnValue
+    @Experimental
+    public Builder rootAgentNode(@Nullable LlmAgent rootAgentNode) {
+      this.rootAgentNode = rootAgentNode;
       return this;
     }
 
@@ -1196,6 +1223,7 @@ public class InvocationContext {
         && Objects.equals(invocationId, that.invocationId)
         && Objects.equals(agent, that.agent)
         && Objects.equals(node, that.node)
+        && Objects.equals(rootAgentNode, that.rootAgentNode)
         && Objects.equals(agentModeOverride, that.agentModeOverride)
         && Objects.equals(nodePath, that.nodePath)
         && Objects.equals(isolationScope, that.isolationScope)
@@ -1226,6 +1254,7 @@ public class InvocationContext {
         invocationId,
         agent,
         node,
+        rootAgentNode,
         agentModeOverride,
         nodePath,
         isolationScope,

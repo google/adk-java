@@ -23,6 +23,10 @@ import org.jspecify.annotations.Nullable;
 /**
  * Configuration for event compaction.
  *
+ * <p>Compaction ignores isolation scopes, so it does not shrink the history of an agent that works
+ * in a scope of its own, such as a {@link com.google.adk.agents.AgentMode#TASK} node or task root
+ * agent.
+ *
  * @param compactionInterval The number of <b>new</b> user-initiated invocations that, once fully
  *     represented in the session's events, will trigger a compaction.
  * @param overlapSize The number of preceding invocations to include from the end of the last

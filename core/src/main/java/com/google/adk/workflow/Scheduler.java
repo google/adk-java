@@ -247,7 +247,8 @@ final class Scheduler {
               recoveredNode,
               /* dynamic= */ false,
               workflowState.childCanceledMidRun(childKey),
-              workflowState.childFailedThisTurn(childKey));
+              workflowState.childFailedThisTurn(childKey),
+              context.invocationContext());
       Single<Context> nodeRun;
       // Only a run, or a replay that completes an answered transfer, marks a step.
       boolean marksStep = true;
@@ -269,7 +270,8 @@ final class Scheduler {
         if (!marksStep) {
           replayed.add(nodeName);
         }
-        if (interception.transferToAgent() == null || !TransferTarget.handsOff(node)) {
+        if (interception.transferToAgent() == null
+            || !TransferTarget.handsOff(node, context.invocationContext())) {
           if (marksStep) {
             emitCheckpoint();
           }

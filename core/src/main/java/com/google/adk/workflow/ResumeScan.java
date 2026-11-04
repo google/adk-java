@@ -67,7 +67,11 @@ final class ResumeScan {
    * invocation of {@code context}, as {@link #scan(List, String, String)} does.
    */
   static ImmutableMap<String, RecoveredNode> scan(InvocationContext context, String basePath) {
-    return scan(context.session().immutableEvents(), basePath, context.invocationId());
+    return scan(
+        context.session().immutableEvents(),
+        basePath,
+        context.invocationId(),
+        context.agent().rootAgent());
   }
 
   /**
@@ -79,7 +83,13 @@ final class ResumeScan {
    */
   static ImmutableMap<String, RecoveredNode> scan(
       List<Event> events, String basePath, String invocationId) {
-    Reconstruction reconstruction = new Reconstruction(basePath);
+    return scan(events, basePath, invocationId, /* rootAgent= */ null);
+  }
+
+  /** As above; events of agents in {@code rootAgent}'s tree tell a node's own transfer apart. */
+  private static ImmutableMap<String, RecoveredNode> scan(
+      List<Event> events, String basePath, String invocationId, @Nullable BaseAgent rootAgent) {
+    Reconstruction reconstruction = new Reconstruction(basePath, rootAgent);
     for (Event event : events) {
       if (!invocationId.equals(event.invocationId()) || event.partial().orElse(false)) {
         continue;
@@ -110,6 +120,19 @@ final class ResumeScan {
       boolean dynamic,
       boolean canceledMidRun,
       boolean failedThisTurn) {
+    return intercept(node, recovered, dynamic, canceledMidRun, failedThisTurn, /* context= */ null);
+  }
+
+  /**
+   * As above, where {@code node} runs in {@code context}, which may put its agent tree on nodes.
+   */
+  static Interception intercept(
+      Node node,
+      @Nullable RecoveredNode recovered,
+      boolean dynamic,
+      boolean canceledMidRun,
+      boolean failedThisTurn,
+      @Nullable InvocationContext context) {
     if (recovered == null) {
       return Interception.run(ImmutableMap.of());
     }
@@ -118,6 +141,9 @@ final class ResumeScan {
       // A workflow replays its own children, so it always runs.
       return Interception.run(resolved);
     }
+    // An agent in a mode tree, such as a sequence, goes on with its own steps after an answer.
+    boolean handsOff = TransferTarget.handsOff(node, context);
+    boolean rerunOnResume = node.rerunOnResume() || handsOff;
     // A single-turn agent ran its target itself, so it runs again to resume into that target.
     String transfer =
         node instanceof BaseAgent agent && TransferTarget.runsTargetInline(agent)
@@ -127,16 +153,16 @@ final class ResumeScan {
     ImmutableSet<String> unresolved = recovered.unresolved();
 
     if (!unresolved.isEmpty()) {
-      if (node.rerunOnResume() && !resolved.isEmpty()) {
+      if (rerunOnResume && !resolved.isEmpty()) {
         // As in Kotlin, a handoff whose target alone still waits replays, so the target resumes.
         if (transfer != null
-            && TransferTarget.handsOff(node)
+            && handsOff
             && Collections.disjoint(unresolved, recovered.directInterruptIds)) {
           return Interception.replay(/* output= */ null, /* route= */ null, branch, transfer);
         }
         // Agents must wait on open calls; other nodes may proceed without them, as in Kotlin.
         return Interception.run(
-            resolved, node instanceof LlmAgent ? unresolved : ImmutableSet.of());
+            resolved, node instanceof BaseAgent ? unresolved : ImmutableSet.of());
       }
       return Interception.waitOn(branch, unresolved, transfer);
     }
@@ -146,8 +172,7 @@ final class ResumeScan {
     }
     Object output = recovered.output;
     // A reply reruns a node that handed off inline; a handoff the workflow follows replays.
-    boolean replaysTransfer =
-        transfer != null && (!recovered.repliedTo || TransferTarget.handsOff(node));
+    boolean replaysTransfer = transfer != null && (!recovered.repliedTo || handsOff);
     if (output != null || recovered.route != null || replaysTransfer) {
       return Interception.replay(
           recovered.outputFromContent && output instanceof Content content
@@ -161,7 +186,7 @@ final class ResumeScan {
     if (canceledMidRun) {
       return Interception.run(resolved);
     }
-    if (!recovered.interruptIds.isEmpty() && !node.rerunOnResume()) {
+    if (!recovered.interruptIds.isEmpty() && !rerunOnResume) {
       Object answers = resolved.size() == 1 ? resolved.values().iterator().next() : resolved;
       return Interception.replay(answers, /* route= */ null, branch, /* transferToAgent= */ null);
     }
@@ -173,7 +198,7 @@ final class ResumeScan {
     }
     // A rerun node that finished without an output stays done, so its side effects don't repeat.
     boolean shouldRun =
-        node.waitForOutput() || (node.rerunOnResume() ? !recovered.finishedAfterResume : dynamic);
+        node.waitForOutput() || (rerunOnResume ? !recovered.finishedAfterResume : dynamic);
     return shouldRun
         ? Interception.run(resolved)
         : Interception.replay(
@@ -437,6 +462,7 @@ final class ResumeScan {
   private static final class Reconstruction {
     private final String basePath;
     private final String childPrefix;
+    private final @Nullable BaseAgent rootAgent;
 
     /** Reconstructed nodes keyed by their owner, in the order they first appear. */
     final Map<String, RecoveredNode> recovered = new LinkedHashMap<>();
@@ -447,8 +473,9 @@ final class ResumeScan {
     /** The response schema of each request for input, to validate its answer. */
     private final Map<String, Schema> schemas = new HashMap<>();
 
-    Reconstruction(String basePath) {
+    Reconstruction(String basePath, @Nullable BaseAgent rootAgent) {
       this.basePath = basePath;
+      this.rootAgent = rootAgent;
       this.childPrefix = basePath.isEmpty() ? "" : basePath + "/";
     }
 
@@ -573,7 +600,7 @@ final class ResumeScan {
      * {@code nodeName} at {@code ownerPath}. A descendant's event counts only if the descendant's
      * output is also the owner's, as with {@code useAsOutput}.
      */
-    private static void recordOutcome(
+    private void recordOutcome(
         Event event, boolean isDirect, String ownerPath, String nodeName, RecoveredNode node) {
       Object eventOutput = event.output().orElse(null);
       boolean fromContent = false;
@@ -602,6 +629,10 @@ final class ResumeScan {
       }
       Optional<ImmutableList<Route>> route = event.actions().route();
       Optional<String> transfer = event.actions().transferToAgent();
+      // A classic agent inside the node, such as a step of a sequence, hands off within it.
+      if (handsOffWithinNode(event)) {
+        transfer = Optional.empty();
+      }
       // Within the same node run, a sub-agent can return control to its agent node; that ends the
       // hand-off rather than recording a transfer.
       boolean handsOff = transfer.filter(agent -> !agent.equals(nodeName)).isPresent();
@@ -617,6 +648,21 @@ final class ResumeScan {
         node.transferToAgent = null;
         node.failed = true;
       }
+    }
+
+    /**
+     * Returns whether a classic agent that runs inside the node that {@code event} records, such as
+     * a step of a sequence, authored it, so its transfer is that agent's and not the node's.
+     */
+    private boolean handsOffWithinNode(Event event) {
+      String nodeName = event.nodeInfo().flatMap(NodeInfo::name).orElse(null);
+      String author = event.author();
+      return nodeName != null
+          && author != null
+          && !author.equals(nodeName)
+          && rootAgent != null
+          && rootAgent.findAgent(nodeName).isPresent()
+          && rootAgent.findAgent(author).isPresent();
     }
 
     /**

@@ -1094,15 +1094,15 @@ public final class AgentTransferLoopTest {
   }
 
   @Test
-  public void handoffToAParentWithItsOwnParent_runsItAtTheTopWithoutItsTreePath() {
+  public void handoffToAParentWithItsOwnParent_runsItUnderItsAncestorsPath() {
     LlmAgent child = chat("child", TestLlm.create(transferTo("coordinator")));
     LlmAgent coordinator = chat("coordinator", says("coordinator here"), child);
     LlmAgent unusedRoot = chat("root", says("unused"), coordinator);
 
     ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, child))).turn(go());
 
-    // Python derives "root@1/coordinator@1" from the agent tree; Java runs the hop at the top.
-    assertThat(pathOf(contentOf("coordinator", events))).isEqualTo("coordinator@1");
+    // As in Python, the hop's path comes from the agent tree.
+    assertThat(pathOf(contentOf("coordinator", events))).isEqualTo("root@1/coordinator@1");
   }
 
   @Test
@@ -1195,7 +1195,7 @@ public final class AgentTransferLoopTest {
             .turn(go());
 
     // Only an earlier run of the parent agent itself places the parent's next run.
-    assertThat(outputAt("coordinator@1", events)).isEqualTo("from coordinator");
+    assertThat(outputAt("root@1/coordinator@1", events)).isEqualTo("from coordinator");
     assertThat(replyInput(events)).isEqualTo("from coordinator");
   }
 
@@ -1214,7 +1214,7 @@ public final class AgentTransferLoopTest {
     assertThat(coordinator.runs.get()).isEqualTo(2);
     assertThat(
             events.stream().filter(event -> event.output().isPresent()).map(event -> pathOf(event)))
-        .containsExactly("coordinator@1", "wf@1/driver@1");
+        .containsExactly("root@1/coordinator@1", "wf@1/driver@1");
   }
 
   @Test
@@ -1629,14 +1629,24 @@ public final class AgentTransferLoopTest {
     TestLlm coordinatorModel =
         TestLlm.create(
             createFunctionCallLlmResponse("t1", "booker", ImmutableMap.of("request", "book")),
-            createTextLlmResponse("coordinator took over"));
+            createTextLlmResponse("coordinator took over"),
+            createTextLlmResponse("coordinator 3"));
     LlmAgent coordinator = chat("coordinator", coordinatorModel, booker);
 
-    var unused = new WorkflowSession(workflow(new Edge(START, coordinator))).turn(go());
+    ImmutableList<Event> events =
+        new WorkflowSession(workflow(new Edge(START, coordinator))).turn(go());
 
-    // The delegation belongs to the coordinator run that is still waiting on it.
+    // The waiting coordinator run owns the delegation, so the task does not run again.
     assertThat(bookerModel.getRequests()).hasSize(1);
-    assertThat(coordinatorModel.getRequests()).hasSize(2);
+    // As in Kotlin, the coordinator replies after the handoff and again after the empty answer.
+    assertThat(
+            events.stream()
+                .filter(event -> event.author().equals("coordinator"))
+                .flatMap(event -> event.content().stream())
+                .map(Content::text)
+                .filter(text -> text != null && !text.isEmpty()))
+        .containsExactly("coordinator took over", "coordinator 3")
+        .inOrder();
   }
 
   @Test
@@ -1673,9 +1683,9 @@ public final class AgentTransferLoopTest {
   }
 
   @Test
-  public void answeredTopLevelHopThatDoesNotRerun_sendsTheAnswerAsItsOutput() {
+  public void answeredTopLevelHopInAModeTree_runsAgainWithTheAnswer() {
     HandingOffAgent child = new HandingOffAgent("child", "asker");
-    ScriptedAgent unusedAsker =
+    ScriptedAgent asker =
         new ScriptedAgent(
             "asker",
             /* rerunOnResume= */ false,
@@ -1685,10 +1695,10 @@ public final class AgentTransferLoopTest {
     WorkflowSession session = new WorkflowSession(workflow(new Edge(START, child)));
     session.advance(go());
 
-    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+    var unused = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
 
-    // No earlier event carried the answer, so the resume sends it.
-    assertThat(outputAt("asker@1", resumed)).isEqualTo(ImmutableMap.of("ok", true));
+    // In an agent tree with modes, an answered agent runs again rather than replaying the answer.
+    assertThat(asker.runs.get()).isEqualTo(2);
   }
 
   @Test
@@ -1811,7 +1821,7 @@ public final class AgentTransferLoopTest {
     ImmutableList<Event> events = new WorkflowSession(workflow(new Edge(START, child))).turn(go());
 
     // booker runs at the top in a scope of its own, which the next hop takes on.
-    assertThat(contentOf("peer", events).isolationScope()).hasValue("booker@1");
+    assertThat(contentOf("peer", events).isolationScope()).hasValue("root@1/booker@1");
   }
 
   @Test
@@ -1993,10 +2003,10 @@ public final class AgentTransferLoopTest {
   }
 
   @Test
-  public void handoffTargetWithoutAnOutput_runsAgainWhileATaskReplaysItsWait() {
+  public void finishedHandoffTargetWithoutAnOutput_staysDoneWhileATaskReplaysItsWait() {
     CountDownLatch quietRan = new CountDownLatch(1);
     HandingOffAgent first = new HandingOffAgent("first", "quiet");
-    // Finishes without an output, so a resume runs it again.
+    // Finishes without an output.
     QuietAgent quiet = new QuietAgent("quiet", quietRan);
     LlmAgent unusedRoot = chat("root", says("unused"), first, quiet);
     // The task asks only once quiet ran, so the hold does not keep first back in turn 1.
@@ -2024,9 +2034,8 @@ public final class AgentTransferLoopTest {
     // The answer is for another node, so the task still waits on the user.
     session.advance(answer("ask_1", ImmutableMap.of("ok", true)));
 
-    // The task only replayed its wait, so nothing is held, and the target, which left no output,
-    // runs again, as in Python.
-    assertThat(quiet.runs.get()).isEqualTo(2);
+    // The target already finished in an agent tree with modes, so it does not run again.
+    assertThat(quiet.runs.get()).isEqualTo(1);
   }
 
   @Test
