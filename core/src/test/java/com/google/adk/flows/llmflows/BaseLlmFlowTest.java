@@ -121,6 +121,69 @@ public final class BaseLlmFlowTest {
   }
 
   @Test
+  public void run_synchronousModelError_callbackReturnsFallback() {
+    RuntimeException modelError = new RuntimeException("Model request failed");
+    Content fallbackContent = Content.fromParts(Part.fromText("Fallback response"));
+    AtomicInteger callbackCalls = new AtomicInteger();
+
+    TestLlm testLlm =
+        createTestLlm(
+            () -> {
+              throw modelError;
+            });
+
+    Callbacks.OnModelErrorCallback onErrorCallback =
+        (ctx, request, error) -> {
+          callbackCalls.incrementAndGet();
+          assertThat(error).isSameInstanceAs(modelError);
+          return Maybe.just(createLlmResponse(fallbackContent));
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm).onModelErrorCallback(onErrorCallback).build());
+
+    List<Event> events =
+        createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet();
+
+    assertThat(callbackCalls.get()).isEqualTo(1);
+    assertThat(events).hasSize(1);
+    assertThat(getOnlyElement(events).content()).hasValue(fallbackContent);
+  }
+
+  @Test
+  public void run_synchronousModelError_emptyCallbackPropagatesOriginalError() {
+    RuntimeException modelError = new RuntimeException("Model request failed");
+    AtomicInteger callbackCalls = new AtomicInteger();
+
+    TestLlm testLlm =
+        createTestLlm(
+            () -> {
+              throw modelError;
+            });
+
+    Callbacks.OnModelErrorCallback onErrorCallback =
+        (ctx, request, error) -> {
+          callbackCalls.incrementAndGet();
+          assertThat(error).isSameInstanceAs(modelError);
+          return Maybe.empty();
+        };
+
+    InvocationContext invocationContext =
+        createInvocationContext(
+            createTestAgentBuilder(testLlm).onModelErrorCallback(onErrorCallback).build());
+
+    RuntimeException thrown =
+        assertThrows(
+            RuntimeException.class,
+            () ->
+                createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet());
+
+    assertThat(thrown).isSameInstanceAs(modelError);
+    assertThat(callbackCalls.get()).isEqualTo(1);
+  }
+
+  @Test
   public void run_singleTextResponse_returnsSingleEvent() {
     Content content = Content.fromParts(Part.fromText("LLM response"));
     TestLlm testLlm = createTestLlm(createLlmResponse(content));
