@@ -18,6 +18,7 @@ package com.google.adk.testing;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.stream.Collectors.joining;
 
 import com.google.adk.agents.BaseAgent;
@@ -31,6 +32,7 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.LlmResponse;
+import com.google.adk.runner.Runner;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
@@ -46,6 +48,7 @@ import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -224,6 +227,20 @@ public final class TestUtils {
     return part;
   }
 
+  /**
+   * Runs {@code runner} on a new session with a subscriber that requests events only after the run
+   * has started. A run on the calling thread meanwhile leaves its later events queued, unpersisted.
+   */
+  public static TestSubscriber<Event> runRequestingLate(Runner runner, RunConfig runConfig) {
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+    TestSubscriber<Event> subscriber =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("go")), runConfig)
+            .test(0);
+    subscriber.request(Long.MAX_VALUE);
+    return subscriber.awaitDone(5, SECONDS);
+  }
+
   public static TestBaseAgent createRootAgent(BaseAgent... subAgents) {
     return createRootAgent(Arrays.asList(subAgents));
   }
@@ -278,6 +295,12 @@ public final class TestUtils {
 
   public static LlmResponse createTextLlmResponse(String text) {
     return createLlmResponse(Content.builder().role("model").parts(Part.fromText(text)).build());
+  }
+
+  /** Returns a model stream that sends {@code text} as one partial chunk, then as the answer. */
+  public static Flowable<LlmResponse> createStreamingTextLlmResponses(String text) {
+    LlmResponse answer = createTextLlmResponse(text);
+    return Flowable.just(answer.toBuilder().partial(true).build(), answer);
   }
 
   public static LlmResponse createFunctionCallLlmResponse(

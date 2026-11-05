@@ -1215,6 +1215,48 @@ public final class RunnerTest {
   }
 
   /**
+   * With a slow appendEvent, the next sequential sub-agent starts on another thread; its {@code
+   * invoke_agent} span must still be a child of the SequentialAgent's, not start a new trace.
+   */
+  @Test
+  public void runAsync_slowAppendEvent_nextSequentialSubAgentSpanIsChildOfSequentialAgentSpan() {
+    SequentialAgent sequentialAgent =
+        SequentialAgent.builder()
+            .name("sequence")
+            .subAgents(
+                createTestAgentBuilder(createTestLlm(createTextLlmResponse("first")))
+                    .name("first_agent")
+                    .build(),
+                createTestAgentBuilder(createTestLlm(createTextLlmResponse("second")))
+                    .name("second_agent")
+                    .build())
+            .build();
+    Runner runnerForRace =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(sequentialAgent).build())
+            .sessionService(new AppendDelayingSessionService(new InMemorySessionService(), 50))
+            .build();
+    Session raceSession =
+        runnerForRace.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        runnerForRace
+            .runAsync("user", raceSession.id(), createContent("start"))
+            .toList()
+            .blockingGet();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    Optional<SpanData> parentSpan =
+        spans.stream().filter(s -> s.getName().equals("invoke_agent sequence")).findFirst();
+    Optional<SpanData> secondSpan =
+        spans.stream().filter(s -> s.getName().equals("invoke_agent second_agent")).findFirst();
+    assertThat(parentSpan).isPresent();
+    assertThat(secondSpan).isPresent();
+    assertThat(secondSpan.get().getParentSpanContext().getSpanId())
+        .isEqualTo(parentSpan.get().getSpanContext().getSpanId());
+  }
+
+  /**
    * When an LlmAgent transfers to a sub-LlmAgent, the sub-agent's events flow back up through the
    * parent's flow and must each be appended to the session exactly once.
    */
