@@ -31,10 +31,15 @@ import com.google.adk.workflow.Route;
 import com.google.adk.workflow.Start;
 import com.google.adk.workflow.Workflow;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.jspecify.annotations.Nullable;
 
@@ -98,6 +103,63 @@ record AppGraph(String name, @JsonProperty("root_agent") GraphNode rootAgent) {
 
     GraphNode(String name, String type) {
       this(name, type, /* subAgents= */ null, /* tools= */ null, /* graph= */ null);
+    }
+
+    /**
+     * Returns the node at the {@code /}-separated {@code path}, or empty if no child matches.
+     * Accepts a path that starts with this node's name, and ignores an {@code @<run id>} suffix on
+     * any segment.
+     */
+    Optional<GraphNode> find(String path) {
+      List<String> names =
+          Arrays.stream(path.split("/", -1))
+              .map(segment -> segment.split("@", -1)[0])
+              .filter(name -> !name.isEmpty())
+              .toList();
+      List<String> below =
+          !names.isEmpty() && names.get(0).equals(name) ? names.subList(1, names.size()) : names;
+      Optional<GraphNode> node = Optional.of(this);
+      for (String childName : below) {
+        node =
+            node.flatMap(
+                parent ->
+                    parent.children().stream()
+                        .filter(child -> child.name().equals(childName))
+                        .findFirst());
+      }
+      return node;
+    }
+
+    /**
+     * Returns every node below this one that has a graph, keyed by its {@code /}-separated path
+     * from this node's name, in depth-first order.
+     */
+    ImmutableMap<String, GraphNode> nestedWorkflowsByPath() {
+      Map<String, GraphNode> workflows = new LinkedHashMap<>();
+      collectNestedWorkflows(this, name, workflows);
+      return ImmutableMap.copyOf(workflows);
+    }
+
+    private static void collectNestedWorkflows(
+        GraphNode node, String path, Map<String, GraphNode> workflows) {
+      for (GraphNode child : node.children()) {
+        String childPath = path + "/" + child.name();
+        if (child.graph() != null) {
+          workflows.put(childPath, child);
+        }
+        collectNestedWorkflows(child, childPath, workflows);
+      }
+    }
+
+    private ImmutableList<GraphNode> children() {
+      ImmutableList.Builder<GraphNode> children = ImmutableList.builder();
+      if (graph != null) {
+        children.addAll(graph.nodes());
+      }
+      if (subAgents != null) {
+        children.addAll(subAgents);
+      }
+      return children.build();
     }
   }
 
