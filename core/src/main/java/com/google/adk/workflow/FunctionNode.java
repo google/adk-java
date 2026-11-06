@@ -72,10 +72,36 @@ public final class FunctionNode<I, O> extends BaseNode {
         .rerunOnResume(rerunOnResume())
         .waitForOutput(waitForOutput())
         .config(config())
-        .inputSchema(inputSchema().orElse(null))
-        .outputSchema(outputSchema().orElse(null))
+        // Only explicit schemas carry over; the copy infers the others from its ports.
+        .inputSchema(super.inputSchema().orElse(null))
+        .outputSchema(super.outputSchema().orElse(null))
         .stateSchema(stateSchema().orElse(null))
         .body(body);
+  }
+
+  /**
+   * Returns the schema that describes the input port: the one set on the builder or, if none, one
+   * inferred from the input type. An {@code Object}, {@code Void} or other type with no fixed JSON
+   * shape infers none.
+   */
+  @Override
+  public Optional<Schema> inputSchema() {
+    return super.inputSchema().or(() -> Optional.ofNullable(inputCodec.schema()));
+  }
+
+  /**
+   * Returns the schema that describes the output port: the one set on the builder or, if none, one
+   * inferred from the output type. A returned {@code Event} is sent as it is, so an {@code Event}
+   * output infers none.
+   */
+  @Override
+  public Optional<Schema> outputSchema() {
+    return super.outputSchema().or(() -> Optional.ofNullable(outputCodec.schema()));
+  }
+
+  /** Whether {@link #inputSchema} was inferred rather than set on the builder. */
+  boolean inputSchemaInferred() {
+    return super.inputSchema().isEmpty() && inputCodec.schema() != null;
   }
 
   @Override
@@ -201,14 +227,14 @@ public final class FunctionNode<I, O> extends BaseNode {
       return this;
     }
 
-    /** Sets the schema the node's input must match. */
+    /** Sets the schema that describes the node's input, in place of one inferred from its type. */
     @CanIgnoreReturnValue
     public Builder<I, O> inputSchema(@Nullable Schema inputSchema) {
       this.inputSchema = inputSchema;
       return this;
     }
 
-    /** Sets the schema the node's output must match. */
+    /** Sets the schema that describes the node's output, in place of one inferred from its type. */
     @CanIgnoreReturnValue
     public Builder<I, O> outputSchema(@Nullable Schema outputSchema) {
       this.outputSchema = outputSchema;

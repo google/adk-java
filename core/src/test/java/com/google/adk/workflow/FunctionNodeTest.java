@@ -22,24 +22,36 @@ import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
 import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonAnyGetter;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIdentityInfo;
+import com.fasterxml.jackson.annotation.JsonIdentityReference;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
 import com.fasterxml.jackson.annotation.JsonValue;
+import com.fasterxml.jackson.annotation.ObjectIdGenerators;
 import com.fasterxml.jackson.annotation.OptBoolean;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
+import com.fasterxml.jackson.databind.util.StdConverter;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
@@ -52,6 +64,7 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import com.google.genai.types.VideoMetadata;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.schedulers.Schedulers;
@@ -62,6 +75,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.URI;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -69,6 +83,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -85,6 +100,11 @@ public final class FunctionNodeTest {
 
   private static final String APP = "app";
   private static final String USER = "user";
+  private static final Schema ANY = Schema.builder().build();
+  private static final Schema STRING = typed(Type.Known.STRING);
+  private static final Schema INTEGER = typed(Type.Known.INTEGER);
+  private static final Schema ORDER =
+      object(ImmutableMap.of("id", STRING, "quantity", INTEGER), "id", "quantity");
 
   record Order(String id, int quantity) {}
 
@@ -262,6 +282,223 @@ public final class FunctionNodeTest {
     public String getValue() {
       return value;
     }
+  }
+
+  record Note(
+      String title,
+      int pages,
+      Optional<String> subtitle,
+      @Nullable String body,
+      @OtherNullness.Nullable String footer) {}
+
+  /** A record whose JSON form renames one property, ignores one and does not require two. */
+  record Draft(
+      @JsonProperty("section_name") String sectionName,
+      @JsonProperty(isRequired = OptBoolean.FALSE) String content,
+      @JsonProperty(isRequired = OptBoolean.FALSE) int priority,
+      @JsonIgnore String notes) {}
+
+  enum Status {
+    OPEN,
+    SHIPPED
+  }
+
+  record Shipment(Status status, Order order, List<Order> history, Map<String, Order> byId) {}
+
+  enum Color {
+    @JsonProperty("red")
+    RED,
+    @JsonProperty("dark-blue")
+    BLUE
+  }
+
+  /** An enum that Jackson writes as a number. */
+  enum Level {
+    LOW(1),
+    HIGH(2);
+
+    private final int code;
+
+    Level(int code) {
+      this.code = code;
+    }
+
+    @JsonValue
+    int code() {
+      return code;
+    }
+  }
+
+  /** A record that also writes the entries of a map as keys of its own. */
+  record Tagged(String name) {
+    @JsonAnyGetter
+    ImmutableMap<String, Object> extra() {
+      return ImmutableMap.of("k", 1);
+    }
+  }
+
+  /** A class whose any-setter takes keys it does not declare. */
+  static final class Catchall {
+    public String id;
+
+    @JsonAnySetter
+    void put(String key, Object value) {}
+  }
+
+  /** A class with two any-setters, which Jackson rejects. */
+  static final class TwoCatchalls {
+    public String id;
+
+    @JsonAnySetter
+    void put(String key, Object value) {}
+
+    @JsonAnySetter
+    void add(String key, Object value) {}
+  }
+
+  record Flat(String label, @JsonUnwrapped Order order) {}
+
+  @JsonFormat(shape = JsonFormat.Shape.ARRAY)
+  record Pair(int x, int y) {}
+
+  /** A polymorphic base type with a property of its own. */
+  @JsonTypeInfo(use = JsonTypeInfo.Id.NAME)
+  abstract static class Pet {
+    public String name;
+  }
+
+  @JsonIdentityInfo(generator = ObjectIdGenerators.IntSequenceGenerator.class)
+  record Ref(String label) {}
+
+  /** A record whose properties have no fixed JSON type. */
+  record Irregular(
+      @JsonSerialize(using = ToStringSerializer.class) long id,
+      @JsonSerialize(contentUsing = ToStringSerializer.class) List<Integer> codes,
+      @JsonFormat(shape = JsonFormat.Shape.STRING) int count,
+      @JsonTypeInfo(use = JsonTypeInfo.Id.NAME) Order typed,
+      @JsonTypeInfo(use = JsonTypeInfo.Id.NAME) List<Order> typedOrders,
+      @JsonIdentityInfo(generator = ObjectIdGenerators.IntSequenceGenerator.class)
+          @JsonIdentityReference(alwaysAsId = true)
+          Order byId,
+      Tagged tagged,
+      Catchall catchall,
+      TwoCatchalls twoCatchalls,
+      Flat flat,
+      Pair pair,
+      Ref ref,
+      Pet pet,
+      Level level,
+      Instant at,
+      Object raw,
+      List<Pet> pets) {}
+
+  record Measure(Number amount, CharSequence unit) {}
+
+  /** A record whose JSON form may omit all but two keys. */
+  record Sparse(
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) String text,
+      @JsonInclude(JsonInclude.Include.NON_DEFAULT) int count,
+      @JsonInclude(JsonInclude.Include.NON_ABSENT) Optional<String> model,
+      @JsonInclude(JsonInclude.Include.NON_NULL) Optional<String> label,
+      @JsonSerialize(converter = NumberToText.class) int code,
+      String plain) {}
+
+  /** A record whose class-level inclusion omits only the keys that can be null. */
+  @JsonInclude(JsonInclude.Include.NON_NULL)
+  record Counted(int count, String label, @Nullable String note, Optional<String> tag) {}
+
+  record Aliased(@JsonAlias("qty") int quantity) {}
+
+  /** A record whose inclusions may omit keys, though none of its values can be null or empty. */
+  record Lenient(
+      @JsonInclude(JsonInclude.Include.NON_ABSENT) String id,
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) int count,
+      @JsonInclude(JsonInclude.Include.NON_EMPTY) Order order,
+      @JsonInclude(JsonInclude.Include.NON_DEFAULT) Status status) {}
+
+  /** A record that reads a password it never writes, and writes a role it never reads. */
+  record Login(
+      String user,
+      @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) String password,
+      @JsonProperty(access = JsonProperty.Access.READ_ONLY) String role) {}
+
+  /** A class whose creator parameter has no getter or field, so the mapper never writes it. */
+  static final class Greeting {
+    public final String text;
+
+    @JsonCreator
+    Greeting(@JsonProperty("name") String name) {
+      this.text = "hi " + name;
+    }
+  }
+
+  record Strict(@JsonProperty(required = true) @Nullable String id) {}
+
+  /** A field marked required, which Jackson does not enforce outside a creator. */
+  static final class MarkedField {
+    @JsonProperty(required = true)
+    public @Nullable String id;
+  }
+
+  /** A setter marked required, which Jackson does not enforce outside a creator. */
+  static final class MarkedSetter {
+    private @Nullable String id;
+
+    public @Nullable String getId() {
+      return id;
+    }
+
+    @JsonProperty(required = true)
+    public void setId(@Nullable String id) {
+      this.id = id;
+    }
+  }
+
+  record AliasedMarked(
+      @JsonProperty(value = "quantity", required = true) @JsonAlias("qty") int q) {}
+
+  static final class NumberToText extends StdConverter<Integer, String> {
+    @Override
+    public String convert(Integer value) {
+      return value.toString();
+    }
+  }
+
+  /** A class whose field alone is annotated nullable. */
+  static final class Memo {
+    private @Nullable String note;
+
+    public String getNote() {
+      return note;
+    }
+  }
+
+  /** A class whose creator parameter alone is annotated nullable. */
+  static final class Signed {
+    public final String name;
+
+    @JsonCreator
+    Signed(@JsonProperty("name") @Nullable String name) {
+      this.name = name;
+    }
+  }
+
+  /** A record whose explicit accessor drops its component's annotation. */
+  record Remark(@Nullable String note) {
+    @Override
+    public String note() {
+      return note;
+    }
+  }
+
+  record TreeNode(String label, List<TreeNode> children) {}
+
+  /** Holds a declaration annotation named like the {@code @Nullable} of other packages. */
+  static final class OtherNullness {
+    @Retention(RetentionPolicy.RUNTIME)
+    @interface Nullable {}
+
+    private OtherNullness() {}
   }
 
   @Test
@@ -769,6 +1006,362 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/copy@1")).isEqualTo("a1");
+  }
+
+  @Test
+  public void toBuilder_copy_keepsOnlyTheExplicitSchema() {
+    // Arrange
+    Schema explicit = Schema.builder().type(Type.Known.OBJECT).build();
+    FunctionNode<Order, Order> node =
+        FunctionNodes.builder(Order.class, Order.class)
+            .name("n")
+            .inputSchema(explicit)
+            .body((ctx, order) -> order)
+            .build();
+
+    // Act
+    FunctionNode<Order, Order> copy = node.toBuilder().name("copy").build();
+
+    // Assert: the explicit schema wins over the inferred one in the node and in its copy.
+    assertThat(node.inputSchema()).hasValue(explicit);
+    assertThat(copy.inputSchema()).hasValue(explicit);
+    assertThat(copy.inputSchemaInferred()).isFalse();
+    assertThat(copy.outputSchema()).hasValue(ORDER);
+  }
+
+  @Test
+  public void of_inputWithoutAKeyTheInferredSchemaRequires_failsWithAValidationError() {
+    // Arrange: the inferred Order schema requires a quantity, which the input lacks.
+    Node makeOrder = emitter("make_order", ImmutableMap.of("id", "a1", "note", "rush"));
+    FunctionNode<Order, String> describe =
+        FunctionNodes.of(
+            "describe",
+            Order.class,
+            String.class,
+            (ctx, order) -> order.id() + " x" + order.quantity());
+
+    // Act
+    RunResult result = run(chain(makeOrder, describe));
+
+    // Assert: the port enforces the key the inferred schema requires.
+    assertThat(describe.inputSchemaInferred()).isTrue();
+    assertThat(describe.inputSchema().orElseThrow().required())
+        .hasValue(ImmutableList.of("id", "quantity"));
+    assertThat(result.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'describe' does not match "
+                + Order.class.getName()
+                + ".");
+  }
+
+  @Test
+  public void of_recordWithOrWithoutAnOptionalKey_readsTheValueOrEmpty() {
+    // Arrange: the inferred Note schema does not require subtitle, so it may arrive without one.
+    FunctionNode<Note, String> read =
+        FunctionNodes.of(
+            "read", Note.class, String.class, (ctx, note) -> String.valueOf(note.subtitle()));
+    Node without = emitter("make", ImmutableMap.of("title", "t", "pages", 1));
+    Node with = emitter("make", ImmutableMap.of("title", "t", "pages", 1, "subtitle", "s"));
+
+    // Act
+    RunResult missing = run(chain(without, read));
+    RunResult present = run(chain(with, read));
+
+    // Assert
+    missing.assertCompleted();
+    present.assertCompleted();
+    assertThat(missing.outputAt("wf@1/read@1")).isEqualTo("Optional.empty");
+    assertThat(present.outputAt("wf@1/read@1")).isEqualTo("Optional[s]");
+  }
+
+  @Test
+  public void inputSchema_scalarAndArrayTypes_mapToTheirJsonTypes() {
+    // Arrange: as in ADK Kotlin, a long is an INTEGER, unlike in a tool declaration.
+    Schema number = typed(Type.Known.NUMBER);
+    ImmutableMap<Class<?>, Schema> expected =
+        ImmutableMap.<Class<?>, Schema>builder()
+            .put(String.class, STRING)
+            .put(byte[].class, STRING)
+            .put(char[].class, STRING)
+            .put(String[].class, Schema.builder().type(Type.Known.ARRAY).items(STRING).build())
+            .put(boolean.class, typed(Type.Known.BOOLEAN))
+            .put(int.class, INTEGER)
+            .put(long.class, INTEGER)
+            .put(Double.class, number)
+            .put(
+                Measure.class,
+                object(ImmutableMap.of("amount", number, "unit", STRING), "amount", "unit"))
+            .buildOrThrow();
+
+    // Act
+    ImmutableMap<Class<?>, Schema> actual =
+        expected.keySet().stream()
+            .collect(toImmutableMap(type -> type, type -> inputSchema(type).orElseThrow()));
+
+    // Assert
+    assertThat(actual).isEqualTo(expected);
+  }
+
+  @Test
+  public void inputSchema_optionalOrNullableProperties_areNullableAndNotRequired() {
+    // Act
+    Optional<Schema> schema = inputSchema(Note.class);
+
+    // Assert: any annotation named Nullable counts, a type-use one included.
+    Schema text = nullable(STRING);
+    ImmutableMap<String, Schema> properties =
+        ImmutableMap.of(
+            "title", STRING, "pages", INTEGER, "subtitle", text, "body", text, "footer", text);
+    assertThat(schema).hasValue(object(properties, "title", "pages"));
+  }
+
+  @Test
+  public void inputSchema_jacksonAnnotations_renameIgnoreAliasOrUnrequireProperties() {
+    // Act
+    Optional<Schema> schema = inputSchema(Draft.class);
+    Optional<Schema> aliased = inputSchema(Aliased.class);
+    Optional<Schema> flat = inputSchema(Flat.class);
+
+    // Assert: a primitive marked not required is optional too, as a missing one reads as zero.
+    assertThat(schema)
+        .hasValue(
+            object(
+                ImmutableMap.of("section_name", STRING, "content", STRING, "priority", INTEGER),
+                "section_name"));
+    assertThat(aliased).hasValue(object(ImmutableMap.of("quantity", INTEGER, "qty", INTEGER)));
+    assertThat(flat).isEmpty();
+  }
+
+  @Test
+  public void outputSchema_keysTheMapperAlwaysWrites_areRequiredEvenIfNullOrMarkedNotRequired() {
+    // Act
+    Optional<Schema> note = outputSchema(Note.class);
+    Optional<Schema> draft = outputSchema(Draft.class);
+
+    // Assert
+    assertThat(note.orElseThrow().required())
+        .hasValue(ImmutableList.of("title", "pages", "subtitle", "body", "footer"));
+    assertThat(draft.orElseThrow().required())
+        .hasValue(ImmutableList.of("section_name", "content", "priority"));
+  }
+
+  @Test
+  public void outputSchema_keysTheMapperMayOmit_areNotRequiredAndAConverterTakesAnyValue() {
+    // Act
+    Optional<Schema> schema = outputSchema(Sparse.class);
+    Optional<Schema> counted = outputSchema(Counted.class);
+    Optional<Schema> sparseIn = inputSchema(Sparse.class);
+
+    // Assert: an omitted key is never null, but NON_NULL still writes an empty Optional as null.
+    // An input port does not need a key the mapper may omit.
+    ImmutableMap<String, Schema> properties =
+        ImmutableMap.of(
+            "text", STRING,
+            "count", INTEGER,
+            "model", STRING,
+            "label", nullable(STRING),
+            "code", ANY,
+            "plain", STRING);
+    assertThat(schema).hasValue(object(properties, "code", "plain"));
+    assertThat(sparseIn.orElseThrow().required()).hasValue(ImmutableList.of("code", "plain"));
+    assertThat(counted.orElseThrow().required()).hasValue(ImmutableList.of("count", "label"));
+    assertThat(counted.orElseThrow().properties().orElseThrow())
+        .containsAtLeast("note", STRING, "tag", nullable(STRING));
+  }
+
+  @Test
+  public void inputSchema_keysTheMapperMayOmitOrNeverWrites_areNotRequired() {
+    // Arrange: an inclusion may omit each key of Counted and Lenient, though none can be null or
+    // empty, the mapper never writes Login's password or Greeting's name, and required = true
+    // binds only an unaliased creator parameter.
+    ImmutableMap<Class<?>, ImmutableList<String>> expected =
+        ImmutableMap.of(
+            Counted.class, ImmutableList.of(),
+            Lenient.class, ImmutableList.of(),
+            Login.class, ImmutableList.of("user"),
+            Greeting.class, ImmutableList.of(),
+            MarkedField.class, ImmutableList.of(),
+            MarkedSetter.class, ImmutableList.of(),
+            AliasedMarked.class, ImmutableList.of());
+
+    // Act
+    ImmutableMap<Class<?>, ImmutableList<String>> actual =
+        expected.keySet().stream()
+            .collect(toImmutableMap(type -> type, FunctionNodeTest::requiredInputKeys));
+
+    // Assert: an input needs only the keys the mapper always writes, which the port enforces.
+    assertThat(actual).isEqualTo(expected);
+    assertThat(inputSchema(Greeting.class).orElseThrow().properties().orElseThrow())
+        .containsKey("name");
+    assertThat(outputSchema(Lenient.class).orElseThrow().required())
+        .hasValue(ImmutableList.of("id", "count", "order", "status"));
+  }
+
+  @Test
+  public void of_inputMissingAKey_failsOnlyIfTheInferredSchemaRequiresIt() {
+    // Arrange: of these keys, the inferred schemas require only Login's user and Strict's id.
+    FunctionNode<Lenient, String> lenient =
+        FunctionNodes.of(
+            "lenient", Lenient.class, String.class, (ctx, in) -> in.count() + " " + in.order());
+    FunctionNode<Login, String> login =
+        FunctionNodes.of(
+            "login", Login.class, String.class, (ctx, in) -> in.user() + " " + in.password());
+    FunctionNode<Greeting, String> greeting =
+        FunctionNodes.of("greeting", Greeting.class, String.class, (ctx, in) -> in.text);
+    FunctionNode<Strict, String> strict =
+        FunctionNodes.of("strict", Strict.class, String.class, (ctx, in) -> in.id());
+    FunctionNode<MarkedField, String> markedField =
+        FunctionNodes.of("marked_field", MarkedField.class, String.class, (ctx, in) -> in.id);
+    FunctionNode<AliasedMarked, Integer> aliased =
+        FunctionNodes.of("aliased", AliasedMarked.class, Integer.class, (ctx, in) -> in.q());
+
+    // Act
+    RunResult lenientRun = run(chain(emitter("make", ImmutableMap.of()), lenient));
+    RunResult loginRun = run(chain(emitter("make", ImmutableMap.of("user", "u")), login));
+    RunResult greetingRun = run(chain(emitter("make", ImmutableMap.of()), greeting));
+    RunResult strictRun = run(chain(emitter("make", ImmutableMap.of()), strict));
+    RunResult markedFieldRun = run(chain(emitter("make", ImmutableMap.of()), markedField));
+    RunResult aliasedRun = run(chain(emitter("make", ImmutableMap.of("qty", 7)), aliased));
+
+    // Assert: a key marked required is required even if nullable.
+    lenientRun.assertCompleted();
+    assertThat(lenientRun.outputAt("wf@1/lenient@1")).isEqualTo("0 null");
+    loginRun.assertCompleted();
+    assertThat(loginRun.outputAt("wf@1/login@1")).isEqualTo("u null");
+    greetingRun.assertCompleted();
+    assertThat(greetingRun.outputAt("wf@1/greeting@1")).isEqualTo("hi null");
+    markedFieldRun.assertCompleted();
+    aliasedRun.assertCompleted();
+    assertThat(aliasedRun.outputAt("wf@1/aliased@1")).isEqualTo(7);
+    assertThat(strict.inputSchema())
+        .hasValue(object(ImmutableMap.of("id", nullable(STRING)), "id"));
+    assertThat(strictRun.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'strict' does not match "
+                + Strict.class.getName()
+                + ".");
+  }
+
+  @Test
+  public void schemas_nullableOnAFieldCreatorParameterOrRecordComponent_makeThePropertyNullable() {
+    // Act
+    Optional<Schema> memo = outputSchema(Memo.class);
+    Optional<Schema> signed = inputSchema(Signed.class);
+    Optional<Schema> remark = outputSchema(Remark.class);
+
+    // Assert: the getter or accessor the mapper calls is not annotated.
+    assertThat(memo).hasValue(object(ImmutableMap.of("note", nullable(STRING)), "note"));
+    assertThat(signed).hasValue(object(ImmutableMap.of("name", nullable(STRING))));
+    assertThat(remark).hasValue(object(ImmutableMap.of("note", nullable(STRING)), "note"));
+  }
+
+  @Test
+  public void inputSchema_nestedRecordEnumCollectionAndMap_describeEachLevel() {
+    // Act
+    Optional<Schema> shipment = inputSchema(Shipment.class);
+    Optional<Schema> list = inputSchema(new TypeReference<List<Order>>() {});
+    Optional<Schema> set = inputSchema(new TypeReference<Set<Order>>() {});
+    Optional<Schema> objects = inputSchema(new TypeReference<List<Object>>() {});
+
+    // Assert
+    Schema status = Schema.builder().type(Type.Known.STRING).enum_("OPEN", "SHIPPED").build();
+    Schema orders = Schema.builder().type(Type.Known.ARRAY).items(ORDER).build();
+    ImmutableMap<String, Schema> properties =
+        ImmutableMap.of(
+            "status", status, "order", ORDER, "history", orders, "byId", typed(Type.Known.OBJECT));
+    assertThat(shipment).hasValue(object(properties, "status", "order", "history", "byId"));
+    assertThat(list).hasValue(orders);
+    assertThat(set).hasValue(orders);
+    assertThat(objects).hasValue(typed(Type.Known.ARRAY));
+  }
+
+  @Test
+  public void inputSchema_enums_listTheValuesTheMapperWrites() {
+    // Act
+    Optional<Schema> color = inputSchema(Color.class);
+    Optional<Schema> level = inputSchema(Level.class);
+
+    // Assert: an enum written as a number has no string values to list, so it has no schema.
+    assertThat(color)
+        .hasValue(Schema.builder().type(Type.Known.STRING).enum_("red", "dark-blue").build());
+    assertThat(level).isEmpty();
+  }
+
+  @Test
+  public void outputSchema_propertiesOfNoFixedJsonType_takeAnyValue() {
+    // Act
+    Optional<Schema> irregular = outputSchema(Irregular.class);
+    Optional<Schema> pair = outputSchema(Pair.class);
+
+    // Assert: each property takes any value, but a list whose elements carry type ids is a list.
+    ImmutableMap<String, Schema> properties =
+        ImmutableMap.<String, Schema>builder()
+            .put("id", ANY)
+            .put("codes", ANY)
+            .put("count", ANY)
+            .put("typed", ANY)
+            .put("typedOrders", typed(Type.Known.ARRAY))
+            .put("byId", ANY)
+            .put("tagged", ANY)
+            .put("catchall", ANY)
+            .put("twoCatchalls", ANY)
+            .put("flat", ANY)
+            .put("pair", ANY)
+            .put("ref", ANY)
+            .put("pet", ANY)
+            .put("level", ANY)
+            .put("at", ANY)
+            .put("raw", ANY)
+            .put("pets", typed(Type.Known.ARRAY))
+            .buildOrThrow();
+    assertThat(irregular).hasValue(object(properties, properties.keySet().toArray(String[]::new)));
+    assertThat(pair).isEmpty();
+  }
+
+  @Test
+  public void inputSchema_recursiveTypes_areEmptyUnlikeNestedGenerics() {
+    // Act
+    Optional<Schema> tree = inputSchema(TreeNode.class);
+    Optional<Schema> box = inputSchema(new TypeReference<Box<Box<Integer>>>() {});
+
+    // Assert: the Box<Integer> inside a Box<Box<Integer>> is another type, not a cycle.
+    Schema intBox = object(ImmutableMap.of("item", INTEGER), "item");
+    assertThat(tree).isEmpty();
+    assertThat(box).hasValue(object(ImmutableMap.of("item", intBox), "item"));
+  }
+
+  @Test
+  public void of_contentPorts_inferContentsSchemaForBothPorts() {
+    // Act
+    FunctionNode<Content, Content> node =
+        FunctionNodes.of("n", Content.class, Content.class, (ctx, content) -> content);
+
+    // Assert: a returned Content is the output in its JSON form, which omits an unset key.
+    for (Schema schema :
+        ImmutableList.of(node.inputSchema().orElseThrow(), node.outputSchema().orElseThrow())) {
+      assertThat(schema.type()).hasValue(new Type(Type.Known.OBJECT));
+      assertThat(schema.properties().orElseThrow()).containsEntry("role", STRING);
+      assertThat(schema.properties().orElseThrow().keySet()).containsExactly("parts", "role");
+      assertThat(schema.required()).isEmpty();
+    }
+    assertThat(node.inputSchemaInferred()).isTrue();
+  }
+
+  @Test
+  public void of_eventAndObjectPorts_inferASchemaOnlyForAnEventInput() {
+    // Act
+    FunctionNode<Event, Event> node =
+        FunctionNodes.of("n", Event.class, Event.class, (ctx, event) -> event);
+    Optional<Schema> object = inputSchema(Object.class);
+
+    // Assert: an Event reads every key as optional, a returned Event is sent as it is, and an
+    // Object takes any JSON value.
+    Schema input = node.inputSchema().orElseThrow();
+    assertThat(input.properties().orElseThrow()).containsEntry("author", STRING);
+    assertThat(input.required()).isEmpty();
+    assertThat(node.inputSchemaInferred()).isTrue();
+    assertThat(node.outputSchema()).isEmpty();
+    assertThat(object).isEmpty();
   }
 
   @Test
@@ -2025,6 +2618,36 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/read@1")).isEqualTo("t1");
+  }
+
+  private static Optional<Schema> inputSchema(Class<?> type) {
+    return FunctionNodes.of("n", type, Void.class, (ctx, input) -> null).inputSchema();
+  }
+
+  private static Optional<Schema> inputSchema(TypeReference<?> type) {
+    return FunctionNodes.of("n", type, Void.class, (ctx, input) -> null).inputSchema();
+  }
+
+  private static ImmutableList<String> requiredInputKeys(Class<?> type) {
+    return ImmutableList.copyOf(
+        inputSchema(type).orElseThrow().required().orElse(ImmutableList.of()));
+  }
+
+  private static Optional<Schema> outputSchema(Class<?> type) {
+    return FunctionNodes.of("n", Void.class, type, (ctx, input) -> null).outputSchema();
+  }
+
+  private static Schema typed(Type.Known type) {
+    return Schema.builder().type(type).build();
+  }
+
+  private static Schema nullable(Schema schema) {
+    return schema.toBuilder().nullable(true).build();
+  }
+
+  private static Schema object(ImmutableMap<String, Schema> properties, String... required) {
+    Schema.Builder object = Schema.builder().type(Type.Known.OBJECT).properties(properties);
+    return (required.length == 0 ? object : object.required(required)).build();
   }
 
   /** Returns a workflow named {@code wf} that runs {@code nodes} in sequence from START. */

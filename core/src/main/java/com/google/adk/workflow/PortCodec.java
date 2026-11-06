@@ -61,8 +61,11 @@ import com.fasterxml.jackson.databind.type.LogicalType;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.google.adk.events.Event;
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
 import com.google.genai.JsonSerializable;
 import com.google.genai.types.Content;
+import com.google.genai.types.Schema;
 import java.io.IOException;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.GenericArrayType;
@@ -123,16 +126,23 @@ final class PortCodec<T> {
   /** The port's type, with a primitive boxed. */
   private final JavaType type;
 
+  private final Supplier<@Nullable Schema> schema;
+
   /** Whether the declared type is primitive, so the port takes no null. */
   private final boolean primitive;
 
-  private PortCodec(JavaType declared) {
+  private PortCodec(JavaType declared, boolean output) {
     this.primitive = declared.isPrimitive();
     this.type =
         primitive
             ? MAPPER.constructType(
                 MethodType.methodType(declared.getRawClass()).wrap().returnType())
             : declared;
+    // An event output passes through as it is, so no JSON form describes it.
+    this.schema =
+        output && type.getRawClass() == Event.class
+            ? () -> null
+            : Suppliers.memoize(() -> PortSchemas.infer(type, output));
   }
 
   static JavaType javaType(Class<?> type) {
@@ -188,7 +198,7 @@ final class PortCodec<T> {
     if (!passesAsIs(type)) {
       requireUsable(type, what, /* read= */ true);
     }
-    return new PortCodec<>(type);
+    return new PortCodec<>(type, /* output= */ false);
   }
 
   /**
@@ -201,7 +211,7 @@ final class PortCodec<T> {
     if (!passesAsIs(type)) {
       requireUsable(type, what, /* read= */ false);
     }
-    return new PortCodec<>(type);
+    return new PortCodec<>(type, /* output= */ true);
   }
 
   /** Whether a port of {@code type} handles values without a Jackson check. */
@@ -430,7 +440,7 @@ final class PortCodec<T> {
     }
   }
 
-  private static @Nullable TypeSerializer findTypeSerializer(JavaType type) {
+  static @Nullable TypeSerializer findTypeSerializer(JavaType type) {
     try {
       return MAPPER.getSerializerProviderInstance().findTypeSerializer(type);
     } catch (JsonMappingException | RuntimeException e) {
@@ -482,6 +492,11 @@ final class PortCodec<T> {
 
   private static String capitalized(String what) {
     return Character.toUpperCase(what.charAt(0)) + what.substring(1);
+  }
+
+  /** Returns the schema inferred for this port's JSON form, or {@code null} if it has none. */
+  @Nullable Schema schema() {
+    return schema.get();
   }
 
   /**

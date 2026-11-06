@@ -77,6 +77,13 @@ final class RequiredProperties {
     return new Checking(creator, required);
   }
 
+  /**
+   * Returns the creator properties {@code instantiator} fails a value without, if it checks any.
+   */
+  static ImmutableSet<String> required(ValueInstantiator instantiator) {
+    return instantiator instanceof Checking checking ? checking.required : ImmutableSet.of();
+  }
+
   private static boolean isRequired(
       SerializationConfig config,
       JavaType type,
@@ -114,7 +121,7 @@ final class RequiredProperties {
    * Whether {@code property} is annotated {@code @Nullable}, from whichever package, on the member
    * the mapper uses or on its field, getter, setter or creator parameter.
    */
-  private static boolean hasNullableAnnotation(BeanDescription description, BeanProperty property) {
+  static boolean hasNullableAnnotation(BeanDescription description, BeanProperty property) {
     Stream<AnnotatedMember> members =
         description.findProperties().stream()
             .filter(definition -> definition.getName().equals(property.getName()))
@@ -132,7 +139,7 @@ final class RequiredProperties {
   }
 
   /** Returns the field, getter, setter and creator parameter of {@code definition} it has. */
-  private static Stream<AnnotatedMember> members(BeanPropertyDefinition definition) {
+  static Stream<AnnotatedMember> members(BeanPropertyDefinition definition) {
     Stream<AnnotatedMember> members =
         Stream.of(definition.getField(), definition.getConstructorParameter());
     // Jackson rejects overloaded getters or setters it cannot choose between.
