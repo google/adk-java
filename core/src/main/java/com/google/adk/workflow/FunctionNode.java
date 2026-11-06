@@ -42,7 +42,8 @@ import org.jspecify.annotations.Nullable;
 @Experimental
 public final class FunctionNode<I, O> extends BaseNode {
 
-  private static final PortCodec<Object> ANY = PortCodec.of(Object.class);
+  private static final PortCodec<Object> ANY =
+      PortCodec.output(PortCodec.javaType(Object.class), "an event output");
 
   private final PortCodec<I> inputCodec;
   private final PortCodec<O> outputCodec;

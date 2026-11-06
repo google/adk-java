@@ -19,28 +19,43 @@ package com.google.adk.workflow;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.BeanDescription;
 import com.fasterxml.jackson.databind.DeserializationConfig;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonSerializer;
+import com.fasterxml.jackson.databind.KeyDeserializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.cfg.CoercionAction;
 import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
+import com.fasterxml.jackson.databind.deser.AbstractDeserializer;
+import com.fasterxml.jackson.databind.deser.BeanDeserializerBase;
 import com.fasterxml.jackson.databind.deser.BeanDeserializerBuilder;
 import com.fasterxml.jackson.databind.deser.BeanDeserializerModifier;
+import com.fasterxml.jackson.databind.deser.DefaultDeserializationContext;
+import com.fasterxml.jackson.databind.deser.ValueInstantiator;
+import com.fasterxml.jackson.databind.deser.impl.UnsupportedTypeDeserializer;
 import com.fasterxml.jackson.databind.deser.std.DelegatingDeserializer;
 import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
+import com.fasterxml.jackson.databind.deser.std.StdKeyDeserializer;
 import com.fasterxml.jackson.databind.introspect.Annotated;
 import com.fasterxml.jackson.databind.introspect.AnnotatedClass;
 import com.fasterxml.jackson.databind.introspect.NopAnnotationIntrospector;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.databind.jsontype.TypeSerializer;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.node.BigIntegerNode;
+import com.fasterxml.jackson.databind.ser.impl.UnknownSerializer;
+import com.fasterxml.jackson.databind.ser.impl.UnsupportedTypeSerializer;
+import com.fasterxml.jackson.databind.ser.std.BeanSerializerBase;
+import com.fasterxml.jackson.databind.ser.std.StdKeySerializers;
 import com.fasterxml.jackson.databind.ser.std.StdSerializer;
 import com.fasterxml.jackson.databind.type.LogicalType;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
@@ -50,7 +65,13 @@ import com.google.genai.JsonSerializable;
 import com.google.genai.types.Content;
 import java.io.IOException;
 import java.lang.invoke.MethodType;
+import java.lang.reflect.GenericArrayType;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.lang.reflect.TypeVariable;
+import java.lang.reflect.WildcardType;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -114,8 +135,353 @@ final class PortCodec<T> {
             : declared;
   }
 
-  static <T> PortCodec<T> of(Class<T> type) {
-    return new PortCodec<>(MAPPER.constructType(type));
+  static JavaType javaType(Class<?> type) {
+    return MAPPER.constructType(type);
+  }
+
+  /**
+   * Returns the type a {@code TypeReference} captured.
+   *
+   * @throws WorkflowConfigurationException if the type holds a type variable, which a {@code
+   *     TypeReference} cannot capture, or a wildcard
+   */
+  static JavaType javaType(TypeReference<?> type) {
+    requireFullyKnown(type.getType(), type.getType());
+    return MAPPER.getTypeFactory().constructType(type);
+  }
+
+  private static void requireFullyKnown(Type part, Type whole) {
+    if (part instanceof TypeVariable<?>) {
+      throw new WorkflowConfigurationException(
+          "The port type "
+              + whole.getTypeName()
+              + " holds "
+              + part.getTypeName()
+              + ", which a TypeReference cannot capture. Create the TypeReference where "
+              + part.getTypeName()
+              + " is known, or use Object.class.");
+    }
+    if (part instanceof WildcardType) {
+      throw new WorkflowConfigurationException(
+          "The port type "
+              + whole.getTypeName()
+              + " holds the wildcard "
+              + part.getTypeName()
+              + ". Declare the port without it, for example with its bound.");
+    }
+    if (part instanceof ParameterizedType parameterized) {
+      for (Type argument : parameterized.getActualTypeArguments()) {
+        requireFullyKnown(argument, whole);
+      }
+    } else if (part instanceof GenericArrayType array) {
+      requireFullyKnown(array.getGenericComponentType(), whole);
+    }
+  }
+
+  /**
+   * Returns the codec of an input port, which Jackson must both read and write.
+   *
+   * @throws WorkflowConfigurationException if Jackson cannot read and write {@code type}, or if it
+   *     has no single concrete JSON shape
+   */
+  static <T> PortCodec<T> input(JavaType type, String what) {
+    if (!passesAsIs(type)) {
+      requireUsable(type, what, /* read= */ true);
+    }
+    return new PortCodec<>(type);
+  }
+
+  /**
+   * Returns the codec of an output port, which Jackson must write.
+   *
+   * @throws WorkflowConfigurationException if Jackson cannot write {@code type}, or if it has no
+   *     single concrete JSON shape
+   */
+  static <T> PortCodec<T> output(JavaType type, String what) {
+    if (!passesAsIs(type)) {
+      requireUsable(type, what, /* read= */ false);
+    }
+    return new PortCodec<>(type);
+  }
+
+  /** Whether a port of {@code type} handles values without a Jackson check. */
+  private static boolean passesAsIs(JavaType type) {
+    Class<?> raw = type.getRawClass();
+    return raw == Object.class || raw == Void.class || raw == Content.class || raw == Event.class;
+  }
+
+  /** A port has no "absent" value: a missing input arrives as null, and null sends no output. */
+  private static WorkflowConfigurationException optionalPort(JavaType type, String what) {
+    return new WorkflowConfigurationException(
+        capitalized(what)
+            + " has type "
+            + type.toCanonical()
+            + ". Declare it without Optional: a missing input arrives as null, and a null output"
+            + " sends none.");
+  }
+
+  /**
+   * Walks {@code type} down to its elements, checking that each has one concrete JSON shape that
+   * Jackson writes and, when {@code read}, also reads.
+   */
+  private static void requireUsable(JavaType type, String what, boolean read) {
+    if (type.getRawClass() == Object.class) {
+      return;
+    }
+    if (type.isReferenceType()) {
+      throw optionalPort(type, what);
+    }
+    if (type.isContainerType()) {
+      if (type.getKeyType() != null) {
+        if (read) {
+          requireKeyReadable(type.getKeyType(), "a key of " + what);
+        }
+        requireKeyReadsBack(type.getKeyType(), "a key of " + what);
+      }
+      requireUsable(type.getContentType(), "an element of " + what, read);
+    } else {
+      requireConcrete(type, what, read);
+    }
+    if (read) {
+      requireReadable(type, what);
+    }
+    if (!type.isContainerType()) {
+      requireWritable(type, what);
+    }
+  }
+
+  private static void requireReadable(JavaType type, String what) {
+    JsonDeserializer<?> deserializer = null;
+    String reason = "";
+    try {
+      deserializer = deserializationContext().findRootValueDeserializer(type);
+    } catch (JsonMappingException | RuntimeException e) {
+      reason = reason(e);
+    }
+    boolean readable =
+        deserializer != null
+            && !(deserializer instanceof AbstractDeserializer)
+            && !(deserializer instanceof UnsupportedTypeDeserializer)
+            && !(deserializer instanceof ValueInstantiator.Gettable gettable
+                && gettable.getValueInstantiator() != null
+                && !gettable.getValueInstantiator().canInstantiate());
+    if (!readable) {
+      throw new WorkflowConfigurationException(
+          capitalized(what)
+              + " has type "
+              + type.toCanonical()
+              + ", which Jackson cannot create from JSON"
+              + reason
+              + ". Use a record, a class with a constructor Jackson can call, or Object.class.");
+    }
+    // A @JsonValue type writes a single value, so only an object-writing type needs this.
+    if (deserializer instanceof BeanDeserializerBase bean
+        && bean.getValueInstantiator() != null
+        && writesObject(type)
+        && !createsFromObject(bean.getValueInstantiator())) {
+      throw new WorkflowConfigurationException(
+          capitalized(what)
+              + " has type "
+              + type.toCanonical()
+              + ", which Jackson can create only from a string or number, not from the JSON object"
+              + " it writes. Use a record, a class with a no-argument constructor, or a"
+              + " @JsonCreator constructor with @JsonProperty parameters.");
+    }
+  }
+
+  private static void requireWritable(JavaType type, String what) {
+    JsonSerializer<?> serializer = null;
+    String reason = "";
+    try {
+      serializer = MAPPER.getSerializerProviderInstance().findValueSerializer(type);
+    } catch (JsonMappingException | RuntimeException e) {
+      reason = reason(e);
+    }
+    // An UnknownSerializer stands for a class with no properties, which fails when written.
+    if (serializer == null
+        || serializer instanceof UnsupportedTypeSerializer
+        || serializer instanceof UnknownSerializer) {
+      throw new WorkflowConfigurationException(
+          capitalized(what)
+              + " has type "
+              + type.toCanonical()
+              + ", which Jackson cannot write as JSON"
+              + reason
+              + ". Use a record, a class with getters, or Object.class.");
+    }
+  }
+
+  /**
+   * Throws unless {@code type} has one concrete JSON shape: a polymorphic type is rejected, and so
+   * is an interface or abstract class Jackson handles neither through a creator nor on its own.
+   */
+  private static void requireConcrete(JavaType type, String what, boolean read) {
+    String problem;
+    if (findTypeSerializer(type) != null) {
+      problem = "is polymorphic (@JsonTypeInfo)";
+    } else if (type.isAbstract()
+        && !type.isEnumType()
+        && !type.isPrimitive()
+        && !hasBeanCreator(type)
+        // A Number or CharSequence port reads any subclass, so the port names one.
+        && (Number.class.isAssignableFrom(type.getRawClass())
+            || CharSequence.class.isAssignableFrom(type.getRawClass())
+            || !handlesItself(type, read))) {
+      problem = "is an interface or abstract class without a Jackson creator";
+    } else {
+      return;
+    }
+    String fix;
+    if (Number.class.isAssignableFrom(type.getRawClass())) {
+      fix = "Declare the port as Long, Double or BigDecimal, or use Object.class.";
+    } else if (CharSequence.class.isAssignableFrom(type.getRawClass())) {
+      fix = "Declare the port as String.";
+    } else {
+      fix =
+          "Declare the port as a concrete record, wrap the hierarchy in one, or use Object.class.";
+    }
+    throw new WorkflowConfigurationException(
+        capitalized(what) + " has type " + type.toCanonical() + ", which " + problem + ". " + fix);
+  }
+
+  private static void requireKeyReadable(JavaType type, String what) {
+    KeyDeserializer deserializer = null;
+    String reason = "";
+    try {
+      deserializer = deserializationContext().findKeyDeserializer(type, null);
+    } catch (JsonMappingException | RuntimeException e) {
+      reason = reason(e);
+    }
+    if (deserializer == null) {
+      throw new WorkflowConfigurationException(
+          capitalized(what)
+              + " has type "
+              + type.toCanonical()
+              + ", which Jackson cannot read as a map key"
+              + reason
+              + ". Use a String, a number, an enum, or Object.class.");
+    }
+  }
+
+  /**
+   * Throws unless Jackson reads back the map key it writes: without a key serializer, an enum or a
+   * {@code @JsonValue} accessor, a key is written with {@code toString()}, which only a String, a
+   * number or a type with its own Jackson key parser reads back.
+   */
+  private static void requireKeyReadsBack(JavaType type, String what) {
+    if (writesToStringKey(type) && !readsToStringKeyBack(type)) {
+      throw new WorkflowConfigurationException(
+          capitalized(what)
+              + " has type "
+              + type.toCanonical()
+              + ", which Jackson writes as a map key with toString(), a form it does not read back."
+              + " Use a String, a number, an enum or a type with a @JsonValue accessor, or give the"
+              + " type a key serializer and a key deserializer.");
+    }
+  }
+
+  private static boolean writesToStringKey(JavaType type) {
+    try {
+      JsonSerializer<?> serializer =
+          MAPPER.getSerializerProviderInstance().findKeySerializer(type, null);
+      return serializer instanceof StdKeySerializers.Default
+          || serializer instanceof StdKeySerializers.Dynamic;
+    } catch (JsonMappingException | RuntimeException e) {
+      return true;
+    }
+  }
+
+  private static boolean readsToStringKeyBack(JavaType type) {
+    Class<?> raw = type.getRawClass();
+    // Older Jackson reads BigDecimal and BigInteger keys through their String constructors.
+    if (StdKeyDeserializer.forType(raw) != null
+        || raw == BigDecimal.class
+        || raw == BigInteger.class) {
+      return true;
+    }
+    try {
+      KeyDeserializer deserializer = deserializationContext().findKeyDeserializer(type, null);
+      // Jackson's String-creator fallback reads back a toString() that may not round-trip.
+      return deserializer != null && !(deserializer instanceof StdKeyDeserializer);
+    } catch (JsonMappingException | RuntimeException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether Jackson handles {@code type} with a deserializer of its own, such as {@code ZoneId}'s,
+   * or for an output port, with a serializer of its own.
+   */
+  private static boolean handlesItself(JavaType type, boolean read) {
+    try {
+      if (read) {
+        JsonDeserializer<?> deserializer = deserializationContext().findRootValueDeserializer(type);
+        return !(deserializer instanceof AbstractDeserializer)
+            && !(deserializer instanceof BeanDeserializerBase)
+            && !(deserializer instanceof UnsupportedTypeDeserializer);
+      }
+      JsonSerializer<?> serializer =
+          MAPPER.getSerializerProviderInstance().findValueSerializer(type);
+      return !(serializer instanceof BeanSerializerBase)
+          && !(serializer instanceof UnknownSerializer)
+          && !(serializer instanceof UnsupportedTypeSerializer);
+    } catch (JsonMappingException | RuntimeException e) {
+      return false;
+    }
+  }
+
+  private static @Nullable TypeSerializer findTypeSerializer(JavaType type) {
+    try {
+      return MAPPER.getSerializerProviderInstance().findTypeSerializer(type);
+    } catch (JsonMappingException | RuntimeException e) {
+      return null;
+    }
+  }
+
+  private static boolean writesObject(JavaType type) {
+    try {
+      return MAPPER.getSerializerProviderInstance().findValueSerializer(type)
+          instanceof BeanSerializerBase;
+    } catch (JsonMappingException | RuntimeException e) {
+      return false;
+    }
+  }
+
+  /** Whether {@code instantiator} builds a bean from a JSON object, the form a port writes. */
+  private static boolean createsFromObject(ValueInstantiator instantiator) {
+    return instantiator.canCreateUsingDefault()
+        || instantiator.canCreateFromObjectWith()
+        || instantiator.canCreateUsingDelegate();
+  }
+
+  /**
+   * Whether Jackson creates {@code type} as a bean through a creator, such as an AutoValue factory.
+   */
+  private static boolean hasBeanCreator(JavaType type) {
+    try {
+      return deserializationContext().findRootValueDeserializer(type)
+              instanceof BeanDeserializerBase bean
+          && bean.getValueInstantiator() != null
+          && bean.getValueInstantiator().canInstantiate();
+    } catch (JsonMappingException | RuntimeException e) {
+      return false;
+    }
+  }
+
+  private static DefaultDeserializationContext deserializationContext() {
+    return ((DefaultDeserializationContext) MAPPER.getDeserializationContext())
+        .createDummyInstance(MAPPER.getDeserializationConfig());
+  }
+
+  /** The first line of Jackson's message about a type, which names the type and never a value. */
+  private static String reason(Exception e) {
+    String message =
+        e instanceof JsonMappingException mapping ? mapping.getOriginalMessage() : e.getMessage();
+    return message == null ? "" : " (" + message.lines().findFirst().orElse("") + ")";
+  }
+
+  private static String capitalized(String what) {
+    return Character.toUpperCase(what.charAt(0)) + what.substring(1);
   }
 
   /**
@@ -135,7 +501,7 @@ final class PortCodec<T> {
       }
       return null;
     }
-    if (raw == Object.class || hasType(value, type)) {
+    if (raw == Object.class || hasType(value, type, /* trustGenericFields= */ false)) {
       return (T) value;
     }
     if (value instanceof Content || value instanceof Event) {
@@ -179,6 +545,16 @@ final class PortCodec<T> {
               + value.getClass().getSimpleName()
               + ".");
     }
+    // Converts elements of another type, which an unchecked cast lets through. An output port need
+    // not be readable, so a generic type's own fields are trusted.
+    if (!hasType(value, type, /* trustGenericFields= */ true)) {
+      try {
+        value = MAPPER.convertValue(value, type);
+      } catch (RuntimeException e) {
+        // Jackson's message can quote the value, so no cause.
+        throw new IllegalArgumentException(what + " does not match " + type.toCanonical() + ".");
+      }
+    }
     JsonNode tree;
     try {
       tree = MAPPER.valueToTree(value);
@@ -212,30 +588,39 @@ final class PortCodec<T> {
         "validation error: " + what + " expected " + type.toCanonical() + ", but got " + got + ".");
   }
 
-  /** Whether {@code value} already has {@code type}, down to each element and map entry. */
-  private static boolean hasType(Object value, JavaType type) {
+  /**
+   * Whether {@code value} already has {@code type}, down to each element and map entry. A generic
+   * type's fields count as matching only when {@code trustGenericFields}.
+   */
+  private static boolean hasType(Object value, JavaType type, boolean trustGenericFields) {
     if (!type.getRawClass().isInstance(value)) {
       return false;
     }
     if (type.isCollectionLikeType()) {
       return ((Collection<?>) value)
-          .stream().allMatch(item -> item == null || hasType(item, type.getContentType()));
+          .stream()
+              .allMatch(
+                  item -> item == null || hasType(item, type.getContentType(), trustGenericFields));
     }
     if (type.isMapLikeType()) {
       return ((Map<?, ?>) value)
           .entrySet().stream()
               .allMatch(
                   entry ->
-                      (entry.getKey() == null || hasType(entry.getKey(), type.getKeyType()))
+                      (entry.getKey() == null
+                              || hasType(entry.getKey(), type.getKeyType(), trustGenericFields))
                           && (entry.getValue() == null
-                              || hasType(entry.getValue(), type.getContentType())));
+                              || hasType(
+                                  entry.getValue(), type.getContentType(), trustGenericFields)));
     }
     if (type.isArrayType()) {
       return type.getContentType().isPrimitive()
           || Arrays.stream((Object[]) value)
-              .allMatch(item -> item == null || hasType(item, type.getContentType()));
+              .allMatch(
+                  item -> item == null || hasType(item, type.getContentType(), trustGenericFields));
     }
-    return !type.isContainerType();
+    // A generic type's fields can hold anything an unchecked cast let in.
+    return !type.isContainerType() && (trustGenericFields || !type.hasGenericTypes());
   }
 
   /** Returns {@code node} as the values a stored session reads back, collections unmodifiable. */

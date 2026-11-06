@@ -32,7 +32,14 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.annotation.OptBoolean;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
@@ -55,6 +62,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.URI;
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -117,6 +125,143 @@ public final class FunctionNodeTest {
     @interface Nullable {}
 
     private DeclaredNullness() {}
+  }
+
+  record UserId(String id) {}
+
+  record Tag(@JsonValue String name) {}
+
+  record Section(@JsonProperty("section_name") String sectionName, String content) {}
+
+  record Box<T>(T item) {}
+
+  @JsonTypeInfo(use = JsonTypeInfo.Id.NAME)
+  @JsonSubTypes(@JsonSubTypes.Type(value = Circle.class, name = "circle"))
+  interface Shape {}
+
+  record Circle(double radius) implements Shape {}
+
+  /** An interface port type without a creator, which has no single JSON shape. */
+  interface Decision {}
+
+  /** An Immutables-style value type: abstract, read through the concrete class it names. */
+  @JsonDeserialize(as = SimpleRange.class)
+  abstract static class Range {
+    @JsonProperty("low")
+    abstract int low();
+
+    @JsonProperty("high")
+    abstract int high();
+  }
+
+  static final class SimpleRange extends Range {
+    private final int low;
+    private final int high;
+
+    @JsonCreator
+    SimpleRange(@JsonProperty("low") int low, @JsonProperty("high") int high) {
+      this.low = low;
+      this.high = high;
+    }
+
+    @Override
+    int low() {
+      return low;
+    }
+
+    @Override
+    int high() {
+      return high;
+    }
+  }
+
+  /** An AutoValue-style value type: abstract, with a static creator. */
+  abstract static class Point {
+    @JsonProperty("x")
+    abstract int x();
+
+    @JsonCreator
+    static Point create(@JsonProperty("x") int x) {
+      return new AutoPoint(x);
+    }
+  }
+
+  static final class AutoPoint extends Point {
+    private final int x;
+
+    AutoPoint(int x) {
+      this.x = x;
+    }
+
+    @Override
+    int x() {
+      return x;
+    }
+  }
+
+  /** A value type that Jackson writes as a single string through {@code @JsonValue}. */
+  static final class OrderId {
+    private final String value;
+
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    OrderId(String value) {
+      this.value = value;
+    }
+
+    @JsonValue
+    String value() {
+      return value;
+    }
+  }
+
+  /** A class Jackson writes as an object and reads through a delegating map creator. */
+  static final class Bag {
+    private final ImmutableMap<String, Object> values;
+
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    Bag(Map<String, Object> values) {
+      this.values = ImmutableMap.copyOf(values);
+    }
+
+    public Object getName() {
+      return values.get("name");
+    }
+  }
+
+  /** A class Jackson reads but cannot write, since it has no getters. */
+  static final class Token {
+    @SuppressWarnings("unused")
+    private final String secret;
+
+    @JsonCreator
+    Token(@JsonProperty("secret") String secret) {
+      this.secret = secret;
+    }
+  }
+
+  /** A class Jackson cannot create: its only constructor takes unannotated parameters. */
+  static final class NoCreator {
+    public final String label;
+
+    public NoCreator(String label, int unused) {
+      this.label = label;
+    }
+  }
+
+  /** A class Jackson cannot write, since it has no properties. */
+  static final class NoProperties {}
+
+  /** A class Jackson writes as an object but can create only from a string. */
+  static final class StringOnly {
+    private final String value;
+
+    StringOnly(String value) {
+      this.value = value;
+    }
+
+    public String getValue() {
+      return value;
+    }
   }
 
   @Test
@@ -634,6 +779,442 @@ public final class FunctionNodeTest {
     IllegalStateException error = assertThrows(IllegalStateException.class, builder::build);
 
     assertThat(error).hasMessageThat().contains("requires body");
+  }
+
+  @Test
+  public void of_listOfRecordsPort_readsEachElementAsARecord() {
+    // Arrange: a list of maps feeds a list-of-records port.
+    AtomicReference<List<Section>> received = new AtomicReference<>();
+    FunctionNode<Content, Object> upstream =
+        FunctionNodes.of(
+            "upstream",
+            Content.class,
+            Object.class,
+            (ctx, message) ->
+                ImmutableList.of(
+                    ImmutableMap.of("section_name", "s1", "content", "c1"),
+                    ImmutableMap.of("section_name", "s2", "content", "c2")));
+    FunctionNode<List<Section>, String> aggregate =
+        FunctionNodes.of(
+            "aggregate",
+            new TypeReference<List<Section>>() {},
+            String.class,
+            (ctx, sections) -> {
+              received.set(sections);
+              return "Done";
+            });
+
+    RunResult result = run(chain(upstream, aggregate));
+
+    result.assertCompleted();
+    assertThat(received.get())
+        .containsExactly(new Section("s1", "c1"), new Section("s2", "c2"))
+        .inOrder();
+  }
+
+  @Test
+  public void of_mapOfRecordsPort_readsEachValueAsARecord() {
+    // Arrange: a map of maps feeds a map-of-records port.
+    AtomicReference<Map<String, Section>> received = new AtomicReference<>();
+    FunctionNode<Content, Object> upstream =
+        FunctionNodes.of(
+            "upstream",
+            Content.class,
+            Object.class,
+            (ctx, message) ->
+                ImmutableMap.of(
+                    "one", ImmutableMap.of("section_name", "s1", "content", "c1"),
+                    "two", ImmutableMap.of("section_name", "s2", "content", "c2")));
+    FunctionNode<Map<String, Section>, String> aggregate =
+        FunctionNodes.builder(new TypeReference<Map<String, Section>>() {}, String.class)
+            .name("aggregate")
+            .body(
+                (ctx, sections) -> {
+                  received.set(sections);
+                  return "Done";
+                })
+            .build();
+
+    RunResult result = run(chain(upstream, aggregate));
+
+    result.assertCompleted();
+    assertThat(received.get())
+        .containsExactly("one", new Section("s1", "c1"), "two", new Section("s2", "c2"));
+  }
+
+  @Test
+  public void of_numberIntoAListPort_failsTheNode() {
+    // Arrange: a number feeds a list port.
+    FunctionNode<Content, Integer> number =
+        FunctionNodes.of("number", Content.class, Integer.class, (ctx, message) -> 123);
+    FunctionNode<List<Section>, String> first =
+        FunctionNodes.of(
+            "first",
+            new TypeReference<List<Section>>() {},
+            String.class,
+            (ctx, sections) -> sections.get(0).sectionName());
+
+    RunResult result = run(chain(number, first));
+
+    assertThat(result.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'first' does not match java.util.List<"
+                + Section.class.getName()
+                + ">.");
+  }
+
+  @Test
+  public void of_polymorphicPort_failsAtBuild() {
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", Shape.class, String.class, (ctx, in) -> ""));
+
+    assertThat(error).hasMessageThat().contains("is polymorphic (@JsonTypeInfo)");
+  }
+
+  @Test
+  public void of_numberPort_failsAtBuildSuggestingAConcreteNumber() {
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", Number.class, String.class, (ctx, in) -> ""));
+
+    assertThat(error).hasMessageThat().contains("Declare the port as Long, Double or BigDecimal");
+  }
+
+  @Test
+  public void of_charSequencePort_failsAtBuildSuggestingString() {
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", CharSequence.class, String.class, (ctx, in) -> ""));
+
+    assertThat(error).hasMessageThat().contains("Declare the port as String");
+  }
+
+  @Test
+  public void of_outputTypeWithoutProperties_failsAtBuild() {
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", Content.class, NoProperties.class, (ctx, in) -> null));
+
+    assertThat(error).hasMessageThat().contains("cannot write as JSON");
+  }
+
+  @Test
+  public void of_inputTypeCreatableOnlyFromAString_failsAtBuild() {
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", StringOnly.class, String.class, (ctx, in) -> ""));
+
+    assertThat(error).hasMessageThat().contains("only from a string or number");
+  }
+
+  @Test
+  public void builder_mapPortWithAnUnreadableKey_failsAtBuild() {
+    TypeReference<Map<Order, String>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class, () -> FunctionNodes.builder(port, String.class));
+
+    assertThat(error).hasMessageThat().contains("cannot read as a map key");
+  }
+
+  @Test
+  public void of_abstractTypesWithACreator_roundTrip() {
+    FunctionNode<Content, Range> pick =
+        FunctionNodes.of("pick", Content.class, Range.class, (ctx, m) -> new SimpleRange(2, 5));
+    FunctionNode<Range, Point> place =
+        FunctionNodes.of(
+            "place", Range.class, Point.class, (ctx, r) -> Point.create(r.high() - r.low()));
+    FunctionNode<Point, Integer> readX =
+        FunctionNodes.of("read_x", Point.class, Integer.class, (ctx, point) -> point.x());
+
+    RunResult result = run(chain(pick, place, readX));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/pick@1")).isEqualTo(ImmutableMap.of("low", 2, "high", 5));
+    assertThat(result.outputAt("wf@1/read_x@1")).isEqualTo(3);
+  }
+
+  @Test
+  public void of_valueTypeWrittenAsAString_roundTrips() {
+    FunctionNode<Content, OrderId> makeId =
+        FunctionNodes.of("make_id", Content.class, OrderId.class, (ctx, m) -> new OrderId("A-1"));
+    FunctionNode<OrderId, String> readId =
+        FunctionNodes.of("read_id", OrderId.class, String.class, (ctx, id) -> "id " + id.value());
+
+    RunResult result = run(chain(makeId, readId));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/make_id@1")).isEqualTo("A-1");
+    assertThat(result.outputAt("wf@1/read_id@1")).isEqualTo("id A-1");
+  }
+
+  @Test
+  public void of_genericOutputPort_writesEachElementInJsonForm() {
+    FunctionNode<Content, List<Section>> sections =
+        FunctionNodes.of(
+            "sections",
+            Content.class,
+            new TypeReference<List<Section>>() {},
+            (ctx, m) -> ImmutableList.of(new Section("s1", "c1")));
+
+    RunResult result = run(chain(sections));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/sections@1"))
+        .isEqualTo(ImmutableList.of(ImmutableMap.of("section_name", "s1", "content", "c1")));
+  }
+
+  @Test
+  public void of_inputTypeJacksonCannotCreate_failsAtBuild() {
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", NoCreator.class, String.class, (ctx, in) -> in.label));
+
+    assertThat(error).hasMessageThat().contains("cannot create from JSON");
+  }
+
+  @Test
+  public void of_inputTypeJacksonCannotWrite_failsAtBuild() {
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", Token.class, String.class, (ctx, in) -> ""));
+
+    assertThat(error).hasMessageThat().contains("The input of node 'n'");
+    assertThat(error).hasMessageThat().contains("cannot write as JSON");
+  }
+
+  @Test
+  public void of_listOfAnUncreatableType_failsAtBuildNamingTheElement() {
+    TypeReference<List<NoCreator>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", port, String.class, (ctx, in) -> ""));
+
+    assertThat(error).hasMessageThat().startsWith("An element of the input of node 'n'");
+  }
+
+  @Test
+  public void of_optionalPort_failsAtBuild() {
+    TypeReference<Optional<String>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", port, String.class, (ctx, in) -> ""));
+
+    assertThat(error).hasMessageThat().contains("Declare it without Optional");
+  }
+
+  @Test
+  public void of_listOfOptionals_failsAtBuildNamingTheElement() {
+    TypeReference<List<Optional<Order>>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", port, String.class, (ctx, in) -> ""));
+
+    assertThat(error).hasMessageThat().startsWith("An element of the input of node 'n'");
+    assertThat(error).hasMessageThat().contains("Declare it without Optional");
+  }
+
+  @Test
+  public void of_optionalOutputPort_failsAtBuild() {
+    TypeReference<Optional<Order>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", Content.class, port, (ctx, in) -> Optional.empty()));
+
+    assertThat(error).hasMessageThat().startsWith("The output of node 'n'");
+    assertThat(error).hasMessageThat().contains("Declare it without Optional");
+  }
+
+  @Test
+  public void of_listOfOptionalsOutputPort_failsAtBuildNamingTheElement() {
+    TypeReference<List<Optional<Order>>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", Content.class, port, (ctx, in) -> ImmutableList.of()));
+
+    assertThat(error).hasMessageThat().startsWith("An element of the output of node 'n'");
+    assertThat(error).hasMessageThat().contains("Declare it without Optional");
+  }
+
+  @Test
+  public void builder_portTypeWithATypeVariable_failsAtBuild() {
+    // Arrange: a TypeReference made in a generic method cannot capture its type argument.
+    TypeReference<List<Order>> port = listPort();
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class, () -> FunctionNodes.builder(port, String.class));
+
+    assertThat(error).hasMessageThat().contains("holds T, which a TypeReference cannot capture");
+  }
+
+  @Test
+  public void builder_portTypeWithAWildcard_failsAtBuild() {
+    TypeReference<List<? extends Order>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class, () -> FunctionNodes.builder(port, String.class));
+
+    assertThat(error).hasMessageThat().contains("holds the wildcard ? extends");
+  }
+
+  private static <T> TypeReference<List<T>> listPort() {
+    return new TypeReference<>() {};
+  }
+
+  @Test
+  public void of_genericRecordPortFedAValueWithMapFields_readsTheFieldTypes() {
+    // Arrange: an upstream node hands over a Box whose item is still a map.
+    Node upstream =
+        emitter("upstream", new Box<Object>(ImmutableMap.of("id", "a1", "quantity", 3)));
+    FunctionNode<Box<Order>, String> open =
+        FunctionNodes.of(
+            "open",
+            new TypeReference<Box<Order>>() {},
+            String.class,
+            (ctx, box) -> box.item().id());
+
+    RunResult result = run(chain(upstream, open));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/open@1")).isEqualTo("a1");
+  }
+
+  @Test
+  public void of_genericRecordPortFedAMismatchedField_failsTheNodeInputValidation() {
+    Node upstream = emitter("upstream", new Box<String>("bad"));
+    FunctionNode<Box<Order>, String> open =
+        FunctionNodes.of(
+            "open",
+            new TypeReference<Box<Order>>() {},
+            String.class,
+            (ctx, box) -> box.item().id());
+
+    RunResult result = run(chain(upstream, open));
+
+    assertThat(result.errorMessage("NodeInputValidationException"))
+        .isEqualTo(
+            "validation error: input of node 'open' does not match "
+                + Box.class.getName()
+                + "<"
+                + Order.class.getName()
+                + ">.");
+  }
+
+  @Test
+  @SuppressWarnings("unchecked") // The cast smuggles strings into a list of orders.
+  public void of_genericOutputPortGivenElementsOfAnotherType_failsTheNode() {
+    FunctionNode<Content, List<Order>> orders =
+        FunctionNodes.of(
+            "orders",
+            Content.class,
+            new TypeReference<List<Order>>() {},
+            (ctx, m) -> (List<Order>) (List<?>) ImmutableList.of("not an order"));
+
+    RunResult result = run(chain(orders));
+
+    String message = result.errorMessage("IllegalArgumentException");
+    assertThat(message).contains("output of node 'orders' does not match");
+    assertThat(message).doesNotContain("not an order");
+  }
+
+  @Test
+  @SuppressWarnings("unchecked") // The cast passes maps as orders.
+  public void of_genericOutputPortGivenElementsInJsonForm_writesThemAsThePortType() {
+    FunctionNode<Content, List<Order>> orders =
+        FunctionNodes.of(
+            "orders",
+            Content.class,
+            new TypeReference<List<Order>>() {},
+            (ctx, m) ->
+                (List<Order>)
+                    (List<?>) ImmutableList.of(ImmutableMap.of("id", "a1", "quantity", 2.0)));
+
+    RunResult result = run(chain(orders));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/orders@1"))
+        .isEqualTo(ImmutableList.of(ImmutableMap.of("id", "a1", "quantity", 2)));
+  }
+
+  @Test
+  public void of_genericOutputOfATypeJacksonCannotRead_isWritten() {
+    // Arrange: an output port need not be readable.
+    FunctionNode<Content, Box<NoCreator>> boxed =
+        FunctionNodes.of(
+            "boxed",
+            Content.class,
+            new TypeReference<Box<NoCreator>>() {},
+            (ctx, m) -> new Box<>(new NoCreator("x", 1)));
+
+    RunResult result = run(chain(boxed));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/boxed@1"))
+        .isEqualTo(ImmutableMap.of("item", ImmutableMap.of("label", "x")));
+  }
+
+  @Test
+  public void of_typeReadThroughADelegatingMapCreator_roundTrips() {
+    FunctionNode<Content, Bag> makeBag =
+        FunctionNodes.of(
+            "make_bag",
+            Content.class,
+            Bag.class,
+            (ctx, m) -> new Bag(ImmutableMap.of("name", "x")));
+    FunctionNode<Bag, String> readBag =
+        FunctionNodes.of("read_bag", Bag.class, String.class, (ctx, bag) -> "bag " + bag.getName());
+
+    RunResult result = run(chain(makeBag, readBag));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/make_bag@1")).isEqualTo(ImmutableMap.of("name", "x"));
+    assertThat(result.outputAt("wf@1/read_bag@1")).isEqualTo("bag x");
+  }
+
+  @Test
+  public void of_interfaceOutputWithoutACreator_failsAtBuild() {
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", String.class, Decision.class, (ctx, in) -> null));
+
+    assertThat(error)
+        .hasMessageThat()
+        .contains("interface or abstract class without a Jackson creator");
+  }
+
+  @Test
+  public void of_untypedAndAdkPorts_needNoJacksonShape() {
+    FunctionNode<Content, Object> echo =
+        FunctionNodes.of("echo", Content.class, Object.class, (ctx, message) -> message.text());
+    FunctionNode<Object, Void> sink =
+        FunctionNodes.of("sink", Object.class, Void.class, (ctx, in) -> null);
+
+    RunResult result = run(chain(echo, sink));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/echo@1")).isEqualTo("go");
   }
 
   @Test
@@ -1255,6 +1836,195 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(received.get()).isSameInstanceAs(numbers);
+  }
+
+  @Test
+  public void of_listOfContentPort_readsTheContentsLiveAndFromTheStoredJsonForm() {
+    TypeReference<List<Content>> contents = new TypeReference<>() {};
+    FunctionNode<Content, List<Content>> makeContents =
+        FunctionNodes.of(
+            "make_contents",
+            Content.class,
+            contents,
+            (ctx, m) -> ImmutableList.of(Content.fromParts(Part.fromText("a")), m));
+    FunctionNode<List<Content>, String> read =
+        FunctionNodes.of(
+            "read", contents, String.class, (ctx, list) -> list.get(0).text() + list.get(1).text());
+    RunResult live = run(chain(makeContents, read));
+    Node replay = emitter("make_contents", live.storedOutputAt("wf@1/make_contents@1"));
+
+    RunResult fromStored = run(chain(replay, read));
+
+    live.assertCompleted();
+    fromStored.assertCompleted();
+    assertThat(live.outputAt("wf@1/read@1")).isEqualTo("ago");
+    assertThat(fromStored.outputAt("wf@1/read@1")).isEqualTo("ago");
+  }
+
+  @Test
+  public void of_mapOfContentPort_readsTheContentsLiveAndFromTheStoredJsonForm() {
+    TypeReference<Map<String, Content>> contents = new TypeReference<>() {};
+    FunctionNode<Content, Map<String, Content>> makeContents =
+        FunctionNodes.of(
+            "make_contents", Content.class, contents, (ctx, m) -> ImmutableMap.of("first", m));
+    FunctionNode<Map<String, Content>, String> read =
+        FunctionNodes.of("read", contents, String.class, (ctx, map) -> map.get("first").text());
+    RunResult live = run(chain(makeContents, read));
+    Node replay = emitter("make_contents", live.storedOutputAt("wf@1/make_contents@1"));
+
+    RunResult fromStored = run(chain(replay, read));
+
+    live.assertCompleted();
+    fromStored.assertCompleted();
+    assertThat(live.outputAt("wf@1/read@1")).isEqualTo("go");
+    assertThat(fromStored.outputAt("wf@1/read@1")).isEqualTo("go");
+  }
+
+  @Test
+  public void of_listOfEventPort_readsTheEventsLiveAndFromTheStoredJsonForm() {
+    TypeReference<List<Event>> events = new TypeReference<>() {};
+    FunctionNode<Content, List<Event>> makeEvents =
+        FunctionNodes.of(
+            "make_events",
+            Content.class,
+            events,
+            (ctx, m) -> ImmutableList.of(Event.builder().author("someone").content(m).build()));
+    FunctionNode<List<Event>, String> read =
+        FunctionNodes.of(
+            "read",
+            events,
+            String.class,
+            (ctx, list) -> list.get(0).author() + ":" + list.get(0).content().get().text());
+    RunResult live = run(chain(makeEvents, read));
+    Node replay = emitter("make_events", live.storedOutputAt("wf@1/make_events@1"));
+
+    RunResult fromStored = run(chain(replay, read));
+
+    live.assertCompleted();
+    fromStored.assertCompleted();
+    assertThat(live.outputAt("wf@1/read@1")).isEqualTo("someone:go");
+    assertThat(fromStored.outputAt("wf@1/read@1")).isEqualTo("someone:go");
+  }
+
+  @Test
+  public void of_zoneIdPorts_sendAndReadTheZone() {
+    FunctionNode<Content, ZoneId> zone =
+        FunctionNodes.of(
+            "zone", Content.class, ZoneId.class, (ctx, m) -> ZoneId.of("Europe/Paris"));
+    FunctionNode<ZoneId, String> read =
+        FunctionNodes.of("read", ZoneId.class, String.class, (ctx, id) -> id.getId());
+
+    RunResult result = run(chain(zone, read));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/zone@1")).isEqualTo("Europe/Paris");
+    assertThat(result.outputAt("wf@1/read@1")).isEqualTo("Europe/Paris");
+  }
+
+  @Test
+  public void of_jsonNodePorts_sendAndReadTheTree() {
+    FunctionNode<Content, JsonNode> tree =
+        FunctionNodes.of(
+            "tree",
+            Content.class,
+            JsonNode.class,
+            (ctx, m) -> JsonNodeFactory.instance.objectNode().put("a", 1));
+    FunctionNode<JsonNode, Integer> read =
+        FunctionNodes.of(
+            "read", JsonNode.class, Integer.class, (ctx, node) -> node.get("a").asInt());
+
+    RunResult result = run(chain(tree, read));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/tree@1")).isEqualTo(ImmutableMap.of("a", 1));
+    assertThat(result.outputAt("wf@1/read@1")).isEqualTo(1);
+  }
+
+  @Test
+  public void builder_mapInputWithAToStringKey_failsAtBuild() {
+    TypeReference<Map<UserId, String>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class, () -> FunctionNodes.builder(port, String.class));
+
+    assertThat(error).hasMessageThat().contains("writes as a map key with toString()");
+  }
+
+  @Test
+  public void builder_mapOutputWithAToStringKey_failsAtBuild() {
+    TypeReference<Map<UserId, String>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class, () -> FunctionNodes.builder(String.class, port));
+
+    assertThat(error).hasMessageThat().contains("writes as a map key with toString()");
+  }
+
+  @Test
+  public void builder_mapInputWithAStringCreatorKey_failsAtBuild() {
+    // Token writes no object, but its toString() key would come back as a different Token.
+    TypeReference<Map<Token, String>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class, () -> FunctionNodes.builder(port, String.class));
+
+    assertThat(error).hasMessageThat().contains("FunctionNodeTest$Token");
+    assertThat(error).hasMessageThat().contains("writes as a map key with toString()");
+  }
+
+  @Test
+  public void builder_mapOutputWithAStringCreatorKey_failsAtBuild() {
+    TypeReference<Map<Token, String>> port = new TypeReference<>() {};
+
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class, () -> FunctionNodes.builder(String.class, port));
+
+    assertThat(error).hasMessageThat().contains("FunctionNodeTest$Token");
+    assertThat(error).hasMessageThat().contains("writes as a map key with toString()");
+  }
+
+  @Test
+  public void builder_mapPortsWithKeysJacksonParses_build() {
+    TypeReference<Map<BigDecimal, String>> byAmount = new TypeReference<>() {};
+    TypeReference<Map<ZoneId, String>> byZone = new TypeReference<>() {};
+
+    assertThat(FunctionNodes.builder(byAmount, byZone)).isNotNull();
+    assertThat(FunctionNodes.builder(byZone, byAmount)).isNotNull();
+  }
+
+  @Test
+  public void of_mapPortsWithANumberKey_readTheKeyBack() {
+    TypeReference<Map<Integer, String>> byId = new TypeReference<>() {};
+    FunctionNode<Content, Map<Integer, String>> makeMap =
+        FunctionNodes.of("make_map", Content.class, byId, (ctx, m) -> ImmutableMap.of(7, "x"));
+    FunctionNode<Map<Integer, String>, Integer> read =
+        FunctionNodes.of(
+            "read", byId, Integer.class, (ctx, map) -> map.keySet().iterator().next() + 1);
+
+    RunResult result = run(chain(makeMap, read));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/read@1")).isEqualTo(8);
+  }
+
+  @Test
+  public void of_mapPortsWithAJsonValueKey_readTheKeyBack() {
+    TypeReference<Map<Tag, String>> tags = new TypeReference<>() {};
+    FunctionNode<Content, Map<Tag, String>> makeTags =
+        FunctionNodes.of(
+            "make_tags", Content.class, tags, (ctx, m) -> ImmutableMap.of(new Tag("t1"), "x"));
+    FunctionNode<Map<Tag, String>, String> read =
+        FunctionNodes.of(
+            "read", tags, String.class, (ctx, map) -> map.keySet().iterator().next().name());
+
+    RunResult result = run(chain(makeTags, read));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/read@1")).isEqualTo("t1");
   }
 
   /** Returns a workflow named {@code wf} that runs {@code nodes} in sequence from START. */
