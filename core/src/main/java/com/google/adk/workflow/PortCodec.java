@@ -499,6 +499,11 @@ final class PortCodec<T> {
     return schema.get();
   }
 
+  /** Whether this port reads a {@code Content}. */
+  boolean takesContent() {
+    return type.getRawClass() == Content.class;
+  }
+
   /**
    * Returns {@code value} read as this port's type; {@code what} names the port in errors.
    *

@@ -24,8 +24,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
+import com.google.genai.types.Schema;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,6 +82,7 @@ final class Graph {
       NodeNames.validate(node.name());
     }
     GraphValidation.validate(nodes, edgeList);
+    checkEdgeSchemas(edgeList);
     ImmutableMap<String, Node> nodesByName =
         nodes.stream().collect(toImmutableMap(Node::name, node -> node));
     ImmutableSet<String> sourceNames =
@@ -90,6 +93,41 @@ final class Graph {
             .filter(name -> !name.equals(Start.NAME) && !sourceNames.contains(name))
             .collect(toImmutableSet());
     return new Graph(nodes, edgeList, nodesByName, terminalNodeNames);
+  }
+
+  /**
+   * Throws unless the output schema of each edge's source fits the input schema of its target, when
+   * both are set. Each object that lists properties in a schema the target inferred is closed.
+   */
+  private static void checkEdgeSchemas(List<Edge> edges) {
+    for (Edge edge : edges) {
+      FunctionNode<?, ?> function = edge.to() instanceof FunctionNode<?, ?> node ? node : null;
+      Optional<Schema> output = edge.from().outputSchema();
+      Optional<Schema> input =
+          function != null ? function.edgeInputSchema() : edge.to().inputSchema();
+      if (output.isEmpty() || input.isEmpty()) {
+        continue;
+      }
+      boolean closed = function != null && function.edgeInputSchemaInferred();
+      if (!SchemaFit.fits(output.get(), input.get(), closed)) {
+        throw new WorkflowConfigurationException(
+            "Schema mismatch on edge "
+                + edge.from().name()
+                + " -> "
+                + edge.to().name()
+                + ". Output schema "
+                + output.get().toJson()
+                + " does not fit input schema "
+                + input.get().toJson()
+                + "."
+                + (function != null
+                        && function.acceptsExtraKeysWithASchema()
+                        && SchemaFit.fits(output.get(), input.get(), /* closed= */ false)
+                    ? " It was inferred from the port's type and takes no other keys; set"
+                        + " inputSchema on the builder or read the objects as Maps to accept them."
+                    : ""));
+      }
+    }
   }
 
   ImmutableList<Node> nodes() {

@@ -62,7 +62,13 @@ public interface Node {
     return NodeConfig.builder().build();
   }
 
-  /** Returns the schema the node's input must match. */
+  /**
+   * Returns the schema the node's input must match. An edge into the node fails at build when its
+   * source's output schema lists a key or type this one rejects, so an open producer such as a map
+   * builds, and a {@link FunctionNode} on a {@code Content} port checks the edge against the {@code
+   * Content} schema. A node that requires all predecessors applies it to each predecessor's output,
+   * not the joined map.
+   */
   @Experimental
   default Optional<Schema> inputSchema() {
     return Optional.empty();

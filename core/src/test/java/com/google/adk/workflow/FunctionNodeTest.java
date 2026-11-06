@@ -491,6 +491,82 @@ public final class FunctionNodeTest {
     }
   }
 
+  record FullOrder(String id, double total, String note) {}
+
+  record BasicOrder(String id, double total) {}
+
+  record OrderWithOptionalNote(String id, double total, @Nullable String note) {}
+
+  /** A record that writes a total it derives, and so does not read. */
+  record Invoice(String id, int quantity) {
+    public int getTotal() {
+      return quantity * 10;
+    }
+  }
+
+  record Creds(String user, String password) {}
+
+  /** A class with a property it only reads, by a setter. */
+  static final class Notepad {
+    public String id;
+
+    public void setNote(String note) {}
+  }
+
+  record FlatOut(String label, String id, int quantity) {}
+
+  record Qty(int qty) {}
+
+  @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+  record Count(int count) {}
+
+  @JsonInclude(JsonInclude.Include.NON_EMPTY)
+  record Tags(String text, List<String> tags) {}
+
+  /** A record whose nested record NON_DEFAULT still writes. */
+  @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+  record Packed(int count, Order order) {}
+
+  /** A record whose property-level inclusion overrides its class's. */
+  @JsonInclude(JsonInclude.Include.NON_EMPTY)
+  record Overridden(@JsonInclude(JsonInclude.Include.ALWAYS) String text, String note) {}
+
+  /** A class whose NON_DEFAULT omits any value equal to its field's initializer. */
+  @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+  static final class Defaults {
+    public Status status = Status.OPEN;
+    public Order order = new Order("a1", 1);
+  }
+
+  record View(Status status, Order order) {}
+
+  @JsonInclude(JsonInclude.Include.NON_EMPTY)
+  record Labeled(@JsonProperty(required = true) String label, int n) {}
+
+  /** A class that writes its order unwrapped and has two setters for it. */
+  static final class OverFlat {
+    public String label;
+
+    @JsonUnwrapped
+    public Order getOrder() {
+      return new Order("a1", 1);
+    }
+
+    public void setOrder(Order order) {}
+
+    public void setOrder(Map<String, Object> order) {}
+  }
+
+  /** A class that reads its unwrapped order through a setter. */
+  static final class SetterFlat {
+    public String label;
+
+    @JsonUnwrapped
+    public void setOrder(Order order) {}
+  }
+
+  record Authored(String author) {}
+
   record TreeNode(String label, List<TreeNode> children) {}
 
   /** Holds a declaration annotation named like the {@code @Nullable} of other packages. */
@@ -943,8 +1019,9 @@ public final class FunctionNodeTest {
 
   @Test
   public void of_inputThatDoesNotFitThePort_failsTheNodeWithoutQuotingTheValue() {
-    FunctionNode<Content, String> secret =
-        FunctionNodes.of("secret", Content.class, String.class, (ctx, message) -> "s3cr3t");
+    // Arrange: an Object output has no schema, so the build leaves this edge to run time.
+    FunctionNode<Content, Object> secret =
+        FunctionNodes.of("secret", Content.class, Object.class, (ctx, message) -> "s3cr3t");
     FunctionNode<Order, String> describe =
         FunctionNodes.of("describe", Order.class, String.class, (ctx, order) -> order.id());
 
@@ -957,8 +1034,9 @@ public final class FunctionNodeTest {
 
   @Test
   public void of_valueThatIsNotAContent_failsAContentPortWithoutQuotingTheValue() {
-    FunctionNode<Content, String> secret =
-        FunctionNodes.of("secret", Content.class, String.class, (ctx, message) -> "s3cr3t");
+    // Arrange: an Object output has no schema, so the build leaves this edge to run time.
+    FunctionNode<Content, Object> secret =
+        FunctionNodes.of("secret", Content.class, Object.class, (ctx, message) -> "s3cr3t");
     FunctionNode<Content, String> read =
         FunctionNodes.of("read", Content.class, String.class, (ctx, content) -> content.text());
 
@@ -1365,6 +1443,431 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void build_recordIntoAClosedRecordThatLacksOneOfItsKeys_failsNamingBothSchemasAndTheFix() {
+    // Arrange: the inferred BasicOrder schema takes no note.
+    FunctionNode<Content, FullOrder> full = fullOrder();
+    FunctionNode<BasicOrder, String> basic =
+        FunctionNodes.of("basic", BasicOrder.class, String.class, (ctx, order) -> order.id());
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(full, basic));
+
+    // Assert
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "Schema mismatch on edge full -> basic. Output schema "
+                + full.outputSchema().get().toJson()
+                + " does not fit input schema "
+                + basic.inputSchema().get().toJson()
+                + ". It was inferred from the port's type and takes no other keys; set inputSchema"
+                + " on the builder or read the objects as Maps to accept them.");
+  }
+
+  @Test
+  public void build_recordIntoAClosedRecordWithAnOptionalKeyItLacks_buildsAndRuns() {
+    // Arrange: the inferred OrderWithOptionalNote schema lists a note it does not require.
+    FunctionNode<Content, BasicOrder> basic =
+        FunctionNodes.of(
+            "basic", Content.class, BasicOrder.class, (ctx, m) -> new BasicOrder("a1", 9.5));
+    FunctionNode<OrderWithOptionalNote, String> noted =
+        FunctionNodes.of(
+            "noted",
+            OrderWithOptionalNote.class,
+            String.class,
+            (ctx, order) -> order.id() + ":" + order.note());
+
+    // Act
+    RunResult result = run(chain(basic, noted));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/noted@1")).isEqualTo("a1:null");
+  }
+
+  @Test
+  public void build_listOfRecordsIntoAListOfClosedRecords_hintsAtMapsThatThenBuild() {
+    // Arrange: the inferred BasicOrder items take no note; map items take any key.
+    FunctionNode<Content, List<FullOrder>> fulls = fullOrders();
+    FunctionNode<List<BasicOrder>, Integer> basics =
+        FunctionNodes.of(
+            "basics",
+            new TypeReference<List<BasicOrder>>() {},
+            Integer.class,
+            (ctx, l) -> l.size());
+    FunctionNode<List<Map<String, Object>>, Object> maps =
+        FunctionNodes.of(
+            "maps",
+            new TypeReference<List<Map<String, Object>>>() {},
+            Object.class,
+            (ctx, l) -> l.get(0).get("note"));
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(fulls, basics));
+    RunResult result = run(chain(fulls, maps));
+
+    // Assert
+    assertThat(error)
+        .hasMessageThat()
+        .endsWith("set inputSchema on the builder or read the objects as Maps to accept them.");
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/maps@1")).isEqualTo("rush");
+  }
+
+  @Test
+  public void build_recordIntoAHandWrittenSchema_admitsKeysItDoesNotList() {
+    // Arrange: a schema set on the builder is open, unlike an inferred one.
+    FunctionNode<BasicOrder, String> basic =
+        FunctionNodes.builder(BasicOrder.class, String.class)
+            .name("basic")
+            .inputSchema(object(ImmutableMap.of("id", STRING), "id"))
+            .body((ctx, order) -> order.id())
+            .build();
+
+    // Act
+    RunResult result = run(chain(fullOrder(), basic));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/basic@1")).isEqualTo("a1");
+  }
+
+  @Test
+  public void build_integerIntoANullableIntegerSchema_buildsAndRuns() {
+    // Arrange
+    FunctionNode<Content, Integer> three =
+        FunctionNodes.of("three", Content.class, Integer.class, (ctx, message) -> 3);
+    FunctionNode<Integer, Integer> increment =
+        FunctionNodes.builder(Integer.class, Integer.class)
+            .name("increment")
+            .inputSchema(nullable(INTEGER))
+            .body((ctx, n) -> n + 1)
+            .build();
+
+    // Act
+    RunResult result = run(chain(three, increment));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/increment@1")).isEqualTo(4);
+  }
+
+  @Test
+  public void build_recordIntoAContentPort_failsWithoutSuggestingABuilderSchema() {
+    // Arrange: a builder schema on a Content port describes the text, so it cannot help here.
+    FunctionNode<Content, FullOrder> full = fullOrder();
+    FunctionNode<Content, String> read =
+        FunctionNodes.of("read", Content.class, String.class, (ctx, content) -> content.text());
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(full, read));
+
+    // Assert
+    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge full -> read.");
+    assertThat(error).hasMessageThat().doesNotContain("inputSchema on the builder");
+  }
+
+  @Test
+  public void build_contentIntoAStringPort_fails() {
+    // Arrange: a returned Content is the output in its JSON form, an object.
+    FunctionNode<Content, Content> reply = reply();
+    FunctionNode<String, String> shout =
+        FunctionNodes.of("shout", String.class, String.class, (ctx, text) -> text);
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(reply, shout));
+
+    // Assert: the keys are not the cause, so the message suggests no way to accept them.
+    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge reply -> shout.");
+    assertThat(error).hasMessageThat().doesNotContain("takes no other keys");
+  }
+
+  @Test
+  public void build_recordIntoAnEventPort_fails() {
+    // Arrange: an Event port takes only an event's keys, and a FullOrder has others.
+    FunctionNode<Content, FullOrder> full = fullOrder();
+    FunctionNode<Event, String> author =
+        FunctionNodes.of("author", Event.class, String.class, (ctx, event) -> event.author());
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(full, author));
+
+    // Assert
+    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge full -> author.");
+  }
+
+  @Test
+  public void build_contentIntoContentOrObjectPorts_buildsAndRuns() {
+    // Arrange
+    FunctionNode<Content, String> read =
+        FunctionNodes.of("read", Content.class, String.class, (ctx, content) -> content.text());
+    FunctionNode<Object, String> any =
+        FunctionNodes.of("any", Object.class, String.class, (ctx, value) -> "ok");
+
+    // Act
+    RunResult intoContent = run(chain(reply(), read));
+    RunResult intoObject = run(chain(reply(), any));
+
+    // Assert
+    intoContent.assertCompleted();
+    intoObject.assertCompleted();
+    assertThat(intoContent.outputAt("wf@1/read@1")).isEqualTo("hi");
+    assertThat(intoObject.outputAt("wf@1/any@1")).isEqualTo("ok");
+  }
+
+  @Test
+  public void build_contentPortWithAnExplicitSchema_checksTheEdgeAgainstItsContentSchema() {
+    // Arrange: an explicit schema on a Content port describes the message's text.
+    FunctionNode<Content, String> text =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("text")
+            .inputSchema(STRING)
+            .body((ctx, content) -> content.text())
+            .build();
+    FunctionNode<Content, FullOrder> full = fullOrder();
+
+    // Act
+    RunResult result = run(chain(reply(), text));
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(full, text));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/text@1")).isEqualTo("hi");
+    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge full -> text.");
+  }
+
+  @Test
+  public void build_edgeIntoANodeThatIsNotAFunctionNode_checksItsOpenSchema() {
+    // Arrange: such a node infers nothing, so its schema takes keys it does not list.
+    FunctionNode<Content, String> text =
+        FunctionNodes.of("text", Content.class, String.class, (ctx, message) -> message.text());
+    JoinNode wantsInteger = JoinNode.builder().name("join").inputSchema(INTEGER).build();
+    JoinNode wantsId =
+        JoinNode.builder()
+            .name("join")
+            .inputSchema(object(ImmutableMap.of("id", STRING), "id"))
+            .build();
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(text, wantsInteger));
+    Workflow workflow = chain(fullOrder(), wantsId);
+
+    // Assert
+    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge text -> join.");
+    assertThat(workflow.graph()).isPresent();
+  }
+
+  @Test
+  public void build_recordsIntoPortsThatReadOtherKeysThanTheyWrite_buildAndRun() {
+    // Arrange: Invoice writes a total it does not read; Login reads a password it does not write.
+    FunctionNode<Content, Order> order =
+        FunctionNodes.of("order", Content.class, Order.class, (ctx, m) -> new Order("a1", 2));
+    FunctionNode<Invoice, String> invoice =
+        FunctionNodes.of(
+            "invoice", Invoice.class, String.class, (ctx, i) -> i.id() + "=" + i.getTotal());
+    FunctionNode<Content, Creds> creds =
+        FunctionNodes.of("creds", Content.class, Creds.class, (ctx, m) -> new Creds("ann", "pw"));
+    FunctionNode<Login, String> login =
+        FunctionNodes.of(
+            "login", Login.class, String.class, (ctx, l) -> l.user() + ":" + l.password().length());
+
+    // Act
+    RunResult invoiced = run(chain(order, invoice));
+    RunResult loggedIn = run(chain(creds, login));
+
+    // Assert
+    invoiced.assertCompleted();
+    loggedIn.assertCompleted();
+    assertThat(invoiced.outputAt("wf@1/invoice@1")).isEqualTo("a1=20");
+    assertThat(loggedIn.outputAt("wf@1/login@1")).isEqualTo("ann:2");
+  }
+
+  @Test
+  public void build_contentIntoASchemaWithAnOptionalRole_buildsAndRuns() {
+    // Arrange: a Content omits an unset role rather than writing null.
+    FunctionNode<Content, Content> model =
+        FunctionNodes.of(
+            "model",
+            Content.class,
+            Content.class,
+            (ctx, m) -> Content.builder().role("model").parts(Part.fromText("hi")).build());
+    FunctionNode<Map<String, Object>, Object> role =
+        FunctionNodes.builder(new TypeReference<Map<String, Object>>() {}, Object.class)
+            .name("role")
+            .inputSchema(object(ImmutableMap.of("role", STRING)))
+            .body((ctx, message) -> message.get("role"))
+            .build();
+
+    // Act
+    RunResult result = run(chain(model, role));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/role@1")).isEqualTo("model");
+  }
+
+  @Test
+  public void build_recordWithAnEventKeyIntoAnEventPort_buildsAndRuns() {
+    // Arrange: an Event port reads each key as optional, as Event.fromJson does.
+    FunctionNode<Content, Authored> authored =
+        FunctionNodes.of(
+            "authored", Content.class, Authored.class, (ctx, m) -> new Authored("ann"));
+    FunctionNode<Event, String> author =
+        FunctionNodes.of("author", Event.class, String.class, (ctx, event) -> event.author());
+
+    // Act
+    RunResult result = run(chain(authored, author));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/author@1")).isEqualTo("ann");
+  }
+
+  @Test
+  public void schemas_propertiesOnlyReadOrOnlyWritten_appearOnlyInThatPortsSchema() {
+    // Act
+    Optional<Schema> notepadIn = inputSchema(Notepad.class);
+    Optional<Schema> notepadOut = outputSchema(Notepad.class);
+    Optional<Schema> invoiceIn = inputSchema(Invoice.class);
+    Optional<Schema> invoiceOut = outputSchema(Invoice.class);
+    Optional<Schema> loginIn = inputSchema(Login.class);
+    Optional<Schema> loginOut = outputSchema(Login.class);
+
+    // Assert: Jackson leaves a field or setter property it does not read at its default.
+    assertThat(notepadIn).hasValue(object(ImmutableMap.of("id", STRING, "note", STRING)));
+    assertThat(notepadOut).hasValue(object(ImmutableMap.of("id", STRING), "id"));
+    assertThat(invoiceIn).hasValue(ORDER);
+    assertThat(invoiceOut.orElseThrow().required())
+        .hasValue(ImmutableList.of("id", "quantity", "total"));
+    assertThat(loginIn)
+        .hasValue(object(ImmutableMap.of("user", STRING, "password", STRING), "user"));
+    assertThat(loginOut)
+        .hasValue(object(ImmutableMap.of("user", STRING, "role", STRING), "user", "role"));
+  }
+
+  @Test
+  public void build_sameTypeUnderClassInclusionOrFlatKeysIntoUnwrapped_builds() {
+    // Arrange: NON_NULL omits only nullable keys, and an unwrapped port infers no schema.
+    FunctionNode<Content, Counted> counts =
+        FunctionNodes.of(
+            "counts",
+            Content.class,
+            Counted.class,
+            (ctx, m) -> new Counted(1, "a", null, Optional.empty()));
+    FunctionNode<Counted, Integer> count =
+        FunctionNodes.of("count", Counted.class, Integer.class, (ctx, c) -> c.count());
+    FunctionNode<Content, FlatOut> flatOut =
+        FunctionNodes.of(
+            "flat_out", Content.class, FlatOut.class, (ctx, m) -> new FlatOut("l", "a1", 2));
+    FunctionNode<Flat, String> flat =
+        FunctionNodes.of("flat", Flat.class, String.class, (ctx, f) -> f.label());
+    FunctionNode<SetterFlat, String> setterFlat =
+        FunctionNodes.of("setter_flat", SetterFlat.class, String.class, (ctx, f) -> f.label);
+
+    // Act
+    Workflow counted = chain(counts, count);
+    Workflow flattened = chain(flatOut, flat);
+    Workflow setterFlattened = chain(flatOut, setterFlat);
+
+    // Assert
+    assertThat(counted.graph()).isPresent();
+    assertThat(flattened.graph()).isPresent();
+    assertThat(setterFlattened.graph()).isPresent();
+  }
+
+  @Test
+  public void build_sameTypeUnderClassNonDefaultOrNonEmpty_builds() {
+    // Arrange: such a key may be omitted on write, and an absent one reads as its default.
+    FunctionNode<Content, Count> makeCount =
+        FunctionNodes.of("make_count", Content.class, Count.class, (ctx, m) -> new Count(0));
+    FunctionNode<Count, Integer> readCount =
+        FunctionNodes.of("read_count", Count.class, Integer.class, (ctx, c) -> c.count());
+    FunctionNode<Content, Tags> makeTags =
+        FunctionNodes.of(
+            "make_tags", Content.class, Tags.class, (ctx, m) -> new Tags("", ImmutableList.of()));
+    FunctionNode<Tags, String> readTags =
+        FunctionNodes.of("read_tags", Tags.class, String.class, (ctx, t) -> t.text());
+
+    // Act
+    Workflow counts = chain(makeCount, readCount);
+    Workflow tags = chain(makeTags, readTags);
+
+    // Assert
+    assertThat(counts.graph()).isPresent();
+    assertThat(tags.graph()).isPresent();
+  }
+
+  @Test
+  public void build_producerThatMayOmitAKeyTheTargetNeeds_fails() {
+    // Arrange: Defaults omits a value equal to its initializer, and Labeled an empty label.
+    FunctionNode<Content, Defaults> defaults =
+        FunctionNodes.of("defaults", Content.class, Defaults.class, (ctx, m) -> new Defaults());
+    FunctionNode<View, Status> view =
+        FunctionNodes.of("view", View.class, Status.class, (ctx, v) -> v.status());
+    FunctionNode<Content, Labeled> makeLabeled =
+        FunctionNodes.of(
+            "make_labeled", Content.class, Labeled.class, (ctx, m) -> new Labeled("", 1));
+    FunctionNode<Labeled, String> readLabeled =
+        FunctionNodes.of("read_labeled", Labeled.class, String.class, (ctx, l) -> l.label());
+
+    // Act
+    WorkflowConfigurationException intoView =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(defaults, view));
+    WorkflowConfigurationException intoLabeled =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(makeLabeled, readLabeled));
+
+    // Assert
+    assertThat(intoView).hasMessageThat().startsWith("Schema mismatch on edge defaults -> view.");
+    assertThat(intoLabeled)
+        .hasMessageThat()
+        .startsWith("Schema mismatch on edge make_labeled -> read_labeled.");
+  }
+
+  @Test
+  public void outputSchema_unwrappedGetterBesideOverloadedSetters_inferNone() {
+    // Act
+    Optional<Schema> schema = outputSchema(OverFlat.class);
+
+    // Assert: Jackson cannot pick a setter, but the getter still writes the order's keys.
+    assertThat(schema).isEmpty();
+  }
+
+  @Test
+  public void outputSchema_nonDefaultNestedRecordOrPropertyLevelAlways_staysRequired() {
+    // Act
+    Optional<Schema> packed = outputSchema(Packed.class);
+    Optional<Schema> overridden = outputSchema(Overridden.class);
+
+    // Assert: NON_DEFAULT always writes a non-null record.
+    assertThat(packed).hasValue(object(ImmutableMap.of("count", INTEGER, "order", ORDER), "order"));
+    assertThat(overridden)
+        .hasValue(object(ImmutableMap.of("text", STRING, "note", STRING), "text"));
+  }
+
+  @Test
+  public void build_recordIntoAnAliasOfItsKey_buildsAndRuns() {
+    // Arrange: Aliased reads its quantity from a qty key too.
+    FunctionNode<Content, Qty> qty =
+        FunctionNodes.of("qty", Content.class, Qty.class, (ctx, m) -> new Qty(3));
+    FunctionNode<Aliased, String> aliased =
+        FunctionNodes.of("aliased", Aliased.class, String.class, (ctx, a) -> "x" + a.quantity());
+
+    // Act
+    RunResult result = run(chain(qty, aliased));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/aliased@1")).isEqualTo("x3");
+  }
+
+  @Test
   public void builder_withoutABody_failsAtBuild() {
     FunctionNode.Builder<String, String> builder =
         FunctionNodes.builder(String.class, String.class).name("empty");
@@ -1437,9 +1940,9 @@ public final class FunctionNodeTest {
 
   @Test
   public void of_numberIntoAListPort_failsTheNode() {
-    // Arrange: a number feeds a list port.
-    FunctionNode<Content, Integer> number =
-        FunctionNodes.of("number", Content.class, Integer.class, (ctx, message) -> 123);
+    // Arrange: a number feeds a list port, by an Object output the build does not check.
+    FunctionNode<Content, Object> number =
+        FunctionNodes.of("number", Content.class, Object.class, (ctx, message) -> 123);
     FunctionNode<List<Section>, String> first =
         FunctionNodes.of(
             "first",
@@ -2648,6 +3151,26 @@ public final class FunctionNodeTest {
   private static Schema object(ImmutableMap<String, Schema> properties, String... required) {
     Schema.Builder object = Schema.builder().type(Type.Known.OBJECT).properties(properties);
     return (required.length == 0 ? object : object.required(required)).build();
+  }
+
+  /** Returns a node named {@code reply} that returns a Content saying "hi". */
+  private static FunctionNode<Content, Content> reply() {
+    return FunctionNodes.of(
+        "reply", Content.class, Content.class, (ctx, m) -> Content.fromParts(Part.fromText("hi")));
+  }
+
+  /** Returns a node named {@code full} that returns a {@link FullOrder} with a note. */
+  private static FunctionNode<Content, FullOrder> fullOrder() {
+    return FunctionNodes.of(
+        "full", Content.class, FullOrder.class, (ctx, m) -> new FullOrder("a1", 9.5, "rush"));
+  }
+
+  private static FunctionNode<Content, List<FullOrder>> fullOrders() {
+    return FunctionNodes.of(
+        "fulls",
+        Content.class,
+        new TypeReference<List<FullOrder>>() {},
+        (ctx, m) -> ImmutableList.of(new FullOrder("a1", 9.5, "rush")));
   }
 
   /** Returns a workflow named {@code wf} that runs {@code nodes} in sequence from START. */

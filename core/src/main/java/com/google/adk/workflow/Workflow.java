@@ -210,6 +210,8 @@ public final class Workflow extends BaseNode {
      *     empty or contains {@code /}, {@code @}, or {@code .}
      * @throws GraphValidationException if the graph is malformed, for example if {@link Start}
      *     cannot reach one of its nodes
+     * @throws WorkflowConfigurationException if the output schema of an edge's source admits a
+     *     value that the input schema of its target does not
      */
     public Workflow build() {
       checkState(name != null, "Workflow.Builder requires name to be set.");
