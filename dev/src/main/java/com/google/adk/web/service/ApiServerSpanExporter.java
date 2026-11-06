@@ -32,11 +32,11 @@ import org.slf4j.LoggerFactory;
 
 /**
  * A custom SpanExporter that stores relevant span data. It handles two types of trace data storage:
- * 1. Event-ID based: Stores attributes of specific spans (call_llm, send_data, tool_response) keyed
- * by `gcp.vertex.agent.event_id`. This is used for debugging individual events. 2. Session-ID
- * based: Stores all exported spans and maintains a mapping from `session_id` (extracted from
- * `call_llm` spans) to a list of `trace_id`s. This is used for retrieving all spans related to a
- * session.
+ * 1. Event-ID based: Stores attributes of specific spans (call_llm, send_data, tool_response,
+ * execute_tool) keyed by `gcp.vertex.agent.event_id`. This is used for debugging individual events.
+ * 2. Session-ID based: Stores all exported spans and maintains a mapping from `session_id`
+ * (extracted from `call_llm` spans) to a list of `trace_id`s. This is used for retrieving all spans
+ * related to a session.
  */
 public class ApiServerSpanExporter implements SpanExporter {
   private static final Logger exporterLog = LoggerFactory.getLogger(ApiServerSpanExporter.class);
@@ -103,7 +103,8 @@ public class ApiServerSpanExporter implements SpanExporter {
     boolean isEventTraceSpan =
         "call_llm".equals(spanName)
             || "send_data".equals(spanName)
-            || (spanName != null && spanName.startsWith("tool_response"));
+            || (spanName != null
+                && (spanName.startsWith("tool_response") || spanName.startsWith("execute_tool")));
     if (eventId != null && !eventId.isEmpty()) {
       eventIdRefCount.merge(eventId, 1, Integer::sum);
       if (isEventTraceSpan) {
