@@ -39,5 +39,6 @@
     <module>mcpfilesystem</module>
     <module>spring_chat</module>
     <module>spring_chat_advanced</module>
+    <module>workflows</module>
   </modules>
 </project>

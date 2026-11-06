@@ -90,9 +90,19 @@ liveRunner
 
 -   Events arrive on the runner's dispatcher (`Dispatchers.IO` unless you pass
     one to `asJavaRunner`), never on the thread that sends to the queue.
--   Blobs sent to the Java `LiveRequestQueue` are dropped with a warning.
+-   A blob with an `audio/*` MIME type goes to the model as audio, and one with
+    `image/*` as a video frame. Any other blob, or one with no MIME type, is
+    dropped with a warning, because the Kotlin engine has no untyped media
+    input.
+-   An ADK Java `FunctionTool` that returns a `Flowable` streams its items to
+    the model in a live run; its `inputStream` parameter, if any, receives
+    `null`.
 -   `RunConfig` settings the Kotlin engine cannot honor fail the stream rather
     than being dropped.
+-   `runLive(session, ...)` runs the copy of that session the Kotlin runner's
+    session service stores under the runner's app, and does not update the
+    passed `Session` object. A session of another app, or one that service
+    lacks, fails the stream even with `autoCreateSession`.
 
 See the `JavaAdkToKt` KDoc for the full set of adapters (including session,
 artifact, and memory services) and the documented interop limits.

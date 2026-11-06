@@ -70,7 +70,11 @@ import kotlinx.coroutines.CoroutineDispatcher
  */
 object JavaAdkToKt {
 
-  /** Adapts an ADK Java tool, hopping to `dispatcher` for its (possibly blocking) calls. */
+  /**
+   * Adapts an ADK Java tool, hopping to `dispatcher` for its (possibly blocking) calls. A
+   * `FunctionTool` that returns a `Flowable` streams its items to the model in a live run; its
+   * `inputStream` parameter, if any, receives `null`.
+   */
   @JvmStatic
   @JvmOverloads
   fun asKtTool(

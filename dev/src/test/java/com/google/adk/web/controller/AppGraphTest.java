@@ -42,6 +42,7 @@ import com.google.adk.workflow.Route;
 import com.google.adk.workflow.Start;
 import com.google.adk.workflow.Workflow;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import org.jspecify.annotations.Nullable;
@@ -211,6 +212,64 @@ class AppGraphTest {
 
     assertThat(node).isEqualTo(new GraphNode("empty", "workflow"));
     assertThat(objectMapper.valueToTree(node).has("graph")).isFalse();
+  }
+
+  @Test
+  void find_pathThroughGraphsAndSubAgents_returnsTheNode() {
+    GraphNode support = AppGraph.graphNodeOf(supportWorkflow());
+    GraphNode assistant = AppGraph.graphNodeOf(assistantAgent());
+
+    assertThat(support.find("")).hasValue(support);
+    assertThat(support.find("tech_flow").map(GraphNode::type)).hasValue("workflow");
+    assertThat(support.find("support/tech_flow/diagnose").map(GraphNode::name))
+        .hasValue("diagnose");
+    assertThat(support.find("/tech_flow/fix/").map(GraphNode::name)).hasValue("fix");
+    assertThat(assistant.find("helper").map(GraphNode::tools))
+        .hasValue(ImmutableList.of(new GraphTool("lookup_invoice", "tool")));
+  }
+
+  @Test
+  void find_segmentsWithRunIdSuffix_ignoreTheSuffix() {
+    GraphNode support = AppGraph.graphNodeOf(supportWorkflow());
+
+    assertThat(support.find("support@1/tech_flow@2/diagnose@1").map(GraphNode::name))
+        .hasValue("diagnose");
+  }
+
+  @Test
+  void find_nameMatchingNoChild_returnsEmpty() {
+    GraphNode support = AppGraph.graphNodeOf(supportWorkflow());
+
+    assertThat(support.find("missing")).isEmpty();
+    assertThat(support.find("tech_flow/missing")).isEmpty();
+    assertThat(support.find("classify/anything")).isEmpty();
+  }
+
+  @Test
+  void nestedWorkflowsByPath_nestedWorkflows_keysEachByItsPathFromThisNode() {
+    Workflow inner =
+        Workflow.builder().name("inner").edges(new Edge(Start.INSTANCE, step("leaf"))).build();
+    Workflow middle =
+        Workflow.builder().name("middle").edges(new Edge(Start.INSTANCE, inner)).build();
+    Workflow outer =
+        Workflow.builder()
+            .name("outer")
+            .edges(new Edge(Start.INSTANCE, middle), new Edge(middle, step("z")))
+            .build();
+    GraphNode root = AppGraph.graphNodeOf(outer);
+
+    ImmutableMap<String, GraphNode> fromRoot = root.nestedWorkflowsByPath();
+    ImmutableMap<String, GraphNode> fromMiddle =
+        root.find("middle").orElseThrow().nestedWorkflowsByPath();
+
+    assertThat(fromRoot.keySet()).containsExactly("outer/middle", "outer/middle/inner").inOrder();
+    assertThat(fromRoot.get("outer/middle/inner").name()).isEqualTo("inner");
+    assertThat(fromMiddle.keySet()).containsExactly("middle/inner");
+  }
+
+  @Test
+  void nestedWorkflowsByPath_agentTree_isEmpty() {
+    assertThat(AppGraph.graphNodeOf(assistantAgent()).nestedWorkflowsByPath()).isEmpty();
   }
 
   /** Returns the edge's {@code route} as JSON text, or null when the edge omits it. */

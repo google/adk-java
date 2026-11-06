@@ -33,6 +33,7 @@ import com.google.adk.models.LlmRequest;
 import com.google.adk.models.Model;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.workflow.NodeInfo;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Blob;
@@ -445,6 +446,113 @@ public final class ContentsTest {
   }
 
   @Test
+  public void processRequest_userAnswerToNodesCall_isNarratedWithTheCall() {
+    Event u1 = createUserEvent("u1", "Query 1");
+    Event o1 = nodeEvent(createFunctionCallEvent(OTHER_AGENT, "o1", "ask_user", "call1"));
+    Event fr1 =
+        createFunctionResponseEvent(
+            USER, "fr1", "ask_user", "call1", ImmutableMap.of("result", "yes"));
+
+    List<Content> result = runContentsProcessor(ImmutableList.of(u1, o1, fr1));
+
+    assertThat(result)
+        .containsExactly(
+            u1.content().get(),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[other_agent] called tool `ask_user` with parameters:", "{}")),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[user] `ask_user` tool returned result:", "{\"result\":\"yes\"}")))
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_userAnswerToOtherAgentsCallOutsideAWorkflow_isNarratedWithTheCall() {
+    Event u1 = createUserEvent("u1", "Query 1");
+    Event o1 = createFunctionCallEvent(OTHER_AGENT, "o1", "ask_user", "call1");
+    Event fr1 =
+        createFunctionResponseEvent(
+            USER, "fr1", "ask_user", "call1", ImmutableMap.of("result", "yes"));
+    Event u2 = createUserEvent("u2", "Query 2");
+
+    List<Content> result = runContentsProcessor(ImmutableList.of(u1, o1, fr1, u2));
+
+    assertThat(result)
+        .containsExactly(
+            u1.content().get(),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[other_agent] called tool `ask_user` with parameters:", "{}")),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[user] `ask_user` tool returned result:", "{\"result\":\"yes\"}")),
+            u2.content().get())
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_userAnswerToOwnCall_staysAFunctionResponse() {
+    Event u1 = createUserEvent("u1", "Query 1");
+    Event fc1 = createFunctionCallEvent("fc1", "approve", "call1");
+    Event fr1 =
+        createFunctionResponseEvent(USER, "fr1", "approve", "call1", ImmutableMap.of("ok", true));
+
+    List<Content> result = runContentsProcessor(ImmutableList.of(u1, fc1, fr1));
+
+    assertThat(result)
+        .containsExactly(u1.content().get(), fc1.content().get(), fr1.content().get())
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_userAnswerToOwnCallReusingOtherAgentsCallId_staysAFunctionResponse() {
+    Event u1 = createUserEvent("u1", "Query 1");
+    Event o1 = createFunctionCallEvent(OTHER_AGENT, "o1", "ask_user", "call1");
+    Event fr1 =
+        createFunctionResponseEvent(
+            USER, "fr1", "ask_user", "call1", ImmutableMap.of("result", "yes"));
+    Event fc2 = createFunctionCallEvent("fc2", "approve", "call1");
+    Event fr2 =
+        createFunctionResponseEvent(USER, "fr2", "approve", "call1", ImmutableMap.of("ok", true));
+
+    List<Content> result = runContentsProcessor(ImmutableList.of(u1, o1, fr1, fc2, fr2));
+
+    assertThat(result)
+        .containsExactly(
+            u1.content().get(),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[other_agent] called tool `ask_user` with parameters:", "{}")),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[user] `ask_user` tool returned result:", "{\"result\":\"yes\"}")),
+            fc2.content().get(),
+            fr2.content().get())
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_userAnswerToOtherAgentsCallWithEmptyId_isLeftOut() {
+    Event u1 = createUserEvent("u1", "Query 1");
+    Event o1 = createFunctionCallEvent(OTHER_AGENT, "o1", "ask_user", "");
+    Event fr1 =
+        createFunctionResponseEvent(USER, "fr1", "ask_user", "", ImmutableMap.of("result", "yes"));
+    Event u2 = createUserEvent("u2", "Query 2");
+
+    List<Content> result = runContentsProcessor(ImmutableList.of(u1, o1, fr1, u2));
+
+    assertThat(result)
+        .containsExactly(
+            u1.content().get(),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[other_agent] called tool `ask_user` with parameters:", "{}")),
+            u2.content().get())
+        .inOrder();
+  }
+
+  @Test
   public void processRequest_includeContentsNone_lastEventIsUser() {
     ImmutableList<Event> events =
         ImmutableList.of(
@@ -535,6 +643,103 @@ public final class ContentsTest {
             events.get(1).content().get(), // fc1
             events.get(3).content().get()) // fr1 (merged)
         .inOrder();
+  }
+
+  @Test
+  public void
+      processRequest_includeContentsNone_userAnswerToOtherAgentsCall_reachesBackToTheCall() {
+    Event u1 = createUserEvent("u1", "Query 1");
+    Event o1 = createFunctionCallEvent(OTHER_AGENT, "o1", "ask_user", "call1");
+    Event fr1 =
+        createFunctionResponseEvent(
+            USER, "fr1", "ask_user", "call1", ImmutableMap.of("result", "yes"));
+
+    List<Content> result =
+        runContentsProcessorWithIncludeContents(
+            ImmutableList.of(u1, o1, fr1), LlmAgent.IncludeContents.NONE);
+
+    assertThat(result)
+        .containsExactly(
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[other_agent] called tool `ask_user` with parameters:", "{}")),
+            Content.fromParts(
+                otherAgentPreamblePart(),
+                otherAgentPart("[user] `ask_user` tool returned result:", "{\"result\":\"yes\"}")))
+        .inOrder();
+  }
+
+  @Test
+  public void processRequest_includeContentsNone_userAnswerToOwnCall_reachesBackToTheUsersTurn() {
+    Event u1 = createUserEvent("u1", "Query 1");
+    Event fc1 = createFunctionCallEvent("fc1", "approve", "call1");
+    Event fr1 =
+        createFunctionResponseEvent(USER, "fr1", "approve", "call1", ImmutableMap.of("ok", true));
+
+    List<Content> result =
+        runContentsProcessorWithIncludeContents(
+            ImmutableList.of(u1, fc1, fr1), LlmAgent.IncludeContents.NONE);
+
+    assertThat(result)
+        .containsExactly(u1.content().get(), fc1.content().get(), fr1.content().get())
+        .inOrder();
+  }
+
+  @Test
+  public void
+      processRequest_includeContentsNone_userTurnBetweenCallAndAnswer_doesNotStartTheTurn() {
+    Event u1 = createUserEvent("u1", "Query 1");
+    Event fc1 = createFunctionCallEvent("fc1", "approve", "call1");
+    Event u2 = createUserEvent("u2", "Any news?");
+    Event a1 = createAgentEvent("a1", "Still waiting.");
+    Event fr1 =
+        createFunctionResponseEvent(USER, "fr1", "approve", "call1", ImmutableMap.of("ok", true));
+
+    List<Content> result =
+        runContentsProcessorWithIncludeContents(
+            ImmutableList.of(u1, fc1, u2, a1, fr1), LlmAgent.IncludeContents.NONE);
+
+    assertThat(result)
+        .containsExactly(u1.content().get(), fc1.content().get(), fr1.content().get())
+        .inOrder();
+  }
+
+  // With no call to reach back to, the unpaired answer still starts the turn and is dropped.
+  @Test
+  public void processRequest_includeContentsNone_userAnswerToUnknownCall_doesNotReachBack() {
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Query 1"),
+            createFunctionResponseEvent(
+                USER, "fr1", "ask_user", "missing", ImmutableMap.of("result", "yes")));
+
+    List<Content> result =
+        runContentsProcessorWithIncludeContents(events, LlmAgent.IncludeContents.NONE);
+
+    assertThat(result).isEmpty();
+  }
+
+  // An answer outside this agent's context does not move its turn back to the call.
+  @Test
+  public void processRequest_includeContentsNone_userAnswerOnAnotherBranch_doesNotReachBack() {
+    Event offBranchAnswer =
+        createFunctionResponseEvent(
+                USER, "fr1", "ask_user", "call1", ImmutableMap.of("result", "yes"))
+            .toBuilder()
+            .branch("root.agent_1")
+            .build();
+    ImmutableList<Event> events =
+        ImmutableList.of(
+            createUserEvent("u1", "Query 1"),
+            createFunctionCallEvent("agent_10", "fc1", "ask_user", "call1"),
+            createUserEvent("u2", "Query 2"),
+            offBranchAnswer);
+
+    List<Content> contents =
+        runContentsProcessorOnBranch(
+            events, "agent_10", "root.agent_10", LlmAgent.IncludeContents.NONE);
+
+    assertThat(turns(contents)).containsExactly("user: Query 2");
   }
 
   @Test
@@ -2490,6 +2695,11 @@ public final class ContentsTest {
                 .build())
         .invocationId("invocationId")
         .build();
+  }
+
+  /** Returns {@code event} as a workflow node emits it, carrying the node's path. */
+  private static Event nodeEvent(Event event) {
+    return event.toBuilder().nodeInfo(NodeInfo.builder().path("wf@1/ask@1").build()).build();
   }
 
   private static Event createAgentEventWithTextAndFunctionCall(

@@ -30,13 +30,17 @@ import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
+import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
+import com.google.adk.testing.TestUtils;
 import com.google.adk.workflow.WorkflowResumeTesting.FailedTurn;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Schema;
@@ -251,6 +255,48 @@ public final class WorkflowHitlTest {
         assertThrows(IllegalArgumentException.class, () -> session.turn(reply));
 
     assertThat(error).hasMessageThat().contains("Validation failed for interrupt ask_1");
+  }
+
+  @Test
+  public void resume_answeredRequestThenAnLlmAgentNode_givesTheModelTheAnswerAsContext() {
+    TestLlm model = TestLlm.create(TestUtils.createTextLlmResponse("revised"));
+    LlmAgent agent = LlmAgent.builder().name("agent").model(model).build();
+    Node ask = ask("ask", request("ask_1"));
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, ask), new Edge(ask, agent)));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("result", "shorter")));
+
+    String lastTurn = Iterables.getLast(model.getLastRequest().contents()).text();
+    assertThat(lastTurn).contains("[user] `adk_request_input` tool returned result:");
+    assertThat(lastTurn).contains("shorter");
+    assertThat(events.stream().map(Event::stringifyContent)).contains("revised");
+  }
+
+  @Test
+  public void
+      resume_answeredRequestThenAnLlmAgentNodeWithIncludeContentsNone_givesTheModelTheAnswer() {
+    TestLlm model = TestLlm.create(TestUtils.createTextLlmResponse("revised"));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(model)
+            .includeContents(LlmAgent.IncludeContents.NONE)
+            .build();
+    Node ask = ask("ask", request("ask_1"));
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, ask), new Edge(ask, agent)));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("ask_1", ImmutableMap.of("result", "shorter")));
+
+    String lastTurn = Iterables.getLast(model.getLastRequest().contents()).text();
+    assertThat(lastTurn).contains("[user] `adk_request_input` tool returned result:");
+    assertThat(lastTurn).contains("shorter");
+    assertThat(events.stream().map(Event::stringifyContent)).contains("revised");
   }
 
   /** A session paused on {@code ask_1}, whose answer must match {@code schema}. */

@@ -102,6 +102,14 @@ internal object PartCodec {
   fun toJavaOrThrow(part: KtPart): GenaiPart =
     requireNotNull(toJava(part)) { "Artifact part is empty or unmapped" }
 
+  /** Returns the Kotlin [KtBlob] view of the genai [blob]. */
+  fun blobFromJava(blob: GenaiBlob): KtBlob =
+    KtBlob(
+      mimeType = blob.mimeType().getOrNull(),
+      displayName = blob.displayName().getOrNull(),
+      data = blob.data().getOrNull(),
+    )
+
   /** Returns the Kotlin [KtPart] view of the genai [part], or null if it carries nothing mapped. */
   fun fromJava(part: GenaiPart): KtPart? {
     val functionCall = part.functionCall().getOrNull()
@@ -228,13 +236,6 @@ internal object PartCodec {
     resolution.numTokens?.let { builder.numTokens(it) }
     return builder.build()
   }
-
-  private fun blobFromJava(blob: GenaiBlob): KtBlob =
-    KtBlob(
-      mimeType = blob.mimeType().getOrNull(),
-      displayName = blob.displayName().getOrNull(),
-      data = blob.data().getOrNull(),
-    )
 
   private fun blobToJava(blob: KtBlob): GenaiBlob {
     val builder = GenaiBlob.builder()

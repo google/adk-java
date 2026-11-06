@@ -16,14 +16,21 @@
 
 package com.google.adk.web.controller;
 
+import static com.google.adk.web.testing.GraphFixtures.step;
+import static com.google.common.truth.Truth.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.apps.App;
 import com.google.adk.web.AppLoader;
 import com.google.adk.web.InMemoryAppLoader;
 import com.google.adk.web.testing.GraphFixtures;
+import com.google.adk.workflow.Edge;
+import com.google.adk.workflow.Start;
+import com.google.adk.workflow.Workflow;
 import com.google.common.collect.ImmutableList;
 import java.util.Optional;
 import org.hamcrest.Matchers;
@@ -39,15 +46,27 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 class AppGraphControllerTest {
 
-  /** Serves a workflow app and an agent app, and lists one more app that fails to load. */
+  private static final ObjectMapper objectMapper = new ObjectMapper();
+
+  /**
+   * Serves a workflow app, an agent app and a two-level nested workflow app, and lists one more app
+   * that fails to load.
+   */
   @TestConfiguration
   static class Apps {
     @Bean
     AppLoader appLoader() {
+      Workflow inner =
+          Workflow.builder().name("inner").edges(new Edge(Start.INSTANCE, step("leaf"))).build();
+      Workflow middle =
+          Workflow.builder().name("middle").edges(new Edge(Start.INSTANCE, inner)).build();
+      Workflow outer =
+          Workflow.builder().name("outer").edges(new Edge(Start.INSTANCE, middle)).build();
       InMemoryAppLoader apps =
           new InMemoryAppLoader(
               App.builder().name("support_app").rootNode(GraphFixtures.supportWorkflow()).build(),
-              App.builder().name("assistant").rootAgent(GraphFixtures.assistantAgent()).build());
+              App.builder().name("assistant").rootAgent(GraphFixtures.assistantAgent()).build(),
+              App.builder().name("nested").rootNode(outer).build());
       return new AppLoader() {
         @Override
         public ImmutableList<String> listApps() {
@@ -100,5 +119,127 @@ class AppGraphControllerTest {
     mockMvc
         .perform(get("/dev/apps/broken/build_graph"))
         .andExpect(status().isInternalServerError());
+  }
+
+  @Test
+  void buildGraphImage_workflowApp_drawsTheRootAndEveryNestedWorkflow() throws Exception {
+    JsonNode graphs = json("/dev/apps/support_app/build_graph_image?dark_mode=false");
+
+    assertThat(ImmutableList.copyOf(graphs.fieldNames()))
+        .containsExactly("", "support/tech_flow")
+        .inOrder();
+    assertThat(dotSrc(graphs, "")).contains("__START__ -> classify");
+    assertThat(dotSrc(graphs, "")).contains("classify -> tech_flow [label=\"  tech\"]");
+    assertThat(dotSrc(graphs, "")).contains("bgcolor=\"#F8FAFC\"");
+    assertThat(dotSrc(graphs, "support/tech_flow")).contains("diagnose -> fix");
+  }
+
+  @Test
+  void buildGraphImage_nestedWorkflows_prefixesNonRootKeysWithTheRootName() throws Exception {
+    JsonNode graphs = json("/dev/apps/nested/build_graph_image");
+
+    assertThat(ImmutableList.copyOf(graphs.fieldNames()))
+        .containsExactly("", "outer/middle", "outer/middle/inner")
+        .inOrder();
+    assertThat(dotSrc(graphs, "outer/middle/inner")).contains("__START__ -> leaf");
+  }
+
+  @Test
+  void buildGraphImage_darkModeValues_selectDarkOrLightBackground() throws Exception {
+    assertThat(dotSrc(json("/dev/apps/support_app/build_graph_image?dark_mode=true"), ""))
+        .contains("bgcolor=\"#0F172A\"");
+    assertThat(dotSrc(json("/dev/apps/support_app/build_graph_image?dark_mode=YES"), ""))
+        .contains("bgcolor=\"#0F172A\"");
+    assertThat(dotSrc(json("/dev/apps/support_app/build_graph_image"), ""))
+        .contains("bgcolor=\"#F8FAFC\"");
+    assertThat(dotSrc(json("/dev/apps/support_app/build_graph_image?dark_mode=0"), ""))
+        .contains("bgcolor=\"#F8FAFC\"");
+  }
+
+  @Test
+  void buildGraphImage_darkMode_appliesToNestedAndDrillInGraphs() throws Exception {
+    JsonNode graphs = json("/dev/apps/support_app/build_graph_image?dark_mode=true");
+    JsonNode nested = json("/dev/apps/support_app/build_graph_image?node=tech_flow&dark_mode=true");
+
+    assertThat(dotSrc(graphs, "support/tech_flow")).contains("bgcolor=\"#0F172A\"");
+    assertThat(nested.get("dotSrc").asText()).contains("bgcolor=\"#0F172A\"");
+  }
+
+  @Test
+  void buildGraphImage_node_returnsBareDotGraphForTarget() throws Exception {
+    JsonNode nested = json("/dev/apps/support_app/build_graph_image?node=tech_flow");
+    JsonNode agent = json("/dev/apps/support_app/build_graph_image?node=support/billing_agent");
+
+    assertThat(ImmutableList.copyOf(nested.fieldNames())).containsExactly("dotSrc");
+    assertThat(nested.get("dotSrc").asText()).contains("diagnose -> fix");
+    assertThat(ImmutableList.copyOf(agent.fieldNames())).containsExactly("dotSrc");
+    assertThat(agent.get("dotSrc").asText()).contains("billing_agent -> lookup_invoice");
+    assertThat(agent.get("dotSrc").asText()).doesNotContain("__START__");
+  }
+
+  @Test
+  void buildGraphImage_emptyNode_returnsThePathKeyedMap() throws Exception {
+    JsonNode graphs = json("/dev/apps/support_app/build_graph_image?node=");
+
+    assertThat(ImmutableList.copyOf(graphs.fieldNames()))
+        .containsExactly("", "support/tech_flow")
+        .inOrder();
+  }
+
+  @Test
+  void buildGraphImage_nodeNamingTheRoot_returnsTheRootGraph() throws Exception {
+    JsonNode root = json("/dev/apps/support_app/build_graph_image?node=support");
+
+    assertThat(ImmutableList.copyOf(root.fieldNames())).containsExactly("dotSrc");
+    assertThat(root.get("dotSrc").asText()).contains("__START__ -> classify");
+  }
+
+  @Test
+  void buildGraphImage_agentApp_drawsItsTree() throws Exception {
+    JsonNode graphs = json("/dev/apps/assistant/build_graph_image");
+
+    assertThat(ImmutableList.copyOf(graphs.fieldNames())).containsExactly("");
+    assertThat(dotSrc(graphs, "")).contains("assistant -> helper");
+    assertThat(dotSrc(graphs, "")).doesNotContain("__END__");
+  }
+
+  @Test
+  void buildGraphImage_unknownNode_returnsNotFound() throws Exception {
+    mockMvc
+        .perform(get("/dev/apps/support_app/build_graph_image?node=tech_flow/missing"))
+        .andExpect(status().isNotFound());
+  }
+
+  @Test
+  void buildGraphImage_unknownApp_returnsNotFound() throws Exception {
+    mockMvc.perform(get("/dev/apps/missing/build_graph_image")).andExpect(status().isNotFound());
+  }
+
+  @Test
+  void buildGraphImage_invalidDarkMode_returnsBadRequest() throws Exception {
+    mockMvc
+        .perform(get("/dev/apps/support_app/build_graph_image?dark_mode=maybe"))
+        .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void buildGraphImage_emptyDarkMode_returnsBadRequest() throws Exception {
+    mockMvc
+        .perform(get("/dev/apps/support_app/build_graph_image?dark_mode="))
+        .andExpect(status().isBadRequest());
+  }
+
+  private JsonNode json(String path) throws Exception {
+    return objectMapper.readTree(
+        mockMvc
+            .perform(get(path))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString());
+  }
+
+  private static String dotSrc(JsonNode graphs, String path) {
+    return graphs.get(path).get("dotSrc").asText();
   }
 }

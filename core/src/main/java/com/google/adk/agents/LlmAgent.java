@@ -622,6 +622,12 @@ public class LlmAgent extends BaseAgent {
   }
 
   private void maybeSaveOutputToState(Event event) {
+    // Events from another agent, e.g. a transfer target, must not overwrite this agent's output.
+    if (!name().equals(event.author())) {
+      logger.debug(
+          "Skipping output save for agent {}: event authored by {}", name(), event.author());
+      return;
+    }
     if (outputKey().isEmpty() || !event.finalResponse() || event.content().isEmpty()) {
       return;
     }

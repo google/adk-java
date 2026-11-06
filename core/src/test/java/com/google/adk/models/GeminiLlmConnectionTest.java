@@ -16,14 +16,18 @@
 
 package com.google.adk.models;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.models.GeminiLlmConnection.PendingText;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.ExecutableCode;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.Language;
 import com.google.genai.types.LiveSendClientContentParameters;
 import com.google.genai.types.LiveSendRealtimeInputParameters;
 import com.google.genai.types.LiveSendToolResponseParameters;
@@ -33,9 +37,11 @@ import com.google.genai.types.LiveServerSetupComplete;
 import com.google.genai.types.LiveServerToolCall;
 import com.google.genai.types.LiveServerToolCallCancellation;
 import com.google.genai.types.Part;
+import com.google.genai.types.Transcription;
 import com.google.genai.types.UsageMetadata;
 import io.reactivex.rxjava3.observers.TestObserver;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -149,16 +155,15 @@ public final class GeminiLlmConnectionTest {
     LiveServerMessage message = LiveServerMessage.builder().serverContent(serverContent).build();
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
 
+    // The text of the interrupted message is emitted in full and reports the interruption.
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
     LlmResponse response = testObserver.values().get(0);
 
-    assertThat(response.content()).isPresent();
     assertThat(response.content().get().text()).isEqualTo("Model response");
-    assertThat(response.partial()).hasValue(true);
-    assertThat(response.turnComplete()).hasValue(false);
+    assertThat(response.partial()).hasValue(false);
     assertThat(response.interrupted()).hasValue(true);
   }
 
@@ -175,7 +180,7 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
 
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
@@ -196,11 +201,11 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
 
-    testObserver.assertValueCount(1);
+    testObserver.assertValueCount(2);
     testObserver.assertComplete();
-    LlmResponse response = testObserver.values().get(0);
+    LlmResponse response = testObserver.values().get(1);
     assertThat(response.interrupted()).isEmpty();
     assertThat(response.turnComplete()).hasValue(true);
   }
@@ -217,11 +222,16 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
 
-    testObserver.assertValueCount(1);
+    // The text is emitted in full before the response that completes the turn.
+    testObserver.assertValueCount(2);
     testObserver.assertComplete();
-    LlmResponse response = testObserver.values().get(0);
+    LlmResponse textResponse = testObserver.values().get(0);
+    assertThat(textResponse.content().get().text()).isEqualTo("Final response");
+    assertThat(textResponse.partial()).hasValue(false);
+    LlmResponse response = testObserver.values().get(1);
+    assertThat(response.content()).isEmpty();
     assertThat(response.partial()).hasValue(false);
     assertThat(response.turnComplete()).hasValue(true);
   }
@@ -238,7 +248,7 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
 
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
@@ -257,7 +267,7 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
 
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
@@ -289,7 +299,7 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
 
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
@@ -318,7 +328,7 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
     LlmResponse response = testObserver.values().get(0);
@@ -341,7 +351,7 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
     testObserver.assertNoValues();
     testObserver.assertComplete();
   }
@@ -355,7 +365,7 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
 
     testObserver.assertNoValues();
     testObserver.assertComplete();
@@ -367,7 +377,7 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
 
     testObserver.assertValueCount(1);
     testObserver.assertComplete();
@@ -399,21 +409,22 @@ public final class GeminiLlmConnectionTest {
 
     TestObserver<LlmResponse> testObserver = new TestObserver<>();
 
-    GeminiLlmConnection.convertToServerResponse(message).subscribe(testObserver);
+    GeminiLlmConnection.convertToServerResponse(message, new PendingText()).subscribe(testObserver);
 
-    testObserver.assertValueCount(2);
+    testObserver.assertValueCount(3);
     testObserver.assertComplete();
 
     List<LlmResponse> responses = testObserver.values();
 
-    // Check for ServerContent response
+    // Check for ServerContent response: the text in full, then the turn completion
     LlmResponse contentResponse = responses.get(0);
     assertThat(contentResponse.content()).isPresent();
     assertThat(contentResponse.content().get().text()).isEqualTo("Model response");
     assertThat(contentResponse.usageMetadata()).isEmpty();
+    assertThat(responses.get(1).turnComplete()).hasValue(true);
 
     // Check for UsageMetadata response
-    LlmResponse usageResponse = responses.get(1);
+    LlmResponse usageResponse = responses.get(2);
     assertThat(usageResponse.content()).isEmpty();
     assertThat(usageResponse.usageMetadata()).isPresent();
     GenerateContentResponseUsageMetadata expectedUsageMetadata =
@@ -423,6 +434,250 @@ public final class GeminiLlmConnectionTest {
             .totalTokenCount(30)
             .build();
     assertThat(usageResponse.usageMetadata()).hasValue(expectedUsageMetadata);
+  }
+
+  @Test
+  public void convertToServerResponse_textArrivingWithTurnComplete_isEmittedOnlyInFull() {
+    // Text that arrives with the end of the turn is not streamed on its own.
+    assertThat(
+            convertAll(
+                modelTurn(Part.fromText("Hel")),
+                serverContent(
+                    LiveServerContent.builder()
+                        .modelTurn(modelContent(Part.fromText("lo")))
+                        .turnComplete(true))))
+        .containsExactly("partial text:Hel", "text:Hello", "turnComplete")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_interrupted_fullTextReportsIt() {
+    assertThat(
+            convertAll(
+                modelTurn(Part.fromText("Hel")),
+                serverContent(LiveServerContent.builder().interrupted(true))))
+        .containsExactly("partial text:Hel", "text:Hel interrupted")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_textArrivingWithInterrupted_isEmittedOnlyInFull() {
+    assertThat(
+            convertAll(
+                modelTurn(Part.fromText("Hel")),
+                serverContent(
+                    LiveServerContent.builder()
+                        .modelTurn(modelContent(Part.fromText("lo")))
+                        .interrupted(true))))
+        .containsExactly("partial text:Hel", "text:Hello interrupted")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_interruptedWithTurnComplete_bothResponsesReportIt() {
+    assertThat(
+            convertAll(
+                modelTurn(Part.fromText("Hel")),
+                serverContent(LiveServerContent.builder().interrupted(true).turnComplete(true))))
+        .containsExactly("partial text:Hel", "text:Hel interrupted", "turnComplete interrupted")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_interruptedWithInlineData_bothResponsesReportIt() {
+    assertThat(
+            convertAll(
+                modelTurn(Part.fromText("Hel")),
+                serverContent(
+                    LiveServerContent.builder()
+                        .modelTurn(modelContent(Part.fromBytes(new byte[] {1, 2}, "audio/pcm")))
+                        .interrupted(true))))
+        .containsExactly("partial text:Hel", "text:Hel interrupted", "inlineData interrupted")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_interruptedWithTranscription_fullTextReportsIt() {
+    assertThat(
+            convertAll(
+                modelTurn(Part.fromText("Hel")),
+                serverContent(
+                    LiveServerContent.builder()
+                        .interrupted(true)
+                        .outputTranscription(Transcription.builder().text("Hel").build()))))
+        .containsExactly("partial text:Hel", "text:Hel interrupted", "output:Hel")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_interruptedWithoutText_isReportedOnMessageResponse() {
+    assertThat(convertAll(serverContent(LiveServerContent.builder().interrupted(true))))
+        .containsExactly("interrupted");
+    assertThat(
+            convertAll(
+                serverContent(
+                    LiveServerContent.builder()
+                        .interrupted(true)
+                        .outputTranscription(Transcription.builder().text("Hel").build()))))
+        .containsExactly("output:Hel interrupted");
+    assertThat(
+            convertAll(
+                serverContent(
+                    LiveServerContent.builder()
+                        .modelTurn(modelContent(Part.fromBytes(new byte[] {1, 2}, "audio/pcm")))
+                        .interrupted(true))))
+        .containsExactly("inlineData interrupted");
+    assertThat(
+            convertAll(
+                serverContent(LiveServerContent.builder().interrupted(true).turnComplete(true))))
+        .containsExactly("turnComplete interrupted");
+  }
+
+  @Test
+  public void convertToServerResponse_textAndOtherPartInOneMessage_keepsOtherPartAfterFullText() {
+    Part code =
+        Part.builder()
+            .executableCode(
+                ExecutableCode.builder().code("print(1)").language(Language.Known.PYTHON))
+            .build();
+    LiveServerMessage message =
+        serverContent(
+            LiveServerContent.builder()
+                .modelTurn(
+                    Content.builder().role("model").parts(Part.fromText("Run"), code).build()));
+
+    List<LlmResponse> responses =
+        GeminiLlmConnection.convertToServerResponse(message, new PendingText())
+            .toList()
+            .blockingGet();
+
+    assertThat(describe(responses)).containsExactly("text:Run", "executableCode").inOrder();
+    assertThat(responses.get(1).content().get().role()).hasValue("model");
+  }
+
+  @Test
+  public void convertToServerResponse_textAndInlineDataWithTurnComplete_keepsInlineData() {
+    assertThat(
+            convertAll(
+                serverContent(
+                    LiveServerContent.builder()
+                        .modelTurn(
+                            Content.builder()
+                                .role("model")
+                                .parts(
+                                    Part.fromText("Hello"),
+                                    Part.fromBytes(new byte[] {1, 2}, "audio/pcm"))
+                                .build())
+                        .turnComplete(true))))
+        .containsExactly("text:Hello", "inlineData turnComplete")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_toolCall_emitsPendingTextInFullFirst() {
+    LiveServerMessage toolCall =
+        LiveServerMessage.builder()
+            .toolCall(
+                LiveServerToolCall.builder()
+                    .functionCalls(ImmutableList.of(FunctionCall.builder().name("tool").build()))
+                    .build())
+            .build();
+
+    assertThat(convertAll(modelTurn(Part.fromText("Checking")), toolCall))
+        .containsExactly("partial text:Checking", "text:Checking", "call:tool")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_thoughtThenText_emitsEachInFull() {
+    assertThat(
+            convertAll(
+                modelTurn(Part.builder().text("Plan").thought(true).build()),
+                modelTurn(Part.fromText("Answer")),
+                serverContent(LiveServerContent.builder().turnComplete(true))))
+        .containsExactly(
+            "partial thought:Plan",
+            "thought:Plan",
+            "partial text:Answer",
+            "text:Answer",
+            "turnComplete")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_inlineData_isNotPartialAndDoesNotEndPendingText() {
+    // Only text is partial, even in a message that sets turnComplete to false.
+    assertThat(
+            convertAll(
+                modelTurn(Part.fromText("Hel")),
+                serverContent(
+                    LiveServerContent.builder()
+                        .modelTurn(modelContent(Part.fromBytes(new byte[] {1, 2}, "audio/pcm")))
+                        .turnComplete(false)),
+                modelTurn(Part.fromText("lo")),
+                serverContent(LiveServerContent.builder().turnComplete(true))))
+        .containsExactly(
+            "partial text:Hel", "inlineData", "partial text:lo", "text:Hello", "turnComplete")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_textWithTranscription_emitsTranscriptionSeparately() {
+    // The partial text response is not persisted, so the transcription is not put on it.
+    assertThat(
+            convertAll(
+                serverContent(
+                    LiveServerContent.builder()
+                        .modelTurn(modelContent(Part.fromText("Hel")))
+                        .inputTranscription(Transcription.builder().text("Hi").build()))))
+        .containsExactly("partial text:Hel", "input:Hi")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_emptyText_endsPendingTextLikeOtherParts() {
+    // A part with empty text, such as a bare thought signature, is not text.
+    assertThat(convertAll(modelTurn(Part.fromText("Hel")), modelTurn(Part.fromText(""))))
+        .containsExactly("partial text:Hel", "text:Hel", "text:")
+        .inOrder();
+  }
+
+  @Test
+  public void convertToServerResponse_otherPart_endsPendingText() {
+    Part code =
+        Part.builder()
+            .executableCode(
+                ExecutableCode.builder().code("print(1)").language(Language.Known.PYTHON))
+            .build();
+
+    assertThat(convertAll(modelTurn(Part.fromText("Running")), modelTurn(code)))
+        .containsExactly("partial text:Running", "text:Running", "executableCode")
+        .inOrder();
+  }
+
+  @Test
+  public void receive_textChunks_streamedAsPartialAndEmittedInFullAtTurnComplete() {
+    // The Live API may leave turnComplete out of a message that does not end the turn.
+    CompletableFuture<GeminiLiveTransport> transportFuture = new CompletableFuture<>();
+    GeminiLlmConnection connection = new GeminiLlmConnection(transportFuture);
+    TestSubscriber<LlmResponse> subscriber = connection.receive().test();
+
+    transportFuture.complete(
+        new FakeTransport(
+            /* endStreamOnReceive= */ true,
+            ImmutableList.of(
+                modelTurn(Part.fromText("Hel")),
+                serverContent(
+                    LiveServerContent.builder()
+                        .modelTurn(modelContent(Part.fromText("lo")))
+                        .turnComplete(false)),
+                serverContent(LiveServerContent.builder().turnComplete(true)))));
+    subscriber.awaitDone(5, TimeUnit.SECONDS);
+
+    subscriber.assertComplete();
+    assertThat(describe(subscriber.values()))
+        .containsExactly("partial text:Hel", "partial text:lo", "text:Hello", "turnComplete")
+        .inOrder();
   }
 
   @Test
@@ -457,18 +712,94 @@ public final class GeminiLlmConnectionTest {
     assertThat(transport.closeCount.get()).isEqualTo(0);
   }
 
+  /** Converts {@code messages} in order with one {@link PendingText}, as a connection does. */
+  private static ImmutableList<String> convertAll(LiveServerMessage... messages) {
+    PendingText pendingText = new PendingText();
+    List<LlmResponse> responses = new ArrayList<>();
+    for (LiveServerMessage message : messages) {
+      responses.addAll(
+          GeminiLlmConnection.convertToServerResponse(message, pendingText).toList().blockingGet());
+    }
+    return describe(responses);
+  }
+
+  private static LiveServerMessage modelTurn(Part part) {
+    return serverContent(LiveServerContent.builder().modelTurn(modelContent(part)));
+  }
+
+  private static LiveServerMessage serverContent(LiveServerContent.Builder serverContent) {
+    return LiveServerMessage.builder().serverContent(serverContent.build()).build();
+  }
+
+  private static Content modelContent(Part part) {
+    return Content.builder().role("model").parts(part).build();
+  }
+
   /**
-   * A minimal in-process {@link GeminiLiveTransport} that records sends and closes and can end its
-   * stream.
+   * Describes each response by its partial flag, parts and turn signals, such as {@code partial
+   * text:Hel} or {@code turnComplete}.
+   */
+  private static ImmutableList<String> describe(List<LlmResponse> responses) {
+    return responses.stream()
+        .map(
+            response -> {
+              List<String> words = new ArrayList<>();
+              if (response.partial().orElse(false)) {
+                words.add("partial");
+              }
+              response.content().flatMap(Content::parts).orElse(ImmutableList.of()).stream()
+                  .map(GeminiLlmConnectionTest::describePart)
+                  .forEach(words::add);
+              response
+                  .inputTranscription()
+                  .flatMap(Transcription::text)
+                  .ifPresent(text -> words.add("input:" + text));
+              response
+                  .outputTranscription()
+                  .flatMap(Transcription::text)
+                  .ifPresent(text -> words.add("output:" + text));
+              if (response.turnComplete().orElse(false)) {
+                words.add("turnComplete");
+              }
+              if (response.interrupted().orElse(false)) {
+                words.add("interrupted");
+              }
+              return String.join(" ", words);
+            })
+        .collect(toImmutableList());
+  }
+
+  private static String describePart(Part part) {
+    if (part.text().isPresent()) {
+      return (part.thought().orElse(false) ? "thought:" : "text:") + part.text().get();
+    }
+    if (part.functionCall().isPresent()) {
+      return "call:" + part.functionCall().get().name().orElse("");
+    }
+    if (part.inlineData().isPresent()) {
+      return "inlineData";
+    }
+    return part.executableCode().isPresent() ? "executableCode" : "other";
+  }
+
+  /**
+   * A minimal in-process {@link GeminiLiveTransport} that delivers the given messages, records
+   * sends and closes and can end its stream.
    */
   private static final class FakeTransport implements GeminiLiveTransport {
     private final boolean endStreamOnReceive;
+    private final ImmutableList<LiveServerMessage> messages;
     final AtomicInteger closeCount = new AtomicInteger();
     final List<LiveSendClientContentParameters> clientContents = new CopyOnWriteArrayList<>();
     final List<LiveSendToolResponseParameters> toolResponses = new CopyOnWriteArrayList<>();
 
     FakeTransport(boolean endStreamOnReceive) {
+      this(endStreamOnReceive, ImmutableList.of());
+    }
+
+    FakeTransport(boolean endStreamOnReceive, ImmutableList<LiveServerMessage> messages) {
       this.endStreamOnReceive = endStreamOnReceive;
+      this.messages = messages;
     }
 
     @Override
@@ -491,6 +822,7 @@ public final class GeminiLlmConnectionTest {
     @Override
     public CompletableFuture<Void> receive(
         Consumer<LiveServerMessage> onMessage, Runnable onStreamEnd) {
+      messages.forEach(onMessage);
       if (endStreamOnReceive) {
         onStreamEnd.run();
       }

@@ -16,42 +16,83 @@
 
 package com.google.adk.models;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.stream.Collectors.joining;
 
 import com.anthropic.client.AnthropicClient;
+import com.anthropic.core.JsonValue;
 import com.anthropic.core.Properties;
 import com.anthropic.core.http.Headers;
+import com.anthropic.core.http.StreamResponse;
+import com.anthropic.helpers.MessageAccumulator;
+import com.anthropic.models.messages.Base64ImageSource;
+import com.anthropic.models.messages.CacheControlEphemeral;
 import com.anthropic.models.messages.ContentBlock;
 import com.anthropic.models.messages.ContentBlockParam;
+import com.anthropic.models.messages.DocumentBlockParam;
+import com.anthropic.models.messages.ImageBlockParam;
 import com.anthropic.models.messages.Message;
 import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.MessageParam;
 import com.anthropic.models.messages.MessageParam.Role;
+import com.anthropic.models.messages.OutputConfig;
+import com.anthropic.models.messages.RawContentBlockDelta;
+import com.anthropic.models.messages.RawContentBlockDeltaEvent;
+import com.anthropic.models.messages.RawMessageStreamEvent;
 import com.anthropic.models.messages.RedactedThinkingBlockParam;
+import com.anthropic.models.messages.StopReason;
 import com.anthropic.models.messages.TextBlockParam;
 import com.anthropic.models.messages.ThinkingBlock;
 import com.anthropic.models.messages.ThinkingBlockParam;
+import com.anthropic.models.messages.ThinkingConfigAdaptive;
+import com.anthropic.models.messages.ThinkingConfigDisabled;
+import com.anthropic.models.messages.ThinkingConfigParam;
 import com.anthropic.models.messages.Tool;
 import com.anthropic.models.messages.ToolChoice;
 import com.anthropic.models.messages.ToolChoiceAuto;
+import com.anthropic.models.messages.ToolChoiceTool;
 import com.anthropic.models.messages.ToolResultBlockParam;
 import com.anthropic.models.messages.ToolUnion;
+import com.anthropic.models.messages.ToolUseBlock;
 import com.anthropic.models.messages.ToolUseBlockParam;
+import com.anthropic.models.messages.Usage;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.ContextCacheConfig;
+import com.google.common.base.Ascii;
 import com.google.common.base.Utf8;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.genai.types.*;
+import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.genai.types.Blob;
+import com.google.genai.types.Content;
+import com.google.genai.types.FinishReason;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionDeclaration;
+import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.GenerateContentConfig;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.Part;
+import com.google.genai.types.Schema;
+import com.google.genai.types.ThinkingConfig;
 import io.reactivex.rxjava3.core.Flowable;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.stream.Collectors;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,12 +100,13 @@ import org.slf4j.LoggerFactory;
 /**
  * Represents the Claude Generative AI model by Anthropic.
  *
- * <p>This class provides methods for interacting with Claude models. Streaming and live connections
- * are not currently supported for Claude.
+ * <p>Live connections are not supported for Claude.
  */
 public class Claude extends BaseLlm {
 
   private static final Logger logger = LoggerFactory.getLogger(Claude.class);
+
+  private static final int DEFAULT_MAX_TOKENS = 8192;
 
   // JSON Schema keywords traversed by updateTypeString, grouped by the shape of their value.
   // Keywords whose value is a map of named sub-schemas (e.g. "properties": {"a": {...}}).
@@ -87,8 +129,40 @@ public class Claude extends BaseLlm {
   private static final ImmutableList<String> NESTED_SCHEMA_LIST_KEYWORDS =
       ImmutableList.of("allOf", "all_of", "anyOf", "any_of", "oneOf", "one_of", "prefixItems");
 
-  private int maxTokens = 8192;
+  // A Vertex AI resource name for a Claude model; group 1 is the model id.
+  private static final Pattern VERTEX_RESOURCE_NAME =
+      Pattern.compile(
+          "^projects/[^/]+/locations/[^/]+/(?:publishers/anthropic/models|endpoints)/([^/:]+)");
+
+  // The pattern Claude requires of tool_use ids.
+  private static final Pattern VALID_TOOL_USE_ID = Pattern.compile("[a-zA-Z0-9_-]+");
+
+  private static final ImmutableSet<String> IMAGE_MEDIA_TYPES =
+      ImmutableSet.of("image/jpeg", "image/png", "image/gif", "image/webp");
+  private static final String PDF_MEDIA_TYPE = "application/pdf";
+
+  // Stop reasons that can cut a tool_use block off before its input is complete.
+  private static final ImmutableSet<StopReason.Value> TRUNCATING_STOP_REASONS =
+      ImmutableSet.of(StopReason.Value.MAX_TOKENS, StopReason.Value.MODEL_CONTEXT_WINDOW_EXCEEDED);
+  private static final String TRUNCATED_TOOL_USE_MESSAGE =
+      "The response was cut off by the max_tokens or context window limit before a tool call or"
+          + " structured output was complete, so it was not returned. Increase maxOutputTokens or"
+          + " shorten the context and retry.";
+
+  // The tool a requested response schema is sent as; see OutputSchemaTool.
+  private static final String OUTPUT_SCHEMA_TOOL_NAME = "structured_output";
+  private static final String OUTPUT_SCHEMA_TOOL_DESCRIPTION =
+      "Provide your final answer. Call this tool exactly once, with your whole answer in the"
+          + " structure its input describes.";
+  private static final String OUTPUT_SCHEMA_VALUE_KEY = "response";
+
+  private final int maxTokens;
+  private final OutputConfig.@Nullable Effort effort;
   private final AnthropicClient anthropicClient;
+  // Each warns once per model rather than on every request.
+  private final AtomicBoolean warnedThinkingLevel = new AtomicBoolean();
+  private final AtomicBoolean warnedMissingThinkingBudget = new AtomicBoolean();
+  private final AtomicBoolean warnedIgnoredSampling = new AtomicBoolean();
 
   /**
    * Constructs a new Claude instance. Requests sent through {@code anthropicClient} carry ADK's
@@ -98,14 +172,111 @@ public class Claude extends BaseLlm {
    * @param anthropicClient The Anthropic API client instance.
    */
   public Claude(String modelName, AnthropicClient anthropicClient) {
-    super(modelName);
-    this.anthropicClient = withTrackingHeaders(anthropicClient);
+    this(modelName, anthropicClient, DEFAULT_MAX_TOKENS);
   }
 
+  /**
+   * Constructs a new Claude instance with a default for the maximum number of tokens to generate.
+   *
+   * @param modelName The name of the Claude model to use.
+   * @param anthropicClient The Anthropic API client instance.
+   * @param maxTokens The {@code max_tokens} sent when the request config sets no maxOutputTokens.
+   */
   public Claude(String modelName, AnthropicClient anthropicClient, int maxTokens) {
+    this(modelName, anthropicClient, maxTokens, null);
+  }
+
+  private Claude(
+      String modelName,
+      AnthropicClient anthropicClient,
+      int maxTokens,
+      OutputConfig.@Nullable Effort effort) {
     super(modelName);
     this.anthropicClient = withTrackingHeaders(anthropicClient);
     this.maxTokens = maxTokens;
+    this.effort = effort;
+  }
+
+  /**
+   * Returns a builder for {@link Claude}. Use it for options the constructors don't take, such as
+   * reasoning effort.
+   */
+  public static Builder builder() {
+    return new Builder();
+  }
+
+  /** Builder for {@link Claude}. */
+  public static final class Builder {
+    private @Nullable String modelName;
+    private @Nullable AnthropicClient anthropicClient;
+    private int maxTokens = DEFAULT_MAX_TOKENS;
+    private OutputConfig.@Nullable Effort effort;
+
+    private Builder() {}
+
+    /**
+     * Sets the name of the Claude model to use. Required.
+     *
+     * @param modelName The model name (e.g., "claude-sonnet-4-5").
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder modelName(String modelName) {
+      this.modelName = modelName;
+      return this;
+    }
+
+    /**
+     * Sets the Anthropic API client that sends the requests. Required.
+     *
+     * @param anthropicClient The client instance.
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder anthropicClient(AnthropicClient anthropicClient) {
+      this.anthropicClient = anthropicClient;
+      return this;
+    }
+
+    /**
+     * Sets the {@code max_tokens} sent when the request config does not set maxOutputTokens.
+     * Defaults to 8192.
+     *
+     * @param maxTokens The maximum number of tokens to generate.
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder maxTokens(int maxTokens) {
+      this.maxTokens = maxTokens;
+      return this;
+    }
+
+    /**
+     * Sets how much reasoning effort Claude spends on each request. If unset, the model's default
+     * applies.
+     *
+     * @param effort The reasoning effort, or null for the model's default.
+     * @return This builder.
+     */
+    @CanIgnoreReturnValue
+    public Builder effort(OutputConfig.@Nullable Effort effort) {
+      this.effort = effort;
+      return this;
+    }
+
+    /**
+     * Builds the {@link Claude} instance.
+     *
+     * @return A new {@link Claude} instance.
+     * @throws NullPointerException if modelName or anthropicClient is not set.
+     */
+    public Claude build() {
+      return new Claude(
+          Objects.requireNonNull(modelName, "modelName must be set."),
+          Objects.requireNonNull(anthropicClient, "anthropicClient must be set."),
+          maxTokens,
+          effort);
+    }
   }
 
   /**
@@ -139,84 +310,348 @@ public class Claude extends BaseLlm {
 
   @Override
   public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-    // TODO: Switch to streaming API.
-    List<MessageParam> messages =
-        llmRequest.contents().stream()
-            .map(this::contentToAnthropicMessageParam)
-            // Anthropic rejects empty messages, e.g. a turn whose parts were all dropped.
-            .filter(message -> !message.content().asBlockParams().isEmpty())
-            .collect(Collectors.toList());
+    // Deferred so that a failure reaches the flow's model error callbacks.
+    return Flowable.defer(
+        () -> {
+          PreparedRequest request = prepareRequest(llmRequest);
+          return stream ? streamResponses(request) : Flowable.just(sendRequest(request));
+        });
+  }
 
-    List<ToolUnion> tools = ImmutableList.of();
-    if (llmRequest.config().isPresent()
-        && llmRequest.config().get().tools().isPresent()
-        && !llmRequest.config().get().tools().get().isEmpty()
-        && llmRequest.config().get().tools().get().get(0).functionDeclarations().isPresent()) {
-      tools =
-          llmRequest.config().get().tools().get().get(0).functionDeclarations().get().stream()
-              .map(this::functionDeclarationToAnthropicTool)
-              .map(tool -> ToolUnion.ofTool(tool))
-              .collect(Collectors.toList());
+  /** A request ready to send, with the tool that carries its response schema, if any. */
+  private record PreparedRequest(
+      MessageCreateParams params, @Nullable OutputSchemaTool outputSchemaTool) {}
+
+  private PreparedRequest prepareRequest(LlmRequest llmRequest) {
+    ToolUseIds toolUseIds = new ToolUseIds();
+    List<MessageParam> messages = new ArrayList<>();
+    for (Content content : llmRequest.contents()) {
+      MessageParam message = contentToAnthropicMessageParam(content, toolUseIds);
+      // Anthropic rejects empty messages, e.g. a turn whose parts were all dropped.
+      if (!message.content().asBlockParams().isEmpty()) {
+        messages.add(message);
+      }
     }
+    Optional<GenerateContentConfig> config = llmRequest.config();
+    ImmutableList<FunctionDeclaration> declarations =
+        config.flatMap(GenerateContentConfig::tools).orElse(ImmutableList.of()).stream()
+            .flatMap(tool -> tool.functionDeclarations().orElse(ImmutableList.of()).stream())
+            .collect(toImmutableList());
+    @Nullable ThinkingConfigParam thinking =
+        config
+            .flatMap(GenerateContentConfig::thinkingConfig)
+            .flatMap(this::thinkingParam)
+            .orElse(null);
 
-    ToolChoice toolChoice =
-        llmRequest.tools().isEmpty()
-            ? null
-            : ToolChoice.ofAuto(ToolChoiceAuto.builder().disableParallelToolUse(true).build());
+    boolean thinkingEnabled = thinking != null && !thinking.isDisabled();
+    @Nullable CacheControlEphemeral cacheControl = cacheControl(llmRequest);
 
-    String systemText = "";
-    Optional<GenerateContentConfig> configOpt = llmRequest.config();
-    if (configOpt.isPresent()) {
-      Optional<Content> systemInstructionOpt = configOpt.get().systemInstruction();
-      if (systemInstructionOpt.isPresent()) {
-        String extractedSystemText =
-            systemInstructionOpt.get().parts().orElse(ImmutableList.of()).stream()
-                .filter(p -> p.text().isPresent())
-                .map(p -> p.text().get())
-                .collect(Collectors.joining("\n"));
-        if (!extractedSystemText.isEmpty()) {
-          systemText = extractedSystemText;
-        }
+    MessageCreateParams.Builder params =
+        MessageCreateParams.builder()
+            .model(resolveModelName(llmRequest.model().orElse(model())))
+            .messages(cacheControl == null ? messages : withCacheBreakpoint(messages, cacheControl))
+            .maxTokens(config.flatMap(GenerateContentConfig::maxOutputTokens).orElse(maxTokens));
+    String systemText =
+        llmRequest.getSystemInstructions().stream()
+            .filter(text -> !text.isEmpty())
+            .collect(joining("\n"));
+    if (!systemText.isEmpty()) {
+      if (cacheControl == null) {
+        params.system(systemText);
+      } else {
+        params.systemOfTextBlockParams(
+            ImmutableList.of(
+                TextBlockParam.builder().text(systemText).cacheControl(cacheControl).build()));
       }
     }
 
-    MessageCreateParams.Builder paramsBuilder =
-        MessageCreateParams.builder()
-            .model(llmRequest.model().orElse(model()))
-            .system(systemText)
-            .messages(messages)
-            .maxTokens(this.maxTokens);
-
-    if (toolChoice != null) {
-      paramsBuilder.tools(tools);
-      paramsBuilder.toolChoice(toolChoice);
+    @Nullable OutputSchemaTool outputSchemaTool = null;
+    List<Tool> tools = new ArrayList<>();
+    Optional<Schema> responseSchema = config.flatMap(GenerateContentConfig::responseSchema);
+    if (responseSchema.isPresent() && declarations.isEmpty()) {
+      // With tools present, the flow adds the set_model_response tool instead.
+      outputSchemaTool = OutputSchemaTool.forSchema(responseSchema.get());
+      tools.add(outputSchemaTool.tool());
+      params.toolChoice(outputSchemaTool.choice(thinkingEnabled));
+    } else if (!declarations.isEmpty()) {
+      declarations.forEach(
+          declaration -> tools.add(functionDeclarationToAnthropicTool(declaration)));
+      params.toolChoice(ToolChoice.ofAuto(ToolChoiceAuto.builder().build()));
+    }
+    if (!tools.isEmpty()) {
+      if (cacheControl != null) {
+        int last = tools.size() - 1;
+        tools.set(last, tools.get(last).toBuilder().cacheControl(cacheControl).build());
+      }
+      params.tools(tools.stream().map(ToolUnion::ofTool).collect(toImmutableList()));
     }
 
-    var message = this.anthropicClient.messages().create(paramsBuilder.build());
-
-    logger.debug("Claude response: {}", message);
-
-    return Flowable.just(convertAnthropicResponseToLlmResponse(message));
+    if (thinking != null) {
+      params.thinking(thinking);
+    }
+    if (effort != null) {
+      params.outputConfig(OutputConfig.builder().effort(effort).build());
+    }
+    config.ifPresent(c -> setSamplingParameters(params, c, thinkingEnabled));
+    config
+        .flatMap(GenerateContentConfig::stopSequences)
+        .filter(stopSequences -> !stopSequences.isEmpty())
+        .ifPresent(params::stopSequences);
+    return new PreparedRequest(params.build(), outputSchemaTool);
   }
 
-  private Role toClaudeRole(String role) {
+  /**
+   * Sends temperature, topP and topK unless thinking or effort is on, as ADK Python does; Claude
+   * rejects them while it reasons. Models released after Claude Opus 4.6 reject non-default values
+   * in every request.
+   */
+  @SuppressWarnings("deprecation") // Deprecated because models after Claude Opus 4.6 reject them.
+  private void setSamplingParameters(
+      MessageCreateParams.Builder params, GenerateContentConfig config, boolean thinkingEnabled) {
+    if (config.temperature().isEmpty() && config.topP().isEmpty() && config.topK().isEmpty()) {
+      return;
+    }
+    if (thinkingEnabled || effort != null) {
+      if (warnedIgnoredSampling.compareAndSet(false, true)) {
+        logger.warn("Claude ignores temperature, topP and topK while thinking or effort is on.");
+      }
+      return;
+    }
+    config.temperature().ifPresent(temperature -> params.temperature(decimal(temperature)));
+    config.topP().ifPresent(topP -> params.topP(decimal(topP)));
+    config.topK().ifPresent(topK -> params.topK(topK.longValue()));
+  }
+
+  /** Widens {@code value} through its decimal form, so 0.7f is sent as 0.7 and not 0.699999988. */
+  private static double decimal(float value) {
+    return Double.parseDouble(Float.toString(value));
+  }
+
+  /**
+   * Returns the cache breakpoint for {@code llmRequest}, or null without a cache config. Also
+   * returns null when the previous prompt was smaller than the config's minTokens, as in ADK
+   * Python.
+   */
+  private static @Nullable CacheControlEphemeral cacheControl(LlmRequest llmRequest) {
+    ContextCacheConfig cacheConfig = llmRequest.cacheConfig().orElse(null);
+    if (cacheConfig == null
+        || llmRequest
+            .cacheableContentsTokenCount()
+            .map(tokens -> tokens < cacheConfig.minTokens())
+            .orElse(false)) {
+      return null;
+    }
+    CacheControlEphemeral.Builder cacheControl = CacheControlEphemeral.builder();
+    // An hour is the longest Claude keeps a prefix; a shorter lifetime gets the 5-minute default.
+    if (cacheConfig.ttl().compareTo(Duration.ofHours(1)) >= 0) {
+      cacheControl.ttl(CacheControlEphemeral.Ttl.TTL_1H);
+    }
+    return cacheControl.build();
+  }
+
+  /**
+   * Marks the last block Claude can cache, so the next request reads the conversation so far from
+   * the cache.
+   */
+  private static List<MessageParam> withCacheBreakpoint(
+      List<MessageParam> messages, CacheControlEphemeral cacheControl) {
+    for (int i = messages.size() - 1; i >= 0; i--) {
+      List<ContentBlockParam> blocks = new ArrayList<>(messages.get(i).content().asBlockParams());
+      for (int j = blocks.size() - 1; j >= 0; j--) {
+        Optional<ContentBlockParam> marked = withCacheControl(blocks.get(j), cacheControl);
+        if (marked.isPresent()) {
+          blocks.set(j, marked.get());
+          List<MessageParam> markedMessages = new ArrayList<>(messages);
+          markedMessages.set(i, messages.get(i).toBuilder().contentOfBlockParams(blocks).build());
+          return markedMessages;
+        }
+      }
+    }
+    return messages;
+  }
+
+  /** Returns {@code block} with a cache breakpoint, or empty for a thinking block. */
+  private static Optional<ContentBlockParam> withCacheControl(
+      ContentBlockParam block, CacheControlEphemeral cacheControl) {
+    if (block.isText()) {
+      return Optional.of(
+          ContentBlockParam.ofText(block.asText().toBuilder().cacheControl(cacheControl).build()));
+    } else if (block.isImage()) {
+      return Optional.of(
+          ContentBlockParam.ofImage(
+              block.asImage().toBuilder().cacheControl(cacheControl).build()));
+    } else if (block.isDocument()) {
+      return Optional.of(
+          ContentBlockParam.ofDocument(
+              block.asDocument().toBuilder().cacheControl(cacheControl).build()));
+    } else if (block.isToolUse()) {
+      return Optional.of(
+          ContentBlockParam.ofToolUse(
+              block.asToolUse().toBuilder().cacheControl(cacheControl).build()));
+    } else if (block.isToolResult()) {
+      return Optional.of(
+          ContentBlockParam.ofToolResult(
+              block.asToolResult().toBuilder().cacheControl(cacheControl).build()));
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Maps a thinking budget to Claude's thinking mode as ADK Python does. A budget of 0 turns
+   * thinking off, a negative one lets the model choose its depth, and a positive one sets a token
+   * budget. Unlike ADK Python, which rejects a missing budget, this sends no thinking mode, so the
+   * model's default applies.
+   */
+  private Optional<ThinkingConfigParam> thinkingParam(ThinkingConfig thinkingConfig) {
+    if (thinkingConfig.thinkingLevel().isPresent()
+        && effort == null
+        && warnedThinkingLevel.compareAndSet(false, true)) {
+      logger.warn(
+          "Claude ignores ThinkingConfig.thinkingLevel; set effort with"
+              + " Claude.builder().effort() instead.");
+    }
+    if (thinkingConfig.thinkingBudget().isEmpty()) {
+      if (warnedMissingThinkingBudget.compareAndSet(false, true)) {
+        logger.warn(
+            "Claude sends no thinking mode for a ThinkingConfig without thinkingBudget, so the"
+                + " model's default applies. Set thinkingBudget to 0 to turn thinking off, -1 to"
+                + " let the model choose its depth, or 1024 or more for a token budget.");
+      }
+      return Optional.empty();
+    }
+    int budget = thinkingConfig.thinkingBudget().get();
+    if (budget == 0) {
+      return Optional.of(ThinkingConfigParam.ofDisabled(ThinkingConfigDisabled.builder().build()));
+    }
+    if (budget < 0) {
+      // Without a display mode, newer models send back their reasoning redacted.
+      return Optional.of(
+          ThinkingConfigParam.ofAdaptive(
+              ThinkingConfigAdaptive.builder()
+                  .display(ThinkingConfigAdaptive.Display.SUMMARIZED)
+                  .build()));
+    }
+    return Optional.of(ThinkingConfigParam.ofEnabled(budget));
+  }
+
+  /** Returns the bare model id when {@code model} is a Vertex AI resource name. */
+  private static String resolveModelName(String model) {
+    Matcher matcher = VERTEX_RESOURCE_NAME.matcher(model);
+    return matcher.find() ? matcher.group(1) : model;
+  }
+
+  private LlmResponse sendRequest(PreparedRequest request) {
+    Message message = anthropicClient.messages().create(request.params());
+    logger.debug(
+        "Claude response: {} content blocks, stop reason {}",
+        message.content().size(),
+        message.stopReason().map(StopReason::asString).orElse("none"));
+    return convertAnthropicResponseToLlmResponse(message, request.outputSchemaTool());
+  }
+
+  private Flowable<LlmResponse> streamResponses(PreparedRequest request) {
+    return Flowable.using(
+        () -> anthropicClient.messages().createStreaming(request.params()),
+        response -> {
+          StreamState state = new StreamState(request.outputSchemaTool());
+          return Flowable.fromStream(response.stream())
+              .concatMapIterable(state::accept)
+              .concatWith(Flowable.fromCallable(state::finish));
+        },
+        StreamResponse::close);
+  }
+
+  /** Turns streamed events into partial responses, then the whole message into a final one. */
+  private static final class StreamState {
+    private final MessageAccumulator accumulator = MessageAccumulator.create();
+    private final @Nullable OutputSchemaTool outputSchemaTool;
+    private final Set<Long> outputSchemaBlocks = new HashSet<>();
+    private @Nullable String modelVersion;
+
+    StreamState(@Nullable OutputSchemaTool outputSchemaTool) {
+      this.outputSchemaTool = outputSchemaTool;
+    }
+
+    List<LlmResponse> accept(RawMessageStreamEvent event) {
+      accumulator.accumulate(event);
+      event.messageStart().ifPresent(start -> modelVersion = start.message().model().asString());
+      event
+          .contentBlockStart()
+          .filter(start -> start.contentBlock().isToolUse())
+          .ifPresent(
+              start -> {
+                // The accumulator rejects a tool_use block without input deltas; read it as {}.
+                accumulator.accumulate(
+                    RawMessageStreamEvent.ofContentBlockDelta(
+                        RawContentBlockDeltaEvent.builder()
+                            .index(start.index())
+                            .delta(RawContentBlockDelta.ofInputJson(""))
+                            .build()));
+                if (outputSchemaTool != null
+                    && start.contentBlock().asToolUse().name().equals(OUTPUT_SCHEMA_TOOL_NAME)) {
+                  outputSchemaBlocks.add(start.index());
+                }
+              });
+      Optional<RawContentBlockDeltaEvent> blockDelta = event.contentBlockDelta();
+      if (blockDelta.isEmpty()) {
+        return ImmutableList.of();
+      }
+      RawContentBlockDelta delta = blockDelta.get().delta();
+      if (delta.text().isPresent()) {
+        return ImmutableList.of(partial(Part.fromText(delta.text().get().text())));
+      }
+      if (delta.thinking().isPresent()) {
+        return ImmutableList.of(
+            partial(Part.builder().text(delta.thinking().get().thinking()).thought(true).build()));
+      }
+      // The input of the schema tool is the answer itself, unless it was nested to be an object.
+      if (delta.inputJson().isPresent()
+          && outputSchemaTool != null
+          && !outputSchemaTool.nestsValue()
+          && outputSchemaBlocks.contains(blockDelta.get().index())
+          && !delta.inputJson().get().partialJson().isEmpty()) {
+        return ImmutableList.of(partial(Part.fromText(delta.inputJson().get().partialJson())));
+      }
+      return ImmutableList.of();
+    }
+
+    LlmResponse finish() {
+      return convertAnthropicResponseToLlmResponse(accumulator.message(), outputSchemaTool);
+    }
+
+    private LlmResponse partial(Part part) {
+      return LlmResponse.builder()
+          .content(Content.builder().role("model").parts(part).build())
+          .modelVersion(modelVersion)
+          .partial(true)
+          .build();
+    }
+  }
+
+  private static Role toClaudeRole(String role) {
     return role.equals("model") || role.equals("assistant") ? Role.ASSISTANT : Role.USER;
   }
 
-  private MessageParam contentToAnthropicMessageParam(Content content) {
+  private static MessageParam contentToAnthropicMessageParam(
+      Content content, ToolUseIds toolUseIds) {
     Role role = toClaudeRole(content.role().orElse(""));
     List<Part> parts = content.parts().orElse(ImmutableList.of());
-    List<ContentBlockParam> blocks =
-        parts.stream()
-            .map(this::partToAnthropicMessageBlock)
-            .filter(Objects::nonNull)
-            .collect(Collectors.toList());
+    List<ContentBlockParam> blocks = new ArrayList<>();
+    for (Part part : parts) {
+      if (role.equals(Role.ASSISTANT) && isImageOrPdf(part)) {
+        logger.warn("Dropping an image or PDF from an assistant turn, where Claude rejects them.");
+        continue;
+      }
+      ContentBlockParam block = partToAnthropicMessageBlock(part, toolUseIds);
+      if (block != null) {
+        blocks.add(block);
+      }
+    }
     // Keep a user turn of only empty text as ".", or a last assistant turn would be prefill.
     if (blocks.isEmpty()
         && role.equals(Role.USER)
         && parts.stream().anyMatch(Claude::isEmptyTextPart)) {
-      blocks =
-          ImmutableList.of(ContentBlockParam.ofText(TextBlockParam.builder().text(".").build()));
+      blocks.add(ContentBlockParam.ofText("."));
     }
     return MessageParam.builder().role(role).contentOfBlockParams(blocks).build();
   }
@@ -249,7 +684,15 @@ public class Claude extends BaseLlm {
         && !hasContentFields(part);
   }
 
-  private @Nullable ContentBlockParam partToAnthropicMessageBlock(Part part) {
+  private static boolean isImageOrPdf(Part part) {
+    return part.inlineData()
+        .map(Claude::mediaType)
+        .filter(type -> type.startsWith("image/") || type.equals(PDF_MEDIA_TYPE))
+        .isPresent();
+  }
+
+  private static @Nullable ContentBlockParam partToAnthropicMessageBlock(
+      Part part, ToolUseIds toolUseIds) {
     if (isContentFreeSignature(part)) {
       logger.warn("Dropping a thought signature from another model.");
       return null;
@@ -283,46 +726,173 @@ public class Claude extends BaseLlm {
     }
     // Unlike ADK Python, a call or response is always sent, even on a thought or beside text.
     if (part.functionCall().isPresent()) {
+      FunctionCall call = part.functionCall().get();
+      String name = call.name().orElseThrow();
       return ContentBlockParam.ofToolUse(
           ToolUseBlockParam.builder()
-              .id(part.functionCall().get().id().orElse(""))
-              .name(part.functionCall().get().name().orElseThrow())
-              .type(com.anthropic.core.JsonValue.from("tool_use"))
-              .input(
-                  com.anthropic.core.JsonValue.from(
-                      part.functionCall().get().args().orElse(ImmutableMap.of())))
+              .id(toolUseIds.forCall(call.id().orElse(null), name))
+              .name(name)
+              .input(JsonValue.from(call.args().orElse(ImmutableMap.of())))
               .build());
     } else if (part.functionResponse().isPresent()) {
-      String content = "";
-      if (part.functionResponse().get().response().isPresent()) {
-        Map<String, Object> responseData = part.functionResponse().get().response().get();
-
-        Object resultObj = responseData.get("result");
-        if (resultObj != null) {
-          content = resultObj.toString();
-        } else {
-          // Fallback to json serialization of the function response.
-          content = serializeToJson(responseData);
-        }
-      }
+      FunctionResponse response = part.functionResponse().get();
       return ContentBlockParam.ofToolResult(
           ToolResultBlockParam.builder()
-              .toolUseId(part.functionResponse().get().id().orElse(""))
-              .content(content)
+              .toolUseId(
+                  toolUseIds.forResult(response.id().orElse(null), response.name().orElse(null)))
+              .content(toolResultText(response.response().orElse(ImmutableMap.of())))
               .isError(false)
               .build());
-    } else if (part.text().isPresent()) {
-      return ContentBlockParam.ofText(TextBlockParam.builder().text(part.text().get()).build());
+    } else if (part.text().filter(text -> !text.isEmpty()).isPresent()) {
+      return ContentBlockParam.ofText(part.text().get());
+    } else if (part.inlineData().isPresent()) {
+      return inlineDataToBlock(part.inlineData().get());
+    } else if (part.executableCode().isPresent()) {
+      return ContentBlockParam.ofText(
+          "Code:```python\n" + part.executableCode().get().code().orElse("") + "\n```");
+    } else if (part.codeExecutionResult().isPresent()) {
+      return ContentBlockParam.ofText(
+          "Execution Result:```code_output\n"
+              + part.codeExecutionResult().get().output().orElse("")
+              + "\n```");
     }
-    throw new UnsupportedOperationException("Not supported yet.");
+    throw new UnsupportedOperationException("Claude does not support this part type yet.");
   }
 
-  private String serializeToJson(Object obj) {
+  /** Converts inline image or PDF data to a base64 block; Claude takes no other inline media. */
+  private static ContentBlockParam inlineDataToBlock(Blob blob) {
+    String mediaType = mediaType(blob);
+    byte[] data =
+        blob.data()
+            .orElseThrow(
+                () -> new IllegalArgumentException("Claude needs image and PDF data inline."));
+    String base64 = Base64.getEncoder().encodeToString(data);
+    if (mediaType.equals(PDF_MEDIA_TYPE)) {
+      return ContentBlockParam.ofDocument(DocumentBlockParam.Source.ofBase64(base64));
+    }
+    if (IMAGE_MEDIA_TYPES.contains(mediaType)) {
+      return ContentBlockParam.ofImage(
+          ImageBlockParam.Source.ofBase64(
+              Base64ImageSource.builder()
+                  .data(base64)
+                  .mediaType(Base64ImageSource.MediaType.of(mediaType))
+                  .build()));
+    }
+    throw new IllegalArgumentException(
+        "Claude accepts only JPEG, PNG, GIF and WebP images and PDF documents as inline data.");
+  }
+
+  /** The MIME type of {@code blob} without parameters, in lower case. */
+  private static String mediaType(Blob blob) {
+    String mimeType = blob.mimeType().orElse("");
+    int parameters = mimeType.indexOf(';');
+    return Ascii.toLowerCase(
+        (parameters < 0 ? mimeType : mimeType.substring(0, parameters)).trim());
+  }
+
+  /**
+   * Renders a function response as tool_result text, as ADK Python does: a {@code content} field is
+   * sent as is, the value of a response that holds only {@code result} is unwrapped, and any other
+   * response is sent as JSON.
+   */
+  private static String toolResultText(Map<String, Object> response) {
+    Object content = response.get("content");
+    if (content instanceof List<?> items && !items.isEmpty()) {
+      return items.stream().map(Claude::contentItemText).collect(joining("\n"));
+    }
+    if (content instanceof String text && !text.isEmpty()) {
+      return text;
+    }
+    Object result = response.get("result");
+    if (response.size() == 1 && result != null) {
+      return toText(result);
+    }
+    return response.isEmpty() ? "" : serializeToJson(response);
+  }
+
+  private static String contentItemText(Object item) {
+    if (item instanceof Map<?, ?> map
+        && "text".equals(map.get("type"))
+        && map.get("text") != null) {
+      return map.get("text").toString();
+    }
+    return toText(item);
+  }
+
+  private static String toText(@Nullable Object value) {
+    return value instanceof String text ? text : serializeToJson(value);
+  }
+
+  private static String serializeToJson(@Nullable Object obj) {
     try {
       return JsonBaseModel.getMapper().writeValueAsString(obj);
-    } catch (Exception e) {
-      logger.warn("Failed to serialize object to JSON", e);
+    } catch (JsonProcessingException e) {
+      logger.warn(
+          "Failed to serialize a {} to JSON ({}); sending its string form.",
+          obj == null ? "null" : obj.getClass().getName(),
+          e.getClass().getSimpleName());
       return String.valueOf(obj);
+    }
+  }
+
+  /**
+   * Keeps tool_use and tool_result ids paired when history ids are missing or invalid, such as a
+   * call made by another model, as ADK Python does. One instance covers one request.
+   */
+  private static final class ToolUseIds {
+    private record PendingCall(String name, String id) {}
+
+    private final Map<String, String> remapped = new HashMap<>();
+    // Calls without an id that no result has answered yet, oldest first.
+    private final List<PendingCall> pending = new ArrayList<>();
+    private int nextFallback;
+
+    /** Returns the id to send for a call, queuing a fresh fallback when the call has none. */
+    String forCall(@Nullable String id, String name) {
+      String known = known(id);
+      if (known != null) {
+        return known;
+      }
+      String fallback = newFallback();
+      pending.add(new PendingCall(name, fallback));
+      return fallback;
+    }
+
+    /**
+     * Returns the id to send for a result. One without an id takes the oldest pending call with the
+     * same name, else the oldest pending call.
+     */
+    String forResult(@Nullable String id, @Nullable String name) {
+      String known = known(id);
+      if (known != null) {
+        return known;
+      }
+      if (pending.isEmpty()) {
+        return newFallback();
+      }
+      int index = 0;
+      for (int i = 0; i < pending.size(); i++) {
+        if (pending.get(i).name().equals(name)) {
+          index = i;
+          break;
+        }
+      }
+      return pending.remove(index).id();
+    }
+
+    /** A valid id as is, an invalid one remapped consistently, or null when the id is missing. */
+    private @Nullable String known(@Nullable String id) {
+      if (id == null || id.isEmpty()) {
+        return null;
+      }
+      if (VALID_TOOL_USE_ID.matcher(id).matches()) {
+        return id;
+      }
+      return remapped.computeIfAbsent(id, unused -> newFallback());
+    }
+
+    private String newFallback() {
+      return "toolu_fallback_" + nextFallback++;
     }
   }
 
@@ -335,7 +905,7 @@ public class Claude extends BaseLlm {
    * anyOf}, {@code items}, ...) are visited so deeply-nested types are normalized too.
    */
   @SuppressWarnings("unchecked")
-  private void updateTypeString(Object value) {
+  private static void updateTypeString(Object value) {
     if (value instanceof List) {
       for (Object item : (List<Object>) value) {
         updateTypeString(item);
@@ -370,7 +940,7 @@ public class Claude extends BaseLlm {
     }
   }
 
-  private Tool functionDeclarationToAnthropicTool(FunctionDeclaration functionDeclaration) {
+  private static Tool functionDeclarationToAnthropicTool(FunctionDeclaration functionDeclaration) {
     Map<String, Object> inputSchema;
     if (functionDeclaration.parametersJsonSchema().isPresent()) {
       // MCP tools populate parametersJsonSchema (a raw JSON Schema object) instead of the
@@ -421,7 +991,7 @@ public class Claude extends BaseLlm {
    * keyword (e.g. {@code $defs}, {@code additionalProperties}) as an additional property so schemas
    * that rely on {@code $ref}/{@code $defs} are not sent to Claude with dangling references.
    */
-  private Tool.InputSchema toAnthropicInputSchema(Map<String, Object> schema) {
+  private static Tool.InputSchema toAnthropicInputSchema(Map<String, Object> schema) {
     Tool.InputSchema.Builder builder = Tool.InputSchema.builder();
     schema.forEach(
         (key, value) -> {
@@ -430,8 +1000,7 @@ public class Claude extends BaseLlm {
               // The Anthropic input schema type is always "object"; skip to avoid a duplicate key.
               break;
             case "properties":
-              builder.properties(
-                  com.anthropic.core.JsonValue.from(value == null ? new HashMap<>() : value));
+              builder.properties(JsonValue.from(value == null ? new HashMap<>() : value));
               break;
             case "required":
               if (value instanceof List) {
@@ -443,56 +1012,171 @@ public class Claude extends BaseLlm {
                 }
                 builder.required(required);
               } else {
-                builder.putAdditionalProperty(key, com.anthropic.core.JsonValue.from(value));
+                builder.putAdditionalProperty(key, JsonValue.from(value));
               }
               break;
             default:
-              builder.putAdditionalProperty(key, com.anthropic.core.JsonValue.from(value));
+              builder.putAdditionalProperty(key, JsonValue.from(value));
           }
         });
     return builder.build();
   }
 
-  private LlmResponse convertAnthropicResponseToLlmResponse(Message message) {
-    LlmResponse.Builder responseBuilder = LlmResponse.builder();
-    List<Part> parts = new ArrayList<>();
+  /**
+   * A response schema sent as the one tool Claude is asked to call, as ADK Python does: Claude
+   * takes a schema natively only on its newest models. The call is turned back into response text.
+   */
+  private record OutputSchemaTool(Tool tool, boolean nestsValue) {
 
-    if (message.content() != null) {
-      for (ContentBlock block : message.content()) {
-        Part part = anthropicContentBlockToPart(block);
-        if (part != null) {
-          parts.add(part);
-        }
+    static OutputSchemaTool forSchema(Schema schema) {
+      Map<String, Object> inputSchema =
+          JsonBaseModel.getMapper()
+              .convertValue(schema, new TypeReference<Map<String, Object>>() {});
+      updateTypeString(inputSchema);
+      // A tool input must be an object, so a list or scalar schema becomes its only property.
+      boolean nestsValue = !"object".equals(inputSchema.get("type"));
+      if (nestsValue) {
+        inputSchema =
+            ImmutableMap.of(
+                "type",
+                "object",
+                "properties",
+                ImmutableMap.of(OUTPUT_SCHEMA_VALUE_KEY, inputSchema),
+                "required",
+                ImmutableList.of(OUTPUT_SCHEMA_VALUE_KEY));
       }
-      responseBuilder.content(
-          Content.builder().role("model").parts(ImmutableList.copyOf(parts)).build());
+      Tool tool =
+          Tool.builder()
+              .name(OUTPUT_SCHEMA_TOOL_NAME)
+              .description(OUTPUT_SCHEMA_TOOL_DESCRIPTION)
+              .inputSchema(toAnthropicInputSchema(inputSchema))
+              .build();
+      return new OutputSchemaTool(tool, nestsValue);
     }
-    if (message.usage() != null) {
-      responseBuilder.usageMetadata(
-          GenerateContentResponseUsageMetadata.builder()
-              .promptTokenCount((int) message.usage().inputTokens())
-              .candidatesTokenCount((int) message.usage().outputTokens())
-              .totalTokenCount(
-                  (int) (message.usage().inputTokens() + message.usage().outputTokens()))
+
+    /** Forces one call to this tool, or offers it without forcing while Claude is thinking. */
+    ToolChoice choice(boolean thinkingEnabled) {
+      if (thinkingEnabled) {
+        return ToolChoice.ofAuto(ToolChoiceAuto.builder().disableParallelToolUse(true).build());
+      }
+      return ToolChoice.ofTool(
+          ToolChoiceTool.builder()
+              .name(OUTPUT_SCHEMA_TOOL_NAME)
+              .disableParallelToolUse(true)
               .build());
     }
-    return responseBuilder.build();
+
+    /** Replaces the call to this tool with the JSON answer it carries, keeping thoughts. */
+    LlmResponse unwrap(LlmResponse response) {
+      List<Part> parts = response.content().flatMap(Content::parts).orElse(ImmutableList.of());
+      Optional<FunctionCall> call =
+          parts.stream()
+              .flatMap(part -> part.functionCall().stream())
+              .filter(
+                  functionCall -> functionCall.name().orElse("").equals(OUTPUT_SCHEMA_TOOL_NAME))
+              .findFirst();
+      if (call.isEmpty()) {
+        return response;
+      }
+      Map<String, Object> args = call.get().args().orElse(ImmutableMap.of());
+      ImmutableList.Builder<Part> answer = ImmutableList.builder();
+      // Offered rather than forced, Claude may narrate first; that text is not the answer.
+      parts.stream().filter(part -> part.thought().orElse(false)).forEach(answer::add);
+      answer.add(
+          Part.fromText(serializeToJson(nestsValue ? args.get(OUTPUT_SCHEMA_VALUE_KEY) : args)));
+      return response.toBuilder()
+          .content(response.content().get().toBuilder().parts(answer.build()).build())
+          .build();
+    }
   }
 
-  private Part anthropicContentBlockToPart(ContentBlock block) {
+  private static LlmResponse convertAnthropicResponseToLlmResponse(
+      Message message, @Nullable OutputSchemaTool outputSchemaTool) {
+    GenerateContentResponseUsageMetadata usage = usageMetadata(message.usage());
+    String modelVersion = message.model().asString();
+    List<ContentBlock> blocks = message.content();
+    Optional<StopReason.Value> stopReason = message.stopReason().map(StopReason::value);
+    if (stopReason.filter(TRUNCATING_STOP_REASONS::contains).isPresent()
+        && !blocks.isEmpty()
+        && blocks.get(blocks.size() - 1).isToolUse()) {
+      // The last call's input is incomplete, and running it would act on partial arguments.
+      return LlmResponse.builder()
+          .errorCode(new FinishReason(FinishReason.Known.MAX_TOKENS))
+          .errorMessage(TRUNCATED_TOOL_USE_MESSAGE)
+          .finishReason(new FinishReason(FinishReason.Known.MAX_TOKENS))
+          .usageMetadata(usage)
+          .modelVersion(modelVersion)
+          .build();
+    }
+    LlmResponse response =
+        LlmResponse.builder()
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        blocks.stream()
+                            .map(Claude::anthropicContentBlockToPart)
+                            .collect(toImmutableList()))
+                    .build())
+            .usageMetadata(usage)
+            .finishReason(stopReason.map(Claude::toFinishReason).orElse(null))
+            .modelVersion(modelVersion)
+            .build();
+    return outputSchemaTool == null ? response : outputSchemaTool.unwrap(response);
+  }
+
+  /** Maps Claude's stop reason to a finish reason as ADK Python does. */
+  private static FinishReason toFinishReason(StopReason.Value stopReason) {
+    return new FinishReason(
+        switch (stopReason) {
+          case END_TURN, STOP_SEQUENCE, TOOL_USE, PAUSE_TURN -> FinishReason.Known.STOP;
+          case MAX_TOKENS, MODEL_CONTEXT_WINDOW_EXCEEDED -> FinishReason.Known.MAX_TOKENS;
+          case REFUSAL -> FinishReason.Known.SAFETY;
+          default -> FinishReason.Known.FINISH_REASON_UNSPECIFIED;
+        });
+  }
+
+  /**
+   * Folds the cache tokens Claude reports separately into the prompt count, and splits the thinking
+   * tokens it counts as output into their own count, as the genai usage shape expects.
+   */
+  private static GenerateContentResponseUsageMetadata usageMetadata(Usage usage) {
+    long promptTokens =
+        usage.inputTokens()
+            + usage.cacheReadInputTokens().orElse(0L)
+            + usage.cacheCreationInputTokens().orElse(0L);
+    long outputTokens = usage.outputTokens();
+    Optional<Long> thinkingTokens =
+        usage
+            .outputTokensDetails()
+            .flatMap(details -> details._thinkingTokens().asKnown())
+            .map(tokens -> Math.min(tokens, outputTokens));
+    GenerateContentResponseUsageMetadata.Builder builder =
+        GenerateContentResponseUsageMetadata.builder()
+            .promptTokenCount(Math.toIntExact(promptTokens))
+            .candidatesTokenCount(Math.toIntExact(outputTokens - thinkingTokens.orElse(0L)))
+            .totalTokenCount(Math.toIntExact(promptTokens + outputTokens));
+    usage
+        .cacheReadInputTokens()
+        .ifPresent(tokens -> builder.cachedContentTokenCount(Math.toIntExact(tokens)));
+    thinkingTokens.ifPresent(tokens -> builder.thoughtsTokenCount(Math.toIntExact(tokens)));
+    return builder.build();
+  }
+
+  private static Part anthropicContentBlockToPart(ContentBlock block) {
     if (block.isText()) {
       return Part.builder().text(block.asText().text()).build();
     } else if (block.isToolUse()) {
+      ToolUseBlock toolUse = block.asToolUse();
+      Map<String, Object> args =
+          toolUse._input().convert(new TypeReference<Map<String, Object>>() {});
       return Part.builder()
           .functionCall(
               FunctionCall.builder()
-                  .id(block.asToolUse().id())
-                  .name(block.asToolUse().name())
-                  .args(
-                      block
-                          .asToolUse()
-                          ._input()
-                          .convert(new TypeReference<Map<String, Object>>() {}))
+                  .id(toolUse.id())
+                  .name(toolUse.name())
+                  // An "input": null block has no arguments, as in ADK Kotlin.
+                  .args(args != null ? args : ImmutableMap.of())
                   .build())
           .build();
     } else if (block.isThinking()) {
