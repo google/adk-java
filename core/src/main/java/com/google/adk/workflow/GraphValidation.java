@@ -33,6 +33,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
 
@@ -55,6 +56,7 @@ final class GraphValidation {
     validateNoDuplicateEdges(edges);
     validateDefaultRoutes(edges);
     validateNoUnconditionalCycles(edges, nodeNames);
+    validateNodeOutgoingEdges(nodes, edges);
   }
 
   private static GraphValidationException invalid(String message) {
@@ -212,6 +214,20 @@ final class GraphValidation {
     }
     path.remove(node);
     done.add(node);
+  }
+
+  /** Lets each {@link BaseNode} check the edges that leave it. */
+  private static void validateNodeOutgoingEdges(List<Node> nodes, List<Edge> edges) {
+    ImmutableListMultimap<String, Edge> outgoing =
+        Multimaps.index(edges, edge -> edge.from().name());
+    for (Node node : nodes) {
+      if (node instanceof BaseNode baseNode) {
+        Optional<String> problem = baseNode.findOutgoingEdgeProblem(outgoing.get(node.name()));
+        if (problem.isPresent()) {
+          throw invalid(problem.get());
+        }
+      }
+    }
   }
 
   private record NodePair(String from, String to) {}
