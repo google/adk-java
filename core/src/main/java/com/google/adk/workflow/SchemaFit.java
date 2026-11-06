@@ -98,6 +98,40 @@ final class SchemaFit {
     };
   }
 
+  /**
+   * The paths, such as {@code note} or {@code invoice.total}, of the keys of the objects in {@code
+   * source} that the matching objects in {@code target} lack.
+   */
+  static ImmutableSet<String> extraKeys(Schema source, Schema target) {
+    ImmutableSet.Builder<String> keys = ImmutableSet.builder();
+    addExtraKeys(source, target, "", keys);
+    return keys.build();
+  }
+
+  private static void addExtraKeys(
+      Schema source, Schema target, String prefix, ImmutableSet.Builder<String> keys) {
+    source
+        .anyOf()
+        .ifPresent(branches -> branches.forEach(b -> addExtraKeys(b, target, prefix, keys)));
+    if (source.items().isPresent() && target.items().isPresent()) {
+      addExtraKeys(source.items().get(), target.items().get(), prefix, keys);
+    }
+    if (source.properties().isEmpty() || target.properties().isEmpty()) {
+      return;
+    }
+    Map<String, Schema> wanted = target.properties().get();
+    source
+        .properties()
+        .get()
+        .forEach((key, value) -> {
+          if (wanted.containsKey(key)) {
+            addExtraKeys(value, wanted.get(key), prefix + key + ".", keys);
+          } else {
+            keys.add(prefix + key);
+          }
+        });
+  }
+
   /** Whether a union fits: its own part and each of its {@code branches} must. */
   private static boolean unionFits(
       Schema source, List<Schema> branches, Schema target, boolean closed) {

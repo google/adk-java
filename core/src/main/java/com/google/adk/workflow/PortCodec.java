@@ -297,6 +297,17 @@ final class PortCodec<T> {
               + " it writes. Use a record, a class with a no-argument constructor, or a"
               + " @JsonCreator constructor with @JsonProperty parameters.");
     }
+    // A type that writes properties but reads none would reach its reader empty.
+    if (deserializer instanceof BeanDeserializerBase bean
+        && writesProperties(type)
+        && readsNothing(bean, mapperFor(type))) {
+      throw new WorkflowConfigurationException(
+          capitalized(what)
+              + " has type "
+              + type.toCanonical()
+              + ", which Jackson writes as an object but reads no property of. Use a record, a"
+              + " class with setters or a @JsonCreator constructor, or Object.class.");
+    }
   }
 
   private static void requireWritable(JavaType type, String what) {
@@ -423,12 +434,37 @@ final class PortCodec<T> {
   }
 
   private static boolean writesObject(JavaType type) {
+    return beanSerializer(type) != null;
+  }
+
+  private static boolean writesProperties(JavaType type) {
+    BeanSerializerBase serializer = beanSerializer(type);
+    return serializer != null && serializer.properties().hasNext();
+  }
+
+  private static @Nullable BeanSerializerBase beanSerializer(JavaType type) {
     try {
       return mapperFor(type).getSerializerProviderInstance().findValueSerializer(type)
-          instanceof BeanSerializerBase;
+              instanceof BeanSerializerBase bean
+          ? bean
+          : null;
     } catch (JsonMappingException | RuntimeException e) {
-      return false;
+      return null;
     }
+  }
+
+  /**
+   * Whether {@code bean} reads no property: none bound, no delegating creator and no any-setter.
+   */
+  private static boolean readsNothing(BeanDeserializerBase bean, ObjectMapper mapper) {
+    ValueInstantiator creator = bean.getValueInstantiator();
+    // Reading also sees @JsonUnwrapped, which the deserializer leaves out of its properties.
+    BeanDescription read = mapper.getDeserializationConfig().introspect(bean.getValueType());
+    return bean.getPropertyCount() == 0
+        && (creator == null
+            || (!creator.canCreateUsingDelegate() && !creator.canCreateUsingArrayDelegate()))
+        && read.findAnySetterAccessor() == null
+        && read.findProperties().stream().noneMatch(property -> property.getMutator() != null);
   }
 
   /** Whether {@code instantiator} builds a bean from a JSON object, the form a port writes. */
