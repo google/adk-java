@@ -150,6 +150,20 @@ public final class InMemorySessionServiceTest {
   }
 
   @Test
+  public void appendEvent_rejectsDeletedSession() {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session =
+        sessionService.createSession("app", "user", new HashMap<>(), "session1").blockingGet();
+    sessionService.deleteSession("app", "user", "session1").blockingAwait();
+
+    sessionService
+        .appendEvent(session, Event.builder().build())
+        .test()
+        .assertError(SessionNotFoundException.class);
+    assertThat(sessionService.listSessions("app", "user").blockingGet().sessions()).isEmpty();
+  }
+
+  @Test
   public void appendEvent_updatesSessionState() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session =
