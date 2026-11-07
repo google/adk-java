@@ -19,10 +19,16 @@ package com.google.adk.flows.llmflows;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.adk.tools.BaseTool;
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.HashMultiset;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Multiset;
+import com.google.common.collect.SetMultimap;
+import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.Part;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -148,9 +154,61 @@ final class StepResume {
       return PAUSE;
     }
     if (needsCallReplay(callNames, answers)) {
-      return new Decision(Action.REPLAY_CALLS, callEvent);
+      Event unexecuted = unexecutedCalls(callEvent, events.subList(callIdx + 1, events.size()));
+      if (unexecuted != null) {
+        return new Decision(Action.REPLAY_CALLS, unexecuted);
+      }
     }
     return pausedByLast ? PAUSE : CONTINUE;
+  }
+
+  /**
+   * {@code callEvent} filtered to the calls that no response in {@code laterEvents} answers, or
+   * null when every call ran. A response with an id answers the call with that id and name; one
+   * without an id answers the next call of its name, as in Python's {@code
+   * _unexecuted_calls_event}.
+   */
+  private static @Nullable Event unexecutedCalls(Event callEvent, List<Event> laterEvents) {
+    SetMultimap<String, String> answeredNamesById = HashMultimap.create();
+    Multiset<String> answeredNames = HashMultiset.create();
+    for (Event event : laterEvents) {
+      for (FunctionResponse response : event.functionResponses()) {
+        String name = response.name().orElse("");
+        if (response.id().isPresent()) {
+          answeredNamesById.put(response.id().get(), name);
+        } else {
+          answeredNames.add(name);
+        }
+      }
+    }
+    List<Part> parts = callEvent.content().flatMap(Content::parts).orElse(ImmutableList.of());
+    ImmutableList.Builder<Part> kept = ImmutableList.builder();
+    boolean hasUnexecutedCall = false;
+    for (Part part : parts) {
+      if (part.functionCall().isEmpty()) {
+        kept.add(part);
+        continue;
+      }
+      FunctionCall call = part.functionCall().get();
+      String name = call.name().orElse("");
+      // An id match takes precedence, leaving name-only responses for other calls.
+      boolean answeredById =
+          call.id().map(id -> answeredNamesById.containsEntry(id, name)).orElse(false);
+      if (!answeredById && !answeredNames.remove(name)) {
+        kept.add(part);
+        hasUnexecutedCall = true;
+      }
+    }
+    if (!hasUnexecutedCall) {
+      return null;
+    }
+    ImmutableList<Part> keptParts = kept.build();
+    if (keptParts.size() == parts.size()) {
+      return callEvent;
+    }
+    return callEvent.toBuilder()
+        .content(callEvent.content().get().toBuilder().parts(keptParts).build())
+        .build();
   }
 
   /**

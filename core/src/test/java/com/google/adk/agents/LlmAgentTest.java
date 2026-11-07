@@ -863,6 +863,65 @@ public final class LlmAgentTest {
     assertThat(rootLlm.getRequests()).isEmpty();
   }
 
+  // A sub-agent's transfer to its own sub-agent is not a transfer back to the root.
+  @Test
+  public void runAsync_resumeAfterSubAgentTransfersToItsSubAgent_resumesThatAgent() {
+    LlmAgent grandchild =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("grandchild resumes")))
+            .name("grandchild")
+            .build();
+    TestLlm subLlm = createTestLlm(createTextLlmResponse("sub should not run"));
+    LlmAgent sub = createTestAgentBuilder(subLlm).name("sub").subAgents(grandchild).build();
+    TestLlm rootLlm = createTestLlm(createTextLlmResponse("root should not run"));
+    LlmAgent root = createTestAgentBuilder(rootLlm).name("root").subAgents(sub).build();
+    InvocationContext context = resumableContextWithSeededEvent(root, transferEvent("root", "sub"));
+    var unused =
+        context
+            .sessionService()
+            .appendEvent(
+                context.session(), transferEvent("sub", "grandchild").toBuilder().id("t2").build())
+            .blockingGet();
+    context.setAgentState("root", ImmutableMap.of(), /* endOfAgent= */ false);
+    context.setAgentState("sub", ImmutableMap.of(), /* endOfAgent= */ false);
+
+    List<Event> events = root.runAsync(context).toList().blockingGet();
+
+    assertThat(simplifyEvents(events)).contains("grandchild: grandchild resumes");
+    assertThat(rootLlm.getRequests()).isEmpty();
+    assertThat(subLlm.getRequests()).isEmpty();
+  }
+
+  // A transfer-back action with no transfer_to_agent response leaves the turn with the sub-agent.
+  @Test
+  public void runAsync_resumeTransferBackActionWithoutTransferResponse_resumesSubAgent() {
+    LlmAgent sub =
+        createTestAgentBuilder(createTestLlm(createTextLlmResponse("sub resumes")))
+            .name("sub")
+            .build();
+    TestLlm rootLlm = createTestLlm(createTextLlmResponse("root should not run"));
+    LlmAgent root = createTestAgentBuilder(rootLlm).name("root").subAgents(sub).build();
+    InvocationContext context = resumableContextWithSeededEvent(root, transferEvent("root", "sub"));
+    var unused =
+        context
+            .sessionService()
+            .appendEvent(
+                context.session(),
+                Event.builder()
+                    .id("t2")
+                    .invocationId("inv")
+                    .author("sub")
+                    .actions(EventActions.builder().transferToAgent("root").build())
+                    .content(Content.fromParts(Part.fromText("just text")))
+                    .build())
+            .blockingGet();
+    context.setAgentState("root", ImmutableMap.of(), /* endOfAgent= */ false);
+
+    List<Event> events = root.runAsync(context).toList().blockingGet();
+
+    assertThat(simplifyEvents(events)).contains("sub: sub resumes");
+    assertThat(rootLlm.getRequests()).isEmpty();
+  }
+
   // Mirrors AgentTransferTest.transferTargets_ordersSubAgentsThenParentThenPeers: the flow keeps a
   // second copy of this rule that the agents package cannot reach, so both copies are pinned.
   @Test
