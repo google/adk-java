@@ -18,6 +18,8 @@ package com.google.adk.classifiers;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.google.adk.annotations.Experimental;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableMap;
@@ -28,13 +30,17 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * A {@link Classifier}'s answer to a {@link Question}: a {@link ChoiceAnswer}, a {@link
- * BinaryAnswer}, a {@link ScoreAnswer}, or a {@link RefusalAnswer}.
+ * BinaryAnswer}, a {@link ScoreAnswer}, or a {@link RefusalAnswer}. The ADK object mapper reads and
+ * writes answers in Python ADK's JSON form, which names each kind in a {@code type} field.
  */
 @Experimental
+@JsonSerialize(using = ClassifierJson.AnswerSerializer.class)
+@JsonDeserialize(using = ClassifierJson.AnswerDeserializer.class)
 public sealed interface Answer {
 
   /** The answer to a {@link Question.Choice} question. */
   @AutoValue
+  @JsonDeserialize(using = ClassifierJson.ChoiceAnswerDeserializer.class)
   abstract non-sealed class ChoiceAnswer implements Answer {
 
     ChoiceAnswer() {}
@@ -87,6 +93,7 @@ public sealed interface Answer {
 
   /** The answer to a {@link Question.Binary} question. */
   @AutoValue
+  @JsonDeserialize(using = ClassifierJson.BinaryAnswerDeserializer.class)
   abstract non-sealed class BinaryAnswer implements Answer {
 
     BinaryAnswer() {}
@@ -132,6 +139,7 @@ public sealed interface Answer {
 
   /** The answer to a {@link Question.Score} question. */
   @AutoValue
+  @JsonDeserialize(using = ClassifierJson.ScoreAnswerDeserializer.class)
   abstract non-sealed class ScoreAnswer implements Answer {
 
     ScoreAnswer() {}
@@ -189,6 +197,7 @@ public sealed interface Answer {
    * The answer to a question that the provider declined to answer. Refusals are reported per
    * question, so one {@link Classifier#classify} call can still answer the other questions.
    */
+  @JsonDeserialize(using = ClassifierJson.RefusalAnswerDeserializer.class)
   enum RefusalAnswer implements Answer {
     INSTANCE
   }

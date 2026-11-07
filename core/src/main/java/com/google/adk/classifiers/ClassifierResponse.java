@@ -16,6 +16,8 @@
 
 package com.google.adk.classifiers;
 
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.google.adk.annotations.Experimental;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableMap;
@@ -24,9 +26,14 @@ import java.util.Map;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 
-/** The answers that one {@link Classifier#classify} call produced. */
+/**
+ * The answers that one {@link Classifier#classify} call produced. The ADK object mapper reads and
+ * writes a response in Python ADK's JSON form.
+ */
 @Experimental
 @AutoValue
+@JsonSerialize(using = ClassifierJson.ResponseSerializer.class)
+@JsonDeserialize(using = ClassifierJson.ResponseDeserializer.class)
 public abstract class ClassifierResponse {
 
   ClassifierResponse() {}

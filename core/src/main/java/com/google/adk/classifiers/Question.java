@@ -20,6 +20,9 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.google.adk.JsonBaseModel;
 import com.google.adk.annotations.Experimental;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
@@ -35,8 +38,13 @@ import org.jspecify.annotations.Nullable;
  * A typed question that a {@link Classifier} answers: a {@link Choice}, a {@link Binary}, or a
  * {@link Score}. Its instructions and criteria are {@link ClassifierContent}: text, or a JSON
  * object or array.
+ *
+ * <p>The ADK object mapper ({@link JsonBaseModel#getMapper()}) reads and writes questions in Python
+ * ADK's JSON form, which names each kind in a {@code type} field.
  */
 @Experimental
+@JsonSerialize(using = ClassifierJson.QuestionSerializer.class)
+@JsonDeserialize(using = ClassifierJson.QuestionDeserializer.class)
 public sealed interface Question {
 
   /** Returns what to decide, if set. */
@@ -47,6 +55,7 @@ public sealed interface Question {
    * Answer.ChoiceAnswer}.
    */
   @AutoValue
+  @JsonDeserialize(using = ClassifierJson.ChoiceDeserializer.class)
   abstract non-sealed class Choice implements Question {
 
     Choice() {}
@@ -145,6 +154,7 @@ public sealed interface Question {
    * Answer.BinaryAnswer}.
    */
   @AutoValue
+  @JsonDeserialize(using = ClassifierJson.BinaryDeserializer.class)
   abstract non-sealed class Binary implements Question {
 
     Binary() {}
@@ -198,6 +208,7 @@ public sealed interface Question {
    * by a {@link Answer.ScoreAnswer}.
    */
   @AutoValue
+  @JsonDeserialize(using = ClassifierJson.ScoreDeserializer.class)
   abstract non-sealed class Score implements Question {
 
     Score() {}
