@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -179,10 +180,45 @@ public class PluginManager extends BasePlugin {
         .compose(Tracing.withContext(capturedContext));
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Unlike early-exit callbacks, invokes every registered plugin in order, passing each plugin's
+   * non-empty {@link Event} to the next, and returns the final modified event or empty if every
+   * plugin returned empty.
+   */
   @Override
   public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
-    return runMaybeCallbacks(
-        plugin -> plugin.onEventCallback(invocationContext, event), "onEventCallback");
+    // Do not use runMaybeCallbacks: event plugins fold sequentially instead of early-exiting.
+    Context capturedContext = Context.current();
+    return Maybe.defer(
+            () -> {
+              AtomicReference<Event> currentEvent = new AtomicReference<>(event);
+              return Flowable.fromIterable(this.plugins)
+                  .concatMapMaybe(
+                      plugin ->
+                          runOnEventPlugin(
+                              plugin, invocationContext, currentEvent, capturedContext))
+                  .lastElement();
+            })
+        .compose(Tracing.withContext(capturedContext));
+  }
+
+  private static Maybe<Event> runOnEventPlugin(
+      Plugin plugin,
+      InvocationContext invocationContext,
+      AtomicReference<Event> currentEvent,
+      Context capturedContext) {
+    return Maybe.defer(() -> plugin.onEventCallback(invocationContext, currentEvent.get()))
+        .compose(Tracing.withContext(capturedContext))
+        .doOnSuccess(
+            updatedEvent -> {
+              logger.debug(
+                  "Plugin '{}' returned a value for callback 'onEventCallback'.", plugin.getName());
+              currentEvent.set(updatedEvent);
+            })
+        .doOnError(
+            e -> logger.error("[{}] Error during callback 'onEventCallback'", plugin.getName(), e));
   }
 
   @Override
