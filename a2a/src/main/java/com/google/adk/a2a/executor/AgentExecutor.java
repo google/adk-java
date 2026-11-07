@@ -311,13 +311,8 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
   }
 
   /**
-   * Returns the session this request belongs to, creating it on the first turn.
-   *
-   * <p>The A2A {@code contextId} is the anchor for a multi-turn conversation, so it is used as the
-   * session id as well: a follow-up message carrying the context id of the previous response lands
-   * in the same session and the agent sees the earlier turns. Creating the session without an id
-   * would let the service generate a fresh one, and every turn would then start from an empty
-   * history. adk-python resolves the same way, by passing the context id as {@code session_id}.
+   * Returns the session for this request, creating it on the first turn under the A2A {@code
+   * contextId} so that later turns carrying the same context id see the earlier ones.
    */
   private Maybe<Session> prepareSession(
       RequestContext ctx, String appName, BaseSessionService service) {
@@ -329,13 +324,8 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
   }
 
   /**
-   * Creates the session for {@code contextId}, tolerating a concurrent first turn that won the
-   * race.
-   *
-   * <p>Two first turns carrying the same new context id can both miss {@code getSession} and both
-   * try to create. A service that rejects duplicate ids then fails the losing request, which would
-   * surface to that peer as a failed task. Re-reading the session the winner created turns that
-   * into an ordinary turn.
+   * Creates the session for {@code contextId}, re-reading it when a concurrent first turn created
+   * the same id first.
    */
   private static Maybe<Session> createSession(
       String appName, String userId, String contextId, BaseSessionService service) {
