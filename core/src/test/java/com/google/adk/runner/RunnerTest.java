@@ -95,6 +95,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.truth.Correspondence;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
@@ -803,6 +804,194 @@ public final class RunnerTest {
     assertThat(simplifyEvents(events)).containsExactly("author: content for event form plugin");
 
     verify(plugin).onEventCallback(any(), any());
+  }
+
+  @Test
+  public void onEventCallback_chainsMultiplePluginsAcrossPartialAndFinalEvents() {
+    LlmResponse partialResponse =
+        createTextLlmResponse("raw-partial").toBuilder().partial(true).build();
+    LlmAgent streamingAgent =
+        createTestAgent(
+            createTestLlm(
+                () -> Flowable.just(partialResponse, createTextLlmResponse("raw-final"))));
+    BasePlugin rewritingPlugin =
+        new BasePlugin("rewriting") {
+          @Override
+          public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
+            String rewritten = event.content().orElseThrow().text().replace("raw-", "clean-");
+            return Maybe.just(event.toBuilder().content(createContent(rewritten)).build());
+          }
+        };
+    BasePlugin metadataPlugin =
+        new BasePlugin("metadata") {
+          @Override
+          public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
+            return Maybe.just(
+                event.toBuilder()
+                    .customMetadata(
+                        ImmutableList.of(
+                            CustomMetadata.builder()
+                                .key("seen")
+                                .stringValue(event.content().orElseThrow().text())
+                                .build()))
+                    .build());
+          }
+        };
+    Runner streamingRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(streamingAgent)
+                    .plugins(ImmutableList.of(rewritingPlugin, metadataPlugin))
+                    .build())
+            .build();
+    Session streamingSession = newSession(streamingRunner);
+
+    List<Event> streamed = runTurn(streamingRunner, streamingSession, "hi");
+
+    assertThat(streamed).hasSize(2);
+    assertThat(streamed.get(0).partial()).hasValue(true);
+    assertThat(streamed.get(0).content().map(Content::text)).hasValue("clean-partial");
+    assertThat(streamed.get(0).customMetadata())
+        .hasValue(
+            ImmutableList.of(
+                CustomMetadata.builder().key("seen").stringValue("clean-partial").build()));
+    assertThat(streamed.get(1).partial().orElse(false)).isFalse();
+    assertThat(streamed.get(1).content().map(Content::text)).hasValue("clean-final");
+    assertThat(streamed.get(1).customMetadata())
+        .hasValue(
+            ImmutableList.of(
+                CustomMetadata.builder().key("seen").stringValue("clean-final").build()));
+    assertThat(reloadSession(streamingRunner, streamingSession).immutableEvents()).hasSize(2);
+  }
+
+  @Test
+  public void onEventCallback_multiTurnWithTools_chainsAllPluginsAcrossToolAndModelEvents() {
+    LlmResponse toolCallResponse =
+        createFunctionCallLlmResponse("call-1", "echo_tool", ImmutableMap.of("msg", "hello"));
+    LlmResponse finalPartialResponse =
+        createTextLlmResponse("raw-part").toBuilder().partial(true).build();
+    LlmResponse finalResponse = createTextLlmResponse("raw-done");
+    LlmAgent toolAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    Flowable.just(toolCallResponse),
+                    Flowable.just(finalPartialResponse, finalResponse)))
+            .tools(new EchoTool())
+            .build();
+    BasePlugin rewritingPlugin =
+        new BasePlugin("rewriting") {
+          @Override
+          public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
+            ImmutableList<CustomMetadata> updatedMetadata =
+                ImmutableList.<CustomMetadata>builder()
+                    .addAll(event.customMetadata().orElse(ImmutableList.of()))
+                    .add(CustomMetadata.builder().key("p1").stringValue("done").build())
+                    .build();
+            Event.Builder builder = event.toBuilder().customMetadata(updatedMetadata);
+            event
+                .content()
+                .map(Content::text)
+                .filter(text -> text.contains("raw-"))
+                .ifPresent(text -> builder.content(createContent(text.replace("raw-", "clean-"))));
+            return Maybe.just(builder.build());
+          }
+        };
+    BasePlugin passThroughPlugin = new BasePlugin("pass_through") {};
+    BasePlugin tailPlugin =
+        new BasePlugin("tail") {
+          @Override
+          public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
+            boolean sawP1 =
+                event.customMetadata().orElse(ImmutableList.of()).stream()
+                    .anyMatch(m -> m.key().orElse("").equals("p1"));
+            String seenText = event.content().map(Content::text).orElse("");
+            ImmutableList<CustomMetadata> updatedMetadata =
+                ImmutableList.<CustomMetadata>builder()
+                    .addAll(event.customMetadata().orElse(ImmutableList.of()))
+                    .add(
+                        CustomMetadata.builder()
+                            .key("p3")
+                            .stringValue("p1=" + sawP1 + ";text=" + seenText)
+                            .build())
+                    .build();
+            return Maybe.just(event.toBuilder().customMetadata(updatedMetadata).build());
+          }
+        };
+    Runner multiTurnRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(toolAgent)
+                    .plugins(ImmutableList.of(rewritingPlugin, passThroughPlugin, tailPlugin))
+                    .build())
+            .build();
+    Session toolSession = newSession(multiTurnRunner);
+
+    List<Event> events = runTurn(multiTurnRunner, toolSession, "hi");
+
+    // 1) function call event, 2) function response event, 3) partial text chunk, 4) final answer
+    assertThat(events).hasSize(4);
+    for (Event emitted : events) {
+      assertWithMessage("metadata keys for event %s", emitted.id())
+          .that(
+              emitted.customMetadata().orElse(ImmutableList.of()).stream()
+                  .map(m -> m.key().orElse(""))
+                  .collect(toImmutableList()))
+          .containsExactly("p1", "p3")
+          .inOrder();
+    }
+    assertThat(events.get(0).customMetadata().orElseThrow().get(1).stringValue())
+        .hasValue("p1=true;text=");
+    assertThat(events.get(1).functionResponses()).hasSize(1);
+    assertThat(events.get(1).customMetadata().orElseThrow().get(1).stringValue())
+        .hasValue("p1=true;text=");
+    assertThat(events.get(2).content().map(Content::text)).hasValue("clean-part");
+    assertThat(events.get(2).customMetadata().orElseThrow().get(1).stringValue())
+        .hasValue("p1=true;text=clean-part");
+    assertThat(events.get(3).content().map(Content::text)).hasValue("clean-done");
+    assertThat(events.get(3).customMetadata().orElseThrow().get(1).stringValue())
+        .hasValue("p1=true;text=clean-done");
+  }
+
+  @Test
+  public void onEventCallback_plugin1Error_stopsSubsequentPluginAndFailsRunner() {
+    LlmAgent simpleAgent = createTestAgent(createTestLlm(createTextLlmResponse("hello")));
+    AtomicInteger trailingPluginCalls = new AtomicInteger();
+    BasePlugin failingPlugin =
+        new BasePlugin("failing") {
+          @Override
+          public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
+            return Maybe.error(new IllegalStateException("onEvent boom"));
+          }
+        };
+    BasePlugin trailingPlugin =
+        new BasePlugin("trailing") {
+          @Override
+          public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
+            trailingPluginCalls.incrementAndGet();
+            return Maybe.empty();
+          }
+        };
+    Runner errorRunner =
+        Runner.builder()
+            .app(
+                App.builder()
+                    .name("test")
+                    .rootAgent(simpleAgent)
+                    .plugins(ImmutableList.of(failingPlugin, trailingPlugin))
+                    .build())
+            .build();
+    Session errorSession = newSession(errorRunner);
+
+    errorRunner
+        .runAsync("user", errorSession.id(), createContent("hi"))
+        .test()
+        .assertError(IllegalStateException.class);
+
+    assertThat(trailingPluginCalls.get()).isEqualTo(0);
   }
 
   @Test
