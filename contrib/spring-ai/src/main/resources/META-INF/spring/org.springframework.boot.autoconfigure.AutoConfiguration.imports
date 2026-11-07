@@ -1,1 +1,2 @@
 com.google.adk.models.springai.autoconfigure.SpringAIAutoConfiguration
+com.google.adk.models.springai.bridge.SpringAiToolBridgeAutoConfiguration
