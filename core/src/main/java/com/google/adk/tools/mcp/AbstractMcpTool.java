@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Base class for MCP tools.
@@ -48,8 +49,20 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
   // Volatile ensures write visibility in the asynchronous chain for McpAsyncTool.
   protected volatile T mcpSession;
 
+  private final CallToolResultMapper callToolResultMapper;
+
   protected AbstractMcpTool(
       Tool mcpTool, T mcpSession, McpSessionManager mcpSessionManager, ObjectMapper objectMapper) {
+    this(mcpTool, mcpSession, mcpSessionManager, objectMapper, /* callToolResultMapper= */ null);
+  }
+
+  /** Creates a tool that maps call results with {@code callToolResultMapper} unless it is null. */
+  AbstractMcpTool(
+      Tool mcpTool,
+      T mcpSession,
+      McpSessionManager mcpSessionManager,
+      ObjectMapper objectMapper,
+      @Nullable CallToolResultMapper callToolResultMapper) {
     super(
         mcpTool == null ? "" : mcpTool.name(),
         mcpTool == null ? "" : (Strings.nullToEmpty(mcpTool.description())));
@@ -70,6 +83,10 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
     this.mcpSession = mcpSession;
     this.mcpSessionManager = mcpSessionManager;
     this.objectMapper = objectMapper;
+    this.callToolResultMapper =
+        callToolResultMapper != null
+            ? callToolResultMapper
+            : (tool, result) -> wrapCallResult(objectMapper, tool.name(), result);
   }
 
   public ToolAnnotations annotations() {
@@ -107,6 +124,14 @@ public abstract class AbstractMcpTool<T> extends BaseTool {
               this.name(), inputSchema, outputSchema),
           e);
     }
+  }
+
+  /** Converts a call result into the tool response; a null result is reported as an error. */
+  final Map<String, Object> mapCallResult(@Nullable CallToolResult callResult) {
+    if (callResult == null) {
+      return wrapCallResult(objectMapper, name(), null);
+    }
+    return callToolResultMapper.map(mcpTool, callResult);
   }
 
   @SuppressWarnings("PreferredInterfaceType") // BaseTool.runAsync() returns Map<String, Object>

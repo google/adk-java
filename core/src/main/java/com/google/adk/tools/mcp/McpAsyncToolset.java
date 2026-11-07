@@ -67,6 +67,7 @@ public class McpAsyncToolset implements BaseToolset {
   private final McpSessionManager mcpSessionManager;
   private final ObjectMapper objectMapper;
   private final @Nullable Object toolFilter;
+  private final @Nullable CallToolResultMapper callToolResultMapper;
   private final AtomicReference<Mono<List<McpAsyncTool>>> mcpTools = new AtomicReference<>();
 
   public static Builder builder() {
@@ -78,6 +79,7 @@ public class McpAsyncToolset implements BaseToolset {
     private McpSessionManager mcpSessionManager = null;
     private ObjectMapper objectMapper = null;
     private @Nullable Object toolFilter = null;
+    private @Nullable CallToolResultMapper callToolResultMapper = null;
 
     @CanIgnoreReturnValue
     public Builder connectionParams(ServerParameters connectionParams) {
@@ -115,12 +117,22 @@ public class McpAsyncToolset implements BaseToolset {
       return this;
     }
 
+    /**
+     * Sets how tools convert MCP call results into their responses. By default they keep only the
+     * text content.
+     */
+    @CanIgnoreReturnValue
+    public Builder callToolResultMapper(@Nullable CallToolResultMapper callToolResultMapper) {
+      this.callToolResultMapper = callToolResultMapper;
+      return this;
+    }
+
     public McpAsyncToolset build() {
       if (objectMapper == null) {
         objectMapper = JsonBaseModel.getMapper();
       }
       checkNotNull(mcpSessionManager, "Connection params must be set");
-      return new McpAsyncToolset(mcpSessionManager, objectMapper, toolFilter);
+      return new McpAsyncToolset(mcpSessionManager, objectMapper, toolFilter, callToolResultMapper);
     }
   }
 
@@ -133,11 +145,20 @@ public class McpAsyncToolset implements BaseToolset {
    */
   McpAsyncToolset(
       McpSessionManager mcpSessionManager, ObjectMapper objectMapper, @Nullable Object toolFilter) {
+    this(mcpSessionManager, objectMapper, toolFilter, /* callToolResultMapper= */ null);
+  }
+
+  private McpAsyncToolset(
+      McpSessionManager mcpSessionManager,
+      ObjectMapper objectMapper,
+      @Nullable Object toolFilter,
+      @Nullable CallToolResultMapper callToolResultMapper) {
     Objects.requireNonNull(mcpSessionManager);
     Objects.requireNonNull(objectMapper);
     this.objectMapper = objectMapper;
     this.mcpSessionManager = mcpSessionManager;
     this.toolFilter = toolFilter;
+    this.callToolResultMapper = callToolResultMapper;
   }
 
   @Override
@@ -202,7 +223,8 @@ public class McpAsyncToolset implements BaseToolset {
                                             tool,
                                             mcpSession, // move mcpSession to McpAsyncTool
                                             this.mcpSessionManager,
-                                            this.objectMapper))
+                                            this.objectMapper,
+                                            this.callToolResultMapper))
                                 .toList()))
         .retryWhen(
             RetrySpec.from(

@@ -29,6 +29,8 @@ import io.modelcontextprotocol.spec.McpSchema.Tool;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.Map;
+import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,6 +74,16 @@ public final class McpAsyncTool extends AbstractMcpTool<McpAsyncClient> {
     super(mcpTool, mcpSession, mcpSessionManager, objectMapper);
   }
 
+  /** Creates a tool that maps call results with {@code callToolResultMapper} unless it is null. */
+  McpAsyncTool(
+      Tool mcpTool,
+      McpAsyncClient mcpSession,
+      McpSessionManager mcpSessionManager,
+      ObjectMapper objectMapper,
+      @Nullable CallToolResultMapper callToolResultMapper) {
+    super(mcpTool, mcpSession, mcpSessionManager, objectMapper, callToolResultMapper);
+  }
+
   private Single<McpSchema.InitializeResult> reinitializeSession() {
     McpAsyncClient client = this.mcpSessionManager.createAsyncSession();
     return Single.fromCompletionStage(
@@ -102,10 +114,8 @@ public final class McpAsyncTool extends AbstractMcpTool<McpAsyncClient> {
                                 new CallToolRequest(
                                     this.name(), ImmutableMap.copyOf(args), /* meta= */ null))
                             .toFuture())
-                    .map(callResult -> wrapCallResult(this.objectMapper, this.name(), callResult))
-                    .switchIfEmpty(
-                        Single.fromCallable(
-                            () -> wrapCallResult(this.objectMapper, this.name(), null))))
+                    .map(Optional::of)
+                    .defaultIfEmpty(Optional.empty()))
         .retryWhen(
             errors ->
                 errors
@@ -114,6 +124,8 @@ public final class McpAsyncTool extends AbstractMcpTool<McpAsyncClient> {
                     .doOnNext(
                         error ->
                             logger.error("Retrying callTool due to: {}", error.getMessage(), error))
-                    .flatMapSingle(_ignore -> this.reinitializeSession()));
+                    .flatMapSingle(unused -> this.reinitializeSession()))
+        // Mapped after the retry, so a failing mapper does not call the tool again.
+        .map(callResult -> mapCallResult(callResult.orElse(null)));
   }
 }

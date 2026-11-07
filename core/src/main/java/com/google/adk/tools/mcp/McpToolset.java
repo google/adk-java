@@ -28,6 +28,7 @@ import com.google.adk.tools.ToolPredicate;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Booleans;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.spec.McpSchema.ListToolsResult;
@@ -60,6 +61,7 @@ public class McpToolset implements BaseToolset {
   private McpSyncClient mcpSession;
   private final ObjectMapper objectMapper;
   private final @Nullable Object toolFilter;
+  private final @Nullable CallToolResultMapper callToolResultMapper;
 
   private static final int MAX_RETRIES = 3;
   private static final long RETRY_DELAY_MILLIS = 100;
@@ -95,6 +97,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = Objects.requireNonNull(toolPredicate);
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -109,6 +112,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = ImmutableList.copyOf(toolNames);
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -121,6 +125,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = null;
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -135,6 +140,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = Objects.requireNonNull(toolPredicate);
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -149,6 +155,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = ImmutableList.copyOf(toolNames);
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -161,6 +168,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = null;
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -195,6 +203,7 @@ public class McpToolset implements BaseToolset {
     this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.toolFilter = Objects.requireNonNull(toolPredicate);
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -209,6 +218,7 @@ public class McpToolset implements BaseToolset {
     this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.toolFilter = ImmutableList.copyOf(toolNames);
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -221,6 +231,7 @@ public class McpToolset implements BaseToolset {
     this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.toolFilter = null;
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -237,6 +248,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = Objects.requireNonNull(toolPredicate);
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -253,6 +265,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = ImmutableList.copyOf(toolNames);
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -265,6 +278,7 @@ public class McpToolset implements BaseToolset {
     this.objectMapper = Objects.requireNonNull(objectMapper);
     this.mcpSessionManager = new McpSessionManager(Objects.requireNonNull(connectionParams));
     this.toolFilter = null;
+    this.callToolResultMapper = null;
   }
 
   /**
@@ -275,6 +289,91 @@ public class McpToolset implements BaseToolset {
    */
   public McpToolset(StreamableHttpServerParameters connectionParams) {
     this(connectionParams, JsonBaseModel.getMapper());
+  }
+
+  private McpToolset(
+      McpSessionManager mcpSessionManager,
+      ObjectMapper objectMapper,
+      @Nullable Object toolFilter,
+      @Nullable CallToolResultMapper callToolResultMapper) {
+    this.mcpSessionManager = Objects.requireNonNull(mcpSessionManager);
+    this.objectMapper = Objects.requireNonNull(objectMapper);
+    this.toolFilter = toolFilter;
+    this.callToolResultMapper = callToolResultMapper;
+  }
+
+  public static Builder builder() {
+    return new Builder();
+  }
+
+  /** Builder for McpToolset. */
+  public static final class Builder {
+    private @Nullable McpSessionManager mcpSessionManager = null;
+    private @Nullable ObjectMapper objectMapper = null;
+    private @Nullable Object toolFilter = null;
+    private @Nullable CallToolResultMapper callToolResultMapper = null;
+
+    private Builder() {}
+
+    @CanIgnoreReturnValue
+    public Builder connectionParams(ServerParameters connectionParams) {
+      this.mcpSessionManager = new McpSessionManager(connectionParams);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder connectionParams(SseServerParameters connectionParams) {
+      this.mcpSessionManager = new McpSessionManager(connectionParams);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder connectionParams(StreamableHttpServerParameters connectionParams) {
+      this.mcpSessionManager = new McpSessionManager(connectionParams);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder mcpSessionManager(McpSessionManager mcpSessionManager) {
+      this.mcpSessionManager = mcpSessionManager;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder objectMapper(ObjectMapper objectMapper) {
+      this.objectMapper = objectMapper;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder toolFilter(List<String> toolNames) {
+      this.toolFilter = ImmutableList.copyOf(toolNames);
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder toolFilter(@Nullable ToolPredicate toolPredicate) {
+      this.toolFilter = toolPredicate;
+      return this;
+    }
+
+    /**
+     * Sets how tools convert MCP call results into their responses. By default they keep only the
+     * text content.
+     */
+    @CanIgnoreReturnValue
+    public Builder callToolResultMapper(@Nullable CallToolResultMapper callToolResultMapper) {
+      this.callToolResultMapper = callToolResultMapper;
+      return this;
+    }
+
+    public McpToolset build() {
+      return new McpToolset(
+          Objects.requireNonNull(mcpSessionManager, "Connection params must be set"),
+          objectMapper != null ? objectMapper : JsonBaseModel.getMapper(),
+          toolFilter,
+          callToolResultMapper);
+    }
   }
 
   @Override
@@ -295,7 +394,11 @@ public class McpToolset implements BaseToolset {
                       .map(
                           tool ->
                               new McpTool(
-                                  tool, this.mcpSession, this.mcpSessionManager, this.objectMapper))
+                                  tool,
+                                  this.mcpSession,
+                                  this.mcpSessionManager,
+                                  this.objectMapper,
+                                  this.callToolResultMapper))
                       .filter(tool -> isToolSelected(tool, toolFilter, readonlyContext)));
             })
         .retryWhen(
