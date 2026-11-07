@@ -423,6 +423,34 @@ public final class NodeExecutionState {
         node.name());
   }
 
+  /**
+   * Returns the output a {@code useAsOutput} descendant gave this run, or that the run adopted on
+   * replay, or empty if the run did not delegate its output or holds no output yet.
+   */
+  Optional<Object> delegatedOutput() {
+    OutputState current = outputState.get();
+    return current.status().isDelegated() ? Optional.ofNullable(current.value()) : Optional.empty();
+  }
+
+  /**
+   * Replaces the run's delegated output with {@code output}, not yet sent, so the run's final event
+   * carries it as the run's own output.
+   *
+   * @throws IllegalStateException if the run holds no delegated output
+   */
+  void replaceDelegatedOutput(Object output) {
+    checkNotNull(output);
+    outputState.updateAndGet(
+        current -> {
+          checkState(
+              current.status() == OutputStatus.DELEGATE_EMITTED
+                  || current.status() == OutputStatus.DELEGATE_PRODUCED,
+              "Node '%s' has no delegated output to replace.",
+              node.name());
+          return new OutputState(OutputStatus.DELEGATE_PRODUCED, output);
+        });
+  }
+
   /** Returns whether an event has carried the node's current route selection. */
   boolean routesEmitted() {
     return routesEmitted;
