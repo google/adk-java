@@ -16,6 +16,8 @@
 
 package com.google.adk.flows.llmflows;
 
+import static com.google.common.base.Strings.isNullOrEmpty;
+
 import com.google.adk.agents.ActiveStreamingTool;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.CallbackContext;
@@ -258,6 +260,9 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                             : LlmRegistry.getLlm(
                                                 agent.resolvedModel().modelName().get());
                                     LlmRequest finalLlmRequest = llmRequestBuilder.build();
+                                    // A reply's chunks share one id; the next reply gets a new one.
+                                    AtomicReference<String> replyId =
+                                        new AtomicReference<>(eventForCallbackUsage.id());
 
                                     return llm.generateContent(
                                             finalLlmRequest,
@@ -278,26 +283,38 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                               span.recordException(error);
                                             })
                                         .concatMap(
-                                            llmResp ->
-                                                handleAfterModelCallback(
-                                                        context, llmResp, eventForCallbackUsage)
-                                                    .toFlowable())
-                                        .flatMap(
-                                            llmResp ->
-                                                postprocess(
-                                                        context,
-                                                        eventForCallbackUsage,
-                                                        finalLlmRequest,
-                                                        llmResp,
-                                                        callLlmContext)
-                                                    .doOnSubscribe(
-                                                        subscription ->
-                                                            traceCallLlm(
-                                                                span,
-                                                                context,
-                                                                eventForCallbackUsage.id(),
-                                                                finalLlmRequest,
-                                                                llmResp)));
+                                            llmResp -> {
+                                              Event replyEvent =
+                                                  eventForCallbackUsage.toBuilder()
+                                                      .id(replyId.get())
+                                                      .build();
+                                              return handleAfterModelCallback(
+                                                      context, llmResp, replyEvent)
+                                                  .flatMapPublisher(
+                                                      response -> {
+                                                        Flowable<Event> events =
+                                                            postprocess(
+                                                                    context,
+                                                                    replyEvent,
+                                                                    finalLlmRequest,
+                                                                    response,
+                                                                    callLlmContext)
+                                                                .doOnSubscribe(
+                                                                    subscription ->
+                                                                        traceCallLlm(
+                                                                            span,
+                                                                            context,
+                                                                            replyEvent.id(),
+                                                                            finalLlmRequest,
+                                                                            response));
+                                                        // A complete response ends the reply.
+                                                        return response.partial().orElse(false)
+                                                            ? events
+                                                            : events.doOnComplete(
+                                                                () ->
+                                                                    replyId.set(context.newUuid()));
+                                                      });
+                                            });
                                   })))
               .compose(Tracing.withContext(spanContext));
         });
@@ -498,11 +515,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                 mutableEventTemplate)
                             .concatMap(
                                 event -> {
-                                  // Update event ID for the new resulting events
-                                  String oldId = event.id();
-                                  String newId = context.newUuid();
-                                  logger.debug("Resetting event ID from {} to {}", oldId, newId);
-                                  event = event.toBuilder().id(newId).build();
+                                  // A custom ResponseProcessor may emit an event without an id.
+                                  if (isNullOrEmpty(event.id())) {
+                                    event = event.toBuilder().id(context.newUuid()).build();
+                                  }
                                   return followTransfer(event, context, spanContext);
                                 });
                       }));
@@ -810,7 +826,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
   private Flowable<Event> followTransfer(
       Event event, InvocationContext context, Context spanContext) {
     Flowable<Event> self = Flowable.just(event);
-    if (event.actions().transferToAgent().isEmpty()) {
+    // A reply's chunks share its actions, so its complete event carries the same transfer.
+    if (event.partial().orElse(false) || event.actions().transferToAgent().isEmpty()) {
       return self;
     }
     String agentToTransfer = event.actions().transferToAgent().get();

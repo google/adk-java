@@ -949,26 +949,26 @@ public class Runner {
     // Mirror ADK Python (runners.py): partial events are streamed to the caller but
     // never persisted, so managed session services (e.g. VertexAiSessionService) do
     // not store a duplicate of the function call/text that the final aggregated event
-    // already carries. Nothing to persist, so resolve the barrier immediately.
+    // already carries. A partial shares its complete event's id, so it leaves the barrier alone.
     Single<Event> persistStep =
         event.partial().orElse(false)
             ? Single.just(event)
-            : this.sessionService.appendEvent(sessionToPersist, event);
-    return persistStep
-        // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
-        // sole appendEvent caller (see PersistBarrier).
-        .doOnSuccess(unusedEvent -> PersistBarrier.markPersisted(context, event.id()))
-        .doOnError(error -> PersistBarrier.markFailed(context, event.id(), error))
-        .flatMap(
-            registeredEvent -> {
-              if (onEachPersisted != null) {
-                onEachPersisted.run();
-              }
-              return context
-                  .pluginManager()
-                  .onEventCallback(context, registeredEvent)
-                  .defaultIfEmpty(registeredEvent);
-            });
+            : this.sessionService
+                .appendEvent(sessionToPersist, event)
+                // Release (or fail) BaseLlmFlow's wait for this step; the Runner stays the
+                // sole appendEvent caller (see PersistBarrier).
+                .doOnSuccess(unusedEvent -> PersistBarrier.markPersisted(context, event.id()))
+                .doOnError(error -> PersistBarrier.markFailed(context, event.id(), error));
+    return persistStep.flatMap(
+        registeredEvent -> {
+          if (onEachPersisted != null) {
+            onEachPersisted.run();
+          }
+          return context
+              .pluginManager()
+              .onEventCallback(context, registeredEvent)
+              .defaultIfEmpty(registeredEvent);
+        });
   }
 
   /** Runs an agent root through its own lifecycle, and any other node root through NodeRunner. */
