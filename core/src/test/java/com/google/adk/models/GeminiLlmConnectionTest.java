@@ -712,6 +712,148 @@ public final class GeminiLlmConnectionTest {
     assertThat(transport.closeCount.get()).isEqualTo(0);
   }
 
+  @Test
+  public void sendHistory_endsWithUserTurn_completesTurn() {
+    ImmutableList<Content> history =
+        ImmutableList.of(
+            userContent(Part.fromText("My name is Zofia.")),
+            modelContent(Part.fromText("Nice to meet you.")),
+            userContent(Part.fromText("What is my name?")));
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture()) {
+      fixture.connection.sendHistory(history).blockingAwait();
+
+      assertThat(fixture.transport.clientContents)
+          .containsExactly(clientContent(history, /* turnComplete= */ true));
+    }
+  }
+
+  @Test
+  public void sendHistory_endsWithModelTurn_leavesTurnOpen() {
+    ImmutableList<Content> history =
+        ImmutableList.of(
+            userContent(Part.fromText("Hello")), modelContent(Part.fromText("Hi there!")));
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture()) {
+      fixture.connection.sendHistory(history).blockingAwait();
+
+      assertThat(fixture.transport.clientContents)
+          .containsExactly(clientContent(history, /* turnComplete= */ false));
+    }
+  }
+
+  @Test
+  public void sendHistory_endsWithTurnWithoutRole_leavesTurnOpen() {
+    ImmutableList<Content> history =
+        ImmutableList.of(
+            userContent(Part.fromText("Hello")),
+            Content.builder().parts(Part.fromText("Hi there!")).build());
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture()) {
+      fixture.connection.sendHistory(history).blockingAwait();
+
+      assertThat(fixture.transport.clientContents)
+          .containsExactly(clientContent(history, /* turnComplete= */ false));
+    }
+  }
+
+  @Test
+  public void sendHistory_endsWithFunctionResponse_completesTurn() {
+    ImmutableList<Content> history =
+        ImmutableList.of(
+            userContent(Part.fromText("What is the weather in Paris?")),
+            modelContent(Part.fromFunctionCall("get_weather", ImmutableMap.of("city", "Paris"))),
+            userContent(
+                Part.fromFunctionResponse("get_weather", ImmutableMap.of("forecast", "sunny"))));
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture()) {
+      fixture.connection.sendHistory(history).blockingAwait();
+
+      assertThat(fixture.transport.clientContents)
+          .containsExactly(clientContent(history, /* turnComplete= */ true));
+    }
+  }
+
+  @Test
+  public void sendHistory_dropsAudioAndSavedLiveBlobs_keepsOtherParts() {
+    Part image = Part.fromBytes(new byte[] {1}, "image/png");
+    Part artifact = Part.fromUri("artifact://app/user/session/report.pdf#0", "application/pdf");
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture()) {
+      fixture
+          .connection
+          .sendHistory(
+              ImmutableList.of(
+                  userContent(Part.fromText("Look at this."), inlineAudio(), image),
+                  Content.builder()
+                      .role("model")
+                      .parts(
+                          Part.fromText("I see it."),
+                          Part.fromUri("gs://bucket/reply.wav", "audio/wav"))
+                      .build(),
+                  userContent(
+                      Part.fromUri(
+                          "artifact://app/user/session/_adk_live/media_1.zip#0", "application/zip"),
+                      artifact)))
+          .blockingAwait();
+
+      assertThat(fixture.transport.clientContents)
+          .containsExactly(
+              clientContent(
+                  ImmutableList.of(
+                      userContent(Part.fromText("Look at this."), image),
+                      modelContent(Part.fromText("I see it.")),
+                      userContent(artifact)),
+                  /* turnComplete= */ true));
+    }
+  }
+
+  @Test
+  public void sendHistory_trailingModelTurnOfOnlyAudio_completesTheUserTurnBeforeIt() {
+    Content question = userContent(Part.fromText("What is my name?"));
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture()) {
+      fixture
+          .connection
+          .sendHistory(ImmutableList.of(question, modelContent(inlineAudio())))
+          .blockingAwait();
+
+      assertThat(fixture.transport.clientContents)
+          .containsExactly(clientContent(ImmutableList.of(question), /* turnComplete= */ true));
+    }
+  }
+
+  @Test
+  public void sendHistory_trailingUserTurnOfOnlyAudio_leavesTurnOpen() {
+    ImmutableList<Content> textTurns =
+        ImmutableList.of(userContent(Part.fromText("hi")), modelContent(Part.fromText("hello")));
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture()) {
+      fixture
+          .connection
+          .sendHistory(
+              ImmutableList.<Content>builder()
+                  .addAll(textTurns)
+                  .add(userContent(inlineAudio()))
+                  .build())
+          .blockingAwait();
+
+      assertThat(fixture.transport.clientContents)
+          .containsExactly(clientContent(textTurns, /* turnComplete= */ false));
+    }
+  }
+
+  @Test
+  public void sendHistory_everyPartDropped_sendsNothing() {
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture()) {
+      fixture.connection.sendHistory(ImmutableList.of(userContent(inlineAudio()))).blockingAwait();
+
+      assertThat(fixture.transport.clientContents).isEmpty();
+    }
+  }
+
+  @Test
+  public void sendHistory_emptyHistory_sendsNothing() {
+    try (LiveConnectionFixture fixture = new LiveConnectionFixture()) {
+      fixture.connection.sendHistory(ImmutableList.of()).blockingAwait();
+
+      assertThat(fixture.transport.clientContents).isEmpty();
+    }
+  }
+
   /** Converts {@code messages} in order with one {@link PendingText}, as a connection does. */
   private static ImmutableList<String> convertAll(LiveServerMessage... messages) {
     PendingText pendingText = new PendingText();
@@ -780,6 +922,22 @@ public final class GeminiLlmConnectionTest {
       return "inlineData";
     }
     return part.executableCode().isPresent() ? "executableCode" : "other";
+  }
+
+  private static Content userContent(Part... parts) {
+    return Content.builder().role("user").parts(parts).build();
+  }
+
+  private static Part inlineAudio() {
+    return Part.fromBytes(new byte[] {0, 0}, "audio/pcm;rate=16000");
+  }
+
+  private static LiveSendClientContentParameters clientContent(
+      List<Content> turns, boolean turnComplete) {
+    return LiveSendClientContentParameters.builder()
+        .turns(turns)
+        .turnComplete(turnComplete)
+        .build();
   }
 
   /**
