@@ -16,6 +16,8 @@
 
 package com.google.adk.tokt.adapters
 
+import com.google.adk.kt.annotations.ExperimentalLiveApi
+import com.google.adk.kt.models.LiveConnection
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
@@ -29,6 +31,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.reactive.asFlow
+import kotlinx.coroutines.withContext
 
 /**
  * Java -> Kotlin adapter: presents a user's ADK Java [JavaBaseLlm] as a Kotlin [Model] so the ADK
@@ -58,4 +61,27 @@ internal class JavaModelToKt(
         )
       }
       .flowOn(dispatcher)
+
+  // A Java connect may block, so it runs on dispatcher.
+  @OptIn(ExperimentalLiveApi::class)
+  override suspend fun connect(request: LlmRequest): LiveConnection {
+    if (
+      request.liveConnectConfig.realtimeInputConfig?.automaticActivityDetection?.disabled == true
+    ) {
+      throw UnsupportedOperationException(
+        "realtimeInputConfig.automaticActivityDetection.disabled is not supported: ADK Java live " +
+          "connections cannot send ActivityStart or ActivityEnd"
+      )
+    }
+    if (request.liveConnectConfig.explicitVadSignal == true) {
+      throw UnsupportedOperationException(
+        "explicitVadSignal = true is not supported: the server sends voice-activity messages, " +
+          "which ADK Java live connections turn into errors"
+      )
+    }
+    val javaRequest = LlmRequestCodec.toJavaLive(request)
+    return withContext(dispatcher) {
+      JavaLlmConnectionToKt(javaLlm.connect(javaRequest), dispatcher)
+    }
+  }
 }
