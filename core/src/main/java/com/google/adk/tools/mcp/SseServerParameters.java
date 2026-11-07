@@ -17,12 +17,14 @@
 package com.google.adk.tools.mcp;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableMap;
 import java.time.Duration;
 import java.util.Map;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
 /** Parameters for establishing a MCP Server-Sent Events (SSE) connection. */
@@ -40,6 +42,11 @@ public abstract class SseServerParameters {
   /** Optional headers to include in the SSE connection request. */
   @Nullable
   public abstract ImmutableMap<String, Object> headers();
+
+  /** Optional supplier of headers, evaluated per-request for dynamic authentication. */
+  @JsonIgnore
+  @Nullable
+  public abstract Supplier<Map<String, Object>> headersProvider();
 
   /** The timeout for the initial connection attempt. */
   @Nullable
@@ -74,6 +81,11 @@ public abstract class SseServerParameters {
 
     /** Sets the headers for the SSE connection request. */
     public abstract Builder headers(@Nullable Map<String, Object> headers);
+
+    /** Sets a dynamic supplier of headers, evaluated per-request. */
+    @JsonIgnore
+    public abstract Builder headersProvider(
+        @Nullable Supplier<Map<String, Object>> headersProvider);
 
     /** Sets the timeout for the initial connection attempt. */
     public abstract Builder timeout(@Nullable Duration timeout);
