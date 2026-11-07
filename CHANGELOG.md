@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.15.0](https://github.com/google/adk-java/compare/v1.14.0...v1.15.0) (2026-11-07)
+
+
+### Features
+
+* add FunctionNode, a workflow step with typed Java ports ([d627147](https://github.com/google/adk-java/commit/d627147b0ee620119cb2293776ad8acf0d7c7b65))
+* add TypeReference ports and a build-time port check to FunctionNode ([01f899f](https://github.com/google/adk-java/commit/01f899fb84ae76bb618b8272c3ce5fcad63ff37e))
+* check workflow edges by assignability ([a0cc1dc](https://github.com/google/adk-java/commit/a0cc1dcd0ba2d2337124d5f009860cf6a48f172b))
+* **classifiers:** add LlmClassifier backed by BaseLlm ([f3e1cea](https://github.com/google/adk-java/commit/f3e1ceadf17943caa66d1be4aa41e54ae0234bd2))
+* **classifiers:** add the experimental Classifier interface and its question and answer types ([739c231](https://github.com/google/adk-java/commit/739c2315b2b07cf389ca048cbbbc4d2c8f94d603))
+* **classifiers:** read and write questions and answers as JSON ([ef5f798](https://github.com/google/adk-java/commit/ef5f798dc46d7a6eaec4e02e7f9774af72b0c438))
+* **dev:** serve workflow graph images ([677557b](https://github.com/google/adk-java/commit/677557b536df515bb160aef94fecc289173936cd))
+* infer schemas for FunctionNode ports ([020c95c](https://github.com/google/adk-java/commit/020c95ccf35506abca8700a32a7e61fb40a20ca7))
+* **models:** bring Claude to parity with ADK Python ([62003c1](https://github.com/google/adk-java/commit/62003c129466658d40316728b0bbb4b98578b1b5))
+* **tokt:** carry transcriptions and turnComplete across the interop ([30edd99](https://github.com/google/adk-java/commit/30edd998914c6412276d1b9c4b72dcdfb9f97976))
+* **tokt:** convert speech and transcription configs ([ab34617](https://github.com/google/adk-java/commit/ab34617775820fc67dcec423711fe8674353e23b))
+* **tokt:** run agents through the ADK Java runner's runLive ([3582f1a](https://github.com/google/adk-java/commit/3582f1a688eff82aeff5fec2eb2191a7acb0cd11))
+* **tokt:** send blobs and run a held session through runLive ([1f1537d](https://github.com/google/adk-java/commit/1f1537dc8c8662b9c4081b5eed40cba5e4851a76))
+* **tokt:** stream a Flowable FunctionTool in a live run ([42b2f9c](https://github.com/google/adk-java/commit/42b2f9c3258fbdb197eee3c4edc8f539052467a0))
+* **workflow:** add JoinNode.create for a join that needs only a name ([d100738](https://github.com/google/adk-java/commit/d100738a62cf5ebf631ba9a6c288406cd999eb79))
+
+
+### Bug Fixes
+
+* **agents:** stop saving a transfer target's reply to the parent's outputKey ([abb86a7](https://github.com/google/adk-java/commit/abb86a742bed1a3e2628ae38c3b25be2e8f73508))
+* aggregate live text chunks and skip partial events in runLive ([9435377](https://github.com/google/adk-java/commit/94353776710149cdb2d88922df4f79dccbf92165))
+* count events after the last model response toward the compaction threshold ([587d252](https://github.com/google/adk-java/commit/587d2525c307bedebe847e01ad463a353881bb7d))
+* **plugins:** prevent BQAA offload data loss and preserve binary MIME ([94b5bac](https://github.com/google/adk-java/commit/94b5bacdb1c037ab162ffb88abee570ade8dfdec))
+* show an agent the user's answer to another agent's call ([658faba](https://github.com/google/adk-java/commit/658fabaaa2d020160dab59fc8a64a81f63628e3c))
+* **tokt:** merge a Java plugin's replacement onto the original, as ADK Python does ([0bb7f4a](https://github.com/google/adk-java/commit/0bb7f4acfa84848722108547c08d2a97bfc4450d))
+
+
+### Documentation
+
+* **examples:** add a workflows module with five samples that call no model ([5217ce8](https://github.com/google/adk-java/commit/5217ce85231834315a6c8de5d4068587807dae48))
+* **examples:** add retry, returns and route workflow samples ([a77e5dc](https://github.com/google/adk-java/commit/a77e5dcc647ee86861dd8825ee53150365f3889c))
+* **examples:** add workflow samples that pause for human input ([51bc06c](https://github.com/google/adk-java/commit/51bc06c8eadd9a80ecad15caae2c0afa7ba2f88d))
+
 ## [1.14.0](https://github.com/google/adk-java/compare/v1.13.0...v1.14.0) (2026-11-02)
 
 
