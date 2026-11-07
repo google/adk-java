@@ -55,9 +55,9 @@ public class DebugController {
    * @param eventId The ID of the event to trace (expected to be gcp.vertex.agent.event_id).
    * @return A ResponseEntity containing the trace data or NOT_FOUND.
    */
-  @GetMapping("/debug/trace/{eventId}")
+  // adk-web 1.0 and later call the /dev/apps paths; earlier UIs call the others.
+  @GetMapping({"/dev/apps/{appName}/debug/trace/{eventId}", "/debug/trace/{eventId}"})
   public ResponseEntity<?> getTraceDict(@PathVariable String eventId) {
-    log.info("Request received for GET /debug/trace/{}", eventId);
     Map<String, Object> traceData = this.apiServerSpanExporter.getEventTraceAttributes(eventId);
     if (traceData == null) {
       log.warn("Trace not found for eventId: {}", eventId);
@@ -74,10 +74,11 @@ public class DebugController {
    * @param sessionId The session ID.
    * @return A ResponseEntity containing a list of span data maps for the session, or an empty list.
    */
-  @GetMapping("/debug/trace/session/{sessionId}")
+  @GetMapping({
+    "/dev/apps/{appName}/debug/trace/session/{sessionId}",
+    "/debug/trace/session/{sessionId}"
+  })
   public ResponseEntity<Object> getSessionTrace(@PathVariable String sessionId) {
-    log.info("Request received for GET /debug/trace/session/{}", sessionId);
-
     List<String> traceIdsForSession =
         this.apiServerSpanExporter.getSessionToTraceIdsMap().get(sessionId);
 
