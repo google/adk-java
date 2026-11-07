@@ -26,6 +26,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.RunConfig;
@@ -52,8 +53,10 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -406,6 +409,54 @@ public final class AgentExecutorTest {
 
     // There should be no final status events.
     assertThat(statusEvents).isEmpty();
+  }
+
+  @Test
+  public void execute_messageMetadataIsReadableAndDistinctFromRequestMetadata() throws Exception {
+    testAgent.setEventsToEmit(Flowable.empty());
+    AtomicReference<Map<String, Object>> receivedMetadata = new AtomicReference<>();
+    AgentExecutor executor =
+        new AgentExecutor.Builder()
+            .agentExecutorConfig(
+                AgentExecutorConfig.builder()
+                    .beforeExecuteCallback(
+                        ctx -> {
+                          receivedMetadata.set(ctx.getMessage().getMetadata());
+                          return Single.just(false);
+                        })
+                    .build())
+            .app(App.builder().name("test_app").rootAgent(testAgent).build())
+            .sessionService(new InMemorySessionService())
+            .artifactService(new InMemoryArtifactService())
+            .build();
+    Map<String, Object> messageMetadata =
+        Map.of("user_id", "customer-42", "roles", List.of("reader"));
+    Map<String, Object> requestMetadata = Map.of("request_key", "request-value");
+    Message message =
+        new Message.Builder()
+            .messageId("msg-1")
+            .role(Message.Role.USER)
+            .parts(List.of(new TextPart("Hello")))
+            .metadata(messageMetadata)
+            .build();
+    MessageSendParams sent =
+        new MessageSendParams.Builder().message(message).metadata(requestMetadata).build();
+    // Exercise the SDK's actual JSON models rather than flattening the two metadata maps.
+    var mapper = JsonBaseModel.getMapper();
+    MessageSendParams received =
+        mapper.readValue(mapper.writeValueAsString(sent), MessageSendParams.class);
+    RequestContext ctx = mock(RequestContext.class);
+    when(ctx.getMessage()).thenReturn(received.message());
+    when(ctx.getParams()).thenReturn(received);
+    when(ctx.getTaskId()).thenReturn("task-1");
+    when(ctx.getContextId()).thenReturn("ctx-1");
+
+    executor.execute(ctx, eventQueue);
+
+    assertThat(receivedMetadata.get()).isEqualTo(messageMetadata);
+    assertThat(testAgent.lastInvocationContext.runConfig().customMetadata())
+        .containsEntry("a2a_metadata", requestMetadata);
+    assertThat(testAgent.lastInvocationContext.session().state()).doesNotContainKey("user_id");
   }
 
   @Test

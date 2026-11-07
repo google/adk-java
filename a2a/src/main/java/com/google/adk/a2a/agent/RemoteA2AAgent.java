@@ -49,7 +49,9 @@ import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.FlowableEmitter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BiConsumer;
@@ -84,6 +86,7 @@ public class RemoteA2AAgent extends BaseAgent {
   private final Client a2aClient;
   private String description;
   private final boolean streaming;
+  private final @Nullable A2ARequestMetadataProvider requestMetadataProvider;
 
   // Internal constructor used by builder
   private RemoteA2AAgent(Builder builder) {
@@ -117,6 +120,7 @@ public class RemoteA2AAgent extends BaseAgent {
       this.description = this.agentCard.description();
     }
     this.streaming = builder.streaming && this.agentCard.capabilities().streaming();
+    this.requestMetadataProvider = builder.requestMetadataProvider;
   }
 
   public static Builder builder() {
@@ -133,6 +137,7 @@ public class RemoteA2AAgent extends BaseAgent {
     private List<Callbacks.BeforeAgentCallback> beforeAgentCallback;
     private List<Callbacks.AfterAgentCallback> afterAgentCallback;
     private boolean streaming;
+    private @Nullable A2ARequestMetadataProvider requestMetadataProvider;
 
     @CanIgnoreReturnValue
     public Builder streaming(boolean streaming) {
@@ -182,6 +187,16 @@ public class RemoteA2AAgent extends BaseAgent {
       return this;
     }
 
+    /**
+     * Sets an optional provider called once for each outgoing message, after its parts and
+     * identifiers have been populated. Session state is never forwarded automatically.
+     */
+    @CanIgnoreReturnValue
+    public Builder requestMetadataProvider(@Nullable A2ARequestMetadataProvider provider) {
+      this.requestMetadataProvider = provider;
+      return this;
+    }
+
     public RemoteA2AAgent build() {
       return new RemoteA2AAgent(this);
     }
@@ -198,19 +213,30 @@ public class RemoteA2AAgent extends BaseAgent {
 
   private Message prepareMessage(InvocationContext invocationContext) {
     Event userCall = EventConverter.findUserFunctionCall(invocationContext.session().events());
+    Message message;
     if (userCall != null) {
       ImmutableList<io.a2a.spec.Part<?>> parts =
           EventConverter.contentToParts(userCall.content(), userCall.partial().orElse(false));
-      return newA2AMessage(invocationContext, Message.Role.USER, parts)
-          .taskId(EventConverter.taskId(userCall))
-          .contextId(EventConverter.contextId(userCall))
-          .build();
+      message =
+          newA2AMessage(invocationContext, Message.Role.USER, parts)
+              .taskId(EventConverter.taskId(userCall))
+              .contextId(EventConverter.contextId(userCall))
+              .build();
+    } else {
+      message =
+          newA2AMessage(
+                  invocationContext,
+                  Message.Role.USER,
+                  EventConverter.messagePartsFromContext(invocationContext))
+              .build();
     }
-    return newA2AMessage(
-            invocationContext,
-            Message.Role.USER,
-            EventConverter.messagePartsFromContext(invocationContext))
-        .build();
+    if (requestMetadataProvider == null) {
+      return message;
+    }
+    Map<String, Object> metadata = requestMetadataProvider.provide(invocationContext, message);
+    return metadata == null
+        ? message
+        : new Message.Builder(message).metadata(new LinkedHashMap<>(metadata)).build();
   }
 
   @Override
