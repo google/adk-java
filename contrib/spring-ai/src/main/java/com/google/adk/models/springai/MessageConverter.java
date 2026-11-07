@@ -454,6 +454,22 @@ public class MessageConverter {
     }
 
     if (hasTools) {
+      if (modelDefaultOptions != null && !(modelDefaultOptions instanceof ToolCallingChatOptions)) {
+        // The model's default options are not tool-calling options — typical for delegating or
+        // wrapping ChatModels relying on the interface default getOptions() (an empty
+        // DefaultChatOptions), or hand-rolled dummy/test models. The prompt will carry
+        // provider-neutral ToolCallingChatOptions; provider models that cast
+        // Prompt.getOptions() to their own type (e.g. OpenAiChatModel.createRequest) will then
+        // fail with a bare ClassCastException whose cause is hard to spot. Warn so the cause is
+        // one grep away; dummy models that ignore options keep working.
+        logger.warn(
+            "Tool callbacks were attached to provider-neutral ToolCallingChatOptions because the"
+                + " model's default options are {} (not ToolCallingChatOptions). Provider models"
+                + " such as OpenAiChatModel will fail with a ClassCastException on this prompt;"
+                + " if the model is a wrapper, make getOptions() delegate to the underlying"
+                + " provider model's options (e.g. OpenAiChatOptions).",
+            modelDefaultOptions.getClass().getName());
+      }
       ToolCallingChatOptions.Builder<?> optionsBuilder = ToolCallingChatOptions.builder();
       optionsBuilder.toolCallbacks(toolCallbacks);
       if (modelDefaultOptions != null && modelDefaultOptions.getModel() != null) {
