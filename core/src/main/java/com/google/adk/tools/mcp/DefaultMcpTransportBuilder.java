@@ -18,6 +18,7 @@ package com.google.adk.tools.mcp;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
@@ -36,6 +37,10 @@ import reactor.core.publisher.Mono;
  * The default builder for creating MCP client transports. Supports StdioClientTransport based on
  * {@link ServerParameters}, HttpClientSseClientTransport based on {@link SseServerParameters}, and
  * HttpClientStreamableHttpTransport based on {@link StreamableHttpServerParameters}.
+ *
+ * <p>For stdio servers, the command is resolved against {@code PATH} first on Windows, so npm shims
+ * such as {@code npx} reach {@code ProcessBuilder} as the {@code .cmd} file they really are. See
+ * {@link WindowsExecutableResolver}.
  */
 public class DefaultMcpTransportBuilder implements McpTransportBuilder {
 
@@ -44,7 +49,7 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
   @Override
   public McpClientTransport build(Object connectionParams) {
     if (connectionParams instanceof ServerParameters serverParameters) {
-      return new StdioClientTransport(serverParameters, jsonMapper);
+      return new StdioClientTransport(resolveCommand(serverParameters), jsonMapper);
     } else if (connectionParams instanceof SseServerParameters sseServerParams) {
       return HttpClientSseClientTransport.builder(sseServerParams.url())
           .sseEndpoint(
@@ -87,6 +92,41 @@ public class DefaultMcpTransportBuilder implements McpTransportBuilder {
               + " StreamableHttpServerParameters, but got "
               + connectionParams.getClass().getName());
     }
+  }
+
+  /**
+   * Resolves a Windows command shim before the stdio transport hands the command to {@code
+   * ProcessBuilder}.
+   *
+   * <p>Without this, {@code command("npx")} never starts a process on Windows: the transport's
+   * error is swallowed by the initialization timeout, so the toolset appears to hang. See {@link
+   * WindowsExecutableResolver} and google/adk-java#1686.
+   *
+   * <p>Everywhere except Windows, and for commands that are already paths, the parameters are
+   * returned untouched.
+   */
+  private static ServerParameters resolveCommand(ServerParameters serverParameters) {
+    String command = serverParameters.getCommand();
+    String resolved = WindowsExecutableResolver.resolve(command);
+    if (resolved.equals(command)) {
+      return serverParameters;
+    }
+    return withCommand(serverParameters, resolved);
+  }
+
+  /**
+   * Returns {@code serverParameters} with {@code command} substituted, keeping the caller's args
+   * and environment.
+   *
+   * <p>{@code ServerParameters} merges the default environment with the caller's, so round-tripping
+   * {@code getEnv()} reproduces the same effective environment.
+   */
+  @VisibleForTesting
+  static ServerParameters withCommand(ServerParameters serverParameters, String command) {
+    return ServerParameters.builder(command)
+        .args(serverParameters.getArgs())
+        .env(serverParameters.getEnv())
+        .build();
   }
 
   /**
