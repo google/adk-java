@@ -19,6 +19,8 @@ contains more complete end-to-end samples for customers to use or modify.
     prime-checking tools.
 -   [`mcpfilesystem`](mcpfilesystem/README.md): an agent that uses the MCP
     filesystem server as a toolset.
+-   [`mcpfullresult`](mcpfullresult/README.md): MCP tools that return the whole
+    tool result, reshaped by an after-tool callback.
 -   [`spring_chat`](spring_chat/README.md): a Spring Boot chat page backed by an
     agent that calls its model through Spring AI.
 -   [`spring_chat_advanced`](spring_chat_advanced/README.md): the Spring Boot

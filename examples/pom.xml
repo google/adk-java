@@ -37,6 +37,7 @@
     <module>contextcaching</module>
     <module>helloworld</module>
     <module>mcpfilesystem</module>
+    <module>mcpfullresult</module>
     <module>spring_chat</module>
     <module>spring_chat_advanced</module>
     <module>workflows</module>
