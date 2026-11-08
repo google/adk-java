@@ -509,8 +509,14 @@ public abstract class BaseAgent extends BaseNode {
   @Override
   public Flowable<Event> runNode(
       com.google.adk.agents.Context context, @Nullable Object nodeInput) {
+    return runAsNode(context, context.invocationContext());
+  }
+
+  /** Runs this agent as {@link #runNode} does, but on {@code invocationContext}. */
+  final Flowable<Event> runAsNode(
+      com.google.adk.agents.Context context, InvocationContext invocationContext) {
     NodeExecutionState nodeState = context.requireNodeState();
-    return runWithCallbacks(context.invocationContext(), /* keepBranch= */ true, this::runAsyncImpl)
+    return runWithCallbacks(invocationContext, /* keepBranch= */ true, this::runAsyncImpl)
         .doOnNext(
             event -> {
               if (!isNullOrEmpty(event.author())) {

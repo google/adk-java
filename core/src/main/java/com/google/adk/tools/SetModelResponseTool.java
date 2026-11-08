@@ -17,6 +17,7 @@
 package com.google.adk.tools;
 
 import com.google.adk.SchemaUtils;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
@@ -77,34 +78,43 @@ public class SetModelResponseTool extends BaseTool {
                     + "\nRecall the set_model_response function correctly, fix the errors, and"
                     + " call it again with all required fields using the correct types.");
           }
-          // Match Python's model_dump(exclude_none=True) for Java's map-shaped response.
-          Map<String, Object> validatedResponse = excludeNullFields(args);
+          Map<String, Object> validatedResponse = excludeNullFields(args, outputSchema);
           toolContext.actions().setSetModelResponse(validatedResponse);
           return validatedResponse;
         });
   }
 
-  private static Map<String, Object> excludeNullFields(Map<String, Object> values) {
+  /**
+   * Drops nulls like Python's {@code model_dump(exclude_none=True)}, but keeps the null of a
+   * property that {@code schema} marks required and nullable, which the schema demands.
+   */
+  private static Map<String, Object> excludeNullFields(Map<String, Object> values, Schema schema) {
+    // Validation passed, so each key has a property schema and each non-empty list an item schema.
+    Map<String, Schema> properties = schema.properties().orElseThrow();
+    List<String> required = schema.required().orElse(ImmutableList.of());
     Map<String, Object> result = new LinkedHashMap<>();
     for (Map.Entry<String, Object> entry : values.entrySet()) {
+      Schema property = properties.get(entry.getKey());
       Object value = entry.getValue();
       if (value != null) {
-        result.put(entry.getKey(), excludeNullsFromValue(value));
+        result.put(entry.getKey(), excludeNullsFromValue(value, property));
+      } else if (property.nullable().orElse(false) && required.contains(entry.getKey())) {
+        result.put(entry.getKey(), null);
       }
     }
     return result;
   }
 
-  private static Object excludeNullsFromValue(Object value) {
+  private static Object excludeNullsFromValue(Object value, Schema schema) {
     if (value instanceof Map<?, ?>) {
       @SuppressWarnings("unchecked") // Function-call args always have String keys.
       Map<String, Object> map = (Map<String, Object>) value;
-      return excludeNullFields(map);
+      return excludeNullFields(map, schema);
     }
-    if (value instanceof List<?>) {
+    if (value instanceof List<?> list) {
       List<Object> result = new ArrayList<>();
-      for (Object item : (List<?>) value) {
-        result.add(excludeNullsFromValue(item));
+      for (Object item : list) {
+        result.add(excludeNullsFromValue(item, schema.items().orElseThrow()));
       }
       return result;
     }
