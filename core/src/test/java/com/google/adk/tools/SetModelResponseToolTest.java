@@ -21,6 +21,7 @@ import static com.google.adk.testing.TestUtils.createTestAgent;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.SchemaUtils;
 import com.google.adk.models.LlmResponse;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -121,6 +122,119 @@ public final class SetModelResponseToolTest {
 
     assertThat(result).containsExactly("a", "x");
     assertThat(toolContext.actions().setModelResponse()).hasValue(ImmutableMap.of("a", "x"));
+  }
+
+  @Test
+  public void runAsync_requiredNullableNull_keepsTheNull() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "a",
+                    Schema.builder().type("STRING").build(),
+                    "b",
+                    Schema.builder().type("STRING").nullable(true).build()))
+            .required(ImmutableList.of("a", "b"))
+            .build();
+    Map<String, Object> args = new LinkedHashMap<>();
+    args.put("a", "x");
+    args.put("b", null);
+
+    ToolContext toolContext = createToolContext();
+    Map<String, Object> result =
+        new SetModelResponseTool(outputSchema).runAsync(args, toolContext).blockingGet();
+
+    assertThat(result).containsExactly("a", "x", "b", null).inOrder();
+    assertThat(toolContext.actions().setModelResponse()).hasValue(result);
+    // Throws if the result does not match the schema, as dropping the null did.
+    SchemaUtils.validateMapOnSchema(result, outputSchema, /* isInput= */ false);
+  }
+
+  @Test
+  public void runAsync_requiredAndOptionalNullableNulls_keepsOnlyTheRequiredOne() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "kept",
+                    Schema.builder().type("STRING").nullable(true).build(),
+                    "dropped",
+                    Schema.builder().type("STRING").nullable(true).build()))
+            .required(ImmutableList.of("kept"))
+            .build();
+    Map<String, Object> args = new LinkedHashMap<>();
+    args.put("kept", null);
+    args.put("dropped", null);
+
+    Map<String, Object> result =
+        new SetModelResponseTool(outputSchema).runAsync(args, createToolContext()).blockingGet();
+
+    assertThat(result).containsExactly("kept", null);
+  }
+
+  @Test
+  public void runAsync_nestedRequiredNullableNull_keepsTheNull() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("addr", requiredNullableZipAddressSchema()))
+            .required(ImmutableList.of("addr"))
+            .build();
+    Map<String, Object> address = new LinkedHashMap<>();
+    address.put("city", "NYC");
+    address.put("zip", null);
+
+    ToolContext toolContext = createToolContext();
+    Map<String, Object> result =
+        new SetModelResponseTool(outputSchema)
+            .runAsync(ImmutableMap.of("addr", address), toolContext)
+            .blockingGet();
+
+    assertThat(result).containsExactly("addr", address);
+    assertThat(toolContext.actions().setModelResponse()).hasValue(result);
+  }
+
+  @Test
+  public void runAsync_arrayItemRequiredNullableNull_keepsTheNull() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "addresses",
+                    Schema.builder()
+                        .type("ARRAY")
+                        .items(requiredNullableZipAddressSchema())
+                        .build()))
+            .required(ImmutableList.of("addresses"))
+            .build();
+    Map<String, Object> address = new LinkedHashMap<>();
+    address.put("city", "NYC");
+    address.put("zip", null);
+
+    ToolContext toolContext = createToolContext();
+    Map<String, Object> result =
+        new SetModelResponseTool(outputSchema)
+            .runAsync(ImmutableMap.of("addresses", ImmutableList.of(address)), toolContext)
+            .blockingGet();
+
+    assertThat(result).containsExactly("addresses", ImmutableList.of(address));
+    assertThat(toolContext.actions().setModelResponse()).hasValue(result);
+  }
+
+  private static Schema requiredNullableZipAddressSchema() {
+    return Schema.builder()
+        .type("OBJECT")
+        .properties(
+            ImmutableMap.of(
+                "city",
+                Schema.builder().type("STRING").build(),
+                "zip",
+                Schema.builder().type("STRING").nullable(true).build()))
+        .required(ImmutableList.of("city", "zip"))
+        .build();
   }
 
   @Test

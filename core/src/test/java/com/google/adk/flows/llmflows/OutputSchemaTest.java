@@ -48,6 +48,7 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -474,5 +475,61 @@ public final class OutputSchemaTest {
     Event finalEvent = events.get(events.size() - 1);
     assertThat(finalEvent.content().get().parts().get().get(0).text())
         .hasValue("{\"field1\":\"value1\"}");
+  }
+
+  @Test
+  public void setModelResponseWithARequiredNullableNull_keepsItInTheAnswerAndOutputKey() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "city",
+                    Schema.builder().type("STRING").build(),
+                    "note",
+                    Schema.builder().type("STRING").nullable(true).build()))
+            .required(ImmutableList.of("city", "note"))
+            .build();
+    Map<String, Object> args = new LinkedHashMap<>();
+    args.put("city", "Paris");
+    args.put("note", null);
+    TestLlm scriptedLlm =
+        createTestLlm(
+            createLlmResponse(
+                Content.fromParts(Part.fromFunctionCall(SetModelResponseTool.NAME, args))));
+    // Only a model that can't combine tools with an output schema answers via set_model_response.
+    BaseLlm gemini2NamedLlm =
+        new BaseLlm("gemini-2.0-flash") {
+          @Override
+          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+            return scriptedLlm.generateContent(llmRequest, stream);
+          }
+
+          @Override
+          public BaseLlmConnection connect(LlmRequest llmRequest) {
+            return scriptedLlm.connect(llmRequest);
+          }
+        };
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(gemini2NamedLlm)
+            .outputSchema(schema)
+            .tools(ImmutableList.of(new TestTool()))
+            .outputKey("answer")
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent, "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("hello")))
+            .toList()
+            .blockingGet();
+
+    Event finalEvent = events.get(events.size() - 1);
+    assertThat(finalEvent.content().get().parts().get().get(0).text())
+        .hasValue("{\"city\":\"Paris\",\"note\":null}");
+    assertThat(finalEvent.actions().stateDelta()).containsEntry("answer", args);
   }
 }
