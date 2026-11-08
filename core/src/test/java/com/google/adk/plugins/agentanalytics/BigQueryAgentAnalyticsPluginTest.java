@@ -1298,6 +1298,352 @@ public class BigQueryAgentAnalyticsPluginTest {
   }
 
   @Test
+  public void afterToolCallback_afterRecoveredToolError_doesNotEmitDuplicateToolCompleted()
+      throws Exception {
+    ToolContext recoveredContext = mock(ToolContext.class);
+    when(recoveredContext.invocationContext()).thenReturn(mockInvocationContext);
+    when(recoveredContext.functionCallId()).thenReturn(Optional.of("fc-recovered"));
+    BaseTool mockTool = mock(BaseTool.class);
+    when(mockTool.name()).thenReturn("flaky_tool");
+
+    plugin
+        .onUserMessageCallback(mockInvocationContext, Content.builder().build())
+        .blockingSubscribe();
+    String invocationSpanId =
+        state
+            .getTraceManager("invocation_id")
+            .getCurrentSpanId(mockInvocationContext)
+            .orElseThrow();
+
+    plugin
+        .beforeToolCallback(mockTool, ImmutableMap.of("a", "b"), recoveredContext)
+        .blockingSubscribe();
+    plugin
+        .onToolErrorCallback(
+            mockTool, ImmutableMap.of("a", "b"), recoveredContext, new RuntimeException("boom"))
+        .blockingSubscribe();
+    plugin
+        .afterToolCallback(
+            mockTool,
+            ImmutableMap.of("a", "b"),
+            recoveredContext,
+            ImmutableMap.of("recovered", true))
+        .blockingSubscribe();
+
+    Map<String, Map<String, Object>> rows = drainRowsByEventType();
+    Map<String, Object> startingRow = rows.get("TOOL_STARTING");
+    Map<String, Object> errorRow = rows.get("TOOL_ERROR");
+    assertNotNull("TOOL_STARTING row not found", startingRow);
+    assertNotNull("TOOL_ERROR row not found", errorRow);
+    assertEquals(startingRow.get("span_id"), errorRow.get("span_id"));
+    assertEquals(invocationSpanId, errorRow.get("parent_span_id"));
+    assertNull(
+        "Recovered tool error must not also emit TOOL_COMPLETED", rows.get("TOOL_COMPLETED"));
+
+    // An unrecovered error on a call ID must not poison a subsequent turn reusing the same ID.
+    ToolContext reusedIdContext = mock(ToolContext.class);
+    when(reusedIdContext.invocationContext()).thenReturn(mockInvocationContext);
+    when(reusedIdContext.functionCallId()).thenReturn(Optional.of("fc-reused"));
+    plugin
+        .beforeToolCallback(mockTool, ImmutableMap.of("attempt", 1), reusedIdContext)
+        .blockingSubscribe();
+    plugin
+        .onToolErrorCallback(
+            mockTool,
+            ImmutableMap.of("attempt", 1),
+            reusedIdContext,
+            new RuntimeException("unrecovered"))
+        .blockingSubscribe();
+    drainRowsByEventType();
+
+    plugin
+        .beforeToolCallback(mockTool, ImmutableMap.of("attempt", 2), reusedIdContext)
+        .blockingSubscribe();
+    plugin
+        .afterToolCallback(
+            mockTool, ImmutableMap.of("attempt", 2), reusedIdContext, ImmutableMap.of("ok", true))
+        .blockingSubscribe();
+    Map<String, Map<String, Object>> retryRows = drainRowsByEventType();
+    assertNotNull(
+        "Subsequent call reusing functionCallId must still emit TOOL_COMPLETED",
+        retryRows.get("TOOL_COMPLETED"));
+  }
+
+  @Test
+  public void afterToolCallback_concurrentIdLessTools_recoveredErrorDoesNotSuppressSibling()
+      throws Exception {
+    BaseTool toolA = mock(BaseTool.class);
+    when(toolA.name()).thenReturn("tool_a");
+    BaseTool toolB = mock(BaseTool.class);
+    when(toolB.name()).thenReturn("tool_b");
+    ToolContext contextA = mock(ToolContext.class);
+    when(contextA.invocationContext()).thenReturn(mockInvocationContext);
+    when(contextA.functionCallId()).thenReturn(Optional.of(""));
+    ToolContext contextB = mock(ToolContext.class);
+    when(contextB.invocationContext()).thenReturn(mockInvocationContext);
+    when(contextB.functionCallId()).thenReturn(Optional.of(""));
+
+    state.getTraceManager("invocation_id").ensureInvocationSpan(mockInvocationContext);
+    plugin.beforeToolCallback(toolA, ImmutableMap.of(), contextA).blockingSubscribe();
+    plugin.beforeToolCallback(toolB, ImmutableMap.of(), contextB).blockingSubscribe();
+    // Tool A fails and is recovered; Tool B succeeds concurrently with empty functionCallId.
+    plugin
+        .onToolErrorCallback(toolA, ImmutableMap.of(), contextA, new RuntimeException("boom"))
+        .blockingSubscribe();
+    plugin
+        .afterToolCallback(
+            toolA, ImmutableMap.of(), contextA, ImmutableMap.of("fallback", "from_callback"))
+        .blockingSubscribe();
+    plugin
+        .afterToolCallback(toolB, ImmutableMap.of(), contextB, ImmutableMap.of("ok", true))
+        .blockingSubscribe();
+
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+    Map<String, String> startingSpanByTool = new HashMap<>();
+    List<String> completedTools = new ArrayList<>();
+    List<String> errorTools = new ArrayList<>();
+    String toolBCompletedSpan = null;
+    Map<String, Object> row;
+    while ((row = state.getBatchProcessor("invocation_id").queue.poll()) != null) {
+      String eventType = (String) row.get("event_type");
+      String tool = ((JsonNode) row.get("content")).get("tool").asText();
+      if (Objects.equals(eventType, "TOOL_STARTING")) {
+        startingSpanByTool.put(tool, (String) row.get("span_id"));
+      } else if (Objects.equals(eventType, "TOOL_ERROR")) {
+        errorTools.add(tool);
+      } else if (Objects.equals(eventType, "TOOL_COMPLETED")) {
+        completedTools.add(tool);
+        if (Objects.equals(tool, "tool_b")) {
+          toolBCompletedSpan = (String) row.get("span_id");
+        }
+      }
+    }
+    assertEquals(ImmutableList.of("tool_a"), errorTools);
+    assertEquals(ImmutableList.of("tool_b"), completedTools);
+    assertEquals(startingSpanByTool.get("tool_b"), toolBCompletedSpan);
+  }
+
+  @Test
+  public void afterToolCallback_parallelBranchesAndWrapperContexts_isolatesErrorMarker()
+      throws Exception {
+    Session session = mockInvocationContext.session();
+    InvocationContext branchAContext = mock(InvocationContext.class);
+    when(branchAContext.session()).thenReturn(session);
+    when(branchAContext.invocationId()).thenReturn("invocation_id");
+    when(branchAContext.agent()).thenReturn(fakeAgent);
+    when(branchAContext.callbackContextData()).thenReturn(new ConcurrentHashMap<>());
+    when(branchAContext.userId()).thenReturn("user_id");
+    when(branchAContext.branch()).thenReturn(Optional.of("parallel.a"));
+
+    InvocationContext branchBContext = mock(InvocationContext.class);
+    when(branchBContext.session()).thenReturn(session);
+    when(branchBContext.invocationId()).thenReturn("invocation_id");
+    when(branchBContext.agent()).thenReturn(fakeAgent);
+    when(branchBContext.callbackContextData()).thenReturn(new ConcurrentHashMap<>());
+    when(branchBContext.userId()).thenReturn("user_id");
+    when(branchBContext.branch()).thenReturn(Optional.of("parallel.b"));
+
+    // Simulate adapter paths (such as JavaPluginToKt) that wrap a fresh ToolContext per callback
+    // while preserving non-empty functionCallId, concurrent with a sibling branch using the same
+    // call ID. Non-empty functionCallId works across fresh JavaToolContext wrappers, whereas empty
+    // "" functionCallId relies on syntheticToolCallIds object identity on a reused pure-Java
+    // ToolContext.
+    ToolContext branchABefore = mock(ToolContext.class);
+    when(branchABefore.invocationContext()).thenReturn(branchAContext);
+    when(branchABefore.functionCallId()).thenReturn(Optional.of("call_1"));
+    ToolContext branchAError = mock(ToolContext.class);
+    when(branchAError.invocationContext()).thenReturn(branchAContext);
+    when(branchAError.functionCallId()).thenReturn(Optional.of("call_1"));
+    ToolContext branchAAfter = mock(ToolContext.class);
+    when(branchAAfter.invocationContext()).thenReturn(branchAContext);
+    when(branchAAfter.functionCallId()).thenReturn(Optional.of("call_1"));
+
+    ToolContext branchBCtx = mock(ToolContext.class);
+    when(branchBCtx.invocationContext()).thenReturn(branchBContext);
+    when(branchBCtx.functionCallId()).thenReturn(Optional.of("call_1"));
+
+    BaseTool toolA = mock(BaseTool.class);
+    when(toolA.name()).thenReturn("branch_a_tool");
+    BaseTool toolB = mock(BaseTool.class);
+    when(toolB.name()).thenReturn("branch_b_tool");
+
+    state.getTraceManager("invocation_id").ensureInvocationSpan(mockInvocationContext);
+    plugin.beforeToolCallback(toolA, ImmutableMap.of(), branchABefore).blockingSubscribe();
+    plugin.beforeToolCallback(toolB, ImmutableMap.of(), branchBCtx).blockingSubscribe();
+    plugin
+        .onToolErrorCallback(toolA, ImmutableMap.of(), branchAError, new RuntimeException("fail"))
+        .blockingSubscribe();
+    plugin
+        .afterToolCallback(
+            toolA, ImmutableMap.of(), branchAAfter, ImmutableMap.of("recovered", true))
+        .blockingSubscribe();
+    plugin
+        .afterToolCallback(toolB, ImmutableMap.of(), branchBCtx, ImmutableMap.of("ok", true))
+        .blockingSubscribe();
+
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+    List<String> completedTools = new ArrayList<>();
+    List<String> errorTools = new ArrayList<>();
+    Map<String, Object> row;
+    while ((row = state.getBatchProcessor("invocation_id").queue.poll()) != null) {
+      String eventType = (String) row.get("event_type");
+      String tool = ((JsonNode) row.get("content")).get("tool").asText();
+      if (Objects.equals(eventType, "TOOL_ERROR")) {
+        errorTools.add(tool);
+      } else if (Objects.equals(eventType, "TOOL_COMPLETED")) {
+        completedTools.add(tool);
+      }
+    }
+    assertEquals(ImmutableList.of("branch_a_tool"), errorTools);
+    assertEquals(ImmutableList.of("branch_b_tool"), completedTools);
+  }
+
+  @Test
+  public void afterToolCallback_reflectAndRetryPluginFirst_emitsToolErrorWithoutToolCompleted()
+      throws Exception {
+    com.google.adk.plugins.ReflectAndRetryToolPlugin retryPlugin =
+        com.google.adk.plugins.ReflectAndRetryToolPlugin.builder()
+            .maxRetries(3)
+            .resultErrorExtractor(
+                (t, a, c, res) ->
+                    "error_map".equals(res.get("mode"))
+                        ? Optional.of(res)
+                        : ("error_text".equals(res.get("mode"))
+                            ? Optional.of("tool reported status=error")
+                            : Optional.empty()))
+            .build();
+    com.google.adk.plugins.PluginManager pluginManager =
+        new com.google.adk.plugins.PluginManager(ImmutableList.of(retryPlugin, plugin));
+    BaseTool retryTool = mock(BaseTool.class);
+    when(retryTool.name()).thenReturn("flaky_tool");
+    Map<String, Object> args = ImmutableMap.of("city", "Phoenix");
+    pluginManager
+        .onUserMessageCallback(mockInvocationContext, Content.builder().build())
+        .blockingGet();
+    String invocationSpanId =
+        state
+            .getTraceManager("invocation_id")
+            .getCurrentSpanId(mockInvocationContext)
+            .orElseThrow();
+
+    // 1. Thrown exception intercepted by ReflectAndRetryToolPlugin before BigQuery's
+    // onToolErrorCallback runs: PluginManager.onToolErrorCallback short-circuits and feeds the
+    // reflection payload into afterToolCallback.
+    ToolContext ctx1 = ToolContext.builder(mockInvocationContext).functionCallId("retry-1").build();
+    pluginManager.beforeToolCallback(retryTool, args, ctx1).blockingGet();
+    Map<String, Object> thrownReflection =
+        pluginManager
+            .onToolErrorCallback(retryTool, args, ctx1, new IllegalStateException("rate limited"))
+            .blockingGet();
+    assertNotNull(thrownReflection);
+    pluginManager.afterToolCallback(retryTool, args, ctx1, thrownReflection).blockingGet();
+
+    // 2a. Result-embedded error mapped by ReflectAndRetryToolPlugin into a Map error_details
+    // (falls back to error_type "ToolError" as error_message).
+    ToolContext ctx2a =
+        ToolContext.builder(mockInvocationContext).functionCallId("retry-2a").build();
+    pluginManager.beforeToolCallback(retryTool, args, ctx2a).blockingGet();
+    Map<String, Object> mapReflection =
+        retryPlugin
+            .afterToolCallback(retryTool, args, ctx2a, ImmutableMap.of("mode", "error_map"))
+            .blockingGet();
+    assertNotNull(mapReflection);
+    pluginManager.afterToolCallback(retryTool, args, ctx2a, mapReflection).blockingGet();
+
+    // 2b. Result-embedded text error with empty args -> error_details string + args omitted.
+    ToolContext ctx2b =
+        ToolContext.builder(mockInvocationContext).functionCallId("retry-2b").build();
+    pluginManager.beforeToolCallback(retryTool, ImmutableMap.of(), ctx2b).blockingGet();
+    Map<String, Object> textReflection =
+        retryPlugin
+            .afterToolCallback(
+                retryTool, ImmutableMap.of(), ctx2b, ImmutableMap.of("mode", "error_text"))
+            .blockingGet();
+    assertNotNull(textReflection);
+    pluginManager
+        .afterToolCallback(retryTool, ImmutableMap.of(), ctx2b, textReflection)
+        .blockingGet();
+
+    // 2c. Synthetic reflection payload missing error_details and error_type -> default message.
+    ToolContext ctx2c =
+        ToolContext.builder(mockInvocationContext).functionCallId("retry-2c").build();
+    pluginManager.beforeToolCallback(retryTool, ImmutableMap.of(), ctx2c).blockingGet();
+    pluginManager
+        .afterToolCallback(
+            retryTool,
+            ImmutableMap.of(),
+            ctx2c,
+            ImmutableMap.of(
+                "response_type",
+                "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN",
+                "error_details",
+                "",
+                "error_type",
+                ""))
+        .blockingGet();
+
+    CompletableFuture.allOf(
+            state
+                .getPendingTasksForInvocation("invocation_id")
+                .toArray(new CompletableFuture<?>[0]))
+        .join();
+    List<Map<String, Object>> rows = new ArrayList<>();
+    Map<String, Object> polled;
+    while ((polled = state.getBatchProcessor("invocation_id").queue.poll()) != null) {
+      rows.add(polled);
+    }
+
+    List<Map<String, Object>> startingRows = new ArrayList<>();
+    List<Map<String, Object>> errorRows = new ArrayList<>();
+    for (Map<String, Object> row : rows) {
+      String type = (String) row.get("event_type");
+      assertFalse("Unexpected TOOL_COMPLETED row: " + row, "TOOL_COMPLETED".equals(type));
+      if ("TOOL_STARTING".equals(type)) {
+        startingRows.add(row);
+      } else if ("TOOL_ERROR".equals(type)) {
+        errorRows.add(row);
+      }
+    }
+
+    assertEquals(4, startingRows.size());
+    assertEquals(4, errorRows.size());
+
+    // Verify all 4 TOOL_ERROR rows match their popped TOOL_STARTING span and did not leak spans
+    // across sequential calls on the same invocation branch.
+    for (int i = 0; i < 4; i++) {
+      assertEquals(invocationSpanId, startingRows.get(i).get("parent_span_id"));
+      assertEquals(startingRows.get(i).get("span_id"), errorRows.get(i).get("span_id"));
+      assertEquals(invocationSpanId, errorRows.get(i).get("parent_span_id"));
+      assertEquals("ERROR", errorRows.get(i).get("status"));
+      JsonNode contentNode = (JsonNode) errorRows.get(i).get("content");
+      assertEquals("flaky_tool", contentNode.get("tool").asText());
+      assertTrue(contentNode.has("tool_origin"));
+      if (i < 2) {
+        assertEquals("Phoenix", contentNode.get("args").get("city").asText());
+      } else {
+        assertFalse(contentNode.has("args"));
+      }
+    }
+    assertEquals(
+        Optional.of(invocationSpanId),
+        state.getTraceManager("invocation_id").getCurrentSpanId(mockInvocationContext));
+    assertEquals("rate limited", errorRows.get(0).get("error_message"));
+    assertEquals("ToolError", errorRows.get(1).get("error_message"));
+    assertEquals("tool reported status=error", errorRows.get(2).get("error_message"));
+    assertEquals(
+        "Tool raised an error that ReflectAndRetryToolPlugin handled.",
+        errorRows.get(3).get("error_message"));
+  }
+
+  @Test
   public void logEvent_includesSessionMetadata_whenEnabled() throws Exception {
     // Config default has logSessionMetadata(true)
     Content content = Content.fromParts(Part.fromText("test message"));
