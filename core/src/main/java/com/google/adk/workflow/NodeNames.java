@@ -21,9 +21,12 @@ import static com.google.common.base.Preconditions.checkArgument;
 import com.google.adk.annotations.Experimental;
 import com.google.common.base.CharMatcher;
 
-/** The rules a node name follows so that the node paths and branches built from it stay intact. */
+/**
+ * The rules a node name follows so that the node paths and branches built from it stay intact. A
+ * node outside this package validates its name with {@link #validate} when it is built.
+ */
 @Experimental
-final class NodeNames {
+public final class NodeNames {
 
   // '/' and '@' form node-path segments and '.' separates branch segments, so disallow all three.
   static final CharMatcher PATH_SEPARATORS = CharMatcher.anyOf("/@.");
@@ -34,7 +37,7 @@ final class NodeNames {
    * Throws {@link IllegalArgumentException} if {@code name} is empty or contains {@code /},
    * {@code @}, or {@code .}.
    */
-  static void validate(String name) {
+  public static void validate(String name) {
     checkArgument(!name.isEmpty(), "A node name must not be empty.");
     checkArgument(
         PATH_SEPARATORS.matchesNoneOf(name),

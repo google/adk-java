@@ -17,15 +17,20 @@
 package com.google.adk.workflow;
 
 import com.google.adk.annotations.Experimental;
+import org.jspecify.annotations.Nullable;
 
 /**
- * Thrown when a node's input does not fit its input port. The message names the port and the
- * expected type, never the value.
+ * Thrown when a node's input does not fit the node, such as a value of the wrong type for its input
+ * port or one the node cannot work on. The message never quotes the value.
  */
 @Experimental
-public final class NodeInputValidationException extends IllegalArgumentException {
+public final class NodeInputValidationException extends WorkflowDataException {
 
-  NodeInputValidationException(String message) {
+  public NodeInputValidationException(String message) {
     super(message);
+  }
+
+  public NodeInputValidationException(String message, @Nullable Throwable cause) {
+    super(message, cause);
   }
 }

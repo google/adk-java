@@ -55,6 +55,7 @@ final class GraphValidation {
     validateNoDuplicateEdges(edges);
     validateDefaultRoutes(edges);
     validateNoUnconditionalCycles(edges, nodeNames);
+    validateNodeOutgoingEdges(nodes, edges);
   }
 
   private static GraphValidationException invalid(String message) {
@@ -212,6 +213,17 @@ final class GraphValidation {
     }
     path.remove(node);
     done.add(node);
+  }
+
+  /** Lets each {@link BaseNode} check the edges that leave it. */
+  private static void validateNodeOutgoingEdges(List<Node> nodes, List<Edge> edges) {
+    ImmutableListMultimap<String, Edge> outgoing =
+        Multimaps.index(edges, edge -> edge.from().name());
+    for (Node node : nodes) {
+      if (node instanceof BaseNode baseNode) {
+        baseNode.validateOutgoingEdges(outgoing.get(node.name()));
+      }
+    }
   }
 
   private record NodePair(String from, String to) {}

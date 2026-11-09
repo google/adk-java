@@ -24,6 +24,7 @@ import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
+import java.util.Collection;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 
@@ -116,6 +117,13 @@ public abstract class BaseNode implements Node {
   public Optional<Schema> stateSchema() {
     return Optional.ofNullable(stateSchema);
   }
+
+  /**
+   * Throws {@link GraphValidationException} if this node cannot serve the {@code edges} that leave
+   * it, such as an edge for a route it never emits. The default accepts any edges. Building the
+   * workflow graph calls it after its own checks.
+   */
+  protected void validateOutgoingEdges(Collection<Edge> edges) {}
 
   /**
    * Runs the node and emits its events. Each emission of {@link #runNode} that is an {@link Event}

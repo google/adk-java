@@ -20,12 +20,13 @@ import com.google.adk.annotations.Experimental;
 
 /**
  * Thrown when a workflow graph is malformed, such as when {@link Start} cannot reach a node or a
- * cycle has no routed edge. Building the workflow throws it, so a malformed graph never runs.
+ * cycle has no routed edge. Building the workflow throws it, so a malformed graph never runs. A
+ * node throws it from {@link BaseNode#validateOutgoingEdges} for edges it cannot serve.
  */
 @Experimental
 public final class GraphValidationException extends IllegalArgumentException {
 
-  GraphValidationException(String message) {
+  public GraphValidationException(String message) {
     super(message);
   }
 }
