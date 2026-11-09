@@ -62,6 +62,7 @@ import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.flows.llmflows.Functions;
+import com.google.adk.models.LlmResponse;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.sessions.Session;
 import com.google.adk.telemetry.Tracing;
@@ -393,6 +394,67 @@ public final class RunnerResumabilityTest {
     // The root is an LlmAgent ancestor of the paused agent, so the resume re-enters it rather than
     // routing past it, and it closes itself once the sub-agent finishes.
     assertThat(simplifyResumableEvents(resumed)).contains("root_agent: end_of_agent");
+  }
+
+  // A parent regaining control after a resume calls its model instead of replaying its transfer.
+  @Test
+  public void runAsync_resumable_subAgentTransfersBackAfterResume_rootAnswers() {
+    TestLlm testLlm =
+        createTestLlm(
+            transferTo("sub_agent_1"),
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "hello")),
+            transferTo("root_agent"),
+            createTextLlmResponse("root answer"));
+    LlmAgent subAgent1 =
+        createTestAgentBuilder(testLlm).name("sub_agent_1").tools(pendingFunctionTool()).build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    Runner runner = resumableRunner(rootAgent);
+    Session session = newSession(runner);
+    runTurn(runner, session, "hi");
+
+    ImmutableList<Event> resumed =
+        answerCall(runner, session, "lro_call_id", "pendingTool", ImmutableMap.of("message", "ok"));
+
+    assertThat(simplifyEvents(resumed)).contains("root_agent: root answer");
+  }
+
+  // Resuming uses root's newer transfer over the older transfer back, so the sub-agent resumes.
+  @Test
+  public void runAsync_resumable_rootTransfersAgainAfterTransferBack_resumesSubAgent() {
+    TestLlm testLlm =
+        createTestLlm(
+            transferTo("sub_agent_1"),
+            transferTo("root_agent"),
+            transferTo("sub_agent_1"),
+            createFunctionCallLlmResponse(
+                "lro_call_id", "pendingTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("sub answer"));
+    LlmAgent subAgent1 =
+        createTestAgentBuilder(testLlm).name("sub_agent_1").tools(pendingFunctionTool()).build();
+    LlmAgent rootAgent =
+        createTestAgentBuilder(testLlm)
+            .name("root_agent")
+            .subAgents(ImmutableList.of(subAgent1))
+            .build();
+    Runner runner = resumableRunner(rootAgent);
+    Session session = newSession(runner);
+    runTurn(runner, session, "hi");
+
+    ImmutableList<Event> resumed =
+        answerCall(runner, session, "lro_call_id", "pendingTool", ImmutableMap.of("message", "ok"));
+
+    assertThat(simplifyEvents(resumed)).contains("sub_agent_1: sub answer");
+  }
+
+  private static LlmResponse transferTo(String agentName) {
+    return createLlmResponse(
+        Content.fromParts(
+            Part.fromFunctionCall("transfer_to_agent", ImmutableMap.of("agent_name", agentName))));
   }
 
   // An invocation paused on two long-running calls stays paused until both are answered.
