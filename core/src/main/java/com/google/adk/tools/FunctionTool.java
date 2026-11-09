@@ -47,9 +47,11 @@ public class FunctionTool extends BaseTool {
 
   private final @Nullable Object instance;
   private final Method func;
-  private final FunctionDeclaration funcDeclaration;
+  private volatile DeclarationState declarationState;
   private final boolean requireConfirmation;
   private final ObjectMapper objectMapper;
+  // Retain the current view while this tool is active, even before declaration() is called again.
+  private volatile @Nullable ObjectMapper currentToolMapper;
 
   public static FunctionTool create(Object instance, Method func) {
     return create(instance, func, /* requireConfirmation= */ false);
@@ -180,6 +182,16 @@ public class FunctionTool extends BaseTool {
     this(instance, func, isLongRunning, /* requireConfirmation= */ false, objectMapper);
   }
 
+  /**
+   * Creates a tool without changing the supplied mapper. Object-property {@code @Schema}
+   * annotations use a shared, isolated view of its configuration. Modules and features configured
+   * through mapper APIs after construction are picked up by subsequent tool operations. Complete
+   * configuration before concurrent use, as required by Jackson.
+   *
+   * <p>For annotated types, mapper subclasses that inherit {@code ObjectMapper.copy()} are copied
+   * as Jackson configuration. Subclasses with additional behavior should implement {@code copy()}
+   * to preserve that behavior in the tool view.
+   */
   protected FunctionTool(
       @Nullable Object instance,
       Method func,
@@ -204,17 +216,46 @@ public class FunctionTool extends BaseTool {
 
     this.instance = instance;
     this.func = func;
-    this.objectMapper = ToolSchemaObjectMapper.create(objectMapper);
-    this.funcDeclaration =
-        FunctionCallingUtils.buildFunctionDeclaration(
-            this.func, ImmutableList.of("toolContext", "inputStream"), this.objectMapper);
+    this.objectMapper = objectMapper;
+    this.declarationState = buildDeclaration(toolMapper());
     this.requireConfirmation = requireConfirmation;
   }
 
   @Override
   public Optional<FunctionDeclaration> declaration() {
-    return Optional.of(this.funcDeclaration);
+    ObjectMapper mapper = toolMapper();
+    DeclarationState state = declarationState;
+    if (state.mapper() != mapper
+        || state.configuration() != mapper.getSerializationConfig()
+        || state.inputConfiguration() != mapper.getDeserializationConfig()) {
+      state = buildDeclaration(mapper);
+      declarationState = state;
+    }
+    return Optional.of(state.declaration());
   }
+
+  private DeclarationState buildDeclaration(ObjectMapper mapper) {
+    return new DeclarationState(
+        mapper,
+        mapper.getSerializationConfig(),
+        mapper.getDeserializationConfig(),
+        FunctionCallingUtils.buildFunctionDeclaration(
+            func, ImmutableList.of("toolContext", "inputStream"), mapper));
+  }
+
+  private ObjectMapper toolMapper() {
+    ObjectMapper mapper = ToolSchemaObjectMapper.forMethod(objectMapper, func);
+    if (currentToolMapper != mapper) {
+      currentToolMapper = mapper;
+    }
+    return mapper;
+  }
+
+  private record DeclarationState(
+      ObjectMapper mapper,
+      Object configuration,
+      Object inputConfiguration,
+      FunctionDeclaration declaration) {}
 
   /** Returns the underlying function {@link Method}. */
   public Method func() {
@@ -293,7 +334,7 @@ public class FunctionTool extends BaseTool {
     }
     try {
       Map<String, Object> map =
-          objectMapper.convertValue(value, new TypeReference<Map<String, Object>>() {});
+          toolMapper().convertValue(value, new TypeReference<Map<String, Object>>() {});
       if (map == null) {
         return ImmutableMap.of();
       }
@@ -302,7 +343,7 @@ public class FunctionTool extends BaseTool {
       // Conversion to map failed, in this case we follow
       // https://google.github.io/adk-docs/tools-custom/function-tools/#return-type and return
       // the { "result": $result }
-      return ImmutableMap.of("result", value);
+      return ImmutableMap.of("result", toolMapper().convertValue(value, Object.class));
     }
   }
 
@@ -334,7 +375,7 @@ public class FunctionTool extends BaseTool {
         return createList((List<Object>) argValue, typeArgClass);
       }
     } else if (argValue instanceof Map) {
-      return objectMapper.convertValue(argValue, paramType);
+      return toolMapper().convertValue(argValue, paramType);
     }
     return castValue(argValue, paramType);
   }
@@ -437,7 +478,7 @@ public class FunctionTool extends BaseTool {
           || cls == String.class) {
         list.add(castValue(value, cls));
       } else {
-        list.add(objectMapper.convertValue(value, type));
+        list.add(toolMapper().convertValue(value, type));
       }
     }
     return list;
@@ -491,6 +532,6 @@ public class FunctionTool extends BaseTool {
         return value;
       }
     }
-    return objectMapper.convertValue(value, type);
+    return toolMapper().convertValue(value, type);
   }
 }

@@ -29,8 +29,9 @@ import java.lang.annotation.Target;
 public final class Annotations {
 
   /**
-   * Describes a tool or its inputs. On object properties, overrides Jackson's name and required
-   * flag for tool schemas and tool JSON binding only; ordinary JSON serialization is unchanged.
+   * Describes a tool or its inputs. On object properties, non-empty names and descriptions take
+   * precedence over Jackson's. {@code optional = true} relaxes requiredness, while {@code false}
+   * retains Jackson's required marker. Ordinary business JSON serialization is unchanged.
    */
   @Target({METHOD, PARAMETER, FIELD, RECORD_COMPONENT})
   @Retention(RetentionPolicy.RUNTIME)
@@ -41,7 +42,10 @@ public final class Annotations {
     /** Description included in the generated tool schema. */
     String description() default "";
 
-    /** Whether this input may be omitted from the generated schema's required list. */
+    /**
+     * Whether this input may be omitted. On object properties, only {@code true} overrides
+     * Jackson's required marker; {@code false} does not introduce a required constraint.
+     */
     boolean optional() default false;
   }
 
