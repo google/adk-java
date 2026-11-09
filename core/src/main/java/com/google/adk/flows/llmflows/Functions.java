@@ -38,6 +38,7 @@ import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
+import com.google.adk.workflow.RequestInput;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -75,6 +76,19 @@ public final class Functions {
   public static final String TOOL_CALL_SECURITY_STATES = "adk_tool_call_security_states";
 
   private static final Logger logger = LoggerFactory.getLogger(Functions.class);
+
+  /** Name reported for a function call the model emitted without one. */
+  private static final String UNNAMED_TOOL = "<unnamed>";
+
+  /**
+   * Function calls the framework emits to pause for the user. They are not tools, so a call to one
+   * that no tool is registered for is left unanswered rather than rejected as unknown.
+   */
+  private static final ImmutableSet<String> FRAMEWORK_FUNCTION_CALL_NAMES =
+      ImmutableSet.of(
+          REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+          RequestInput.FUNCTION_CALL_NAME,
+          "adk_request_credential");
 
   /** Generates a unique ID for a function call. */
   public static String generateClientFunctionCallId() {
@@ -159,21 +173,12 @@ public final class Functions {
       Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
 
-    List<FunctionCall> validFunctionCalls = new ArrayList<>();
-    for (FunctionCall functionCall : functionCalls) {
-      if (!tools.containsKey(functionCall.name().get())) {
-        logger.warn("Tool not found: {}", functionCall.name().get());
-      } else {
-        validFunctionCalls.add(functionCall);
-      }
-    }
-
     Context parentContext = Context.current();
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         getFunctionCallMapper(invocationContext, tools, toolConfirmations, false, parentContext);
 
     Observable<Event> functionResponseEventsObservable =
-        buildToolExecutionObservable(invocationContext, validFunctionCalls, functionCallMapper);
+        buildToolExecutionObservable(invocationContext, functionCalls, functionCallMapper);
     return functionResponseEventsObservable
         .toList()
         .toMaybe()
@@ -223,21 +228,12 @@ public final class Functions {
       Map<String, ToolConfirmation> toolConfirmations) {
     ImmutableList<FunctionCall> functionCalls = functionCallEvent.functionCalls();
 
-    List<FunctionCall> validFunctionCalls = new ArrayList<>();
-    for (FunctionCall functionCall : functionCalls) {
-      if (!tools.containsKey(functionCall.name().get())) {
-        logger.warn("Tool not found: {}", functionCall.name().get());
-      } else {
-        validFunctionCalls.add(functionCall);
-      }
-    }
-
     Context parentContext = Context.current();
     Function<FunctionCall, Maybe<Event>> functionCallMapper =
         getFunctionCallMapper(invocationContext, tools, toolConfirmations, true, parentContext);
 
     Observable<Event> responseEventsObservable =
-        buildToolExecutionObservable(invocationContext, validFunctionCalls, functionCallMapper);
+        buildToolExecutionObservable(invocationContext, functionCalls, functionCallMapper);
 
     return responseEventsObservable
         .toList()
@@ -271,22 +267,22 @@ public final class Functions {
    */
   private static Observable<Event> buildToolExecutionObservable(
       InvocationContext invocationContext,
-      List<FunctionCall> validFunctionCalls,
+      List<FunctionCall> functionCalls,
       Function<FunctionCall, Maybe<Event>> functionCallMapper) {
     ToolExecutionMode mode = invocationContext.runConfig().toolExecutionMode();
-    boolean sequential = mode == ToolExecutionMode.SEQUENTIAL || validFunctionCalls.size() <= 1;
+    boolean sequential = mode == ToolExecutionMode.SEQUENTIAL || functionCalls.size() <= 1;
     if (sequential) {
-      return Observable.fromIterable(validFunctionCalls).concatMapMaybe(functionCallMapper);
+      return Observable.fromIterable(functionCalls).concatMapMaybe(functionCallMapper);
     }
     if (mode == ToolExecutionMode.PARALLEL_SUBSCRIBE) {
       Scheduler scheduler = resolveWorkerScheduler(invocationContext);
-      return Observable.fromIterable(validFunctionCalls)
+      return Observable.fromIterable(functionCalls)
           .concatMapEager(
               call -> functionCallMapper.apply(call).toObservable().subscribeOn(scheduler));
     }
     // PARALLEL (and NONE, which defaults to PARALLEL): eager subscribe on the caller thread,
     // without offloading to a worker. Async tools run concurrently; blocking tools still block.
-    return Observable.fromIterable(validFunctionCalls)
+    return Observable.fromIterable(functionCalls)
         .concatMapEager(call -> functionCallMapper.apply(call).toObservable());
   }
 
@@ -311,7 +307,17 @@ public final class Functions {
     return functionCall ->
         Maybe.defer(
                 () -> {
-                  BaseTool tool = tools.get(functionCall.name().get());
+                  Optional<String> name = functionCall.name().filter(n -> !n.isEmpty());
+                  Optional<BaseTool> registeredTool = name.map(tools::get);
+                  if (registeredTool.isEmpty()
+                      && name.filter(FRAMEWORK_FUNCTION_CALL_NAMES::contains).isPresent()) {
+                    logger.debug("Leaving framework function call {} unanswered.", name.get());
+                    return Maybe.empty();
+                  }
+                  BaseTool tool =
+                      registeredTool.orElseGet(() ->
+                          new MissingTool(
+                              name.orElse(UNNAMED_TOOL), ImmutableList.copyOf(tools.keySet())));
                   ToolContext toolContext =
                       ToolContext.builder(invocationContext)
                           .functionCallId(functionCall.id().orElse(""))
@@ -505,32 +511,56 @@ public final class Functions {
                 tool, invocationContext.agent(), functionArgs, parentContext),
         toolExecution -> {
           Context toolOtelContext = toolExecution.context().otelContext();
-          Maybe<Map<String, Object>> maybeFunctionResult =
-              Maybe.defer(
-                      () ->
-                          maybeInvokeBeforeToolCall(
-                              invocationContext, tool, functionArgs, toolContext))
-                  .compose(Tracing.withContext(toolOtelContext))
-                  .switchIfEmpty(
-                      Maybe.defer(
-                              () ->
-                                  isLive
-                                      ? processFunctionLive(
-                                          invocationContext,
-                                          tool,
-                                          toolContext,
-                                          functionCall,
-                                          functionArgs)
-                                      : callTool(tool, functionArgs, toolContext))
-                          .compose(Tracing.withContext(toolOtelContext)));
-          return processFunctionResult(
-                  maybeFunctionResult,
-                  invocationContext,
-                  tool,
-                  functionArgs,
-                  toolContext,
-                  isLive,
-                  toolOtelContext)
+          Maybe<Map<String, Object>> beforeToolResult =
+              Maybe.defer(() ->
+                      maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext))
+                  .compose(Tracing.withContext(toolOtelContext));
+          Maybe<Event> functionResponseEvent;
+          if (tool instanceof MissingTool missingTool) {
+            // A before-tool callback may still answer a call that no tool can run.
+            functionResponseEvent =
+                beforeToolResult
+                    .flatMap(answer ->
+                        processFunctionResult(
+                            Maybe.just(answer),
+                            invocationContext,
+                            tool,
+                            functionArgs,
+                            toolContext,
+                            isLive,
+                            toolOtelContext))
+                    .switchIfEmpty(
+                        Maybe.defer(() ->
+                            respondToolNotFound(
+                                invocationContext,
+                                missingTool,
+                                functionArgs,
+                                toolContext,
+                                toolExecution)));
+          } else {
+            Maybe<Map<String, Object>> maybeFunctionResult =
+                beforeToolResult.switchIfEmpty(
+                    Maybe.defer(() ->
+                            isLive
+                                ? processFunctionLive(
+                                    invocationContext,
+                                    tool,
+                                    toolContext,
+                                    functionCall,
+                                    functionArgs)
+                                : callTool(tool, functionArgs, toolContext))
+                        .compose(Tracing.withContext(toolOtelContext)));
+            functionResponseEvent =
+                processFunctionResult(
+                    maybeFunctionResult,
+                    invocationContext,
+                    tool,
+                    functionArgs,
+                    toolContext,
+                    isLive,
+                    toolOtelContext);
+          }
+          return functionResponseEvent
               .compose(Tracing.withContext(toolOtelContext))
               .doOnSuccess(event -> toolExecution.context().setFunctionResponseEvent(event))
               .doOnError(toolExecution::setError);
@@ -602,6 +632,54 @@ public final class Functions {
                         return Maybe.just(event);
                       });
             });
+  }
+
+  /**
+   * Answers a call to a tool name the agent does not have, so the model can correct the name. The
+   * on-tool-error callbacks may answer it first; the after-tool callbacks are skipped because no
+   * tool ran. Telemetry records the call as failed either way.
+   */
+  private static Maybe<Event> respondToolNotFound(
+      InvocationContext invocationContext,
+      MissingTool tool,
+      Map<String, Object> functionArgs,
+      ToolContext toolContext,
+      ToolExecution toolExecution) {
+    return Maybe.defer(
+            () -> {
+              IllegalArgumentException error =
+                  new IllegalArgumentException(
+                      String.format(
+                          "No tool with the requested name is registered. The tools you can call"
+                              + " are: %s.",
+                          tool.availableTools()));
+              toolExecution.setErrorType(error.getClass().getSimpleName());
+              return handleOnToolErrorCallback(
+                  invocationContext, tool, functionArgs, toolContext, error);
+            })
+        .compose(Tracing.withContext(toolExecution.context().otelContext()))
+        .switchIfEmpty(
+            Single.fromCallable(() -> {
+              // The tool name is model-provided, so only the size of the tool set is logged.
+              logger.warn(
+                  "Tool not found: model called a tool that is not registered; {} tool(s)"
+                      + " available.",
+                  tool.availableToolCount());
+              return buildToolNotFoundResponse(tool);
+            }))
+        .map(response -> buildResponseEvent(tool, response, toolContext, invocationContext))
+        .toMaybe();
+  }
+
+  /** Returns the error the model gets for a tool name it made up, listing the tools it has. */
+  private static ImmutableMap<String, Object> buildToolNotFoundResponse(MissingTool tool) {
+    return ImmutableMap.of(
+        "error",
+        "Invoking `"
+            + tool.name()
+            + "()` failed as no tool with that name is available. The tools you can call are: "
+            + tool.availableTools()
+            + ". You could retry, but it is IMPORTANT that you only call a tool from that list.");
   }
 
   private static Optional<Event> mergeParallelFunctionResponseEvents(
@@ -870,6 +948,25 @@ public final class Functions {
         .name()
         .map(name -> name.equals(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME))
         .orElse(false);
+  }
+
+  /** Stands in for a tool name the agent does not have, so tool callbacks can see the call. */
+  private static final class MissingTool extends BaseTool {
+    private final ImmutableList<String> availableToolNames;
+
+    MissingTool(String name, ImmutableList<String> availableToolNames) {
+      super(name, "Tool not found");
+      this.availableToolNames = availableToolNames;
+    }
+
+    /** The registered tool names, comma-separated, or {@code none}. */
+    String availableTools() {
+      return availableToolNames.isEmpty() ? "none" : String.join(", ", availableToolNames);
+    }
+
+    int availableToolCount() {
+      return availableToolNames.size();
+    }
   }
 
   private Functions() {}
