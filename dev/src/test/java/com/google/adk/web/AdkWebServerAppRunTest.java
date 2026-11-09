@@ -188,9 +188,11 @@ class AdkWebServerAppRunTest {
             .perform(runRequest("/run_sse", appName, sessionId))
             .andExpect(request().asyncStarted())
             .andReturn();
-    // A stream that ended in an error would leave the error as the async result.
-    assertThat(result.getAsyncResult(10_000)).isNull();
-    return result.getResponse().getContentAsString();
+    result.getAsyncResult(10_000); // Waits for the stream to end.
+    String stream = result.getResponse().getContentAsString();
+    // A failed run ends the stream with an error event.
+    assertThat(stream).doesNotContain("\"error_details\"");
+    return stream;
   }
 
   private static RequestBuilder runRequest(String path, String appName, String sessionId) {
