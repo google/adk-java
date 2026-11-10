@@ -18,6 +18,7 @@ package com.google.adk;
 
 import static org.junit.Assert.assertThrows;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Schema;
 import java.util.HashMap;
@@ -97,5 +98,142 @@ public final class SchemaUtilsTest {
 
     args.put("intField", 123);
     SchemaUtils.validateMapOnSchema(args, schema, /* isInput= */ true);
+  }
+
+  @Test
+  public void validateMapOnSchema_untypedProperty_acceptsAnyValue() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("anything", Schema.builder().build()))
+            .build();
+
+    SchemaUtils.validateMapOnSchema(
+        ImmutableMap.of("anything", ImmutableMap.of("nested", 1)), schema, /* isInput= */ false);
+    SchemaUtils.validateMapOnSchema(
+        ImmutableMap.of("anything", "text"), schema, /* isInput= */ false);
+  }
+
+  @Test
+  public void validateMapOnSchema_objectWithoutProperties_acceptsAnyKeys() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("metadata", Schema.builder().type("OBJECT").build()))
+            .build();
+
+    SchemaUtils.validateMapOnSchema(
+        ImmutableMap.of("metadata", ImmutableMap.of("source", "web", "score", 0.5)),
+        schema,
+        /* isInput= */ false);
+  }
+
+  @Test
+  public void validateMapOnSchema_topLevelObjectWithoutProperties_stillEnforcesRequired() {
+    Schema schema = Schema.builder().type("OBJECT").required(ImmutableList.of("id")).build();
+
+    SchemaUtils.validateMapOnSchema(
+        ImmutableMap.of("id", "1", "extra", true), schema, /* isInput= */ true);
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            SchemaUtils.validateMapOnSchema(
+                ImmutableMap.of("extra", true), schema, /* isInput= */ true));
+  }
+
+  @Test
+  public void validateMapOnSchema_arrayWithoutItems_acceptsAnyElements() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("tags", Schema.builder().type("ARRAY").build()))
+            .build();
+
+    SchemaUtils.validateMapOnSchema(
+        ImmutableMap.of("tags", ImmutableList.of("a", 1, ImmutableMap.of())),
+        schema,
+        /* isInput= */ false);
+  }
+
+  @Test
+  public void validateMapOnSchema_arrayWithoutItems_stillRejectsANonList() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("tags", Schema.builder().type("ARRAY").build()))
+            .build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            SchemaUtils.validateMapOnSchema(
+                ImmutableMap.of("tags", "a"), schema, /* isInput= */ false));
+  }
+
+  @Test
+  public void validateMapOnSchema_nonObjectSchema_throwsException() {
+    Schema schema = Schema.builder().type("ARRAY").build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            SchemaUtils.validateMapOnSchema(ImmutableMap.of("a", 1), schema, /* isInput= */ false));
+  }
+
+  @Test
+  public void validateMapOnSchema_untypedProperty_acceptsNull() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("anything", Schema.builder().build()))
+            .build();
+    Map<String, Object> args = new HashMap<>();
+    args.put("anything", null);
+
+    SchemaUtils.validateMapOnSchema(args, schema, /* isInput= */ false);
+  }
+
+  @Test
+  public void validateMapOnSchema_untypedNonNullableProperty_throwsException() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("anything", Schema.builder().nullable(false).build()))
+            .build();
+    Map<String, Object> args = new HashMap<>();
+    args.put("anything", null);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SchemaUtils.validateMapOnSchema(args, schema, /* isInput= */ false));
+  }
+
+  @Test
+  public void validateMapOnSchema_untypedNestedSchemaWithProperties_validatesAsObject() {
+    Schema nested =
+        Schema.builder()
+            .properties(ImmutableMap.of("a", Schema.builder().type("STRING").build()))
+            .required(ImmutableList.of("a"))
+            .build();
+    Schema schema =
+        Schema.builder().type("OBJECT").properties(ImmutableMap.of("nested", nested)).build();
+
+    SchemaUtils.validateMapOnSchema(
+        ImmutableMap.of("nested", ImmutableMap.of("a", "x")), schema, /* isInput= */ false);
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            SchemaUtils.validateMapOnSchema(
+                ImmutableMap.of("nested", 5), schema, /* isInput= */ false));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            SchemaUtils.validateMapOnSchema(
+                ImmutableMap.of("nested", ImmutableMap.of()), schema, /* isInput= */ false));
+    Map<String, Object> nullNested = new HashMap<>();
+    nullNested.put("nested", null);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SchemaUtils.validateMapOnSchema(nullNested, schema, /* isInput= */ false));
   }
 }
