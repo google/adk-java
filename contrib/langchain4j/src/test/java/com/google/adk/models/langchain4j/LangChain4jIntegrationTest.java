@@ -371,12 +371,12 @@ class LangChain4jIntegrationTest {
             true);
 
     String fullResponse =
-        String.join(
-            "",
-            responses
-                .blockingStream()
-                .map(llmResponse -> llmResponse.content().get().text())
-                .toList());
+        responses
+            .filter(llmResponse -> !llmResponse.partial().orElse(false))
+            .blockingLast()
+            .content()
+            .get()
+            .text();
 
     // then
     assertTrue(fullResponse.contains("blue"));
@@ -430,15 +430,30 @@ class LangChain4jIntegrationTest {
     // when
     List<Event> eventsHi = askAgentStreaming(agent, "Hi");
     String responseToHi =
-        String.join("", eventsHi.stream().map(event -> event.content().get().text()).toList());
+        String.join(
+            "",
+            eventsHi.stream()
+                .filter(event -> !event.partial().orElse(false))
+                .map(event -> event.content().get().text())
+                .toList());
 
     List<Event> eventsQubit = askAgentStreaming(agent, "Tell me about qubits");
     String responseToQubit =
-        String.join("", eventsQubit.stream().map(event -> event.content().get().text()).toList());
+        String.join(
+            "",
+            eventsQubit.stream()
+                .filter(event -> !event.partial().orElse(false))
+                .map(event -> event.content().get().text())
+                .toList());
 
     List<Event> eventsWeather = askAgentStreaming(agent, "What's the weather in Paris?");
     String responseToWeather =
-        String.join("", eventsWeather.stream().map(Event::stringifyContent).toList());
+        String.join(
+            "",
+            eventsWeather.stream()
+                .filter(event -> !event.partial().orElse(false))
+                .map(Event::stringifyContent)
+                .toList());
 
     // then
 
@@ -497,7 +512,8 @@ class LangChain4jIntegrationTest {
         eventsWeather.stream()
             .filter(
                 event ->
-                    event.functionCalls().isEmpty()
+                    !event.partial().orElse(false)
+                        && event.functionCalls().isEmpty()
                         && event.functionResponses().isEmpty()
                         && event.content().isPresent()
                         && event.content().get().text() != null)

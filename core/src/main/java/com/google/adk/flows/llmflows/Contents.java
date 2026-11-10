@@ -18,15 +18,18 @@ package com.google.adk.flows.llmflows;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.workflow.NodeInfo;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -79,9 +82,23 @@ public final class Contents implements RequestProcessor {
             .groupFunctionResponsesInHistoryOverride()
             .orElse(modelName.contains("gemini-3"));
 
-    ImmutableList<Event> sessionEvents = context.session().immutableEvents();
+    @Nullable String nodePath = context.nodePath().orElse(null);
+    ImmutableList<Event> sessionEvents =
+        context.session().immutableEvents().stream()
+            .filter(event -> !isOtherNodeInput(context, event, nodePath))
+            .collect(toImmutableList());
+    LlmAgent.IncludeContents includeContents = llmAgent.canonicalIncludeContents(context);
+    if (nodePath != null
+        && context.agentMode(llmAgent).filter(AgentMode.SINGLE_TURN::equals).isPresent()) {
+      boolean keepAncestors = includeContents != LlmAgent.IncludeContents.NONE;
+      sessionEvents =
+          withoutOrphanedFunctionResponses(
+              sessionEvents.stream()
+                  .filter(event -> isOnNodePath(event, nodePath, keepAncestors))
+                  .collect(toImmutableList()));
+    }
 
-    if (llmAgent.includeContents() == LlmAgent.IncludeContents.NONE) {
+    if (includeContents == LlmAgent.IncludeContents.NONE) {
       return Single.just(
           RequestProcessor.RequestProcessingResult.create(
               request.toBuilder()
@@ -105,6 +122,56 @@ public final class Contents implements RequestProcessor {
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(
             request.toBuilder().contents(contents).build(), ImmutableList.of()));
+  }
+
+  /** Returns whether {@code event} is the input of a workflow node other than {@code nodePath}. */
+  private static boolean isOtherNodeInput(
+      InvocationContext context, Event event, @Nullable String nodePath) {
+    return context.isNodeInput(event)
+        && !event.nodeInfo().map(NodeInfo::path).orElse("").equals(nodePath);
+  }
+
+  /**
+   * Returns whether a single-turn node at {@code nodePath} sees {@code event}: a root event, one of
+   * its own path or below, or with {@code keepAncestors} one of its ancestors.
+   */
+  private static boolean isOnNodePath(Event event, String nodePath, boolean keepAncestors) {
+    String path = event.nodeInfo().map(NodeInfo::path).orElse("");
+    return path.isEmpty()
+        || path.equals(nodePath)
+        || path.startsWith(nodePath + "/")
+        || (keepAncestors && nodePath.startsWith(path + "/"));
+  }
+
+  /**
+   * Returns {@code events} without the function responses whose call is not among them, since a
+   * node's path filter can hide a call and a response without its call fails the request.
+   */
+  private static ImmutableList<Event> withoutOrphanedFunctionResponses(List<Event> events) {
+    ImmutableSet<String> callIds =
+        events.stream()
+            .flatMap(event -> event.functionCalls().stream())
+            .flatMap(call -> call.id().stream())
+            .collect(toImmutableSet());
+    ImmutableList.Builder<Event> kept = ImmutableList.builder();
+    for (Event event : events) {
+      List<Part> parts = event.content().flatMap(Content::parts).orElse(ImmutableList.of());
+      ImmutableList<Part> keptParts =
+          parts.stream()
+              .filter(
+                  part ->
+                      part.functionResponse()
+                          .map(response -> response.id().filter(callIds::contains).isPresent())
+                          .orElse(true))
+              .collect(toImmutableList());
+      if (keptParts.size() == parts.size()) {
+        kept.add(event);
+      } else if (!keptParts.isEmpty()) {
+        Content content = event.content().get().toBuilder().parts(keptParts).build();
+        kept.add(event.toBuilder().content(content).build());
+      }
+    }
+    return kept.build();
   }
 
   /** Gets contents for the current turn only (no conversation history). */
