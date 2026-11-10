@@ -19,6 +19,12 @@ import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
+import com.google.adk.events.Event;
+import com.google.adk.runner.InMemoryRunner;
+import com.google.adk.sessions.Session;
+import com.google.adk.tools.FunctionTool;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -31,13 +37,16 @@ import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
+import com.google.genai.types.Schema;
 import com.google.genai.types.ToolCall;
 import com.google.genai.types.ToolResponse;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.functions.Predicate;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.util.Arrays;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -329,7 +338,159 @@ public final class GeminiTest {
         finalResponse.content().get().parts().get().get(0).functionCall().get();
     assertThat(finalCall.name()).hasValue("book");
     assertThat(finalCall.args().get())
-        .containsExactly("location", ImmutableMap.of("city", "Paris"), "guests", 2.0);
+        .containsExactly("location", ImmutableMap.of("city", "Paris"), "guests", 2);
+  }
+
+  @Test
+  public void processRawResponses_streamedArrayPaths_buildLists() {
+    ImmutableList<PartialArg> partialArgs =
+        ImmutableList.of(
+            PartialArg.builder().jsonPath("$.tags[0]").stringValue("red").build(),
+            PartialArg.builder().jsonPath("$.tags[1]").stringValue("bl").build(),
+            PartialArg.builder().jsonPath("$.tags[1]").stringValue("ue").build(),
+            PartialArg.builder().jsonPath("$.items[0].name").stringValue("pen").build(),
+            PartialArg.builder().jsonPath("$.items[0].count").numberValue(2.0).build(),
+            PartialArg.builder().jsonPath("$.matrix[0][1]").numberValue(7.0).build());
+
+    Map<String, Object> args = streamedArgs(partialArgs);
+
+    assertThat(args)
+        .containsExactly(
+            "tags",
+            ImmutableList.of("red", "blue"),
+            "items",
+            ImmutableList.of(ImmutableMap.of("name", "pen", "count", 2)),
+            "matrix",
+            ImmutableList.of(Arrays.asList(null, 7)));
+  }
+
+  @Test
+  public void processRawResponses_streamedArrayPathsOutOfOrder_padWithNullsLikeAdkPython() {
+    ImmutableList<PartialArg> partialArgs =
+        ImmutableList.of(
+            PartialArg.builder().jsonPath("$.tags[2]").stringValue("c").build(),
+            PartialArg.builder().jsonPath("$.tags[0]").stringValue("a").build(),
+            PartialArg.builder().jsonPath("$.tags[20000]").stringValue("ignored").build(),
+            PartialArg.builder().jsonPath("$.tags.key").stringValue("ignored").build());
+
+    Map<String, Object> args = streamedArgs(partialArgs);
+
+    assertThat(args).containsExactly("tags", Arrays.asList("a", null, "c"));
+  }
+
+  @Test
+  public void processRawResponses_streamedNumbers_storesExactWholeNumbersAsIntegers() {
+    ImmutableMap<String, Object> args =
+        streamedArgs(
+            ImmutableMap.of(
+                "fraction",
+                2.5,
+                "beyondInt",
+                3_000_000_000d,
+                "largestExact",
+                9007199254740991d,
+                "beyondExact",
+                9007199254740992d));
+
+    assertThat(args.get("fraction")).isEqualTo(2.5);
+    assertThat(args.get("beyondInt")).isEqualTo(3_000_000_000L);
+    assertThat(args.get("largestExact")).isEqualTo(9007199254740991L);
+    assertThat(args.get("beyondExact")).isEqualTo(9007199254740992d);
+  }
+
+  // A streamed whole number must validate against an INTEGER field of the output schema.
+  @Test
+  public void runner_streamedSetModelResponseWithAWholeNumber_finishesWithTheAnswer() {
+    BaseLlm streamingGemini2 =
+        new BaseLlm("gemini-2.5-flash") {
+          @Override
+          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+            return Gemini.processRawResponses(
+                streamedCall(
+                    "set_model_response",
+                    ImmutableList.of(
+                        PartialArg.builder().jsonPath("$.guests").numberValue(2.0).build())));
+          }
+
+          @Override
+          public BaseLlmConnection connect(LlmRequest llmRequest) {
+            throw new UnsupportedOperationException();
+          }
+        };
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(streamingGemini2)
+            .tools(FunctionTool.create(GeminiTest.class, "lookup"))
+            .outputSchema(
+                Schema.builder()
+                    .type("OBJECT")
+                    .properties(ImmutableMap.of("guests", Schema.builder().type("INTEGER").build()))
+                    .build())
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent, "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+
+    ImmutableList<Event> events =
+        ImmutableList.copyOf(
+            runner
+                .runAsync(
+                    "user",
+                    session.id(),
+                    Content.fromParts(Part.fromText("hello")),
+                    RunConfig.builder().streamingMode(RunConfig.StreamingMode.SSE).build())
+                .blockingIterable());
+
+    assertThat(Iterables.getLast(events).content().get().text()).isEqualTo("{\"guests\":2}");
+  }
+
+  /** Streams one call whose arguments are {@code numbers}, one partial arg each. */
+  private ImmutableMap<String, Object> streamedArgs(ImmutableMap<String, Double> numbers) {
+    ImmutableList.Builder<PartialArg> partialArgs = ImmutableList.builder();
+    for (Map.Entry<String, Double> number : numbers.entrySet()) {
+      partialArgs.add(
+          PartialArg.builder()
+              .jsonPath("$." + number.getKey())
+              .numberValue(number.getValue())
+              .build());
+    }
+    return ImmutableMap.copyOf(streamedArgs(partialArgs.build()));
+  }
+
+  /** Streams one call through {@code partialArgs} and returns the arguments it ends with. */
+  private Map<String, Object> streamedArgs(ImmutableList<PartialArg> partialArgs) {
+    LlmResponse last =
+        Iterables.getLast(
+            Gemini.processRawResponses(streamedCall("f", partialArgs)).blockingIterable());
+    return last.content().get().parts().get().get(0).functionCall().get().args().get();
+  }
+
+  /** Returns the raw chunks of one call to {@code name} streamed through {@code partialArgs}. */
+  private Flowable<GenerateContentResponse> streamedCall(
+      String name, ImmutableList<PartialArg> partialArgs) {
+    GenerateContentResponse first =
+        toResponse(
+            functionCallPart(
+                FunctionCall.builder()
+                    .name(name)
+                    .partialArgs(partialArgs)
+                    .willContinue(true)
+                    .build()));
+    GenerateContentResponse last =
+        toResponse(
+            Candidate.builder()
+                .content(
+                    Content.builder()
+                        .parts(functionCallPart(FunctionCall.builder().willContinue(false).build()))
+                        .build())
+                .finishReason(new FinishReason(FinishReason.Known.STOP))
+                .build());
+    return Flowable.just(first, last);
+  }
+
+  /** A tool for the runner tests; never called, since the fake model answers without it. */
+  public static ImmutableMap<String, Object> lookup() {
+    return ImmutableMap.of();
   }
 
   // Two streamed function calls back-to-back must not bleed arguments into each other: a completed
