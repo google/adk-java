@@ -20,6 +20,7 @@ import com.google.adk.internal.http.HttpClientFactory;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.primitives.Ints;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.Client;
 import com.google.genai.ResponseStream;
@@ -46,6 +47,8 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import okhttp3.OkHttpClient;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -440,6 +443,28 @@ public class Gemini extends BaseLlm {
   }
 
   private static final class StreamingResponseAggregator {
+    /** The largest list index a streamed argument path may set, as in ADK Python. */
+    private static final int MAX_ARRAY_INDEX = 10_000;
+
+    /**
+     * A JSONPath segment, as in ADK Python: a list index such as {@code [0]}, a quoted key such as
+     * {@code ['a.b']} or {@code ["a.b"]}, or a key with an optional dot. Keys may hold escapes. The
+     * key loops are possessive: a greedy one recurses per character and overflows the stack.
+     */
+    private static final Pattern JSON_PATH_SEGMENT =
+        Pattern.compile(
+            "\\[\\s*(\\d+)\\s*]"
+                + "|\\['((?:[^'\\\\]|\\\\.)*+)'\\]"
+                + "|\\[\"((?:[^\"\\\\]|\\\\.)*+)\"\\]"
+                + "|\\.?((?:[^.\\[\\]\\\\]|\\\\.)++)");
+
+    /** A backslash escape in a JSONPath key: {@code \\uXXXX} or one escaped character. */
+    private static final Pattern JSON_PATH_ESCAPE =
+        Pattern.compile("\\\\u([0-9a-fA-F]{4})|\\\\(.)");
+
+    /** A whole number whose magnitude is at most 2^53 - 1 has an exact double; others may not. */
+    private static final double MAX_EXACT_DOUBLE_INTEGER = 9007199254740991d;
+
     private final List<Part> accumulatedSequence = new ArrayList<>();
     private final StringBuilder currentTextBuffer = new StringBuilder();
     // Always reassigned in accumulateParts() before it is read; the initializer is never observed.
@@ -674,7 +699,7 @@ public class Gemini extends BaseLlm {
         String chunk = partialArg.stringValue().get();
         setValueByJsonPath(jsonPath, existing instanceof String s ? s + chunk : chunk);
       } else if (partialArg.numberValue().isPresent()) {
-        setValueByJsonPath(jsonPath, partialArg.numberValue().get());
+        setValueByJsonPath(jsonPath, wholeNumberAsInteger(partialArg.numberValue().get()));
       } else if (partialArg.boolValue().isPresent()) {
         setValueByJsonPath(jsonPath, partialArg.boolValue().get());
       } else if (partialArg.nullValue().isPresent()) {
@@ -683,13 +708,35 @@ public class Gemini extends BaseLlm {
     }
 
     /**
+     * Returns a whole number whose magnitude is at most 2^53 - 1 as the Integer or Long a
+     * non-streamed call carries, because schema validation rejects a Double for an INTEGER field.
+     * Any other value stays a Double.
+     */
+    private static Number wholeNumberAsInteger(double value) {
+      if (value != Math.rint(value) || Math.abs(value) > MAX_EXACT_DOUBLE_INTEGER) {
+        return value;
+      }
+      long whole = (long) value;
+      if (whole == (int) whole) {
+        return (int) whole;
+      }
+      return whole;
+    }
+
+    /**
      * Returns the value currently stored at {@code jsonPath} in {@link #currentFcArgs}, or null.
      */
     private @Nullable Object getValueByJsonPath(String jsonPath) {
       Object current = currentFcArgs;
-      for (String key : splitJsonPath(jsonPath)) {
-        if (current instanceof Map<?, ?> map && map.containsKey(key)) {
+      for (Object segment : parseJsonPath(jsonPath)) {
+        if (segment instanceof String key
+            && current instanceof Map<?, ?> map
+            && map.containsKey(key)) {
           current = map.get(key);
+        } else if (segment instanceof Integer index
+            && current instanceof List<?> list
+            && index < list.size()) {
+          current = list.get(index);
         } else {
           return null;
         }
@@ -698,27 +745,92 @@ public class Gemini extends BaseLlm {
     }
 
     /**
-     * Sets {@code value} at {@code jsonPath} in {@link #currentFcArgs}, creating maps as needed.
+     * Sets {@code value} at {@code jsonPath} in {@link #currentFcArgs}, creating maps and lists as
+     * needed and padding lists with nulls, as ADK Python's {@code _set_value_by_json_path} does. A
+     * path that runs into a value of the wrong type or an index above 10,000 is ignored.
      */
     @SuppressWarnings("unchecked")
-    private void setValueByJsonPath(String jsonPath, Object value) {
-      String[] keys = splitJsonPath(jsonPath);
-      Map<String, Object> current = currentFcArgs;
-      for (int i = 0; i < keys.length - 1; i++) {
-        Object next = current.get(keys[i]);
-        if (!(next instanceof Map)) {
-          next = new LinkedHashMap<>();
-          current.put(keys[i], next);
+    private void setValueByJsonPath(String jsonPath, @Nullable Object value) {
+      List<Object> segments = parseJsonPath(jsonPath);
+      Object current = currentFcArgs;
+      for (int i = 0; i < segments.size(); i++) {
+        boolean last = i == segments.size() - 1;
+        Object child =
+            last
+                ? value
+                : segments.get(i + 1) instanceof Integer
+                    ? new ArrayList<>()
+                    : new LinkedHashMap<>();
+        if (segments.get(i) instanceof String key && current instanceof Map<?, ?>) {
+          Map<String, Object> map = (Map<String, Object>) current;
+          if (last || !map.containsKey(key)) {
+            map.put(key, child);
+          }
+          current = map.get(key);
+        } else if (segments.get(i) instanceof Integer index
+            && current instanceof List<?>
+            && index <= MAX_ARRAY_INDEX) {
+          List<Object> list = (List<Object>) current;
+          while (list.size() <= index) {
+            list.add(null);
+          }
+          if (last || list.get(index) == null) {
+            list.set(index, child);
+          }
+          current = list.get(index);
+        } else {
+          return;
         }
-        current = (Map<String, Object>) next;
       }
-      current.put(keys[keys.length - 1], value);
     }
 
-    /** Splits a JSONPath such as {@code "$.location.city"} into its component keys. */
-    private static String[] splitJsonPath(String jsonPath) {
-      String path = jsonPath.startsWith("$.") ? jsonPath.substring(2) : jsonPath;
-      return path.split("\\.");
+    /** Splits a JSONPath such as {@code "$.items[0].name"} into map keys and list indices. */
+    private static List<Object> parseJsonPath(String jsonPath) {
+      String path =
+          jsonPath.startsWith("$.")
+              ? jsonPath.substring(2)
+              : jsonPath.startsWith("$") ? jsonPath.substring(1) : jsonPath;
+      Matcher matcher = JSON_PATH_SEGMENT.matcher(path);
+      List<Object> segments = new ArrayList<>();
+      while (matcher.find()) {
+        if (matcher.group(1) != null) {
+          Integer index = Ints.tryParse(matcher.group(1));
+          // An index too large for an int is above MAX_ARRAY_INDEX anyway.
+          segments.add(index == null ? Integer.MAX_VALUE : index);
+        } else {
+          String key =
+              matcher.group(2) != null
+                  ? matcher.group(2)
+                  : matcher.group(3) != null ? matcher.group(3) : matcher.group(4);
+          segments.add(unescapeJsonPathKey(key));
+        }
+      }
+      return segments;
+    }
+
+    /** Resolves backslash escapes in a JSONPath key the way ADK Python does. */
+    private static String unescapeJsonPathKey(String key) {
+      Matcher matcher = JSON_PATH_ESCAPE.matcher(key);
+      StringBuilder result = new StringBuilder();
+      while (matcher.find()) {
+        String replacement;
+        if (matcher.group(1) != null) {
+          replacement = String.valueOf((char) Integer.parseInt(matcher.group(1), 16));
+        } else {
+          replacement =
+              switch (matcher.group(2)) {
+                case "n" -> "\n";
+                case "r" -> "\r";
+                case "t" -> "\t";
+                case "b" -> "\b";
+                case "f" -> "\f";
+                default -> matcher.group(2);
+              };
+        }
+        matcher.appendReplacement(result, Matcher.quoteReplacement(replacement));
+      }
+      matcher.appendTail(result);
+      return result.toString();
     }
 
     /**

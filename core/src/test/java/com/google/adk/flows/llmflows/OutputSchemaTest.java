@@ -24,6 +24,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
@@ -40,11 +41,14 @@ import com.google.adk.tools.SetModelResponseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
 import java.time.Instant;
@@ -70,6 +74,9 @@ public final class OutputSchemaTest {
           .required(ImmutableList.of("field1"))
           .build();
 
+  /** A Gemini 2 model name, which answers through set_model_response. */
+  private static final String GEMINI_2_MODEL = "gemini-2.5-flash";
+
   private OutputSchema outputSchemaProcessor;
   private TestLlm testLlm;
   private LlmRequest initialRequest;
@@ -84,6 +91,12 @@ public final class OutputSchemaTest {
   public static class TestTool extends BaseTool {
     public TestTool() {
       super("test_tool", "test description");
+    }
+
+    @Override
+    public Optional<FunctionDeclaration> declaration() {
+      return Optional.of(
+          FunctionDeclaration.builder().name(name()).description(description()).build());
     }
 
     @Override
@@ -562,6 +575,25 @@ public final class OutputSchemaTest {
     assertThat(otherRequest.tools()).doesNotContainKey(SetModelResponseTool.NAME);
   }
 
+  @Test
+  public void runner_untypedSchemaWithProperties_getsSetModelResponseWithObjectParameters() {
+    Schema untypedSchema =
+        Schema.builder()
+            .properties(ImmutableMap.of("field1", Schema.builder().type("STRING").build()))
+            .build();
+
+    LlmRequest request = firstRequest(GEMINI_2_MODEL, untypedSchema, new TestTool());
+
+    assertUsesSetModelResponse(request);
+    assertThat(
+            request
+                .tools()
+                .get(SetModelResponseTool.NAME)
+                .declaration()
+                .flatMap(FunctionDeclaration::parameters))
+        .hasValue(untypedSchema.toBuilder().type(Type.Known.OBJECT).build());
+  }
+
   /**
    * Forwards generateContent and connect to {@code delegate} under the model name {@code name}. It
    * does not forward capabilities(), which follows {@code name}.
@@ -612,5 +644,96 @@ public final class OutputSchemaTest {
         .processRequest(context, basicRequest)
         .blockingGet()
         .updatedRequest();
+  }
+
+  @Test
+  public void setModelResponseWithARequiredUntypedNull_keepsItInTheOutputKey() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("extra", Schema.builder().build()))
+            .required(ImmutableList.of("extra"))
+            .build();
+    Map<String, Object> args = new LinkedHashMap<>();
+    args.put("extra", null);
+    TestLlm scriptedLlm =
+        createTestLlm(
+            createLlmResponse(
+                Content.fromParts(Part.fromFunctionCall(SetModelResponseTool.NAME, args))));
+    BaseLlm gemini2NamedLlm =
+        new BaseLlm("gemini-2.0-flash") {
+          @Override
+          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+            return scriptedLlm.generateContent(llmRequest, stream);
+          }
+
+          @Override
+          public BaseLlmConnection connect(LlmRequest llmRequest) {
+            return scriptedLlm.connect(llmRequest);
+          }
+        };
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(gemini2NamedLlm)
+            .outputSchema(schema)
+            .tools(ImmutableList.of(new TestTool()))
+            .outputKey("answer")
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent, "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                Content.fromParts(Part.fromText("hello")),
+                // A rejected answer would make the model retry; stop instead of looping.
+                RunConfig.builder().maxLlmCalls(2).build())
+            .toList()
+            .blockingGet();
+
+    Event finalEvent = events.get(events.size() - 1);
+    assertThat(finalEvent.content().get().parts().get().get(0).text()).hasValue("{\"extra\":null}");
+    assertThat(finalEvent.actions().stateDelta()).containsEntry("answer", args);
+  }
+
+  private static LlmAgent.Builder agentBuilder(
+      BaseLlm model, Schema outputSchema, BaseTool... tools) {
+    return LlmAgent.builder()
+        .name("agent")
+        .model(model)
+        .outputSchema(outputSchema)
+        .tools(ImmutableList.copyOf(tools));
+  }
+
+  /** Runs {@code agent} once in an {@link InMemoryRunner} and returns its events. */
+  @CanIgnoreReturnValue
+  private static List<Event> runAgent(LlmAgent agent) {
+    InMemoryRunner runner = new InMemoryRunner(agent, "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+    return runner
+        .runAsync("user", session.id(), Content.fromParts(Part.fromText("hello")))
+        .toList()
+        .blockingGet();
+  }
+
+  /**
+   * Returns the first request an agent with {@code outputSchema} and {@code tools} sends to a model
+   * named {@code modelName}.
+   */
+  private static LlmRequest firstRequest(String modelName, Schema outputSchema, BaseTool... tools) {
+    TestLlm scriptedLlm = createTestLlm(createLlmResponse(Content.fromParts(Part.fromText("{}"))));
+    runAgent(agentBuilder(new RenamedLlm(modelName, scriptedLlm), outputSchema, tools).build());
+    return scriptedLlm.getRequests().get(0);
+  }
+
+  private static void assertUsesSetModelResponse(LlmRequest request) {
+    assertThat(request.tools()).containsKey(SetModelResponseTool.NAME);
+    assertThat(request.tools()).containsKey("test_tool");
+    assertThat(String.join("\n", request.getSystemInstructions()))
+        .contains("you must provide your final response using the set_model_response tool");
+    assertThat(request.config().flatMap(GenerateContentConfig::responseSchema)).isEmpty();
   }
 }

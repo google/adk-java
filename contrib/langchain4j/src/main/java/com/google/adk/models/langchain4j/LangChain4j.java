@@ -59,6 +59,7 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.request.ChatRequestParameters;
 import dev.langchain4j.model.chat.request.ToolChoice;
+import dev.langchain4j.model.chat.request.json.JsonAnyOfSchema;
 import dev.langchain4j.model.chat.request.json.JsonArraySchema;
 import dev.langchain4j.model.chat.request.json.JsonBooleanSchema;
 import dev.langchain4j.model.chat.request.json.JsonIntegerSchema;
@@ -564,8 +565,18 @@ public abstract class LangChain4j extends BaseLlm {
   }
 
   private JsonObjectSchema toParameters(Schema schema) {
-    if (schema.type().isPresent() && Type.Known.OBJECT.equals(schema.type().get().knownEnum())) {
+    // An untyped root with anyOf or items describes something other than an object.
+    if (schema.type().isEmpty()
+        && schema.properties().isEmpty()
+        && (schema.anyOf().map(branches -> !branches.isEmpty()).orElse(false)
+            || schema.items().isPresent())) {
+      throw new UnsupportedOperationException(
+          "LangChain4jLlm does not support an untyped root schema with anyOf or items");
+    }
+    // Any other untyped root describes an object.
+    if (schema.type().map(t -> t.knownEnum() == Type.Known.OBJECT).orElse(true)) {
       return JsonObjectSchema.builder()
+          .description(schema.description().orElse(null))
           .addProperties(toProperties(schema))
           .required(schema.required().orElse(List.of()))
           .build();
@@ -582,31 +593,94 @@ public abstract class LangChain4j extends BaseLlm {
     return result;
   }
 
-  private JsonSchemaElement toJsonSchemaElement(Schema schema) {
-    if (schema != null && schema.type().isPresent()) {
-      Type type = schema.type().get();
-      return switch (type.knownEnum()) {
-        case STRING ->
-            JsonStringSchema.builder().description(schema.description().orElse(null)).build();
-        case NUMBER ->
-            JsonNumberSchema.builder().description(schema.description().orElse(null)).build();
-        case INTEGER ->
-            JsonIntegerSchema.builder().description(schema.description().orElse(null)).build();
-        case BOOLEAN ->
-            JsonBooleanSchema.builder().description(schema.description().orElse(null)).build();
-        case ARRAY ->
-            JsonArraySchema.builder()
-                .description(schema.description().orElse(null))
-                .items(toJsonSchemaElement(schema.items().orElseThrow()))
-                .build();
-        case OBJECT -> toParameters(schema);
-        default ->
-            throw new UnsupportedFeatureException(
-                "LangChain4jLlm does not support schema of type: " + type);
-      };
-    } else {
-      throw new IllegalArgumentException("Schema type cannot be null or absent");
+  private JsonSchemaElement toJsonSchemaElement(@Nullable Schema schema) {
+    if (schema == null) {
+      return anyValue(null);
     }
+    // An untyped schema maps its anyOf branches; with properties or required keys it is an object,
+    // with items an array, as in SchemaUtils; otherwise it accepts any value.
+    boolean declaresKeys = schema.properties().isPresent() || schema.required().isPresent();
+    if (schema.type().isEmpty()) {
+      if (schema.anyOf().map(branches -> !branches.isEmpty()).orElse(false)) {
+        return toAnyOf(schema);
+      }
+      if (!declaresKeys && schema.items().isEmpty()) {
+        return anyValue(schema.description().orElse(null));
+      }
+    }
+    Type.Known type =
+        schema
+            .type()
+            .map(Type::knownEnum)
+            .orElse(declaresKeys ? Type.Known.OBJECT : Type.Known.ARRAY);
+    return switch (type) {
+      case STRING ->
+          JsonStringSchema.builder().description(schema.description().orElse(null)).build();
+      case NUMBER ->
+          JsonNumberSchema.builder().description(schema.description().orElse(null)).build();
+      case INTEGER ->
+          JsonIntegerSchema.builder().description(schema.description().orElse(null)).build();
+      case BOOLEAN ->
+          JsonBooleanSchema.builder().description(schema.description().orElse(null)).build();
+      case ARRAY ->
+          JsonArraySchema.builder()
+              .description(schema.description().orElse(null))
+              .items(schema.items().map(this::toJsonSchemaElement).orElseGet(() -> anyValue(null)))
+              .build();
+      case OBJECT -> toParameters(schema);
+      default ->
+          throw new UnsupportedFeatureException(
+              "LangChain4jLlm does not support schema of type: " + type);
+    };
+  }
+
+  /**
+   * Maps the anyOf branches of {@code schema}, without NULL branches, which LangChain4j tool
+   * parameters cannot express. A single remaining branch is returned as itself.
+   */
+  private JsonSchemaElement toAnyOf(Schema schema) {
+    @Nullable String description = schema.description().orElse(null);
+    List<Schema> branches = new ArrayList<>();
+    for (Schema branch : schema.anyOf().get()) {
+      if (branch.type().map(t -> t.knownEnum() != Type.Known.NULL).orElse(true)) {
+        branches.add(branch);
+      }
+    }
+    if (branches.isEmpty()) {
+      return anyValue(description);
+    }
+    if (branches.size() == 1) {
+      Schema only = branches.get(0);
+      if (description != null && only.description().isEmpty()) {
+        only = only.toBuilder().description(description).build();
+      }
+      return toJsonSchemaElement(only);
+    }
+    List<JsonSchemaElement> elements = new ArrayList<>();
+    for (Schema branch : branches) {
+      elements.add(toJsonSchemaElement(branch));
+    }
+    return JsonAnyOfSchema.builder().description(description).anyOf(elements).build();
+  }
+
+  /**
+   * Returns an element that accepts a string, number, boolean, object, or an array of those, for a
+   * schema without a type. Not a {@code JsonRawSchema}, which the Gemini provider rejects. The
+   * array branch has items, which Gemini requires.
+   */
+  private static JsonSchemaElement anyValue(@Nullable String description) {
+    List<JsonSchemaElement> nonArrays =
+        List.of(
+            new JsonStringSchema(),
+            new JsonNumberSchema(),
+            new JsonBooleanSchema(),
+            JsonObjectSchema.builder().build());
+    List<JsonSchemaElement> anyOf = new ArrayList<>(nonArrays);
+    anyOf.add(
+        JsonArraySchema.builder()
+            .items(JsonAnyOfSchema.builder().anyOf(nonArrays).build())
+            .build());
+    return JsonAnyOfSchema.builder().description(description).anyOf(anyOf).build();
   }
 
   private LlmResponse toLlmResponse(ChatResponse chatResponse, ChatRequest chatRequest) {
