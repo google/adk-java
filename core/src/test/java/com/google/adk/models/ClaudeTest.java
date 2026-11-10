@@ -1805,4 +1805,9 @@ public final class ClaudeTest {
         .test()
         .assertError(UnsupportedOperationException.class);
   }
+
+  @Test
+  public void capabilities_reportNoOutputSchemaWithTools() {
+    assertThat(claude.capabilities().outputSchemaAndTools()).isFalse();
+  }
 }

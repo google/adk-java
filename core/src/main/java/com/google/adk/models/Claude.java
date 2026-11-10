@@ -1200,4 +1200,13 @@ public class Claude extends BaseLlm {
   public BaseLlmConnection connect(LlmRequest llmRequest) {
     throw new UnsupportedOperationException("Live connection is not supported for Claude models.");
   }
+
+  /**
+   * Reports {@link LlmCapabilities#outputSchemaAndTools()} as false: this class drops a response
+   * schema sent beside function declarations.
+   */
+  @Override
+  public LlmCapabilities capabilities() {
+    return LlmCapabilities.builder().outputSchemaAndTools(false).build();
+  }
 }

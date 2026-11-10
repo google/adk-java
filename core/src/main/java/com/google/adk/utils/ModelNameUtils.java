@@ -96,11 +96,14 @@ public final class ModelNameUtils {
   }
 
   /**
-   * Returns true if the model supports using output schema together with tools.
+   * Returns false for a {@code gemini-2.*} model name and true for any other name.
    *
    * @param modelString The model name or path.
-   * @return true if output schema with tools is supported, false otherwise.
+   * @return false for a {@code gemini-2.*} model name, true otherwise.
+   * @deprecated Use {@link com.google.adk.models.BaseLlm#capabilities()} instead. ADK no longer
+   *     calls this method.
    */
+  @Deprecated
   public static boolean canUseOutputSchemaWithTools(String modelString) {
     // Current limitation for Vertex AI 2.x models.
     return !isGemini2Model(modelString);

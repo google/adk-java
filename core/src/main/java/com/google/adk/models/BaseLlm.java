@@ -16,6 +16,7 @@
 
 package com.google.adk.models;
 
+import com.google.adk.utils.ModelNameUtils;
 import io.reactivex.rxjava3.core.Flowable;
 
 /**
@@ -54,4 +55,15 @@ public abstract class BaseLlm {
 
   /** Creates a live connection to the LLM. */
   public abstract BaseLlmConnection connect(LlmRequest llmRequest);
+
+  /**
+   * Returns what this model supports. By default, {@link LlmCapabilities#outputSchemaAndTools()} is
+   * false when {@link ModelNameUtils#isGemini2Model} accepts the {@link #model()} name and true
+   * otherwise. Override it to report what the model itself supports.
+   */
+  public LlmCapabilities capabilities() {
+    return LlmCapabilities.builder()
+        .outputSchemaAndTools(!ModelNameUtils.isGemini2Model(model()))
+        .build();
+  }
 }

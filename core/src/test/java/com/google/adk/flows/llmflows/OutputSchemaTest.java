@@ -29,6 +29,7 @@ import com.google.adk.events.EventActions;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
 import com.google.adk.models.BaseLlm;
 import com.google.adk.models.BaseLlmConnection;
+import com.google.adk.models.LlmCapabilities;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
 import com.google.adk.runner.InMemoryRunner;
@@ -53,6 +54,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -77,21 +79,6 @@ public final class OutputSchemaTest {
     outputSchemaProcessor = new OutputSchema();
     testLlm = createTestLlm(LlmResponse.builder().build());
     initialRequest = LlmRequest.builder().model("gemini-2.0-pro").build();
-  }
-
-  /** A model named like Gemini 2, which cannot take a response schema alongside tools. */
-  private static BaseLlm gemini2Llm() {
-    return new BaseLlm("gemini-2.0-pro") {
-      @Override
-      public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-        return Flowable.empty();
-      }
-
-      @Override
-      public BaseLlmConnection connect(LlmRequest llmRequest) {
-        throw new UnsupportedOperationException();
-      }
-    };
   }
 
   public static class TestTool extends BaseTool {
@@ -157,7 +144,7 @@ public final class OutputSchemaTest {
     LlmAgent agent =
         LlmAgent.builder()
             .name("agent")
-            .model(testLlm)
+            .model(new RenamedLlm("gemini-2.0-pro", testLlm))
             .outputSchema(TEST_OUTPUT_SCHEMA)
             .subAgents(LlmAgent.builder().name("helper").model(testLlm).build())
             .build();
@@ -173,7 +160,11 @@ public final class OutputSchemaTest {
   public void processRequest_withOutputSchemaUnderAnLlmAgentParent_addsSetModelResponseTool() {
     // A sub-agent can transfer back to its parent, so its requests declare transfer_to_agent.
     LlmAgent leaf =
-        LlmAgent.builder().name("leaf").model(testLlm).outputSchema(TEST_OUTPUT_SCHEMA).build();
+        LlmAgent.builder()
+            .name("leaf")
+            .model(new RenamedLlm("gemini-2.0-pro", testLlm))
+            .outputSchema(TEST_OUTPUT_SCHEMA)
+            .build();
     LlmAgent unused = LlmAgent.builder().name("root").model(testLlm).subAgents(leaf).build();
     InvocationContext context = createInvocationContext(leaf);
 
@@ -189,7 +180,7 @@ public final class OutputSchemaTest {
     LlmAgent leaf =
         LlmAgent.builder()
             .name("leaf")
-            .model(gemini2Llm())
+            .model(new RenamedLlm("gemini-2.0-pro", testLlm))
             .outputSchema(TEST_OUTPUT_SCHEMA)
             .disallowTransferToParent(true)
             .disallowTransferToPeers(true)
@@ -212,7 +203,7 @@ public final class OutputSchemaTest {
     LlmAgent agent =
         LlmAgent.builder()
             .name("agent")
-            .model(testLlm)
+            .model(new RenamedLlm("gemini-2.5-pro", testLlm))
             .outputSchema(TEST_OUTPUT_SCHEMA)
             .tools(ImmutableList.of(new TestTool()))
             .build();
@@ -426,18 +417,7 @@ public final class OutputSchemaTest {
         createTestLlm(createLlmResponse(invalidCall), createLlmResponse(validCall));
     // The output-schema workaround only activates for models that cannot combine tools with an
     // output schema, so the scripted TestLlm is wrapped under a gemini-2 model name.
-    BaseLlm gemini2NamedLlm =
-        new BaseLlm("gemini-2.0-flash") {
-          @Override
-          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-            return scriptedLlm.generateContent(llmRequest, stream);
-          }
-
-          @Override
-          public BaseLlmConnection connect(LlmRequest llmRequest) {
-            return scriptedLlm.connect(llmRequest);
-          }
-        };
+    BaseLlm gemini2NamedLlm = new RenamedLlm("gemini-2.0-flash", scriptedLlm);
     LlmAgent agent =
         LlmAgent.builder()
             .name("agent")
@@ -498,18 +478,7 @@ public final class OutputSchemaTest {
             createLlmResponse(
                 Content.fromParts(Part.fromFunctionCall(SetModelResponseTool.NAME, args))));
     // Only a model that can't combine tools with an output schema answers via set_model_response.
-    BaseLlm gemini2NamedLlm =
-        new BaseLlm("gemini-2.0-flash") {
-          @Override
-          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
-            return scriptedLlm.generateContent(llmRequest, stream);
-          }
-
-          @Override
-          public BaseLlmConnection connect(LlmRequest llmRequest) {
-            return scriptedLlm.connect(llmRequest);
-          }
-        };
+    BaseLlm gemini2NamedLlm = new RenamedLlm("gemini-2.0-flash", scriptedLlm);
     LlmAgent agent =
         LlmAgent.builder()
             .name("agent")
@@ -531,5 +500,117 @@ public final class OutputSchemaTest {
     assertThat(finalEvent.content().get().parts().get().get(0).text())
         .hasValue("{\"city\":\"Paris\",\"note\":null}");
     assertThat(finalEvent.actions().stateDelta()).containsEntry("answer", args);
+  }
+
+  @Test
+  public void capabilities_customModelDefaultFollowsGemini2Name() {
+    assertThat(new RenamedLlm("gemini-2.5-flash", testLlm).capabilities().outputSchemaAndTools())
+        .isFalse();
+    assertThat(
+            new RenamedLlm("models/gemini-2.5-flash", testLlm)
+                .capabilities()
+                .outputSchemaAndTools())
+        .isTrue();
+    assertThat(new RenamedLlm("my-model", testLlm).capabilities().outputSchemaAndTools()).isTrue();
+  }
+
+  @Test
+  public void processRequest_modelReportingNoOutputSchemaWithTools_addsSetModelResponseTool() {
+    LlmRequest request =
+        basicThenOutputSchema(
+            withCapabilities("my-model", testLlm, LlmCapabilities.builder().build()));
+
+    assertThat(request.tools()).containsKey(SetModelResponseTool.NAME);
+    assertThat(request.config().flatMap(GenerateContentConfig::responseSchema)).isEmpty();
+  }
+
+  @Test
+  public void processRequest_modelReportingOutputSchemaWithTools_keepsTheResponseSchema() {
+    LlmRequest request =
+        basicThenOutputSchema(
+            withCapabilities(
+                "my-model", testLlm, LlmCapabilities.builder().outputSchemaAndTools(true).build()));
+
+    assertThat(request.tools()).doesNotContainKey(SetModelResponseTool.NAME);
+    assertThat(request.config().flatMap(GenerateContentConfig::responseSchema))
+        .hasValue(TEST_OUTPUT_SCHEMA);
+  }
+
+  @Test
+  public void processRequest_gemini2ModelReportingOutputSchemaWithTools_keepsTheResponseSchema() {
+    LlmRequest request =
+        basicThenOutputSchema(
+            withCapabilities(
+                "gemini-2.5-flash",
+                testLlm,
+                LlmCapabilities.builder().outputSchemaAndTools(true).build()));
+
+    assertThat(request.tools()).doesNotContainKey(SetModelResponseTool.NAME);
+    assertThat(request.config().flatMap(GenerateContentConfig::responseSchema))
+        .hasValue(TEST_OUTPUT_SCHEMA);
+  }
+
+  @Test
+  public void processRequest_modelWithNullCapabilities_followsTheRequestName() {
+    LlmRequest gemini2Request =
+        basicThenOutputSchema(
+            withCapabilities("gemini-2.5-flash", testLlm, /* capabilities= */ null));
+    LlmRequest otherRequest =
+        basicThenOutputSchema(withCapabilities("my-model", testLlm, /* capabilities= */ null));
+
+    assertThat(gemini2Request.tools()).containsKey(SetModelResponseTool.NAME);
+    assertThat(otherRequest.tools()).doesNotContainKey(SetModelResponseTool.NAME);
+  }
+
+  /**
+   * Forwards generateContent and connect to {@code delegate} under the model name {@code name}. It
+   * does not forward capabilities(), which follows {@code name}.
+   */
+  private static class RenamedLlm extends BaseLlm {
+    private final BaseLlm delegate;
+
+    RenamedLlm(String name, BaseLlm delegate) {
+      super(name);
+      this.delegate = delegate;
+    }
+
+    @Override
+    public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+      return delegate.generateContent(llmRequest, stream);
+    }
+
+    @Override
+    public BaseLlmConnection connect(LlmRequest llmRequest) {
+      return delegate.connect(llmRequest);
+    }
+  }
+
+  /** {@code delegate} under {@code name}, reporting {@code capabilities}. */
+  private static BaseLlm withCapabilities(
+      String name, BaseLlm delegate, @Nullable LlmCapabilities capabilities) {
+    return new RenamedLlm(name, delegate) {
+      @Override
+      public LlmCapabilities capabilities() {
+        return capabilities;
+      }
+    };
+  }
+
+  /** Runs Basic, then OutputSchema, for an agent on {@code model} with a tool and a schema. */
+  private LlmRequest basicThenOutputSchema(BaseLlm model) {
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(model)
+            .outputSchema(TEST_OUTPUT_SCHEMA)
+            .tools(ImmutableList.of(new TestTool()))
+            .build();
+    InvocationContext context = createInvocationContext(agent);
+    LlmRequest basicRequest =
+        new Basic().processRequest(context, initialRequest).blockingGet().updatedRequest();
+    return outputSchemaProcessor
+        .processRequest(context, basicRequest)
+        .blockingGet()
+        .updatedRequest();
   }
 }

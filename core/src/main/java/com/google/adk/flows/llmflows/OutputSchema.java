@@ -22,7 +22,9 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.models.BaseLlm;
+import com.google.adk.models.LlmCapabilities;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.models.Model;
 import com.google.adk.tools.SetModelResponseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.adk.utils.ModelNameUtils;
@@ -40,8 +42,6 @@ import org.slf4j.LoggerFactory;
 public final class OutputSchema implements RequestProcessor {
 
   private static final Logger logger = LoggerFactory.getLogger(OutputSchema.class);
-
-  private static final String CLAUDE_CLASS = "com.google.adk.models.Claude";
 
   public OutputSchema() {}
 
@@ -79,30 +79,27 @@ public final class OutputSchema implements RequestProcessor {
   }
 
   /**
-   * Returns true if the agent's output schema needs the set_model_response tool. This is needed
-   * when its requests declare function tools, counting the transfer_to_agent tool that agent
-   * transfer adds, and its model cannot take a response schema alongside them. ADK's Claude model
-   * never can, as in ADK Python.
+   * Returns true if the agent's output schema needs the set_model_response tool. That is when its
+   * requests declare function tools, counting the transfer_to_agent tool that agent transfer adds,
+   * and its model cannot take a response schema alongside them.
    */
   static boolean needsSetModelResponseTool(LlmAgent agent, String modelName) {
     boolean hasFunctionTools =
         !agent.toolsUnion().isEmpty() || !AgentTransfer.transferTargets(agent).isEmpty();
-    return hasFunctionTools
-        && (!ModelNameUtils.canUseOutputSchemaWithTools(modelName)
-            || agent.resolvedModel().model().map(OutputSchema::isClaude).orElse(false));
+    return hasFunctionTools && !takesOutputSchemaWithTools(agent.resolvedModel(), modelName);
   }
 
   /**
-   * Returns true if {@code llm} is ADK's Claude model or a subclass of it. Checks by class name
-   * because not every ADK build includes the Claude class.
+   * Returns the model's {@link LlmCapabilities#outputSchemaAndTools()}. Without a {@link BaseLlm},
+   * or when {@code capabilities()} returns null as a mock does, it falls back to the rule for
+   * {@code modelName}: false for a Gemini 2 name.
    */
-  private static boolean isClaude(BaseLlm llm) {
-    for (Class<?> clazz = llm.getClass(); clazz != null; clazz = clazz.getSuperclass()) {
-      if (clazz.getName().equals(CLAUDE_CLASS)) {
-        return true;
-      }
-    }
-    return false;
+  private static boolean takesOutputSchemaWithTools(Model model, String modelName) {
+    return model
+        .model()
+        .map(BaseLlm::capabilities)
+        .map(LlmCapabilities::outputSchemaAndTools)
+        .orElseGet(() -> !ModelNameUtils.isGemini2Model(modelName));
   }
 
   /**
