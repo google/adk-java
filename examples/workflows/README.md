@@ -10,9 +10,11 @@ an adk-python workflow sample.
 | `LoopSelfWorkflow` | A node routes back to itself until it guesses the user's number. | No |
 | `MessageWorkflow` | Nodes send text, an inline image, several messages, and a streamed sentence. | No |
 | `MultiTriggersWorkflow` | Three nodes transform the user's text concurrently, and each one triggers its own run of the same node. | No |
+| `OrderProcessingWorkflow` | Nested workflows and a tool check an order concurrently, then a node routes it based on an agent's risk decision: charge, review, or freeze as fraud. | Yes |
 | `RequestInputAdvancedWorkflow` | A node asks a manager to decide, sending a payload and asking for an answer that matches a schema. | Yes |
 | `RequestInputRerunWorkflow` | The `RequestInputWorkflow` review in one node, which reruns when the human answers. | Yes |
 | `RequestInputWorkflow` | A node pauses the workflow until a human approves, rejects, or asks to revise a draft. | Yes |
+| `ResearchWorkflow` | A planner fans out to two agents that search the web, and a reviewer sends the writer's brief back until it is complete. | Yes |
 | `RetryWorkflow` | A retry policy reruns a failing node before the next node reports its result. | No |
 | `ReturnsWorkflow` | Function tools run as graph steps, and a routing map matches groups of statuses with `anyOf`. | No |
 | `RouteWorkflow` | An agent classifies the input, and a node routes it to the agent or node that handles it. | Yes |
