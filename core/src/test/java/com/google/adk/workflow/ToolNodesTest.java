@@ -19,6 +19,7 @@ package com.google.adk.workflow;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
+import static com.google.adk.testing.WorkflowTestNodes.dispatcher;
 import static com.google.adk.testing.WorkflowTestNodes.emitter;
 import static com.google.adk.testing.WorkflowTestNodes.workflow;
 import static com.google.adk.workflow.WorkflowResumeTesting.LONG_RUNNING_CALL;
@@ -27,17 +28,21 @@ import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.callContent;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
+import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
 import static com.google.adk.workflow.WorkflowResumeTesting.newEvent;
+import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
+import static com.google.adk.workflow.WorkflowResumeTesting.requestAnswer;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
-import com.google.adk.agents.CallbackContext;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.plugins.PluginManager;
 import com.google.adk.testing.TestLlm;
@@ -54,6 +59,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
@@ -63,6 +69,7 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -75,6 +82,9 @@ import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public final class ToolNodesTest {
+
+  private static final String DELETION_CONFIRMATION_ID = "wf_tool_confirmation:wf@1/delete_db@1";
+  private static final String TRANSFER_CONFIRMATION_ID = "wf_tool_confirmation:wf@1/transfer@1";
 
   @Test
   public void asNode_withOnlyATool_usesItsNameAndDescriptionAndDefaults() {
@@ -330,18 +340,92 @@ public final class ToolNodesTest {
   }
 
   @Test
-  public void runNode_functionToolRequiringConfirmation_outputsItsPlaceholderWithoutRunning() {
+  public void runNode_functionToolRequiringConfirmation_asksForItWithoutRunning() {
     FunctionTool tool =
         FunctionTool.create(Functions.class, "forecast", /* requireConfirmation= */ true);
-    Context context = context();
 
-    Object output = run(tool, context, "Rome");
+    Object output = run(tool, "Rome");
 
-    assertThat(output)
-        .isEqualTo(
+    assertThat(output).isInstanceOf(RequestInput.class);
+    RequestInput request = (RequestInput) output;
+    assertThat(request.interruptId()).isEqualTo("wf_tool_confirmation:tool@1");
+    assertThat(request.message())
+        .hasValue(
+            "Please approve or reject the tool call forecast() by responding with a"
+                + " FunctionResponse with an expected ToolConfirmation payload.");
+    assertThat(request.payload())
+        .hasValue(
+            ImmutableMap.of("tool_name", "forecast", "args", ImmutableMap.of("city", "Rome")));
+    assertThat(request.responseSchema()).isPresent();
+  }
+
+  @Test
+  public void runNode_toolAsksForConfirmationWithoutAHint_asksInItsName() {
+    FakeTool tool =
+        FakeTool.running(
+            "cleanup",
+            (args, toolContext) -> {
+              toolContext.requestConfirmation();
+              return ImmutableMap.of("status", "pending");
+            });
+
+    Object output = run(tool, null);
+
+    assertThat(((RequestInput) output).message())
+        .hasValue("Please approve or reject the tool call cleanup().");
+  }
+
+  @Test
+  public void runNode_toolAsksForConfirmation_skipsTheAfterToolCallbacks() {
+    FunctionTool tool =
+        FunctionTool.create(Functions.class, "forecast", /* requireConfirmation= */ true);
+    RecordingPlugin plugin = RecordingPlugin.silent();
+
+    Object output = run(tool, context(plugin), "Rome");
+
+    assertThat(output).isInstanceOf(RequestInput.class);
+    assertThat(plugin.calls).containsExactly("before forecast {city=Rome}");
+  }
+
+  @Test
+  public void runNode_answerThatIsNotAConfirmation_failsTheNode() {
+    FunctionTool tool =
+        FunctionTool.create(Functions.class, "forecast", /* requireConfirmation= */ true);
+    Context context =
+        nodeContext(
+            new PluginManager(), ImmutableMap.of("wf_tool_confirmation:tool@1", "approved"));
+
+    WorkflowDataException thrown =
+        assertThrows(WorkflowDataException.class, () -> run(tool, context, "Rome"));
+
+    assertThat(thrown).hasMessageThat().contains("tool node 'forecast'");
+    assertThat(thrown).hasMessageThat().contains("not a ToolConfirmation");
+  }
+
+  @Test
+  public void runNode_answerWithHintThatIsNotAString_failsTheNode() {
+    FunctionTool tool =
+        FunctionTool.create(Functions.class, "forecast", /* requireConfirmation= */ true);
+    Context context =
+        nodeContext(
+            new PluginManager(),
             ImmutableMap.of(
-                "error", "This tool call requires confirmation, please approve or reject."));
-    assertThat(context.eventActions().requestedToolConfirmations()).isEmpty();
+                "wf_tool_confirmation:tool@1",
+                ImmutableMap.of("confirmed", true, "hint", ImmutableList.of("yes"))));
+
+    assertThrows(WorkflowDataException.class, () -> run(tool, context, "Rome"));
+  }
+
+  @Test
+  public void runNode_answerWithAnUnknownKey_failsTheNode() {
+    FunctionTool tool =
+        FunctionTool.create(Functions.class, "forecast", /* requireConfirmation= */ true);
+    Context context =
+        nodeContext(
+            new PluginManager(),
+            ImmutableMap.of("wf_tool_confirmation:tool@1", ImmutableMap.of("approved", true)));
+
+    assertThrows(WorkflowDataException.class, () -> run(tool, context, "Rome"));
   }
 
   @Test
@@ -404,14 +488,11 @@ public final class ToolNodesTest {
   }
 
   @Test
-  public void runNode_functionToolReturningNothingThatNeedsConfirmation_outputsItsPlaceholder() {
+  public void runNode_functionToolReturningNothingThatNeedsConfirmation_asksForIt() {
     FunctionTool tool =
         FunctionTool.create(Functions.class, "record", /* requireConfirmation= */ true);
 
-    assertThat(run(tool, "a note"))
-        .isEqualTo(
-            ImmutableMap.of(
-                "error", "This tool call requires confirmation, please approve or reject."));
+    assertThat(run(tool, "a note")).isInstanceOf(RequestInput.class);
   }
 
   @Test
@@ -462,25 +543,282 @@ public final class ToolNodesTest {
 
   @Test
   public void runNode_toolRequestsModelOnlyActions_dropsThem() {
-    ImmutableMap<String, Object> placeholder = ImmutableMap.of("error", "Needs confirmation.");
+    ImmutableMap<String, Object> result = ImmutableMap.of("status", "handed off");
     FakeTool tool =
         FakeTool.running(
             "handoff",
             (args, toolContext) -> {
-              toolContext.requestConfirmation("Approve?");
               toolContext.eventActions().setTransferToAgent("elsewhere");
               toolContext.eventActions().setSkipSummarization(true);
-              return placeholder;
+              return result;
             });
     Context context = context();
 
     Object output = run(tool, context, null);
 
-    assertThat(output).isEqualTo(placeholder);
+    assertThat(output).isEqualTo(result);
     EventActions actions = context.eventActions();
-    assertThat(actions.requestedToolConfirmations()).isEmpty();
     assertThat(actions.transferToAgent()).isEmpty();
     assertThat(actions.skipSummarization()).isEmpty();
+  }
+
+  @Test
+  public void turn_toolRequiresConfirmation_asksWithItsArgumentsWithoutRunningIt() {
+    Database database = new Database();
+
+    ImmutableList<Event> events = new WorkflowSession(deletionWorkflow(database)).turn(go());
+
+    FunctionCall call =
+        events.stream().flatMap(event -> event.functionCalls().stream()).collect(onlyElement());
+    assertThat(call.name()).hasValue(RequestInput.FUNCTION_CALL_NAME);
+    assertThat(call.id()).hasValue(DELETION_CONFIRMATION_ID);
+    assertThat(call.args().orElseThrow().get("payload"))
+        .isEqualTo(
+            ImmutableMap.of("tool_name", "delete_db", "args", ImmutableMap.of("name", "prod")));
+    assertThat(database.deleted).isEmpty();
+    assertThat(pathsOf(events)).doesNotContain("wf@1/reply@1");
+  }
+
+  @Test
+  public void resume_confirmationApproved_runsTheToolOnceAndContinues() {
+    Database database = new Database();
+    WorkflowSession session = new WorkflowSession(deletionWorkflow(database));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer(DELETION_CONFIRMATION_ID, ImmutableMap.of("confirmed", true)));
+
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("deleted", "prod"));
+    assertThat(database.deleted).containsExactly("prod");
+  }
+
+  @Test
+  public void resume_confirmationApprovedWithoutResumability_runsTheToolOnceAndContinues() {
+    Database database = new Database();
+    WorkflowSession session =
+        new WorkflowSession(deletionWorkflow(database), /* resumable= */ false);
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer(DELETION_CONFIRMATION_ID, ImmutableMap.of("confirmed", true)));
+
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("deleted", "prod"));
+    assertThat(database.deleted).containsExactly("prod");
+  }
+
+  @Test
+  public void resume_confirmationApprovedWithANullHint_runsTheTool() {
+    Database database = new Database();
+    WorkflowSession session = new WorkflowSession(deletionWorkflow(database));
+    session.advance(go());
+    Map<String, @Nullable Object> approval = new HashMap<>();
+    approval.put("confirmed", true);
+    approval.put("hint", null);
+
+    ImmutableList<Event> events = session.turn(requestAnswer(DELETION_CONFIRMATION_ID, approval));
+
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("deleted", "prod"));
+    assertThat(database.deleted).containsExactly("prod");
+  }
+
+  @Test
+  public void resume_confirmationRejected_outputsTheRejectionWithoutRunningTheTool() {
+    Database database = new Database();
+    WorkflowSession session = new WorkflowSession(deletionWorkflow(database));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer(DELETION_CONFIRMATION_ID, ImmutableMap.of("confirmed", false)));
+
+    assertThat(replyInput(events))
+        .isEqualTo(ImmutableMap.of("error", "This tool call is rejected."));
+    assertThat(database.deleted).isEmpty();
+  }
+
+  @Test
+  public void resume_answerWithoutConfirmed_rejectsTheCall() {
+    Database database = new Database();
+    WorkflowSession session = new WorkflowSession(deletionWorkflow(database));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer(DELETION_CONFIRMATION_ID, ImmutableMap.of("hint", "no")));
+
+    assertThat(replyInput(events))
+        .isEqualTo(ImmutableMap.of("error", "This tool call is rejected."));
+    assertThat(database.deleted).isEmpty();
+  }
+
+  @Test
+  public void resume_confirmationApproved_showsTheAnswerToThePluginsBeforeToolCallback() {
+    RecordingPlugin plugin = RecordingPlugin.silent();
+    WorkflowSession session =
+        new WorkflowSession(deletionWorkflow(new Database()), /* resumable= */ true, plugin);
+    session.advance(go());
+
+    session.advance(requestAnswer(DELETION_CONFIRMATION_ID, ImmutableMap.of("confirmed", true)));
+
+    assertThat(plugin.confirmationsBefore)
+        .containsExactly(Optional.empty(), Optional.of(true))
+        .inOrder();
+  }
+
+  @Test
+  public void resume_answerThatIsNotAConfirmation_failsNamingTheInterrupt() {
+    WorkflowSession session = new WorkflowSession(deletionWorkflow(new Database()));
+    session.advance(go());
+    Content answer = requestAnswer(DELETION_CONFIRMATION_ID, ImmutableMap.of("confirmed", "yes"));
+
+    IllegalArgumentException thrown =
+        assertThrows(IllegalArgumentException.class, () -> session.turn(answer));
+
+    assertThat(thrown)
+        .hasMessageThat()
+        .contains("Validation failed for interrupt " + DELETION_CONFIRMATION_ID);
+  }
+
+  @Test
+  public void turn_toolRequestsConfirmation_asksWithItsHintAndPayload() {
+    List<Object> transferred = new ArrayList<>();
+
+    ImmutableList<Event> events = new WorkflowSession(transferWorkflow(transferred)).turn(go());
+
+    FunctionCall call =
+        events.stream().flatMap(event -> event.functionCalls().stream()).collect(onlyElement());
+    assertThat(call.id()).hasValue(TRANSFER_CONFIRMATION_ID);
+    assertThat(call.args().orElseThrow())
+        .containsAtLeast(
+            "message",
+            "Approve the transfer?",
+            "payload",
+            ImmutableMap.of(
+                "tool_name",
+                "transfer",
+                "args",
+                ImmutableMap.of("amount", 5),
+                "confirmation_payload",
+                ImmutableMap.of("limit", 0)));
+    assertThat(transferred).isEmpty();
+    assertThat(pathsOf(events)).doesNotContain("wf@1/reply@1");
+  }
+
+  @Test
+  public void resume_toolRequestedConfirmationApproved_rerunsItWithTheAnswer() {
+    List<Object> transferred = new ArrayList<>();
+    WorkflowSession session = new WorkflowSession(transferWorkflow(transferred));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(
+            requestAnswer(
+                TRANSFER_CONFIRMATION_ID,
+                ImmutableMap.of("confirmed", true, "payload", ImmutableMap.of("limit", 10))));
+
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("transferred", 5, "limit", 10));
+    assertThat(transferred).containsExactly(5);
+  }
+
+  @Test
+  public void resume_toolRequestedConfirmationRejected_letsTheToolDecide() {
+    List<Object> transferred = new ArrayList<>();
+    WorkflowSession session = new WorkflowSession(transferWorkflow(transferred));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer(TRANSFER_CONFIRMATION_ID, ImmutableMap.of("confirmed", false)));
+
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("status", "declined"));
+    assertThat(transferred).isEmpty();
+  }
+
+  @Test
+  public void resume_afterALaterInterrupt_doesNotRunAConfirmedToolReturningNothingAgain() {
+    Recorder recorder = new Recorder();
+    Node note = emitter("note", ImmutableMap.of("note", "a note"));
+    Node toolNode =
+        ToolNodes.asNode(FunctionTool.create(recorder, "record", /* requireConfirmation= */ true));
+    Node asker = longRunningAsk("asker", "ask-1");
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(
+                new Edge(START, note),
+                new Edge(note, toolNode),
+                new Edge(toolNode, asker),
+                new Edge(asker, captureInput("reply"))));
+    session.advance(go());
+    session.advance(
+        requestAnswer("wf_tool_confirmation:wf@1/record@1", ImmutableMap.of("confirmed", true)));
+
+    ImmutableList<Event> events = session.turn(answer("ask-1", ImmutableMap.of("result", "ok")));
+
+    assertThat(recorder.calls).isEqualTo(1);
+    assertThat(replyInput(events)).isEqualTo("ok");
+  }
+
+  @Test
+  public void resume_afterItsCallerResumes_doesNotRunADynamicToolReturningNothingAgain() {
+    Recorder recorder = new Recorder();
+    Node toolNode = ToolNodes.asNode(FunctionTool.create(recorder, "record"));
+    Node driver =
+        dispatcher(
+            "driver",
+            (ctx, input) ->
+                ctx.runNode(toolNode, ImmutableMap.of("note", "a note"))
+                    .ignoreElement()
+                    .andThen(Flowable.fromCallable(() -> reviewRequestOrDone(ctx))));
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(new Edge(START, driver), new Edge(driver, captureInput("reply"))));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer("review", ImmutableMap.of("status", "ok")));
+
+    assertThat(recorder.calls).isEqualTo(1);
+    assertThat(replyInput(events)).isEqualTo("done");
+  }
+
+  @Test
+  public void resume_dynamicToolAskedForConfirmation_runsItWithTheAnswerAfterItsCallerReruns() {
+    Database database = new Database();
+    Node toolNode =
+        ToolNodes.asNode(
+            FunctionTool.create(database, "deleteDb", /* requireConfirmation= */ true));
+    Node driver =
+        dispatcher(
+            "driver",
+            (ctx, input) -> ctx.runNode(toolNode, ImmutableMap.of("name", "prod")).toFlowable());
+    WorkflowSession session =
+        new WorkflowSession(
+            workflow(new Edge(START, driver), new Edge(driver, captureInput("reply"))));
+    FunctionCall request =
+        session.turn(go()).stream()
+            .flatMap(event -> event.functionCalls().stream())
+            .collect(onlyElement());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer(request.id().orElseThrow(), ImmutableMap.of("confirmed", true)));
+
+    assertThat(request.id()).hasValue("wf_tool_confirmation:wf@1/driver@1/delete_db@1");
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("deleted", "prod"));
+    assertThat(database.deleted).containsExactly("prod");
+  }
+
+  @Test
+  public void runNode_toolFailsAfterAskingForConfirmation_dropsTheRequest() {
+    FakeTool tool =
+        FakeTool.running(
+            "lookup",
+            (args, toolContext) -> {
+              toolContext.requestConfirmation("Look up the city?");
+              throw new IllegalStateException("no data");
+            });
+    RecordingPlugin plugin = RecordingPlugin.answeringError(ImmutableMap.of("error", "handled"));
+
+    Object output = run(tool, context(plugin), ImmutableMap.of("city", "Paris"));
+
+    assertThat(output).isEqualTo(ImmutableMap.of("error", "handled"));
+    assertThat(plugin.pendingAfter).containsExactly(ImmutableMap.of());
   }
 
   @Test
@@ -611,11 +949,75 @@ public final class ToolNodesTest {
   }
 
   private static Context context(PluginManager pluginManager) {
+    return nodeContext(pluginManager, /* resumeInputs= */ ImmutableMap.of());
+  }
+
+  /** Returns the context of a root node run named {@code tool} that resumes with these answers. */
+  private static Context nodeContext(
+      PluginManager pluginManager, Map<String, @Nullable Object> resumeInputs) {
     InvocationContext invocationContext =
         TestUtils.createInvocationContext(TestUtils.createRootAgent()).toBuilder()
             .pluginManager(pluginManager)
             .build();
-    return new CallbackContext(invocationContext, /* eventActions= */ null);
+    return new Context(
+        invocationContext,
+        NodeExecutionState.builder()
+            .node(TestNode.of("tool"))
+            .eventSink((event, nodeFailure) -> Completable.complete())
+            .runId("1")
+            .resumeInputs(resumeInputs)
+            .build());
+  }
+
+  /** Returns "done" once the review request is answered, or the request itself. */
+  private static Object reviewRequestOrDone(Context context) {
+    return context.resumeInputs().containsKey("review")
+        ? "done"
+        : RequestInput.builder().interruptId("review").message("Please review").build();
+  }
+
+  /** Returns a workflow named {@code wf} that passes {@code {"name": "prod"}} to delete_db. */
+  private static Workflow deletionWorkflow(Database database) {
+    return toolWorkflow(
+        FunctionTool.create(database, "deleteDb", /* requireConfirmation= */ true),
+        ImmutableMap.of("name", "prod"));
+  }
+
+  /** Returns a workflow named {@code wf} that passes {@code {"amount": 5}} to a transfer tool. */
+  private static Workflow transferWorkflow(List<Object> transferred) {
+    return toolWorkflow(transferTool(transferred), ImmutableMap.of("amount", 5));
+  }
+
+  /** Returns a workflow named {@code wf} that passes {@code arguments} through {@code tool}. */
+  private static Workflow toolWorkflow(BaseTool tool, Map<String, Object> arguments) {
+    Node start = emitter("start", arguments);
+    Node toolNode = ToolNodes.asNode(tool);
+    return workflow(
+        new Edge(START, start),
+        new Edge(start, toolNode),
+        new Edge(toolNode, captureInput("reply")));
+  }
+
+  /**
+   * Returns a tool named {@code transfer} that asks for its own confirmation and adds each amount
+   * it transfers to {@code transferred}.
+   */
+  private static FakeTool transferTool(List<Object> transferred) {
+    return FakeTool.running(
+        "transfer",
+        (args, toolContext) -> {
+          Optional<ToolConfirmation> confirmation = toolContext.toolConfirmation();
+          if (confirmation.isEmpty()) {
+            toolContext.requestConfirmation("Approve the transfer?", ImmutableMap.of("limit", 0));
+            return ImmutableMap.of("status", "waiting for approval");
+          }
+          if (!confirmation.get().confirmed()) {
+            return ImmutableMap.of("status", "declined");
+          }
+          transferred.add(args.get("amount"));
+          Object limit = ((Map<?, ?>) confirmation.get().payload()).get("limit");
+          return ImmutableMap.of("transferred", args.get("amount"), "limit", limit);
+        });
   }
 
   /** Runs {@code node} as the root of a workflow run and returns the events it sends. */
@@ -651,6 +1053,26 @@ public final class ToolNodesTest {
     public static void record(@Annotations.Schema(name = "note") String note) {}
 
     private Functions() {}
+  }
+
+  /** The target of a {@link FunctionTool} named delete_db that records what it deletes. */
+  public static final class Database {
+    final List<String> deleted = new ArrayList<>();
+
+    @Annotations.Schema(name = "delete_db")
+    public ImmutableMap<String, Object> deleteDb(@Annotations.Schema(name = "name") String name) {
+      deleted.add(name);
+      return ImmutableMap.of("deleted", name);
+    }
+  }
+
+  /** The target of a {@link FunctionTool} that returns nothing and counts its calls. */
+  public static final class Recorder {
+    int calls;
+
+    public void record(@Annotations.Schema(name = "note") String note) {
+      calls++;
+    }
   }
 
   /** A tool with an optional declaration that runs {@code body}. */
@@ -726,6 +1148,10 @@ public final class ToolNodesTest {
   /** Records the plugins' tool callbacks, answering at most one of them with a map. */
   private static final class RecordingPlugin extends BasePlugin {
     final List<String> calls = new ArrayList<>();
+    // Whether each before-tool callback saw a confirmed call, or empty if it saw no answer.
+    final List<Optional<Boolean>> confirmationsBefore = new ArrayList<>();
+    // The confirmations still requested when each after-tool callback ran.
+    final List<Map<String, ToolConfirmation>> pendingAfter = new ArrayList<>();
     private final @Nullable Map<String, Object> beforeAnswer;
     private final @Nullable Map<String, Object> afterAnswer;
     private final @Nullable Map<String, Object> errorAnswer;
@@ -760,6 +1186,7 @@ public final class ToolNodesTest {
     public Maybe<Map<String, Object>> beforeToolCallback(
         BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext) {
       calls.add("before " + tool.name() + " " + toolArgs);
+      confirmationsBefore.add(toolContext.toolConfirmation().map(ToolConfirmation::confirmed));
       return beforeAnswer == null ? Maybe.empty() : Maybe.just(beforeAnswer);
     }
 
@@ -770,6 +1197,8 @@ public final class ToolNodesTest {
         ToolContext toolContext,
         Map<String, Object> result) {
       calls.add("after " + tool.name() + " " + result);
+      pendingAfter.add(
+          ImmutableMap.copyOf(toolContext.eventActions().requestedToolConfirmations()));
       return afterAnswer == null ? Maybe.empty() : Maybe.just(afterAnswer);
     }
 

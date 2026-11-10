@@ -16,6 +16,7 @@
 
 package com.google.adk.workflow;
 
+import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.base.Strings.nullToEmpty;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -29,11 +30,14 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
@@ -49,7 +53,8 @@ import org.jspecify.annotations.Nullable;
  * Static factories for workflow nodes that run a {@link BaseTool}, such as an MCP tool or an agent
  * wrapped as a tool. A node calls its tool between the plugins' tool callbacks and keeps only the
  * tool's state and artifact changes; a tool declared to return nothing gives no output. A tool that
- * asks for confirmation does not pause the workflow: the node outputs the tool's placeholder error.
+ * asks for confirmation pauses the workflow with a {@link RequestInput}, and once the user answers,
+ * the node runs the tool again with the answer as its {@link Context#toolConfirmation()}.
  */
 @Experimental
 public final class ToolNodes {
@@ -90,13 +95,41 @@ public final class ToolNodes {
             .readerFor(Object.class)
             .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
+    /** The interrupt ID prefix of a run's confirmation request, followed by the node path. */
+    private static final String CONFIRMATION_INTERRUPT_PREFIX = "wf_tool_confirmation:";
+
+    private static final String TOOL_NAME_KEY = "tool_name";
+    private static final String ARGS_KEY = "args";
+    private static final String CONFIRMATION_PAYLOAD_KEY = "confirmation_payload";
+    private static final String CONFIRMATION_MESSAGE_FORMAT =
+        "Please approve or reject the tool call %s().";
+
+    private static final String ANSWER_CONFIRMED_KEY = "confirmed";
+    private static final String ANSWER_HINT_KEY = "hint";
+    private static final String ANSWER_PAYLOAD_KEY = "payload";
+    private static final ImmutableSet<String> ANSWER_KEYS =
+        ImmutableSet.of(ANSWER_CONFIRMED_KEY, ANSWER_HINT_KEY, ANSWER_PAYLOAD_KEY);
+
+    /** The schema of the user's answer to a confirmation request. */
+    private static final Schema TOOL_CONFIRMATION_SCHEMA =
+        Schema.builder()
+            .type(Type.Known.OBJECT)
+            .properties(
+                ImmutableMap.of(
+                    ANSWER_CONFIRMED_KEY, Schema.builder().type(Type.Known.BOOLEAN).build(),
+                    ANSWER_HINT_KEY,
+                        Schema.builder().type(Type.Known.STRING).nullable(true).build(),
+                    ANSWER_PAYLOAD_KEY, Schema.builder().build()))
+            .build();
+
     private final BaseTool tool;
 
     ToolNode(BaseTool tool, String name, NodeConfig config) {
       super(
           name,
           nullToEmpty(tool.description()),
-          /* rerunOnResume= */ false,
+          // Reruns on resume so that a call paused for confirmation runs once the user answers.
+          /* rerunOnResume= */ true,
           /* waitForOutput= */ false,
           config,
           /* inputSchema= */ null,
@@ -108,10 +141,13 @@ public final class ToolNodes {
     @Override
     public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
       return Single.defer(() -> runTool(context, nodeInput))
-          .<Object>map(
-              result ->
-                  result.isEmpty() && declaresNoResult(tool) ? eventWithoutOutput(context) : result)
+          .map(result -> returnedNothing(result) ? eventWithoutOutput(context) : result)
           .toFlowable();
+    }
+
+    /** Whether {@code result} is an empty map from a tool declared to return nothing. */
+    private boolean returnedNothing(Object result) {
+      return result instanceof Map<?, ?> map && map.isEmpty() && declaresNoResult(tool);
     }
 
     /**
@@ -127,7 +163,8 @@ public final class ToolNodes {
           .build();
     }
 
-    private Single<Map<String, Object>> runTool(Context context, @Nullable Object nodeInput) {
+    /** Returns the tool's result, or the {@link RequestInput} that asks to confirm the call. */
+    private Single<Object> runTool(Context context, @Nullable Object nodeInput) {
       Parameters parameters = Parameters.of(tool);
       Map<String, Object> args = argumentsFrom(nodeInput, parameters);
       for (String param : parameters.required()) {
@@ -135,33 +172,117 @@ public final class ToolNodes {
           args.put(param, context.state().get(param));
         }
       }
+      String interruptId = CONFIRMATION_INTERRUPT_PREFIX + context.requireNodeState().nodePath();
       ToolContext toolContext =
           ToolContext.builder(context.invocationContext())
               .functionCallId(context.invocationContext().newUuid())
+              .toolConfirmation(confirmationAnswer(context.resumeInputs().get(interruptId)))
               .build();
-      return callTool(context.invocationContext().pluginManager(), args, toolContext)
+      return callTool(context.invocationContext().pluginManager(), args, toolContext, interruptId)
           // Kept on failure too, so the recorded deltas match the live session state.
           .doOnEvent((unusedResult, unusedError) -> keepDeltas(context, toolContext));
     }
 
-    /** Calls the tool between the plugins' tool callbacks, as a model's tool call does. */
-    private Single<Map<String, Object>> callTool(
-        Plugin plugins, Map<String, Object> args, ToolContext toolContext) {
-      Single<Map<String, Object>> toolCall =
+    /**
+     * Calls the tool between the plugins' tool callbacks, as a model's tool call does. A
+     * confirmation request from the tool becomes a request for input and skips the after-tool
+     * callbacks.
+     */
+    private Single<Object> callTool(
+        Plugin plugins, Map<String, Object> args, ToolContext toolContext, String interruptId) {
+      Single<Object> toolCall =
           Single.defer(() -> tool.runAsync(args, toolContext))
-              .onErrorResumeNext(
-                  error ->
-                      plugins
-                          .onToolErrorCallback(tool, args, toolContext, error)
-                          .switchIfEmpty(Single.error(error)));
+              .flatMap(
+                  result -> {
+                    ToolConfirmation requested = takeRequestedConfirmation(toolContext);
+                    return requested != null
+                        ? Single.just(confirmationRequest(args, requested, interruptId))
+                        : afterToolCallbacks(plugins, args, toolContext, result);
+                  },
+                  error -> {
+                    // The failure is the call's result, so a confirmation it asked for is dropped.
+                    takeRequestedConfirmation(toolContext);
+                    return plugins
+                        .onToolErrorCallback(tool, args, toolContext, error)
+                        .switchIfEmpty(Single.error(error))
+                        .flatMap(answer -> afterToolCallbacks(plugins, args, toolContext, answer));
+                  });
       return plugins
           .beforeToolCallback(tool, args, toolContext)
-          .switchIfEmpty(toolCall)
-          .flatMap(
-              result ->
-                  plugins
-                      .afterToolCallback(tool, args, toolContext, result)
-                      .defaultIfEmpty(result));
+          .flatMapSingle(answer -> afterToolCallbacks(plugins, args, toolContext, answer))
+          .switchIfEmpty(toolCall);
+    }
+
+    private Single<Object> afterToolCallbacks(
+        Plugin plugins,
+        Map<String, Object> args,
+        ToolContext toolContext,
+        Map<String, Object> result) {
+      return plugins
+          .afterToolCallback(tool, args, toolContext, result)
+          .defaultIfEmpty(result)
+          .cast(Object.class);
+    }
+
+    /**
+     * Returns the user's answer to this run's confirmation request, or null if there is none yet.
+     * An answer that leaves out {@code confirmed} rejects the call.
+     *
+     * @throws WorkflowDataException if the answer is not a {@link ToolConfirmation}
+     */
+    private @Nullable ToolConfirmation confirmationAnswer(@Nullable Object answer) {
+      if (answer == null) {
+        return null;
+      }
+      if (!(answer instanceof Map<?, ?> map)
+          || !ANSWER_KEYS.containsAll(map.keySet())
+          || (map.get(ANSWER_CONFIRMED_KEY) != null
+              && !(map.get(ANSWER_CONFIRMED_KEY) instanceof Boolean))
+          || (map.get(ANSWER_HINT_KEY) != null && !(map.get(ANSWER_HINT_KEY) instanceof String))) {
+        throw new WorkflowDataException(
+            String.format(
+                "The answer to the confirmation request of tool node '%s' is not a"
+                    + " ToolConfirmation.",
+                name()));
+      }
+      return ToolConfirmation.builder()
+          .confirmed(Boolean.TRUE.equals(map.get(ANSWER_CONFIRMED_KEY)))
+          .hint((String) map.get(ANSWER_HINT_KEY))
+          .payload(map.get(ANSWER_PAYLOAD_KEY))
+          .build();
+    }
+
+    /** Removes and returns the confirmation the call asked for, or null if it asked for none. */
+    @CanIgnoreReturnValue
+    private static @Nullable ToolConfirmation takeRequestedConfirmation(ToolContext toolContext) {
+      return toolContext
+          .eventActions()
+          .requestedToolConfirmations()
+          .remove(toolContext.functionCallId().orElseThrow());
+    }
+
+    /**
+     * Returns the request that asks the user to approve or reject this call, with the hint and
+     * payload in {@code requested}.
+     */
+    private RequestInput confirmationRequest(
+        Map<String, Object> args, ToolConfirmation requested, String interruptId) {
+      ImmutableMap.Builder<String, Object> payload =
+          ImmutableMap.<String, Object>builder()
+              .put(TOOL_NAME_KEY, tool.name())
+              .put(ARGS_KEY, args);
+      if (requested.payload() != null) {
+        payload.put(CONFIRMATION_PAYLOAD_KEY, requested.payload());
+      }
+      return RequestInput.builder()
+          .interruptId(interruptId)
+          .message(
+              isNullOrEmpty(requested.hint())
+                  ? String.format(CONFIRMATION_MESSAGE_FORMAT, tool.name())
+                  : requested.hint())
+          .payload(payload.buildOrThrow())
+          .responseSchema(TOOL_CONFIRMATION_SCHEMA)
+          .build();
     }
 
     private Map<String, Object> argumentsFrom(@Nullable Object nodeInput, Parameters parameters) {

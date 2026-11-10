@@ -20,11 +20,11 @@ import static com.google.adk.testing.WorkflowTestNodes.emitter;
 import static com.google.adk.testing.WorkflowTestNodes.workflow;
 import static com.google.adk.workflow.WorkflowResumeTesting.AGE_SCHEMA;
 import static com.google.adk.workflow.WorkflowResumeTesting.START;
-import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
+import static com.google.adk.workflow.WorkflowResumeTesting.requestAnswer;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
@@ -48,7 +48,6 @@ import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -323,10 +322,6 @@ public final class WorkflowHitlTest {
                     .anyMatch(
                         call -> call.name().orElse("").equals(RequestInput.FUNCTION_CALL_NAME)))
         .collect(toImmutableList());
-  }
-
-  private static Content requestAnswer(String interruptId, Map<String, ?> response) {
-    return answer(interruptId, response, RequestInput.FUNCTION_CALL_NAME);
   }
 
   private static RequestInput request(String interruptId) {

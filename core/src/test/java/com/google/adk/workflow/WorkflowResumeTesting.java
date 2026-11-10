@@ -112,6 +112,11 @@ final class WorkflowResumeTesting {
         .build();
   }
 
+  /** Returns the user's answer to the {@link RequestInput} with ID {@code interruptId}. */
+  static Content requestAnswer(String interruptId, Map<String, ?> response) {
+    return answer(interruptId, response, RequestInput.FUNCTION_CALL_NAME);
+  }
+
   static Content callContent(String name, String id) {
     return Content.builder()
         .role("model")
