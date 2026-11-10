@@ -6,6 +6,7 @@ an adk-python workflow sample.
 
 | Sample | What it shows | Calls Gemini |
 | --- | --- | --- |
+| `ClassifierNodeWorkflow` | A classifier node routes a support ticket to the team that handles it, and a second classifier node decides whether a technical ticket is urgent. | Yes |
 | `FanOutFanInWorkflow` | Three nodes transform the user's text concurrently, and a join combines their outputs. | No |
 | `LoopSelfWorkflow` | A node routes back to itself until it guesses the user's number. | No |
 | `MessageWorkflow` | Nodes send text, an inline image, several messages, and a streamed sentence. | No |
