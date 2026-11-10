@@ -107,6 +107,9 @@ public class MessageConverter {
   /** Package of the Spring AI OpenAI provider, which is not a compile-time dependency. */
   private static final String OPENAI_PACKAGE = "org.springframework.ai.openai";
 
+  /** Package prefix of the Anthropic SDK, which this module does not declare as a dependency. */
+  private static final String ANTHROPIC_SDK_PACKAGE_PREFIX = "com.anthropic.";
+
   private final ObjectMapper objectMapper;
   private final ToolConverter toolConverter;
   private final ConfigMapper configMapper;
@@ -347,13 +350,25 @@ public class MessageConverter {
       }
       Usage springUsage = chatResponse.getMetadata().getUsage();
       if (springUsage != null && !(springUsage instanceof EmptyUsage)) {
-        GenerateContentResponseUsageMetadata adkUsage =
+        Long cacheReadTokens = springUsage.getCacheReadInputTokens();
+        // Anthropic counts cache reads and writes outside the prompt; ADK counts them inside.
+        int cacheTokensOutsidePrompt =
+            isAnthropicUsage(springUsage)
+                ? Math.toIntExact(
+                    Objects.requireNonNullElse(cacheReadTokens, 0L)
+                        + Objects.requireNonNullElse(springUsage.getCacheWriteInputTokens(), 0L))
+                : 0;
+        GenerateContentResponseUsageMetadata.Builder adkUsageBuilder =
             GenerateContentResponseUsageMetadata.builder()
-                .promptTokenCount(nullSafeInt(springUsage.getPromptTokens()))
+                .promptTokenCount(
+                    nullSafeInt(springUsage.getPromptTokens()) + cacheTokensOutsidePrompt)
                 .candidatesTokenCount(nullSafeInt(springUsage.getCompletionTokens()))
-                .totalTokenCount(nullSafeInt(springUsage.getTotalTokens()))
-                .build();
-        responseBuilder.usageMetadata(adkUsage);
+                .totalTokenCount(
+                    nullSafeInt(springUsage.getTotalTokens()) + cacheTokensOutsidePrompt);
+        if (cacheReadTokens != null) {
+          adkUsageBuilder.cachedContentTokenCount(Math.toIntExact(cacheReadTokens));
+        }
+        responseBuilder.usageMetadata(adkUsageBuilder.build());
       }
     }
     return responseBuilder.build();
@@ -399,7 +414,10 @@ public class MessageConverter {
           new DefaultUsage(
               usage.promptTokenCount().orElse(0),
               usage.candidatesTokenCount().orElse(0),
-              usage.totalTokenCount().orElse(0));
+              usage.totalTokenCount().orElse(0),
+              /* nativeUsage= */ null,
+              usage.cachedContentTokenCount().map(Integer::longValue).orElse(null),
+              /* cacheWriteInputTokens= */ null);
       metadataBuilder.usage(springUsage);
       hasMetadata = true;
     }
@@ -674,6 +692,13 @@ public class MessageConverter {
     return metadata.containsKey(CANDIDATE_INDEX_KEY)
         ? metadata.get(CANDIDATE_INDEX_KEY)
         : metadata.get(OPENAI_CHOICE_INDEX_KEY);
+  }
+
+  /** Returns whether the usage comes from Anthropic, possibly through a wrapping chat model. */
+  private static boolean isAnthropicUsage(Usage usage) {
+    Object nativeUsage = usage.getNativeUsage();
+    return nativeUsage != null
+        && nativeUsage.getClass().getPackageName().startsWith(ANTHROPIC_SDK_PACKAGE_PREFIX);
   }
 
   private int nullSafeInt(@Nullable Integer value) {

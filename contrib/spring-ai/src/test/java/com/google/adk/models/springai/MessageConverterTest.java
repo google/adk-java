@@ -18,6 +18,7 @@ package com.google.adk.models.springai;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.anthropic.models.messages.Usage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.models.LlmResponse;
@@ -36,6 +37,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -448,6 +450,113 @@ class MessageConverterTest {
     assertThat(llmResponse.usageMetadata().get().promptTokenCount().orElse(-1)).isEqualTo(15);
     assertThat(llmResponse.usageMetadata().get().candidatesTokenCount().orElse(-1)).isEqualTo(25);
     assertThat(llmResponse.usageMetadata().get().totalTokenCount().orElse(-1)).isEqualTo(40);
+  }
+
+  @Test
+  void toLlmResponse_usageWithCacheReadTokens_setsCachedContentTokenCount() {
+    DefaultUsage springUsage =
+        new DefaultUsage(
+            /* promptTokens= */ 2006,
+            /* completionTokens= */ 300,
+            /* totalTokens= */ 2306,
+            /* nativeUsage= */ null,
+            /* cacheReadInputTokens= */ 1920L,
+            /* cacheWriteInputTokens= */ null);
+    ChatResponse chatResponse =
+        new ChatResponse(
+            List.of(new Generation(new AssistantMessage("hello"))),
+            ChatResponseMetadata.builder().usage(springUsage).build());
+
+    LlmResponse llmResponse = messageConverter.toLlmResponse(chatResponse);
+
+    GenerateContentResponseUsageMetadata usage = llmResponse.usageMetadata().orElseThrow();
+    assertThat(usage.promptTokenCount()).hasValue(2006);
+    assertThat(usage.cachedContentTokenCount()).hasValue(1920);
+  }
+
+  @Test
+  void toLlmResponse_usageWithoutCacheReadTokens_leavesCachedContentTokenCountEmpty() {
+    ChatResponse chatResponse =
+        new ChatResponse(
+            List.of(new Generation(new AssistantMessage("hello"))),
+            ChatResponseMetadata.builder().usage(new DefaultUsage(15, 25, 40)).build());
+
+    LlmResponse llmResponse = messageConverter.toLlmResponse(chatResponse);
+
+    GenerateContentResponseUsageMetadata usage = llmResponse.usageMetadata().orElseThrow();
+    assertThat(usage.cachedContentTokenCount()).isEmpty();
+  }
+
+  @Test
+  void toLlmResponse_anthropicUsageWithCacheRead_foldsCacheReadIntoPromptAndTotal() {
+    ChatResponse chatResponse =
+        new ChatResponse(
+            List.of(new Generation(new AssistantMessage("hello"))),
+            ChatResponseMetadata.builder()
+                .usage(
+                    anthropicUsage(
+                        /* inputTokens= */ 86,
+                        /* outputTokens= */ 300,
+                        /* cacheReadTokens= */ 1920L,
+                        /* cacheWriteTokens= */ 0L))
+                .build());
+
+    LlmResponse llmResponse = messageConverter.toLlmResponse(chatResponse);
+
+    GenerateContentResponseUsageMetadata usage = llmResponse.usageMetadata().orElseThrow();
+    assertThat(usage.promptTokenCount()).hasValue(2006);
+    assertThat(usage.cachedContentTokenCount()).hasValue(1920);
+    assertThat(usage.candidatesTokenCount()).hasValue(300);
+    assertThat(usage.totalTokenCount()).hasValue(2306);
+  }
+
+  @Test
+  void toLlmResponse_anthropicUsageWithCacheWriteOnly_foldsCacheWriteWithoutCachedCount() {
+    ChatResponse chatResponse =
+        new ChatResponse(
+            List.of(new Generation(new AssistantMessage("hello"))),
+            ChatResponseMetadata.builder()
+                .usage(
+                    anthropicUsage(
+                        /* inputTokens= */ 12,
+                        /* outputTokens= */ 40,
+                        /* cacheReadTokens= */ null,
+                        /* cacheWriteTokens= */ 5000L))
+                .build());
+
+    LlmResponse llmResponse = messageConverter.toLlmResponse(chatResponse);
+
+    GenerateContentResponseUsageMetadata usage = llmResponse.usageMetadata().orElseThrow();
+    assertThat(usage.promptTokenCount()).hasValue(5012);
+    assertThat(usage.cachedContentTokenCount()).isEmpty();
+    assertThat(usage.totalTokenCount()).hasValue(5052);
+  }
+
+  /** Builds usage the way Spring AI's Anthropic model does, with the SDK usage as native usage. */
+  private static DefaultUsage anthropicUsage(
+      long inputTokens,
+      long outputTokens,
+      @Nullable Long cacheReadTokens,
+      @Nullable Long cacheWriteTokens) {
+    Usage nativeUsage =
+        Usage.builder()
+            .inputTokens(inputTokens)
+            .outputTokens(outputTokens)
+            .cacheReadInputTokens(Optional.ofNullable(cacheReadTokens))
+            .cacheCreationInputTokens(Optional.ofNullable(cacheWriteTokens))
+            .cacheCreation(Optional.empty())
+            .inferenceGeo(Optional.empty())
+            .outputTokensDetails(Optional.empty())
+            .serverToolUse(Optional.empty())
+            .serviceTier(Optional.empty())
+            .build();
+    return new DefaultUsage(
+        Math.toIntExact(inputTokens),
+        Math.toIntExact(outputTokens),
+        Math.toIntExact(inputTokens + outputTokens),
+        nativeUsage,
+        cacheReadTokens,
+        cacheWriteTokens);
   }
 
   @Test
@@ -1301,6 +1410,7 @@ class MessageConverterTest {
             .promptTokenCount(12)
             .candidatesTokenCount(18)
             .totalTokenCount(30)
+            .cachedContentTokenCount(8)
             .build();
     LlmResponse originalResponse =
         LlmResponse.builder()
@@ -1322,6 +1432,7 @@ class MessageConverterTest {
     assertThat(chatResponse.getResult().getMetadata().getFinishReason()).isEqualTo("STOP");
     assertThat(chatResponse.getMetadata().getModel()).isEqualTo("gemini-2.5-flash");
     assertThat(chatResponse.getMetadata().getUsage().getTotalTokens()).isEqualTo(30);
+    assertThat(chatResponse.getMetadata().getUsage().getCacheReadInputTokens()).isEqualTo(8L);
 
     assertThat(roundTripped.content()).isEqualTo(originalResponse.content());
     assertThat(roundTripped.finishReason()).contains(new FinishReason(FinishReason.Known.STOP));

@@ -17,6 +17,7 @@ package com.google.adk.models.springai;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.anthropic.models.messages.MessageDeltaUsage;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
@@ -26,15 +27,21 @@ import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
 import com.google.adk.tools.FunctionTool;
 import com.google.genai.types.Content;
+import com.google.genai.types.GenerateContentResponseUsageMetadata;
 import com.google.genai.types.Part;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.model.StreamingChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.google.genai.metadata.GoogleGenAiUsage;
 import reactor.core.publisher.Flux;
 
 /**
@@ -260,6 +267,76 @@ class SpringAIIntegrationTest {
   }
 
   @Test
+  void testAgentEventCarriesCachedTokensReportedByChatModel() {
+    // given
+    LlmAgent agent = scienceAgent(new SpringAI(promptCachingChatModel(), GEMINI_2_5_FLASH));
+
+    // when
+    List<Event> events = TestUtils.askAgent(agent, false, "What is a qubit?");
+
+    // then
+    assertEquals(1, events.size());
+    GenerateContentResponseUsageMetadata usage = events.get(0).usageMetadata().orElseThrow();
+    assertEquals(Optional.of(2006), usage.promptTokenCount());
+    assertEquals(Optional.of(1920), usage.cachedContentTokenCount());
+  }
+
+  @Test
+  void testStreamingAgentFinalEventCarriesCachedTokensReportedByChatModel() {
+    // given
+    LlmAgent agent = scienceAgent(new SpringAI(promptCachingChatModel(), GEMINI_2_5_FLASH));
+
+    // when
+    List<Event> events = TestUtils.askAgent(agent, true, "What is a qubit?");
+
+    // then
+    Event finalEvent = events.get(events.size() - 1);
+    assertFalse(finalEvent.partial().orElse(false));
+    GenerateContentResponseUsageMetadata usage = finalEvent.usageMetadata().orElseThrow();
+    assertEquals(Optional.of(2006), usage.promptTokenCount());
+    assertEquals(Optional.of(1920), usage.cachedContentTokenCount());
+  }
+
+  @Test
+  void testStreamingAgentFinalEventFoldsAnthropicCacheTokensIntoPrompt() {
+    // given - chunks shaped like Spring AI's Anthropic stream: usage only on the last one
+    MessageDeltaUsage nativeUsage =
+        MessageDeltaUsage.builder()
+            .inputTokens(86L)
+            .outputTokens(300L)
+            .cacheReadInputTokens(1920L)
+            .cacheCreationInputTokens(100L)
+            .outputTokensDetails(Optional.empty())
+            .serverToolUse(Optional.empty())
+            .build();
+    ChatResponse textChunk =
+        new ChatResponse(
+            List.of(new Generation(new AssistantMessage("A qubit is a quantum bit."))));
+    ChatResponse lastChunk =
+        new ChatResponse(
+            List.of(
+                new Generation(
+                    new AssistantMessage(""),
+                    ChatGenerationMetadata.builder().finishReason("end_turn").build())),
+            ChatResponseMetadata.builder()
+                .usage(new DefaultUsage(86, 300, 386, nativeUsage, 1920L, 100L))
+                .build());
+    StreamingChatModel anthropicLikeModel = prompt -> Flux.just(textChunk, lastChunk);
+    LlmAgent agent = scienceAgent(new SpringAI(anthropicLikeModel, "claude-haiku"));
+
+    // when
+    List<Event> events = TestUtils.askAgent(agent, true, "What is a qubit?");
+
+    // then
+    Event finalEvent = events.get(events.size() - 1);
+    assertFalse(finalEvent.partial().orElse(false));
+    GenerateContentResponseUsageMetadata usage = finalEvent.usageMetadata().orElseThrow();
+    assertEquals(Optional.of(2106), usage.promptTokenCount());
+    assertEquals(Optional.of(1920), usage.cachedContentTokenCount());
+    assertEquals(Optional.of(2406), usage.totalTokenCount());
+  }
+
+  @Test
   void testConfigurationDrivenApproach() {
     // This test demonstrates that SpringAI wrapper works with ANY ChatModel implementation
     // Users can configure different providers through Spring AI configuration
@@ -309,5 +386,44 @@ class SpringAIIntegrationTest {
     System.out.println("   - Same SpringAI wrapper works with any ChatModel");
     System.out.println("   - Users configure providers through Spring AI");
     System.out.println("   - ADK provides unified agent interface");
+  }
+
+  private static LlmAgent scienceAgent(SpringAI model) {
+    return LlmAgent.builder()
+        .name("science-app")
+        .model(model)
+        .instruction("You are a helpful science teacher.")
+        .build();
+  }
+
+  /**
+   * Returns a model that reports usage as Spring AI's Google GenAI provider does: 1920 of its 2006
+   * prompt tokens were read from cache.
+   */
+  private static ChatModel promptCachingChatModel() {
+    ChatResponse response =
+        new ChatResponse(
+            List.of(new Generation(new AssistantMessage("A qubit is a quantum bit."))),
+            ChatResponseMetadata.builder()
+                .usage(
+                    GoogleGenAiUsage.from(
+                        GenerateContentResponseUsageMetadata.builder()
+                            .promptTokenCount(2006)
+                            .candidatesTokenCount(300)
+                            .totalTokenCount(2306)
+                            .cachedContentTokenCount(1920)
+                            .build()))
+                .build());
+    return new ChatModel() {
+      @Override
+      public ChatResponse call(Prompt prompt) {
+        return response;
+      }
+
+      @Override
+      public Flux<ChatResponse> stream(Prompt prompt) {
+        return Flux.just(response);
+      }
+    };
   }
 }
