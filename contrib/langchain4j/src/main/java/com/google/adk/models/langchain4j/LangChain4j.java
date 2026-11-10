@@ -77,6 +77,8 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -215,33 +217,41 @@ public abstract class LangChain4j extends BaseLlm {
                     new StreamingChatResponseHandler() {
                       @Override
                       public void onPartialResponse(String s) {
+                        if (s == null || s.isEmpty()) {
+                          return;
+                        }
                         emitter.onNext(
                             LlmResponse.builder()
-                                .content(Content.fromParts(Part.fromText(s)))
+                                .content(
+                                    Content.builder().role("model").parts(Part.fromText(s)).build())
+                                .partial(true)
                                 .build());
                       }
 
                       @Override
                       public void onCompleteResponse(ChatResponse chatResponse) {
-                        if (chatResponse.aiMessage().hasToolExecutionRequests()) {
+                        // Ends every turn, even an empty one, or the flow calls the model again.
+                        LlmResponse.Builder response;
+                        try {
                           AiMessage aiMessage = chatResponse.aiMessage();
-                          toParts(aiMessage).stream()
-                              .map(Part::functionCall)
-                              .forEach(
-                                  functionCall -> {
-                                    functionCall.ifPresent(
-                                        function -> {
-                                          emitter.onNext(
-                                              LlmResponse.builder()
-                                                  .content(
-                                                      Content.fromParts(
-                                                          Part.fromFunctionCall(
-                                                              function.name().orElse(""),
-                                                              function.args().orElse(Map.of()))))
-                                                  .build());
-                                        });
-                                  });
+                          List<Part> parts = new ArrayList<>();
+                          if (aiMessage.text() != null && !aiMessage.text().isEmpty()) {
+                            parts.add(Part.fromText(aiMessage.text()));
+                          }
+                          if (aiMessage.hasToolExecutionRequests()) {
+                            parts.addAll(toParts(aiMessage));
+                          }
+                          response =
+                              LlmResponse.builder()
+                                  .content(Content.builder().role("model").parts(parts).build());
+                          usageMetadata(chatResponse, chatRequest)
+                              .ifPresent(response::usageMetadata);
+                        } catch (RuntimeException e) {
+                          // LangChain4j drops a handler's exception, so the run would hang.
+                          emitter.onError(e);
+                          return;
                         }
+                        emitter.onNext(response.build());
                         emitter.onComplete();
                       }
 
@@ -604,33 +614,44 @@ public abstract class LangChain4j extends BaseLlm {
         Content.builder().role("model").parts(toParts(chatResponse.aiMessage())).build();
 
     LlmResponse.Builder builder = LlmResponse.builder().content(content);
-    TokenUsage tokenUsage = chatResponse.tokenUsage();
+    usageMetadata(chatResponse, chatRequest).ifPresent(builder::usageMetadata);
+    return builder.build();
+  }
+
+  /** Returns the usage of {@code chatResponse}, estimated when a token count estimator is set. */
+  private Optional<GenerateContentResponseUsageMetadata> usageMetadata(
+      ChatResponse chatResponse, ChatRequest chatRequest) {
     if (tokenCountEstimator() != null) {
       try {
         int estimatedInput =
             tokenCountEstimator().estimateTokenCountInMessages(chatRequest.messages());
+        // A turn with only calls has no text.
         int estimatedOutput =
-            tokenCountEstimator().estimateTokenCountInText(chatResponse.aiMessage().text());
+            tokenCountEstimator()
+                .estimateTokenCountInText(
+                    Objects.requireNonNullElse(chatResponse.aiMessage().text(), ""));
         int estimatedTotal = estimatedInput + estimatedOutput;
-        builder.usageMetadata(
+        return Optional.of(
             GenerateContentResponseUsageMetadata.builder()
                 .promptTokenCount(estimatedInput)
                 .candidatesTokenCount(estimatedOutput)
                 .totalTokenCount(estimatedTotal)
                 .build());
-      } catch (Exception e) {
-        e.printStackTrace();
+      } catch (RuntimeException e) {
+        // The exception's message can quote the conversation, so only its type is logged.
+        logger.warn("Could not estimate token usage: {}", e.getClass().getSimpleName());
       }
-    } else if (tokenUsage != null) {
-      builder.usageMetadata(
+    }
+    TokenUsage tokenUsage = chatResponse.tokenUsage();
+    if (tokenUsage != null) {
+      return Optional.of(
           GenerateContentResponseUsageMetadata.builder()
               .promptTokenCount(tokenUsage.inputTokenCount())
               .candidatesTokenCount(tokenUsage.outputTokenCount())
               .totalTokenCount(tokenUsage.totalTokenCount())
               .build());
     }
-
-    return builder.build();
+    return Optional.empty();
   }
 
   private List<Part> toParts(AiMessage aiMessage) {
