@@ -19,8 +19,10 @@ package com.google.adk.models;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Blob;
 import com.google.genai.types.Content;
+import com.google.genai.types.FileData;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.LiveSendClientContentParameters;
@@ -119,8 +121,6 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
       return;
     }
 
-    logger.debug("Received server message: {}", message.toJson());
-
     Observable<LlmResponse> llmResponse = convertToServerResponse(message, pendingText);
     if (!disposables.add(
         llmResponse.subscribe(responseProcessor::onNext, responseProcessor::onError))) {
@@ -181,7 +181,7 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
                   });
 
           if (!handled.get()) {
-            logger.warn("Received unknown or empty server message: {}", message.toJson());
+            logger.warn("Received unknown or empty server message.");
             emitter.onNext(createUnknownMessageResponse());
           }
           emitter.onComplete();
@@ -309,10 +309,58 @@ public final class GeminiLlmConnection implements BaseLlmConnection {
     }
   }
 
+  /**
+   * Sends {@code history} without audio, which a live session cannot replay, or {@code _adk_live}
+   * artifact references, which the model cannot resolve. Completes the turn so the model answers
+   * only when the remaining history ends with a user turn.
+   */
   @Override
   public Completable sendHistory(List<Content> history) {
+    ImmutableList<Content> contents =
+        history.stream()
+            .map(GeminiLlmConnection::filterReplayableParts)
+            .flatMap(Optional::stream)
+            .collect(toImmutableList());
+    if (contents.isEmpty()) {
+      logger.debug("No history to send after dropping audio and _adk_live artifact references.");
+      return Completable.complete();
+    }
+    boolean turnComplete = Iterables.getLast(contents).role().map("user"::equals).orElse(false);
     return sendClientContentInternal(
-        LiveSendClientContentParameters.builder().turns(history).build());
+        LiveSendClientContentParameters.builder()
+            .turns(contents)
+            .turnComplete(turnComplete)
+            .build());
+  }
+
+  /** Returns {@code content} with only its replayable parts, or empty if none remain. */
+  private static Optional<Content> filterReplayableParts(Content content) {
+    ImmutableList<Part> parts =
+        content.parts().orElse(ImmutableList.of()).stream()
+            .filter(part -> !isAudio(part) && !isAdkLiveArtifact(part))
+            .collect(toImmutableList());
+    return parts.isEmpty()
+        ? Optional.empty()
+        : Optional.of(content.toBuilder().parts(parts).build());
+  }
+
+  private static boolean isAudio(Part part) {
+    return part.inlineData().flatMap(Blob::mimeType).map(m -> m.startsWith("audio/")).orElse(false)
+        || part.fileData()
+            .flatMap(FileData::mimeType)
+            .map(m -> m.startsWith("audio/"))
+            .orElse(false);
+  }
+
+  /**
+   * Matches the {@code _adk_live} references that ADK Python and ADK Kotlin live runs save to a
+   * session.
+   */
+  private static boolean isAdkLiveArtifact(Part part) {
+    return part.fileData()
+        .flatMap(FileData::fileUri)
+        .map(uri -> uri.startsWith("artifact://") && uri.contains("/_adk_live/"))
+        .orElse(false);
   }
 
   @Override
