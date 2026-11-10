@@ -22,7 +22,7 @@ import com.google.adk.tokt.JavaAdkToKt;
 import com.google.adk.tokt.KotlinAdkToJava;
 
 // Your existing ADK Java components:
-BaseLlm model = new Gemini("gemini-flash-latest", client);
+BaseLlm model = new Gemini("gemini-3.8-flash", client);
 BaseTool weatherTool = FunctionTool.create(WeatherTools.class, "getWeather");
 BaseToolset mathToolset = new MathToolset();
 BasePlugin loggingPlugin = new LoggingPlugin();
