@@ -29,6 +29,7 @@ import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.web.config.BackendUrl;
 import com.google.adk.web.config.DevUiAssets;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ObjectArrays;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,6 +42,8 @@ import org.springframework.context.ApplicationContextInitializer;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
@@ -161,26 +164,34 @@ public class AdkWebServer implements WebMvcConfigurer {
   }
 
   /**
-   * Main entry point for the Spring Boot application.
+   * Main entry point for the Spring Boot application. It listens on 127.0.0.1 unless {@code
+   * server.address} is set, for example to 0.0.0.0 in a container.
    *
    * @param args Command line arguments.
    */
   public static void main(String[] args) {
-    // Increase the default websocket buffer size to 10MB to accommodate live API messages.
-    System.setProperty(
-        "org.apache.tomcat.websocket.DEFAULT_BUFFER_SIZE", String.valueOf(10 * 1024 * 1024));
-    SpringApplication.run(AdkWebServer.class, args);
+    run(args);
     log.info("AdkWebServer application started successfully.");
   }
 
+  /** Like {@link #main}, returning the context it starts. */
+  @VisibleForTesting
+  static ConfigurableApplicationContext run(String[] args) {
+    // Increase the default websocket buffer size to 10MB to accommodate live API messages.
+    System.setProperty(
+        "org.apache.tomcat.websocket.DEFAULT_BUFFER_SIZE", String.valueOf(10 * 1024 * 1024));
+    return newApplication().run(args);
+  }
+
   // TODO: return a Closeable that stops the server and resets the static state.
+  /** Starts the server with {@code agents}, on 127.0.0.1 unless {@code server.address} is set. */
   public static void start(BaseAgent... agents) {
     startWithLoader(new String[0], "agentLoader", new AgentStaticLoader(agents));
   }
 
   /**
-   * Starts the server with {@code app} and {@code moreApps}, each served under its name. An app can
-   * run an agent or a workflow.
+   * Starts the server with {@code app} and {@code moreApps}, each served under its name, on
+   * 127.0.0.1 unless {@code server.address} is set. An app can run an agent or a workflow.
    *
    * @throws IllegalArgumentException if two apps share a name
    */
@@ -204,7 +215,7 @@ public class AdkWebServer implements WebMvcConfigurer {
         "org.apache.tomcat.websocket.DEFAULT_BUFFER_SIZE", String.valueOf(10 * 1024 * 1024));
 
     // Create Spring Application with custom initializer
-    SpringApplication app = new SpringApplication(AdkWebServer.class);
+    SpringApplication app = newApplication();
     app.addInitializers(
         new ApplicationContextInitializer<ConfigurableApplicationContext>() {
           @Override
@@ -217,5 +228,29 @@ public class AdkWebServer implements WebMvcConfigurer {
         });
 
     return app.run(args);
+  }
+
+  /**
+   * Returns an application that listens on 127.0.0.1 unless {@code server.address} is set, since no
+   * endpoint authenticates its callers. A blank address counts as unset, because Spring would bind
+   * it to every interface.
+   */
+  private static SpringApplication newApplication() {
+    SpringApplication app = new SpringApplication(AdkWebServer.class);
+    app.addInitializers(
+        context -> {
+          ConfigurableEnvironment environment = context.getEnvironment();
+          if (environment.getProperty("server.address", "").isBlank()) {
+            environment
+                .getPropertySources()
+                .addFirst(
+                    new MapPropertySource(
+                        "adkLoopbackAddress", ImmutableMap.of("server.address", "127.0.0.1")));
+            log.info(
+                "server.address is not set; listening on 127.0.0.1 only. Set server.address to"
+                    + " accept connections from other machines.");
+          }
+        });
+    return app;
   }
 }

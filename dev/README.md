@@ -7,6 +7,16 @@ redirect there, keeping the query string. The assets are not served from the
 origin root: `/adk_favicon.svg` and the like return 404, and only the `/dev-ui/`
 form resolves.
 
+## Listening address
+
+`AdkWebServer.main()` and `AdkWebServer.start()` listen on `127.0.0.1` unless
+`server.address` is set, because the server's endpoints do not authenticate
+callers. To accept connections from other machines, such as in a container, set
+the environment variable `SERVER_ADDRESS=0.0.0.0`, or pass
+`--server.address=0.0.0.0` to `main()`. Put authentication in front of the
+server first. `mvn google-adk:web` listens on `localhost` and takes `-Dhost`
+instead.
+
 ## Behind a reverse proxy
 
 If the server runs behind a reverse proxy that strips a path prefix (for
@@ -69,11 +79,9 @@ Avoid `*`: it lets any website open in your browser call the server.
 ### DNS rebinding
 
 The server also blocks pages that resolve their own domain to this machine. When
-`server.address` is a loopback address (the default for `mvn google-adk:web`),
-it rejects a non-loopback `Host`. On a request that arrives over loopback, it
-rejects a non-loopback `Origin`. Origins in `adk.web.cors.origins`, and their
-hosts, are exempt. A UI reached over loopback under another name, through a
-same-machine proxy or a hosts-file alias, therefore needs its origin listed. `*`
-turns both checks off. `AdkWebServer.start()` and `main()` do not set
-`server.address`, so set `server.address=127.0.0.1` there to turn on the `Host`
-check.
+`server.address` is a loopback address (the default for `AdkWebServer.main()`,
+`AdkWebServer.start()` and `mvn google-adk:web`), it rejects a non-loopback
+`Host`. On a request that arrives over loopback, it rejects a non-loopback
+`Origin`. Origins in `adk.web.cors.origins`, and their hosts, are exempt. A UI
+reached over loopback under another name, through a same-machine proxy or a
+hosts-file alias, therefore needs its origin listed. `*` turns both checks off.
