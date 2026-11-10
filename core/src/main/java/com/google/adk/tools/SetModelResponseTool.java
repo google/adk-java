@@ -87,8 +87,8 @@ public class SetModelResponseTool extends BaseTool {
 
   /**
    * Drops nulls like Python's {@code model_dump(exclude_none=True)}, but keeps the null of a
-   * property that {@code schema} marks required and nullable, which the schema demands. A value
-   * without a schema loses all its nulls.
+   * property that {@code schema} marks required, which validation already accepted. A value without
+   * a schema loses all its nulls.
    */
   private static Map<String, Object> excludeNullFields(
       Map<String, Object> values, @Nullable Schema schema) {
@@ -102,9 +102,7 @@ public class SetModelResponseTool extends BaseTool {
       Object value = entry.getValue();
       if (value != null) {
         result.put(entry.getKey(), excludeNullsFromValue(value, property));
-      } else if (property != null
-          && property.nullable().orElse(false)
-          && required.contains(entry.getKey())) {
+      } else if (required.contains(entry.getKey())) {
         result.put(entry.getKey(), null);
       }
     }
