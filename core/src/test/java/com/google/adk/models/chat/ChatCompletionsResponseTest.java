@@ -584,6 +584,38 @@ public final class ChatCompletionsResponseTest {
   }
 
   @Test
+  public void testToLlmResponse_cachedTokens() throws Exception {
+    String json =
+        """
+        {
+          "choices": [{
+            "message": {
+              "role": "assistant",
+              "content": "hello"
+            },
+            "finish_reason": "stop"
+          }],
+          "usage": {
+            "prompt_tokens": 2006,
+            "completion_tokens": 300,
+            "total_tokens": 2306,
+            "prompt_tokens_details": {
+              "cached_tokens": 1920
+            }
+          }
+        }
+        """;
+
+    ChatCompletionsResponse.ChatCompletion completion =
+        objectMapper.readValue(json, ChatCompletionsResponse.ChatCompletion.class);
+
+    LlmResponse response = completion.toLlmResponse();
+
+    assertThat(response.usageMetadata().get().promptTokenCount()).hasValue(2006);
+    assertThat(response.usageMetadata().get().cachedContentTokenCount()).hasValue(1920);
+  }
+
+  @Test
   public void testToolCallToPart_withFunction() throws Exception {
     String json =
         """
