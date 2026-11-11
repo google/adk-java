@@ -2573,6 +2573,40 @@ public final class RunnerTest {
         .inOrder();
   }
 
+  @Test
+  public void runAsync_withToolConfirmation_slowAppendEvent_doesNotCauseStaleSession() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse(
+                "tool_call_id", "echoTool", ImmutableMap.of("message", "hello")),
+            createTextLlmResponse("Response after observing tool needs confirmation."),
+            createTextLlmResponse("Response after user confirmed."));
+    LlmAgent agent = createTestAgentBuilder(testLlm).tools(confirmingEchoFunctionTool()).build();
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(agent).build())
+            .sessionService(new AppendDelayingSessionService(new InMemorySessionService(), 50))
+            .build();
+    Session session = newSession(runner);
+    FunctionCall askUserConfirmationFunctionCall =
+        runTurnAskingConfirmation(runner, session, "from user");
+
+    ImmutableList<Event> eventsAfterConfirmation =
+        approveConfirmation(runner, session, askUserConfirmationFunctionCall);
+
+    assertThat(simplifyEvents(eventsAfterConfirmation))
+        .containsExactly(
+            "test agent: FunctionResponse(name=echoTool, response={message=hello})",
+            "test agent: Response after user confirmed.")
+        .inOrder();
+    assertThat(testLlm.getLastRequest().contents().stream().map(TestUtils::formatContent))
+        .containsExactly(
+            "from user",
+            "FunctionCall(name=echoTool, args={message=hello})",
+            "FunctionResponse(name=echoTool, response={message=hello})")
+        .inOrder();
+  }
+
   // HITL tool confirmation must resume the originating sub-agent even when wrapped inside a
   // non-LlmAgent workflow agent (e.g. SequentialAgent).
   @Test

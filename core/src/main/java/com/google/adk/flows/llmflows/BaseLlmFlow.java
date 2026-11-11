@@ -106,13 +106,31 @@ public abstract class BaseLlmFlow implements BaseFlow {
         Iterables.concat(requestProcessors, ImmutableList.of(getRequestProcessorFromTools(agent)));
 
     return Flowable.fromIterable(allProcessors)
-        .concatMap(
-            processor ->
-                Single.defer(() -> processor.processRequest(context, llmRequestRef.get()))
-                    .compose(Tracing.withContext(currentContext))
-                    .doOnSuccess(result -> llmRequestRef.set(result.updatedRequest()))
-                    .flattenAsFlowable(
-                        result -> result.events() != null ? result.events() : ImmutableList.of()));
+        .concatMap(processor -> runProcessor(processor, context, llmRequestRef, currentContext));
+  }
+
+  private static Flowable<Event> runProcessor(
+      RequestProcessor processor,
+      InvocationContext context,
+      AtomicReference<LlmRequest> llmRequestRef,
+      Context currentContext) {
+    return Single.defer(() -> processor.processRequest(context, llmRequestRef.get()))
+        .compose(Tracing.withContext(currentContext))
+        .doOnSuccess(result -> llmRequestRef.set(result.updatedRequest()))
+        .flatMapPublisher(result -> emitAndAwaitPersisted(context, result));
+  }
+
+  private static Flowable<Event> emitAndAwaitPersisted(
+      InvocationContext context, RequestProcessingResult result) {
+    if (result.events() == null) {
+      return Flowable.empty();
+    }
+    ImmutableList<Event> events = ImmutableList.copyOf(result.events());
+    if (events.isEmpty()) {
+      return Flowable.empty();
+    }
+    // Otherwise later processors such as Contents can read a session missing these events.
+    return Flowable.fromIterable(events).concatWith(PersistBarrier.awaitPersisted(context, events));
   }
 
   /**
