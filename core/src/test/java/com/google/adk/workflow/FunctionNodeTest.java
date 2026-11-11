@@ -26,6 +26,7 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 
@@ -52,22 +53,38 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.databind.util.StdConverter;
+import com.google.adk.agents.Context;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.runner.Runner;
+import com.google.adk.sessions.BaseSessionService;
+import com.google.adk.sessions.GetSessionConfig;
+import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.ListEventsResponse;
+import com.google.adk.sessions.ListSessionsResponse;
 import com.google.adk.sessions.Session;
+import com.google.adk.testing.TestUtils;
+import com.google.adk.tools.ToolContext;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import com.google.genai.types.VideoMetadata;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.io.IOException;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -84,10 +101,21 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
@@ -100,6 +128,7 @@ public final class FunctionNodeTest {
 
   private static final String APP = "app";
   private static final String USER = "user";
+  private static final Duration SLOW_APPEND = Duration.ofMillis(100);
   private static final Schema ANY = Schema.builder().build();
   private static final Schema STRING = typed(Type.Known.STRING);
   private static final Schema INTEGER = typed(Type.Known.INTEGER);
@@ -703,6 +732,120 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void builder_bodyReturningAfterDelegating_dropsTheValueAndOutputsTheChildsAsO() {
+    // Arrange: the child's output lacks Ticket's null fields, which writing it as O adds.
+    FunctionNode<Content, Ticket> parent =
+        FunctionNodes.builder(Content.class, Ticket.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              Object unused =
+                  ctx.runNode(
+                          emitter("child", ImmutableMap.of("id", "a1")),
+                          null,
+                          RunNodeConfig.builder().useAsOutput(true).build())
+                      .blockingGet();
+              return new Ticket("returned", Optional.empty(), null);
+            })
+            .build();
+    Map<String, @Nullable Object> asTicket = new HashMap<>();
+    asTicket.put("id", "a1");
+    asTicket.put("tag", null);
+    asTicket.put("note", null);
+
+    RunResult result = run(chain(parent, captureInput("reply")));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/parent@1")).isEqualTo(asTicket);
+    assertThat(result.storedOutputAt("wf@1/parent@1")).isEqualTo(asTicket);
+    assertThat(replyInput(result.events())).isEqualTo(asTicket);
+    assertThat(
+            result.events().stream()
+                .flatMap(e -> e.output().stream())
+                .anyMatch(output -> output.toString().contains("returned")))
+        .isFalse();
+  }
+
+  @Test
+  public void builder_bodyBlockingOnAChildThatAsks_resumesWithTheAnswer() {
+    // Arrange: a plain body may block on its worker thread until a child finishes.
+    FunctionNode<Object, Object> asker =
+        FunctionNodes.ofFlowable(
+            "asker",
+            Object.class,
+            Object.class,
+            (ctx, input) ->
+                Flowable.just(
+                    RequestInput.builder().interruptId("name_1").message("name?").build()));
+    FunctionNode<Content, Object> parent =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, message) ->
+                ctx.runNode(asker, null, RunNodeConfig.builder().runId("b").build()).blockingGet())
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(parent, captureInput("reply")));
+    session.advance(go());
+    ImmutableMap<String, Object> details = ImmutableMap.of("name", "John");
+
+    ImmutableList<Event> events =
+        session.turn(answer("name_1", details, RequestInput.FUNCTION_CALL_NAME));
+
+    assertThat(replyInput(events)).isEqualTo(details);
+  }
+
+  @Test
+  public void builder_twoChildrenAndAnEmittedMessageAcrossAPause_replaysTheFinishedChild() {
+    // Arrange: a plain body sends a message, runs the first child once, and the second asks.
+    AtomicInteger firstRuns = new AtomicInteger();
+    FunctionNode<Object, String> first =
+        FunctionNodes.of(
+            "first",
+            Object.class,
+            String.class,
+            (ctx, input) -> {
+              firstRuns.incrementAndGet();
+              return "a_out";
+            });
+    FunctionNode<Object, Object> asker =
+        FunctionNodes.ofFlowable(
+            "asker",
+            Object.class,
+            Object.class,
+            (ctx, input) ->
+                Flowable.just(
+                    RequestInput.builder().interruptId("name_1").message("name?").build()));
+    FunctionNode<Content, Object> parent =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              ctx.emit(text("working"));
+              Object a =
+                  ctx.runNode(first, null, RunNodeConfig.builder().runId("a").build())
+                      .blockingGet();
+              Object b =
+                  ctx.runNode(asker, a, RunNodeConfig.builder().runId("b").build()).blockingGet();
+              return ImmutableList.of(a, b);
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(parent, captureInput("reply")));
+    ImmutableList<Event> paused = session.turn(go());
+    ImmutableMap<String, Object> details = ImmutableMap.of("name", "John");
+
+    ImmutableList<Event> events =
+        session.turn(answer("name_1", details, RequestInput.FUNCTION_CALL_NAME));
+
+    // Assert: the message went out in both turns, as the body ran again.
+    assertThat(paused.stream().flatMap(e -> e.content().stream()).map(Content::text))
+        .contains("working");
+    assertThat(events.stream().flatMap(e -> e.content().stream()).map(Content::text))
+        .contains("working");
+    assertThat(firstRuns.get()).isEqualTo(1);
+    assertThat(replyInput(events)).isEqualTo(ImmutableList.of("a_out", details));
+  }
+
+  @Test
   public void builder_eventBodyDelegatingARecord_outputsItsJsonForm() {
     RunResult result = run(chain(delegating(Event.class, new Order("a1", 3))));
 
@@ -1048,9 +1191,11 @@ public final class FunctionNodeTest {
   }
 
   @Test
-  public void of_body_runsOnTheRunnersScheduler() {
+  public void of_body_runsOnIoRatherThanTheRunnersScheduler() {
     ExecutorService executor =
         Executors.newSingleThreadExecutor(task -> new Thread(task, "app-scheduler"));
+    ExecutorService io = Executors.newCachedThreadPool(task -> new Thread(task, "io-stand-in"));
+    var previousIoHandler = RxJavaPlugins.getIoSchedulerHandler();
     FunctionNode<Content, String> where =
         FunctionNodes.of(
             "where",
@@ -1060,13 +1205,521 @@ public final class FunctionNodeTest {
 
     RunResult result;
     try {
+      RxJavaPlugins.setIoSchedulerHandler(unused -> Schedulers.from(io));
       result = run(chain(where), Schedulers.from(executor));
+    } finally {
+      RxJavaPlugins.setIoSchedulerHandler(previousIoHandler);
+      executor.shutdownNow();
+      io.shutdownNow();
+    }
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/where@1")).isEqualTo("io-stand-in");
+  }
+
+  @Test
+  public void builderScheduler_body_runsOnThatScheduler() {
+    ExecutorService nodeExecutor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "node-scheduler"));
+    ExecutorService runnerExecutor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "app-scheduler"));
+    FunctionNode<Content, String> where =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("where")
+            .scheduler(Schedulers.from(nodeExecutor))
+            .body((ctx, message) -> Thread.currentThread().getName())
+            .build();
+
+    RunResult result;
+    try {
+      result = run(chain(where), Schedulers.from(runnerExecutor));
+    } finally {
+      nodeExecutor.shutdownNow();
+      runnerExecutor.shutdownNow();
+    }
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/where@1")).isEqualTo("node-scheduler");
+  }
+
+  @Test
+  public void runDisposed_sleepingBody_isInterrupted() throws InterruptedException {
+    // Arrange: an executor scheduler, which does not interrupt on its own when disposed.
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    ExecutorService executor = Executors.newCachedThreadPool();
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .scheduler(Schedulers.from(executor))
+            .body((ctx, message) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interrupted.countDown();
+              }
+              return "late";
+            })
+            .build();
+    try {
+      Runner runner = runner(chain(sleeper), Schedulers.from(executor));
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run =
+          runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      run.dispose();
+
+      assertThat(interrupted.await(10, SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void runDisposed_bodyThatKeepsTheInterrupt_leavesTheThreadUninterruptedForTheNextTask()
+      throws Exception {
+    // Arrange: one thread runs every task and keeps an interrupt between them, unlike a pool.
+    BlockingQueue<Runnable> tasks = new LinkedBlockingQueue<>();
+    AtomicBoolean stopped = new AtomicBoolean();
+    Thread worker =
+        new Thread(() -> {
+          while (!stopped.get()) {
+            Uninterruptibles.takeUninterruptibly(tasks).run();
+          }
+        });
+    worker.setDaemon(true);
+    worker.start();
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch finished = new CountDownLatch(1);
+    AtomicBoolean sawInterrupt = new AtomicBoolean();
+    FunctionNode<Content, String> spinner =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("spinner")
+            .scheduler(Schedulers.from(tasks::add))
+            .body((ctx, message) -> {
+              started.countDown();
+              long deadline = System.nanoTime() + SECONDS.toNanos(10);
+              while (!Thread.currentThread().isInterrupted() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+              }
+              sawInterrupt.set(Thread.currentThread().isInterrupted());
+              finished.countDown();
+              return "late";
+            })
+            .build();
+    try {
+      Runner runner = runner(chain(spinner), Schedulers.from(tasks::add));
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run =
+          runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      run.dispose();
+      assertThat(finished.await(10, SECONDS)).isTrue();
+      CompletableFuture<Boolean> nextTaskInterrupted = new CompletableFuture<>();
+      tasks.add(() -> nextTaskInterrupted.complete(Thread.currentThread().isInterrupted()));
+
+      assertThat(sawInterrupt.get()).isTrue();
+      assertThat(nextTaskInterrupted.get(10, SECONDS)).isFalse();
+    } finally {
+      stopped.set(true);
+      tasks.add(() -> {});
+    }
+  }
+
+  @Test
+  public void inlineScheduler_runDisposedFromAnotherThread_interruptsTheBodyAndClearsTheInterrupt()
+      throws Exception {
+    // Arrange: a trampoline scheduler runs the body on the caller's thread, which subscribes.
+    CountDownLatch started = new CountDownLatch(1);
+    AtomicBoolean sawInterrupt = new AtomicBoolean();
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .scheduler(Schedulers.trampoline())
+            .body((ctx, message) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                sawInterrupt.set(true);
+                Thread.currentThread().interrupt();
+              }
+              return "late";
+            })
+            .build();
+    Runner runner = runner(chain(sleeper), Schedulers.trampoline());
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+    try {
+      Future<Boolean> callerInterrupted =
+          caller.submit(() -> {
+            runner
+                .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+                .subscribe(subscriber);
+            return Thread.interrupted();
+          });
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      subscriber.cancel();
+
+      assertThat(callerInterrupted.get(10, SECONDS)).isFalse();
+      assertThat(sawInterrupt.get()).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+  }
+
+  @Test
+  public void inlineScheduler_callerAlreadyInterrupted_keepsTheInterruptAfterTheBodyReturns()
+      throws Exception {
+    // Arrange: a trampoline scheduler runs the body on the caller's thread, interrupted beforehand.
+    AtomicBoolean bodySawInterrupt = new AtomicBoolean();
+    FunctionNode<Content, String> quick =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("quick")
+            .scheduler(Schedulers.trampoline())
+            .body((ctx, message) -> {
+              bodySawInterrupt.set(Thread.currentThread().isInterrupted());
+              return "done";
+            })
+            .build();
+    Runner runner = runner(chain(quick), Schedulers.trampoline());
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+    Future<Boolean> callerInterrupted;
+    try {
+      callerInterrupted =
+          caller.submit(() -> {
+            Thread.currentThread().interrupt();
+            runner
+                .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+                .subscribe(subscriber);
+            return Thread.interrupted();
+          });
+
+      assertThat(callerInterrupted.get(10, SECONDS)).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+
+    subscriber.assertComplete().assertNoErrors();
+    assertThat(bodySawInterrupt.get()).isTrue();
+  }
+
+  @Test
+  public void inlineScheduler_callerInterruptedThenRunDisposed_keepsTheCallersInterrupt()
+      throws Exception {
+    // Arrange: the caller's interrupt and the cancel's both reach the body on the caller's thread.
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch canceled = new CountDownLatch(1);
+    AtomicBoolean sawCancel = new AtomicBoolean();
+    AtomicBoolean cancelInterruptedTheBody = new AtomicBoolean();
+    FunctionNode<Content, String> waiter =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("waiter")
+            .scheduler(Schedulers.trampoline())
+            .body((ctx, message) -> {
+              boolean callerInterrupt = Thread.interrupted();
+              started.countDown();
+              sawCancel.set(Uninterruptibles.awaitUninterruptibly(canceled, 10, SECONDS));
+              cancelInterruptedTheBody.set(Thread.currentThread().isInterrupted());
+              if (callerInterrupt) {
+                Thread.currentThread().interrupt();
+              }
+              return "late";
+            })
+            .build();
+    Runner runner = runner(chain(waiter), Schedulers.trampoline());
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+    try {
+      Future<Boolean> callerInterrupted =
+          caller.submit(() -> {
+            Thread.currentThread().interrupt();
+            runner
+                .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+                .subscribe(subscriber);
+            return Thread.interrupted();
+          });
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      subscriber.cancel();
+      canceled.countDown();
+
+      assertThat(callerInterrupted.get(10, SECONDS)).isTrue();
+      assertThat(sawCancel.get()).isTrue();
+      assertThat(cancelInterruptedTheBody.get()).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+  }
+
+  @Test
+  public void inlineScheduler_bodyInterruptsItself_callerSeesTheInterrupt() throws Exception {
+    // Arrange: nothing cancels the node, so only the body interrupts the caller's thread.
+    FunctionNode<Content, String> restorer =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("restorer")
+            .scheduler(Schedulers.trampoline())
+            .body((ctx, message) -> {
+              Thread.currentThread().interrupt();
+              return "done";
+            })
+            .build();
+    Runner runner = runner(chain(restorer), Schedulers.trampoline());
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+    Future<Boolean> callerInterrupted;
+    try {
+      callerInterrupted =
+          caller.submit(() -> {
+            runner
+                .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+                .subscribe(subscriber);
+            return Thread.interrupted();
+          });
+
+      assertThat(callerInterrupted.get(10, SECONDS)).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+
+    subscriber.assertComplete().assertNoErrors();
+  }
+
+  @Test
+  public void inlineScheduler_bodyReturns_leavesTheCallerUninterrupted() throws Exception {
+    // Arrange: RxJava calls the node's cancellable after the body's result is sent.
+    FunctionNode<Content, String> quick =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("quick")
+            .scheduler(Schedulers.trampoline())
+            .body((ctx, message) -> "done")
+            .build();
+    Runner runner = runner(chain(quick), Schedulers.trampoline());
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+    Future<Boolean> callerInterrupted;
+    try {
+      callerInterrupted =
+          caller.submit(() -> {
+            runner
+                .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+                .subscribe(subscriber);
+            return Thread.interrupted();
+          });
+
+      assertThat(callerInterrupted.get(10, SECONDS)).isFalse();
+    } finally {
+      caller.shutdownNow();
+    }
+
+    subscriber.assertComplete().assertNoErrors();
+  }
+
+  @Test
+  public void nodeTimeout_sleepingBody_isInterruptedAndFailsWithNodeTimeoutException()
+      throws InterruptedException {
+    CountDownLatch interrupted = new CountDownLatch(1);
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .config(NodeConfig.builder().timeout(Duration.ofSeconds(1)).build())
+            .body((ctx, message) -> {
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interrupted.countDown();
+              }
+              return "late";
+            })
+            .build();
+
+    RunResult result = run(chain(sleeper));
+
+    assertThat(interrupted.await(10, SECONDS)).isTrue();
+    assertThat(result.error()).isInstanceOf(NodeTimeoutException.class);
+    assertThat(result.errorMessage("NodeTimeoutException")).contains("'sleeper'");
+  }
+
+  @Test
+  public void nodeTimeout_sleepingBodyOnBuilderScheduler_isInterrupted()
+      throws InterruptedException {
+    // An executor scheduler does not interrupt its task on its own when disposed.
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "node-scheduler"));
+    AtomicReference<String> interruptedOn = new AtomicReference<>();
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .config(NodeConfig.builder().timeout(Duration.ofSeconds(1)).build())
+            .scheduler(Schedulers.from(executor))
+            .body((ctx, message) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interruptedOn.set(Thread.currentThread().getName());
+                interrupted.countDown();
+              }
+              return "late";
+            })
+            .build();
+
+    RunResult result;
+    try {
+      result = run(chain(sleeper));
+      assertThat(started.await(10, SECONDS)).isTrue();
+      assertThat(interrupted.await(10, SECONDS)).isTrue();
     } finally {
       executor.shutdownNow();
     }
 
-    result.assertCompleted();
-    assertThat(result.outputAt("wf@1/where@1")).isEqualTo("app-scheduler");
+    assertThat(result.error()).isInstanceOf(NodeTimeoutException.class);
+    assertThat(interruptedOn.get()).isEqualTo("node-scheduler");
+  }
+
+  @Test
+  public void nodeTimeout_afterTheBodyReturned_doesNotInterruptTheHandlingOfItsOutput() {
+    // An interruptible worker interrupts its task when disposed, as io() does.
+    ExecutorService executor = Executors.newCachedThreadPool();
+    FunctionNode<Content, String> quick =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("quick")
+            .config(NodeConfig.builder().timeout(Duration.ofSeconds(1)).build())
+            .scheduler(Schedulers.from(executor, /* interruptibleWorker= */ true))
+            .body((ctx, message) -> "out")
+            .build();
+    Runner runner = runner(chain(quick), /* scheduler= */ null);
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    AtomicBoolean handled = new AtomicBoolean();
+    AtomicBoolean interrupted = new AtomicBoolean();
+    AtomicReference<Throwable> error = new AtomicReference<>();
+
+    try {
+      runner
+          .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+          .doOnNext(event -> {
+            if (RunResult.pathOf(event).equals("wf@1/quick@1") && event.output().isPresent()) {
+              try {
+                // Outlasts the timeout on the thread that delivers the node's output.
+                Thread.sleep(2000);
+                handled.set(true);
+              } catch (InterruptedException e) {
+                interrupted.set(true);
+                Thread.currentThread().interrupt();
+              }
+            }
+          })
+          .timeout(30, SECONDS)
+          .blockingSubscribe(event -> {}, error::set);
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(error.get()).isInstanceOf(NodeTimeoutException.class);
+    assertThat(handled.get()).isTrue();
+    assertThat(interrupted.get()).isFalse();
+  }
+
+  @Test
+  public void runDisposed_bodyThatThrowsAfterTheInterrupt_reportsNoUndeliverableError()
+      throws InterruptedException {
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch finished = new CountDownLatch(1);
+    List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
+    var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    ExecutorService executor = Executors.newCachedThreadPool();
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .scheduler(Schedulers.from(executor))
+            .body((ctx, message) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+                return "late";
+              } finally {
+                finished.countDown();
+              }
+            })
+            .build();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+    try {
+      Runner runner = runner(chain(sleeper), Schedulers.from(executor));
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run =
+          runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      run.dispose();
+      assertThat(finished.await(10, SECONDS)).isTrue();
+      executor.shutdown();
+      assertThat(executor.awaitTermination(10, SECONDS)).isTrue();
+
+      assertThat(undeliverable).isEmpty();
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousErrorHandler);
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void siblingFails_sleepingBody_isInterrupted() throws InterruptedException {
+    // Arrange: the workflow cancels the nodes still running when one fails.
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    ExecutorService executor = Executors.newCachedThreadPool();
+    FunctionNode<Content, Void> sleeper =
+        FunctionNodes.builder(Content.class, Void.class)
+            .name("sleeper")
+            .scheduler(Schedulers.from(executor))
+            .body((ctx, message) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interrupted.countDown();
+              }
+              return null;
+            })
+            .build();
+    FunctionNode<Content, Void> broken =
+        FunctionNodes.of(
+            "broken",
+            Content.class,
+            Void.class,
+            (ctx, message) -> {
+              if (!started.await(10, SECONDS)) {
+                throw new IllegalStateException("sleeper never started");
+              }
+              throw new IOException("down");
+            });
+    Workflow workflow =
+        Workflow.builder()
+            .name("wf")
+            .edges(new Edge(Start.INSTANCE, sleeper), new Edge(Start.INSTANCE, broken))
+            .build();
+
+    RunResult result;
+    try {
+      result = run(workflow, Schedulers.from(executor));
+      assertThat(interrupted.await(10, SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(result.errorMessage("IOException")).isEqualTo("down");
   }
 
   @Test
@@ -1084,6 +1737,28 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/copy@1")).isEqualTo("a1");
+  }
+
+  @Test
+  public void toBuilder_copy_keepsTheScheduler() {
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "node-scheduler"));
+    FunctionNode<Content, String> where =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("where")
+            .scheduler(Schedulers.from(executor))
+            .body((ctx, message) -> Thread.currentThread().getName())
+            .build();
+
+    RunResult result;
+    try {
+      result = run(chain(where.toBuilder().name("copy").build()));
+    } finally {
+      executor.shutdownNow();
+    }
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/copy@1")).isEqualTo("node-scheduler");
   }
 
   @Test
@@ -2314,6 +2989,773 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void ofFlowable_twoMessagesThenAValue_sendsThemInOrderBeforeTheOutput() {
+    FunctionNode<Content, String> chatty =
+        FunctionNodes.ofFlowable(
+            "chatty",
+            Content.class,
+            String.class,
+            (ctx, message) ->
+                Flowable.just(
+                    Event.builder()
+                        .author("some_agent")
+                        .content(Content.fromParts(Part.fromText("event 1")))
+                        .build(),
+                    Event.builder().content(Content.fromParts(Part.fromText("event 2"))).build(),
+                    "done"));
+
+    RunResult result = run(chain(chatty));
+
+    result.assertCompleted();
+    ImmutableList<Event> events = result.eventsAt("wf@1/chatty@1");
+    assertThat(events).hasSize(3);
+    assertThat(events.get(0).content().get().text()).isEqualTo("event 1");
+    assertThat(events.get(1).content().get().text()).isEqualTo("event 2");
+    assertThat(events.get(2).output()).hasValue("done");
+  }
+
+  @Test
+  public void ofFlowable_genericPortTypes_readAndWriteThePortTypes() {
+    FunctionNode<Content, List<Order>> orders =
+        FunctionNodes.ofFlowable(
+            "orders",
+            Content.class,
+            new TypeReference<List<Order>>() {},
+            (ctx, message) -> Flowable.just(ImmutableList.of(new Order("a1", 3))));
+    FunctionNode<List<Order>, List<String>> ids =
+        FunctionNodes.ofFlowable(
+            "ids",
+            new TypeReference<List<Order>>() {},
+            new TypeReference<List<String>>() {},
+            (ctx, list) -> Flowable.just(ImmutableList.of(list.get(0).id())));
+    FunctionNode<List<String>, Integer> count =
+        FunctionNodes.ofFlowable(
+            "count",
+            new TypeReference<List<String>>() {},
+            Integer.class,
+            (ctx, list) -> Flowable.just(list.size()));
+
+    RunResult result = run(chain(orders, ids, count));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/orders@1"))
+        .isEqualTo(ImmutableList.of(ImmutableMap.of("id", "a1", "quantity", 3)));
+    assertThat(result.outputAt("wf@1/ids@1")).isEqualTo(ImmutableList.of("a1"));
+    assertThat(result.outputAt("wf@1/count@1")).isEqualTo(1);
+    assertThat(orders.outputSchema()).isPresent();
+    assertThat(ids.inputSchema()).isPresent();
+    assertThat(ids.outputSchema()).isPresent();
+    assertThat(count.inputSchema()).isPresent();
+  }
+
+  @Test
+  public void ofFlowable_emptyMaybe_sendsNoOutput() {
+    FunctionNode<Content, String> quiet =
+        FunctionNodes.ofFlowable(
+            "quiet", Content.class, String.class, (ctx, message) -> Maybe.empty().toFlowable());
+
+    RunResult result = run(chain(quiet));
+
+    result.assertCompleted();
+    assertThat(result.events().stream().anyMatch(e -> e.output().isPresent())).isFalse();
+  }
+
+  @Test
+  public void ofFlowable_eventWithARecordOutputOnAnEventNode_sendsItsJsonForm() {
+    FunctionNode<Content, Event> lookUp =
+        FunctionNodes.ofFlowable(
+            "look_up",
+            Content.class,
+            Event.class,
+            (ctx, message) -> Flowable.just(Event.builder().output(new Order("a1", 3)).build()));
+
+    RunResult result = run(chain(lookUp));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/look_up@1"))
+        .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3));
+  }
+
+  @Test
+  public void ofFlowable_itemOfAnotherType_failsTheNode() {
+    FunctionNode<Content, String> wrong =
+        FunctionNodes.ofFlowable(
+            "wrong", Content.class, String.class, (ctx, message) -> Flowable.just(42));
+
+    RunResult result = run(chain(wrong));
+
+    assertThat(result.errorMessage("IllegalArgumentException"))
+        .contains("output of node 'wrong' expected");
+  }
+
+  @Test
+  public void ofFlowable_bodyReturningAnErrorOrThrowing_failsTheNode() {
+    FunctionNode<Content, String> erroring =
+        FunctionNodes.ofFlowable(
+            "broken",
+            Content.class,
+            String.class,
+            (ctx, m) -> Flowable.error(new IOException("down")));
+    FunctionNode<Content, String> throwing =
+        FunctionNodes.ofFlowable(
+            "broken",
+            Content.class,
+            String.class,
+            (ctx, m) -> {
+              throw new IOException("down");
+            });
+
+    RunResult errored = run(chain(erroring));
+    RunResult thrown = run(chain(throwing));
+
+    assertThat(errored.errorMessage("IOException")).isEqualTo("down");
+    assertThat(thrown.errorMessage("IOException")).isEqualTo("down");
+  }
+
+  @Test
+  public void ofFlowable_twoValueItems_sendsTheFirstAndFailsTheNodeOnTheSecond() {
+    FunctionNode<Content, String> twice =
+        FunctionNodes.ofFlowable(
+            "twice", Content.class, String.class, (ctx, message) -> Flowable.just("a", "b"));
+
+    RunResult result = run(chain(twice));
+
+    assertThat(result.outputAt("wf@1/twice@1")).isEqualTo("a");
+    assertThat(result.errorMessage("IllegalStateException"))
+        .isEqualTo("Node 'twice' produced a second output; a node produces at most one output.");
+  }
+
+  @Test
+  public void ofFlowable_inputThatDoesNotFitThePort_failsTheNode() {
+    FunctionNode<Content, Object> secret =
+        FunctionNodes.of("secret", Content.class, Object.class, (ctx, message) -> "s3cr3t");
+    FunctionNode<Order, String> describe =
+        FunctionNodes.ofFlowable(
+            "describe", Order.class, String.class, (ctx, order) -> Flowable.just(order.id()));
+
+    RunResult result = run(chain(secret, describe));
+
+    assertThat(result.errorMessage("NodeInputValidationException")).contains("describe");
+  }
+
+  @Test
+  public void ofFlowable_requestInputAnsweredWithAMapOnARecordOutput_outputsTheRecordJsonForm() {
+    // Arrange: Order drops the extra key and writes the Long quantity as its int.
+    FunctionNode<Content, Order> asker =
+        FunctionNodes.ofFlowable(
+            "asker",
+            Content.class,
+            Order.class,
+            (ctx, message) ->
+                Flowable.just(RequestInput.builder().interruptId("o_1").message("order?").build()));
+    WorkflowSession session = new WorkflowSession(chain(asker, captureInput("reply")));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(
+            answer(
+                "o_1",
+                ImmutableMap.of(
+                    "result", ImmutableMap.of("id", "a1", "quantity", 3L, "gift", true)),
+                RequestInput.FUNCTION_CALL_NAME));
+
+    ImmutableMap<String, Object> asOrder = ImmutableMap.of("id", "a1", "quantity", 3);
+    assertThat(WorkflowResumeTesting.outputEventAt(events, "wf@1/asker@1").output())
+        .hasValue(asOrder);
+    assertThat(replyInput(events)).isEqualTo(asOrder);
+  }
+
+  @Test
+  public void
+      ofFlowable_requestInputAnsweredWithAnotherType_failsNamingTheAskerBeforeTheSuccessor() {
+    FunctionNode<Content, Integer> asker =
+        FunctionNodes.ofFlowable(
+            "asker",
+            Content.class,
+            Integer.class,
+            (ctx, message) ->
+                Flowable.just(RequestInput.builder().interruptId("n_1").message("n?").build()));
+    FunctionNode<Integer, Integer> twice =
+        FunctionNodes.of("twice", Integer.class, Integer.class, (ctx, n) -> n * 2);
+    WorkflowSession session = new WorkflowSession(chain(asker, twice));
+    session.advance(go());
+
+    WorkflowResumeTesting.FailedTurn turn =
+        session.failingTurn(
+            answer("n_1", ImmutableMap.of("result", "abc"), RequestInput.FUNCTION_CALL_NAME));
+
+    assertThat(turn.error()).isInstanceOf(WorkflowDataException.class);
+    assertThat(turn.error())
+        .hasMessageThat()
+        .isEqualTo(
+            "validation error: answer to node 'asker' (interrupt 'n_1') does not match"
+                + " java.lang.Integer.");
+    assertThat(WorkflowResumeTesting.pathsOf(turn.events())).doesNotContain("wf@1/twice@1");
+  }
+
+  @Test
+  public void ofFlowable_requestInputAnsweredWithTextOnARecordOutput_failsNamingTheNode() {
+    FunctionNode<Content, Order> asker =
+        FunctionNodes.ofFlowable(
+            "asker",
+            Content.class,
+            Order.class,
+            (ctx, message) ->
+                Flowable.just(RequestInput.builder().interruptId("o_1").message("order?").build()));
+    WorkflowSession session = new WorkflowSession(chain(asker));
+    session.advance(go());
+
+    WorkflowResumeTesting.FailedTurn turn =
+        session.failingTurn(
+            answer("o_1", ImmutableMap.of("result", "secret"), RequestInput.FUNCTION_CALL_NAME));
+
+    assertThat(turn.error())
+        .hasMessageThat()
+        .isEqualTo(
+            "validation error: answer to node 'asker' (interrupt 'o_1') does not match"
+                + " com.google.adk.workflow.FunctionNodeTest$Order.");
+  }
+
+  @Test
+  public void ofFlowable_requestInputBadAnswerThenACorrectedOne_recoversWithTheTypedOutput() {
+    FunctionNode<Content, Order> asker =
+        FunctionNodes.ofFlowable(
+            "asker",
+            Content.class,
+            Order.class,
+            (ctx, message) ->
+                Flowable.just(RequestInput.builder().interruptId("o_1").message("order?").build()));
+    WorkflowSession session = new WorkflowSession(chain(asker, captureInput("reply")));
+    session.advance(go());
+
+    WorkflowResumeTesting.FailedTurn failed =
+        session.failingTurn(
+            answer("o_1", ImmutableMap.of("result", "secret"), RequestInput.FUNCTION_CALL_NAME));
+    ImmutableList<Event> events =
+        session.turn(
+            answer(
+                "o_1",
+                ImmutableMap.of("result", ImmutableMap.of("id", "a1", "quantity", 3L)),
+                RequestInput.FUNCTION_CALL_NAME));
+
+    assertThat(failed.error()).hasMessageThat().contains("node 'asker' (interrupt 'o_1')");
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3));
+  }
+
+  @Test
+  public void ofFlowable_requestInputAnsweredWithNumericTextOnAStringOutput_outputsTheText() {
+    FunctionNode<Content, String> asker =
+        FunctionNodes.ofFlowable(
+            "asker",
+            Content.class,
+            String.class,
+            (ctx, message) ->
+                Flowable.just(
+                    RequestInput.builder().interruptId("t_1").message("ticket?").build()));
+    WorkflowSession session = new WorkflowSession(chain(asker, captureInput("reply")));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(
+            answer("t_1", ImmutableMap.of("result", "12345"), RequestInput.FUNCTION_CALL_NAME));
+
+    assertThat(replyInput(events)).isEqualTo("12345");
+  }
+
+  @Test
+  public void ofFlowable_requestInputAnsweredOnAVoidOutput_completesWithoutAnOutput() {
+    FunctionNode<Content, Void> asker =
+        FunctionNodes.ofFlowable(
+            "asker",
+            Content.class,
+            Void.class,
+            (ctx, message) ->
+                Flowable.just(RequestInput.builder().interruptId("p_1").message("go on?").build()));
+    WorkflowSession session = new WorkflowSession(chain(asker, captureInput("reply")));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(
+            answer("p_1", ImmutableMap.of("result", "yes"), RequestInput.FUNCTION_CALL_NAME));
+
+    assertThat(
+            events.stream()
+                .anyMatch(e ->
+                    WorkflowResumeTesting.pathOf(e).equals("wf@1/asker@1")
+                        && e.output().isPresent()))
+        .isFalse();
+    assertThat(replyInput(events)).isNull();
+  }
+
+  @Test
+  public void ofFlowable_messageAsOutputEvent_failsTheNode() {
+    Content message = Content.fromParts(Part.fromText("hello"));
+    Event marked =
+        Event.builder()
+            .content(message)
+            .nodeInfo(NodeInfo.builder().messageAsOutput(true).build())
+            .build();
+
+    RunResult onContent = run(chain(emitting("greeter", Content.class, marked)));
+    RunResult withAnOutput =
+        run(chain(emitting("greeter", Content.class, marked.toBuilder().output(message).build())));
+    RunResult partialOnEvent =
+        run(chain(emitting("greeter", Event.class, marked.toBuilder().partial(true).build())));
+
+    String rejection =
+        "node 'greeter' emitted an Event marked messageAsOutput; send the message as a plain"
+            + " event and return the Content.";
+    assertThat(onContent.errorMessage("IllegalArgumentException")).isEqualTo(rejection);
+    assertThat(withAnOutput.errorMessage("IllegalArgumentException")).isEqualTo(rejection);
+    assertThat(partialOnEvent.errorMessage("IllegalArgumentException")).isEqualTo(rejection);
+    assertThat(onContent.eventsAt("wf@1/greeter@1").stream().collect(onlyElement()).errorCode())
+        .isPresent();
+  }
+
+  @Test
+  public void ofFlowable_messageEventThenTheSameContent_successorGetsItLiveAndOnResume() {
+    // Arrange: the successor pauses on its first run and runs again on the resume.
+    Content message = Content.fromParts(Part.fromText("hello"));
+    FunctionNode<Content, Content> greeter =
+        FunctionNodes.ofFlowable(
+            "greeter",
+            Content.class,
+            Content.class,
+            (ctx, input) -> Flowable.just(Event.builder().content(message).build(), message));
+    List<@Nullable Object> inputs = new ArrayList<>();
+    FunctionNode<Content, String> asker =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("asker")
+            .rerunOnResume(true)
+            .flowableBody((ctx, input) -> {
+              inputs.add(input);
+              return inputs.size() == 1
+                  ? Flowable.just(RequestInput.builder().interruptId("ok_1").message("ok?").build())
+                  : Flowable.just("done");
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(greeter, asker));
+
+    ImmutableList<Event> first = session.turn(go());
+    ImmutableList<Event> second =
+        session.turn(answer("ok_1", ImmutableMap.of("ok", true), RequestInput.FUNCTION_CALL_NAME));
+
+    // Assert: the user sees the message once, and both runs of the successor get the same Content.
+    assertThat(
+            first.stream()
+                .filter(e -> WorkflowResumeTesting.pathOf(e).equals("wf@1/greeter@1"))
+                .flatMap(e -> e.content().stream()))
+        .containsExactly(message);
+    assertThat(second.stream().filter(e -> e.errorCode().isPresent())).isEmpty();
+    assertThat(second.stream().filter(e -> e.content().equals(Optional.of(message)))).isEmpty();
+    assertThat(inputs).containsExactly(message, message);
+  }
+
+  @Test
+  public void ofFlowable_eventOutputOnAnIntegerNode_failsTheNodeUnlessItIsAnInteger() {
+    RunResult fits =
+        run(chain(emitting("count", Integer.class, Event.builder().output(42).build())));
+    RunResult misfits =
+        run(chain(emitting("count", Integer.class, Event.builder().output("abc").build())));
+
+    fits.assertCompleted();
+    assertThat(fits.outputAt("wf@1/count@1")).isEqualTo(42);
+    assertThat(misfits.errorMessage("IllegalArgumentException"))
+        .isEqualTo("output of node 'count' expected java.lang.Integer, but got String.");
+    assertThat(misfits.eventsAt("wf@1/count@1").stream().collect(onlyElement()).errorCode())
+        .isPresent();
+  }
+
+  @Test
+  public void ofFlowable_eventWithARecordOutputOnARecordNode_sendsItsJsonForm() {
+    Event event = Event.builder().output(new Order("a1", 3)).build();
+
+    RunResult result = run(chain(emitting("order", Order.class, event)));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/order@1"))
+        .isEqualTo(ImmutableMap.of("id", "a1", "quantity", 3));
+  }
+
+  @Test
+  public void ofFlowable_bodyDelegatingItsOutput_outputsTheChildsOutputWrittenAsO() {
+    FunctionNode<Content, Ticket> router =
+        FunctionNodes.builder(Content.class, Ticket.class)
+            .name("router")
+            .rerunOnResume(true)
+            .flowableBody((ctx, message) ->
+                ctx.runNode(
+                        emitter("child", ImmutableMap.of("id", "a1")),
+                        null,
+                        RunNodeConfig.builder().useAsOutput(true).build())
+                    .ignoreElement()
+                    .toFlowable())
+            .build();
+    Map<String, @Nullable Object> asTicket = new HashMap<>();
+    asTicket.put("id", "a1");
+    asTicket.put("tag", null);
+    asTicket.put("note", null);
+
+    RunResult result = run(chain(router));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/router@1/child@1")).isEqualTo(ImmutableMap.of("id", "a1"));
+    assertThat(result.outputAt("wf@1/router@1")).isEqualTo(asTicket);
+  }
+
+  @Test
+  public void ofFlowable_twoChildrenAndAMessageAcrossAPause_replaysTheFinishedChild() {
+    // Arrange: the first child runs once; the second asks, and the answer is its output.
+    AtomicInteger firstRuns = new AtomicInteger();
+    FunctionNode<Object, String> first =
+        FunctionNodes.of(
+            "first",
+            Object.class,
+            String.class,
+            (ctx, input) -> {
+              firstRuns.incrementAndGet();
+              return "a_out";
+            });
+    FunctionNode<Object, Object> asker =
+        FunctionNodes.ofFlowable(
+            "asker",
+            Object.class,
+            Object.class,
+            (ctx, input) ->
+                Flowable.just(
+                    RequestInput.builder().interruptId("name_1").message("name?").build()));
+    FunctionNode<Content, Object> parent =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .flowableBody((ctx, message) ->
+                Flowable.concat(
+                    Flowable.just(
+                        Event.builder()
+                            .content(Content.fromParts(Part.fromText("working")))
+                            .build()),
+                    ctx.runNode(first, null, RunNodeConfig.builder().runId("a").build())
+                        .flatMap(a ->
+                            ctx.runNode(asker, a, RunNodeConfig.builder().runId("b").build())
+                                .map(b -> ImmutableList.of(a, b)))
+                        .toFlowable()))
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(parent, captureInput("reply")));
+    session.advance(go());
+    ImmutableMap<String, Object> details = ImmutableMap.of("name", "John");
+
+    ImmutableList<Event> events =
+        session.turn(answer("name_1", details, RequestInput.FUNCTION_CALL_NAME));
+
+    // Assert: the body ran again and sent its message again.
+    assertThat(events.stream().flatMap(e -> e.content().stream()).map(Content::text))
+        .contains("working");
+    assertThat(firstRuns.get()).isEqualTo(1);
+    assertThat(replyInput(events)).isEqualTo(ImmutableList.of("a_out", details));
+  }
+
+  @Test
+  public void ofFlowable_body_isSubscribedWithoutMovingToTheRunnersScheduler() throws Exception {
+    // Arrange: the Runner's scheduler runs on the "app-scheduler" thread.
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "app-scheduler"));
+    ExecutorService caller =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "runner-caller"));
+    FunctionNode<Content, String> where =
+        FunctionNodes.ofFlowable(
+            "where",
+            Content.class,
+            String.class,
+            (ctx, message) -> Flowable.just(Thread.currentThread().getName()));
+
+    RunResult result;
+    try {
+      result = caller.submit(() -> run(chain(where), Schedulers.from(executor))).get(30, SECONDS);
+    } finally {
+      executor.shutdownNow();
+      caller.shutdownNow();
+    }
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/where@1")).isEqualTo("runner-caller");
+  }
+
+  @Test
+  public void builderScheduler_flowableBody_isSubscribedOnTheCallingThread() throws Exception {
+    ExecutorService nodeExecutor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "node-scheduler"));
+    ExecutorService caller =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "runner-caller"));
+    FunctionNode<Content, String> where =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("where")
+            .scheduler(Schedulers.from(nodeExecutor))
+            .flowableBody((ctx, message) -> Flowable.just(Thread.currentThread().getName()))
+            .build();
+
+    RunResult result;
+    try {
+      result = caller.submit(() -> run(chain(where))).get(30, SECONDS);
+    } finally {
+      nodeExecutor.shutdownNow();
+      caller.shutdownNow();
+    }
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/where@1")).isEqualTo("runner-caller");
+  }
+
+  @Test
+  public void ofFlowable_runDisposed_disposesTheBodysFlowable() throws InterruptedException {
+    CountDownLatch subscribed = new CountDownLatch(1);
+    CountDownLatch canceled = new CountDownLatch(1);
+    FunctionNode<Content, String> waiting =
+        FunctionNodes.ofFlowable(
+            "waiting",
+            Content.class,
+            String.class,
+            (ctx, message) ->
+                Flowable.<String>never()
+                    .doOnSubscribe(unused -> subscribed.countDown())
+                    .doOnCancel(canceled::countDown));
+    Runner runner = runner(chain(waiting), /* scheduler= */ null);
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    Disposable run =
+        runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+    assertThat(subscribed.await(10, SECONDS)).isTrue();
+
+    run.dispose();
+
+    assertThat(canceled.await(10, SECONDS)).isTrue();
+  }
+
+  @Test
+  public void emit_stateWrittenAroundEvents_ridesTheNextEventAndReadsBackAfterTheStore()
+      throws Exception {
+    onEveryScheduler(scheduler -> {
+      SlowStore store = new SlowStore(scheduler, SLOW_APPEND);
+      AtomicReference<String> readBack = new AtomicReference<>();
+      FunctionNode<Content, Object> counter =
+          node(
+              "counter",
+              (ctx, message) -> {
+                ctx.state().put("n", 1);
+                ctx.emit(text("first"));
+                ctx.state().put("n", 2);
+                // "first" is stored by now, so its n=1 can no longer land over n=2.
+                readBack.set(ctx.state().get("n") + " " + store.storedTexts);
+                ctx.emit(text("second"));
+                ctx.state().put("after_second", 3);
+                return ctx.state().get("n");
+              });
+
+      RunResult result = run(chain(counter), scheduler, store);
+
+      assertThat(readBack.get()).isEqualTo("2 [first]");
+      result.assertCompleted();
+      assertThat(
+              result.eventsAt("wf@1/counter@1").stream()
+                  .map(e -> describe(e) + e.actions().stateDelta()))
+          .containsExactly("first{n=1}", "second{n=2}", "2{after_second=3}")
+          .inOrder();
+    });
+  }
+
+  @Test
+  public void emit_fromTheBodyOrAHelperStillWaitingAtReturn_returnsOnceStoredAndLaterCallsThrow()
+      throws Exception {
+    onEveryScheduler(scheduler -> {
+      // Arrange: the body returns no output while its helper still waits in emit.
+      SlowStore store = new SlowStore(scheduler, SLOW_APPEND);
+      AtomicReference<ImmutableList<String>> storedWhenHelperReturned = new AtomicReference<>();
+      ExecutorService helper = Executors.newSingleThreadExecutor();
+      AtomicReference<Future<?>> helperEmit = new AtomicReference<>();
+      AtomicReference<Context> bodyContext = new AtomicReference<>();
+      FunctionNode<Content, Object> reporter =
+          node(
+              "reporter",
+              (ctx, message) -> {
+                bodyContext.set(ctx);
+                ctx.emit(text("from the body"));
+                helperEmit.set(
+                    helper.submit(() -> {
+                      ctx.emit(text("from a helper"));
+                      storedWhenHelperReturned.set(ImmutableList.copyOf(store.storedTexts));
+                    }));
+                assertThat(store.appendsStarted.tryAcquire(2, 10, SECONDS)).isTrue();
+                return null;
+              });
+
+      ExecutionException lateError;
+      try {
+        run(chain(reporter), scheduler, store).assertCompleted();
+        helperEmit.get().get(10, SECONDS);
+        Future<?> lateEmit = helper.submit(() -> bodyContext.get().emit(text("late")));
+        lateError = assertThrows(ExecutionException.class, () -> lateEmit.get(10, SECONDS));
+      } finally {
+        helper.shutdownNow();
+      }
+
+      assertThat(storedWhenHelperReturned.get())
+          .containsExactly("from the body", "from a helper")
+          .inOrder();
+      assertThat(lateError).hasCauseThat().isInstanceOf(IllegalStateException.class);
+      assertThat(lateError).hasCauseThat().hasMessageThat().contains("a tool or callback returns");
+    });
+  }
+
+  @Test
+  public void emit_duplicateIdThenRunDisposedWhileWaiting_throwIllegalArgumentThenCancellation()
+      throws Exception {
+    onEveryScheduler(scheduler -> {
+      // Arrange: the store never finishes a node event, so emit waits until the cancel.
+      SlowStore store = new SlowStore(scheduler, Duration.ofHours(1));
+      ExecutorService helper = Executors.newSingleThreadExecutor();
+      CompletableFuture<Future<?>> duplicate = new CompletableFuture<>();
+      CompletableFuture<Exception> emitFailure = new CompletableFuture<>();
+      FunctionNode<Content, Object> stuck =
+          node(
+              "stuck",
+              (ctx, message) -> {
+                duplicate.complete(
+                    helper.submit(() -> {
+                      assertThat(store.appendsStarted.tryAcquire(10, SECONDS)).isTrue();
+                      ctx.emit(Event.builder().id("x").content(text("again")).build());
+                      return null;
+                    }));
+                try {
+                  ctx.emit(Event.builder().id("x").content(text("stuck")).build());
+                } catch (CancellationException e) {
+                  // The waiting call reported the cancel, so this one sends nothing and returns.
+                  ctx.emit(text("after the cancel"));
+                  emitFailure.complete(e);
+                }
+                return "dropped";
+              });
+      Runner runner = runner(chain(stuck), scheduler, store);
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      try {
+        Disposable run = runner.runAsync(USER, session.id(), text("go")).subscribe();
+        ExecutionException duplicateError =
+            assertThrows(
+                ExecutionException.class, () -> duplicate.get(10, SECONDS).get(10, SECONDS));
+
+        run.dispose();
+
+        assertThat(duplicateError).hasCauseThat().isInstanceOf(IllegalArgumentException.class);
+        assertThat(emitFailure.get(10, SECONDS)).isInstanceOf(CancellationException.class);
+      } finally {
+        helper.shutdownNow();
+      }
+    });
+  }
+
+  @Test
+  public void emit_runDisposedWhileTheBodyWorks_nextCallThrowsAndTheOneAfterReturns()
+      throws Exception {
+    // Arrange: the body works between calls and learns of the cancel only from its interrupt.
+    CountDownLatch working = new CountDownLatch(1);
+    CompletableFuture<Exception> nextEmitFailure = new CompletableFuture<>();
+    FunctionNode<Content, Object> importer =
+        node(
+            "importer",
+            (ctx, message) -> {
+              working.countDown();
+              try {
+                new CountDownLatch(1).await(10, SECONDS);
+              } catch (InterruptedException e) {
+                // The cancel reaches the body before the interrupt does.
+              }
+              try {
+                ctx.emit(text("batch 1"));
+              } catch (CancellationException e) {
+                ctx.emit(text("batch 2"));
+                nextEmitFailure.complete(e);
+              }
+              return "dropped";
+            });
+    Runner runner = runner(chain(importer), null);
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    Disposable run = runner.runAsync(USER, session.id(), text("go")).subscribe();
+    assertThat(working.await(10, SECONDS)).isTrue();
+
+    run.dispose();
+
+    assertThat(nextEmitFailure.get(10, SECONDS)).isInstanceOf(CancellationException.class);
+  }
+
+  @Test
+  public void emit_partialOrOutputEvent_partialIsNotStoredNorReleasesALaterEventAndOutputFails()
+      throws Exception {
+    // Arrange: a helper's event keeps the run busy, so the partial event waits in line.
+    SlowStore store = new SlowStore(Schedulers.io(), SLOW_APPEND);
+    ExecutorService helper = Executors.newSingleThreadExecutor();
+    AtomicReference<ImmutableList<String>> storedWhenEmitReturned = new AtomicReference<>();
+    AtomicReference<IllegalArgumentException> outputError = new AtomicReference<>();
+    FunctionNode<Content, Object> typist =
+        node(
+            "typist",
+            (ctx, message) -> {
+              Future<?> first = helper.submit(() -> ctx.emit(text("first")));
+              assertThat(store.appendsStarted.tryAcquire(10, SECONDS)).isTrue();
+              ctx.state().put("k", 1);
+              outputError.set(
+                  assertThrows(
+                      IllegalArgumentException.class,
+                      () -> ctx.emit(Event.builder().output("too soon").build())));
+              ctx.emit(Event.builder().id("x").partial(true).content(text("typing")).build());
+              ctx.emit(Event.builder().id("x").content(text("typed")).build());
+              storedWhenEmitReturned.set(ImmutableList.copyOf(store.storedTexts));
+              first.get(10, SECONDS);
+              return "done";
+            });
+
+    RunResult result;
+    try {
+      result = run(chain(typist), Schedulers.io(), store);
+    } finally {
+      helper.shutdownNow();
+    }
+
+    result.assertCompleted();
+    ImmutableList<Event> events = result.eventsAt("wf@1/typist@1");
+    assertThat(events.stream().map(e -> describe(e) + e.actions().stateDelta()))
+        .containsExactly("first{}", "typing{}", "typed{k=1}", "done{}")
+        .inOrder();
+    assertThat(storedWhenEmitReturned.get()).containsExactly("first", "typed").inOrder();
+    assertThat(outputError.get()).hasMessageThat().contains("return the value from the body");
+  }
+
+  @Test
+  public void emit_fromAFlowableBodyOrOutsideANode_throwsNamingTheAlternative() {
+    FlowableNodeBody<Content> rx = (ctx, message) -> Flowable.fromAction(() -> ctx.emit(text("x")));
+    ToolContext tool =
+        ToolContext.builder(TestUtils.createInvocationContext(TestUtils.createRootAgent())).build();
+
+    RunResult result = run(chain(FunctionNodes.ofFlowable("rx", Content.class, String.class, rx)));
+    var toolError = assertThrows(IllegalStateException.class, () -> tool.emit(text("x")));
+
+    assertThat(result.errorMessage("IllegalStateException")).contains("sends events as items");
+    assertThat(toolError).hasMessageThat().contains("a tool or callback returns its result");
+  }
+
+  @Test
+  public void toBuilder_bodyOfTheOtherKind_replacesTheBodyInLaterCopies() {
+    FunctionNode<Object, String> plain =
+        FunctionNodes.of("plain", Object.class, String.class, (ctx, input) -> "plain");
+    FunctionNode<Object, String> rx =
+        plain.toBuilder().name("rx").flowableBody((ctx, input) -> Flowable.just("rx")).build();
+    FunctionNode<Object, String> back =
+        rx.toBuilder().name("back").body((ctx, input) -> "back").build();
+
+    RunResult result = run(chain(rx.toBuilder().name("recopy").build(), back));
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/recopy@1")).isEqualTo("rx");
+    assertThat(result.outputAt("wf@1/back@1")).isEqualTo("back");
+  }
+
+  @Test
   public void builder_withoutAName_failsAtBuild() {
     FunctionNode.Builder<String, String> builder =
         FunctionNodes.builder(String.class, String.class).body((ctx, text) -> text);
@@ -2866,8 +4308,8 @@ public final class FunctionNodeTest {
 
     assertThat(result.errorMessage("IllegalArgumentException"))
         .isEqualTo(
-            "node 'ask' returned a RequestInput, which a NodeBody cannot send; return the output"
-                + " instead.");
+            "node 'ask' returned a RequestInput, which a NodeBody cannot send; emit it from a"
+                + " FlowableNodeBody instead.");
   }
 
   @Test
@@ -3184,6 +4626,12 @@ public final class FunctionNodeTest {
     return Workflow.builder().name("wf").edges(edges.toArray(new Edge[0])).build();
   }
 
+  /** Returns a flowable node that sends {@code event}. */
+  private static <O> FunctionNode<Content, O> emitting(String name, Class<O> type, Event event) {
+    return FunctionNodes.ofFlowable(
+        name, Content.class, type, (ctx, message) -> Flowable.just(event));
+  }
+
   /**
    * Returns a node {@code router} whose body gives its output to a child {@code child} that outputs
    * {@code childOutput}, and returns nothing itself.
@@ -3209,13 +4657,14 @@ public final class FunctionNodeTest {
     return run(root, null);
   }
 
-  /** Runs {@code root} as an app's root node through a {@link Runner} on a "go" message. */
   private static RunResult run(Node root, @Nullable Scheduler scheduler) {
-    Runner runner =
-        Runner.builder()
-            .app(App.builder().name(APP).rootNode(root).build())
-            .scheduler(scheduler)
-            .build();
+    return run(root, scheduler, new InMemorySessionService());
+  }
+
+  /** Runs {@code root} as an app's root node through a {@link Runner} on a "go" message. */
+  private static RunResult run(
+      Node root, @Nullable Scheduler scheduler, BaseSessionService sessionService) {
+    Runner runner = runner(root, scheduler, sessionService);
     Session session = runner.sessionService().createSession(APP, USER).blockingGet();
     List<Event> events = new ArrayList<>();
     AtomicReference<Throwable> error = new AtomicReference<>();
@@ -3224,6 +4673,123 @@ public final class FunctionNodeTest {
         .timeout(30, SECONDS)
         .blockingSubscribe(events::add, error::set);
     return new RunResult(ImmutableList.copyOf(events), error.get());
+  }
+
+  private static Runner runner(Node root, @Nullable Scheduler scheduler) {
+    return runner(root, scheduler, new InMemorySessionService());
+  }
+
+  private static Runner runner(
+      Node root, @Nullable Scheduler scheduler, BaseSessionService sessionService) {
+    return Runner.builder()
+        .app(App.builder().name(APP).rootNode(root).build())
+        .sessionService(sessionService)
+        .scheduler(scheduler)
+        .build();
+  }
+
+  /** Runs {@code check} on its own thread, for a bounded time, with each Runner scheduler. */
+  private static void onEveryScheduler(SchedulerCheck check) throws Exception {
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    ExecutorService checks = Executors.newCachedThreadPool();
+    try {
+      for (Scheduler scheduler :
+          ImmutableList.of(
+              Schedulers.io(),
+              Schedulers.trampoline(),
+              Schedulers.single(),
+              Schedulers.from(pool),
+              Schedulers.from(Runnable::run))) {
+        Future<?> done =
+            checks.submit(() -> {
+              check.run(scheduler);
+              return null;
+            });
+        try {
+          done.get(20, SECONDS);
+        } catch (ExecutionException | TimeoutException e) {
+          throw new AssertionError("on " + scheduler + ": " + e.getMessage(), e);
+        }
+      }
+    } finally {
+      checks.shutdownNow();
+      pool.shutdownNow();
+    }
+  }
+
+  private interface SchedulerCheck {
+    void run(Scheduler scheduler) throws Exception;
+  }
+
+  /** Returns a plain node named {@code name} that runs {@code body} on the user's message. */
+  private static FunctionNode<Content, Object> node(String name, NodeBody<Content, Object> body) {
+    return FunctionNodes.of(name, Content.class, Object.class, body);
+  }
+
+  private static Content text(String text) {
+    return Content.fromParts(Part.fromText(text));
+  }
+
+  /** Returns the event's text or output, whichever it carries. */
+  private static String describe(Event event) {
+    return event.content().map(Content::text).orElse("") + event.output().orElse("");
+  }
+
+  /** A session service that stores each node event {@code delay} late, on {@code appendOn}. */
+  private static final class SlowStore implements BaseSessionService {
+    private final InMemorySessionService delegate = new InMemorySessionService();
+    private final Scheduler appendOn;
+    private final Duration delay;
+    final List<String> storedTexts = new CopyOnWriteArrayList<>();
+    final Semaphore appendsStarted = new Semaphore(0);
+
+    SlowStore(Scheduler appendOn, Duration delay) {
+      this.appendOn = appendOn;
+      this.delay = delay;
+    }
+
+    @Override
+    public Single<Event> appendEvent(Session session, Event event) {
+      if (event.nodeInfo().isEmpty()) {
+        return delegate.appendEvent(session, event);
+      }
+      appendsStarted.release();
+      return Single.timer(delay.toMillis(), MILLISECONDS, appendOn)
+          .flatMap(unused -> delegate.appendEvent(session, event))
+          .doOnSuccess(unused -> storedTexts.add(describe(event)));
+    }
+
+    // BaseSessionService's only abstract createSession overload is deprecated.
+    @SuppressWarnings("deprecation")
+    @Override
+    public Single<Session> createSession(
+        String appName,
+        String userId,
+        @Nullable ConcurrentMap<String, Object> state,
+        @Nullable String sessionId) {
+      return delegate.createSession(appName, userId, state, sessionId);
+    }
+
+    @Override
+    public Maybe<Session> getSession(
+        String appName, String userId, String sessionId, Optional<GetSessionConfig> config) {
+      return delegate.getSession(appName, userId, sessionId, config);
+    }
+
+    @Override
+    public Single<ListSessionsResponse> listSessions(String appName, String userId) {
+      return delegate.listSessions(appName, userId);
+    }
+
+    @Override
+    public Completable deleteSession(String appName, String userId, String sessionId) {
+      return delegate.deleteSession(appName, userId, sessionId);
+    }
+
+    @Override
+    public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
+      return delegate.listEvents(appName, userId, sessionId);
+    }
   }
 
   /** The events a run streamed and the error it failed with, if any. */

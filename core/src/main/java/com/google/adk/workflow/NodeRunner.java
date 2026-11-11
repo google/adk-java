@@ -624,12 +624,13 @@ public final class NodeRunner {
       Event outgoing = stamped.partial().orElse(false) ? stamped : withPendingDeltas(stamped);
       return eventSink
           .send(outgoing, /* nodeFailure= */ null)
-          .doOnComplete(
-              () -> {
-                if (outgoing.output().isPresent() || messageAsOutput) {
-                  nodeState.markOutputEmitted();
-                }
-              });
+          .doOnComplete(() -> {
+            if (outgoing.output().isPresent() || messageAsOutput) {
+              nodeState.markOutputEmitted();
+            }
+          })
+          // Releases a plain body that waits in Context.emit for this event.
+          .doOnComplete(() -> nodeState.markProcessed(outgoing));
     }
 
     /** Sends a final event carrying any output, routes, or deltas that no earlier event carried. */
@@ -689,11 +690,17 @@ public final class NodeRunner {
         return event;
       }
       EventActions actions = event.actions().toBuilder().build();
-      actions.stateDelta().putAll(stateDelta);
-      actions.artifactDelta().putAll(artifactDelta);
-      stateDelta.clear();
-      artifactDelta.clear();
+      moveEntries(stateDelta, actions.stateDelta());
+      moveEntries(artifactDelta, actions.artifactDelta());
       return event.toBuilder().actions(actions).build();
+    }
+
+    /** Moves each entry, leaving one changed concurrently in {@code from} for the next event. */
+    private static <V> void moveEntries(Map<String, V> from, Map<String, V> to) {
+      for (Map.Entry<String, V> entry : from.entrySet()) {
+        to.put(entry.getKey(), entry.getValue());
+        from.remove(entry.getKey(), entry.getValue());
+      }
     }
 
     /** Attributes {@code event} to its author and to this run of the node. */

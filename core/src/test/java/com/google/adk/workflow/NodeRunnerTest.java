@@ -43,7 +43,12 @@ import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subjects.SingleSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -360,6 +365,39 @@ public final class NodeRunnerTest {
     assertThat(sentEvents).hasSize(2);
     assertThat(sentEvents.get(0).actions().stateDelta()).isEmpty();
     assertThat(sentEvents.get(1).actions().stateDelta()).containsExactly("key", "value");
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  public void run_stateWrittenWhileDeltasMove_ridesTheNextEvent() {
+    runAtRoot(
+        new TestNode(
+            "writer",
+            (ctx, input) -> {
+              // The deprecated setter is the only deterministic way to land a write mid-move.
+              ctx.eventActions()
+                  .setStateDelta(
+                      new ConcurrentHashMap<String, Object>() {
+                        private boolean written;
+
+                        @Override
+                        public Set<Map.Entry<String, Object>> entrySet() {
+                          Set<Map.Entry<String, Object>> copy = new HashSet<>(super.entrySet());
+                          if (!written) {
+                            written = true;
+                            super.replace("early", 1, 3);
+                            super.put("late", 2);
+                          }
+                          return copy;
+                        }
+                      });
+              ctx.eventActions().stateDelta().put("early", 1);
+              return Flowable.<Object>just(newEvent().content(MESSAGE).build(), "done");
+            }));
+
+    Map<String, Object> applied = new HashMap<>();
+    sentEvents.forEach(event -> applied.putAll(event.actions().stateDelta()));
+    assertThat(applied).containsExactly("early", 3, "late", 2);
   }
 
   @Test

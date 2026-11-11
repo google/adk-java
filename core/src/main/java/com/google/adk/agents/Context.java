@@ -18,6 +18,7 @@ package com.google.adk.agents;
 
 import com.google.adk.annotations.Experimental;
 import com.google.adk.artifacts.ListArtifactsResponse;
+import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.memory.SearchMemoryResponse;
@@ -30,6 +31,7 @@ import com.google.adk.workflow.Route;
 import com.google.adk.workflow.RunNodeConfig;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -37,6 +39,7 @@ import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -346,6 +349,59 @@ public class Context extends ReadonlyContext {
   }
 
   /**
+   * Sends {@code event} from this workflow node's plain {@code FunctionNode} body, after the events
+   * of earlier calls and before the output, unless a {@code useAsOutput} child already sent it, and
+   * returns once the run has stored it and handed it to the run's caller.
+   *
+   * <ul>
+   *   <li>State: a write made before {@code emit} rides this event, or an event another thread sent
+   *       just before it; a write made after {@code emit} returns rides a later event or the
+   *       output. Reads made after {@code emit} returns, on that thread, see the body's own writes.
+   *   <li>Threads: any thread the body uses may call it; a call waits even if the body returns.
+   *   <li>Where it works: only while a plain {@code FunctionNode} body of this node runs; a tool,
+   *       callback, {@code Flowable} body or custom node sends events as its results instead. A
+   *       callback of {@code ctx.runNode(...)}, such as {@code doOnSuccess}, runs inside the run's
+   *       dispatch, so calling {@code emit} there deadlocks.
+   *   <li>Events: a missing ID is filled in. Long-running tool IDs, a route or a transfer change
+   *       the node's control flow, as on a returned event. A partial event goes to the caller
+   *       without waiting, is not stored and carries no state.
+   *   <li>Cancellation: each call waiting at a cancel throws {@link CancellationException}, though
+   *       its event may still be stored. If none waits, only the next call throws. Later calls on
+   *       any thread send nothing, and the output is dropped. A cancel can interrupt the store of
+   *       an event that {@code emit} is still handing over, as it may run on the calling thread. A
+   *       body rerun after a pause sends its events again.
+   * </ul>
+   *
+   * @throws IllegalArgumentException if {@code event} has an output, or has the ID of an event
+   *     another {@code emit} call still waits on
+   * @throws IllegalStateException if no plain {@code FunctionNode} body of this node is running
+   * @throws CancellationException if the node is canceled while this call waits, or before it and
+   *     no earlier call has thrown for that cancel
+   */
+  @Experimental
+  public final void emit(Event event) {
+    Preconditions.checkNotNull(event);
+    if (nodeState == null || !nodeState.emitFromBody(event)) {
+      throw new IllegalStateException(
+          "Context.emit works only while a plain FunctionNode body runs; a Flowable body or a"
+              + " custom node sends events as items of its Flowable, and a tool or callback returns"
+              + " its result.");
+    }
+  }
+
+  /** Sends {@code message} as a side event of this node, as {@link #emit(Event)} does. */
+  @Experimental
+  public final void emit(Content message) {
+    Preconditions.checkNotNull(message);
+    emit(
+        Event.builder()
+            .author("")
+            .timestamp(invocationContext.now().toEpochMilli())
+            .content(message)
+            .build());
+  }
+
+  /**
    * Runs {@code node} as a child of this workflow node without an input, as {@link #runNode(Node,
    * Object, RunNodeConfig)} does with the default {@link RunNodeConfig}.
    */
@@ -374,7 +430,8 @@ public class Context extends ReadonlyContext {
    * node and emits the child's output, or completes empty if it has none. Include it in this node's
    * run and catch only failures you handle, such as {@link DynamicNodeFailedException}: when the
    * child waits, it fails with an internal {@link RuntimeException} that must propagate to end this
-   * node's run, so that it waits too.
+   * node's run, so that it waits too; {@code catch (Exception e)} around {@code
+   * ctx.runNode(...).blockingGet()} swallows it.
    *
    * <p>It fails with {@link DynamicNodeFailedException} if the child fails; with {@link
    * IllegalStateException} if this is not a workflow node's context, if this node's {@link

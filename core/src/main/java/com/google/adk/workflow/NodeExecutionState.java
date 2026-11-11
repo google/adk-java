@@ -16,12 +16,15 @@
 
 package com.google.adk.workflow;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
+import com.google.adk.events.Event;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -80,6 +83,7 @@ public final class NodeExecutionState {
   private @Nullable Exception failure;
   private @Nullable String failureNodePath;
   private @Nullable ImmutableMap<String, ResumeScan.RecoveredNode> recoveredChildren;
+  private volatile FunctionNode.@Nullable BodyRun bodyRun;
 
   private NodeExecutionState(Builder builder) {
     checkState(builder.node != null, "A node state needs a node.");
@@ -247,6 +251,39 @@ public final class NodeExecutionState {
 
   NodeRunner.EventSink eventSink() {
     return eventSink;
+  }
+
+  /**
+   * Sends {@code event} for {@link Context#emit(Event)} and waits as it describes, or returns false
+   * if no plain {@code FunctionNode} body of this node runs; not for direct use.
+   */
+  @Experimental
+  public boolean emitFromBody(Event event) {
+    checkArgument(
+        event.output().isEmpty() && !event.nodeInfo().map(NodeInfo::messageAsOutput).orElse(false),
+        "Context.emit takes an event without an output; return the value from the body instead.");
+    FunctionNode.BodyRun run = bodyRun;
+    if (run == null) {
+      return false;
+    }
+    return run.emit(
+        isNullOrEmpty(event.id())
+            ? event.toBuilder().id(run.invocationContext.newUuid()).build()
+            : event);
+  }
+
+  /** Sets the run of this node's plain body that {@link #emitFromBody} sends to. */
+  void bodyRun(FunctionNode.BodyRun run) {
+    bodyRun = run;
+  }
+
+  /** Releases the {@link #emitFromBody} call that waits for {@code event}, if any. */
+  void markProcessed(Event event) {
+    FunctionNode.BodyRun run = bodyRun;
+    // A partial event never waits, so it must not release a later event with the same ID.
+    if (run != null && !event.partial().orElse(false)) {
+      run.markProcessed(event.id());
+    }
   }
 
   /**
