@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Google LLC. Licensed under the Apache License, Version 2.0.
+     https://www.apache.org/licenses/LICENSE-2.0 -->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.google.adk.testing</groupId>
+  <artifactId>database-session-consumer</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>4.1.2</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <!-- Use the packaged artifact without installing or publishing the new module. -->
+    <dependency>
+      <groupId>com.google.adk</groupId>
+      <artifactId>google-adk-database-session-service</artifactId>
+      <version>${adk.version}</version>
+      <scope>system</scope>
+      <systemPath>${adk.module.jar}</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>com.google.adk</groupId>
+      <artifactId>google-adk</artifactId>
+      <version>${adk.version}</version>
+    </dependency>
+    <!-- Deliberately managed only by Boot 4.1, not ADK's parent or an explicit Flyway pin. -->
+    <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-core</artifactId></dependency>
+    <dependency><groupId>org.xerial</groupId><artifactId>sqlite-jdbc</artifactId><version>3.54.1.0</version></dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version></plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.6.4</version>
+        <executions><execution><phase>verify</phase><goals><goal>java</goal></goals></execution></executions>
+        <configuration>
+          <mainClass>consumer.BootBomConsumer</mainClass>
+          <includeProjectDependencies>true</includeProjectDependencies>
+          <classpathScope>test</classpathScope>
+          <arguments><argument>${project.build.directory}/consumer.db</argument></arguments>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

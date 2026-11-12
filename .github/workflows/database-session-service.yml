@@ -1,0 +1,63 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0 (the "License");
+# https://www.apache.org/licenses/LICENSE-2.0
+name: database-session-service
+
+on:
+  pull_request:
+    branches: [main, 'release/**']
+    paths:
+      - 'contrib/database-session-service/**'
+      - 'pom.xml'
+      - '.github/workflows/database-session-service.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-databases:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - java: '17'
+            backends: postgresql,mysql,mariadb,postgresql18,mariadb114
+          - java: '25'
+            backends: postgresql,mysql,mariadb
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-database-sessions-${{ matrix.java }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-database-sessions-${{ matrix.java }}-
+      - name: Build core and its shared test jar
+        run: ./mvnw -B -ntp -pl core -am -DskipTests install
+      - name: Real database and consumer contracts
+        run: ./mvnw -B -ntp -pl contrib/database-session-service -Pintegration-tests,consumer-tests -Dadk.test.backends=${{ matrix.backends }} verify
+      - name: Verify formatting stayed clean
+        run: git diff --exit-code
+      - name: Preserve reports and actual database versions
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: database-sessions-java-${{ matrix.java }}
+          if-no-files-found: warn
+          path: |
+            contrib/database-session-service/target/surefire-reports/
+            contrib/database-session-service/target/failsafe-reports/
+            contrib/database-session-service/target/invoker-reports/
+            contrib/database-session-service/target/consumer-build/**/build.log
