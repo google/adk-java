@@ -51,10 +51,10 @@ The project is built using Maven. Use the `./mvnw` wrapper script for all comman
     ./mvnw test
     ```
 
-*   **Format code**:
+*   **Format changed lines**:
 
     ```shell
-    ./mvnw fmt:format
+    git diff -U0 $(git merge-base origin/main HEAD) | google-java-format-diff.py -p1 -i
     ```
 
 *   **Skip tests during build**:
@@ -91,7 +91,8 @@ Once started, the dev UI is available at `http://localhost:8000` (or the specifi
 
 ## Development Conventions
 
-*   **Coding Style**: The project follows the Google Java Style Guide. The `fmt-maven-plugin` is used to format the code automatically.
+*   **Coding Style**: The project follows the Google Java Style Guide. Format
+    changed lines with `google-java-format`.
     *   **Import Style**: Always use import statements instead of fully qualified class names in code. Prefer `import com.google.adk.agents.InvocationContext;` over using `com.google.adk.agents.InvocationContext` directly in the code.
 *   **Testing**: The project uses JUnit 5 for testing. Tests are located in the `src/test/java` directory of each module.
 *   **Contributing**: Contributions are welcome. Please see the `CONTRIBUTING.md` file for more information.
