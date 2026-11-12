@@ -37,14 +37,17 @@ information on using pull requests.
 ### Format
 
 Code must be formatted according to the
-[Google Java Style Guide](https://google.github.io/styleguide/javaguide.html).
+[Google Java Style Guide](https://google.github.io/styleguide/javaguide.html),
+using [`google-java-format`](https://github.com/google/google-java-format).
+Format only the lines you change, with an IDE integration or with
+[`google-java-format-diff.py`](https://github.com/google/google-java-format/blob/master/scripts/google-java-format-diff.py):
 
-The Maven build will automagically run
-[`google-java-format`](https://github.com/google/google-java-format) when you
-locally build this project.
+```shell
+git diff -U0 $(git merge-base origin/main HEAD) | google-java-format-diff.py -p1 -i
+```
 
-Pull requests will fail to build if you forget to commit reformatted code, and
-cannot be merged until you fix this.
+Stage new files with `git add` first. In a fork, use the remote that points at
+`google/adk-java` instead of `origin`.
 
 ### Single Commit
 
