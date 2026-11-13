@@ -23,12 +23,17 @@ import static com.google.common.base.Preconditions.checkState;
 import com.google.adk.agents.Context;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
+import com.google.adk.events.ToolConfirmation;
 import com.google.common.base.Throwables;
+import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.MaybeEmitter;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -51,15 +56,38 @@ public final class FunctionNode<I, O> extends BaseNode {
   private static final PortCodec<Object> ANY =
       PortCodec.output(PortCodec.javaType(Object.class), "an event output");
 
+  private static final String CONFIRMATION_INTERRUPT_PREFIX = "wf_tool_confirmation:";
+
+  private static final ConfirmationPredicate<Object> ALWAYS_CONFIRM = (context, input) -> true;
+
+  /** The output of a run the user rejected. */
+  private static final ImmutableMap<String, String> REJECTED_OUTPUT =
+      ImmutableMap.of("error", "This tool call is rejected.");
+
+  /** The schema of an answer to a confirmation request. */
+  private static final Schema TOOL_CONFIRMATION_SCHEMA =
+      Schema.builder()
+          .type(Type.Known.OBJECT)
+          .properties(
+              ImmutableMap.of(
+                  "hint", Schema.builder().type(Type.Known.STRING).nullable(true).build(),
+                  "confirmed", Schema.builder().type(Type.Known.BOOLEAN).nullable(true).build(),
+                  "payload", Schema.builder().build()))
+          .build();
+
   private final PortCodec<I> inputCodec;
   private final PortCodec<O> outputCodec;
   private final NodeBody<? super I, ? extends O> body;
+  private final @Nullable ConfirmationPredicate<? super I> confirmationPredicate;
+  private final @Nullable Boolean explicitRerunOnResume;
 
   private FunctionNode(Builder<I, O> builder) {
     super(
         checkNotNull(builder.name),
         builder.description,
-        builder.rerunOnResume,
+        builder.rerunOnResume != null
+            ? builder.rerunOnResume
+            : builder.confirmationPredicate != null,
         builder.waitForOutput,
         builder.config,
         builder.inputSchema,
@@ -68,14 +96,21 @@ public final class FunctionNode<I, O> extends BaseNode {
     this.inputCodec = builder.inputCodec;
     this.outputCodec = builder.outputCodec;
     this.body = checkNotNull(builder.body);
+    this.confirmationPredicate = builder.confirmationPredicate;
+    this.explicitRerunOnResume = builder.rerunOnResume;
   }
 
-  /** Returns a builder initialized with this node's properties. */
+  /**
+   * Returns a builder initialized with this node's properties. A {@code rerunOnResume} the node
+   * derived from its confirmation is left unset, so the copy derives it from its own.
+   */
   public Builder<I, O> toBuilder() {
-    return new Builder<>(inputCodec, outputCodec)
+    Builder<I, O> builder = new Builder<>(inputCodec, outputCodec);
+    builder.rerunOnResume = explicitRerunOnResume;
+    builder.confirmationPredicate = confirmationPredicate;
+    return builder
         .name(name())
         .description(description())
-        .rerunOnResume(rerunOnResume())
         .waitForOutput(waitForOutput())
         .config(config())
         // Only explicit schemas carry over; the copy infers the others from its ports.
@@ -138,21 +173,15 @@ public final class FunctionNode<I, O> extends BaseNode {
 
   /** Runs the body on the calling thread and sends its output or failure to {@code emitter}. */
   private void runBody(Context context, @Nullable Object nodeInput, MaybeEmitter<Object> emitter) {
-    Worker<O> worker =
-        new Worker<>(() -> {
-          I input = inputCodec.decode(nodeInput, "input of node '" + name() + "'");
-          return emitter.isDisposed() ? null : body.apply(context, input);
-        });
+    Worker<Run<O>> worker = new Worker<>(() -> runFunction(context, nodeInput, emitter));
     emitter.setCancellable(worker::cancel);
     Object output;
     try {
-      O result = worker.run();
-      if (emitter.isDisposed()) {
+      Run<O> run = worker.run();
+      if (run == null || emitter.isDisposed()) {
         return;
       }
-      encodeDelegatedOutput(context.requireNodeState());
-      // After a delegation, NodeRunner drops a returned output.
-      output = output(result);
+      output = run.replacement() != null ? run.replacement() : output(context, run);
     } catch (Exception e) {
       // tryOnError, as a canceled run can no longer take a failure.
       emitter.tryOnError(e);
@@ -164,6 +193,51 @@ public final class FunctionNode<I, O> extends BaseNode {
       emitter.onSuccess(output);
     }
   }
+
+  /**
+   * Asks for or reads the user's confirmation, then runs the body unless the rejection or the
+   * request replaces it. Runs in the worker, as the predicate is user code like the body.
+   */
+  private @Nullable Run<O> runFunction(
+      Context context, @Nullable Object nodeInput, MaybeEmitter<Object> emitter) throws Exception {
+    I input = inputCodec.decode(nodeInput, "input of node '" + name() + "'");
+    ToolConfirmation confirmation = confirmationAnswer(context);
+    if (confirmation != null) {
+      context.toolConfirmation(confirmation);
+      if (!confirmation.confirmed()) {
+        return new Run<>(confirmation, REJECTED_OUTPUT, null);
+      }
+    } else if (confirmationPredicate != null && confirmationPredicate.test(context, input)) {
+      return new Run<>(null, confirmationRequest(context, input), null);
+    }
+    return emitter.isDisposed() ? null : new Run<>(confirmation, null, body.apply(context, input));
+  }
+
+  /** Returns the event or JSON value to send for a run of the body, or {@code null} for none. */
+  private @Nullable Object output(Context context, Run<O> run) {
+    NodeExecutionState state = context.requireNodeState();
+    encodeDelegatedOutput(state);
+    Object output = output(run.result());
+    if (run.confirmation() != null && state.delegatedOutput().isEmpty()) {
+      // Leaves an event for an approved run with no output, or only a dropped one, so a resume
+      // finds it finished.
+      if (output instanceof Event event && state.hasOutputDelegate()) {
+        return event.toBuilder().output(null).build();
+      }
+      if (output == null || state.hasOutputDelegate()) {
+        return finishedEvent(context);
+      }
+    }
+    // After a delegation, NodeRunner drops a returned output.
+    return output;
+  }
+
+  /**
+   * One run: the user's answer to its confirmation request, if any, and either what replaces the
+   * body (a rejection or a confirmation request) or the body's result.
+   */
+  private record Run<O>(
+      @Nullable ToolConfirmation confirmation, @Nullable Object replacement, @Nullable O result) {}
 
   /**
    * Writes the output of a child the body gave its output to with {@code useAsOutput} as if the
@@ -197,6 +271,65 @@ public final class FunctionNode<I, O> extends BaseNode {
     if (encoded != null && !encoded.equals(delegated.get())) {
       state.replaceDelegatedOutput(encoded);
     }
+  }
+
+  private static Event finishedEvent(Context context) {
+    return Event.builder()
+        .id(context.invocationContext().newUuid())
+        .timestamp(context.invocationContext().now().toEpochMilli())
+        .author("")
+        .build();
+  }
+
+  private static String confirmationInterruptId(Context context) {
+    return CONFIRMATION_INTERRUPT_PREFIX + context.requireNodeState().nodePath();
+  }
+
+  /** Returns the request that asks the user to approve this run with {@code input}. */
+  private RequestInput confirmationRequest(Context context, @Nullable I input) {
+    String interruptId = confirmationInterruptId(context);
+    Map<String, @Nullable Object> payload = new LinkedHashMap<>();
+    payload.put("tool_name", name());
+    payload.put("args", inputCodec.encode(input, "input of node '" + name() + "'"));
+    return RequestInput.builder()
+        .interruptId(interruptId)
+        .message("Please approve or reject the tool call " + name() + "().")
+        .payload(payload)
+        .responseSchema(TOOL_CONFIRMATION_SCHEMA)
+        .build();
+  }
+
+  /**
+   * Returns the user's answer to this run's confirmation request, or null if the node requires no
+   * confirmation or has no answer yet. A field left out or null takes its default.
+   *
+   * @throws WorkflowDataException if the answer is not a {@link ToolConfirmation}
+   */
+  private @Nullable ToolConfirmation confirmationAnswer(Context context) {
+    if (confirmationPredicate == null) {
+      return null;
+    }
+    Object answer = context.resumeInputs().get(confirmationInterruptId(context));
+    if (answer == null) {
+      return null;
+    }
+    if (!(answer instanceof Map<?, ?> map)
+        || !TOOL_CONFIRMATION_SCHEMA.properties().orElseThrow().keySet().containsAll(map.keySet())
+        || (map.get("confirmed") != null && !(map.get("confirmed") instanceof Boolean))
+        || (map.get("hint") != null && !(map.get("hint") instanceof String))) {
+      throw new WorkflowDataException(
+          "The answer to the confirmation request of node '"
+              + name()
+              + "' is not a ToolConfirmation.");
+    }
+    ToolConfirmation.Builder confirmation = ToolConfirmation.builder();
+    if (map.get("hint") instanceof String hint) {
+      confirmation.hint(hint);
+    }
+    return confirmation
+        .confirmed(map.get("confirmed") instanceof Boolean confirmed && confirmed)
+        .payload(map.get("payload"))
+        .build();
   }
 
   /** Returns the event or JSON value to send for {@code result}, or {@code null} for none. */
@@ -259,14 +392,16 @@ public final class FunctionNode<I, O> extends BaseNode {
 
   /**
    * Fluent builder for {@link FunctionNode}. Any property left unset falls back to the default of
-   * the matching {@link Node} property; name and body are required.
+   * the matching {@link Node} property, except that {@code rerunOnResume} defaults to true for a
+   * node that requires confirmation; name and body are required.
    */
   public static final class Builder<I, O> {
     private final PortCodec<I> inputCodec;
     private final PortCodec<O> outputCodec;
     private @Nullable String name;
     private String description = "";
-    private boolean rerunOnResume;
+    private @Nullable Boolean rerunOnResume;
+    private @Nullable ConfirmationPredicate<? super I> confirmationPredicate;
     private boolean waitForOutput;
     private NodeConfig config = NodeConfig.builder().build();
     private @Nullable Schema inputSchema;
@@ -293,7 +428,10 @@ public final class FunctionNode<I, O> extends BaseNode {
       return this;
     }
 
-    /** Sets whether a resume runs the node again rather than using the resuming answer. */
+    /**
+     * Sets whether a resume runs the node again rather than using the resuming answer. Unset, it is
+     * true for a node that requires confirmation and false otherwise.
+     */
     @CanIgnoreReturnValue
     public Builder<I, O> rerunOnResume(boolean rerunOnResume) {
       this.rerunOnResume = rerunOnResume;
@@ -340,6 +478,31 @@ public final class FunctionNode<I, O> extends BaseNode {
       return this;
     }
 
+    /**
+     * Sets whether each run first asks the user to approve it; either overload replaces the other.
+     * Such a node reruns on resume, so a body that asks for input reads its answer from {@link
+     * Context#resumeInputs()} before asking. An approved run reads the user's decision from {@link
+     * Context#toolConfirmation()}, and a rejected run skips the body and outputs {@code {"error":
+     * "This tool call is rejected."}} whatever the output type, so a successor that must handle a
+     * rejection takes {@code Object}.
+     */
+    @CanIgnoreReturnValue
+    public Builder<I, O> requireConfirmation(boolean requireConfirmation) {
+      this.confirmationPredicate = requireConfirmation ? ALWAYS_CONFIRM : null;
+      return this;
+    }
+
+    /**
+     * Sets a predicate that decides for each input whether a run asks the user to approve it, as
+     * the {@code boolean} overload does for every input. Once the node has asked, the answer
+     * decides.
+     */
+    @CanIgnoreReturnValue
+    public Builder<I, O> requireConfirmation(ConfirmationPredicate<? super I> predicate) {
+      this.confirmationPredicate = checkNotNull(predicate);
+      return this;
+    }
+
     /** Sets the function the node runs on each input. Required. */
     @CanIgnoreReturnValue
     public Builder<I, O> body(NodeBody<? super I, ? extends O> body) {
@@ -351,10 +514,19 @@ public final class FunctionNode<I, O> extends BaseNode {
      * Builds the node.
      *
      * @throws IllegalStateException if the name or the body is not set
+     * @throws WorkflowConfigurationException if the node requires confirmation but {@code
+     *     rerunOnResume} is set to false
      */
     public FunctionNode<I, O> build() {
       checkState(name != null, "FunctionNode.Builder requires name to be set.");
       checkState(body != null, "FunctionNode.Builder for '%s' requires body to be set.", name);
+      if (confirmationPredicate != null && rerunOnResume != null && !rerunOnResume) {
+        throw new WorkflowConfigurationException(
+            "node '"
+                + name
+                + "' requires confirmation, so it needs rerunOnResume(true) to run again once the"
+                + " user answers.");
+      }
       return new FunctionNode<>(this);
     }
   }

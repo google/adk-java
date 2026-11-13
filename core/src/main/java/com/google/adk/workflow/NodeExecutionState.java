@@ -423,6 +423,11 @@ public final class NodeExecutionState {
         node.name());
   }
 
+  /** Returns whether a {@code useAsOutput} child holds the run's output, so its own is dropped. */
+  boolean hasOutputDelegate() {
+    return outputState.get().status().isDelegated();
+  }
+
   /**
    * Returns the output a {@code useAsOutput} descendant gave this run, or that the run adopted on
    * replay, or empty if the run did not delegate its output or holds no output yet.

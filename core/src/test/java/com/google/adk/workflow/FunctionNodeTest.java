@@ -22,6 +22,8 @@ import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
 import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
+import static com.google.adk.workflow.WorkflowResumeTesting.requestAnswer;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
@@ -52,21 +54,28 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.databind.util.StdConverter;
+import com.google.adk.agents.Context;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.events.ToolConfirmation;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
+import com.google.adk.testing.TestNode;
+import com.google.adk.testing.TestUtils;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import com.google.genai.types.VideoMetadata;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
@@ -82,6 +91,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -99,6 +109,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -110,6 +121,12 @@ public final class FunctionNodeTest {
 
   private static final String APP = "app";
   private static final String USER = "user";
+  private static final String TRANSFER_CONFIRMATION = "wf_tool_confirmation:wf@1/transfer@1";
+  private static final String CHILD_TRANSFER_CONFIRMATION =
+      "wf_tool_confirmation:wf@1/parent@1/transfer@1";
+  private static final String PAY_CONFIRMATION = "wf_tool_confirmation:wf@1/pay@1";
+  private static final ImmutableMap<String, String> REJECTED =
+      ImmutableMap.of("error", "This tool call is rejected.");
   private static final Schema ANY = Schema.builder().build();
   private static final Schema STRING = typed(Type.Known.STRING);
   private static final Schema INTEGER = typed(Type.Known.INTEGER);
@@ -3544,6 +3561,812 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/read@1")).isEqualTo("t1");
+  }
+
+  @Test
+  public void builder_requireConfirmation_asksBeforeTheBody() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer = transfer(runs).requireConfirmation(true).build();
+
+    ImmutableList<Event> events = new WorkflowSession(chain(transfer)).turn(go());
+
+    FunctionCall request = confirmationRequest(events);
+    assertThat(request.id()).hasValue(TRANSFER_CONFIRMATION);
+    Map<String, Object> args = request.args().orElseThrow();
+    assertThat(args)
+        .containsEntry(
+            RequestInput.MESSAGE_KEY, "Please approve or reject the tool call transfer().");
+    assertThat((Map<?, ?>) args.get(RequestInput.PAYLOAD_KEY))
+        .containsEntry("tool_name", "transfer");
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void builder_requireConfirmation_approvedRunsTheBodyWithTheAnswer() {
+    AtomicReference<@Nullable ToolConfirmation> seen = new AtomicReference<>();
+    FunctionNode<Content, String> transfer =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("transfer")
+            .requireConfirmation(true)
+            .body((ctx, message) -> {
+              seen.set(ctx.toolConfirmation().orElse(null));
+              return "sent";
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(transfer, captureInput("reply")));
+    session.advance(go());
+    Map<String, @Nullable Object> answer = new HashMap<>();
+    answer.put("confirmed", true);
+    answer.put("hint", null);
+    answer.put("payload", ImmutableMap.of("limit", 50));
+
+    ImmutableList<Event> events = session.turn(requestAnswer(TRANSFER_CONFIRMATION, answer));
+
+    assertThat(replyInput(events)).isEqualTo("sent");
+    assertThat(seen.get().confirmed()).isTrue();
+    assertThat(seen.get().hint()).isEmpty();
+    assertThat(seen.get().payload()).isEqualTo(ImmutableMap.of("limit", 50));
+  }
+
+  @Test
+  public void builder_requireConfirmation_rejectedSkipsTheBodyAndOutputsTheRejection() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer = transfer(runs).requireConfirmation(true).build();
+    WorkflowSession session = new WorkflowSession(chain(transfer, captureInput("reply")));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(confirmation(TRANSFER_CONFIRMATION, false));
+
+    assertThat(replyInput(events)).isEqualTo(REJECTED);
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void resume_confirmationApprovedWithoutResumability_runsTheBodyOnceAndContinues() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer = transfer(runs).requireConfirmation(true).build();
+    WorkflowSession session =
+        new WorkflowSession(chain(transfer, captureInput("reply")), /* resumable= */ false);
+    ImmutableList<Event> askEvents = session.turn(go());
+
+    ImmutableList<Event> events = session.turn(confirmation(TRANSFER_CONFIRMATION, true));
+
+    assertThat(confirmationRequest(askEvents).id()).hasValue(TRANSFER_CONFIRMATION);
+    assertThat(replyInput(events)).isEqualTo("sent");
+    assertThat(runs.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void resume_confirmationRejectedWithoutResumability_outputsTheRejectionWithoutTheBody() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer = transfer(runs).requireConfirmation(true).build();
+    WorkflowSession session =
+        new WorkflowSession(chain(transfer, captureInput("reply")), /* resumable= */ false);
+    ImmutableList<Event> askEvents = session.turn(go());
+
+    ImmutableList<Event> events = session.turn(confirmation(TRANSFER_CONFIRMATION, false));
+
+    assertThat(confirmationRequest(askEvents).id()).hasValue(TRANSFER_CONFIRMATION);
+    assertThat(replyInput(events)).isEqualTo(REJECTED);
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void resume_laterAskAfterARejection_replaysTheRejection() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer = transfer(runs).requireConfirmation(true).build();
+    WorkflowSession session = new WorkflowSession(chain(transfer, new AskOnce("ask", "ask_1")));
+    session.advance(go());
+    session.advance(confirmation(TRANSFER_CONFIRMATION, false));
+
+    ImmutableList<Event> events = session.turn(requestAnswer("ask_1", ImmutableMap.of("ok", true)));
+
+    assertThat(WorkflowResumeTesting.outputEventAt(events, "wf@1/ask@1").output())
+        .hasValue(ImmutableMap.of("received", REJECTED));
+    assertThat(confirmationRequests(events)).isEmpty();
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void resume_laterAskAfterAnApprovedRunWithoutOutput_doesNotRunTheBodyAgain() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, Void> notify =
+        FunctionNodes.builder(Content.class, Void.class)
+            .name("notify")
+            .requireConfirmation(true)
+            .body((ctx, message) -> {
+              runs.incrementAndGet();
+              return null;
+            })
+            .build();
+    Node ask = new AskOnce("ask", "ask_1");
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder()
+                .name("wf")
+                .edges(new Edge(Start.INSTANCE, notify), new Edge(Start.INSTANCE, ask))
+                .build());
+    session.advance(go());
+    session.advance(confirmation("wf_tool_confirmation:wf@1/notify@1", true));
+
+    ImmutableList<Event> events = session.turn(requestAnswer("ask_1", ImmutableMap.of("ok", true)));
+
+    assertThat(confirmationRequests(events)).isEmpty();
+    assertThat(runs.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void resume_approvedBodyThatWaits_rerunsOnTheAnswerWithoutAskingAgain() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, Object> transfer =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("transfer")
+            .requireConfirmation(true)
+            .body((ctx, message) -> {
+              runs.incrementAndGet();
+              Object reply = ctx.resumeInputs().get("ask_1");
+              return reply != null ? reply : WorkflowResumeTesting.interrupt("ask_1");
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(transfer, captureInput("reply")));
+    List<Event> events = new ArrayList<>(session.turn(go()));
+    events.addAll(session.turn(confirmation(TRANSFER_CONFIRMATION, true)));
+
+    events.addAll(session.turn(answer("ask_1", ImmutableMap.of("ok", true))));
+
+    assertThat(confirmationRequests(events)).hasSize(1);
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("ok", true));
+    assertThat(runs.get()).isEqualTo(2);
+  }
+
+  @Test
+  public void resume_approvedBodyThatDelegatesItsOutput_writesNoEmptyEventAndIsNotRerun() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Void, String> child =
+        FunctionNodes.of("child", Void.class, String.class, (ctx, unused) -> "child_done");
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .requireConfirmation(true)
+            .body((ctx, message) -> {
+              runs.incrementAndGet();
+              Object unused =
+                  ctx.runNode(child, null, RunNodeConfig.builder().useAsOutput(true).build())
+                      .blockingGet();
+              return null;
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(parent, new AskOnce("review", "review")));
+    session.advance(go());
+    ImmutableList<Event> confirmed =
+        session.turn(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+
+    session.advance(requestAnswer("review", ImmutableMap.of("ok", true)));
+
+    ImmutableList<Event> parentEvents =
+        confirmed.stream()
+            .filter(event -> WorkflowResumeTesting.pathOf(event).startsWith("wf@1/parent@1"))
+            .collect(toImmutableList());
+    assertThat(WorkflowResumeTesting.pathsOf(parentEvents))
+        .containsExactly("wf@1/parent@1/child@1");
+    assertThat(parentEvents.get(0).output()).hasValue("child_done");
+    assertThat(runs.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void resume_approvedBodyWhoseOnlyOutputIsDropped_isNotRerunWhenALaterNodeResumes() {
+    AtomicInteger runs = new AtomicInteger();
+    AtomicInteger childRuns = new AtomicInteger();
+    FunctionNode<Void, String> child =
+        FunctionNodes.of(
+            "child",
+            Void.class,
+            String.class,
+            (ctx, unused) -> {
+              childRuns.incrementAndGet();
+              return null;
+            });
+    FunctionNode<Content, String> parent =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("parent")
+            .requireConfirmation(true)
+            .body((ctx, message) -> {
+              runs.incrementAndGet();
+              Object unused =
+                  ctx.runNode(child, null, RunNodeConfig.builder().useAsOutput(true).build())
+                      .blockingGet();
+              return "fallback";
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(parent, new AskOnce("review", "review")));
+    session.advance(go());
+    session.advance(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+
+    session.advance(requestAnswer("review", ImmutableMap.of("ok", true)));
+
+    assertThat(runs.get()).isEqualTo(1);
+    assertThat(childRuns.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void resume_approvedBodyThatRoutesAfterAnEmptyDelegation_reachesTheRoutedNode() {
+    FunctionNode<Content, Event> parent =
+        delegatingToASilentChild(
+            new AtomicInteger(),
+            Event.builder()
+                .actions(
+                    EventActions.builder()
+                        .route(ImmutableList.of(new Route.Tag("approved")))
+                        .build())
+                .build());
+    Node reply = captureInput("reply");
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder()
+                .name("wf")
+                .edges(
+                    new Edge(Start.INSTANCE, parent),
+                    new Edge(parent, reply, new Route.Tag("approved")))
+                .build());
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+
+    assertThat(WorkflowResumeTesting.pathsOf(events)).contains("wf@1/reply@1");
+  }
+
+  @Test
+  public void resume_approvedBodyThatSendsAMessageAfterAnEmptyDelegation_sendsItAndItsState() {
+    FunctionNode<Content, Event> parent =
+        delegatingToASilentChild(
+            new AtomicInteger(),
+            Event.builder()
+                .content(Content.fromParts(Part.fromText("approved")))
+                .actions(
+                    EventActions.builder()
+                        .stateDelta(new HashMap<>(ImmutableMap.of("my_key", "my_value")))
+                        .build())
+                .build());
+    FunctionNode<Object, String> read =
+        FunctionNodes.of(
+            "read", Object.class, String.class, (ctx, unused) -> "" + ctx.state().get("my_key"));
+    WorkflowSession session = new WorkflowSession(chain(parent, read));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+
+    Event sent =
+        events.stream()
+            .filter(event -> WorkflowResumeTesting.pathOf(event).equals("wf@1/parent@1"))
+            .collect(onlyElement());
+    assertThat(sent.content().get().text()).isEqualTo("approved");
+    assertThat(sent.output()).isEmpty();
+    assertThat(WorkflowResumeTesting.outputEventAt(events, "wf@1/read@1").output())
+        .hasValue("my_value");
+  }
+
+  @Test
+  public void resume_approvedBodyThatReturnsOnlyAnOutputAfterAnEmptyDelegation_isNotRerun() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, Event> parent =
+        delegatingToASilentChild(runs, Event.builder().output("dropped").build());
+    WorkflowSession session = new WorkflowSession(chain(parent, new AskOnce("review", "review")));
+    session.advance(go());
+    session.advance(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+
+    session.advance(requestAnswer("review", ImmutableMap.of("ok", true)));
+
+    assertThat(runs.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void resume_approvedBodyThatWaitsAfterAnEmptyDelegation_asksTheUser() {
+    FunctionNode<Content, Event> parent =
+        delegatingToASilentChild(new AtomicInteger(), WorkflowResumeTesting.interrupt("ask_1"));
+    WorkflowSession session = new WorkflowSession(chain(parent, captureInput("reply")));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+
+    assertThat(
+            events.stream()
+                .flatMap(event -> event.functionCalls().stream())
+                .map(call -> call.id().orElse("")))
+        .contains("ask_1");
+    assertThat(WorkflowResumeTesting.pathsOf(events)).doesNotContain("wf@1/reply@1");
+  }
+
+  @Test
+  public void builder_requireConfirmationPredicateTrue_asks() {
+    FunctionNode<Integer, String> pay = pay(amount -> amount > 100);
+
+    ImmutableList<Event> events =
+        new WorkflowSession(chain(emitter("amount", 500), pay)).turn(go());
+
+    FunctionCall request = confirmationRequest(events);
+    assertThat(request.id()).hasValue(PAY_CONFIRMATION);
+    Map<String, Object> args = request.args().orElseThrow();
+    assertThat((Map<?, ?>) args.get(RequestInput.PAYLOAD_KEY)).containsEntry("args", 500);
+    assertThat(args.get(RequestInput.RESPONSE_SCHEMA_KEY))
+        .isEqualTo(
+            ImmutableMap.of(
+                "type",
+                "OBJECT",
+                "properties",
+                ImmutableMap.of(
+                    "hint", ImmutableMap.of("type", "STRING", "nullable", true),
+                    "confirmed", ImmutableMap.of("type", "BOOLEAN", "nullable", true),
+                    "payload", ImmutableMap.of())));
+  }
+
+  @Test
+  public void builder_requireConfirmationPredicateFalse_runsTheBodyWithoutAsking() {
+    FunctionNode<Integer, String> pay = pay(amount -> amount > 100);
+
+    ImmutableList<Event> events = new WorkflowSession(chain(emitter("amount", 5), pay)).turn(go());
+
+    assertThat(confirmationRequests(events)).isEmpty();
+    assertThat(WorkflowResumeTesting.outputEventAt(events, "wf@1/pay@1").output())
+        .hasValue("paid 5");
+  }
+
+  @Test
+  public void builder_requireConfirmationPredicate_runsOncePerAsk() {
+    AtomicInteger calls = new AtomicInteger();
+    FunctionNode<Integer, String> pay = pay(amount -> calls.incrementAndGet() > 0);
+    WorkflowSession session = new WorkflowSession(chain(emitter("amount", 500), pay));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(confirmation(PAY_CONFIRMATION, true));
+
+    assertThat(WorkflowResumeTesting.outputEventAt(events, "wf@1/pay@1").output())
+        .hasValue("paid 500");
+    assertThat(calls.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void builder_requireConfirmationPredicateThrows_failsTheRunWithoutTheBody() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer =
+        transfer(runs)
+            .requireConfirmation((ctx, message) -> {
+              throw new IOException("policy unavailable");
+            })
+            .build();
+
+    RunResult result = run(chain(transfer));
+
+    assertThat(result.errorMessage("IOException")).contains("policy unavailable");
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void resume_answerThatIsNotAToolConfirmation_failsTheResume() {
+    FunctionNode<Content, String> transfer =
+        transfer(new AtomicInteger()).requireConfirmation(true).build();
+    WorkflowSession session = new WorkflowSession(chain(transfer));
+    session.advance(go());
+    Content answer = requestAnswer(TRANSFER_CONFIRMATION, ImmutableMap.of("confirmed", "yes"));
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> session.turn(answer));
+
+    assertThat(error.getClass()).isEqualTo(IllegalArgumentException.class);
+    assertThat(error)
+        .hasMessageThat()
+        .startsWith("Validation failed for interrupt " + TRANSFER_CONFIRMATION + ":");
+  }
+
+  @Test
+  public void builder_requireConfirmation_defaultsRerunOnResumeToTrue() {
+    FunctionNode<Content, String> transfer =
+        transfer(new AtomicInteger()).requireConfirmation(true).build();
+
+    assertThat(transfer.rerunOnResume()).isTrue();
+  }
+
+  @Test
+  public void builder_requireConfirmationWithRerunOnResumeFalse_failsAtBuild() {
+    FunctionNode.Builder<Content, String> transfer =
+        transfer(new AtomicInteger()).rerunOnResume(false).requireConfirmation(true);
+
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, transfer::build);
+
+    assertThat(error).hasMessageThat().contains("rerunOnResume(true)");
+  }
+
+  @Test
+  public void builder_requireConfirmationFalse_clearsAnEarlierPredicate() {
+    FunctionNode<Integer, String> pay =
+        pay(amount -> true).toBuilder().requireConfirmation(false).build();
+
+    ImmutableList<Event> events =
+        new WorkflowSession(chain(emitter("amount", 500), pay)).turn(go());
+
+    assertThat(confirmationRequests(events)).isEmpty();
+  }
+
+  @Test
+  public void builder_predicateAfterRequireConfirmationTrue_predicateDecides() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer =
+        transfer(runs).requireConfirmation(true).requireConfirmation((ctx, m) -> false).build();
+
+    ImmutableList<Event> events = new WorkflowSession(chain(transfer)).turn(go());
+
+    assertThat(confirmationRequests(events)).isEmpty();
+    assertThat(runs.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void resume_confirmedNull_rejectsTheRun() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer = transfer(runs).requireConfirmation(true).build();
+    WorkflowSession session = new WorkflowSession(chain(transfer, captureInput("reply")));
+    session.advance(go());
+    Map<String, @Nullable Object> answer = new HashMap<>();
+    answer.put("confirmed", null);
+
+    ImmutableList<Event> events = session.turn(requestAnswer(TRANSFER_CONFIRMATION, answer));
+
+    assertThat(replyInput(events)).isEqualTo(REJECTED);
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  @Test
+  public void resume_answerWithAHint_bodySeesTheHint() {
+    AtomicReference<@Nullable ToolConfirmation> seen = new AtomicReference<>();
+    FunctionNode<Content, String> transfer =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("transfer")
+            .requireConfirmation(true)
+            .body((ctx, message) -> {
+              seen.set(ctx.toolConfirmation().orElse(null));
+              return "sent";
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(transfer));
+    session.advance(go());
+
+    session.advance(
+        requestAnswer(
+            TRANSFER_CONFIRMATION, ImmutableMap.of("confirmed", true, "hint", "under the limit")));
+
+    assertThat(seen.get().hint()).isEqualTo("under the limit");
+  }
+
+  @Test
+  public void runNode_answerThatIsNotAMap_throwsWorkflowDataException() {
+    FunctionNode<Content, String> transfer =
+        transfer(new AtomicInteger()).requireConfirmation(true).build();
+    Context context = nodeContext(ImmutableMap.of("wf_tool_confirmation:transfer@1", "approved"));
+    Flowable<?> run = transfer.runNode(context, null);
+
+    WorkflowDataException error = assertThrows(WorkflowDataException.class, run::blockingFirst);
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "The answer to the confirmation request of node 'transfer' is not a ToolConfirmation.");
+  }
+
+  @Test
+  public void runNode_answerWithConfirmedThatIsNotABoolean_throwsWorkflowDataException() {
+    FunctionNode<Content, String> transfer =
+        transfer(new AtomicInteger()).requireConfirmation(true).build();
+    Context context =
+        nodeContext(
+            ImmutableMap.of(
+                "wf_tool_confirmation:transfer@1", ImmutableMap.of("confirmed", "yes")));
+    Flowable<?> run = transfer.runNode(context, null);
+
+    WorkflowDataException error = assertThrows(WorkflowDataException.class, run::blockingFirst);
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "The answer to the confirmation request of node 'transfer' is not a ToolConfirmation.");
+  }
+
+  @Test
+  public void runNode_answerWithHintThatIsNotAString_throwsWorkflowDataException() {
+    FunctionNode<Content, String> transfer =
+        transfer(new AtomicInteger()).requireConfirmation(true).build();
+    Context context =
+        nodeContext(
+            ImmutableMap.of(
+                "wf_tool_confirmation:transfer@1", ImmutableMap.of("confirmed", true, "hint", 5)));
+    Flowable<?> run = transfer.runNode(context, null);
+
+    WorkflowDataException error = assertThrows(WorkflowDataException.class, run::blockingFirst);
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "The answer to the confirmation request of node 'transfer' is not a ToolConfirmation.");
+  }
+
+  @Test
+  public void runNode_answerWithAKeyOutsideTheSchema_throwsWorkflowDataException() {
+    FunctionNode<Content, String> transfer =
+        transfer(new AtomicInteger()).requireConfirmation(true).build();
+    Context context =
+        nodeContext(
+            ImmutableMap.of(
+                "wf_tool_confirmation:transfer@1",
+                ImmutableMap.of("confirmed", true, "approved", true)));
+    Flowable<?> run = transfer.runNode(context, null);
+
+    WorkflowDataException error = assertThrows(WorkflowDataException.class, run::blockingFirst);
+
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "The answer to the confirmation request of node 'transfer' is not a ToolConfirmation.");
+  }
+
+  @Test
+  public void toBuilder_requireConfirmationOnANodeFromOf_asks() {
+    FunctionNode<Content, String> echo =
+        FunctionNodes.of("transfer", Content.class, String.class, (ctx, message) -> "sent");
+    FunctionNode<Content, String> confirming = echo.toBuilder().requireConfirmation(true).build();
+
+    ImmutableList<Event> events = new WorkflowSession(chain(confirming)).turn(go());
+
+    assertThat(confirmationRequest(events).id()).hasValue(TRANSFER_CONFIRMATION);
+  }
+
+  @Test
+  public void toBuilder_nodeWithAConfirmationPredicate_copyAsks() {
+    FunctionNode<Integer, String> copy = pay(amount -> amount > 100).toBuilder().build();
+
+    ImmutableList<Event> events =
+        new WorkflowSession(chain(emitter("amount", 500), copy)).turn(go());
+
+    assertThat(confirmationRequest(events).id()).hasValue(PAY_CONFIRMATION);
+  }
+
+  @Test
+  public void toBuilder_rerunOnResume_copiesOnlyAnExplicitValue() {
+    FunctionNode<Content, String> derived =
+        transfer(new AtomicInteger()).requireConfirmation(true).build();
+    FunctionNode<Content, String> explicitTrue =
+        transfer(new AtomicInteger()).rerunOnResume(true).requireConfirmation(true).build();
+    FunctionNode<Content, String> explicitFalse =
+        transfer(new AtomicInteger()).rerunOnResume(false).build();
+
+    FunctionNode<Content, String> derivedCopy =
+        derived.toBuilder().requireConfirmation(false).build();
+    FunctionNode<Content, String> explicitTrueCopy =
+        explicitTrue.toBuilder().requireConfirmation(false).build();
+    FunctionNode.Builder<Content, String> explicitFalseCopy =
+        explicitFalse.toBuilder().requireConfirmation(true);
+
+    assertThat(derivedCopy.rerunOnResume()).isFalse();
+    assertThat(explicitTrueCopy.rerunOnResume()).isTrue();
+    assertThrows(WorkflowConfigurationException.class, explicitFalseCopy::build);
+  }
+
+  @Test
+  public void resume_rejectionIntoAStringPort_failsTheSuccessor() {
+    FunctionNode<Content, String> transfer =
+        transfer(new AtomicInteger()).requireConfirmation(true).build();
+    FunctionNode<String, String> read =
+        FunctionNodes.of("read", String.class, String.class, (ctx, text) -> text);
+    WorkflowSession session = new WorkflowSession(chain(transfer, read));
+    session.advance(go());
+    Content rejection = confirmation(TRANSFER_CONFIRMATION, false);
+
+    NodeInputValidationException error =
+        assertThrows(NodeInputValidationException.class, () -> session.turn(rejection));
+
+    assertThat(error).hasMessageThat().contains("input of node 'read' does not match");
+  }
+
+  @Test
+  public void resume_rejectionIntoARecordWithRequiredComponents_failsTheSuccessor() {
+    FunctionNode<Content, Order> order =
+        FunctionNodes.builder(Content.class, Order.class)
+            .name("transfer")
+            .requireConfirmation(true)
+            .body((ctx, message) -> new Order("o1", 1))
+            .build();
+    FunctionNode<Order, String> describe =
+        FunctionNodes.of("describe", Order.class, String.class, (ctx, o) -> o.id());
+    WorkflowSession session = new WorkflowSession(chain(order, describe));
+    session.advance(go());
+    Content rejection = confirmation(TRANSFER_CONFIRMATION, false);
+
+    NodeInputValidationException error =
+        assertThrows(NodeInputValidationException.class, () -> session.turn(rejection));
+
+    assertThat(error).hasMessageThat().contains("input of node 'describe' does not match");
+  }
+
+  @Test
+  public void resume_rejectionIntoARecordOfOptionalComponents_leavesThemUnset() {
+    FunctionNode<Content, OptionalNote> note =
+        FunctionNodes.builder(Content.class, OptionalNote.class)
+            .name("transfer")
+            .requireConfirmation(true)
+            .body((ctx, message) -> new OptionalNote("ok"))
+            .build();
+    AtomicReference<@Nullable OptionalNote> seen = new AtomicReference<>();
+    FunctionNode<OptionalNote, String> read =
+        FunctionNodes.of(
+            "read",
+            OptionalNote.class,
+            String.class,
+            (ctx, r) -> {
+              seen.set(r);
+              return "read";
+            });
+    WorkflowSession session = new WorkflowSession(chain(note, read));
+    session.advance(go());
+
+    session.advance(confirmation(TRANSFER_CONFIRMATION, false));
+
+    assertThat(seen.get()).isEqualTo(new OptionalNote(null));
+  }
+
+  @Test
+  public void parallelWorkers_confirmingItems_askEachAndRunOnlyTheApprovedOnes() {
+    List<Integer> runs = Collections.synchronizedList(new ArrayList<>());
+    FunctionNode<Integer, String> pay =
+        FunctionNodes.builder(Integer.class, String.class)
+            .name("pay")
+            .requireConfirmation(true)
+            .body((ctx, amount) -> {
+              runs.add(amount);
+              return "paid " + amount;
+            })
+            .build();
+    WorkflowSession session =
+        new WorkflowSession(
+            chain(
+                emitter("amounts", ImmutableList.of(1, 2)),
+                ParallelWorkers.parallelNode(pay),
+                captureInput("reply")));
+    ImmutableList<Event> asked = session.turn(go());
+    session.advance(confirmation("wf_tool_confirmation:wf@1/pay@1/pay@1", true));
+
+    ImmutableList<Event> events =
+        session.turn(confirmation("wf_tool_confirmation:wf@1/pay@1/pay@2", false));
+
+    assertThat(
+            confirmationRequests(asked).stream()
+                .map(call -> call.id().orElseThrow())
+                .collect(toImmutableList()))
+        .containsExactly(
+            "wf_tool_confirmation:wf@1/pay@1/pay@1", "wf_tool_confirmation:wf@1/pay@1/pay@2");
+    assertThat(replyInput(events)).isEqualTo(ImmutableList.of("paid 1", REJECTED));
+    assertThat(runs).containsExactly(1);
+  }
+
+  @Test
+  public void runNodeChild_confirmationApproved_runsTheChildOnceAndTheParentOutputsIt() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer = transfer(runs).requireConfirmation(true).build();
+    WorkflowSession session = new WorkflowSession(chain(parent(transfer), captureInput("reply")));
+    ImmutableList<Event> asked = session.turn(go());
+
+    ImmutableList<Event> events = session.turn(confirmation(CHILD_TRANSFER_CONFIRMATION, true));
+
+    assertThat(confirmationRequest(asked).id()).hasValue(CHILD_TRANSFER_CONFIRMATION);
+    assertThat(replyInput(events)).isEqualTo("sent");
+    assertThat(runs.get()).isEqualTo(1);
+  }
+
+  @Test
+  public void runNodeChild_confirmationRejected_parentOutputsTheRejectionWithoutTheChildBody() {
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer = transfer(runs).requireConfirmation(true).build();
+    WorkflowSession session = new WorkflowSession(chain(parent(transfer), captureInput("reply")));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(confirmation(CHILD_TRANSFER_CONFIRMATION, false));
+
+    assertThat(replyInput(events)).isEqualTo(REJECTED);
+    assertThat(runs.get()).isEqualTo(0);
+  }
+
+  record OptionalNote(@Nullable String note) {}
+
+  /** Returns a builder for a node {@code transfer} that counts its runs and outputs "sent". */
+  private static FunctionNode.Builder<Content, String> transfer(AtomicInteger runs) {
+    return FunctionNodes.builder(Content.class, String.class)
+        .name("transfer")
+        .body((ctx, message) -> {
+          runs.incrementAndGet();
+          return "sent";
+        });
+  }
+
+  /** Returns a node {@code parent} that runs {@code child} on its input and outputs its output. */
+  private static FunctionNode<Content, Object> parent(Node child) {
+    return FunctionNodes.builder(Content.class, Object.class)
+        .name("parent")
+        .rerunOnResume(true)
+        .body((ctx, message) -> ctx.runNode(child, message).blockingGet())
+        .build();
+  }
+
+  /**
+   * Returns a node {@code parent} that requires confirmation and, once approved, gives its output
+   * to a child that outputs nothing, then returns {@code event}; {@code runs} counts its body's
+   * runs.
+   */
+  private static FunctionNode<Content, Event> delegatingToASilentChild(
+      AtomicInteger runs, Event event) {
+    FunctionNode<Void, String> child =
+        FunctionNodes.of("child", Void.class, String.class, (ctx, unused) -> null);
+    return FunctionNodes.builder(Content.class, Event.class)
+        .name("parent")
+        .requireConfirmation(true)
+        .body((ctx, message) -> {
+          runs.incrementAndGet();
+          Object unused =
+              ctx.runNode(child, null, RunNodeConfig.builder().useAsOutput(true).build())
+                  .blockingGet();
+          return event;
+        })
+        .build();
+  }
+
+  /** Returns the context of a run of node {@code transfer} that resumes with {@code answers}. */
+  private static Context nodeContext(Map<String, @Nullable Object> answers) {
+    return new Context(
+        TestUtils.createInvocationContext(TestUtils.createRootAgent()),
+        NodeExecutionState.builder()
+            .node(TestNode.of("transfer"))
+            .eventSink((event, nodeFailure) -> Completable.complete())
+            .runId("1")
+            .resumeInputs(answers)
+            .build());
+  }
+
+  /** Returns a node {@code pay} that asks for confirmation when {@code asks} accepts the amount. */
+  private static FunctionNode<Integer, String> pay(Predicate<Integer> asks) {
+    return FunctionNodes.builder(Integer.class, String.class)
+        .name("pay")
+        .requireConfirmation((ctx, amount) -> asks.test(amount))
+        .body((ctx, amount) -> "paid " + amount)
+        .build();
+  }
+
+  private static Content confirmation(String interruptId, boolean confirmed) {
+    return requestAnswer(interruptId, ImmutableMap.of("confirmed", confirmed));
+  }
+
+  private static ImmutableList<FunctionCall> confirmationRequests(List<Event> events) {
+    return events.stream()
+        .flatMap(event -> event.functionCalls().stream())
+        .filter(call -> call.id().orElse("").startsWith("wf_tool_confirmation:"))
+        .collect(toImmutableList());
+  }
+
+  private static FunctionCall confirmationRequest(List<Event> events) {
+    return confirmationRequests(events).stream().collect(onlyElement());
+  }
+
+  /** A node that asks for input {@code interruptId}, then outputs its input under "received". */
+  private record AskOnce(String name, String interruptId) implements Node {
+
+    @Override
+    public boolean rerunOnResume() {
+      return true;
+    }
+
+    @Override
+    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
+      return context.resumeInputs().containsKey(interruptId)
+          ? Flowable.just(Collections.singletonMap("received", nodeInput))
+          : Flowable.just(RequestInput.builder().interruptId(interruptId).build());
+    }
   }
 
   private static Optional<Schema> inputSchema(Class<?> type) {
