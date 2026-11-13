@@ -24,6 +24,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.flows.llmflows.RequestProcessor.RequestProcessingResult;
@@ -612,5 +613,58 @@ public final class OutputSchemaTest {
         .processRequest(context, basicRequest)
         .blockingGet()
         .updatedRequest();
+  }
+
+  @Test
+  public void setModelResponseWithARequiredUntypedNull_keepsItInTheOutputKey() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("extra", Schema.builder().build()))
+            .required(ImmutableList.of("extra"))
+            .build();
+    Map<String, Object> args = new LinkedHashMap<>();
+    args.put("extra", null);
+    TestLlm scriptedLlm =
+        createTestLlm(
+            createLlmResponse(
+                Content.fromParts(Part.fromFunctionCall(SetModelResponseTool.NAME, args))));
+    BaseLlm gemini2NamedLlm =
+        new BaseLlm("gemini-2.0-flash") {
+          @Override
+          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+            return scriptedLlm.generateContent(llmRequest, stream);
+          }
+
+          @Override
+          public BaseLlmConnection connect(LlmRequest llmRequest) {
+            return scriptedLlm.connect(llmRequest);
+          }
+        };
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(gemini2NamedLlm)
+            .outputSchema(schema)
+            .tools(ImmutableList.of(new TestTool()))
+            .outputKey("answer")
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent, "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                Content.fromParts(Part.fromText("hello")),
+                // A rejected answer would make the model retry; stop instead of looping.
+                RunConfig.builder().maxLlmCalls(2).build())
+            .toList()
+            .blockingGet();
+
+    Event finalEvent = events.get(events.size() - 1);
+    assertThat(finalEvent.content().get().parts().get().get(0).text()).hasValue("{\"extra\":null}");
+    assertThat(finalEvent.actions().stateDelta()).containsEntry("answer", args);
   }
 }
