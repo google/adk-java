@@ -54,6 +54,35 @@ public final class EventConverterTest {
   }
 
   @Test
+  public void taskIdAndContextId_readA2aKeysBeforeLegacyKeys() {
+    Event e =
+        Event.builder()
+            .customMetadata(
+                ImmutableList.of(
+                    metadata("a2a:task_id", "task-1"),
+                    metadata("a2a:context_id", "context-1"),
+                    metadata(EventConverter.ADK_TASK_ID_KEY, "legacy-task"),
+                    metadata(EventConverter.ADK_CONTEXT_ID_KEY, "legacy-context")))
+            .build();
+
+    assertThat(EventConverter.taskId(e)).isEqualTo("task-1");
+    assertThat(EventConverter.contextId(e)).isEqualTo("context-1");
+  }
+
+  @Test
+  public void taskId_eventWithA2aContextIdOnly_ignoresLegacyTaskId() {
+    Event e =
+        Event.builder()
+            .customMetadata(
+                ImmutableList.of(
+                    metadata("a2a:context_id", "context-1"),
+                    metadata(EventConverter.ADK_TASK_ID_KEY, "legacy-task")))
+            .build();
+
+    assertThat(EventConverter.taskId(e)).isEmpty();
+  }
+
+  @Test
   public void testTaskId_empty() {
     Event e = Event.builder().build();
     assertThat(EventConverter.taskId(e)).isEmpty();
@@ -240,5 +269,9 @@ public final class EventConverterTest {
     protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
       return Flowable.empty();
     }
+  }
+
+  private static CustomMetadata metadata(String key, String value) {
+    return CustomMetadata.builder().key(key).stringValue(value).build();
   }
 }

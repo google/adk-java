@@ -15,6 +15,7 @@
  */
 package com.google.adk.a2a.agent;
 
+import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.base.Strings.nullToEmpty;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -30,6 +31,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
@@ -197,13 +199,17 @@ public class RemoteA2AAgent extends BaseAgent {
   }
 
   private Message prepareMessage(InvocationContext invocationContext) {
-    Event userCall = EventConverter.findUserFunctionCall(invocationContext.session().events());
-    if (userCall != null) {
+    List<Event> events = invocationContext.session().events();
+    Event callEvent = EventConverter.findUserFunctionCall(events);
+    if (callEvent != null) {
+      // The last event is the user's answer to the call.
+      Event answer = Iterables.getLast(events);
       ImmutableList<io.a2a.spec.Part<?>> parts =
-          EventConverter.contentToParts(userCall.content(), userCall.partial().orElse(false));
+          EventConverter.contentToParts(answer.content(), answer.partial().orElse(false));
+      // As in ADK Python, a call that came without ids, such as one in a plain message, sends none.
       return newA2AMessage(invocationContext, Message.Role.USER, parts)
-          .taskId(EventConverter.taskId(userCall))
-          .contextId(EventConverter.contextId(userCall))
+          .taskId(emptyToNull(EventConverter.taskId(callEvent)))
+          .contextId(emptyToNull(EventConverter.contextId(callEvent)))
           .build();
     }
     return newA2AMessage(

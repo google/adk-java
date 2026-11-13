@@ -22,6 +22,7 @@ import com.google.adk.events.Event;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
 import com.google.genai.types.FunctionResponse;
 import io.a2a.spec.Part;
 import java.util.Collection;
@@ -31,7 +32,10 @@ import org.jspecify.annotations.Nullable;
 
 /** Converter for ADK Events to A2A Messages. */
 public final class EventConverter {
+  /** Legacy task ID key, read only for events with neither {@code a2a:} ID key. */
   public static final String ADK_TASK_ID_KEY = "adk_task_id";
+
+  /** Legacy context ID key, read only for events with neither {@code a2a:} ID key. */
   public static final String ADK_CONTEXT_ID_KEY = "adk_context_id";
 
   private EventConverter() {}
@@ -39,26 +43,29 @@ public final class EventConverter {
   /**
    * Returns the task ID from the event.
    *
-   * <p>Task ID is stored in the event's custom metadata with the key {@link #ADK_TASK_ID_KEY}.
+   * <p>Task ID is stored in the event's custom metadata under {@code a2a:task_id}, where {@link
+   * ResponseConverter} and ADK Python write it. An event with neither {@code a2a:task_id} nor
+   * {@code a2a:context_id} is read from the legacy {@link #ADK_TASK_ID_KEY}.
    *
    * @param event The event to get the task ID from.
    * @return The task ID, or an empty string if not found.
    */
   public static String taskId(Event event) {
-    return metadataValue(event, ADK_TASK_ID_KEY);
+    return remoteId(event, AdkMetadataKey.TASK_ID.getType(), ADK_TASK_ID_KEY);
   }
 
   /**
    * Returns the context ID from the event.
    *
-   * <p>Context ID is stored in the event's custom metadata with the key {@link
-   * #ADK_CONTEXT_ID_KEY}.
+   * <p>Context ID is stored in the event's custom metadata under {@code a2a:context_id}, where
+   * {@link ResponseConverter} and ADK Python write it. An event with neither {@code a2a:task_id}
+   * nor {@code a2a:context_id} is read from the legacy {@link #ADK_CONTEXT_ID_KEY}.
    *
    * @param event The event to get the context ID from.
    * @return The context ID, or an empty string if not found.
    */
   public static String contextId(Event event) {
-    return metadataValue(event, ADK_CONTEXT_ID_KEY);
+    return remoteId(event, AdkMetadataKey.CONTEXT_ID.getType(), ADK_CONTEXT_ID_KEY);
   }
 
   /**
@@ -196,14 +203,22 @@ public final class EventConverter {
             .build());
   }
 
-  private static String metadataValue(Event event, String key) {
-    if (event.customMetadata().isEmpty()) {
-      return "";
-    }
-    return event.customMetadata().get().stream()
-        .filter(m -> m.key().map(k -> k.equals(key)).orElse(false))
-        .findFirst()
-        .flatMap(m -> m.stringValue())
+  /**
+   * Returns the ID under {@code key}, or under {@code legacyKey} if the event has neither new key.
+   */
+  private static String remoteId(Event event, String key, String legacyKey) {
+    boolean hasNewKeys =
+        findMetadata(event, AdkMetadataKey.TASK_ID.getType()).isPresent()
+            || findMetadata(event, AdkMetadataKey.CONTEXT_ID.getType()).isPresent();
+    return findMetadata(event, hasNewKeys ? key : legacyKey)
+        .flatMap(CustomMetadata::stringValue)
         .orElse("");
+  }
+
+  private static Optional<CustomMetadata> findMetadata(Event event, String key) {
+    return event.customMetadata().stream()
+        .flatMap(List::stream)
+        .filter(m -> m.key().map(k -> k.equals(key)).orElse(false))
+        .findFirst();
   }
 }
