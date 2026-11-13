@@ -214,17 +214,13 @@ public class ReflectAndRetryToolPluginTest {
   }
 
   @Test
-  public void onToolError_pastRetryLimit_completesEmptySoTheOriginalErrorPropagates() {
+  public void onToolError_pastRetryLimit_emitsTheOriginalError() {
     ReflectAndRetryToolPlugin plugin = ReflectAndRetryToolPlugin.builder().maxRetries(2).build();
 
     callOnError(plugin);
     callOnError(plugin);
 
-    plugin
-        .onToolErrorCallback(tool, ARGS, toolContext, error)
-        .test()
-        .assertNoValues()
-        .assertComplete();
+    plugin.onToolErrorCallback(tool, ARGS, toolContext, error).test().assertError(error);
   }
 
   @Test
@@ -246,14 +242,10 @@ public class ReflectAndRetryToolPluginTest {
   }
 
   @Test
-  public void maxRetriesZero_completesEmptyImmediately() {
+  public void maxRetriesZero_emitsTheErrorImmediately() {
     ReflectAndRetryToolPlugin plugin = ReflectAndRetryToolPlugin.builder().maxRetries(0).build();
 
-    plugin
-        .onToolErrorCallback(tool, ARGS, toolContext, error)
-        .test()
-        .assertNoValues()
-        .assertComplete();
+    plugin.onToolErrorCallback(tool, ARGS, toolContext, error).test().assertError(error);
   }
 
   @Test
@@ -355,11 +347,7 @@ public class ReflectAndRetryToolPluginTest {
 
     assertThat(plugin.getName()).isEqualTo("reflect_retry_tool_plugin");
     assertThat(callOnError(plugin)).containsEntry("retry_count", 3);
-    plugin
-        .onToolErrorCallback(tool, ARGS, toolContext, error)
-        .test()
-        .assertNoValues()
-        .assertComplete();
+    plugin.onToolErrorCallback(tool, ARGS, toolContext, error).test().assertError(error);
   }
 
   @Test
@@ -753,13 +741,42 @@ public class ReflectAndRetryToolPluginTest {
   }
 
   @Test
-  public void unknownToolName_neverReachesThePlugin() {
+  public void unknownToolName_modelReceivesReflectionGuidance() {
     TestLlm llm = createTestLlm(call(UNKNOWN_TOOL, ImmutableMap.of()), createTextLlmResponse("x"));
 
     run(llm, tool, ReflectAndRetryToolPlugin.builder().build()).assertComplete();
 
-    assertThat(llm.getRequests().stream().anyMatch(ReflectAndRetryToolPluginTest::hasGuidance))
-        .isFalse();
+    Map<String, Object> response = functionResponseIn(llm.getRequests().get(1));
+    assertThat(response).containsEntry(RESPONSE_TYPE_KEY, RESPONSE_TYPE);
+    assertThat(response).containsEntry("error_type", "IllegalArgumentException");
+    assertThat(response).containsEntry("retry_count", 1);
+    assertThat((String) response.get("reflection_guidance")).contains("Wrong Function Name");
+  }
+
+  @Test
+  public void unknownToolName_guidanceListsRegisteredTools() {
+    TestLlm llm = createTestLlm(call(UNKNOWN_TOOL, ImmutableMap.of()), createTextLlmResponse("x"));
+
+    run(llm, tool, ReflectAndRetryToolPlugin.builder().build()).assertComplete();
+
+    assertThat((String) functionResponseIn(llm.getRequests().get(1)).get("reflection_guidance"))
+        .contains(
+            "No tool with the requested name is registered. The tools you can call are: "
+                + TOOL_NAME
+                + ".");
+  }
+
+  @Test
+  public void unknownToolName_pastRetryLimit_runFails() {
+    TestLlm llm =
+        createTestLlm(
+            call(UNKNOWN_TOOL, ImmutableMap.of()),
+            call(UNKNOWN_TOOL, ImmutableMap.of()),
+            createTextLlmResponse("x"));
+
+    run(llm, tool, ReflectAndRetryToolPlugin.builder().maxRetries(1).build())
+        .assertError(IllegalArgumentException.class);
+    assertThat(llm.getRequests()).hasSize(2);
   }
 
   /**
