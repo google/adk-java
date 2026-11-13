@@ -16,8 +16,10 @@
 
 package com.google.adk.tools;
 
+import static java.lang.annotation.ElementType.FIELD;
 import static java.lang.annotation.ElementType.METHOD;
 import static java.lang.annotation.ElementType.PARAMETER;
+import static java.lang.annotation.ElementType.RECORD_COMPONENT;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -26,14 +28,24 @@ import java.lang.annotation.Target;
 /** Annotations for tools. */
 public final class Annotations {
 
-  /** The annotation for binding the 'Schema' input. */
-  @Target({METHOD, PARAMETER})
+  /**
+   * Describes a tool or its inputs. On object properties, non-empty names and descriptions take
+   * precedence over Jackson's. {@code optional = true} relaxes requiredness, while {@code false}
+   * retains Jackson's required marker. Ordinary business JSON serialization is unchanged.
+   */
+  @Target({METHOD, PARAMETER, FIELD, RECORD_COMPONENT})
   @Retention(RetentionPolicy.RUNTIME)
   public @interface Schema {
+    /** Model-facing name; an empty property name retains Jackson's name or the Java default. */
     String name() default "";
 
+    /** Description included in the generated tool schema. */
     String description() default "";
 
+    /**
+     * Whether this input may be omitted. On object properties, only {@code true} overrides
+     * Jackson's required marker; {@code false} does not introduce a required constraint.
+     */
     boolean optional() default false;
   }
 

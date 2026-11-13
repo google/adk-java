@@ -83,6 +83,12 @@ public final class FunctionCallingUtils {
    */
   public static FunctionDeclaration buildFunctionDeclaration(
       Method func, List<String> ignoreParams) {
+    return buildFunctionDeclaration(func, ignoreParams, defaultObjectMapper);
+  }
+
+  static FunctionDeclaration buildFunctionDeclaration(
+      Method func, List<String> ignoreParams, ObjectMapper objectMapper) {
+    objectMapper = ToolSchemaObjectMapper.forMethod(objectMapper, func);
     String name =
         func.isAnnotationPresent(Annotations.Schema.class)
                 && !func.getAnnotation(Annotations.Schema.class).name().isEmpty()
@@ -108,7 +114,7 @@ public final class FunctionCallingUtils {
       if (schema == null || !schema.optional()) {
         required.add(paramName);
       }
-      properties.put(paramName, buildSchemaFromParameter(param));
+      properties.put(paramName, buildSchemaFromParameter(param, objectMapper));
     }
     builder.parameters(
         Schema.builder().required(required).properties(properties).type("OBJECT").build());
@@ -126,7 +132,7 @@ public final class FunctionCallingUtils {
           actualReturnType = parameterizedReturnType.getActualTypeArguments()[0];
         }
       }
-      builder.response(buildSchemaFromType(actualReturnType));
+      builder.response(schemaOf(actualReturnType, objectMapper));
     }
     return builder.build();
   }
@@ -143,8 +149,8 @@ public final class FunctionCallingUtils {
     return declaration;
   }
 
-  private static Schema buildSchemaFromParameter(Parameter param) {
-    Schema schema = buildSchemaFromType(param.getParameterizedType());
+  private static Schema buildSchemaFromParameter(Parameter param, ObjectMapper objectMapper) {
+    Schema schema = schemaOf(param.getParameterizedType(), objectMapper);
     if (param.isAnnotationPresent(Annotations.Schema.class)
         && !param.getAnnotation(Annotations.Schema.class).description().isEmpty()) {
       return schema.toBuilder()
@@ -168,14 +174,25 @@ public final class FunctionCallingUtils {
   /**
    * Builds a Schema from a Java Type, creating a new context for the generation process.
    *
+   * <p>On object properties, non-empty {@code @Schema} names and descriptions take precedence over
+   * Jackson annotations. {@code optional = true} relaxes Jackson's required marker; the default
+   * {@code false} retains Jackson's requiredness. Business JSON is not changed. Custom mapper
+   * naming strategies also apply to unannotated properties. Isolated tool views are reused until
+   * normal mapper configuration APIs change their configuration; configure the mapper before
+   * concurrent use.
+   *
    * @param type The Java {@link Type} to convert into a Schema.
    * @param objectMapper The {@link ObjectMapper} to use for introspecting types.
    * @return The generated {@link Schema}.
    * @throws IllegalArgumentException if a type is encountered that cannot be serialized by Jackson.
    */
   public static Schema buildSchemaFromType(Type type, ObjectMapper objectMapper) {
+    return schemaOf(type, ToolSchemaObjectMapper.forType(objectMapper, type));
+  }
+
+  private static Schema schemaOf(Type type, ObjectMapper schemaMapper) {
     return buildSchemaRecursive(
-        objectMapper.constructType(type), new SchemaGenerationContext(), objectMapper);
+        schemaMapper.constructType(type), new SchemaGenerationContext(), schemaMapper);
   }
 
   /**
@@ -241,7 +258,21 @@ public final class FunctionCallingUtils {
         }
         builder.enum_(enumValues).type("STRING").format("enum");
       } else { // POJO
-        if (!objectMapper.canSerialize(rawClass)) {
+        BeanDescription beanDescription =
+            objectMapper.getSerializationConfig().introspect(javaType);
+        Map<String, BeanPropertyDefinition> definitions = new LinkedHashMap<>();
+        for (BeanPropertyDefinition property : beanDescription.findProperties()) {
+          definitions.put(property.getName(), property);
+        }
+        if (ToolSchemaObjectMapper.isSchemaMapper(objectMapper)) {
+          // Creator-only properties are part of the input contract even without a getter.
+          for (BeanPropertyDefinition property :
+              objectMapper.getDeserializationConfig().introspect(javaType).findProperties()) {
+            definitions.put(property.getName(), property);
+          }
+        }
+        if (!objectMapper.canSerialize(rawClass)
+            && (!ToolSchemaObjectMapper.isSchemaMapper(objectMapper) || definitions.isEmpty())) {
           throw new IllegalArgumentException(
               "Unsupported type: "
                   + rawClass.getName()
@@ -249,15 +280,18 @@ public final class FunctionCallingUtils {
                   + " primitive. Opaque types like Protobuf models are not supported"
                   + " directly.");
         }
-        BeanDescription beanDescription =
-            objectMapper.getSerializationConfig().introspect(javaType);
         Map<String, Schema> properties = new LinkedHashMap<>();
         List<String> required = new ArrayList<>();
-        for (BeanPropertyDefinition property : beanDescription.findProperties()) {
+        for (BeanPropertyDefinition property : definitions.values()) {
           AnnotatedMember member = property.getPrimaryMember();
           if (member != null) {
-            properties.put(
-                property.getName(), buildSchemaRecursive(member.getType(), context, objectMapper));
+            Schema propertySchema =
+                buildSchemaRecursive(property.getPrimaryType(), context, objectMapper);
+            String description = property.getMetadata().getDescription();
+            if (description != null && !description.isEmpty()) {
+              propertySchema = propertySchema.toBuilder().description(description).build();
+            }
+            properties.put(property.getName(), propertySchema);
             if (property.isRequired()) {
               required.add(property.getName());
             }
