@@ -286,8 +286,13 @@ public class Gemini extends BaseLlm {
       @Nullable CacheMetadata cacheMetadata) {
     GenerateContentConfig config = llmRequest.config().orElse(null);
 
-    logger.trace("Request Contents: {}", llmRequest.contents());
-    logger.trace("Request Config: {}", config);
+    // Model input must not be logged, so only the request's shape is.
+    logger.trace(
+        "Request to {}: {} contents, config present: {}, {} tools",
+        effectiveModelName,
+        llmRequest.contents().size(),
+        config != null,
+        config == null ? 0 : config.tools().map(List::size).orElse(0));
 
     if (!clientSendsTrackingHeaders) {
       config = withTrackingHeaders(config);
@@ -424,7 +429,10 @@ public class Gemini extends BaseLlm {
     String effectiveModelName = llmRequest.model().orElse(model());
 
     logger.debug("Connecting to model {}", effectiveModelName);
-    logger.trace("Connection Config: {}", liveConnectConfig);
+    logger.trace(
+        "Connection config: {} tools, system instruction present: {}",
+        liveConnectConfig.tools().map(List::size).orElse(0),
+        liveConnectConfig.systemInstruction().isPresent());
 
     return new GeminiLlmConnection(connectLiveTransport(effectiveModelName, liveConnectConfig));
   }
@@ -493,11 +501,15 @@ public class Gemini extends BaseLlm {
      */
     private Flowable<LlmResponse> processRawResponse(GenerateContentResponse rawResponse) {
       lastRawResponse = rawResponse;
-      logger.trace("Raw streaming response: {}", rawResponse);
 
       LlmResponse currentProcessedLlmResponse = LlmResponse.create(rawResponse);
       List<Part> parts =
           currentProcessedLlmResponse.content().flatMap(Content::parts).orElse(ImmutableList.of());
+      // Model output and tool arguments must not be logged, so only the chunk's shape is.
+      logger.trace(
+          "Streaming chunk: {} parts, finish reason {}",
+          parts.size(),
+          currentProcessedLlmResponse.finishReason().map(Object::toString).orElse("none"));
 
       // Assign an ID to every function-call part up front, mirroring ADK Python's
       // StreamingResponseAggregator: the same ID is reused in the partial and final responses so
