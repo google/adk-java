@@ -75,9 +75,12 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
     }
 
-    int finalConfirmationEventIndex = confirmationResult.get().eventIndex();
+    ConfirmationResult result =
+        confirmationResult.orElseThrow(
+            () -> new IllegalStateException("confirmationResult should be present when not empty"));
+    int finalConfirmationEventIndex = result.eventIndex();
     ImmutableMap<String, ToolConfirmation> requestConfirmationFunctionResponses =
-        confirmationResult.get().responses();
+        result.responses();
     String agentName = invocationContext.agent().name();
     ImmutableMap<String, AuthoredFunctionCall> functionCallsById =
         functionCallsById(events, agentName);
@@ -129,10 +132,22 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
                                   ofc, functionCallsById, confirmationRequestedIds, agentName))
                       .ifPresent(
                           ofc -> {
+                            String functionId =
+                                ofc.id()
+                                    .orElseThrow(
+                                        () ->
+                                            new IllegalStateException(
+                                                "Function call should have an ID"));
+                            String confirmationId =
+                                fc.id()
+                                    .orElseThrow(
+                                        () ->
+                                            new IllegalStateException(
+                                                "Function call should have an ID"));
                             toolsToResumeWithConfirmation.put(
-                                ofc.id().get(),
-                                requestConfirmationFunctionResponses.get(fc.id().get()));
-                            toolsToResumeWithArgs.put(ofc.id().get(), ofc);
+                                functionId,
+                                requestConfirmationFunctionResponses.get(confirmationId));
+                            toolsToResumeWithArgs.put(functionId, ofc);
                           }));
 
       // If all confirmed tools in this event have already been processed, continue
