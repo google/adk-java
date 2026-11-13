@@ -39,6 +39,7 @@ import com.google.api.gax.rpc.UnavailableException;
 import com.google.cloud.firestore.CollectionReference;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
+import com.google.cloud.firestore.FieldValue;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
@@ -96,6 +97,8 @@ public class FirestoreSessionServiceTest {
   @Mock private DocumentReference mockUserStateAppDocRef;
   @Mock private DocumentReference mockUserStateUserDocRef;
   @Mock private DocumentSnapshot mockSessionSnapshot;
+  @Mock private DocumentSnapshot mockAppStateSnapshot;
+  @Mock private DocumentSnapshot mockUserStateSnapshot;
   @Mock private QueryDocumentSnapshot mockEventSnapshot;
   @Mock private Query mockQuery;
   @Mock private QuerySnapshot mockQuerySnapshot;
@@ -127,20 +130,28 @@ public class FirestoreSessionServiceTest {
     lenient()
         .when(mockDb.collection(Constants.APP_STATE_COLLECTION))
         .thenReturn(mockAppStateCollection);
-    lenient().when(mockAppStateCollection.document(APP_NAME)).thenReturn(mockAppStateDocRef);
+    lenient().when(mockAppStateCollection.document(anyString())).thenReturn(mockAppStateDocRef);
+    lenient()
+        .when(mockAppStateDocRef.get())
+        .thenReturn(ApiFutures.immediateFuture(mockAppStateSnapshot));
+    lenient().when(mockAppStateSnapshot.exists()).thenReturn(false);
+
     lenient()
         .when(mockDb.collection(Constants.USER_STATE_COLLECTION))
         .thenReturn(mockUserStateRootCollection);
     lenient()
-        .when(mockUserStateRootCollection.document(APP_NAME))
+        .when(mockUserStateRootCollection.document(anyString()))
         .thenReturn(mockUserStateAppDocRef);
     lenient()
-        .when(mockUserStateAppDocRef.collection("users"))
+        .when(mockUserStateAppDocRef.collection(anyString()))
         .thenReturn(mockUserStateUsersCollection);
     lenient()
-        .when(mockUserStateUsersCollection.document(USER_ID))
+        .when(mockUserStateUsersCollection.document(anyString()))
         .thenReturn(mockUserStateUserDocRef);
-
+    lenient()
+        .when(mockUserStateUserDocRef.get())
+        .thenReturn(ApiFutures.immediateFuture(mockUserStateSnapshot));
+    lenient().when(mockUserStateSnapshot.exists()).thenReturn(false);
     // Default mock for writes
     lenient()
         .when(mockSessionDocRef.create(anyMap()))
@@ -908,7 +919,7 @@ public class FirestoreSessionServiceTest {
         EventActions.builder()
             .stateDelta(
                 new ConcurrentHashMap<>(
-                    ImmutableMap.of("_app_appKey", "appValue"))) // Corrected type and key
+                    ImmutableMap.of("app:appKey", "appValue"))) // Corrected type and key
             .build();
 
     Event event =
@@ -955,7 +966,7 @@ public class FirestoreSessionServiceTest {
 
     EventActions actions =
         EventActions.builder()
-            .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("_user_userKey", "userValue")))
+            .stateDelta(new ConcurrentHashMap<>(ImmutableMap.of("user:userKey", "userValue")))
             .build();
 
     Event event =
@@ -985,6 +996,116 @@ public class FirestoreSessionServiceTest {
     // Verify that app state and session state are not updated
     verify(mockAppStateDocRef, never()).set(anyMap(), any(SetOptions.class));
     verify(mockSessionDocRef, never()).update(eq(Constants.KEY_STATE), any());
+  }
+
+  /** Tests that appendEvent ignores temp: state keys and never writes them to any store. */
+  @Test
+  void appendEvent_withTempOnlyStateDeltas_doesNotPersistTempState() {
+    Session session =
+        Session.builder(SESSION_ID)
+            .appName(APP_NAME)
+            .userId(USER_ID)
+            .state(new ConcurrentHashMap<>())
+            .build();
+
+    EventActions actions =
+        EventActions.builder()
+            .stateDelta(
+                new ConcurrentHashMap<>(
+                    ImmutableMap.of(
+                        State.TEMP_PREFIX + "scratchKey",
+                        "tempValue",
+                        State.TEMP_PREFIX + "counter",
+                        10)))
+            .build();
+
+    Event event =
+        Event.builder()
+            .author("model")
+            .content(Content.builder().parts(List.of(Part.fromText("..."))).build())
+            .actions(actions)
+            .build();
+
+    // Mock Firestore interactions for appendEvent
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockEventsCollection.document()).thenReturn(mockEventDocRef);
+    when(mockEventDocRef.getId()).thenReturn(EVENT_ID);
+    when(mockEventsCollection.document(EVENT_ID)).thenReturn(mockEventDocRef);
+    when(mockSessionDocRef.update(anyMap()))
+        .thenReturn(ApiFutures.immediateFuture(mockWriteResult));
+
+    // Act
+    sessionService.appendEvent(session, event).test().assertComplete();
+
+    // Assert
+    // Ephemeral temp keys must never be added to session state
+    assertThat(session.state()).doesNotContainKey(State.TEMP_PREFIX + "scratchKey");
+    assertThat(session.state()).doesNotContainKey(State.TEMP_PREFIX + "counter");
+
+    // Scoped stores and session state update must never be invoked
+    verify(mockAppStateDocRef, never()).set(anyMap(), any(SetOptions.class));
+    verify(mockUserStateUsersCollection, never()).document(anyString());
+    verify(mockSessionDocRef, never()).update(eq(Constants.KEY_STATE), any());
+  }
+
+  /** Tests that appendEvent with State.REMOVED deletes keys from app, user, and session stores. */
+  @Test
+  @SuppressWarnings("unchecked")
+  void appendEvent_withStateRemovedSentinel_deletesKeysAcrossStores() {
+    // Arrange
+    ConcurrentHashMap<String, Object> sessionState = new ConcurrentHashMap<>();
+    sessionState.put("sessionKey", "initialValue");
+
+    Session session =
+        Session.builder(SESSION_ID).appName(APP_NAME).userId(USER_ID).state(sessionState).build();
+
+    EventActions actions =
+        EventActions.builder()
+            .stateDelta(
+                new ConcurrentHashMap<>(
+                    ImmutableMap.of(
+                        State.APP_PREFIX + "appKey",
+                        State.REMOVED,
+                        State.USER_PREFIX + "userKey",
+                        State.REMOVED,
+                        "sessionKey",
+                        State.REMOVED)))
+            .build();
+
+    Event event =
+        Event.builder()
+            .author("model")
+            .content(Content.builder().parts(List.of(Part.fromText("..."))).build())
+            .actions(actions)
+            .build();
+
+    // Mock Firestore interactions for appendEvent
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockEventsCollection.document()).thenReturn(mockEventDocRef);
+    when(mockEventDocRef.getId()).thenReturn(EVENT_ID);
+    when(mockEventsCollection.document(EVENT_ID)).thenReturn(mockEventDocRef);
+    when(mockSessionDocRef.update(anyMap()))
+        .thenReturn(ApiFutures.immediateFuture(mockWriteResult));
+    when(mockSessionDocRef.update(eq(Constants.KEY_STATE), any()))
+        .thenReturn(ApiFutures.immediateFuture(mockWriteResult));
+
+    // Act
+    sessionService.appendEvent(session, event).test().assertComplete();
+
+    // Assert
+    // Verify app state uses FieldValue.delete()
+    ArgumentCaptor<Map<String, Object>> appStateCaptor = ArgumentCaptor.forClass(Map.class);
+    verify(mockAppStateDocRef).set(appStateCaptor.capture(), any(SetOptions.class));
+    assertThat(appStateCaptor.getValue()).containsEntry("appKey", FieldValue.delete());
+
+    // Verify user state uses FieldValue.delete()
+    ArgumentCaptor<Map<String, Object>> userStateCaptor = ArgumentCaptor.forClass(Map.class);
+    verify(mockUserStateUserDocRef).set(userStateCaptor.capture(), any(SetOptions.class));
+    assertThat(userStateCaptor.getValue()).containsEntry("userKey", FieldValue.delete());
+
+    // Verify session state entry was removed from in-memory session object
+    assertThat(session.state()).doesNotContainKey("sessionKey");
+    verify(mockSessionDocRef).update(eq(Constants.KEY_STATE), any());
   }
 
   /** Tests that getSession skips malformed events and returns only the well-formed ones. */
@@ -1389,6 +1510,105 @@ public class FirestoreSessionServiceTest {
     // Assert: the session (belonging to another app) must be left intact.
     verify(mockSessionDocRef, never()).delete();
     verify(mockWriteBatch, never()).commit();
+  }
+
+  /** Tests that getSession merges app and user state with proper prefixes. */
+  @Test
+  void getSession_mergesGlobalAppStateAndUserState() {
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockSessionDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockSessionSnapshot));
+    when(mockSessionSnapshot.exists()).thenReturn(true);
+    when(mockSessionSnapshot.getData())
+        .thenReturn(
+            ImmutableMap.of(
+                Constants.KEY_ID, SESSION_ID,
+                Constants.KEY_APP_NAME, APP_NAME,
+                Constants.KEY_USER_ID, USER_ID,
+                Constants.KEY_UPDATE_TIME, NOW.toString(),
+                Constants.KEY_STATE, ImmutableMap.of("sessionKey", "sessionValue")));
+    when(mockSessionSnapshot.getReference()).thenReturn(mockSessionDocRef);
+    when(mockQuery.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
+    when(mockQuerySnapshot.getDocuments()).thenReturn(Collections.emptyList());
+
+    when(mockAppStateSnapshot.exists()).thenReturn(true);
+    when(mockAppStateSnapshot.getData()).thenReturn(ImmutableMap.of("theme", "dark"));
+    when(mockUserStateSnapshot.exists()).thenReturn(true);
+    when(mockUserStateSnapshot.getData()).thenReturn(ImmutableMap.of("name", "Jae"));
+
+    TestObserver<Session> testObserver =
+        sessionService.getSession(APP_NAME, USER_ID, SESSION_ID, Optional.empty()).test();
+
+    testObserver.assertComplete();
+    testObserver.assertValue(
+        s -> {
+          assertThat(s.state()).containsEntry("sessionKey", "sessionValue");
+          assertThat(s.state()).containsEntry("app:theme", "dark");
+          assertThat(s.state()).containsEntry("user:name", "Jae");
+          return true;
+        });
+  }
+
+  /** Tests that createSession merges existing global app and user state into the new session. */
+  @Test
+  void createSession_mergesGlobalAppStateAndUserState() {
+    when(mockSessionsCollection.document(SESSION_ID)).thenReturn(mockSessionDocRef);
+    when(mockAppStateSnapshot.exists()).thenReturn(true);
+    when(mockAppStateSnapshot.getData()).thenReturn(ImmutableMap.of("theme", "dark"));
+    when(mockUserStateSnapshot.exists()).thenReturn(true);
+    when(mockUserStateSnapshot.getData()).thenReturn(ImmutableMap.of("name", "Jae"));
+
+    TestObserver<Session> testObserver =
+        sessionService
+            .createSession(
+                APP_NAME,
+                USER_ID,
+                new ConcurrentHashMap<>(ImmutableMap.of("initial", "val")),
+                SESSION_ID)
+            .test();
+
+    testObserver.assertComplete();
+    testObserver.assertValue(
+        s -> {
+          assertThat(s.state()).containsEntry("initial", "val");
+          assertThat(s.state()).containsEntry("app:theme", "dark");
+          assertThat(s.state()).containsEntry("user:name", "Jae");
+          return true;
+        });
+  }
+
+  /** Tests that listSessions merges existing global app and user state into listed sessions. */
+  @Test
+  void listSessions_mergesGlobalAppStateAndUserState() {
+    when(mockSessionsCollection.whereEqualTo(Constants.KEY_APP_NAME, APP_NAME))
+        .thenReturn(mockQuery);
+    when(mockQuery.get()).thenReturn(ApiFutures.immediateFuture(mockQuerySnapshot));
+    QueryDocumentSnapshot mockDoc = mock(QueryDocumentSnapshot.class);
+    when(mockQuerySnapshot.getDocuments()).thenReturn(List.of(mockDoc));
+    when(mockDoc.getData())
+        .thenReturn(
+            ImmutableMap.of(
+                Constants.KEY_ID, SESSION_ID,
+                Constants.KEY_APP_NAME, APP_NAME,
+                Constants.KEY_USER_ID, USER_ID,
+                Constants.KEY_UPDATE_TIME, NOW.toString()));
+
+    when(mockAppStateSnapshot.exists()).thenReturn(true);
+    when(mockAppStateSnapshot.getData()).thenReturn(ImmutableMap.of("theme", "dark"));
+    when(mockUserStateSnapshot.exists()).thenReturn(true);
+    when(mockUserStateSnapshot.getData()).thenReturn(ImmutableMap.of("name", "Jae"));
+
+    TestObserver<ListSessionsResponse> testObserver =
+        sessionService.listSessions(APP_NAME, USER_ID).test();
+
+    testObserver.assertComplete();
+    testObserver.assertValue(
+        response -> {
+          assertThat(response.sessions()).hasSize(1);
+          Session s = response.sessions().get(0);
+          assertThat(s.state()).containsEntry("app:theme", "dark");
+          assertThat(s.state()).containsEntry("user:name", "Jae");
+          return true;
+        });
   }
 
   private static AlreadyExistsException alreadyExists() {

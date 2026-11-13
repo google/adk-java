@@ -31,6 +31,7 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.sessions.Session;
+import com.google.adk.utils.Constants;
 import com.google.adk.utils.FirestoreProperties;
 import com.google.api.core.ApiFutures;
 import com.google.cloud.firestore.CollectionReference;
@@ -89,6 +90,8 @@ public class FirestoreDatabaseRunnerTest {
   @Mock private DocumentReference mockEventDocRef;
   @Mock private Query mockQuery;
   @Mock private QuerySnapshot mockQuerySnapshot;
+  @Mock private DocumentSnapshot mockAppStateSnapshot;
+  @Mock private DocumentSnapshot mockUserStateSnapshot;
   @Mock private WriteResult mockWriteResult;
 
   /**
@@ -174,6 +177,22 @@ public class FirestoreDatabaseRunnerTest {
     when(mockRootCollection.document(anyString())).thenReturn(mockUserDocRef);
     when(mockUserDocRef.collection(anyString())).thenReturn(mockSessionsCollection);
     when(mockSessionsCollection.document(anyString())).thenReturn(mockSessionDocRef);
+
+    // Mock app-state and user-state collections for session global state retrieval
+    when(mockFirestore.collection(Constants.APP_STATE_COLLECTION))
+        .thenReturn(mockAppStateCollection);
+    when(mockAppStateCollection.document(anyString())).thenReturn(mockAppStateDocRef);
+    when(mockAppStateDocRef.get()).thenReturn(ApiFutures.immediateFuture(mockAppStateSnapshot));
+    when(mockAppStateSnapshot.exists()).thenReturn(false);
+
+    when(mockFirestore.collection(Constants.USER_STATE_COLLECTION))
+        .thenReturn(mockUserStateRootCollection);
+    when(mockUserStateRootCollection.document(anyString())).thenReturn(mockUserStateAppDocRef);
+    when(mockUserStateAppDocRef.collection(anyString())).thenReturn(mockUserStateUsersCollection);
+    when(mockUserStateUsersCollection.document(anyString())).thenReturn(mockUserStateUserDocRef);
+    when(mockUserStateUserDocRef.get())
+        .thenReturn(ApiFutures.immediateFuture(mockUserStateSnapshot));
+    when(mockUserStateSnapshot.exists()).thenReturn(false);
 
     when(mockSessionDocRef.create(anyMap()))
         .thenReturn(ApiFutures.immediateFuture(mockWriteResult));
