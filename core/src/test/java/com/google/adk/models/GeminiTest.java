@@ -29,6 +29,8 @@ import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.GenerateContentResponse;
 import com.google.genai.types.GenerateContentResponseUsageMetadata;
+import com.google.genai.types.HttpOptions;
+import com.google.genai.types.HttpRetryOptions;
 import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import com.google.genai.types.ToolCall;
@@ -48,6 +50,30 @@ import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public final class GeminiTest {
+
+  @Test
+  public void buildHttpOptions_withRetryOptions_setsRetryOptions() {
+    HttpRetryOptions retryOptions =
+        HttpRetryOptions.builder()
+            .attempts(3)
+            .initialDelay(1.0)
+            .maxDelay(8.0)
+            .expBase(2.0)
+            .jitter(0.2)
+            .httpStatusCodes(429, 500, 503)
+            .build();
+
+    HttpOptions httpOptions = Gemini.buildHttpOptions(retryOptions);
+
+    assertThat(httpOptions.retryOptions()).hasValue(retryOptions);
+  }
+
+  @Test
+  public void buildHttpOptions_withoutRetryOptions_leavesSdkRetryOptionsUnset() {
+    HttpOptions httpOptions = Gemini.buildHttpOptions(null);
+
+    assertThat(httpOptions.retryOptions()).isEmpty();
+  }
 
   // Test cases for processRawResponses static method
   @Test
