@@ -21,6 +21,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -55,11 +56,16 @@ public class SetModelResponseTool extends BaseTool {
 
   @Override
   public Optional<FunctionDeclaration> declaration() {
+    // Function parameters must be an object, so an untyped object schema gets that type.
+    Schema parameters =
+        outputSchema.type().isPresent()
+            ? outputSchema
+            : outputSchema.toBuilder().type(Type.Known.OBJECT).build();
     return Optional.of(
         FunctionDeclaration.builder()
             .name(name())
             .description(description())
-            .parameters(outputSchema)
+            .parameters(parameters)
             .build());
   }
 
@@ -87,8 +93,8 @@ public class SetModelResponseTool extends BaseTool {
 
   /**
    * Drops nulls like Python's {@code model_dump(exclude_none=True)}, but keeps the null of a
-   * property that {@code schema} marks required and nullable, which the schema demands. A value
-   * without a schema loses all its nulls.
+   * property that {@code schema} marks required, which validation already accepted. A value without
+   * a schema loses all its nulls.
    */
   private static Map<String, Object> excludeNullFields(
       Map<String, Object> values, @Nullable Schema schema) {
@@ -102,9 +108,7 @@ public class SetModelResponseTool extends BaseTool {
       Object value = entry.getValue();
       if (value != null) {
         result.put(entry.getKey(), excludeNullsFromValue(value, property));
-      } else if (property != null
-          && property.nullable().orElse(false)
-          && required.contains(entry.getKey())) {
+      } else if (required.contains(entry.getKey())) {
         result.put(entry.getKey(), null);
       }
     }

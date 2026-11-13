@@ -15,11 +15,13 @@
  */
 package com.google.adk.models.langchain4j;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.*;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
@@ -28,7 +30,9 @@ import com.google.adk.models.LlmResponse;
 import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.sessions.Session;
 import com.google.adk.tools.FunctionTool;
+import com.google.adk.tools.SetModelResponseTool;
 import com.google.genai.types.*;
+import com.sun.net.httpserver.HttpServer;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.UserMessage;
@@ -37,17 +41,26 @@ import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.request.ChatRequestParameters;
+import dev.langchain4j.model.chat.request.json.JsonAnyOfSchema;
+import dev.langchain4j.model.chat.request.json.JsonArraySchema;
+import dev.langchain4j.model.chat.request.json.JsonIntegerSchema;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonSchemaElement;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.googleai.GoogleAiGeminiChatModel;
 import dev.langchain4j.model.output.TokenUsage;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -56,6 +69,25 @@ import org.mockito.ArgumentCaptor;
 class LangChain4jTest {
 
   private static final String MODEL_NAME = "test-model";
+
+  /**
+   * An output schema with an untyped property, an array without items, and an untyped object with
+   * properties.
+   */
+  private static final Schema FREE_FORM_SCHEMA =
+      Schema.builder()
+          .type("OBJECT")
+          .properties(
+              Map.of(
+                  "extra",
+                  Schema.builder().description("Anything").build(),
+                  "tags",
+                  Schema.builder().type("ARRAY").build(),
+                  "nested",
+                  Schema.builder()
+                      .properties(Map.of("a", Schema.builder().type("STRING").build()))
+                      .build()))
+          .build();
 
   private ChatModel chatModel;
   private StreamingChatModel streamingChatModel;
@@ -975,6 +1007,301 @@ class LangChain4jTest {
     assertThat(capturedRequest.toolSpecifications()).isNotEmpty();
     assertThat(capturedRequest.toolSpecifications().get(0).name()).isEqualTo("mcpTool");
     assertThat(capturedRequest.toolSpecifications().get(0).description()).isEqualTo("An MCP tool");
+  }
+
+  @Test
+  @DisplayName("Should send an empty MCP input schema as an open object")
+  void testGenerateContentWithMcpToolEmptyInputSchema() {
+    // When
+    final JsonObjectSchema parameters = sentToolParameters(Map.of(), null);
+
+    // Then
+    assertThat(parameters.properties()).isEmpty();
+    assertThat(parameters.required()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("Should send untyped parameters with only required fields as an object")
+  void testGenerateContentWithUntypedRequiredOnlyParameters() {
+    // When
+    final JsonObjectSchema parameters =
+        sentToolParameters(null, Schema.builder().required(List.of("id")).build());
+
+    // Then
+    assertThat(parameters.properties()).isEmpty();
+    assertThat(parameters.required()).containsExactly("id");
+  }
+
+  @Test
+  @DisplayName("Should send an optional MCP string parameter as a string")
+  void testGenerateContentWithMcpToolOptionalStringParameter() {
+    // Given
+    final Map<String, Object> inputSchema =
+        Map.of(
+            "type",
+            "object",
+            "properties",
+            Map.of(
+                "city",
+                Map.of(
+                    "description",
+                    "City name",
+                    "anyOf",
+                    List.of(Map.of("type", "string"), Map.of("type", "null")))));
+
+    // When
+    final JsonObjectSchema parameters = sentToolParameters(inputSchema, null);
+
+    // Then
+    assertThat(parameters.properties().get("city"))
+        .isEqualTo(JsonStringSchema.builder().description("City name").build());
+  }
+
+  @Test
+  @DisplayName("Should send an untyped anyOf of two types as anyOf")
+  void testGenerateContentWithUntypedAnyOfParameter() {
+    // Given
+    final Schema parameters =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                Map.of(
+                    "id",
+                    Schema.builder()
+                        .anyOf(
+                            List.of(
+                                Schema.builder().type("STRING").build(),
+                                Schema.builder().type("INTEGER").build()))
+                        .build()))
+            .build();
+
+    // When
+    final JsonObjectSchema sent = sentToolParameters(null, parameters);
+
+    // Then
+    assertThat(sent.properties().get("id"))
+        .isEqualTo(
+            JsonAnyOfSchema.builder()
+                .anyOf(List.of(new JsonStringSchema(), new JsonIntegerSchema()))
+                .build());
+  }
+
+  @Test
+  @DisplayName("Should keep the description of a nested object parameter")
+  void testGenerateContentWithNestedObjectDescription() {
+    // Given
+    final Schema parameters =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                Map.of(
+                    "address",
+                    Schema.builder()
+                        .type("OBJECT")
+                        .description("Where to deliver")
+                        .properties(Map.of("street", Schema.builder().type("STRING").build()))
+                        .build()))
+            .build();
+
+    // When
+    final JsonObjectSchema sent = sentToolParameters(null, parameters);
+
+    // Then
+    assertThat(((JsonObjectSchema) sent.properties().get("address")).description())
+        .isEqualTo("Where to deliver");
+  }
+
+  @Test
+  @DisplayName("Should reject an untyped root schema with anyOf")
+  void testGenerateContentWithUntypedAnyOfRootThrows() {
+    // Given
+    final Schema parameters =
+        Schema.builder()
+            .anyOf(
+                List.of(
+                    Schema.builder().type("STRING").build(),
+                    Schema.builder().type("INTEGER").build()))
+            .build();
+
+    // When / Then
+    assertThrows(UnsupportedOperationException.class, () -> sentToolParameters(null, parameters));
+  }
+
+  @Test
+  @DisplayName("Should reject an untyped root schema with items")
+  void testGenerateContentWithUntypedItemsRootThrows() {
+    // Given
+    final Schema parameters =
+        Schema.builder().items(Schema.builder().type("STRING").build()).build();
+
+    // When / Then
+    assertThrows(UnsupportedOperationException.class, () -> sentToolParameters(null, parameters));
+  }
+
+  @Test
+  @DisplayName("Should send a nested untyped schema with only required keys as an object")
+  void testGenerateContentWithNestedUntypedRequiredOnlyParameter() {
+    // Given
+    final Schema parameters =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(Map.of("item", Schema.builder().required(List.of("id")).build()))
+            .build();
+
+    // When
+    final JsonObjectSchema sent = sentToolParameters(null, parameters);
+
+    // Then
+    assertThat(sent.properties().get("item"))
+        .isEqualTo(JsonObjectSchema.builder().required(List.of("id")).build());
+  }
+
+  @Test
+  @DisplayName("Should send a nested untyped schema with only items as an array")
+  void testGenerateContentWithNestedUntypedItemsOnlyParameter() {
+    // Given
+    final Schema parameters =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                Map.of(
+                    "tags",
+                    Schema.builder()
+                        .description("Tags")
+                        .items(Schema.builder().type("STRING").build())
+                        .build()))
+            .build();
+
+    // When
+    final JsonObjectSchema sent = sentToolParameters(null, parameters);
+
+    // Then
+    assertThat(sent.properties().get("tags"))
+        .isEqualTo(
+            JsonArraySchema.builder().description("Tags").items(new JsonStringSchema()).build());
+  }
+
+  /**
+   * Returns the parameters sent for a tool declared with {@code parametersJsonSchema} or, when that
+   * is null, with {@code parameters}.
+   */
+  private JsonObjectSchema sentToolParameters(Object parametersJsonSchema, Schema parameters) {
+    final com.google.adk.tools.BaseTool tool = mock(com.google.adk.tools.BaseTool.class);
+    when(tool.name()).thenReturn("lookup");
+    when(tool.description()).thenReturn("Looks something up");
+    final FunctionDeclaration functionDeclaration = mock(FunctionDeclaration.class);
+    when(tool.declaration()).thenReturn(Optional.of(functionDeclaration));
+    when(functionDeclaration.parametersJsonSchema())
+        .thenReturn(Optional.ofNullable(parametersJsonSchema));
+    when(functionDeclaration.parameters()).thenReturn(Optional.ofNullable(parameters));
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    when(chatResponse.aiMessage()).thenReturn(AiMessage.from("Done"));
+    when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+    final LlmRequest llmRequest =
+        LlmRequest.builder()
+            .contents(List.of(Content.fromParts(Part.fromText("Look it up"))))
+            .tools(Map.of("lookup", tool))
+            .build();
+
+    langChain4j.generateContent(llmRequest, false).blockingFirst();
+
+    final ArgumentCaptor<ChatRequest> requestCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+    verify(chatModel).chat(requestCaptor.capture());
+    return requestCaptor.getValue().toolSpecifications().get(0).parameters();
+  }
+
+  @Test
+  @DisplayName("Should convert free-form schemas in tool parameters")
+  void testGenerateContentWithFreeFormToolParameters() {
+    // Given
+    final ChatResponse chatResponse = mock(ChatResponse.class);
+    when(chatResponse.aiMessage()).thenReturn(AiMessage.from("Done"));
+    when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+
+    // When
+    final LlmResponse response =
+        langChain4j.generateContent(freeFormSetModelResponseRequest(), false).blockingFirst();
+
+    // Then
+    assertThat(response.content().get().text()).isEqualTo("Done");
+    final ArgumentCaptor<ChatRequest> requestCaptor = ArgumentCaptor.forClass(ChatRequest.class);
+    verify(chatModel).chat(requestCaptor.capture());
+    final Map<String, JsonSchemaElement> properties =
+        requestCaptor.getValue().toolSpecifications().get(0).parameters().properties();
+    final JsonAnyOfSchema extra = (JsonAnyOfSchema) properties.get("extra");
+    assertThat(extra.description()).isEqualTo("Anything");
+    assertThat(extra.anyOf()).hasSize(5);
+    assertThat(((JsonArraySchema) properties.get("tags")).items())
+        .isInstanceOf(JsonAnyOfSchema.class);
+    assertThat(((JsonObjectSchema) properties.get("nested")).properties().get("a"))
+        .isInstanceOf(JsonStringSchema.class);
+  }
+
+  @Test
+  @DisplayName("Should send free-form tool parameters through the Gemini provider")
+  void testGenerateContentWithFreeFormToolParameters_geminiProvider() throws Exception {
+    // Given
+    final AtomicReference<String> requestBody = new AtomicReference<>();
+    final HttpServer server =
+        HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+    server.createContext(
+        "/",
+        exchange -> {
+          requestBody.set(new String(exchange.getRequestBody().readAllBytes(), UTF_8));
+          final byte[] reply =
+              ("{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Done\"}]},"
+                      + "\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,"
+                      + "\"candidatesTokenCount\":1,\"totalTokenCount\":2}}")
+                  .getBytes(UTF_8);
+          exchange.getResponseHeaders().add("Content-Type", "application/json");
+          exchange.sendResponseHeaders(200, reply.length);
+          try (OutputStream body = exchange.getResponseBody()) {
+            body.write(reply);
+          }
+        });
+
+    // When
+    final LlmResponse response;
+    server.start();
+    try {
+      final LangChain4j gemini =
+          LangChain4j.builder()
+              .chatModel(
+                  GoogleAiGeminiChatModel.builder()
+                      .apiKey("test-key")
+                      .modelName("gemini-2.5-flash")
+                      .baseUrl("http://127.0.0.1:" + server.getAddress().getPort())
+                      .maxRetries(0)
+                      .build())
+              .build();
+      response = gemini.generateContent(freeFormSetModelResponseRequest(), false).blockingFirst();
+    } finally {
+      server.stop(0);
+    }
+
+    // Then
+    assertThat(response.content().get().text()).isEqualTo("Done");
+    // LangChain4j 1.12 sends "tools" as one object, later versions as a list of them.
+    final JsonNode tools = new ObjectMapper().readTree(requestBody.get()).path("tools");
+    final JsonNode properties =
+        (tools.isArray() ? tools.path(0) : tools)
+            .at("/functionDeclarations/0/parameters/properties");
+    assertThat(properties.isObject()).isTrue();
+    assertThat(properties.at("/extra/anyOf").size()).isEqualTo(5);
+    assertThat(properties.at("/nested/properties/a/type").asText()).isEqualToIgnoringCase("string");
+    // Gemini rejects an array schema without items.
+    assertThat(
+            properties.findParents("type").stream()
+                .filter(node -> node.get("type").asText().equalsIgnoreCase("array")))
+        .isNotEmpty()
+        .allMatch(node -> node.has("items"));
+  }
+
+  private static LlmRequest freeFormSetModelResponseRequest() {
+    return LlmRequest.builder()
+        .contents(List.of(Content.fromParts(Part.fromText("Answer"))))
+        .tools(Map.of(SetModelResponseTool.NAME, new SetModelResponseTool(FREE_FORM_SCHEMA)))
+        .build();
   }
 
   @Test
