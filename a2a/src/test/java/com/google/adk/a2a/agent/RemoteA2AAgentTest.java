@@ -40,8 +40,10 @@ import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.a2a.client.Client;
@@ -650,6 +652,103 @@ public final class RemoteA2AAgentTest {
     assertThat(((TextPart) message.getParts().get(1)).getText()).isEqualTo("For context:");
     assertThat(((TextPart) message.getParts().get(2)).getText()).isEqualTo("[model] said: hi");
     assertThat(((TextPart) message.getParts().get(3)).getText()).isEqualTo("how are you?");
+  }
+
+  @Test
+  public void runAsync_answeringRemoteCall_sendsAnswerInItsTask() {
+    // Recorded under the keys ResponseConverter writes.
+    Message message =
+        sendAnswerToRemoteCall(
+            ImmutableList.of(
+                CustomMetadata.builder().key("a2a:task_id").stringValue("task-1").build(),
+                CustomMetadata.builder().key("a2a:context_id").stringValue("context-1").build()));
+
+    assertThat(message.getTaskId()).isEqualTo("task-1");
+    assertThat(message.getContextId()).isEqualTo("context-1");
+    DataPart answer = (DataPart) Iterables.getOnlyElement(message.getParts());
+    assertThat(answer.getMetadata()).containsEntry("adk_type", "function_response");
+    assertThat(answer.getData()).containsEntry("id", "call-1");
+  }
+
+  @Test
+  public void runAsync_answeringRemoteCallWithoutIds_sendsNoIds() {
+    Message message = sendAnswerToRemoteCall(ImmutableList.of());
+
+    assertThat(message.getTaskId()).isNull();
+    assertThat(message.getContextId()).isNull();
+  }
+
+  /**
+   * Runs the agent on a session where the user answers a remote call recorded with {@code
+   * callMetadata}, and returns the message sent.
+   */
+  @SuppressWarnings("unchecked") // cast for Mockito
+  private Message sendAnswerToRemoteCall(ImmutableList<CustomMetadata> callMetadata) {
+    RemoteA2AAgent agent = createAgent();
+    Session session =
+        Session.builder("session-4")
+            .appName("demo")
+            .userId("user")
+            .events(
+                ImmutableList.of(
+                    Event.builder()
+                        .id("e1")
+                        .author("remote-agent")
+                        .content(
+                            Content.builder()
+                                .role("model")
+                                .parts(
+                                    ImmutableList.of(
+                                        Part.builder()
+                                            .functionCall(
+                                                FunctionCall.builder()
+                                                    .name("fn")
+                                                    .id("call-1")
+                                                    .build())
+                                            // As converted from the remote's function-call part.
+                                            .partMetadata(
+                                                ImmutableMap.of("adk_type", "function_call"))
+                                            .build()))
+                                .build())
+                        .customMetadata(callMetadata)
+                        .build(),
+                    Event.builder()
+                        .id("e2")
+                        .author("user")
+                        .content(
+                            Content.builder()
+                                .role("user")
+                                .parts(
+                                    ImmutableList.of(
+                                        Part.builder()
+                                            .functionResponse(
+                                                FunctionResponse.builder()
+                                                    .name("fn")
+                                                    .id("call-1")
+                                                    .response(ImmutableMap.of("result", "ok"))
+                                                    .build())
+                                            .build()))
+                                .build())
+                        .build()))
+            .build();
+    InvocationContext context =
+        InvocationContext.builder()
+            .sessionService(new InMemorySessionService())
+            .artifactService(new InMemoryArtifactService())
+            .pluginManager(new PluginManager())
+            .invocationId("invocation-4")
+            .agent(new TestAgent())
+            .session(session)
+            .runConfig(RunConfig.builder().build())
+            .build();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("ok"), agentCard));
+
+    var unused = agent.runAsync(context).toList().blockingGet();
+
+    ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+    verify(mockClient)
+        .sendMessage(messageCaptor.capture(), any(List.class), any(Consumer.class), any());
+    return messageCaptor.getValue();
   }
 
   @Test
