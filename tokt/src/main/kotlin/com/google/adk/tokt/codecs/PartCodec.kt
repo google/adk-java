@@ -237,7 +237,8 @@ internal object PartCodec {
     return builder.build()
   }
 
-  private fun blobToJava(blob: KtBlob): GenaiBlob {
+  /** Returns the genai [GenaiBlob] view of the Kotlin [blob]. */
+  fun blobToJava(blob: KtBlob): GenaiBlob {
     val builder = GenaiBlob.builder()
     blob.data?.let { builder.data(it) }
     blob.mimeType?.let { builder.mimeType(it) }
