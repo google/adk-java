@@ -32,7 +32,8 @@ public final class FunctionNodes {
 
   /**
    * Returns a node named {@code name} that runs {@code body} on each input read as {@code
-   * inputType} and writes its {@code outputType} output in JSON form.
+   * inputType} and writes its {@code outputType} output in JSON form. The body may send events
+   * first with {@link com.google.adk.agents.Context#emit}.
    *
    * @throws WorkflowConfigurationException if Jackson cannot read and write {@code inputType} or
    *     write {@code outputType}, or if a port type has no single concrete JSON shape; a field type
@@ -68,6 +69,46 @@ public final class FunctionNodes {
       Class<O> outputType,
       NodeBody<? super I, ? extends O> body) {
     return node(name, PortCodec.javaType(inputType), PortCodec.javaType(outputType), body);
+  }
+
+  /**
+   * Returns a node named {@code name} whose {@code body} returns a {@code Flowable}, for a body
+   * that sends several items or runs asynchronously.
+   *
+   * @throws WorkflowConfigurationException as {@link #of} does
+   */
+  public static <I, O> FunctionNode<I, O> ofFlowable(
+      String name, Class<I> inputType, Class<O> outputType, FlowableNodeBody<? super I> body) {
+    return flowableNode(name, PortCodec.javaType(inputType), PortCodec.javaType(outputType), body);
+  }
+
+  /** Like {@link #ofFlowable(String, Class, Class, FlowableNodeBody)}, for generic port types. */
+  public static <I, O> FunctionNode<I, O> ofFlowable(
+      String name,
+      TypeReference<I> inputType,
+      TypeReference<O> outputType,
+      FlowableNodeBody<? super I> body) {
+    return flowableNode(name, PortCodec.javaType(inputType), PortCodec.javaType(outputType), body);
+  }
+
+  /**
+   * Like {@link #ofFlowable(String, Class, Class, FlowableNodeBody)}, for a generic output type.
+   */
+  public static <I, O> FunctionNode<I, O> ofFlowable(
+      String name,
+      Class<I> inputType,
+      TypeReference<O> outputType,
+      FlowableNodeBody<? super I> body) {
+    return flowableNode(name, PortCodec.javaType(inputType), PortCodec.javaType(outputType), body);
+  }
+
+  /** Like {@link #ofFlowable(String, Class, Class, FlowableNodeBody)}, for a generic input type. */
+  public static <I, O> FunctionNode<I, O> ofFlowable(
+      String name,
+      TypeReference<I> inputType,
+      Class<O> outputType,
+      FlowableNodeBody<? super I> body) {
+    return flowableNode(name, PortCodec.javaType(inputType), PortCodec.javaType(outputType), body);
   }
 
   /**
@@ -109,6 +150,14 @@ public final class FunctionNodes {
     return FunctionNodes.<I, O>builder(inputType, outputType, "node '" + name + "'")
         .name(name)
         .body(body)
+        .build();
+  }
+
+  private static <I, O> FunctionNode<I, O> flowableNode(
+      String name, JavaType inputType, JavaType outputType, FlowableNodeBody<? super I> body) {
+    return FunctionNodes.<I, O>builder(inputType, outputType, "node '" + name + "'")
+        .name(name)
+        .flowableBody(body)
         .build();
   }
 

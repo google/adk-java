@@ -152,6 +152,16 @@ final class ResumeScan {
     }
     if (!recovered.interruptIds.isEmpty() && !node.rerunOnResume()) {
       Object answers = resolved.size() == 1 ? resolved.values().iterator().next() : resolved;
+      if (node instanceof FunctionNode<?, ?> functionNode) {
+        // Text that reads as JSON stays text for a String output, then O checks the answer.
+        Schema outputSchema = node.outputSchema().orElse(null);
+        if (resolved.size() == 1 && outputSchema != null && acceptsString(outputSchema)) {
+          answers =
+              unwrapAnswer(
+                  outputSchema, recovered.rawAnswers.get(resolved.keySet().iterator().next()));
+        }
+        answers = functionNode.answerAsOutput(answers, resolved.keySet());
+      }
       return Interception.replay(answers, /* route= */ null, branch, /* transferToAgent= */ null);
     }
     // A rerun node that finished without an output stays done, so its side effects don't repeat.
@@ -383,6 +393,8 @@ final class ResumeScan {
     @Nullable String transferToAgent;
     final Set<String> interruptIds = new LinkedHashSet<>();
     final Map<String, @Nullable Object> resolvedResponses = new LinkedHashMap<>();
+    // The answers as the user sent them, before they were unwrapped; keyed as resolvedResponses.
+    final Map<String, @Nullable Object> rawAnswers = new HashMap<>();
 
     /** Whether the node's last direct event, since its last answer, shows that it finished. */
     boolean finishedAfterResume;
@@ -393,10 +405,11 @@ final class ResumeScan {
     }
 
     /** Records {@code answer}; what the node emitted before it asked is not its result. */
-    void recordAnswer(String interruptId, @Nullable Object answer) {
+    void recordAnswer(String interruptId, @Nullable Object answer, @Nullable Object rawAnswer) {
       output = null;
       finishedAfterResume = false;
       resolvedResponses.put(interruptId, answer);
+      rawAnswers.put(interruptId, rawAnswer);
     }
   }
 
@@ -536,8 +549,9 @@ final class ResumeScan {
         if (targets.isEmpty()) {
           continue;
         }
-        Object answer = validateAnswer(schemas.get(id), response.response().orElse(null), id);
-        targets.forEach((interruptId, node) -> node.recordAnswer(interruptId, answer));
+        Object rawAnswer = response.response().orElse(null);
+        Object answer = validateAnswer(schemas.get(id), rawAnswer, id);
+        targets.forEach((interruptId, node) -> node.recordAnswer(interruptId, answer, rawAnswer));
       }
     }
 
@@ -638,6 +652,7 @@ final class ResumeScan {
       for (String id : raised) {
         // An interrupt raised again waits for a new answer, as in Python.
         node.resolvedResponses.remove(id);
+        node.rawAnswers.remove(id);
         node.interruptIds.add(id);
         interruptOwner.put(id, node);
       }

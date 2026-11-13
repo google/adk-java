@@ -22,9 +22,12 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The body of a {@link FunctionNode}, which takes the node run's context and its single input; the
- * input may be shared with other nodes, so the body must not mutate it. It runs on the {@code
- * Runner}'s scheduler, so it may block, and a small fixed-size scheduler can deadlock bodies that
- * wait for one another.
+ * input may be shared with other nodes, so the body must not mutate it. It runs on the node's
+ * scheduler ({@link FunctionNode.Builder#scheduler}, {@code Schedulers.io()} by default), so it may
+ * block; a scheduler set there needs a free thread for every body that waits, and an inline or
+ * small fixed-size one can hang the run. Canceling the node interrupts the body's thread and drops
+ * its result; a body that ignores the interrupt keeps its thread until it returns, and a retry can
+ * overlap it.
  */
 @Experimental
 @FunctionalInterface
@@ -34,7 +37,8 @@ public interface NodeBody<I, O> {
    * Returns {@code null} for no output, an {@code Event} to send with any output in JSON form, or
    * the output, which is sent in its JSON form; a returned {@code Content} is the output, not a
    * message. {@code input} is null when the predecessor sent no output or the port is {@code Void};
-   * a primitive port fails with {@link NodeInputValidationException} instead.
+   * a primitive port fails with {@link NodeInputValidationException} instead. A body that asks for
+   * input is a {@link FlowableNodeBody} that emits a {@code RequestInput}.
    */
   @Nullable O apply(Context context, @Nullable I input) throws Exception;
 }
