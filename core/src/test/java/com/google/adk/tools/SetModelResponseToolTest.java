@@ -152,6 +152,25 @@ public final class SetModelResponseToolTest {
   }
 
   @Test
+  public void runAsync_requiredUntypedNull_keepsTheNull() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(ImmutableMap.of("extra", Schema.builder().build()))
+            .required(ImmutableList.of("extra"))
+            .build();
+    Map<String, Object> args = new LinkedHashMap<>();
+    args.put("extra", null);
+
+    ToolContext toolContext = createToolContext();
+    Map<String, Object> result =
+        new SetModelResponseTool(outputSchema).runAsync(args, toolContext).blockingGet();
+
+    assertThat(result).isEqualTo(args);
+    assertThat(toolContext.actions().setModelResponse()).hasValue(args);
+  }
+
+  @Test
   public void runAsync_requiredAndOptionalNullableNulls_keepsOnlyTheRequiredOne() {
     Schema outputSchema =
         Schema.builder()

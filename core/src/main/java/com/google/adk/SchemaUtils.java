@@ -41,11 +41,17 @@ public final class SchemaUtils {
    */
   @SuppressWarnings("unchecked") // For tool parameter type casting.
   private static Boolean matchType(Object value, Schema schema, Boolean isInput) {
+    // A schema with no type and no properties accepts any value, and null unless nullable=false.
+    boolean freeForm = schema.type().isEmpty() && schema.properties().isEmpty();
     if (value == null) {
-      return schema.nullable().orElse(false);
+      return schema.nullable().orElse(freeForm);
+    }
+    if (freeForm) {
+      return true;
     }
     // Based on types from https://cloud.google.com/vertex-ai/docs/reference/rest/v1/Schema
-    Type.Known type = schema.type().get().knownEnum();
+    // An untyped schema with properties describes an object.
+    Type.Known type = schema.type().map(Type::knownEnum).orElse(Type.Known.OBJECT);
     switch (type) {
       case STRING:
         return value instanceof String;
@@ -57,6 +63,9 @@ public final class SchemaUtils {
         return value instanceof Number;
       case ARRAY:
         if (value instanceof List) {
+          if (schema.items().isEmpty()) {
+            return true;
+          }
           for (Object element : (List<?>) value) {
             if (!matchType(element, schema.items().get(), isInput)) {
               return false;
@@ -91,29 +100,14 @@ public final class SchemaUtils {
    */
   public static void validateMapOnSchema(Map<String, Object> args, Schema schema, Boolean isInput) {
     Preconditions.checkNotNull(isInput, "IsInput cannot be null");
-    Map<String, Schema> properties = schema.properties().get();
-    for (Entry<String, Object> arg : args.entrySet()) {
-      // Check if the argument is in the schema.
-      if (!properties.containsKey(arg.getKey())) {
-        if (isInput) {
-          throw new IllegalArgumentException(
-              "Input arg: " + arg.getKey() + " does not match agent input schema: " + schema);
-        } else {
-          throw new IllegalArgumentException(
-              "Output arg: " + arg.getKey() + " does not match agent output schema: " + schema);
-        }
-      }
-      // Check if the argument type matches the schema type.
-      if (!matchType(arg.getValue(), properties.get(arg.getKey()), isInput)) {
-        if (isInput) {
-          throw new IllegalArgumentException(
-              "Input arg: " + arg.getKey() + " does not match agent input schema: " + schema);
-        } else {
-          throw new IllegalArgumentException(
-              "Output arg: " + arg.getKey() + " does not match agent output schema: " + schema);
-        }
-      }
+    if (schema.type().map(Type::knownEnum).orElse(Type.Known.OBJECT) != Type.Known.OBJECT) {
+      throw new IllegalArgumentException(
+          (isInput ? "Input" : "Output") + " schema does not describe an object: " + schema);
     }
+    // A schema without properties leaves the keys open, as for a free-form map.
+    schema
+        .properties()
+        .ifPresent(properties -> validateProperties(args, properties, schema, isInput));
     // Check if all required arguments are present.
     if (schema.required().isPresent()) {
       for (String required : schema.required().get()) {
@@ -124,6 +118,20 @@ public final class SchemaUtils {
             throw new IllegalArgumentException("Output args does not contain required " + required);
           }
         }
+      }
+    }
+  }
+
+  /** Checks that every key in {@code args} is one of {@code properties} and matches its schema. */
+  private static void validateProperties(
+      Map<String, Object> args, Map<String, Schema> properties, Schema schema, boolean isInput) {
+    for (Entry<String, Object> arg : args.entrySet()) {
+      if (!properties.containsKey(arg.getKey())
+          || !matchType(arg.getValue(), properties.get(arg.getKey()), isInput)) {
+        throw new IllegalArgumentException(
+            isInput
+                ? "Input arg: " + arg.getKey() + " does not match agent input schema: " + schema
+                : "Output arg: " + arg.getKey() + " does not match agent output schema: " + schema);
       }
     }
   }
