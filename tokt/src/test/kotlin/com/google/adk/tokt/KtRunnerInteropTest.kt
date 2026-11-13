@@ -65,17 +65,22 @@ import com.google.adk.kt.sessions.SessionService as KtSessionService
 import com.google.adk.kt.sessions.State as KtState
 import com.google.adk.kt.tools.BaseTool as KtBaseTool
 import com.google.adk.kt.tools.ToolContext as KtToolContext
+import com.google.adk.kt.types.ActivityHandling as KtActivityHandling
 import com.google.adk.kt.types.AudioTranscriptionConfig as KtAudioTranscriptionConfig
 import com.google.adk.kt.types.AudioTranscriptionConfigMode as KtAudioTranscriptionConfigMode
+import com.google.adk.kt.types.AutomaticActivityDetection as KtAutomaticActivityDetection
 import com.google.adk.kt.types.Blob as KtBlob
 import com.google.adk.kt.types.Citation as KtCitation
 import com.google.adk.kt.types.CitationMetadata as KtCitationMetadata
 import com.google.adk.kt.types.Content as KtContent
+import com.google.adk.kt.types.ContextWindowCompressionConfig as KtContextWindowCompressionConfig
+import com.google.adk.kt.types.EndSensitivity as KtEndSensitivity
 import com.google.adk.kt.types.FileData as KtFileData
 import com.google.adk.kt.types.FinishReason as KtFinishReason
 import com.google.adk.kt.types.FunctionCall as KtFunctionCall
 import com.google.adk.kt.types.FunctionCallingConfig as KtFunctionCallingConfig
 import com.google.adk.kt.types.FunctionCallingConfigMode as KtFunctionCallingConfigMode
+import com.google.adk.kt.types.FunctionDeclaration as KtFunctionDeclaration
 import com.google.adk.kt.types.FunctionResponse as KtFunctionResponse
 import com.google.adk.kt.types.GenerateContentConfig as KtConfig
 import com.google.adk.kt.types.GenerationConfigRoutingConfig as KtRoutingConfig
@@ -87,6 +92,7 @@ import com.google.adk.kt.types.HarmBlockMethod as KtHarmBlockMethod
 import com.google.adk.kt.types.HarmBlockThreshold as KtHarmBlockThreshold
 import com.google.adk.kt.types.HarmCategory as KtHarmCategory
 import com.google.adk.kt.types.InteractionStatus as KtInteractionStatus
+import com.google.adk.kt.types.LiveConnectConfig as KtLiveConnectConfig
 import com.google.adk.kt.types.LiveServerGoAway as KtLiveServerGoAway
 import com.google.adk.kt.types.LiveServerSessionResumptionUpdate as KtLiveServerSessionResumptionUpdate
 import com.google.adk.kt.types.LogprobsResult as KtLogprobsResult
@@ -96,19 +102,26 @@ import com.google.adk.kt.types.MultiSpeakerVoiceConfig as KtMultiSpeakerVoiceCon
 import com.google.adk.kt.types.Part as KtPart
 import com.google.adk.kt.types.PartialArgValue as KtPartialArgValue
 import com.google.adk.kt.types.PrebuiltVoiceConfig as KtPrebuiltVoiceConfig
+import com.google.adk.kt.types.ProactivityConfig as KtProactivityConfig
+import com.google.adk.kt.types.RealtimeInputConfig as KtRealtimeInputConfig
 import com.google.adk.kt.types.ReplicatedVoiceConfig as KtReplicatedVoiceConfig
 import com.google.adk.kt.types.Retrieval as KtRetrieval
 import com.google.adk.kt.types.SafetySetting as KtSafetySetting
 import com.google.adk.kt.types.Schema as KtSchema
 import com.google.adk.kt.types.ServiceTier as KtServiceTier
+import com.google.adk.kt.types.SessionResumptionConfig as KtSessionResumptionConfig
+import com.google.adk.kt.types.SlidingWindow as KtSlidingWindow
 import com.google.adk.kt.types.SpeakerVoiceConfig as KtSpeakerVoiceConfig
 import com.google.adk.kt.types.SpeechConfig as KtSpeechConfig
+import com.google.adk.kt.types.StartSensitivity as KtStartSensitivity
 import com.google.adk.kt.types.ThinkingConfig as KtThinkingConfig
 import com.google.adk.kt.types.ThinkingLevel as KtThinkingLevel
 import com.google.adk.kt.types.Tool as KtTool
 import com.google.adk.kt.types.ToolConfig as KtToolConfig
 import com.google.adk.kt.types.Transcription as KtTranscription
+import com.google.adk.kt.types.TranslationConfig as KtTranslationConfig
 import com.google.adk.kt.types.TurnCompleteReason as KtTurnCompleteReason
+import com.google.adk.kt.types.TurnCoverage as KtTurnCoverage
 import com.google.adk.kt.types.Type as KtType
 import com.google.adk.kt.types.UrlContext as KtUrlContext
 import com.google.adk.kt.types.UsageMetadata as KtUsageMetadata
@@ -151,6 +164,8 @@ import com.google.adk.tokt.codecs.GenerateContentConfigCodec
 import com.google.adk.tokt.codecs.GroundingMetadataCodec
 import com.google.adk.tokt.codecs.KtBackedEventsMutableView
 import com.google.adk.tokt.codecs.KtEventActionsToJavaView
+import com.google.adk.tokt.codecs.LiveConnectConfigCodec
+import com.google.adk.tokt.codecs.LlmRequestCodec
 import com.google.adk.tokt.codecs.LlmResponseCodec
 import com.google.adk.tokt.codecs.PartCodec
 import com.google.adk.tokt.codecs.RunConfigCodec
@@ -175,13 +190,17 @@ import com.google.adk.workflow.NodeInfo as JavaNodeInfo
 import com.google.adk.workflow.Route as JavaRoute
 import com.google.common.truth.Truth.assertThat
 import com.google.errorprone.annotations.CanIgnoreReturnValue
+import com.google.genai.types.ActivityHandling as GenaiActivityHandling
 import com.google.genai.types.AudioTranscriptionConfig as GenaiAudioTranscriptionConfig
 import com.google.genai.types.AudioTranscriptionConfigMode as GenaiAudioTranscriptionConfigMode
+import com.google.genai.types.AutomaticActivityDetection as GenaiAutomaticActivityDetection
 import com.google.genai.types.AvatarConfig as GenaiAvatarConfig
 import com.google.genai.types.Blob as GenaiBlob
 import com.google.genai.types.CodeExecutionResult as GenaiCodeExecutionResult
 import com.google.genai.types.Content as GenaiContent
+import com.google.genai.types.ContextWindowCompressionConfig as GenaiContextWindowCompressionConfig
 import com.google.genai.types.CustomMetadata as GenaiCustomMetadata
+import com.google.genai.types.EndSensitivity as GenaiEndSensitivity
 import com.google.genai.types.ExecutableCode as GenaiExecutableCode
 import com.google.genai.types.FinishReason as GenaiFinishReason
 import com.google.genai.types.FunctionCall as GenaiFunctionCall
@@ -196,9 +215,13 @@ import com.google.genai.types.GroundingChunkRetrievedContext as GenaiGroundingCh
 import com.google.genai.types.GroundingChunkWeb as GenaiGroundingChunkWeb
 import com.google.genai.types.GroundingMetadata as GenaiGroundingMetadata
 import com.google.genai.types.GroundingSupport as GenaiGroundingSupport
+import com.google.genai.types.HarmBlockThreshold as GenaiHarmBlockThreshold
+import com.google.genai.types.HarmCategory as GenaiHarmCategory
 import com.google.genai.types.LanguageAuto as GenaiLanguageAuto
 import com.google.genai.types.LanguageHints as GenaiLanguageHints
+import com.google.genai.types.LiveConnectConfig as GenaiLiveConnectConfig
 import com.google.genai.types.MediaModality as GenaiMediaModality
+import com.google.genai.types.MediaResolution as GenaiMediaResolution
 import com.google.genai.types.Modality as GenaiModality
 import com.google.genai.types.ModalityTokenCount as GenaiModalityTokenCount
 import com.google.genai.types.MultiSpeakerVoiceConfig as GenaiMultiSpeakerVoiceConfig
@@ -206,18 +229,28 @@ import com.google.genai.types.Part as GenaiPart
 import com.google.genai.types.PartMediaResolution as GenaiPartMediaResolution
 import com.google.genai.types.PartialArg as GenaiPartialArg
 import com.google.genai.types.PrebuiltVoiceConfig as GenaiPrebuiltVoiceConfig
+import com.google.genai.types.ProactivityConfig as GenaiProactivityConfig
+import com.google.genai.types.RealtimeInputConfig as GenaiRealtimeInputConfig
 import com.google.genai.types.ReplicatedVoiceConfig as GenaiReplicatedVoiceConfig
 import com.google.genai.types.RetrievalMetadata as GenaiRetrievalMetadata
+import com.google.genai.types.SafetySetting as GenaiSafetySetting
 import com.google.genai.types.Schema as GenaiSchema
 import com.google.genai.types.SearchEntryPoint as GenaiSearchEntryPoint
 import com.google.genai.types.Segment as GenaiSegment
+import com.google.genai.types.SessionResumptionConfig as GenaiSessionResumptionConfig
+import com.google.genai.types.SlidingWindow as GenaiSlidingWindow
 import com.google.genai.types.SpeakerVoiceConfig as GenaiSpeakerVoiceConfig
 import com.google.genai.types.SpeechConfig as GenaiSpeechConfig
+import com.google.genai.types.StartSensitivity as GenaiStartSensitivity
+import com.google.genai.types.ThinkingConfig as GenaiThinkingConfig
+import com.google.genai.types.Tool as GenaiTool
 import com.google.genai.types.ToolCall as GenaiToolCall
 import com.google.genai.types.ToolConfig as GenaiToolConfig
 import com.google.genai.types.ToolResponse as GenaiToolResponse
 import com.google.genai.types.TrafficType as GenaiTrafficType
 import com.google.genai.types.Transcription as GenaiTranscription
+import com.google.genai.types.TranslationConfig as GenaiTranslationConfig
+import com.google.genai.types.TurnCoverage as GenaiTurnCoverage
 import com.google.genai.types.VideoMetadata as GenaiVideoMetadata
 import com.google.genai.types.VoiceConfig as GenaiVoiceConfig
 import com.google.genai.types.VoiceConsentSignature as GenaiVoiceConsentSignature
@@ -6958,6 +6991,245 @@ class KtRunnerInteropTest {
     assertEquals<Map<String, Any?>?>(mapOf("k" to "v"), kt.customMetadata)
   }
 
+  @Test
+  fun toJavaLive_foldsTheAgentConfigIntoTheLiveConfig() {
+    // A Java model reads only the live config, so the agent's settings are folded into it.
+    val both =
+      LlmRequestCodec.toJavaLive(
+          KtLlmRequest(config = foldAgentConfig(), liveConnectConfig = foldLiveConfig())
+        )
+        .liveConnectConfig()
+    val agentOnly =
+      LlmRequestCodec.toJavaLive(KtLlmRequest(config = foldAgentConfig())).liveConnectConfig()
+
+    assertEquals(
+      mapOf(
+        "instruction" to "agent",
+        "tool" to "agent",
+        "thinkingBudget" to 16,
+        "safety" to GenaiHarmCategory.Known.HARM_CATEGORY_HATE_SPEECH,
+      ),
+      both.foldedFields(),
+    )
+    assertEquals(
+      mapOf(
+        "instruction" to "agent",
+        "tool" to "agent",
+        "thinkingBudget" to 16,
+        "safety" to GenaiHarmCategory.Known.HARM_CATEGORY_HARASSMENT,
+      ),
+      agentOnly.foldedFields(),
+    )
+    assertEquals(Optional.of("system"), agentOnly.systemInstruction().get().role())
+    // A live-only setting passes through untouched.
+    assertEquals(
+      listOf(GenaiModality.Known.TEXT),
+      both.responseModalities().get().map { it.knownEnum() },
+    )
+  }
+
+  @Test
+  fun toJavaLive_withoutAModality_asksTheJavaModelForAudio() {
+    // Kotlin's live config means audio when it sets no modality; Java's would open as text.
+    fun sentModalities(modalities: List<KtModality>?) =
+      LlmRequestCodec.toJavaLive(
+          KtLlmRequest(liveConnectConfig = KtLiveConnectConfig(responseModalities = modalities))
+        )
+        .liveConnectConfig()
+        .responseModalities()
+        .getOrNull()
+        ?.map { it.knownEnum() }
+
+    assertEquals(listOf(GenaiModality.Known.AUDIO), sentModalities(null))
+    assertEquals(listOf(GenaiModality.Known.AUDIO), sentModalities(emptyList()))
+    assertEquals(listOf(GenaiModality.Known.TEXT), sentModalities(listOf(KtModality.TEXT)))
+  }
+
+  @Test
+  fun toJavaLive_withoutAgentInstructionOrTools_dropsTheLiveConfigsOwn() {
+    // The agent's instruction and tools replace the live config's, even when unset.
+    val liveInstruction = KtContent(role = "system", parts = listOf(KtPart(text = "from live")))
+    val liveTools = listOf(KtTool(functionDeclarations = listOf(KtFunctionDeclaration("f", "d"))))
+
+    val config =
+      LlmRequestCodec.toJavaLive(
+          KtLlmRequest(
+            liveConnectConfig =
+              KtLiveConnectConfig(
+                systemInstruction = liveInstruction,
+                tools = liveTools,
+                thinkingConfig = KtThinkingConfig(thinkingBudget = 26),
+              )
+          )
+        )
+        .liveConnectConfig()
+
+    assertFalse(config.systemInstruction().isPresent, "no instruction should be sent")
+    assertTrue(config.tools().getOrNull().isNullOrEmpty(), "the live config's tools stay out")
+    // Thinking is not replaced: the live config's own stays when the agent sets none.
+    assertEquals(26, config.thinkingConfig().get().thinkingBudget().get())
+  }
+
+  @Test
+  fun liveConnectConfigCodec_carriesEveryKotlinField() {
+    val tools = listOf(KtTool(functionDeclarations = listOf(KtFunctionDeclaration("f", "d"))))
+    val thinking = KtThinkingConfig(includeThoughts = true, thinkingBudget = 64)
+    val safety =
+      listOf(
+        KtSafetySetting(
+          category = KtHarmCategory.HARM_CATEGORY_HARASSMENT,
+          threshold = KtHarmBlockThreshold.BLOCK_ONLY_HIGH,
+        )
+      )
+    val kt =
+      KtLiveConnectConfig(
+        responseModalities = listOf(KtModality.TEXT),
+        temperature = 0.3f,
+        topP = 0.9f,
+        topK = 7,
+        maxOutputTokens = 256,
+        mediaResolution = KtMediaResolution.MEDIA_RESOLUTION_LOW,
+        seed = 11,
+        speechConfig = ktSpeechConfig(),
+        thinkingConfig = thinking,
+        enableAffectiveDialog = true,
+        systemInstruction = KtContent(role = "system", parts = listOf(KtPart(text = "be brief"))),
+        tools = tools,
+        sessionResumption = KtSessionResumptionConfig(handle = "h", transparent = true),
+        inputAudioTranscription = ktTranscriptionConfig(),
+        outputAudioTranscription = KtAudioTranscriptionConfig(languageCodes = listOf("en-US")),
+        realtimeInputConfig =
+          KtRealtimeInputConfig(
+            automaticActivityDetection =
+              KtAutomaticActivityDetection(
+                disabled = true,
+                startOfSpeechSensitivity = KtStartSensitivity.START_SENSITIVITY_LOW,
+                endOfSpeechSensitivity = KtEndSensitivity.END_SENSITIVITY_HIGH,
+                prefixPaddingMs = 20,
+                silenceDurationMs = 500,
+              ),
+            activityHandling = KtActivityHandling.NO_INTERRUPTION,
+            turnCoverage = KtTurnCoverage.TURN_INCLUDES_ALL_INPUT,
+          ),
+        contextWindowCompression =
+          KtContextWindowCompressionConfig(
+            triggerTokens = 1000L,
+            slidingWindow = KtSlidingWindow(targetTokens = 500L),
+          ),
+        proactivity = KtProactivityConfig(proactiveAudio = true),
+        safetySettings = safety,
+        explicitVadSignal = true,
+        translationConfig =
+          KtTranslationConfig(targetLanguageCode = "es", echoTargetLanguage = true),
+      )
+    // Kotlin live fields tokt doesn't carry yet, named as strings so this compiles without them.
+    val notCarriedYet = setOf("avatarConfig")
+    // Every Kotlin field is set, and each must reach the Java config under its own name.
+    assertEquals(
+      emptyList(),
+      unsetFieldsOf(kt) - notCarriedYet,
+      "set every Kotlin field so the codec is held to carrying it",
+    )
+    val java = LiveConnectConfigCodec.toJava(kt)
+    val json = java.toJson()
+    val names =
+      KtLiveConnectConfig::class
+        .java
+        .declaredFields
+        .filterNot { Modifier.isStatic(it.modifiers) }
+        .map { it.name } - notCarriedYet
+    assertEquals(emptyList(), names.filterNot { "\"$it\"" in json }, "dropped")
+    val expected =
+      GenaiLiveConnectConfig.builder()
+        .responseModalities(listOf(GenaiModality(GenaiModality.Known.TEXT)))
+        .temperature(0.3f)
+        .topP(0.9f)
+        .topK(7f)
+        .maxOutputTokens(256)
+        .mediaResolution(GenaiMediaResolution(GenaiMediaResolution.Known.MEDIA_RESOLUTION_LOW))
+        .seed(11)
+        .speechConfig(genaiSpeechConfig())
+        .thinkingConfig(
+          GenaiThinkingConfig.builder().includeThoughts(true).thinkingBudget(64).build()
+        )
+        .enableAffectiveDialog(true)
+        .systemInstruction(
+          GenaiContent.builder().role("system").parts(GenaiPart.fromText("be brief")).build()
+        )
+        .tools(
+          listOf(
+            GenaiTool.builder()
+              .functionDeclarations(
+                listOf(GenaiFunctionDeclaration.builder().name("f").description("d").build())
+              )
+              .build()
+          )
+        )
+        .sessionResumption(
+          GenaiSessionResumptionConfig.builder().handle("h").transparent(true).build()
+        )
+        .inputAudioTranscription(genaiTranscriptionConfig())
+        .outputAudioTranscription(
+          GenaiAudioTranscriptionConfig.builder().languageCodes(listOf("en-US")).build()
+        )
+        .realtimeInputConfig(
+          GenaiRealtimeInputConfig.builder()
+            .automaticActivityDetection(
+              GenaiAutomaticActivityDetection.builder()
+                .disabled(true)
+                .startOfSpeechSensitivity(
+                  GenaiStartSensitivity(GenaiStartSensitivity.Known.START_SENSITIVITY_LOW)
+                )
+                .endOfSpeechSensitivity(
+                  GenaiEndSensitivity(GenaiEndSensitivity.Known.END_SENSITIVITY_HIGH)
+                )
+                .prefixPaddingMs(20)
+                .silenceDurationMs(500)
+                .build()
+            )
+            .activityHandling(GenaiActivityHandling(GenaiActivityHandling.Known.NO_INTERRUPTION))
+            .turnCoverage(GenaiTurnCoverage(GenaiTurnCoverage.Known.TURN_INCLUDES_ALL_INPUT))
+            .build()
+        )
+        .contextWindowCompression(
+          GenaiContextWindowCompressionConfig.builder()
+            .triggerTokens(1000L)
+            .slidingWindow(GenaiSlidingWindow.builder().targetTokens(500L).build())
+            .build()
+        )
+        .proactivity(GenaiProactivityConfig.builder().proactiveAudio(true).build())
+        .safetySettings(
+          listOf(
+            GenaiSafetySetting.builder()
+              .category(GenaiHarmCategory(GenaiHarmCategory.Known.HARM_CATEGORY_HARASSMENT))
+              .threshold(GenaiHarmBlockThreshold(GenaiHarmBlockThreshold.Known.BLOCK_ONLY_HIGH))
+              .build()
+          )
+        )
+        .explicitVadSignal(true)
+        .translationConfig(
+          GenaiTranslationConfig.builder().targetLanguageCode("es").echoTargetLanguage(true).build()
+        )
+        .build()
+
+    assertEquals(expected.toJson(), java.toJson())
+  }
+
+  @Test
+  fun liveConnectConfigCodec_sendsAnEmptyTranscriptionAndOmitsANullOne() {
+    val java =
+      LiveConnectConfigCodec.toJava(
+        KtLiveConnectConfig(
+          inputAudioTranscription = KtAudioTranscriptionConfig(),
+          outputAudioTranscription = null,
+        )
+      )
+
+    // An empty config turns transcription on; a null one leaves it off.
+    assertTrue(java.inputAudioTranscription().isPresent, "an empty config should be sent")
+    assertFalse(java.outputAudioTranscription().isPresent, "a null config should be omitted")
+  }
+
   /**
    * A local live model: each user content gets an echoed reply with its output transcription, then
    * a turnComplete. It records its connect requests, what each connection was sent, from which
@@ -7185,6 +7457,46 @@ class KtRunnerInteropTest {
         Thread.sleep(10)
       }
     }
+
+    /** An agent config setting every field the live fold reads, each to its own value. */
+    fun foldAgentConfig() =
+      KtConfig(
+        systemInstruction = KtContent.fromText("user", "agent"),
+        tools = listOf(KtTool(functionDeclarations = listOf(KtFunctionDeclaration("agent", "d")))),
+        thinkingConfig = KtThinkingConfig(thinkingBudget = 16),
+        safetySettings =
+          listOf(
+            KtSafetySetting(
+              category = KtHarmCategory.HARM_CATEGORY_HARASSMENT,
+              threshold = KtHarmBlockThreshold.BLOCK_ONLY_HIGH,
+            )
+          ),
+      )
+
+    /** A live config setting the same fields as [foldAgentConfig], each to another value. */
+    fun foldLiveConfig() =
+      KtLiveConnectConfig(
+        responseModalities = listOf(KtModality.TEXT),
+        systemInstruction = KtContent(role = "system", parts = listOf(KtPart(text = "live"))),
+        tools = listOf(KtTool(functionDeclarations = listOf(KtFunctionDeclaration("live", "d")))),
+        thinkingConfig = KtThinkingConfig(thinkingBudget = 26),
+        safetySettings =
+          listOf(
+            KtSafetySetting(
+              category = KtHarmCategory.HARM_CATEGORY_HATE_SPEECH,
+              threshold = KtHarmBlockThreshold.BLOCK_ONLY_HIGH,
+            )
+          ),
+      )
+
+    /** The value of each field the live fold decides, as the Java model receives it. */
+    fun GenaiLiveConnectConfig.foldedFields(): Map<String, Any> =
+      mapOf(
+        "instruction" to systemInstruction().get().parts().get().single().text().get(),
+        "tool" to tools().get().single().functionDeclarations().get().single().name().get(),
+        "thinkingBudget" to thinkingConfig().get().thinkingBudget().get(),
+        "safety" to safetySettings().get().single().category().get().knownEnum(),
+      )
 
     fun userText(text: String): GenaiContent =
       GenaiContent.builder().role("user").parts(GenaiPart.builder().text(text).build()).build()
