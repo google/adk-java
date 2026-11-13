@@ -29,6 +29,7 @@ import com.google.adk.plugins.Plugin;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
+import com.google.adk.sessions.SessionException;
 import com.google.common.base.Ascii;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -309,15 +310,42 @@ public class AgentExecutor implements io.a2a.server.agentexecution.AgentExecutor
     return runConfig.toBuilder().customMetadata(customMetadata).build();
   }
 
+  /**
+   * Returns the session for this request, creating it on the first turn under the A2A {@code
+   * contextId} so that later turns carrying the same context id see the earlier ones.
+   */
   private Maybe<Session> prepareSession(
       RequestContext ctx, String appName, BaseSessionService service) {
+    String userId = getUserId(ctx);
+    String contextId = ctx.getContextId();
     return service
-        .getSession(appName, getUserId(ctx), ctx.getContextId(), Optional.empty())
-        .switchIfEmpty(
-            Maybe.defer(
-                () -> {
-                  return service.createSession(appName, getUserId(ctx)).toMaybe();
-                }));
+        .getSession(appName, userId, contextId, Optional.empty())
+        .switchIfEmpty(Maybe.defer(() -> createSession(appName, userId, contextId, service)));
+  }
+
+  /**
+   * Creates the session for {@code contextId}, re-reading it when a concurrent first turn created
+   * the same id first.
+   */
+  private static Maybe<Session> createSession(
+      String appName, String userId, String contextId, BaseSessionService service) {
+    return service
+        .createSession(appName, userId, /* state= */ (Map<String, Object>) null, contextId)
+        .onErrorResumeNext(
+            error -> {
+              if (!isSessionAlreadyExists(error)) {
+                return Single.error(error);
+              }
+              return service
+                  .getSession(appName, userId, contextId, Optional.empty())
+                  .switchIfEmpty(Single.error(error));
+            })
+        .toMaybe();
+  }
+
+  private static boolean isSessionAlreadyExists(Throwable error) {
+    return error instanceof SessionException
+        && SessionException.SESSION_ALREADY_EXISTS.equals(error.getMessage());
   }
 
   /**
