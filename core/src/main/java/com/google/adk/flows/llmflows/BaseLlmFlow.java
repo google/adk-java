@@ -64,6 +64,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -493,6 +494,8 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                 .branch(context.branch().orElse(null))
                                 .build();
 
+                        // A reply's chunks share its complete event's id, so a UI can replace them.
+                        AtomicReference<@Nullable String> replyId = new AtomicReference<>();
                         return callLlm(
                                 spanContext,
                                 context,
@@ -500,11 +503,13 @@ public abstract class BaseLlmFlow implements BaseFlow {
                                 mutableEventTemplate)
                             .concatMap(
                                 event -> {
-                                  // Update event ID for the new resulting events
-                                  String oldId = event.id();
-                                  String newId = context.newUuid();
-                                  logger.debug("Resetting event ID from {} to {}", oldId, newId);
-                                  event = event.toBuilder().id(newId).build();
+                                  String id = replyId.get();
+                                  if (id == null) {
+                                    id = context.newUuid();
+                                  }
+                                  replyId.set(event.partial().orElse(false) ? id : null);
+                                  logger.debug("Resetting event ID from {} to {}", event.id(), id);
+                                  event = event.toBuilder().id(id).build();
                                   return followTransfer(event, context, spanContext);
                                 });
                       }));

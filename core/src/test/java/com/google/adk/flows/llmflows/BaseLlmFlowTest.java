@@ -428,6 +428,55 @@ public final class BaseLlmFlowTest {
     assertThat(events.get(0).functionCalls()).hasSize(1);
   }
 
+  @Test
+  public void run_streamedReply_partialsShareTheIdOfTheirCompleteEvent() {
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                LlmResponse.builder()
+                    .content(Content.fromParts(Part.fromText("Hel")))
+                    .partial(true)
+                    .build(),
+                LlmResponse.builder()
+                    .content(Content.fromParts(Part.fromText("lo")))
+                    .partial(true)
+                    .build(),
+                createLlmResponse(Content.fromParts(Part.fromText("Hello")))));
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+
+    List<Event> events =
+        createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(3);
+    assertThat(events.stream().map(Event::id).distinct().count()).isEqualTo(1);
+  }
+
+  @Test
+  public void run_oneCallStreamingTwoReplies_givesEachReplyItsOwnId() {
+    TestLlm testLlm =
+        createTestLlm(
+            Flowable.just(
+                LlmResponse.builder()
+                    .content(Content.fromParts(Part.fromText("A")))
+                    .partial(true)
+                    .build(),
+                createLlmResponse(Content.fromParts(Part.fromText("A"))),
+                LlmResponse.builder()
+                    .content(Content.fromParts(Part.fromText("B")))
+                    .partial(true)
+                    .build(),
+                createLlmResponse(Content.fromParts(Part.fromText("B")))));
+    InvocationContext invocationContext = createInvocationContext(createTestAgent(testLlm));
+
+    List<Event> events =
+        createBaseLlmFlowWithoutProcessors().run(invocationContext).toList().blockingGet();
+
+    assertThat(events).hasSize(4);
+    assertThat(events.get(1).id()).isEqualTo(events.get(0).id());
+    assertThat(events.get(3).id()).isEqualTo(events.get(2).id());
+    assertThat(events.get(2).id()).isNotEqualTo(events.get(0).id());
+  }
+
   // End-to-end: when the Gemini aggregator emits a partial event and a final aggregated event for
   // the same function call, both must share the same function-call ID so consumers can correlate
   // them. Mirrors ADK Python's progressive SSE contract. Simulates the post-aggregator stream (FC
