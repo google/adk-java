@@ -39,6 +39,7 @@ import com.google.adk.kt.agents.LlmAgent as KtLlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig as KtResumabilityConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
+import com.google.adk.kt.agents.ToolExecutionMode as KtToolExecutionMode
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -2037,6 +2038,7 @@ class KtRunnerInteropTest {
           JavaRunConfig.builder()
             .streamingMode(JavaRunConfig.StreamingMode.SSE)
             .maxLlmCalls(7)
+            .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
             .autoCreateSession(true)
             .build(),
         )
@@ -2047,6 +2049,11 @@ class KtRunnerInteropTest {
     val seen = assertNotNull(plugin.seen, "the plugin should have been handed the run config")
     assertEquals(JavaRunConfig.StreamingMode.SSE, seen.streamingMode(), "streamingMode should map")
     assertEquals(7, seen.maxLlmCalls(), "maxLlmCalls should map")
+    assertEquals(
+      JavaRunConfig.ToolExecutionMode.SEQUENTIAL,
+      seen.toolExecutionMode(),
+      "toolExecutionMode should map",
+    )
   }
 
   @Test
@@ -2355,7 +2362,7 @@ class KtRunnerInteropTest {
     val config =
       JavaRunConfig.builder()
         .autoCreateSession(true)
-        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.PARALLEL_SUBSCRIBE)
         .build()
 
     val unused = liveJavaRunner(model).runLive("u", "s", queue, config)
@@ -2369,7 +2376,7 @@ class KtRunnerInteropTest {
     val config =
       JavaRunConfig.builder()
         .autoCreateSession(true)
-        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.PARALLEL_SUBSCRIBE)
         .build()
 
     val events =
@@ -2649,7 +2656,7 @@ class KtRunnerInteropTest {
   fun runConfigFromJavaLive_settingsTheEngineCannotHonor_failNamingThem() {
     val java =
       JavaRunConfig.builder()
-        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.PARALLEL_SUBSCRIBE)
         .avatarConfig(GenaiAvatarConfig.builder().avatarName("a").build())
         .groupFunctionResponsesInHistoryOverride(Optional.of(true))
         .dollarEscapedPlaceholders(true)
@@ -2669,7 +2676,8 @@ class KtRunnerInteropTest {
     val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJavaLive(java) }
 
     assertEquals(
-      "RunConfig settings not supported by the ADK Kotlin engine: [toolExecutionMode, " +
+      "RunConfig settings not supported by the ADK Kotlin engine: " +
+        "[toolExecutionMode=PARALLEL_SUBSCRIBE, " +
         "avatarConfig, groupFunctionResponsesInHistoryOverride, dollarEscapedPlaceholders, " +
         "outputAudioTranscription.languageAuto, outputAudioTranscription.languageHints, " +
         "outputAudioTranscription.adaptationPhrases, outputAudioTranscription.mode, " +
@@ -2701,11 +2709,16 @@ class KtRunnerInteropTest {
   fun runConfigFromJavaLive_carriesTheCallBudgetAndMetadata() {
     val kt =
       RunConfigCodec.fromJavaLive(
-        JavaRunConfig.builder().maxLlmCalls(7).customMetadata(mapOf("k" to "v")).build()
+        JavaRunConfig.builder()
+          .maxLlmCalls(7)
+          .customMetadata(mapOf("k" to "v"))
+          .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+          .build()
       )
 
     assertEquals(7, kt.maxLlmCalls)
     assertEquals<Map<String, Any?>?>(mapOf("k" to "v"), kt.customMetadata)
+    assertEquals(KtToolExecutionMode.SEQUENTIAL, kt.toolExecutionMode)
   }
 
   @Test
@@ -6891,7 +6904,7 @@ class KtRunnerInteropTest {
   fun runConfigFromJava_settingsNoRunCanHonor_failNamingThem() {
     val java =
       JavaRunConfig.builder()
-        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
+        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.PARALLEL_SUBSCRIBE)
         .avatarConfig(GenaiAvatarConfig.builder().avatarName("a").build())
         .groupFunctionResponsesInHistoryOverride(Optional.of(true))
         .dollarEscapedPlaceholders(true)
@@ -6900,7 +6913,8 @@ class KtRunnerInteropTest {
     val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJava(java) }
 
     assertEquals(
-      "RunConfig settings not supported by the ADK Kotlin engine: [toolExecutionMode, " +
+      "RunConfig settings not supported by the ADK Kotlin engine: " +
+        "[toolExecutionMode=PARALLEL_SUBSCRIBE, " +
         "avatarConfig, groupFunctionResponsesInHistoryOverride, dollarEscapedPlaceholders]",
       failure.message,
     )
@@ -6956,6 +6970,33 @@ class KtRunnerInteropTest {
     assertEquals(5, kt.maxLlmCalls)
     assertEquals(KtStreamingMode.SSE, kt.streamingMode)
     assertEquals<Map<String, Any?>?>(mapOf("k" to "v"), kt.customMetadata)
+  }
+
+  @Test
+  fun runConfigFromJava_toolExecutionMode_maps() {
+    fun fromJava(mode: JavaRunConfig.ToolExecutionMode) =
+      RunConfigCodec.fromJava(JavaRunConfig.builder().toolExecutionMode(mode).build())
+        .toolExecutionMode
+
+    assertEquals(
+      KtToolExecutionMode.PARALLEL,
+      fromJava(JavaRunConfig.ToolExecutionMode.NONE),
+      "NONE should default to PARALLEL",
+    )
+    assertEquals(KtToolExecutionMode.PARALLEL, fromJava(JavaRunConfig.ToolExecutionMode.PARALLEL))
+    assertEquals(
+      KtToolExecutionMode.SEQUENTIAL,
+      fromJava(JavaRunConfig.ToolExecutionMode.SEQUENTIAL),
+    )
+  }
+
+  @Test
+  fun runConfigToJava_toolExecutionMode_maps() {
+    fun toJava(mode: KtToolExecutionMode) =
+      RunConfigCodec.toJava(KtRunConfig(toolExecutionMode = mode)).toolExecutionMode()
+
+    assertEquals(JavaRunConfig.ToolExecutionMode.PARALLEL, toJava(KtToolExecutionMode.PARALLEL))
+    assertEquals(JavaRunConfig.ToolExecutionMode.SEQUENTIAL, toJava(KtToolExecutionMode.SEQUENTIAL))
   }
 
   /**

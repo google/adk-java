@@ -20,6 +20,7 @@ import com.google.adk.agents.RunConfig as JavaRunConfig
 import com.google.adk.kt.agents.LiveRunConfig as KtLiveRunConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
+import com.google.adk.kt.agents.ToolExecutionMode as KtToolExecutionMode
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.types.AudioTranscriptionConfig as KtAudioTranscriptionConfig
 import com.google.adk.kt.types.Modality as KtModality
@@ -28,10 +29,10 @@ import com.google.genai.types.Modality as GenaiModality
 /**
  * Converts between the Kotlin `kt.agents.RunConfig` and the ADK Java [JavaRunConfig].
  *
- * Streaming mode, the LLM call budget and custom metadata cross both ways; [toJava] also shows a
- * BIDI run's live settings (modalities, speech, transcriptions), and [fromJavaLive] reads them for
- * a live run. [fromJava] and [fromJavaLive] reject a Java setting the engine cannot honor rather
- * than dropping it silently.
+ * Streaming mode, the LLM call budget, custom metadata and tool execution mode cross both ways;
+ * [toJava] also shows a BIDI run's live settings (modalities, speech, transcriptions), and
+ * [fromJavaLive] reads them for a live run. [fromJava] and [fromJavaLive] reject a Java setting the
+ * engine cannot honor rather than dropping it silently.
  */
 internal object RunConfigCodec {
 
@@ -51,6 +52,12 @@ internal object RunConfigCodec {
         )
         .maxLlmCalls(config.maxLlmCalls)
         .customMetadata(config.customMetadata.orEmpty())
+        .toolExecutionMode(
+          when (config.toolExecutionMode) {
+            KtToolExecutionMode.PARALLEL -> JavaRunConfig.ToolExecutionMode.PARALLEL
+            KtToolExecutionMode.SEQUENTIAL -> JavaRunConfig.ToolExecutionMode.SEQUENTIAL
+          }
+        )
     if (config.streamingMode == KtStreamingMode.BIDI) {
       builder
         // A live run defaults its response modalities to AUDIO.
@@ -88,6 +95,7 @@ internal object RunConfigCodec {
         enumByNameOrNull<KtStreamingMode>(config.streamingMode().name) ?: KtStreamingMode.NONE,
       maxLlmCalls = config.maxLlmCalls(),
       customMetadata = config.customMetadata().takeIf { it.isNotEmpty() },
+      toolExecutionMode = config.toolExecutionMode().toKt(),
     )
   }
 
@@ -133,6 +141,7 @@ internal object RunConfigCodec {
       streamingMode = KtStreamingMode.BIDI,
       maxLlmCalls = config.maxLlmCalls(),
       customMetadata = config.customMetadata().ifEmpty { null },
+      toolExecutionMode = config.toolExecutionMode().toKt(),
       live =
         KtLiveRunConfig(
           responseModalities = responseModalities,
@@ -157,8 +166,9 @@ internal object RunConfigCodec {
   // Reads the deprecated groupFunctionResponsesInHistoryOverride to reject it.
   @Suppress("deprecation")
   private fun MutableList<String>.addUnsupportedByEveryRun(config: JavaRunConfig) {
-    if (config.toolExecutionMode() != JavaRunConfig.ToolExecutionMode.NONE) {
-      add("toolExecutionMode")
+    // The Kotlin engine has no worker-thread subscription mode.
+    if (config.toolExecutionMode() == JavaRunConfig.ToolExecutionMode.PARALLEL_SUBSCRIBE) {
+      add("toolExecutionMode=PARALLEL_SUBSCRIBE")
     }
     if (config.avatarConfig() != null) add("avatarConfig")
     if (config.groupFunctionResponsesInHistoryOverride().isPresent) {
@@ -166,4 +176,14 @@ internal object RunConfigCodec {
     }
     if (config.dollarEscapedPlaceholders()) add("dollarEscapedPlaceholders")
   }
+
+  /** Returns the Kotlin mode for this Java mode, reading NONE as PARALLEL. */
+  private fun JavaRunConfig.ToolExecutionMode.toKt(): KtToolExecutionMode =
+    when (this) {
+      JavaRunConfig.ToolExecutionMode.SEQUENTIAL -> KtToolExecutionMode.SEQUENTIAL
+      JavaRunConfig.ToolExecutionMode.NONE,
+      JavaRunConfig.ToolExecutionMode.PARALLEL -> KtToolExecutionMode.PARALLEL
+      JavaRunConfig.ToolExecutionMode.PARALLEL_SUBSCRIBE ->
+        error("PARALLEL_SUBSCRIBE is rejected before mapping")
+    }
 }
