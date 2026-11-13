@@ -132,22 +132,26 @@ public abstract class BaseNode implements Node {
    */
   final Flowable<Event> run(Context context, @Nullable Object nodeInput) {
     InvocationContext invocationContext = checkNotNull(context).invocationContext();
-    // The node runner fills in the author, as only it knows the node's place in the graph.
     return Flowable.<Object>defer(() -> runNode(context, nodeInput))
-        .map(
-            item -> {
-              if (item instanceof Event event) {
-                return event;
-              }
-              if (item instanceof RequestInput request) {
-                return request.toEvent(invocationContext);
-              }
-              return Event.builder()
-                  .id(invocationContext.newUuid())
-                  .timestamp(invocationContext.now().toEpochMilli())
-                  .author("")
-                  .output(item)
-                  .build();
-            });
+        .map(item -> {
+          if (item instanceof Event event) {
+            return event;
+          }
+          if (item instanceof RequestInput request) {
+            return request.toEvent(invocationContext);
+          }
+          return newEventBuilder(invocationContext).output(item).build();
+        });
+  }
+
+  /**
+   * Returns a builder of an event with a new ID and the current time. The node runner fills in the
+   * author, as only it knows the node's place in the graph.
+   */
+  static Event.Builder newEventBuilder(InvocationContext invocationContext) {
+    return Event.builder()
+        .id(invocationContext.newUuid())
+        .timestamp(invocationContext.now().toEpochMilli())
+        .author("");
   }
 }
