@@ -24,8 +24,9 @@ import org.jspecify.annotations.Nullable;
  * The body of a {@link FunctionNode}, which takes the node run's context and its single input; the
  * input may be shared with other nodes, so the body must not mutate it. It runs on the {@code
  * Runner}'s scheduler, so it may block, and a small fixed-size scheduler can deadlock bodies that
- * wait for one another. Canceling the node interrupts the body's thread and drops its result; a
- * body that ignores the interrupt keeps its thread until it returns, and a retry can overlap it.
+ * wait for one another. Canceling the node interrupts the body's thread and drops its result; only
+ * the node's own timeout waits for the body to return, so a body that ignores the interrupt holds
+ * up the retry and the run.
  */
 @Experimental
 @FunctionalInterface
