@@ -98,6 +98,16 @@ public final class PersistBarrierTest {
   }
 
   @Test
+  public void partialEventsOnly_completesImmediately() {
+    PersistBarrier.enable(context);
+    Event partial = Event.builder().id("e1").author("agent").partial(true).build();
+
+    PersistBarrier.awaitPersisted(context, ImmutableList.of(partial)).test().assertComplete();
+
+    assertThat(PersistBarrier.pendingCount(context)).isEqualTo(0);
+  }
+
+  @Test
   public void multiEventStep_completesOnlyAfterAllMarked() {
     PersistBarrier.enable(context);
 
