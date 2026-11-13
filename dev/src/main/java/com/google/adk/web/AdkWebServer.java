@@ -31,6 +31,7 @@ import com.google.adk.web.config.DevUiAssets;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ObjectArrays;
+import java.time.InstantSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -66,6 +67,12 @@ public class AdkWebServer implements WebMvcConfigurer {
   @Bean
   public BackendUrl backendUrl() {
     return BackendUrl.from(backendUrlProperty);
+  }
+
+  /** Supplies the timestamps the server generates itself, such as that of a run's error event. */
+  @Bean
+  public InstantSource instantSource() {
+    return InstantSource.system();
   }
 
   @Bean
