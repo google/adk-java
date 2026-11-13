@@ -4,6 +4,8 @@
   // formatOnType and formatOnPaste is a very bad idea for slow formatters
   // (such as an external Google Java Format invocation exec), so just on Save:
   "editor.formatOnSave": true,
+  // Format the changed region, not the whole file, as CONTRIBUTING.md asks.
+  "editor.formatOnSaveMode": "modifications",
   "editor.formatOnType": false,
   "editor.formatOnPaste": false,
 
@@ -21,9 +23,8 @@
       "source.addMissingImports": "never"
     }
   },
-  // Keep this version in sync with the same version in pom.xml
   // NB: Changes to this are only taken into account on start-up, so need to restart.
-  "java.format.settings.google.version": "1.27.0",
+  "java.format.settings.google.version": "2.0.0",
   // TODO https://github.com/eclipse-jdtls/eclipse.jdt.ls/issues/3050
   "java.compile.nullAnalysis.mode": "automatic",
   "java.completion.importOrder": ["#", "", "javax", "java"], //# is static
