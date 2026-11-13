@@ -23,7 +23,8 @@ import org.jspecify.annotations.Nullable;
 /**
  * A predicate that decides for each input whether a {@link FunctionNode} run asks the user to
  * approve it, set with {@link FunctionNode.Builder#requireConfirmation(ConfirmationPredicate)}. It
- * runs before the body, and an exception it throws fails the run.
+ * runs before the body on the body's thread. Canceling the node interrupts that thread. An
+ * exception it throws fails the run.
  */
 @Experimental
 @FunctionalInterface

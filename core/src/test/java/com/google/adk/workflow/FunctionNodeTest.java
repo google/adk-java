@@ -122,6 +122,7 @@ public final class FunctionNodeTest {
   private static final String APP = "app";
   private static final String USER = "user";
   private static final String TRANSFER_CONFIRMATION = "wf_tool_confirmation:wf@1/transfer@1";
+  private static final String PARENT_CONFIRMATION = "wf_tool_confirmation:wf@1/parent@1";
   private static final String CHILD_TRANSFER_CONFIRMATION =
       "wf_tool_confirmation:wf@1/parent@1/transfer@1";
   private static final String PAY_CONFIRMATION = "wf_tool_confirmation:wf@1/pay@1";
@@ -149,6 +150,21 @@ public final class FunctionNodeTest {
 
     Constructed {
       instances.incrementAndGet();
+    }
+  }
+
+  /** A record whose construction blocks until interrupted, to cancel a node while it decodes. */
+  record SlowToDecode(String id) {
+    /** Counts down when a construction starts. A test replaces it before each use. */
+    static volatile CountDownLatch decoding = new CountDownLatch(1);
+
+    SlowToDecode {
+      decoding.countDown();
+      try {
+        Thread.sleep(60_000);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 
@@ -1135,6 +1151,86 @@ public final class FunctionNodeTest {
       run.dispose();
 
       assertThat(interrupted.await(10, SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void runDisposed_sleepingConfirmationPredicate_isInterruptedAndTheBodyDoesNotRun()
+      throws InterruptedException {
+    // Arrange: an executor scheduler, which does not interrupt on its own when disposed.
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, String> transfer =
+        transfer(runs)
+            .requireConfirmation((ctx, message) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interrupted.countDown();
+                Thread.currentThread().interrupt();
+              }
+              return false;
+            })
+            .build();
+    ExecutorService executor = Executors.newCachedThreadPool();
+    try {
+      Runner runner = runner(chain(transfer), Schedulers.from(executor));
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run =
+          runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      run.dispose();
+
+      assertThat(interrupted.await(10, SECONDS)).isTrue();
+      executor.shutdown();
+      assertThat(executor.awaitTermination(10, SECONDS)).isTrue();
+      assertThat(runs.get()).isEqualTo(0);
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void runDisposed_whileDecodingTheInput_doesNotStartTheConfirmationPredicate()
+      throws InterruptedException {
+    // Arrange: the cancel lands while the input decodes, before the predicate would start.
+    SlowToDecode.decoding = new CountDownLatch(1);
+    AtomicInteger predicateRuns = new AtomicInteger();
+    AtomicInteger runs = new AtomicInteger();
+    FunctionNode<Content, Object> make =
+        FunctionNodes.of(
+            "make", Content.class, Object.class, (ctx, message) -> ImmutableMap.of("id", "a1"));
+    FunctionNode<SlowToDecode, String> transfer =
+        FunctionNodes.builder(SlowToDecode.class, String.class)
+            .name("transfer")
+            .requireConfirmation((ctx, input) -> {
+              predicateRuns.incrementAndGet();
+              return false;
+            })
+            .body((ctx, input) -> {
+              runs.incrementAndGet();
+              return "sent";
+            })
+            .build();
+    ExecutorService executor = Executors.newCachedThreadPool();
+    try {
+      Runner runner = runner(chain(make, transfer), Schedulers.from(executor));
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run =
+          runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+      assertThat(SlowToDecode.decoding.await(10, SECONDS)).isTrue();
+
+      run.dispose();
+
+      executor.shutdown();
+      assertThat(executor.awaitTermination(10, SECONDS)).isTrue();
+      assertThat(predicateRuns.get()).isEqualTo(0);
+      assertThat(runs.get()).isEqualTo(0);
     } finally {
       executor.shutdownNow();
     }
@@ -3720,6 +3816,22 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void resume_approvedBodyThatReturnsAnEventWithAnOutput_sendsTheOutput() {
+    FunctionNode<Content, Event> transfer =
+        FunctionNodes.builder(Content.class, Event.class)
+            .name("transfer")
+            .requireConfirmation(true)
+            .body((ctx, message) -> Event.builder().output("sent").build())
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(transfer, captureInput("reply")));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(confirmation(TRANSFER_CONFIRMATION, true));
+
+    assertThat(replyInput(events)).isEqualTo("sent");
+  }
+
+  @Test
   public void resume_approvedBodyThatDelegatesItsOutput_writesNoEmptyEventAndIsNotRerun() {
     AtomicInteger runs = new AtomicInteger();
     FunctionNode<Void, String> child =
@@ -3738,8 +3850,7 @@ public final class FunctionNodeTest {
             .build();
     WorkflowSession session = new WorkflowSession(chain(parent, new AskOnce("review", "review")));
     session.advance(go());
-    ImmutableList<Event> confirmed =
-        session.turn(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+    ImmutableList<Event> confirmed = session.turn(confirmation(PARENT_CONFIRMATION, true));
 
     session.advance(requestAnswer("review", ImmutableMap.of("ok", true)));
 
@@ -3780,7 +3891,7 @@ public final class FunctionNodeTest {
             .build();
     WorkflowSession session = new WorkflowSession(chain(parent, new AskOnce("review", "review")));
     session.advance(go());
-    session.advance(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+    session.advance(confirmation(PARENT_CONFIRMATION, true));
 
     session.advance(requestAnswer("review", ImmutableMap.of("ok", true)));
 
@@ -3810,8 +3921,7 @@ public final class FunctionNodeTest {
                 .build());
     session.advance(go());
 
-    ImmutableList<Event> events =
-        session.turn(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+    ImmutableList<Event> events = session.turn(confirmation(PARENT_CONFIRMATION, true));
 
     assertThat(WorkflowResumeTesting.pathsOf(events)).contains("wf@1/reply@1");
   }
@@ -3823,6 +3933,7 @@ public final class FunctionNodeTest {
             new AtomicInteger(),
             Event.builder()
                 .content(Content.fromParts(Part.fromText("approved")))
+                .output("dropped")
                 .actions(
                     EventActions.builder()
                         .stateDelta(new HashMap<>(ImmutableMap.of("my_key", "my_value")))
@@ -3834,8 +3945,7 @@ public final class FunctionNodeTest {
     WorkflowSession session = new WorkflowSession(chain(parent, read));
     session.advance(go());
 
-    ImmutableList<Event> events =
-        session.turn(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+    ImmutableList<Event> events = session.turn(confirmation(PARENT_CONFIRMATION, true));
 
     Event sent =
         events.stream()
@@ -3854,7 +3964,7 @@ public final class FunctionNodeTest {
         delegatingToASilentChild(runs, Event.builder().output("dropped").build());
     WorkflowSession session = new WorkflowSession(chain(parent, new AskOnce("review", "review")));
     session.advance(go());
-    session.advance(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+    session.advance(confirmation(PARENT_CONFIRMATION, true));
 
     session.advance(requestAnswer("review", ImmutableMap.of("ok", true)));
 
@@ -3868,8 +3978,7 @@ public final class FunctionNodeTest {
     WorkflowSession session = new WorkflowSession(chain(parent, captureInput("reply")));
     session.advance(go());
 
-    ImmutableList<Event> events =
-        session.turn(confirmation("wf_tool_confirmation:wf@1/parent@1", true));
+    ImmutableList<Event> events = session.turn(confirmation(PARENT_CONFIRMATION, true));
 
     assertThat(
             events.stream()
@@ -4143,12 +4252,14 @@ public final class FunctionNodeTest {
         derived.toBuilder().requireConfirmation(false).build();
     FunctionNode<Content, String> explicitTrueCopy =
         explicitTrue.toBuilder().requireConfirmation(false).build();
-    FunctionNode.Builder<Content, String> explicitFalseCopy =
-        explicitFalse.toBuilder().requireConfirmation(true);
+    WorkflowConfigurationException explicitFalseCopyError =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            explicitFalse.toBuilder().requireConfirmation(true)::build);
 
     assertThat(derivedCopy.rerunOnResume()).isFalse();
     assertThat(explicitTrueCopy.rerunOnResume()).isTrue();
-    assertThrows(WorkflowConfigurationException.class, explicitFalseCopy::build);
+    assertThat(explicitFalseCopyError).hasMessageThat().contains("rerunOnResume(true)");
   }
 
   @Test

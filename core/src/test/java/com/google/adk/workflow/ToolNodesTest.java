@@ -74,6 +74,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
@@ -398,7 +399,7 @@ public final class ToolNodesTest {
     WorkflowDataException thrown =
         assertThrows(WorkflowDataException.class, () -> run(tool, context, "Rome"));
 
-    assertThat(thrown).hasMessageThat().contains("tool node 'forecast'");
+    assertThat(thrown).hasMessageThat().contains("confirmation request of node 'forecast'");
     assertThat(thrown).hasMessageThat().contains("not a ToolConfirmation");
   }
 
@@ -647,6 +648,45 @@ public final class ToolNodesTest {
     assertThat(replyInput(events))
         .isEqualTo(ImmutableMap.of("error", "This tool call is rejected."));
     assertThat(database.deleted).isEmpty();
+  }
+
+  @Test
+  public void resume_answerWithConfirmedNull_rejectsTheCall() {
+    Database database = new Database();
+    WorkflowSession session = new WorkflowSession(deletionWorkflow(database));
+    session.advance(go());
+    Map<String, @Nullable Object> answer = new HashMap<>();
+    answer.put("confirmed", null);
+
+    ImmutableList<Event> events = session.turn(requestAnswer(DELETION_CONFIRMATION_ID, answer));
+
+    assertThat(replyInput(events))
+        .isEqualTo(ImmutableMap.of("error", "This tool call is rejected."));
+    assertThat(database.deleted).isEmpty();
+  }
+
+  @Test
+  public void resume_answerWithoutAHint_toolSeesAnEmptyHint() {
+    AtomicReference<@Nullable String> hint = new AtomicReference<>();
+    FakeTool tool =
+        FakeTool.running(
+            "transfer",
+            (args, toolContext) -> {
+              if (toolContext.toolConfirmation().isEmpty()) {
+                toolContext.requestConfirmation("Approve the transfer?");
+                return ImmutableMap.of();
+              }
+              hint.set(toolContext.toolConfirmation().get().hint());
+              return ImmutableMap.of("status", "sent");
+            });
+    WorkflowSession session = new WorkflowSession(toolWorkflow(tool, ImmutableMap.of("amount", 5)));
+    session.advance(go());
+
+    ImmutableList<Event> events =
+        session.turn(requestAnswer(TRANSFER_CONFIRMATION_ID, ImmutableMap.of("confirmed", true)));
+
+    assertThat(replyInput(events)).isEqualTo(ImmutableMap.of("status", "sent"));
+    assertThat(hint.get()).isEmpty();
   }
 
   @Test
