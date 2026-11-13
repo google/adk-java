@@ -32,6 +32,8 @@ import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.MaybeEmitter;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -166,7 +168,22 @@ public final class FunctionNode<I, O> extends BaseNode {
   @Override
   public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
     // Maybe.create rather than defer, so that canceling the node reaches the body while it runs.
-    return Maybe.<Object>create(emitter -> runBody(context, nodeInput, emitter))
+    return Maybe.<Object>create(
+            emitter -> {
+              // A timeout fails the node only once the body returns, so a retry cannot overlap it.
+              CompletableSubject returned = CompletableSubject.create();
+              NodeExecutionState state = context.requireNodeState();
+              // A body run under another node's context must not replace that node's signal.
+              if (state.node() == this) {
+                // Not on the body's thread, which may be interrupted, nor the Runner's busy pool.
+                state.markBodyStarted(returned.observeOn(Schedulers.computation()));
+              }
+              try {
+                runBody(context, nodeInput, emitter);
+              } finally {
+                returned.onComplete();
+              }
+            })
         .subscribeOn(context.invocationContext().scheduler())
         .toFlowable();
   }
