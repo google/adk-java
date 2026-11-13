@@ -43,7 +43,11 @@ import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -82,6 +86,17 @@ public class FirestoreSessionService implements BaseSessionService {
   private static final String ID_KEY = Constants.KEY_ID;
   private static final String UPDATE_TIME_KEY = Constants.KEY_UPDATE_TIME;
   private static final String TIMESTAMP_KEY = Constants.KEY_TIMESTAMP;
+
+  /**
+   * Formats stored event timestamps with exactly three fraction digits, so text order is time
+   * order. The field stays text, unlike the timestamp in ADK Python, because Firestore orders
+   * timestamp values before strings, so switching types would misorder existing sessions.
+   */
+  private static final DateTimeFormatter TIMESTAMP_FORMATTER =
+      new DateTimeFormatterBuilder().appendInstant(3).toFormatter();
+
+  /** The latest timestamp an event can have, since {@link Event#timestamp()} is epoch millis. */
+  private static final Instant LATEST_EVENT_TIMESTAMP = Instant.ofEpochMilli(Long.MAX_VALUE);
 
   /** Random token each create stores, so a retried create can detect its own write. */
   static final String CREATE_TOKEN_KEY = "createToken";
@@ -239,10 +254,21 @@ public class FirestoreSessionService implements BaseSessionService {
                   document.getReference().collection(EVENTS_SUBCOLLECTION_NAME);
               Query eventsQuery = eventsCollection.orderBy(TIMESTAMP_KEY);
 
-              if (config.afterTimestamp().isPresent()) {
+              // No event can be at or after a later afterTimestamp, and rounding it up below could
+              // overflow near Instant.MAX.
+              boolean afterLatestEvent =
+                  config
+                      .afterTimestamp()
+                      .filter(t -> t.isAfter(LATEST_EVENT_TIMESTAMP))
+                      .isPresent();
+
+              if (config.afterTimestamp().isPresent() && !afterLatestEvent) {
+                // Round up to whole milliseconds, the precision of stored event timestamps.
+                Instant cursor =
+                    config.afterTimestamp().get().plusNanos(999_999).truncatedTo(ChronoUnit.MILLIS);
                 eventsQuery =
-                    eventsQuery.whereGreaterThan(
-                        TIMESTAMP_KEY, config.afterTimestamp().get().toString());
+                    eventsQuery.whereGreaterThanOrEqualTo(
+                        TIMESTAMP_KEY, TIMESTAMP_FORMATTER.format(cursor));
               }
 
               if (config.numRecentEvents().isPresent()) {
@@ -250,10 +276,12 @@ public class FirestoreSessionService implements BaseSessionService {
               }
 
               ApiFuture<List<QueryDocumentSnapshot>> eventsFuture =
-                  ApiFutures.transform(
-                      eventsQuery.get(),
-                      com.google.cloud.firestore.QuerySnapshot::getDocuments,
-                      MoreExecutors.directExecutor());
+                  afterLatestEvent
+                      ? ApiFutures.immediateFuture(List.of())
+                      : ApiFutures.transform(
+                          eventsQuery.get(),
+                          com.google.cloud.firestore.QuerySnapshot::getDocuments,
+                          MoreExecutors.directExecutor());
 
               return ApiFutureUtils.toSingle(eventsFuture)
                   .map(
@@ -265,6 +293,8 @@ public class FirestoreSessionService implements BaseSessionService {
                             events.add(event);
                           }
                         }
+                        // Events stored before fixed-width timestamps can come back out of order.
+                        events.sort(Comparator.comparingLong(Event::timestamp));
                         return events;
                       })
                   .map(
@@ -426,7 +456,7 @@ public class FirestoreSessionService implements BaseSessionService {
     } else {
       data.put("author", event.author());
     }
-    data.put(TIMESTAMP_KEY, Instant.ofEpochMilli(event.timestamp()).toString());
+    data.put(TIMESTAMP_KEY, TIMESTAMP_FORMATTER.format(Instant.ofEpochMilli(event.timestamp())));
     data.put(APP_NAME_KEY, session.appName()); // Persist appName with the event
 
     Map<String, Object> contentData = new HashMap<>();
@@ -650,6 +680,8 @@ public class FirestoreSessionService implements BaseSessionService {
               events.add(event);
             }
           }
+          // Events stored before fixed-width timestamps can come back out of order.
+          events.sort(Comparator.comparingLong(Event::timestamp));
           logger.info("Returning {} events for sessionId: {}", events.size(), sessionId);
           return ListEventsResponse.builder().events(events).build();
         });
