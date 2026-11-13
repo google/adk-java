@@ -71,7 +71,9 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.After;
@@ -140,6 +142,41 @@ public final class LlmAgentTest {
     assertThat(events.get(0).finalResponse()).isTrue();
 
     assertThat(events.get(0).actions().stateDelta()).containsEntry("myOutput", "Saved output");
+  }
+
+  @Test
+  public void testRun_withOutputKeyAndFreeFormOutputSchema_savesParsedState() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "city",
+                    Schema.builder().type("STRING").build(),
+                    "details",
+                    Schema.builder().type("OBJECT").build(),
+                    "tags",
+                    Schema.builder().type("ARRAY").build(),
+                    "extra",
+                    Schema.builder().build()))
+            .build();
+    TestLlm testLlm =
+        createTestLlm(
+            createTextLlmResponse(
+                "{\"city\":\"Paris\",\"details\":{\"population\":2100000},"
+                    + "\"tags\":[\"a\",1],\"extra\":null}"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).outputSchema(outputSchema).outputKey("answer").build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    Map<String, Object> expected = new HashMap<>();
+    expected.put("city", "Paris");
+    expected.put("details", ImmutableMap.of("population", 2100000));
+    expected.put("tags", ImmutableList.of("a", 1));
+    expected.put("extra", null);
+    assertThat(getOnlyElement(events).actions().stateDelta()).containsEntry("answer", expected);
   }
 
   @Test
