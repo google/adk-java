@@ -60,6 +60,7 @@ import com.google.adk.sessions.Session;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.Part;
@@ -67,7 +68,10 @@ import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import com.google.genai.types.VideoMetadata;
 import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.io.IOException;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -84,10 +88,16 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
@@ -115,6 +125,15 @@ public final class FunctionNodeTest {
   record Ticket(String id, Optional<String> tag, @Nullable String note) {}
 
   record Badge(String id, @JsonIgnore int rank) {}
+
+  /** A record that counts its instances, to show whether the node converted a value to it. */
+  record Constructed(String id) {
+    static final AtomicInteger instances = new AtomicInteger();
+
+    Constructed {
+      instances.incrementAndGet();
+    }
+  }
 
   @JsonInclude(JsonInclude.Include.NON_NULL)
   record Parcel(String id, String note) {}
@@ -1067,6 +1086,410 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/where@1")).isEqualTo("app-scheduler");
+  }
+
+  @Test
+  public void runDisposed_sleepingBody_isInterrupted() throws InterruptedException {
+    // Arrange: an executor scheduler, which does not interrupt on its own when disposed.
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.of(
+            "sleeper",
+            Content.class,
+            String.class,
+            (ctx, message) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interrupted.countDown();
+              }
+              return "late";
+            });
+    ExecutorService executor = Executors.newCachedThreadPool();
+    try {
+      Runner runner = runner(chain(sleeper), Schedulers.from(executor));
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run =
+          runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      run.dispose();
+
+      assertThat(interrupted.await(10, SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void runDisposed_bodyThatKeepsTheInterrupt_leavesTheThreadUninterruptedForTheNextTask()
+      throws Exception {
+    // Arrange: one thread runs every task and keeps an interrupt between them, unlike a pool.
+    BlockingQueue<Runnable> tasks = new LinkedBlockingQueue<>();
+    AtomicBoolean stopped = new AtomicBoolean();
+    Thread worker =
+        new Thread(() -> {
+          while (!stopped.get()) {
+            Uninterruptibles.takeUninterruptibly(tasks).run();
+          }
+        });
+    worker.setDaemon(true);
+    worker.start();
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch finished = new CountDownLatch(1);
+    AtomicBoolean sawInterrupt = new AtomicBoolean();
+    FunctionNode<Content, String> spinner =
+        FunctionNodes.of(
+            "spinner",
+            Content.class,
+            String.class,
+            (ctx, message) -> {
+              started.countDown();
+              long deadline = System.nanoTime() + SECONDS.toNanos(10);
+              while (!Thread.currentThread().isInterrupted() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+              }
+              sawInterrupt.set(Thread.currentThread().isInterrupted());
+              finished.countDown();
+              return "late";
+            });
+    try {
+      Runner runner = runner(chain(spinner), Schedulers.from(tasks::add));
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run =
+          runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      run.dispose();
+      assertThat(finished.await(10, SECONDS)).isTrue();
+      CompletableFuture<Boolean> nextTaskInterrupted = new CompletableFuture<>();
+      tasks.add(() -> nextTaskInterrupted.complete(Thread.currentThread().isInterrupted()));
+
+      assertThat(sawInterrupt.get()).isTrue();
+      assertThat(nextTaskInterrupted.get(10, SECONDS)).isFalse();
+    } finally {
+      stopped.set(true);
+      tasks.add(() -> {});
+    }
+  }
+
+  @Test
+  public void inlineScheduler_runDisposedFromAnotherThread_interruptsTheBodyAndClearsTheInterrupt()
+      throws Exception {
+    // Arrange: a trampoline scheduler runs the body on the caller's thread, which subscribes.
+    CountDownLatch started = new CountDownLatch(1);
+    AtomicBoolean sawInterrupt = new AtomicBoolean();
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.of(
+            "sleeper",
+            Content.class,
+            String.class,
+            (ctx, message) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                sawInterrupt.set(true);
+                Thread.currentThread().interrupt();
+              }
+              return "late";
+            });
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+    try {
+      Future<Boolean> callerInterrupted =
+          runInline(caller, chain(sleeper), /* interruptFirst= */ false, subscriber);
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      subscriber.cancel();
+
+      assertThat(callerInterrupted.get(10, SECONDS)).isFalse();
+      assertThat(sawInterrupt.get()).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+  }
+
+  @Test
+  public void inlineScheduler_callerAlreadyInterrupted_keepsTheInterruptAfterTheBodyReturns()
+      throws Exception {
+    // Arrange: a trampoline scheduler runs the body on the caller's thread, interrupted beforehand.
+    AtomicBoolean bodySawInterrupt = new AtomicBoolean();
+    FunctionNode<Content, String> quick =
+        FunctionNodes.of(
+            "quick",
+            Content.class,
+            String.class,
+            (ctx, message) -> {
+              bodySawInterrupt.set(Thread.currentThread().isInterrupted());
+              return "done";
+            });
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+    try {
+      Future<Boolean> callerInterrupted =
+          runInline(caller, chain(quick), /* interruptFirst= */ true, subscriber);
+
+      assertThat(callerInterrupted.get(10, SECONDS)).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+
+    subscriber.assertComplete().assertNoErrors();
+    assertThat(bodySawInterrupt.get()).isTrue();
+  }
+
+  @Test
+  public void inlineScheduler_callerInterruptedThenRunDisposed_keepsTheCallersInterrupt()
+      throws Exception {
+    // Arrange: the caller's interrupt and the cancel's both reach the body on the caller's thread.
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch canceled = new CountDownLatch(1);
+    AtomicBoolean sawCancel = new AtomicBoolean();
+    AtomicBoolean cancelInterruptedTheBody = new AtomicBoolean();
+    FunctionNode<Content, String> waiter =
+        FunctionNodes.of(
+            "waiter",
+            Content.class,
+            String.class,
+            (ctx, message) -> {
+              boolean callerInterrupt = Thread.interrupted();
+              started.countDown();
+              sawCancel.set(Uninterruptibles.awaitUninterruptibly(canceled, 10, SECONDS));
+              cancelInterruptedTheBody.set(Thread.currentThread().isInterrupted());
+              if (callerInterrupt) {
+                Thread.currentThread().interrupt();
+              }
+              return "late";
+            });
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+    try {
+      Future<Boolean> callerInterrupted =
+          runInline(caller, chain(waiter), /* interruptFirst= */ true, subscriber);
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      subscriber.cancel();
+      canceled.countDown();
+
+      assertThat(callerInterrupted.get(10, SECONDS)).isTrue();
+      assertThat(sawCancel.get()).isTrue();
+      assertThat(cancelInterruptedTheBody.get()).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+  }
+
+  @Test
+  public void inlineScheduler_bodyInterruptsItself_callerSeesTheInterrupt() throws Exception {
+    // Arrange: nothing cancels the node, so only the body interrupts the caller's thread.
+    FunctionNode<Content, String> restorer =
+        FunctionNodes.of(
+            "restorer",
+            Content.class,
+            String.class,
+            (ctx, message) -> {
+              Thread.currentThread().interrupt();
+              return "done";
+            });
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+    try {
+      Future<Boolean> callerInterrupted =
+          runInline(caller, chain(restorer), /* interruptFirst= */ false, subscriber);
+
+      assertThat(callerInterrupted.get(10, SECONDS)).isTrue();
+    } finally {
+      caller.shutdownNow();
+    }
+
+    subscriber.assertComplete().assertNoErrors();
+  }
+
+  @Test
+  public void inlineScheduler_bodyReturns_leavesTheCallerUninterrupted() throws Exception {
+    // Arrange: RxJava calls the node's cancellable after the body's result is sent.
+    FunctionNode<Content, String> quick =
+        FunctionNodes.of("quick", Content.class, String.class, (ctx, message) -> "done");
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+    try {
+      Future<Boolean> callerInterrupted =
+          runInline(caller, chain(quick), /* interruptFirst= */ false, subscriber);
+
+      assertThat(callerInterrupted.get(10, SECONDS)).isFalse();
+    } finally {
+      caller.shutdownNow();
+    }
+
+    subscriber.assertComplete().assertNoErrors();
+  }
+
+  @Test
+  public void nodeTimeout_sleepingBody_isInterruptedAndFailsWithNodeTimeoutException()
+      throws InterruptedException {
+    CountDownLatch interrupted = new CountDownLatch(1);
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .config(NodeConfig.builder().timeout(Duration.ofSeconds(1)).build())
+            .body((ctx, message) -> {
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interrupted.countDown();
+              }
+              return "late";
+            })
+            .build();
+    ExecutorService executor = Executors.newCachedThreadPool();
+
+    RunResult result;
+    try {
+      result = run(chain(sleeper), Schedulers.from(executor));
+      assertThat(interrupted.await(10, SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(result.error()).isInstanceOf(NodeTimeoutException.class);
+    assertThat(result.errorMessage("NodeTimeoutException")).contains("'sleeper'");
+  }
+
+  @Test
+  public void runDisposed_bodyThatThrowsAfterTheInterrupt_reportsNoUndeliverableError()
+      throws InterruptedException {
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch finished = new CountDownLatch(1);
+    List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
+    var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.of(
+            "sleeper",
+            Content.class,
+            String.class,
+            (ctx, message) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+                return "late";
+              } finally {
+                finished.countDown();
+              }
+            });
+    ExecutorService executor = Executors.newCachedThreadPool();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+    try {
+      Runner runner = runner(chain(sleeper), Schedulers.from(executor));
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run =
+          runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      run.dispose();
+      assertThat(finished.await(10, SECONDS)).isTrue();
+      executor.shutdown();
+      assertThat(executor.awaitTermination(10, SECONDS)).isTrue();
+
+      assertThat(undeliverable).isEmpty();
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousErrorHandler);
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void runDisposed_bodyThatDelegatedItsOutput_doesNotConvertTheChildsOutput()
+      throws InterruptedException {
+    // Arrange: the child outputs a map, so only the node would convert it to a Constructed.
+    CountDownLatch started = new CountDownLatch(1);
+    FunctionNode<Content, Constructed> router =
+        FunctionNodes.builder(Content.class, Constructed.class)
+            .name("router")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              Object unused =
+                  ctx.runNode(
+                          emitter("child", ImmutableMap.of("id", "a1")),
+                          null,
+                          RunNodeConfig.builder().useAsOutput(true).build())
+                      .blockingGet();
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+              }
+              return null;
+            })
+            .build();
+    ExecutorService executor = Executors.newCachedThreadPool();
+    Constructed.instances.set(0);
+    try {
+      Runner runner = runner(chain(router), Schedulers.from(executor));
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run =
+          runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
+      assertThat(started.await(10, SECONDS)).isTrue();
+
+      run.dispose();
+      executor.shutdown();
+      assertThat(executor.awaitTermination(10, SECONDS)).isTrue();
+
+      assertThat(Constructed.instances.get()).isEqualTo(0);
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  public void siblingFails_sleepingBody_isInterrupted() throws InterruptedException {
+    // Arrange: the workflow cancels the nodes still running when one fails.
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    FunctionNode<Content, Void> sleeper =
+        FunctionNodes.of(
+            "sleeper",
+            Content.class,
+            Void.class,
+            (ctx, message) -> {
+              started.countDown();
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interrupted.countDown();
+              }
+              return null;
+            });
+    FunctionNode<Content, Void> broken =
+        FunctionNodes.of(
+            "broken",
+            Content.class,
+            Void.class,
+            (ctx, message) -> {
+              if (!started.await(10, SECONDS)) {
+                throw new IllegalStateException("sleeper never started");
+              }
+              throw new IOException("down");
+            });
+    Workflow workflow =
+        Workflow.builder()
+            .name("wf")
+            .edges(new Edge(Start.INSTANCE, sleeper), new Edge(Start.INSTANCE, broken))
+            .build();
+    ExecutorService executor = Executors.newCachedThreadPool();
+
+    RunResult result;
+    try {
+      result = run(workflow, Schedulers.from(executor));
+      assertThat(interrupted.await(10, SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(result.errorMessage("IOException")).isEqualTo("down");
   }
 
   @Test
@@ -3211,11 +3634,7 @@ public final class FunctionNodeTest {
 
   /** Runs {@code root} as an app's root node through a {@link Runner} on a "go" message. */
   private static RunResult run(Node root, @Nullable Scheduler scheduler) {
-    Runner runner =
-        Runner.builder()
-            .app(App.builder().name(APP).rootNode(root).build())
-            .scheduler(scheduler)
-            .build();
+    Runner runner = runner(root, scheduler);
     Session session = runner.sessionService().createSession(APP, USER).blockingGet();
     List<Event> events = new ArrayList<>();
     AtomicReference<Throwable> error = new AtomicReference<>();
@@ -3224,6 +3643,33 @@ public final class FunctionNodeTest {
         .timeout(30, SECONDS)
         .blockingSubscribe(events::add, error::set);
     return new RunResult(ImmutableList.copyOf(events), error.get());
+  }
+
+  /**
+   * Subscribes {@code subscriber} to a run of {@code root} on {@code caller}'s thread with a
+   * trampoline scheduler, interrupting that thread first if {@code interruptFirst}. Returns a
+   * future of whether the thread is interrupted once {@code subscribe} returns.
+   */
+  private static Future<Boolean> runInline(
+      ExecutorService caller, Node root, boolean interruptFirst, TestSubscriber<Event> subscriber) {
+    Runner runner = runner(root, Schedulers.trampoline());
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    return caller.submit(() -> {
+      if (interruptFirst) {
+        Thread.currentThread().interrupt();
+      }
+      runner
+          .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+          .subscribe(subscriber);
+      return Thread.interrupted();
+    });
+  }
+
+  private static Runner runner(Node root, @Nullable Scheduler scheduler) {
+    return Runner.builder()
+        .app(App.builder().name(APP).rootNode(root).build())
+        .scheduler(scheduler)
+        .build();
   }
 
   /** The events a run streamed and the error it failed with, if any. */

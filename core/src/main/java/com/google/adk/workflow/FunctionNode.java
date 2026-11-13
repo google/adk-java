@@ -23,10 +23,16 @@ import static com.google.common.base.Preconditions.checkState;
 import com.google.adk.agents.Context;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
+import com.google.common.base.Throwables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.MaybeEmitter;
 import java.util.Optional;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -124,15 +130,39 @@ public final class FunctionNode<I, O> extends BaseNode {
 
   @Override
   public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-    return Flowable.defer(
-            () -> {
-              I input = inputCodec.decode(nodeInput, "input of node '" + name() + "'");
-              O result = body.apply(context, input);
-              encodeDelegatedOutput(context.requireNodeState());
-              // After a delegation, NodeRunner drops a returned output.
-              return Flowable.fromOptional(Optional.ofNullable(output(result)));
-            })
-        .subscribeOn(context.invocationContext().scheduler());
+    // Maybe.create rather than defer, so that canceling the node reaches the body while it runs.
+    return Maybe.<Object>create(emitter -> runBody(context, nodeInput, emitter))
+        .subscribeOn(context.invocationContext().scheduler())
+        .toFlowable();
+  }
+
+  /** Runs the body on the calling thread and sends its output or failure to {@code emitter}. */
+  private void runBody(Context context, @Nullable Object nodeInput, MaybeEmitter<Object> emitter) {
+    Worker<O> worker =
+        new Worker<>(() -> {
+          I input = inputCodec.decode(nodeInput, "input of node '" + name() + "'");
+          return emitter.isDisposed() ? null : body.apply(context, input);
+        });
+    emitter.setCancellable(worker::cancel);
+    Object output;
+    try {
+      O result = worker.run();
+      if (emitter.isDisposed()) {
+        return;
+      }
+      encodeDelegatedOutput(context.requireNodeState());
+      // After a delegation, NodeRunner drops a returned output.
+      output = output(result);
+    } catch (Exception e) {
+      // tryOnError, as a canceled run can no longer take a failure.
+      emitter.tryOnError(e);
+      return;
+    }
+    if (output == null) {
+      emitter.onComplete();
+    } else {
+      emitter.onSuccess(output);
+    }
   }
 
   /**
@@ -186,6 +216,45 @@ public final class FunctionNode<I, O> extends BaseNode {
           : event.toBuilder().output(ANY.encode(event.output().get(), what)).build();
     }
     return outputCodec.encode(result, what);
+  }
+
+  /**
+   * Runs one body on the thread that calls {@link #run}, and {@link #cancel} interrupts that thread
+   * only while the body runs. When a canceled body finishes, the worker clears the thread's
+   * interrupt so its next task does not see it, unless the thread was interrupted before the body
+   * ran. This also clears an interrupt from elsewhere, such as {@code shutdownNow()}, which a
+   * {@code ThreadPoolExecutor} sets again before any task it starts once stopping.
+   */
+  private static final class Worker<T> {
+    private final FutureTask<T> task;
+
+    Worker(Callable<T> body) {
+      this.task = new FutureTask<>(body);
+    }
+
+    @SuppressWarnings("Interruption") // Interrupting the body is how a cancel reaches it.
+    void cancel() {
+      task.cancel(/* mayInterruptIfRunning= */ true);
+    }
+
+    /** Runs the body and returns its result, or {@code null} if it was canceled. */
+    @Nullable T run() throws Exception {
+      boolean callerInterrupted = Thread.currentThread().isInterrupted();
+      task.run();
+      if (task.isCancelled()) {
+        if (!callerInterrupted) {
+          var unused = Thread.interrupted();
+        }
+        return null;
+      }
+      try {
+        return task.get(); // Done, so get does not block.
+      } catch (ExecutionException e) {
+        Throwables.throwIfInstanceOf(e.getCause(), Exception.class);
+        Throwables.throwIfUnchecked(e.getCause());
+        throw e;
+      }
+    }
   }
 
   /**
