@@ -306,6 +306,13 @@ public final class InMemorySessionService implements BaseSessionService {
     String userId = session.userId();
     String sessionId = session.id();
 
+    ConcurrentMap<String, ConcurrentMap<String, Session>> appSessions = sessions.get(appName);
+    ConcurrentMap<String, Session> userSessions =
+        appSessions == null ? null : appSessions.get(userId);
+    if (userSessions == null || !userSessions.containsKey(sessionId)) {
+      return Single.error(new SessionNotFoundException("Session not found: " + sessionId));
+    }
+
     // --- Update User/App State (Same as before) ---
     EventActions actions = event.actions();
     if (actions != null) {
