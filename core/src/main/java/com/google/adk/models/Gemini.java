@@ -440,6 +440,9 @@ public class Gemini extends BaseLlm {
   }
 
   private static final class StreamingResponseAggregator {
+    /** A whole number whose magnitude is at most 2^53 - 1 has an exact double; others may not. */
+    private static final double MAX_EXACT_DOUBLE_INTEGER = 9007199254740991d;
+
     private final List<Part> accumulatedSequence = new ArrayList<>();
     private final StringBuilder currentTextBuffer = new StringBuilder();
     // Always reassigned in accumulateParts() before it is read; the initializer is never observed.
@@ -674,12 +677,28 @@ public class Gemini extends BaseLlm {
         String chunk = partialArg.stringValue().get();
         setValueByJsonPath(jsonPath, existing instanceof String s ? s + chunk : chunk);
       } else if (partialArg.numberValue().isPresent()) {
-        setValueByJsonPath(jsonPath, partialArg.numberValue().get());
+        setValueByJsonPath(jsonPath, wholeNumberAsInteger(partialArg.numberValue().get()));
       } else if (partialArg.boolValue().isPresent()) {
         setValueByJsonPath(jsonPath, partialArg.boolValue().get());
       } else if (partialArg.nullValue().isPresent()) {
         setValueByJsonPath(jsonPath, null);
       }
+    }
+
+    /**
+     * Returns a whole number whose magnitude is at most 2^53 - 1 as the Integer or Long a
+     * non-streamed call carries, because schema validation rejects a Double for an INTEGER field.
+     * Any other value stays a Double.
+     */
+    private static Number wholeNumberAsInteger(double value) {
+      if (value != Math.rint(value) || Math.abs(value) > MAX_EXACT_DOUBLE_INTEGER) {
+        return value;
+      }
+      long whole = (long) value;
+      if (whole == (int) whole) {
+        return (int) whole;
+      }
+      return whole;
     }
 
     /**
