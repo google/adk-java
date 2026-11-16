@@ -32,7 +32,6 @@ import com.fasterxml.jackson.databind.PropertyName;
 import com.fasterxml.jackson.databind.SerializationConfig;
 import com.fasterxml.jackson.databind.deser.BeanDeserializerBase;
 import com.fasterxml.jackson.databind.deser.CreatorProperty;
-import com.fasterxml.jackson.databind.deser.DefaultDeserializationContext;
 import com.fasterxml.jackson.databind.deser.SettableBeanProperty;
 import com.fasterxml.jackson.databind.deser.ValueInstantiator;
 import com.fasterxml.jackson.databind.introspect.AnnotatedMember;
@@ -44,7 +43,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Streams;
-import com.google.genai.JsonSerializable;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import java.lang.invoke.MethodType;
@@ -234,15 +232,13 @@ final class PortSchemas {
 
   /** Returns what the port writes or reads of {@code type}, or {@code null} if it is no bean. */
   private @Nullable Bean bean(JavaType type) {
-    ObjectMapper mapper = mapper(type);
+    ObjectMapper mapper = PortCodec.mapperFor(type);
     Object handler;
     try {
       handler =
           output
               ? mapper.getSerializerProviderInstance().findValueSerializer(type)
-              : ((DefaultDeserializationContext) mapper.getDeserializationContext())
-                  .createDummyInstance(mapper.getDeserializationConfig())
-                  .findRootValueDeserializer(type);
+              : PortCodec.deserializationContext(mapper).findRootValueDeserializer(type);
     } catch (JsonMappingException | RuntimeException e) {
       return null;
     }
@@ -269,16 +265,9 @@ final class PortSchemas {
         RequiredProperties.required(creator));
   }
 
-  /** Returns the mapper that handles {@code type}: genai's own for a genai type, as a port does. */
-  private static ObjectMapper mapper(JavaType type) {
-    return JsonSerializable.class.isAssignableFrom(type.getRawClass())
-        ? JsonSerializable.objectMapper()
-        : PortCodec.MAPPER;
-  }
-
   /** Returns how the mapper includes a property on write: its own, else its class's or mapper's. */
   private static JsonInclude.Include inclusion(JavaType type, BeanProperty property) {
-    SerializationConfig config = mapper(type).getSerializationConfig();
+    SerializationConfig config = PortCodec.mapperFor(type).getSerializationConfig();
     BeanDescription description = config.introspect(type);
     JsonInclude.Value include =
         description.findPropertyInclusion(config.getDefaultPropertyInclusion(type.getRawClass()));

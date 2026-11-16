@@ -52,7 +52,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.databind.util.StdConverter;
 import com.google.adk.agents.Context;
@@ -70,9 +69,11 @@ import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Uninterruptibles;
+import com.google.genai.JsonSerializable;
 import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.Operation;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
@@ -311,11 +312,27 @@ public final class FunctionNodeTest {
   /** A class Jackson cannot write, since it has no properties. */
   static final class NoProperties {}
 
+  /** A genai type genai's mapper cannot write, since it has no properties. */
+  static final class GenaiNoProperties extends JsonSerializable {}
+
   /** A class Jackson writes as an object but can create only from a string. */
   static final class StringOnly {
     private final String value;
 
     StringOnly(String value) {
+      this.value = value;
+    }
+
+    public String getValue() {
+      return value;
+    }
+  }
+
+  /** A genai type, which genai's mapper writes as an object but can create only from a string. */
+  static final class GenaiStringOnly extends JsonSerializable {
+    private final String value;
+
+    GenaiStringOnly(String value) {
       this.value = value;
     }
 
@@ -2703,12 +2720,36 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void of_genaiOutputTypeWithoutProperties_failsAtBuild() {
+    // Act: a port writes a genai type with genai's own mapper, which cannot write this one.
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", Content.class, GenaiNoProperties.class, (ctx, in) -> null));
+
+    // Assert
+    assertThat(error).hasMessageThat().contains("cannot write as JSON");
+  }
+
+  @Test
   public void of_inputTypeCreatableOnlyFromAString_failsAtBuild() {
     WorkflowConfigurationException error =
         assertThrows(
             WorkflowConfigurationException.class,
             () -> FunctionNodes.of("n", StringOnly.class, String.class, (ctx, in) -> ""));
 
+    assertThat(error).hasMessageThat().contains("only from a string or number");
+  }
+
+  @Test
+  public void of_genaiInputTypeCreatableOnlyFromAString_failsAtBuild() {
+    // Act: genai's own mapper, which reads a genai port, creates this one only from a string.
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", GenaiStringOnly.class, String.class, (ctx, in) -> ""));
+
+    // Assert
     assertThat(error).hasMessageThat().contains("only from a string or number");
   }
 
@@ -3706,37 +3747,82 @@ public final class FunctionNodeTest {
   }
 
   @Test
-  public void of_zoneIdPorts_sendAndReadTheZone() {
-    FunctionNode<Content, ZoneId> zone =
-        FunctionNodes.of(
-            "zone", Content.class, ZoneId.class, (ctx, m) -> ZoneId.of("Europe/Paris"));
-    FunctionNode<ZoneId, String> read =
-        FunctionNodes.of("read", ZoneId.class, String.class, (ctx, id) -> id.getId());
+  public void of_jsonNodeInputPort_failsAtBuild() {
+    // Act: Jackson reads the abstract JsonNode with a deserializer of its own, not a creator.
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", JsonNode.class, String.class, (ctx, in) -> ""));
 
-    RunResult result = run(chain(zone, read));
-
-    result.assertCompleted();
-    assertThat(result.outputAt("wf@1/zone@1")).isEqualTo("Europe/Paris");
-    assertThat(result.outputAt("wf@1/read@1")).isEqualTo("Europe/Paris");
+    // Assert
+    assertThat(error)
+        .hasMessageThat()
+        .isEqualTo(
+            "The input of node 'n' has type com.fasterxml.jackson.databind.JsonNode, which is an"
+                + " interface or abstract class without a Jackson creator. Declare the port as a"
+                + " concrete record, wrap the hierarchy in one, or use Object.class.");
   }
 
   @Test
-  public void of_jsonNodePorts_sendAndReadTheTree() {
-    FunctionNode<Content, JsonNode> tree =
-        FunctionNodes.of(
-            "tree",
-            Content.class,
-            JsonNode.class,
-            (ctx, m) -> JsonNodeFactory.instance.objectNode().put("a", 1));
-    FunctionNode<JsonNode, Integer> read =
-        FunctionNodes.of(
-            "read", JsonNode.class, Integer.class, (ctx, node) -> node.get("a").asInt());
+  public void of_zoneIdOutputPort_failsAtBuild() {
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", String.class, ZoneId.class, (ctx, in) -> null));
 
-    RunResult result = run(chain(tree, read));
+    // Assert
+    assertThat(error).hasMessageThat().startsWith("The output of node 'n'");
+    assertThat(error)
+        .hasMessageThat()
+        .contains("ZoneId, which is an interface or abstract class without a Jackson creator");
+  }
 
-    result.assertCompleted();
-    assertThat(result.outputAt("wf@1/tree@1")).isEqualTo(ImmutableMap.of("a", 1));
-    assertThat(result.outputAt("wf@1/read@1")).isEqualTo(1);
+  @Test
+  public void of_listOfZoneIdsPort_failsAtBuildNamingTheElement() {
+    // Arrange
+    TypeReference<List<ZoneId>> port = new TypeReference<>() {};
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", port, String.class, (ctx, in) -> ""));
+
+    // Assert
+    assertThat(error).hasMessageThat().startsWith("An element of the input of node 'n'");
+    assertThat(error)
+        .hasMessageThat()
+        .contains("ZoneId, which is an interface or abstract class without a Jackson creator");
+  }
+
+  @Test
+  public void of_genaiPortThatGenaiCannotCreate_failsAtBuild() {
+    // Act: genai's own mapper, which reads a genai port, has no creator for Operation.
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", Operation.class, String.class, (ctx, in) -> ""));
+
+    // Assert
+    assertThat(error)
+        .hasMessageThat()
+        .contains("Operation, which is an interface or abstract class without a Jackson creator");
+  }
+
+  @Test
+  public void of_genaiBaseClassOutputPort_failsAtBuild() {
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(
+            WorkflowConfigurationException.class,
+            () -> FunctionNodes.of("n", String.class, JsonSerializable.class, (ctx, in) -> null));
+
+    // Assert
+    assertThat(error)
+        .hasMessageThat()
+        .contains(
+            "JsonSerializable, which is an interface or abstract class without a Jackson creator");
   }
 
   @Test

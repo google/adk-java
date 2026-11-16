@@ -192,7 +192,7 @@ final class PortCodec<T> {
    * Returns the codec of an input port, which Jackson must both read and write.
    *
    * @throws WorkflowConfigurationException if Jackson cannot read and write {@code type}, or if it
-   *     has no single concrete JSON shape
+   *     has no single concrete JSON shape or is an abstract type without a Jackson creator
    */
   static <T> PortCodec<T> input(JavaType type, String what) {
     if (!passesAsIs(type)) {
@@ -205,7 +205,7 @@ final class PortCodec<T> {
    * Returns the codec of an output port, which Jackson must write.
    *
    * @throws WorkflowConfigurationException if Jackson cannot write {@code type}, or if it has no
-   *     single concrete JSON shape
+   *     single concrete JSON shape or is an abstract type without a Jackson creator
    */
   static <T> PortCodec<T> output(JavaType type, String what) {
     if (!passesAsIs(type)) {
@@ -232,7 +232,7 @@ final class PortCodec<T> {
 
   /**
    * Walks {@code type} down to its elements, checking that each has one concrete JSON shape that
-   * Jackson writes and, when {@code read}, also reads.
+   * Jackson writes and, when {@code read}, also reads, and is not abstract without a creator.
    */
   private static void requireUsable(JavaType type, String what, boolean read) {
     if (type.getRawClass() == Object.class) {
@@ -250,7 +250,7 @@ final class PortCodec<T> {
       }
       requireUsable(type.getContentType(), "an element of " + what, read);
     } else {
-      requireConcrete(type, what, read);
+      requireConcrete(type, what);
     }
     if (read) {
       requireReadable(type, what);
@@ -264,7 +264,7 @@ final class PortCodec<T> {
     JsonDeserializer<?> deserializer = null;
     String reason = "";
     try {
-      deserializer = deserializationContext().findRootValueDeserializer(type);
+      deserializer = deserializationContext(mapperFor(type)).findRootValueDeserializer(type);
     } catch (JsonMappingException | RuntimeException e) {
       reason = reason(e);
     }
@@ -303,7 +303,7 @@ final class PortCodec<T> {
     JsonSerializer<?> serializer = null;
     String reason = "";
     try {
-      serializer = MAPPER.getSerializerProviderInstance().findValueSerializer(type);
+      serializer = mapperFor(type).getSerializerProviderInstance().findValueSerializer(type);
     } catch (JsonMappingException | RuntimeException e) {
       reason = reason(e);
     }
@@ -322,21 +322,17 @@ final class PortCodec<T> {
   }
 
   /**
-   * Throws unless {@code type} has one concrete JSON shape: a polymorphic type is rejected, and so
-   * is an interface or abstract class Jackson handles neither through a creator nor on its own.
+   * Throws if {@code type} is polymorphic, or an interface or abstract class without a creator
+   * Jackson can call, such as {@code ZoneId}.
    */
-  private static void requireConcrete(JavaType type, String what, boolean read) {
+  private static void requireConcrete(JavaType type, String what) {
     String problem;
     if (findTypeSerializer(type) != null) {
       problem = "is polymorphic (@JsonTypeInfo)";
     } else if (type.isAbstract()
         && !type.isEnumType()
         && !type.isPrimitive()
-        && !hasBeanCreator(type)
-        // A Number or CharSequence port reads any subclass, so the port names one.
-        && (Number.class.isAssignableFrom(type.getRawClass())
-            || CharSequence.class.isAssignableFrom(type.getRawClass())
-            || !handlesItself(type, read))) {
+        && !hasBeanCreator(type)) {
       problem = "is an interface or abstract class without a Jackson creator";
     } else {
       return;
@@ -358,7 +354,7 @@ final class PortCodec<T> {
     KeyDeserializer deserializer = null;
     String reason = "";
     try {
-      deserializer = deserializationContext().findKeyDeserializer(type, null);
+      deserializer = deserializationContext(MAPPER).findKeyDeserializer(type, null);
     } catch (JsonMappingException | RuntimeException e) {
       reason = reason(e);
     }
@@ -410,31 +406,9 @@ final class PortCodec<T> {
       return true;
     }
     try {
-      KeyDeserializer deserializer = deserializationContext().findKeyDeserializer(type, null);
+      KeyDeserializer deserializer = deserializationContext(MAPPER).findKeyDeserializer(type, null);
       // Jackson's String-creator fallback reads back a toString() that may not round-trip.
       return deserializer != null && !(deserializer instanceof StdKeyDeserializer);
-    } catch (JsonMappingException | RuntimeException e) {
-      return false;
-    }
-  }
-
-  /**
-   * Whether Jackson handles {@code type} with a deserializer of its own, such as {@code ZoneId}'s,
-   * or for an output port, with a serializer of its own.
-   */
-  private static boolean handlesItself(JavaType type, boolean read) {
-    try {
-      if (read) {
-        JsonDeserializer<?> deserializer = deserializationContext().findRootValueDeserializer(type);
-        return !(deserializer instanceof AbstractDeserializer)
-            && !(deserializer instanceof BeanDeserializerBase)
-            && !(deserializer instanceof UnsupportedTypeDeserializer);
-      }
-      JsonSerializer<?> serializer =
-          MAPPER.getSerializerProviderInstance().findValueSerializer(type);
-      return !(serializer instanceof BeanSerializerBase)
-          && !(serializer instanceof UnknownSerializer)
-          && !(serializer instanceof UnsupportedTypeSerializer);
     } catch (JsonMappingException | RuntimeException e) {
       return false;
     }
@@ -450,7 +424,7 @@ final class PortCodec<T> {
 
   private static boolean writesObject(JavaType type) {
     try {
-      return MAPPER.getSerializerProviderInstance().findValueSerializer(type)
+      return mapperFor(type).getSerializerProviderInstance().findValueSerializer(type)
           instanceof BeanSerializerBase;
     } catch (JsonMappingException | RuntimeException e) {
       return false;
@@ -465,11 +439,12 @@ final class PortCodec<T> {
   }
 
   /**
-   * Whether Jackson creates {@code type} as a bean through a creator, such as an AutoValue factory.
+   * Whether the mapper that reads {@code type} for a port creates it as a bean through a creator,
+   * such as an AutoValue factory.
    */
   private static boolean hasBeanCreator(JavaType type) {
     try {
-      return deserializationContext().findRootValueDeserializer(type)
+      return deserializationContext(mapperFor(type)).findRootValueDeserializer(type)
               instanceof BeanDeserializerBase bean
           && bean.getValueInstantiator() != null
           && bean.getValueInstantiator().canInstantiate();
@@ -478,9 +453,16 @@ final class PortCodec<T> {
     }
   }
 
-  private static DefaultDeserializationContext deserializationContext() {
-    return ((DefaultDeserializationContext) MAPPER.getDeserializationContext())
-        .createDummyInstance(MAPPER.getDeserializationConfig());
+  /** Returns the mapper that handles {@code type}: genai's own for a genai type, as a port does. */
+  static ObjectMapper mapperFor(JavaType type) {
+    return JsonSerializable.class.isAssignableFrom(type.getRawClass())
+        ? JsonSerializable.objectMapper()
+        : MAPPER;
+  }
+
+  static DefaultDeserializationContext deserializationContext(ObjectMapper mapper) {
+    return ((DefaultDeserializationContext) mapper.getDeserializationContext())
+        .createDummyInstance(mapper.getDeserializationConfig());
   }
 
   /** The first line of Jackson's message about a type, which names the type and never a value. */

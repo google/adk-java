@@ -35,7 +35,8 @@ public final class FunctionNodes {
    * inputType} and writes its {@code outputType} output in JSON form.
    *
    * @throws WorkflowConfigurationException if Jackson cannot read and write {@code inputType} or
-   *     write {@code outputType}, or if a port type has no single concrete JSON shape; a field type
+   *     write {@code outputType}, or if a port type has no single concrete JSON shape or is an
+   *     interface or abstract class without a Jackson creator, such as {@code ZoneId}; a field type
    *     Jackson cannot handle fails on the first value instead
    */
   public static <I, O> FunctionNode<I, O> of(
