@@ -22,12 +22,14 @@ import com.fasterxml.jackson.databind.ObjectReader;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.Context;
 import com.google.adk.annotations.Experimental;
+import com.google.adk.telemetry.Tracing;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -84,7 +86,7 @@ public final class ParallelWorkers {
         JsonBaseModel.getMapper()
             .readerFor(Object.class)
             .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-    // No run ID: items subscribe in input order, so each gets the same generated ID on resume.
+    // No run ID: FanOut reserves IDs in input order, so each item keeps its ID on resume.
     private static final RunNodeConfig ITEM_CONFIG =
         RunNodeConfig.builder().useSubBranch(true).build();
 
@@ -153,6 +155,11 @@ public final class ParallelWorkers {
     private final class FanOut {
       private final Context context;
       private final List<?> items;
+      // Reserved up front, because the items begin on other threads in no fixed order.
+      private final ImmutableList<String> runIds;
+      // The items start on other threads, so each restores the node's trace context.
+      private final io.opentelemetry.context.Context traceContext =
+          io.opentelemetry.context.Context.current();
       // Written by the item runs, which may finish on different threads.
       private final AtomicReferenceArray<Object> outputs;
       private final AtomicReferenceArray<DynamicNodeFailedException> failures;
@@ -161,6 +168,13 @@ public final class ParallelWorkers {
       FanOut(Context context, List<?> items) {
         this.context = context;
         this.items = items;
+        NodeExecutionState state = context.requireNodeState();
+        ImmutableList.Builder<String> reserved =
+            ImmutableList.builderWithExpectedSize(items.size());
+        for (int i = 0; i < items.size(); i++) {
+          reserved.add(state.nextChildRunId(worker.name()));
+        }
+        this.runIds = reserved.build();
         this.outputs = new AtomicReferenceArray<>(items.size());
         this.failures = new AtomicReferenceArray<>(items.size());
       }
@@ -178,11 +192,17 @@ public final class ParallelWorkers {
 
       /** Runs one item, or replays its result on resume, and emits whether it failed. */
       private Single<Boolean> runItem(int index) {
-        return context
-            .runNode(worker, items.get(index), ITEM_CONFIG)
-            .doOnSuccess(output -> outputs.set(index, output))
-            .ignoreElement()
-            .toSingleDefault(false)
+        Maybe<Object> run =
+            NodeRunner.runChild(context, worker, items.get(index), ITEM_CONFIG, runIds.get(index));
+        // Off the caller's thread, so an item that blocks its thread cannot hold up the others.
+        return NodeRunner.completeOn(context.invocationContext().scheduler())
+            .andThen(run.compose(Tracing.withContext(traceContext)))
+            // Not doOnSuccess, which reports a canceled item's late failure as undeliverable.
+            .map(output -> {
+              outputs.set(index, output);
+              return false;
+            })
+            .defaultIfEmpty(false)
             .onErrorResumeNext(error -> settle(index, error));
       }
 

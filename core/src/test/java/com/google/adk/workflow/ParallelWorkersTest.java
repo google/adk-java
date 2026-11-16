@@ -28,23 +28,35 @@ import static com.google.adk.workflow.WorkflowResumeTesting.pathOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.pathsOf;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Context;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.apps.App;
 import com.google.adk.events.Event;
+import com.google.adk.models.LlmResponse;
+import com.google.adk.runner.Runner;
+import com.google.adk.sessions.Session;
+import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.observers.TestObserver;
 import io.reactivex.rxjava3.schedulers.Schedulers;
@@ -57,6 +69,8 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -172,14 +186,16 @@ public final class ParallelWorkersTest {
     Run run = run(ParallelWorkers.parallelNode(doubler()), ImmutableList.of(1, 2, 3));
 
     assertThat(run.output()).isEqualTo(ImmutableList.of(2, 4, 6));
-    ImmutableList<Event> itemEvents = run.eventsUnder("worker@1/");
-    assertThat(pathsOf(itemEvents))
-        .containsExactly("worker@1/worker@1", "worker@1/worker@2", "worker@1/worker@3")
-        .inOrder();
+    // The items run at once, so their events arrive in no fixed order.
     assertThat(
-            itemEvents.stream().map(event -> event.branch().orElse("")).collect(toImmutableList()))
-        .containsExactly("worker@1", "worker@2", "worker@3")
-        .inOrder();
+            run.eventsUnder("worker@1/").stream()
+                .collect(
+                    toImmutableMap(
+                        WorkflowResumeTesting::pathOf, event -> event.branch().orElse(""))))
+        .containsExactly(
+            "worker@1/worker@1", "worker@1",
+            "worker@1/worker@2", "worker@2",
+            "worker@1/worker@3", "worker@3");
   }
 
   @Test
@@ -249,7 +265,7 @@ public final class ParallelWorkersTest {
               return release.andThen(Flowable.just(item));
             });
     TestObserver<Context> observer =
-        start(
+        startInline(
                 ParallelWorkers.parallelNode(worker, /* maxParallelWorkers= */ 2),
                 ImmutableList.of(1, 2, 3, 4, 5, 6))
             .test();
@@ -273,7 +289,7 @@ public final class ParallelWorkersTest {
               return release.andThen(Flowable.just(item));
             });
     TestObserver<Context> observer =
-        start(ParallelWorkers.parallelNode(worker), ImmutableList.of(1, 2, 3)).test();
+        startInline(ParallelWorkers.parallelNode(worker), ImmutableList.of(1, 2, 3)).test();
     int startedBeforeRelease = started.get();
 
     release.onComplete();
@@ -281,6 +297,118 @@ public final class ParallelWorkersTest {
     assertThat(startedBeforeRelease).isEqualTo(3);
     assertThat(observer.awaitDone(10, SECONDS).values().get(0).requireNodeState().output())
         .hasValue(ImmutableList.of(1, 2, 3));
+  }
+
+  @Test
+  public void runNode_itemsThatBlockTheirThreads_runAtOnce() {
+    CountDownLatch allRunning = new CountDownLatch(3);
+    // Each item holds the thread it runs on until all three are running.
+    Node worker =
+        node(item ->
+            Flowable.fromCallable(() -> {
+              allRunning.countDown();
+              awaitRelease(allRunning);
+              return item;
+            }));
+
+    Run run = run(ParallelWorkers.parallelNode(worker), ImmutableList.of(1, 2, 3));
+
+    assertThat(run.output()).isEqualTo(ImmutableList.of(1, 2, 3));
+  }
+
+  @Test
+  public void runAsync_agentWorkersBlockedOnTheirModel_callItAtOnce() {
+    CountDownLatch allCalling = new CountDownLatch(3);
+    // Each call holds its thread until all three are in flight, like Gemini's non-streaming call.
+    TestLlm model =
+        new TestLlm(() ->
+            Flowable.fromCallable(() -> {
+              allCalling.countDown();
+              awaitRelease(allCalling);
+              return LlmResponse.builder()
+                  .content(Content.fromParts(Part.fromText("done")))
+                  .build();
+            }));
+    LlmAgent worker = LlmAgent.builder().name("worker").model(model).build();
+
+    ImmutableList<Event> events =
+        runThroughRunner(ParallelWorkers.parallelNode(worker), "[1, 2, 3]", /* scheduler= */ null);
+
+    assertThat(model.getRequests()).hasSize(3);
+    assertThat(events.stream().filter(event -> event.errorCode().isPresent())).isEmpty();
+  }
+
+  @Test
+  public void runAsync_itemsRunOnTheRunnersScheduler() {
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "app-scheduler"));
+    Node worker = node(item -> Flowable.fromCallable(() -> Thread.currentThread().getName()));
+
+    ImmutableList<Event> events;
+    try {
+      events =
+          runThroughRunner(
+              ParallelWorkers.parallelNode(worker), "[1, 2]", Schedulers.from(executor));
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(Iterables.getLast(events).output())
+        .hasValue(ImmutableList.of("app-scheduler", "app-scheduler"));
+  }
+
+  @Test
+  public void runNode_itemsStartOnOtherThreads_keepTheCallersTraceContext() {
+    ContextKey<String> key = ContextKey.named("caller");
+    Map<Object, String> seenByItem = new ConcurrentHashMap<>();
+    Node worker =
+        node(item -> {
+          seenByItem.put(item, String.valueOf(io.opentelemetry.context.Context.current().get(key)));
+          return Flowable.just(item);
+        });
+
+    Run run;
+    try (Scope unused =
+        io.opentelemetry.context.Context.current().with(key, "parent").makeCurrent()) {
+      run = run(ParallelWorkers.parallelNode(worker), ImmutableList.of(1, 2, 3));
+    }
+
+    assertThat(run.output()).isEqualTo(ImmutableList.of(1, 2, 3));
+    assertThat(seenByItem).containsExactly(1, "parent", 2, "parent", 3, "parent");
+  }
+
+  @Test
+  public void runNode_itemsStartingInReverse_keepTheirRunIdsInInputOrder() throws Exception {
+    List<Runnable> starts = new CopyOnWriteArrayList<>();
+    CountDownLatch allQueued = new CountDownLatch(3);
+    Scheduler queueing =
+        Schedulers.from(start -> {
+          starts.add(start);
+          allQueued.countDown();
+        });
+    Map<Object, String> pathByItem = new ConcurrentHashMap<>();
+    Node worker =
+        new TestNode(
+            "worker",
+            (context, item) -> {
+              pathByItem.put(item, context.requireNodeState().nodePath());
+              return Flowable.just(item);
+            });
+    TestObserver<Context> observer =
+        start(
+                ParallelWorkers.parallelNode(worker),
+                ImmutableList.of(1, 2, 3),
+                new CopyOnWriteArrayList<>(),
+                queueing)
+            .test();
+    assertThat(allQueued.await(10, SECONDS)).isTrue();
+
+    // Starts the items last-in, first-out, so the third item begins first.
+    Lists.reverse(starts).forEach(Runnable::run);
+
+    observer.awaitDone(10, SECONDS).assertComplete();
+    assertThat(pathByItem)
+        .containsExactly(1, "worker@1/worker@1", 2, "worker@1/worker@2", 3, "worker@1/worker@3");
   }
 
   @Test
@@ -354,37 +482,60 @@ public final class ParallelWorkersTest {
   }
 
   @Test
-  public void runNode_itemFails_cancelsRunningSiblings() {
-    AtomicBoolean siblingCancelled = new AtomicBoolean();
-    Node worker =
-        node(
-            item ->
-                item.equals("slow")
-                    ? Flowable.timer(10, SECONDS).doOnCancel(() -> siblingCancelled.set(true))
-                    : Flowable.error(new IllegalStateException("boom")));
+  public void runNode_itemFails_cancelsRunningSiblings() throws Exception {
+    CountDownLatch siblingCancelled = new CountDownLatch(1);
+    Node worker = failsOnceSlowStarts(new IllegalStateException("boom"), siblingCancelled);
 
     Run run = run(ParallelWorkers.parallelNode(worker), ImmutableList.of("slow", "bad"));
 
     assertThat(run.failure().orElseThrow()).hasMessageThat().isEqualTo("boom");
-    assertThat(siblingCancelled.get()).isTrue();
+    assertThat(siblingCancelled.await(10, SECONDS)).isTrue();
   }
 
   @Test
-  public void runNode_itemThrowsAnError_propagatesItAndCancelsRunningSiblings() {
-    AtomicBoolean siblingCancelled = new AtomicBoolean();
-    Node worker =
-        node(
-            item ->
-                item.equals("slow")
-                    ? Flowable.timer(10, SECONDS).doOnCancel(() -> siblingCancelled.set(true))
-                    : Flowable.error(new AssertionError("fatal")));
+  public void runNode_itemThrowsAnError_propagatesItAndCancelsRunningSiblings() throws Exception {
+    CountDownLatch siblingCancelled = new CountDownLatch(1);
+    Node worker = failsOnceSlowStarts(new AssertionError("fatal"), siblingCancelled);
     Node node = ParallelWorkers.parallelNode(worker);
 
     AssertionError thrown =
         assertThrows(AssertionError.class, () -> run(node, ImmutableList.of("slow", "fatal")));
 
     assertThat(thrown).hasMessageThat().isEqualTo("fatal");
-    assertThat(siblingCancelled.get()).isTrue();
+    assertThat(siblingCancelled.await(10, SECONDS)).isTrue();
+  }
+
+  @Test
+  public void runNode_itemFails_doesNotInterruptASiblingThatBlocksItsThread() throws Exception {
+    CountDownLatch blockedStarted = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    CountDownLatch blockedDone = new CountDownLatch(1);
+    AtomicBoolean siblingInterrupted = new AtomicBoolean();
+    Node worker =
+        node(item ->
+            item.equals("blocked")
+                ? Flowable.fromCallable(() -> {
+                  blockedStarted.countDown();
+                  try {
+                    boolean unused = release.await(10, SECONDS);
+                  } catch (InterruptedException e) {
+                    siblingInterrupted.set(true);
+                  } finally {
+                    blockedDone.countDown();
+                  }
+                  return "late";
+                })
+                : Flowable.defer(() -> {
+                  awaitRelease(blockedStarted);
+                  return Flowable.error(new IllegalStateException("boom"));
+                }));
+
+    Run run = run(ParallelWorkers.parallelNode(worker), ImmutableList.of("blocked", "bad"));
+    release.countDown();
+
+    assertThat(run.failure().orElseThrow()).hasMessageThat().isEqualTo("boom");
+    assertThat(blockedDone.await(10, SECONDS)).isTrue();
+    assertThat(siblingInterrupted.get()).isFalse();
   }
 
   @Test
@@ -493,7 +644,8 @@ public final class ParallelWorkersTest {
               return item.equals(1) ? Flowable.just(item) : Flowable.just(interrupt("ask-" + item));
             });
     Node items = emitter("items", ImmutableList.of(1, 2, 3));
-    Node fanOut = ParallelWorkers.parallelNode(worker, /* maxParallelWorkers= */ 2);
+    // One at a time, so the second item asks before a slot frees for the third.
+    Node fanOut = ParallelWorkers.parallelNode(worker, /* maxParallelWorkers= */ 1);
     WorkflowSession session =
         new WorkflowSession(
             workflow(
@@ -661,12 +813,45 @@ public final class ParallelWorkersTest {
    * events}.
    */
   private static Single<Context> start(Node node, @Nullable Object nodeInput, List<Event> events) {
+    return start(node, nodeInput, events, /* scheduler= */ null);
+  }
+
+  private static Single<Context> start(
+      Node node, @Nullable Object nodeInput, List<Event> events, @Nullable Scheduler scheduler) {
     return NodeRunner.builder()
         .node(node)
-        .invocationContext(TestUtils.createInvocationContext(TestUtils.createRootAgent()))
+        .invocationContext(
+            TestUtils.createInvocationContext(TestUtils.createRootAgent()).toBuilder()
+                .scheduler(scheduler)
+                .build())
         .eventSink((event, nodeFailure) -> Completable.fromAction(() -> events.add(event)))
         .build()
         .run(nodeInput);
+  }
+
+  /**
+   * Returns the run of {@code node} as the workflow root, ignoring its events. It runs on the
+   * trampoline scheduler, so each item starts on the subscribing thread.
+   */
+  private static Single<Context> startInline(Node node, @Nullable Object nodeInput) {
+    return start(node, nodeInput, new CopyOnWriteArrayList<>(), Schedulers.trampoline());
+  }
+
+  /** Runs {@code root} as an app's root node through a {@link Runner} on {@code message}. */
+  private static ImmutableList<Event> runThroughRunner(
+      Node root, String message, @Nullable Scheduler scheduler) {
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name("app").rootNode(root).build())
+            .scheduler(scheduler)
+            .build();
+    Session session = runner.sessionService().createSession("app", "user").blockingGet();
+    return ImmutableList.copyOf(
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText(message)))
+            .timeout(30, SECONDS)
+            .toList()
+            .blockingGet());
   }
 
   /** Returns a plain node named "worker", not a {@link BaseNode}, that runs {@code body}. */
@@ -728,6 +913,23 @@ public final class ParallelWorkersTest {
             item.equals(bad)
                 ? Flowable.error(new IllegalStateException("bad item " + item))
                 : Flowable.just(item));
+  }
+
+  /**
+   * Returns a node named "worker" whose "slow" item runs until canceled and then counts down {@code
+   * cancelled}. Its other items fail with {@code error} once the slow item has started.
+   */
+  private static Node failsOnceSlowStarts(Throwable error, CountDownLatch cancelled) {
+    CountDownLatch slowStarted = new CountDownLatch(1);
+    return node(item ->
+        item.equals("slow")
+            ? Flowable.timer(10, SECONDS)
+                .doOnSubscribe(unused -> slowStarted.countDown())
+                .doOnCancel(cancelled::countDown)
+            : Flowable.defer(() -> {
+              awaitRelease(slowStarted);
+              return Flowable.error(error);
+            }));
   }
 
   private static Node interruptsOn(Object asking) {

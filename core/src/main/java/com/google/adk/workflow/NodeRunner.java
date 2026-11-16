@@ -16,6 +16,7 @@
 
 package com.google.adk.workflow;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
@@ -37,6 +38,7 @@ import com.google.genai.types.FinishReason;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
+import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
 import io.reactivex.rxjava3.processors.FlowableProcessor;
@@ -201,12 +203,32 @@ public final class NodeRunner {
     checkNotNull(parent);
     checkNotNull(node);
     checkNotNull(config);
-    return Maybe.defer(() -> startChild(parent, node, nodeInput, config));
+    return Maybe.defer(
+        () -> startChild(parent, node, nodeInput, config, /* reservedRunId= */ null));
+  }
+
+  /**
+   * Runs {@code node} as {@link #runChild(Context, Node, Object, RunNodeConfig)} does, using the
+   * {@code runId} that the caller reserved with {@link NodeExecutionState#nextChildRunId}. {@code
+   * config} must leave its run ID unset.
+   */
+  static Maybe<Object> runChild(
+      Context parent, Node node, @Nullable Object nodeInput, RunNodeConfig config, String runId) {
+    checkNotNull(parent);
+    checkNotNull(node);
+    checkNotNull(config);
+    checkNotNull(runId);
+    checkArgument(config.runId().isEmpty(), "The config sets its own run ID.");
+    return Maybe.defer(() -> startChild(parent, node, nodeInput, config, runId));
   }
 
   /** Runs {@code node} as a child of {@code parent} and turns the child's run into its result. */
   private static Maybe<Object> startChild(
-      Context parent, Node node, @Nullable Object nodeInput, RunNodeConfig config) {
+      Context parent,
+      Node node,
+      @Nullable Object nodeInput,
+      RunNodeConfig config,
+      @Nullable String reservedRunId) {
     NodeExecutionState parentState = parent.requireNodeState();
     checkState(
         parentState.node().rerunOnResume(),
@@ -220,7 +242,10 @@ public final class NodeRunner {
     if (delegatesOutput) {
       parentState.claimOutputDelegation();
     }
-    String runId = config.runId().orElseGet(() -> parentState.nextChildRunId(node.name()));
+    String runId =
+        reservedRunId != null
+            ? reservedRunId
+            : config.runId().orElseGet(() -> parentState.nextChildRunId(node.name()));
     return sharedChildRun(parent, node, nodeInput, runId, config)
         .doOnError(
             error -> {
@@ -536,8 +561,7 @@ public final class NodeRunner {
               .andThen(Completable.error(() -> new NodeTimeoutException(node.name(), limit)));
       io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
       // Off the caller's thread, so a body that blocks does not block the caller.
-      return Completable.timer(0, NANOSECONDS, invocationContext.scheduler())
-          // Unlike subscribeOn, canceling this hop does not interrupt the handling of node events.
+      return completeOn(invocationContext.scheduler())
           .andThen(run.compose(Tracing.withContext(traceContext)))
           // convert saturates, so a timeout too long to count in nanoseconds waits about 292 years.
           .timeout(NANOSECONDS.convert(limit), NANOSECONDS, timedOut)
@@ -800,6 +824,15 @@ public final class NodeRunner {
   /** Returns the {@code name@runId} path segment of a node's run. */
   static String segment(String name, String runId) {
     return name + "@" + runId;
+  }
+
+  /**
+   * Returns a {@link Completable} that completes on {@code scheduler}, so work chained after it
+   * starts on that scheduler instead of the caller's thread. Unlike {@code subscribeOn}, canceling
+   * the chained work does not interrupt the thread it runs on.
+   */
+  static Completable completeOn(Scheduler scheduler) {
+    return Completable.timer(0, NANOSECONDS, scheduler);
   }
 
   /** Returns whether {@code event} is a final event whose content is the node's output. */
