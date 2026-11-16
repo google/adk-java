@@ -21,6 +21,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Single;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -55,11 +56,16 @@ public class SetModelResponseTool extends BaseTool {
 
   @Override
   public Optional<FunctionDeclaration> declaration() {
+    // Function parameters must be an object, so an untyped object schema gets that type.
+    Schema parameters =
+        outputSchema.type().isPresent()
+            ? outputSchema
+            : outputSchema.toBuilder().type(Type.Known.OBJECT).build();
     return Optional.of(
         FunctionDeclaration.builder()
             .name(name())
             .description(description())
-            .parameters(outputSchema)
+            .parameters(parameters)
             .build());
   }
 
