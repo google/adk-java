@@ -59,6 +59,7 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.request.ChatRequestParameters;
 import dev.langchain4j.model.chat.request.ToolChoice;
+import dev.langchain4j.model.chat.request.json.JsonAnyOfSchema;
 import dev.langchain4j.model.chat.request.json.JsonArraySchema;
 import dev.langchain4j.model.chat.request.json.JsonBooleanSchema;
 import dev.langchain4j.model.chat.request.json.JsonIntegerSchema;
@@ -79,6 +80,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -88,6 +90,8 @@ import org.slf4j.LoggerFactory;
 public abstract class LangChain4j extends BaseLlm {
 
   private static final Logger logger = LoggerFactory.getLogger(LangChain4j.class);
+  // Reference and composition keywords that genai's Schema cannot carry.
+  private static final Set<String> UNSUPPORTED_SCHEMA_KEYWORDS = Set.of("$ref", "oneOf", "allOf");
   private static final TypeReference<Map<String, Object>> MAP_TYPE_REFERENCE =
       new TypeReference<>() {};
 
@@ -523,49 +527,60 @@ public abstract class LangChain4j extends BaseLlm {
     llmRequest
         .tools()
         .values()
-        .forEach(
-            baseTool -> {
-              if (baseTool.declaration().isPresent()) {
-                FunctionDeclaration functionDeclaration = baseTool.declaration().get();
-                Schema schema = null;
-                if (functionDeclaration.parametersJsonSchema().isPresent()) {
-                  Object jsonSchemaObj = functionDeclaration.parametersJsonSchema().get();
-                  try {
-                    if (jsonSchemaObj instanceof Schema) {
-                      schema = (Schema) jsonSchemaObj;
-                    } else {
-                      schema = JsonBaseModel.getMapper().convertValue(jsonSchemaObj, Schema.class);
-                    }
-                  } catch (Exception e) {
-                    throw new IllegalStateException(
-                        "Failed to convert parametersJsonSchema to Schema: " + e.getMessage(), e);
-                  }
-                } else if (functionDeclaration.parameters().isPresent()) {
-                  schema = functionDeclaration.parameters().get();
-                }
-
-                if (schema != null) {
-                  ToolSpecification toolSpecification =
-                      ToolSpecification.builder()
-                          .name(baseTool.name())
-                          .description(baseTool.description())
-                          .parameters(toParameters(schema))
-                          .build();
-                  toolSpecifications.add(toolSpecification);
+        .forEach(baseTool -> {
+          if (baseTool.declaration().isPresent()) {
+            FunctionDeclaration functionDeclaration = baseTool.declaration().get();
+            Schema schema = null;
+            if (functionDeclaration.parametersJsonSchema().isPresent()) {
+              Object jsonSchemaObj = functionDeclaration.parametersJsonSchema().get();
+              rejectUnsupportedKeywords(
+                  baseTool.name(),
+                  JsonBaseModel.getMapper().convertValue(jsonSchemaObj, Object.class));
+              try {
+                if (jsonSchemaObj instanceof Schema) {
+                  schema = (Schema) jsonSchemaObj;
                 } else {
-                  throw new IllegalStateException("Tool lacking parameters: " + baseTool);
+                  schema = JsonBaseModel.getMapper().convertValue(jsonSchemaObj, Schema.class);
                 }
-              } else {
-                throw new IllegalStateException("Tool lacking declaration: " + baseTool);
+              } catch (Exception e) {
+                throw new IllegalStateException(
+                    "Failed to convert parametersJsonSchema to Schema: " + e.getMessage(), e);
               }
-            });
+            } else if (functionDeclaration.parameters().isPresent()) {
+              schema = functionDeclaration.parameters().get();
+            }
+
+            if (schema != null) {
+              ToolSpecification toolSpecification =
+                  ToolSpecification.builder()
+                      .name(baseTool.name())
+                      .description(baseTool.description())
+                      .parameters(toParameters(schema))
+                      .build();
+              toolSpecifications.add(toolSpecification);
+            } else {
+              throw new IllegalStateException("Tool lacking parameters: " + baseTool);
+            }
+          } else {
+            throw new IllegalStateException("Tool lacking declaration: " + baseTool);
+          }
+        });
 
     return toolSpecifications;
   }
 
   private JsonObjectSchema toParameters(Schema schema) {
-    if (schema.type().isPresent() && Type.Known.OBJECT.equals(schema.type().get().knownEnum())) {
+    // An untyped root with anyOf or items describes something other than an object.
+    if (schema.type().isEmpty()
+        && !declaresKeys(schema)
+        && (!schema.anyOf().orElse(List.of()).isEmpty() || schema.items().isPresent())) {
+      throw new UnsupportedOperationException(
+          "LangChain4jLlm does not support an untyped root schema with anyOf or items");
+    }
+    // Any other untyped root describes an object.
+    if (schema.type().map(t -> t.knownEnum() == Type.Known.OBJECT).orElse(true)) {
       return JsonObjectSchema.builder()
+          .description(schema.description().orElse(null))
           .addProperties(toProperties(schema))
           .required(schema.required().orElse(List.of()))
           .build();
@@ -582,31 +597,122 @@ public abstract class LangChain4j extends BaseLlm {
     return result;
   }
 
-  private JsonSchemaElement toJsonSchemaElement(Schema schema) {
-    if (schema != null && schema.type().isPresent()) {
-      Type type = schema.type().get();
-      return switch (type.knownEnum()) {
-        case STRING ->
-            JsonStringSchema.builder().description(schema.description().orElse(null)).build();
-        case NUMBER ->
-            JsonNumberSchema.builder().description(schema.description().orElse(null)).build();
-        case INTEGER ->
-            JsonIntegerSchema.builder().description(schema.description().orElse(null)).build();
-        case BOOLEAN ->
-            JsonBooleanSchema.builder().description(schema.description().orElse(null)).build();
-        case ARRAY ->
-            JsonArraySchema.builder()
-                .description(schema.description().orElse(null))
-                .items(toJsonSchemaElement(schema.items().orElseThrow()))
-                .build();
-        case OBJECT -> toParameters(schema);
-        default ->
-            throw new UnsupportedFeatureException(
-                "LangChain4jLlm does not support schema of type: " + type);
-      };
-    } else {
-      throw new IllegalArgumentException("Schema type cannot be null or absent");
+  private JsonSchemaElement toJsonSchemaElement(@Nullable Schema schema) {
+    if (schema == null) {
+      return anyValue(null);
     }
+    @Nullable String description = schema.description().orElse(null);
+    // Untyped: keys make an object and items an array, as in SchemaUtils; else anyOf decides.
+    if (schema.type().isEmpty() && !declaresKeys(schema)) {
+      if (!schema.anyOf().orElse(List.of()).isEmpty()) {
+        return toAnyOf(schema);
+      }
+      if (schema.items().isEmpty()) {
+        return anyValue(description);
+      }
+    }
+    Type.Known type =
+        schema
+            .type()
+            .map(Type::knownEnum)
+            .orElse(declaresKeys(schema) ? Type.Known.OBJECT : Type.Known.ARRAY);
+    return switch (type) {
+      case STRING -> JsonStringSchema.builder().description(description).build();
+      case NUMBER -> JsonNumberSchema.builder().description(description).build();
+      case INTEGER -> JsonIntegerSchema.builder().description(description).build();
+      case BOOLEAN -> JsonBooleanSchema.builder().description(description).build();
+      case ARRAY ->
+          JsonArraySchema.builder()
+              .description(description)
+              .items(schema.items().map(this::toJsonSchemaElement).orElseGet(() -> anyValue(null)))
+              .build();
+      case OBJECT -> toParameters(schema);
+      default ->
+          throw new UnsupportedFeatureException(
+              "LangChain4jLlm does not support schema of type: " + type);
+    };
+  }
+
+  /** Returns whether an untyped {@code schema} names keys, which makes it an object. */
+  private static boolean declaresKeys(Schema schema) {
+    return schema.properties().isPresent() || schema.required().isPresent();
+  }
+
+  /**
+   * Throws if an untyped schema in {@code jsonSchema} uses a keyword that genai's {@link Schema}
+   * drops, which would send the model "any value" instead of the contract the tool declares.
+   */
+  private static void rejectUnsupportedKeywords(String toolName, @Nullable Object jsonSchema) {
+    if (!(jsonSchema instanceof Map<?, ?> schema)) {
+      return;
+    }
+    if (!schema.containsKey("type")) {
+      for (String keyword : UNSUPPORTED_SCHEMA_KEYWORDS) {
+        if (schema.containsKey(keyword)) {
+          throw new UnsupportedOperationException(
+              "LangChain4jLlm does not support "
+                  + keyword
+                  + " in the parameters of tool "
+                  + toolName);
+        }
+      }
+    }
+    if (schema.get("properties") instanceof Map<?, ?> properties) {
+      properties.values().forEach(property -> rejectUnsupportedKeywords(toolName, property));
+    }
+    rejectUnsupportedKeywords(toolName, schema.get("items"));
+    if (schema.get("anyOf") instanceof List<?> branches) {
+      branches.forEach(branch -> rejectUnsupportedKeywords(toolName, branch));
+    }
+  }
+
+  /**
+   * Maps the anyOf branches of {@code schema} without NULL branches, so an optional parameter goes
+   * out as its non-null type. A single remaining branch is returned as itself.
+   */
+  private JsonSchemaElement toAnyOf(Schema schema) {
+    @Nullable String description = schema.description().orElse(null);
+    List<Schema> branches = new ArrayList<>();
+    for (Schema branch : schema.anyOf().get()) {
+      if (branch.type().map(t -> t.knownEnum() != Type.Known.NULL).orElse(true)) {
+        branches.add(branch);
+      }
+    }
+    if (branches.isEmpty()) {
+      return anyValue(description);
+    }
+    if (branches.size() == 1) {
+      Schema only = branches.get(0);
+      if (description != null && only.description().isEmpty()) {
+        only = only.toBuilder().description(description).build();
+      }
+      return toJsonSchemaElement(only);
+    }
+    List<JsonSchemaElement> elements = new ArrayList<>();
+    for (Schema branch : branches) {
+      elements.add(toJsonSchemaElement(branch));
+    }
+    return JsonAnyOfSchema.builder().description(description).anyOf(elements).build();
+  }
+
+  /**
+   * Returns an element that accepts a string, number, boolean, object, or an array of those, for a
+   * schema without a type. Not a {@code JsonRawSchema}, which the Gemini provider rejects. The
+   * array branch has items, which Gemini requires.
+   */
+  private static JsonSchemaElement anyValue(@Nullable String description) {
+    List<JsonSchemaElement> nonArrays =
+        List.of(
+            new JsonStringSchema(),
+            new JsonNumberSchema(),
+            new JsonBooleanSchema(),
+            JsonObjectSchema.builder().build());
+    List<JsonSchemaElement> anyOf = new ArrayList<>(nonArrays);
+    anyOf.add(
+        JsonArraySchema.builder()
+            .items(JsonAnyOfSchema.builder().anyOf(nonArrays).build())
+            .build());
+    return JsonAnyOfSchema.builder().description(description).anyOf(anyOf).build();
   }
 
   private LlmResponse toLlmResponse(ChatResponse chatResponse, ChatRequest chatRequest) {
