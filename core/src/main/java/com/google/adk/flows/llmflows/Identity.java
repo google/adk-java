@@ -16,6 +16,7 @@
 
 package com.google.adk.flows.llmflows;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.models.LlmRequest;
@@ -23,7 +24,10 @@ import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import io.reactivex.rxjava3.core.Single;
 
-/** {@link RequestProcessor} that gives the agent identity from the framework */
+/**
+ * {@link RequestProcessor} that gives the agent identity from the framework. An agent that runs as
+ * a single-turn workflow node gets none.
+ */
 public final class Identity implements RequestProcessor {
 
   public Identity() {}
@@ -32,6 +36,10 @@ public final class Identity implements RequestProcessor {
   public Single<RequestProcessor.RequestProcessingResult> processRequest(
       InvocationContext context, LlmRequest request) {
     BaseAgent agent = context.agent();
+    if (context.agentMode(agent).filter(AgentMode.SINGLE_TURN::equals).isPresent()) {
+      return Single.just(
+          RequestProcessor.RequestProcessingResult.create(request, ImmutableList.of()));
+    }
     StringBuilder builder =
         new StringBuilder()
             .append("You are an agent. Your internal name is ")

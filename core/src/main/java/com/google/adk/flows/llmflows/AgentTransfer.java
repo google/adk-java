@@ -16,6 +16,7 @@
 
 package com.google.adk.flows.llmflows;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
@@ -50,9 +51,11 @@ public final class AgentTransfer implements RequestProcessor {
           RequestProcessor.RequestProcessingResult.create(request, ImmutableList.of()));
     }
 
-    LlmRequest.Builder builder =
-        request.toBuilder()
-            .appendInstructions(ImmutableList.of(buildTargetAgentsInstructions(agent, targets)));
+    LlmRequest.Builder builder = request.toBuilder();
+    // As in Python ADK, a single-turn node can transfer but is not told to.
+    if (context.agentMode(agent).filter(AgentMode.SINGLE_TURN::equals).isEmpty()) {
+      builder.appendInstructions(ImmutableList.of(buildTargetAgentsInstructions(agent, targets)));
+    }
 
     FunctionTool agentTransferTool = createTransferToAgentTool();
     agentTransferTool.processLlmRequest(builder, ToolContext.builder(context).build());

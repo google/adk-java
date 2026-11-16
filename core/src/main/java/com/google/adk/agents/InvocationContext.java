@@ -86,6 +86,7 @@ public class InvocationContext {
   @Nullable private String branch;
   private BaseAgent agent;
   private final @Nullable Node node;
+  private final @Nullable AgentModeOverride agentModeOverride;
   private boolean endInvocation;
 
   protected InvocationContext(Builder builder) {
@@ -100,6 +101,7 @@ public class InvocationContext {
     this.invocationId = builder.resolveInvocationId();
     this.agent = builder.agent;
     this.node = builder.node;
+    this.agentModeOverride = builder.agentModeOverride;
     this.session = builder.session;
     this.userContent = builder.userContent;
     this.runConfig = builder.runConfig;
@@ -192,6 +194,19 @@ public class InvocationContext {
   @Experimental
   public Optional<Node> node() {
     return Optional.ofNullable(node);
+  }
+
+  /**
+   * Returns the mode {@code agent} runs in as a workflow node in this context, or empty when it
+   * runs without one.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public Optional<AgentMode> agentMode(BaseAgent agent) {
+    return agentModeOverride != null && agentModeOverride.agent().equals(agent)
+        ? Optional.of(agentModeOverride.mode())
+        : Optional.empty();
   }
 
   /** Returns the session associated with this invocation. */
@@ -650,6 +665,11 @@ public class InvocationContext {
     }
   }
 
+  /**
+   * The mode one agent runs in, keyed to that agent so the sub-agents it reaches run without it.
+   */
+  private record AgentModeOverride(BaseAgent agent, AgentMode mode) {}
+
   /** Builder for {@link InvocationContext}. */
   public static class Builder {
 
@@ -667,6 +687,7 @@ public class InvocationContext {
       this.invocationIdSet = true;
       this.agent = context.agent;
       this.node = context.node;
+      this.agentModeOverride = context.agentModeOverride;
       this.session = context.session;
       this.userContent = context.userContent;
       this.runConfig = context.runConfig;
@@ -699,6 +720,7 @@ public class InvocationContext {
     private boolean invocationIdSet;
     private BaseAgent agent;
     private @Nullable Node node;
+    private @Nullable AgentModeOverride agentModeOverride;
     private Session session;
     @Nullable private Content userContent = null;
     private RunConfig runConfig = RunConfig.builder().build();
@@ -819,6 +841,13 @@ public class InvocationContext {
     @Experimental
     public Builder node(@Nullable Node node) {
       this.node = node;
+      return this;
+    }
+
+    /** Sets the mode {@code agent} runs in as a workflow node, replacing any earlier one. */
+    @CanIgnoreReturnValue
+    Builder agentMode(BaseAgent agent, AgentMode mode) {
+      this.agentModeOverride = new AgentModeOverride(agent, mode);
       return this;
     }
 
@@ -1024,6 +1053,7 @@ public class InvocationContext {
         && Objects.equals(invocationId, that.invocationId)
         && Objects.equals(agent, that.agent)
         && Objects.equals(node, that.node)
+        && Objects.equals(agentModeOverride, that.agentModeOverride)
         && Objects.equals(session, that.session)
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
@@ -1050,6 +1080,7 @@ public class InvocationContext {
         invocationId,
         agent,
         node,
+        agentModeOverride,
         session,
         userContent,
         runConfig,
