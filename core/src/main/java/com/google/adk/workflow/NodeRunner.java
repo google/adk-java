@@ -529,16 +529,19 @@ public final class NodeRunner {
         return run;
       }
       Duration limit = timeout.get();
-      // Fails on the timer's thread: the timed-out attempt may still hold the scheduler's threads.
-      Completable timedOut = Completable.error(() -> new NodeTimeoutException(node.name(), limit));
+      // The timeout only interrupts a body, so the node fails once the body has returned.
+      Completable timedOut =
+          nodeState
+              .bodyReturned()
+              .andThen(Completable.error(() -> new NodeTimeoutException(node.name(), limit)));
       io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
-      // Off the caller's thread, so a body that blocks its thread cannot hold off the timeout.
+      // Off the caller's thread, so a body that blocks does not block the caller.
       return Completable.timer(0, NANOSECONDS, invocationContext.scheduler())
           // Unlike subscribeOn, canceling this hop does not interrupt the handling of node events.
           .andThen(run.compose(Tracing.withContext(traceContext)))
           // convert saturates, so a timeout too long to count in nanoseconds waits about 292 years.
           .timeout(NANOSECONDS.convert(limit), NANOSECONDS, timedOut)
-          // The failure arrives on the timer's thread, so it needs the caller's trace context too.
+          // The failure arrives on another thread, so it needs the caller's trace context too.
           .compose(Tracing.withContext(traceContext));
     }
 

@@ -28,6 +28,7 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 
@@ -55,10 +56,12 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.databind.util.StdConverter;
 import com.google.adk.agents.Context;
+import com.google.adk.agents.InvocationContext;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
+import com.google.adk.plugins.BasePlugin;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestNode;
@@ -76,6 +79,7 @@ import com.google.genai.types.Type;
 import com.google.genai.types.VideoMetadata;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
@@ -1373,6 +1377,265 @@ public final class FunctionNodeTest {
 
     assertThat(result.error()).isInstanceOf(NodeTimeoutException.class);
     assertThat(result.errorMessage("NodeTimeoutException")).contains("'sleeper'");
+  }
+
+  @Test
+  public void nodeTimeout_bodyIgnoringTheInterrupt_runFailsOnlyAfterItReturns() throws Exception {
+    // The body waits for the run to end, at most 2 s, so a run that ends first records it first.
+    List<String> timeline = Collections.synchronizedList(new ArrayList<>());
+    CountDownLatch runEnded = new CountDownLatch(1);
+    CountDownLatch bodyReturned = new CountDownLatch(1);
+    AtomicBoolean interrupted = new AtomicBoolean();
+    FunctionNode<Content, String> stubborn =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("stubborn")
+            .config(NodeConfig.builder().timeout(Duration.ofMillis(200)).build())
+            .body((ctx, message) -> {
+              var unused = Uninterruptibles.awaitUninterruptibly(runEnded, 2, SECONDS);
+              interrupted.set(Thread.currentThread().isInterrupted());
+              timeline.add("body returned");
+              bodyReturned.countDown();
+              return "late";
+            })
+            .build();
+    ExecutorService executor = Executors.newCachedThreadPool();
+
+    RunResult result;
+    try {
+      result = run(chain(stubborn), Schedulers.from(executor));
+      timeline.add("run ended");
+      runEnded.countDown();
+      assertThat(bodyReturned.await(10, SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(timeline).containsExactly("body returned", "run ended").inOrder();
+    assertThat(interrupted.get()).isTrue();
+    assertThat(result.errorMessage("NodeTimeoutException")).contains("'stubborn'");
+  }
+
+  @Test
+  public void nodeTimeoutWithRetry_bodyIgnoringTheInterrupt_retryStartsOnlyAfterItReturns()
+      throws Exception {
+    // Attempt 1 waits for attempt 2, at most 2 s, so an overlapping retry records its start first.
+    AtomicInteger attempts = new AtomicInteger();
+    List<String> timeline = Collections.synchronizedList(new ArrayList<>());
+    CountDownLatch retryStarted = new CountDownLatch(1);
+    CountDownLatch firstReturned = new CountDownLatch(1);
+    AtomicBoolean firstInterrupted = new AtomicBoolean();
+    FunctionNode<Content, String> stubborn =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("stubborn")
+            .config(
+                NodeConfig.builder()
+                    .timeout(Duration.ofMillis(200))
+                    .retryConfig(
+                        RetryConfig.builder()
+                            .maxAttempts(2)
+                            .initialDelay(Duration.ZERO)
+                            .jitter(0)
+                            .build())
+                    .build())
+            .body((ctx, message) -> {
+              int attempt = attempts.incrementAndGet();
+              timeline.add("start " + attempt);
+              if (attempt == 1) {
+                var unused = Uninterruptibles.awaitUninterruptibly(retryStarted, 2, SECONDS);
+                firstInterrupted.set(Thread.currentThread().isInterrupted());
+                timeline.add("end 1");
+                firstReturned.countDown();
+                return "late";
+              }
+              retryStarted.countDown();
+              return "retried";
+            })
+            .build();
+    ExecutorService executor = Executors.newCachedThreadPool();
+
+    RunResult result;
+    try {
+      result = run(chain(stubborn), Schedulers.from(executor));
+      assertThat(firstReturned.await(10, SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(timeline).containsExactly("start 1", "end 1", "start 2").inOrder();
+    assertThat(firstInterrupted.get()).isTrue();
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/stubborn@1")).isEqualTo("retried");
+  }
+
+  @Test
+  public void nodeTimeoutWithRetry_bodyRunsAnotherNodeUnderItsContext_retryWaitsForTheOuterBody()
+      throws Exception {
+    // "inner" runs under "outer"'s context and returns at once; "outer" then outlives its timeout.
+    AtomicInteger attempts = new AtomicInteger();
+    List<String> timeline = Collections.synchronizedList(new ArrayList<>());
+    CountDownLatch retryStarted = new CountDownLatch(1);
+    CountDownLatch firstReturned = new CountDownLatch(1);
+    FunctionNode<Object, String> inner =
+        FunctionNodes.of("inner", Object.class, String.class, (ctx, in) -> "inner out");
+    FunctionNode<Content, String> outer =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("outer")
+            .config(
+                NodeConfig.builder()
+                    .timeout(Duration.ofMillis(200))
+                    .retryConfig(
+                        RetryConfig.builder()
+                            .maxAttempts(2)
+                            .initialDelay(Duration.ZERO)
+                            .jitter(0)
+                            .build())
+                    .build())
+            .body((ctx, message) -> {
+              int attempt = attempts.incrementAndGet();
+              timeline.add("start " + attempt);
+              if (attempt == 1) {
+                inner.runNode(ctx, null).blockingSubscribe();
+                timeline.add("inner returned");
+                var unused = Uninterruptibles.awaitUninterruptibly(retryStarted, 2, SECONDS);
+                timeline.add("end 1");
+                firstReturned.countDown();
+                return "late";
+              }
+              retryStarted.countDown();
+              return "retried";
+            })
+            .build();
+    ExecutorService executor = Executors.newCachedThreadPool();
+
+    RunResult result;
+    try {
+      result = run(chain(outer), Schedulers.from(executor));
+      assertThat(firstReturned.await(10, SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(timeline).containsExactly("start 1", "inner returned", "end 1", "start 2").inOrder();
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/outer@1")).isEqualTo("retried");
+  }
+
+  @Test
+  public void nodeTimeout_oneThreadRunnerWithABusySibling_failsTheRunAndCancelsTheSibling()
+      throws Exception {
+    // Once "sleeper" times out, a task it queues and "busy" hold the one thread until released.
+    // Both nodes have a timeout, so both start through the same hops and "sleeper" starts first.
+    List<String> timeline = Collections.synchronizedList(new ArrayList<>());
+    CountDownLatch release = new CountDownLatch(1);
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .config(NodeConfig.builder().timeout(Duration.ofMillis(200)).build())
+            .body((ctx, message) -> {
+              timeline.add("sleeper started");
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                executor.execute(() -> Uninterruptibles.awaitUninterruptibly(release));
+              }
+              return "slept";
+            })
+            .build();
+    FunctionNode<Content, String> busy =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("busy")
+            .config(NodeConfig.builder().timeout(Duration.ofHours(1)).build())
+            .body((ctx, message) -> {
+              timeline.add("busy started");
+              release.await();
+              timeline.add("busy finished");
+              return "done";
+            })
+            .build();
+    Workflow workflow =
+        Workflow.builder()
+            .name("wf")
+            .edges(new Edge(Start.INSTANCE, sleeper), new Edge(Start.INSTANCE, busy))
+            .build();
+    Runner runner = runner(workflow, Schedulers.from(executor));
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+
+    boolean runEnded;
+    try {
+      runner
+          .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+          .subscribe(subscriber);
+      runEnded = subscriber.await(5, SECONDS);
+    } finally {
+      subscriber.cancel();
+      release.countDown();
+      executor.shutdownNow();
+    }
+
+    assertThat(timeline).isNotEmpty();
+    assertThat(timeline.get(0)).isEqualTo("sleeper started");
+    assertWithMessage("whether the run ended within 5 s").that(runEnded).isTrue();
+    assertThat(timeline).doesNotContain("busy finished");
+    subscriber.assertError(NodeTimeoutException.class);
+  }
+
+  @Test
+  public void
+      inlineSchedulerWithInterruptedCaller_nodeTimeout_deliversTheFailureOnAnUninterruptedThread()
+          throws Exception {
+    // The body outlives its timeout on the caller's interrupted thread.
+    AtomicReference<Boolean> errorOnInterruptedThread = new AtomicReference<>();
+    FunctionNode<Content, String> stubborn =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("stubborn")
+            .config(NodeConfig.builder().timeout(Duration.ofMillis(200)).build())
+            .body((ctx, message) -> {
+              Uninterruptibles.sleepUninterruptibly(400, MILLISECONDS);
+              return "late";
+            })
+            .build();
+    BasePlugin observer =
+        new BasePlugin("observer") {
+          @Override
+          public Maybe<Event> onEventCallback(InvocationContext context, Event event) {
+            if (event.errorCode().isPresent()) {
+              errorOnInterruptedThread.set(Thread.currentThread().isInterrupted());
+            }
+            return Maybe.empty();
+          }
+        };
+    Runner runner =
+        Runner.builder()
+            .app(App.builder().name(APP).rootNode(chain(stubborn)).plugins(observer).build())
+            .scheduler(Schedulers.trampoline())
+            .build();
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    TestSubscriber<Event> subscriber = new TestSubscriber<>();
+    ExecutorService caller = Executors.newSingleThreadExecutor();
+
+    boolean runEnded;
+    try {
+      var unused =
+          caller.submit(() -> {
+            Thread.currentThread().interrupt();
+            runner
+                .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+                .subscribe(subscriber);
+            return Thread.interrupted();
+          });
+      runEnded = subscriber.await(5, SECONDS);
+    } finally {
+      subscriber.cancel();
+      caller.shutdownNow();
+    }
+
+    assertWithMessage("whether the run ended within 5 s").that(runEnded).isTrue();
+    subscriber.assertError(NodeTimeoutException.class);
+    assertWithMessage("whether the error event reached plugins on an interrupted thread")
+        .that(errorOnInterruptedThread.get())
+        .isFalse();
   }
 
   @Test

@@ -41,7 +41,9 @@ public abstract class NodeConfig {
 
   /**
    * Returns how long an attempt may run before it is canceled and fails with a {@link
-   * NodeTimeoutException}; empty imposes no limit.
+   * NodeTimeoutException}; empty imposes no limit. A {@link FunctionNode}'s own timeout interrupts
+   * its running body and fails the attempt once the body returns, so a body that ignores the
+   * interrupt delays the failure and any retry.
    */
   public abstract Optional<Duration> timeout();
 
