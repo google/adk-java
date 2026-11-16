@@ -20,19 +20,24 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.common.annotations.VisibleForTesting;
 import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Lets {@link BaseLlmFlow}'s multi-step loop wait until the {@code Runner} -- the sole event
  * persister -- has appended the current step's events, so the next step's request (built from
  * {@code session.events()} by {@link Contents}) is not assembled from a stale session. The {@code
  * Runner} calls {@link #markPersisted} (or {@link #markFailed}) after each append; the flow calls
- * {@link #awaitPersisted} between steps. State lives in the per-invocation {@link
- * InvocationContext#callbackContextData()} map, shared across the agent tree.
+ * {@link #awaitPersisted} between steps, and workflow agents between sub-agents. State lives in the
+ * per-invocation {@link InvocationContext#callbackContextData()} map, shared across the agent tree.
  *
  * <p>Each event id maps to a {@link CompletableSubject}: pending until its append finishes, then
  * terminally completed or failed. The subject retains its terminal state, so {@code
@@ -47,6 +52,10 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class PersistBarrier {
 
+  private static final Logger logger = LoggerFactory.getLogger(PersistBarrier.class);
+
+  @VisibleForTesting static final Duration STALL_WARNING_DELAY = Duration.ofSeconds(60);
+
   private static final String ENABLED_KEY = "com.google.adk.flows.llmflows.persistBarrier.enabled";
   private static final String BARRIERS_KEY =
       "com.google.adk.flows.llmflows.persistBarrier.barriers";
@@ -60,13 +69,16 @@ public final class PersistBarrier {
    */
   public static void enable(InvocationContext context) {
     context.callbackContextData().put(ENABLED_KEY, true);
+    // Created now, not on first use, so a copy of callbackContextData made later shares it.
+    var unused = barriers(context);
   }
 
   /**
    * Completes once every event in {@code events} has been {@link #markPersisted}, or fails if any
-   * was {@link #markFailed}; completes immediately if the barrier was never {@link #enable}d.
-   * Already-resolved events resolve immediately, so the order of {@code awaitPersisted}/{@code
-   * mark*} does not matter.
+   * was {@link #markFailed}; completes immediately if the barrier was never {@link #enable}d, and
+   * logs a warning if still pending after 60 seconds. Already-resolved events resolve immediately,
+   * so the order of {@code awaitPersisted}/{@code mark*} does not matter. A wait that was still
+   * pending ends on {@link InvocationContext#scheduler()}.
    */
   public static Completable awaitPersisted(InvocationContext context, List<Event> events) {
     Boolean enabled = (Boolean) context.callbackContextData().get(ENABLED_KEY);
@@ -80,14 +92,38 @@ public final class PersistBarrier {
     // long sessions. Completable.concat drains its sources iteratively, so it stays stack-safe
     // while keeping the same await semantics (order is irrelevant, as each subject retains its
     // terminal state).
-    List<Completable> barriers = new ArrayList<>(events.size());
+    List<CompletableSubject> barriers = new ArrayList<>(events.size());
     for (Event event : events) {
       String eventId = event.id();
       if (eventId != null) {
         barriers.add(barrier(context, eventId));
       }
     }
-    return Completable.concat(barriers);
+    Completable persisted = Completable.concat(barriers);
+    return Completable.defer(() -> {
+      if (barriers.stream().allMatch(subject -> subject.hasComplete() || subject.hasThrowable())) {
+        return persisted;
+      }
+      // Warn rather than time out: the Runner saves only as fast as the caller reads.
+      Disposable warning =
+          Completable.timer(STALL_WARNING_DELAY.toMillis(), TimeUnit.MILLISECONDS)
+              .subscribe(() ->
+                  logger.warn(
+                      "Agent '{}' (invocation {}) has waited {}s for the Runner to save its"
+                          + " events. Expected if the caller has stopped reading events."
+                          + " Otherwise an agent between it and the Runner holds back,"
+                          + " buffers or changes the id of its events and the wait never"
+                          + " ends: run this agent with its own Runner and session.",
+                      context.agent().name(),
+                      context.invocationId(),
+                      STALL_WARNING_DELAY.toSeconds()));
+      return persisted
+          // Cancel before signaling: the next step can run inside onComplete.
+          .doOnTerminate(warning::dispose)
+          .doOnDispose(warning::dispose)
+          // Off the append's thread, so the Runner emits the event while the next step runs.
+          .observeOn(context.scheduler());
+    });
   }
 
   /** Signals that the {@code Runner} persisted the event with the given id. */

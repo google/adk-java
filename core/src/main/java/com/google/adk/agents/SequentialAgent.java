@@ -51,6 +51,12 @@ import org.slf4j.LoggerFactory;
  * var pipeline =
  *     SequentialAgent.builder().name("pipeline").subAgents(draft, reviewer).build();
  * }</pre>
+ *
+ * <p><b>Persistence:</b> in {@link #runAsync}, each sub-agent starts only after the {@code Runner}
+ * has saved the previous sub-agent's events to the session, so it sees their state changes. An
+ * agent that wraps this one and holds back, buffers or changes the id of those events can make this
+ * agent wait forever; to use its output inside your own agent, run this agent with a separate
+ * {@code Runner} and session.
  */
 public class SequentialAgent extends BaseAgent {
 
@@ -114,7 +120,10 @@ public class SequentialAgent extends BaseAgent {
       return runAsyncLegacyResumption(invocationContext, subAgents);
     }
     return Flowable.fromIterable(subAgents)
-        .concatMap(subAgent -> subAgent.runAsync(invocationContext));
+        .concatMap(subAgent ->
+            subAgent
+                .runAsync(invocationContext)
+                .compose(completeAfterPersisted(invocationContext)));
   }
 
   /**
@@ -128,18 +137,17 @@ public class SequentialAgent extends BaseAgent {
         WorkflowAgentResumption.resumeSubAgentIndex(invocationContext, subAgents).orElse(0);
     AtomicBoolean paused = new AtomicBoolean(false);
     return Flowable.fromIterable(subAgents.subList(startIndex, subAgents.size()))
-        .concatMap(
-            subAgent ->
-                paused.get()
-                    ? Flowable.<Event>empty()
-                    : subAgent
-                        .runAsync(invocationContext)
-                        .doOnNext(
-                            event -> {
-                              if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
-                                paused.set(true);
-                              }
-                            }));
+        .concatMap(subAgent ->
+            paused.get()
+                ? Flowable.<Event>empty()
+                : subAgent
+                    .runAsync(invocationContext)
+                    .doOnNext(event -> {
+                      if (WorkflowAgentResumption.hasPendingLongRunningCall(event)) {
+                        paused.set(true);
+                      }
+                    })
+                    .compose(completeAfterPersisted(invocationContext)));
   }
 
   /**
@@ -155,61 +163,53 @@ public class SequentialAgent extends BaseAgent {
   private Flowable<Event> runAsyncResumable(
       InvocationContext invocationContext, List<? extends BaseAgent> subAgents) {
     // Deferred so each subscription reads the checkpoint and builds its own mutable state.
-    return Flowable.defer(
-        () -> {
-          Map<String, Object> state = invocationContext.agentStates().get(name());
-          int resumeIndex = WorkflowAgentStates.resumeIndex(state, subAgents, logger);
-          // A checkpoint naming no sub-agent means the sequence already finished.
-          int startIndex =
-              resumeIndex == WorkflowAgentStates.NO_SUB_AGENT_NAMED
-                  ? subAgents.size()
-                  : resumeIndex;
-          AtomicBoolean paused = new AtomicBoolean(false);
-          AtomicBoolean resuming = new AtomicBoolean(state != null);
-          AtomicReference<BaseAgent> ranLast = new AtomicReference<>(null);
-          return Flowable.fromIterable(subAgents.subList(startIndex, subAgents.size()))
-              .concatMap(
-                  subAgent ->
-                      Flowable.defer(
-                          () -> {
-                            // Catches a previous sub-agent that paused without emitting an event.
-                            BaseAgent previous = ranLast.get();
-                            if (paused.get()
-                                || (previous != null
-                                    && invocationContext.hasUnansweredLongRunningCallIn(
-                                        previous))) {
-                              paused.set(true);
-                              return Flowable.<Event>empty();
-                            }
-                            ranLast.set(subAgent);
-                            Flowable<Event> checkpoint = Flowable.empty();
-                            if (!resuming.getAndSet(false)) {
-                              ImmutableMap<String, Object> subState =
-                                  ImmutableMap.of(
-                                      WorkflowAgentStates.CURRENT_SUB_AGENT, subAgent.name());
-                              checkpoint = checkpointAndRecord(invocationContext, subState);
-                            }
-                            Flowable<Event> run =
-                                subAgent
-                                    .runAsync(invocationContext)
-                                    .doOnNext(
-                                        event -> {
-                                          if (invocationContext.shouldPauseInvocation(event)) {
-                                            paused.set(true);
-                                          }
-                                        });
-                            return checkpoint.concatWith(run);
-                          }))
-              .concatWith(
-                  Flowable.defer(
-                      () -> {
-                        if (paused.get()
-                            || invocationContext.hasUnansweredLongRunningCallIn(this)) {
-                          return Flowable.<Event>empty();
-                        }
-                        return endOfAgentAndRecord(invocationContext);
-                      }));
-        });
+    return Flowable.defer(() -> {
+      Map<String, Object> state = invocationContext.agentStates().get(name());
+      int resumeIndex = WorkflowAgentStates.resumeIndex(state, subAgents, logger);
+      // A checkpoint naming no sub-agent means the sequence already finished.
+      int startIndex =
+          resumeIndex == WorkflowAgentStates.NO_SUB_AGENT_NAMED ? subAgents.size() : resumeIndex;
+      AtomicBoolean paused = new AtomicBoolean(false);
+      AtomicBoolean resuming = new AtomicBoolean(state != null);
+      AtomicReference<BaseAgent> ranLast = new AtomicReference<>(null);
+      return Flowable.fromIterable(subAgents.subList(startIndex, subAgents.size()))
+          .concatMap(subAgent ->
+              Flowable.defer(() -> {
+                // Catches a previous sub-agent that paused without emitting an event.
+                BaseAgent previous = ranLast.get();
+                if (paused.get()
+                    || (previous != null
+                        && invocationContext.hasUnansweredLongRunningCallIn(previous))) {
+                  paused.set(true);
+                  return Flowable.<Event>empty();
+                }
+                ranLast.set(subAgent);
+                Flowable<Event> checkpoint = Flowable.empty();
+                if (!resuming.getAndSet(false)) {
+                  ImmutableMap<String, Object> subState =
+                      ImmutableMap.of(WorkflowAgentStates.CURRENT_SUB_AGENT, subAgent.name());
+                  checkpoint = checkpointAndRecord(invocationContext, subState);
+                }
+                Flowable<Event> run =
+                    subAgent
+                        .runAsync(invocationContext)
+                        .doOnNext(event -> {
+                          if (invocationContext.shouldPauseInvocation(event)) {
+                            paused.set(true);
+                          }
+                        });
+                return checkpoint
+                    .concatWith(run)
+                    .compose(completeAfterPersisted(invocationContext));
+              }))
+          .concatWith(
+              Flowable.defer(() -> {
+                if (paused.get() || invocationContext.hasUnansweredLongRunningCallIn(this)) {
+                  return Flowable.<Event>empty();
+                }
+                return endOfAgentAndRecord(invocationContext);
+              }));
+    });
   }
 
   /**
