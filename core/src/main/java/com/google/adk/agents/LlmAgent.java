@@ -638,7 +638,7 @@ public class LlmAgent extends BaseAgent {
     }
   }
 
-  private void maybeSaveOutputToState(Event event) {
+  private void maybeSaveOutputToState(Event event, InvocationContext invocationContext) {
     // Events from another agent, e.g. a transfer target, must not overwrite this agent's output.
     if (!name().equals(event.author())) {
       logger.debug(
@@ -659,30 +659,36 @@ public class LlmAgent extends BaseAgent {
       return;
     }
 
-    // Concatenate text from all parts, excluding thoughts.
-    String rawResult =
-        parts.stream()
-            .filter(part -> !isThought(part))
-            .map(part -> part.text().orElse(""))
-            .collect(joining());
+    String rawResult = visibleText(event.content().get());
 
     Object output = rawResult;
     Optional<Schema> outputSchema = outputSchema();
-    if (outputSchema.isPresent()) {
+    if (outputSchema.isPresent() && runsSingleTurn(invocationContext)) {
+      try {
+        output = SchemaUtils.parseModelOutput(rawResult, outputSchema.get());
+      } catch (IllegalArgumentException e) {
+        // Like the node output, the saved value must match the schema.
+        return;
+      }
+      if (output == null) {
+        return;
+      }
+    } else if (outputSchema.isPresent()) {
       try {
         output = SchemaUtils.validateOutputSchema(rawResult, outputSchema.get());
       } catch (JsonProcessingException e) {
         logger.error(
             "LlmAgent output for outputKey '{}' was not valid JSON, despite an outputSchema being"
-                + " present. Saving raw output to state.",
+                + " present. Saving raw output to state. Cause: {}",
             outputKey().get(),
-            e);
+            // The exception's message can quote the model's output.
+            e.getClass().getSimpleName());
       } catch (IllegalArgumentException e) {
         logger.error(
             "LlmAgent output for outputKey '{}' did not match the outputSchema. Saving raw output"
-                + " to state.",
+                + " to state. Cause: {}",
             outputKey().get(),
-            e);
+            e.getClass().getSimpleName());
       }
     }
     event.actions().stateDelta().put(outputKey().get(), output);
@@ -692,60 +698,71 @@ public class LlmAgent extends BaseAgent {
     return part.thought().isPresent() && part.thought().get();
   }
 
+  /** Returns the text of the parts of {@code content} that are not thoughts. */
+  private static String visibleText(Content content) {
+    return content.parts().orElseGet(ImmutableList::of).stream()
+        .filter(part -> !isThought(part))
+        .map(part -> part.text().orElse(""))
+        .collect(joining());
+  }
+
+  private boolean runsSingleTurn(InvocationContext invocationContext) {
+    return invocationContext.agentMode(this).filter(AgentMode.SINGLE_TURN::equals).isPresent();
+  }
+
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
     if (!invocationContext.isResumable()) {
-      return llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
+      return llmFlow
+          .run(invocationContext)
+          .doOnNext(event -> maybeSaveOutputToState(event, invocationContext));
     }
-    return Flowable.defer(
-        () -> {
-          // Resumed after a transfer: continue the sub-agent instead of re-invoking the model.
-          if (invocationContext.agentStates().containsKey(name())) {
-            Optional<BaseAgent> resumeTarget = findSubAgentToResume(invocationContext);
-            if (resumeTarget.isPresent()) {
-              AtomicBoolean resumePaused = new AtomicBoolean(false);
-              return resumeTarget
-                  .get()
-                  .runAsync(invocationContext)
-                  .doOnNext(
-                      event -> {
-                        if (invocationContext.shouldPauseInvocation(event)) {
-                          resumePaused.set(true);
-                        }
-                      })
-                  .concatWith(
-                      Flowable.defer(
-                          () -> {
-                            if (resumePaused.get()) {
-                              return Flowable.<Event>empty();
-                            }
-                            return endOfAgentAndRecord(invocationContext);
-                          }));
-            }
-          }
-          // Normal path: emit an end-of-agent checkpoint so a later run can skip this agent.
-          Flowable<Event> events =
-              llmFlow.run(invocationContext).doOnNext(this::maybeSaveOutputToState);
-          AtomicBoolean paused = new AtomicBoolean(false);
-          return events
-              .doOnNext(
-                  event -> {
-                    if (invocationContext.shouldPauseInvocation(event)) {
-                      paused.set(true);
-                    }
-                  })
+    return Flowable.defer(() -> {
+      // Resumed after a transfer: continue the sub-agent instead of re-invoking the model.
+      if (invocationContext.agentStates().containsKey(name())) {
+        Optional<BaseAgent> resumeTarget = findSubAgentToResume(invocationContext);
+        if (resumeTarget.isPresent()) {
+          AtomicBoolean resumePaused = new AtomicBoolean(false);
+          return resumeTarget
+              .get()
+              .runAsync(invocationContext)
+              .doOnNext(event -> {
+                if (invocationContext.shouldPauseInvocation(event)) {
+                  resumePaused.set(true);
+                }
+              })
               .concatWith(
-                  Flowable.defer(
-                      () -> {
-                        // Only the checkpoint is withheld, as in Python; the flow still runs. A
-                        // transferring agent stays open so a resume re-enters it and reaches the
-                        // sub-agent it handed off to.
-                        if (paused.get() || invocationContext.lastEventsPauseInvocation()) {
-                          return Flowable.empty();
-                        }
-                        return endOfAgentAndRecord(invocationContext);
-                      }));
-        });
+                  Flowable.defer(() -> {
+                    if (resumePaused.get()) {
+                      return Flowable.<Event>empty();
+                    }
+                    return endOfAgentAndRecord(invocationContext);
+                  }));
+        }
+      }
+      // Normal path: emit an end-of-agent checkpoint so a later run can skip this agent.
+      Flowable<Event> events =
+          llmFlow
+              .run(invocationContext)
+              .doOnNext(event -> maybeSaveOutputToState(event, invocationContext));
+      AtomicBoolean paused = new AtomicBoolean(false);
+      return events
+          .doOnNext(event -> {
+            if (invocationContext.shouldPauseInvocation(event)) {
+              paused.set(true);
+            }
+          })
+          .concatWith(
+              Flowable.defer(() -> {
+                // Only the checkpoint is withheld, as in Python; the flow still runs. A
+                // transferring agent stays open so a resume re-enters it and reaches the
+                // sub-agent it handed off to.
+                if (paused.get() || invocationContext.lastEventsPauseInvocation()) {
+                  return Flowable.empty();
+                }
+                return endOfAgentAndRecord(invocationContext);
+              }));
+    });
   }
 
   /**
@@ -841,7 +858,8 @@ public class LlmAgent extends BaseAgent {
 
   /**
    * Runs this agent as a workflow node. A {@link AgentMode#SINGLE_TURN} agent gets the node input
-   * as its user turn; an agent without a mode runs as {@link BaseAgent#runNode} runs it.
+   * as its user turn, and its first final model turn is the node output. An agent without a mode
+   * runs as {@link BaseAgent#runNode} runs it.
    */
   @Experimental
   @Override
@@ -856,9 +874,58 @@ public class LlmAgent extends BaseAgent {
     // Eager disposal removes the input before the run ends, so a successor never sees it.
     return Flowable.using(
         () -> injectNodeInput(context, nodeInput),
-        unused -> run,
+        unused -> {
+          // The first final turn with an output is the node's output; later content is not.
+          AtomicBoolean outputMarked = new AtomicBoolean();
+          return run.map(event -> {
+            if (outputMarked.get()) {
+              return event;
+            }
+            Optional<Event> marked = markOutputIfFinalTurn(event);
+            outputMarked.set(marked.isPresent());
+            return marked.orElse(event);
+          });
+        },
         injected -> injected.ifPresent(event -> removeEvent(invocationContext.session(), event)),
         /* eager= */ true);
+  }
+
+  /**
+   * Returns {@code event} carrying the node output when it is this agent's final model turn with
+   * text, or else empty. Without an output schema, the event's message is the output.
+   *
+   * @throws IllegalArgumentException if the text does not match the output schema
+   */
+  private Optional<Event> markOutputIfFinalTurn(Event event) {
+    Optional<Content> content =
+        event.content().filter(c -> c.role().filter(Role.MODEL::equals).isPresent());
+    if (!name().equals(event.author())
+        || !event.finalResponse()
+        || !event.functionCalls().isEmpty()
+        || content.isEmpty()) {
+      return Optional.empty();
+    }
+    String text = visibleText(content.get());
+    Optional<Schema> schema = outputSchema();
+    Object output =
+        schema.isPresent()
+            ? SchemaUtils.parseModelOutput(text, schema.get())
+            : (text.isBlank() ? null : text.trim());
+    if (output == null) {
+      return Optional.empty();
+    }
+    Event.Builder marked = event.toBuilder().output(output);
+    if (schema.isEmpty()) {
+      // The output field gives the successor the trimmed text; the stored event drops it.
+      marked.nodeInfo(
+          event
+              .nodeInfo()
+              .map(NodeInfo::toBuilder)
+              .orElseGet(NodeInfo::builder)
+              .messageAsOutput(true)
+              .build());
+    }
+    return Optional.of(marked.build());
   }
 
   /**
@@ -942,7 +1009,9 @@ public class LlmAgent extends BaseAgent {
 
   @Override
   protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
-    return llmFlow.runLive(invocationContext).doOnNext(this::maybeSaveOutputToState);
+    return llmFlow
+        .runLive(invocationContext)
+        .doOnNext(event -> maybeSaveOutputToState(event, invocationContext));
   }
 
   /**

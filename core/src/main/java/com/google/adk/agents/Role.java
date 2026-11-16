@@ -21,5 +21,8 @@ public final class Role {
   /** The user interacting with the agent or model: a {@code Content} role and an event author. */
   public static final String USER = "user";
 
+  /** The model answering the user: a {@code Content} role. */
+  public static final String MODEL = "model";
+
   private Role() {}
 }

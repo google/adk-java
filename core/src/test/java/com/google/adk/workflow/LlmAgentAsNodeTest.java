@@ -16,11 +16,18 @@
 
 package com.google.adk.workflow;
 
+import static com.google.adk.testing.ResumabilityTestUtils.pendingFunctionTool;
 import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createInvocationContext;
+import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
+import static com.google.adk.workflow.WorkflowResumeTesting.answer;
+import static com.google.adk.workflow.WorkflowResumeTesting.go;
+import static com.google.adk.workflow.WorkflowResumeTesting.interrupt;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
@@ -30,18 +37,27 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
+import com.google.adk.models.BaseLlm;
+import com.google.adk.models.BaseLlmConnection;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.models.LlmResponse;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
+import com.google.adk.testing.TestUtils.EchoTool;
+import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.Part;
+import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.ArrayList;
@@ -245,6 +261,337 @@ public final class LlmAgentAsNodeTest {
   }
 
   @Test
+  public void runAsync_secondSingleTurnNode_getsTheFirstNodesAnswerAsItsUserTurn() {
+    LlmAgent first = singleTurnAgent("first", modelAnswering("Paris"));
+    TestLlm secondModel = TestLlm.create("done");
+    LlmAgent second = singleTurnAgent("second", secondModel);
+
+    run(
+        Workflow.builder()
+            .name("wf")
+            .edges(new Edge(Start.INSTANCE, first), new Edge(first, second))
+            .build(),
+        "Capital of France?");
+
+    assertThat(getLast(secondModel.getLastRequest().contents())).isEqualTo(userTurn("Paris"));
+  }
+
+  @Test
+  public void runAsync_singleTurnNode_givesItsTrimmedAnswerOnTheAnswerEventOnly() {
+    NodeRun nodeRun = runWithSuccessor(singleTurnAgent("worker", modelAnswering("  the answer\n")));
+
+    assertThat(nodeRun.output()).isEqualTo("the answer");
+    Event outputEvent =
+        nodeRun.events().stream()
+            .filter(event -> !outputFor(event).isEmpty())
+            .collect(onlyElement());
+    assertThat(outputEvent.nodeInfo().map(NodeInfo::messageAsOutput)).hasValue(true);
+    assertThat(outputEvent.output()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_singleTurnNode_leavesThoughtsOutOfItsOutputAndOutputKey() {
+    Content answer =
+        Content.builder()
+            .role("model")
+            .parts(
+                Part.builder().text("internal reasoning").thought(true).build(),
+                Part.fromText("visible answer"))
+            .build();
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("worker")
+            .model(TestLlm.create(createLlmResponse(answer)))
+            .mode(AgentMode.SINGLE_TURN)
+            .outputKey("summary")
+            .build();
+
+    NodeRun nodeRun = runWithSuccessor(agent);
+
+    assertThat(nodeRun.output()).isEqualTo("visible answer");
+    assertThat(stateDeltaValues(nodeRun.events(), "summary")).containsExactly("visible answer");
+  }
+
+  @Test
+  public void runAsync_singleTurnNodeThatCallsATool_givesItsAnswerTurnAsItsOutput() {
+    TestLlm model =
+        TestLlm.create(
+            createFunctionCallLlmResponse("call_1", "echo_tool", ImmutableMap.of()),
+            createTextLlmResponse("It is 72"));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("worker")
+            .model(model)
+            .mode(AgentMode.SINGLE_TURN)
+            .tools(new EchoTool())
+            .build();
+
+    NodeRun nodeRun = runWithSuccessor(agent);
+
+    assertThat(nodeRun.output()).isEqualTo("It is 72");
+    assertThat(nodeRun.events().stream().filter(event -> !outputFor(event).isEmpty())).hasSize(1);
+  }
+
+  @Test
+  public void runAsync_textBesideALongRunningCall_isSavedButIsNotTheOutput() {
+    Content turn =
+        Content.builder()
+            .role("model")
+            .parts(
+                Part.fromText("Checking with the user."),
+                Part.builder()
+                    .functionCall(
+                        FunctionCall.builder()
+                            .id("call_1")
+                            .name("pendingTool")
+                            .args(ImmutableMap.of("message", "hello")))
+                    .build())
+            .build();
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("worker")
+            .model(TestLlm.create(createLlmResponse(turn)))
+            .mode(AgentMode.SINGLE_TURN)
+            .tools(pendingFunctionTool())
+            .outputKey("answer")
+            .build();
+
+    List<Event> events =
+        run(Workflow.builder().name("wf").edges(new Edge(Start.INSTANCE, agent)).build(), "go");
+
+    assertThat(stateDeltaValues(events, "answer")).containsExactly("Checking with the user.");
+    assertThat(events.stream().filter(event -> !outputFor(event).isEmpty())).isEmpty();
+  }
+
+  @Test
+  public void runAsync_contentAfterTheAnswer_isNotASecondOutput() {
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("worker")
+            .model(modelAnswering("answer"))
+            .mode(AgentMode.SINGLE_TURN)
+            .afterAgentCallback(context ->
+                Maybe.just(Content.builder().role("model").parts(Part.fromText("note")).build()))
+            .build();
+
+    NodeRun nodeRun = runWithSuccessor(agent);
+
+    assertThat(nodeRun.output()).isEqualTo("answer");
+  }
+
+  @Test
+  public void runAsync_thoughtOnlyAnswer_givesNoOutput() {
+    Content thoughtOnly =
+        Content.builder()
+            .role("model")
+            .parts(Part.builder().text("internal reasoning").thought(true).build())
+            .build();
+
+    NodeRun nodeRun =
+        runWithSuccessor(singleTurnAgent("worker", TestLlm.create(createLlmResponse(thoughtOnly))));
+
+    assertThat(nodeRun.output()).isNull();
+  }
+
+  @Test
+  public void runAsync_answerWithoutTheModelRole_givesNoOutput() {
+    // As in Python ADK, only a model turn is the output; the model adapters all set the role.
+    NodeRun nodeRun = runWithSuccessor(singleTurnAgent("worker", TestLlm.create("done")));
+
+    assertThat(nodeRun.output()).isNull();
+  }
+
+  @Test
+  public void runAsync_singleTurnNodeWithAnOutputSchema_givesAndSavesTheParsedValue() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "title",
+                    Schema.builder().type("STRING").build(),
+                    "count",
+                    Schema.builder().type("INTEGER").build()))
+            .build();
+    LlmAgent agent =
+        schemaAgent(schema, "{\"title\": \"Story\", \"count\": 3}").outputKey("meta").build();
+
+    NodeRun nodeRun = runWithSuccessor(agent);
+
+    ImmutableMap<String, Object> expected = ImmutableMap.of("title", "Story", "count", 3);
+    assertThat(nodeRun.output()).isEqualTo(expected);
+    assertThat(stateDeltaValues(nodeRun.events(), "meta")).containsExactly(expected);
+    Event outputEvent =
+        nodeRun.events().stream()
+            .filter(event -> !outputFor(event).isEmpty())
+            .collect(onlyElement());
+    assertThat(outputEvent.output()).hasValue(expected);
+    assertThat(outputEvent.nodeInfo().map(NodeInfo::messageAsOutput)).hasValue(false);
+  }
+
+  @Test
+  public void runAsync_singleTurnNodeWithAStringSchema_givesItsPlainText() {
+    LlmAgent agent =
+        schemaAgent(Schema.builder().type("STRING").build(), "The answer is 42").build();
+
+    NodeRun nodeRun = runWithSuccessor(agent);
+
+    assertThat(nodeRun.output()).isEqualTo("The answer is 42");
+  }
+
+  @Test
+  public void runAsync_singleTurnNodeWithAnArraySchema_givesAndSavesAList() {
+    Schema schema =
+        Schema.builder().type("ARRAY").items(Schema.builder().type("INTEGER").build()).build();
+
+    NodeRun nodeRun =
+        runWithSuccessor(schemaAgent(schema, "[1, 2, 3]").outputKey("numbers").build());
+
+    assertThat(nodeRun.output()).isEqualTo(ImmutableList.of(1, 2, 3));
+    assertThat(stateDeltaValues(nodeRun.events(), "numbers"))
+        .containsExactly(ImmutableList.of(1, 2, 3));
+  }
+
+  @Test
+  public void runAsync_blankAnswerWithAnOutputSchema_givesNoOutput() {
+    Schema schema = Schema.builder().type("INTEGER").build();
+
+    NodeRun nodeRun = runWithSuccessor(schemaAgent(schema, "   ").outputKey("value").build());
+
+    assertThat(nodeRun.output()).isNull();
+    assertThat(stateDeltaValues(nodeRun.events(), "value")).isEmpty();
+  }
+
+  @Test
+  public void runAsync_singleTurnNodeWithAToolAndAnOutputSchema_takesTheSetModelResponseAnswer() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "title",
+                    Schema.builder().type("STRING").build(),
+                    "count",
+                    Schema.builder().type("INTEGER").build()))
+            .build();
+    TestLlm scripted =
+        TestLlm.create(
+            createFunctionCallLlmResponse(
+                "c1", "set_model_response", ImmutableMap.of("title", "Story", "count", 3)));
+    // Only a model that can't combine tools with an output schema answers via set_model_response.
+    BaseLlm gemini2NamedLlm =
+        new BaseLlm("gemini-2.0-flash") {
+          @Override
+          public Flowable<LlmResponse> generateContent(LlmRequest llmRequest, boolean stream) {
+            return scripted.generateContent(llmRequest, stream);
+          }
+
+          @Override
+          public BaseLlmConnection connect(LlmRequest llmRequest) {
+            return scripted.connect(llmRequest);
+          }
+        };
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("worker")
+            .model(gemini2NamedLlm)
+            .mode(AgentMode.SINGLE_TURN)
+            .outputSchema(schema)
+            .tools(new EchoTool())
+            .outputKey("meta")
+            .build();
+
+    NodeRun nodeRun = runWithSuccessor(agent);
+
+    ImmutableMap<String, Object> expected = ImmutableMap.of("title", "Story", "count", 3);
+    assertThat(nodeRun.output()).isEqualTo(expected);
+    assertThat(stateDeltaValues(nodeRun.events(), "meta")).containsExactly(expected);
+  }
+
+  @Test
+  public void runAsync_answerNotMatchingTheOutputSchema_failsWithoutQuotingIt() {
+    Schema schema = Schema.builder().type("INTEGER").build();
+    LlmAgent agent = schemaAgent(schema, "sorry, I do not know").build();
+
+    var thrown = assertThrows(IllegalArgumentException.class, () -> runWithSuccessor(agent));
+
+    assertThat(thrown).hasMessageThat().contains("validation error");
+    assertThat(thrown).hasMessageThat().doesNotContain("sorry");
+  }
+
+  @Test
+  public void runAsync_singleTurnNodeThatTransfers_givesNoOutputAndSavesNoReply() {
+    LlmAgent helper = LlmAgent.builder().name("helper").model(modelAnswering("help")).build();
+    TestLlm routerModel =
+        TestLlm.create(
+            createFunctionCallLlmResponse(
+                "call_1", "transfer_to_agent", ImmutableMap.of("agent_name", "helper")));
+    LlmAgent router =
+        LlmAgent.builder()
+            .name("router")
+            .model(routerModel)
+            .mode(AgentMode.SINGLE_TURN)
+            .subAgents(helper)
+            .outputKey("route")
+            .build();
+
+    NodeRun nodeRun = runWithSuccessor(router);
+
+    assertThat(nodeRun.output()).isNull();
+    assertThat(stateDeltaValues(nodeRun.events(), "route")).isEmpty();
+  }
+
+  @Test
+  public void runAsync_agentWithoutAMode_givesNoOutput() {
+    LlmAgent agent = LlmAgent.builder().name("worker").model(modelAnswering("done")).build();
+
+    NodeRun nodeRun = runWithSuccessor(agent);
+
+    assertThat(nodeRun.output()).isNull();
+  }
+
+  @Test
+  public void runAsync_singleTurnNodeBeforeAPause_isNotRunAgainAndReplaysItsOutput() {
+    TestLlm model = modelAnswering("summary");
+    LlmAgent summarizer = singleTurnAgent("summarizer", model);
+    List<@Nullable Object> recorderInputs = new ArrayList<>();
+    Node recorder =
+        new Node() {
+          @Override
+          public String name() {
+            return "recorder";
+          }
+
+          @Override
+          public boolean rerunOnResume() {
+            return true;
+          }
+
+          @Override
+          public Flowable<?> runNode(Context context, @Nullable Object input) {
+            recorderInputs.add(input);
+            return context.resumeInputs().isEmpty()
+                ? Flowable.just(interrupt("ask_1"))
+                : Flowable.empty();
+          }
+        };
+    WorkflowSession session =
+        new WorkflowSession(
+            Workflow.builder()
+                .name("wf")
+                .edges(new Edge(Start.INSTANCE, summarizer), new Edge(summarizer, recorder))
+                .build());
+    session.advance(go());
+
+    ImmutableList<Event> resumed = session.turn(answer("ask_1", ImmutableMap.of("ok", true)));
+
+    assertThat(model.getRequests()).hasSize(1);
+    assertThat(resumed.stream().map(Event::author)).doesNotContain("summarizer");
+    // The successor runs again on the summarizer's output, replayed from its recorded event.
+    assertThat(recorderInputs).containsExactly("summary", "summary").inOrder();
+  }
+
+  @Test
   public void runNode_singleTurnNode_givesItsInputTheNodeBranchAndPath() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session = sessionService.createSession(APP_NAME, USER_ID).blockingGet();
@@ -351,6 +698,11 @@ public final class LlmAgentAsNodeTest {
     return LlmAgent.builder().name(name).model(model).mode(AgentMode.SINGLE_TURN).build();
   }
 
+  /** Returns a model that answers once with {@code text} in a model turn, as Gemini does. */
+  private static TestLlm modelAnswering(String text) {
+    return TestLlm.create(createTextLlmResponse(text));
+  }
+
   private static Content userTurn(String text) {
     return Content.fromParts(Part.fromText(text));
   }
@@ -366,11 +718,53 @@ public final class LlmAgentAsNodeTest {
         "go");
   }
 
-  private static void run(Node root, String message) {
+  @CanIgnoreReturnValue
+  private static List<Event> run(Node root, String message) {
     Runner runner =
         Runner.builder().app(App.builder().name(APP_NAME).rootNode(root).build()).build();
     Session session = runner.sessionService().createSession(APP_NAME, USER_ID).blockingGet();
-    runner.runAsync(USER_ID, session.id(), userTurn(message)).ignoreElements().blockingAwait();
+    return runner.runAsync(USER_ID, session.id(), userTurn(message)).toList().blockingGet();
+  }
+
+  /** The events of a run and the input the agent's successor got, which is the agent's output. */
+  private record NodeRun(ImmutableList<Event> events, @Nullable Object output) {}
+
+  private static NodeRun runWithSuccessor(Node agent) {
+    List<@Nullable Object> inputs = new ArrayList<>();
+    Node successor =
+        new TestNode(
+            "successor",
+            (context, input) -> {
+              inputs.add(input);
+              return Flowable.empty();
+            });
+    List<Event> events =
+        run(
+            Workflow.builder()
+                .name("wf")
+                .edges(new Edge(Start.INSTANCE, agent), new Edge(agent, successor))
+                .build(),
+            "go");
+    return new NodeRun(ImmutableList.copyOf(events), getOnlyElement(inputs));
+  }
+
+  private static LlmAgent.Builder schemaAgent(Schema schema, String answer) {
+    return LlmAgent.builder()
+        .name("worker")
+        .model(modelAnswering(answer))
+        .mode(AgentMode.SINGLE_TURN)
+        .outputSchema(schema);
+  }
+
+  private static ImmutableList<String> outputFor(Event event) {
+    return event.nodeInfo().map(NodeInfo::outputFor).orElse(ImmutableList.of());
+  }
+
+  private static ImmutableList<Object> stateDeltaValues(List<Event> events, String key) {
+    return events.stream()
+        .filter(event -> event.actions().stateDelta().containsKey(key))
+        .map(event -> event.actions().stateDelta().get(key))
+        .collect(toImmutableList());
   }
 
   private static Context nodeContext(LlmAgent agent, InvocationContext invocationContext) {

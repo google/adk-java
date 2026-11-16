@@ -21,9 +21,6 @@ import com.google.adk.annotations.Experimental;
 /** How an {@link LlmAgent} converses when it runs as a workflow node. */
 @Experimental
 public enum AgentMode {
-  /**
-   * Answers one input with one response, without conversing with the user. The node does not yet
-   * give its response as its output.
-   */
+  /** Answers one input with one response, without conversing with the user. */
   SINGLE_TURN,
 }
