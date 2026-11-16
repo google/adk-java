@@ -28,6 +28,7 @@ import com.google.adk.agents.Role;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventCompaction;
 import com.google.adk.models.LlmRequest;
+import com.google.adk.workflow.NodeInfo;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -80,12 +81,25 @@ public final class Contents implements RequestProcessor {
             .groupFunctionResponsesInHistoryOverride()
             .orElse(modelName.contains("gemini-3"));
 
+    @Nullable String nodePath = context.nodePath().orElse(null);
     ImmutableList<Event> sessionEvents =
         context.session().immutableEvents().stream()
             .filter(event -> !context.isOtherNodeInput(event))
             .collect(toImmutableList());
+    LlmAgent.IncludeContents includeContents = includeContents(llmAgent, context);
+    if (nodePath != null
+        && context.agentMode(llmAgent).filter(AgentMode.SINGLE_TURN::equals).isPresent()) {
+      boolean keepAncestors = includeContents != LlmAgent.IncludeContents.NONE;
+      // Filtered by branch first, so an answer to another branch's call counts as orphaned.
+      sessionEvents =
+          withoutOrphanedFunctionResponses(
+              sessionEvents.stream()
+                  .filter(event -> isEventBelongsToBranch(context.branch().orElse(null), event))
+                  .filter(event -> isOnNodePath(event, nodePath, keepAncestors))
+                  .collect(toImmutableList()));
+    }
 
-    if (includeContents(llmAgent, context) == LlmAgent.IncludeContents.NONE) {
+    if (includeContents == LlmAgent.IncludeContents.NONE) {
       return Single.just(
           RequestProcessor.RequestProcessingResult.create(
               request.toBuilder()
@@ -123,6 +137,46 @@ public final class Contents implements RequestProcessor {
     return singleTurnNode && !agent.includeContentsExplicit()
         ? LlmAgent.IncludeContents.NONE
         : agent.includeContents();
+  }
+
+  /**
+   * Returns whether a single-turn node at {@code nodePath} sees {@code event}: a root event, one of
+   * its own path or below, or with {@code keepAncestors} one of its ancestors.
+   */
+  private static boolean isOnNodePath(Event event, String nodePath, boolean keepAncestors) {
+    String path = event.nodeInfo().map(NodeInfo::path).orElse("");
+    return path.isEmpty()
+        || path.equals(nodePath)
+        || path.startsWith(nodePath + "/")
+        || (keepAncestors && nodePath.startsWith(path + "/"));
+  }
+
+  /**
+   * Returns {@code events} without the function responses that answer no earlier call among them,
+   * since the branch or path filter can hide a call and a response without its call fails the
+   * request.
+   */
+  private static ImmutableList<Event> withoutOrphanedFunctionResponses(List<Event> events) {
+    Set<String> earlierCallIds = new HashSet<>();
+    ImmutableList.Builder<Event> kept = ImmutableList.builder();
+    for (Event event : events) {
+      List<Part> parts = event.content().flatMap(Content::parts).orElse(ImmutableList.of());
+      ImmutableList<Part> keptParts =
+          parts.stream()
+              .filter(part ->
+                  part.functionResponse()
+                      .map(response -> response.id().filter(earlierCallIds::contains).isPresent())
+                      .orElse(true))
+              .collect(toImmutableList());
+      if (keptParts.size() == parts.size()) {
+        kept.add(event);
+      } else if (!keptParts.isEmpty()) {
+        Content content = event.content().get().toBuilder().parts(keptParts).build();
+        kept.add(event.toBuilder().content(content).build());
+      }
+      earlierCallIds.addAll(callIds(event));
+    }
+    return kept.build();
   }
 
   /** Gets contents for the current turn only (no conversation history). */

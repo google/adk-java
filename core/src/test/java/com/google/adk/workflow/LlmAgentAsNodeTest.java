@@ -22,14 +22,17 @@ import static com.google.adk.testing.TestUtils.createInvocationContext;
 import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
+import static com.google.adk.workflow.WorkflowResumeTesting.callContent;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
 import static com.google.adk.workflow.WorkflowResumeTesting.interrupt;
+import static com.google.adk.workflow.WorkflowResumeTesting.modelText;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static java.util.stream.Collectors.joining;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.AgentMode;
@@ -55,6 +58,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Completable;
@@ -713,6 +717,166 @@ public final class LlmAgentAsNodeTest {
   }
 
   @Test
+  public void runAsync_singleTurnNodeWithHistory_doesNotSeeAnEarlierNodesReply() {
+    LlmAgent first = singleTurnAgent("first", modelAnswering("Paris"));
+    TestLlm secondModel = TestLlm.create("done");
+    LlmAgent second = singleTurnAgentWithHistory("second", secondModel);
+
+    run(chain(first, second), "Capital of France?");
+
+    // "Paris" arrives only as this node's input, not as the first node's reply.
+    assertThat(secondModel.getLastRequest().contents())
+        .containsExactly(userTurn("Capital of France?"), userTurn("Paris"))
+        .inOrder();
+  }
+
+  @Test
+  public void runNode_singleTurnNodeWithHistory_seesItsAncestorsAndChildrenButNotItsSiblings() {
+    TestLlm model = TestLlm.create("done");
+    LlmAgent agent = singleTurnAgentWithHistory("worker", model);
+    InvocationContext invocationContext = createInvocationContext(agent);
+    Session session = invocationContext.session();
+    session.addEvent(nodeEvent("parent", "parent@1", modelText("ancestor note")));
+    session.addEvent(nodeEvent("helper", "parent@1/worker@1/helper@1", modelText("child note")));
+    session.addEvent(nodeEvent("worker10", "parent@1/worker@10", modelText("sibling note")));
+
+    agent
+        .runNode(nodeContextUnder("parent", agent, invocationContext), null)
+        .ignoreElements()
+        .blockingAwait();
+
+    String request = textsOf(model.getLastRequest());
+    assertThat(request).contains("ancestor note");
+    assertThat(request).contains("child note");
+    assertThat(request).doesNotContain("sibling note");
+  }
+
+  @Test
+  public void runNode_singleTurnNodeWithoutHistory_seesRootEventsButNotItsAncestorsOrSiblings() {
+    TestLlm model = TestLlm.create("done");
+    LlmAgent agent = singleTurnAgent("worker", model);
+    InvocationContext invocationContext = createInvocationContext(agent);
+    Session session = invocationContext.session();
+    session.addEvent(
+        Event.builder()
+            .id("question")
+            .author(Role.USER)
+            .content(userTurn("root question"))
+            .build());
+    // Either note would start the current turn if the node saw it, leaving out the question.
+    session.addEvent(nodeEvent("parent", "parent@1", modelText("ancestor note")));
+    session.addEvent(nodeEvent("worker10", "parent@1/worker@10", modelText("sibling note")));
+
+    agent
+        .runNode(nodeContextUnder("parent", agent, invocationContext), null)
+        .ignoreElements()
+        .blockingAwait();
+
+    String request = textsOf(model.getLastRequest());
+    assertThat(request).contains("root question");
+    assertThat(request).doesNotContain("ancestor note");
+    assertThat(request).doesNotContain("sibling note");
+  }
+
+  @Test
+  public void runNode_singleTurnNode_dropsTheAnswerToAnotherNodesCall() {
+    TestLlm model = TestLlm.create("done");
+    LlmAgent agent = singleTurnAgentWithHistory("worker", model);
+    InvocationContext invocationContext = createInvocationContext(agent);
+    Session session = invocationContext.session();
+    session.addEvent(nodeEvent("sibling", "sibling@1", callContent("pendingTool", "call_1")));
+    session.addEvent(nodeEvent("worker", "worker@1", modelText("earlier own note")));
+    // The answer comes last, where an answer without its call fails the request.
+    session.addEvent(answerTo("call_1"));
+
+    agent.runNode(nodeContext(agent, invocationContext), null).ignoreElements().blockingAwait();
+
+    String request = textsOf(model.getLastRequest());
+    assertThat(request).contains("earlier own note");
+    assertThat(request).doesNotContain("pendingTool");
+  }
+
+  @Test
+  public void runNode_singleTurnNodeWithoutHistory_dropsAnAnswerThatComesBeforeItsVisibleCall() {
+    TestLlm model = TestLlm.create("done");
+    LlmAgent agent = singleTurnAgent("worker", model);
+    InvocationContext invocationContext = createInvocationContext(agent);
+    Session session = invocationContext.session();
+    session.addEvent(
+        Event.builder()
+            .id("question")
+            .author(Role.USER)
+            .content(userTurn("root question"))
+            .build());
+    session.addEvent(nodeEvent("sibling", "sibling@1", callContent("pendingTool", "call_1")));
+    session.addEvent(answerTo("call_1"));
+    // A later call that reuses the ID must not adopt the answer, which would hide the question.
+    session.addEvent(nodeEvent("worker", "worker@1", callContent("ownTool", "call_1")));
+
+    agent.runNode(nodeContext(agent, invocationContext), null).ignoreElements().blockingAwait();
+
+    String request = textsOf(model.getLastRequest());
+    assertThat(request).contains("root question");
+    assertThat(request).contains("ownTool");
+    assertThat(request).doesNotContain("pendingTool");
+  }
+
+  @Test
+  public void runNode_singleTurnNode_dropsTheAnswerToACallOnAnotherBranch() {
+    TestLlm model = TestLlm.create("done");
+    LlmAgent agent = singleTurnAgentWithHistory("worker", model);
+    InvocationContext invocationContext =
+        createInvocationContext(agent).toBuilder().branch("wf@1.a@1").build();
+    Session session = invocationContext.session();
+    // A root call passes the node path filter but sits on a branch this node does not see.
+    session.addEvent(
+        Event.builder()
+            .id("call")
+            .author("other")
+            .branch("wf@1.b@1")
+            .content(callContent("pendingTool", "call_1"))
+            .build());
+    session.addEvent(nodeEvent("worker", "worker@1", modelText("earlier own note")));
+    session.addEvent(answerTo("call_1"));
+
+    agent.runNode(nodeContext(agent, invocationContext), null).ignoreElements().blockingAwait();
+
+    String request = textsOf(model.getLastRequest());
+    assertThat(request).contains("earlier own note");
+    assertThat(request).doesNotContain("pendingTool");
+  }
+
+  @Test
+  public void runNode_singleTurnNode_keepsItsOwnAnswerFromAnEventThatAlsoAnswersAnotherNode() {
+    TestLlm model = TestLlm.create("done");
+    LlmAgent agent = singleTurnAgentWithHistory("worker", model);
+    InvocationContext invocationContext = createInvocationContext(agent);
+    Session session = invocationContext.session();
+    session.addEvent(nodeEvent("sibling", "sibling@1", callContent("pendingTool", "call_1")));
+    session.addEvent(nodeEvent("worker", "worker@1", callContent("ownTool", "call_2")));
+    // One event answers a hidden call and a visible one, so only the visible answer stays.
+    session.addEvent(
+        Event.builder()
+            .id("answers")
+            .author(Role.USER)
+            .content(
+                Content.builder()
+                    .role("user")
+                    .parts(answerPart("call_1", "pendingTool"), answerPart("call_2", "ownTool"))
+                    .build())
+            .build());
+
+    agent.runNode(nodeContext(agent, invocationContext), null).ignoreElements().blockingAwait();
+
+    ImmutableList<String> answeredIds =
+        model.getLastRequest().contents().stream()
+            .flatMap(content -> content.parts().orElse(ImmutableList.of()).stream())
+            .flatMap(part -> part.functionResponse().flatMap(FunctionResponse::id).stream())
+            .collect(toImmutableList());
+    assertThat(answeredIds).containsExactly("call_2");
+  }
+
+  @Test
   public void runNode_singleTurnNode_givesItsInputTheNodeBranchAndPath() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session = sessionService.createSession(APP_NAME, USER_ID).blockingGet();
@@ -869,10 +1033,74 @@ public final class LlmAgentAsNodeTest {
     };
   }
 
+  /** Returns the user's answer to the {@code pendingTool} call {@code callId}. */
+  private static Event answerTo(String callId) {
+    return Event.builder()
+        .id("answer")
+        .author(Role.USER)
+        .content(answer(callId, ImmutableMap.of("ok", true), "pendingTool"))
+        .build();
+  }
+
+  /** Returns the only part of the user's answer to the {@code name} call {@code callId}. */
+  private static Part answerPart(String callId, String name) {
+    return getOnlyElement(answer(callId, ImmutableMap.of("ok", true), name).parts().orElseThrow());
+  }
+
+  private static Event nodeEvent(String author, String path, Content content) {
+    return Event.builder()
+        .id(author + "-event")
+        .author(author)
+        .content(content)
+        .nodeInfo(NodeInfo.builder().path(path).build())
+        .build();
+  }
+
+  /** Returns every text and function name in {@code request}'s contents, for substring checks. */
+  private static String textsOf(LlmRequest request) {
+    return request.contents().stream()
+        .flatMap(content -> content.parts().orElse(ImmutableList.of()).stream())
+        .map(part ->
+            part.text().orElse("")
+                + part.functionCall().flatMap(FunctionCall::name).orElse("")
+                + part.functionResponse().flatMap(FunctionResponse::name).orElse(""))
+        .collect(joining("\n"));
+  }
+
+  /** Returns the context of {@code agent} running as a child of a node named {@code parent}. */
+  private static Context nodeContextUnder(
+      String parent, LlmAgent agent, InvocationContext invocationContext) {
+    Context parentContext =
+        new Context(
+            invocationContext,
+            NodeExecutionState.builder()
+                .node(TestNode.of(parent))
+                .eventSink(SINK)
+                .runId("1")
+                .build());
+    return new Context(
+        invocationContext,
+        NodeExecutionState.builder()
+            .node(agent)
+            .eventSink(SINK)
+            .parent(parentContext)
+            .runId("1")
+            .build());
+  }
+
   private static Workflow chain(Node first, Node second) {
     return Workflow.builder()
         .name("wf")
         .edges(new Edge(Start.INSTANCE, first), new Edge(first, second))
+        .build();
+  }
+
+  private static LlmAgent singleTurnAgentWithHistory(String name, TestLlm model) {
+    return LlmAgent.builder()
+        .name(name)
+        .model(model)
+        .mode(AgentMode.SINGLE_TURN)
+        .includeContents(LlmAgent.IncludeContents.DEFAULT)
         .build();
   }
 
