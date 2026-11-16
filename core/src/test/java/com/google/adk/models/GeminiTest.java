@@ -44,7 +44,9 @@ import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.functions.Predicate;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
+import java.util.Arrays;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -341,6 +343,120 @@ public final class GeminiTest {
   }
 
   @Test
+  public void processRawResponses_streamedArrayPaths_buildLists() {
+    ImmutableList<PartialArg> partialArgs =
+        ImmutableList.of(
+            PartialArg.builder().jsonPath("$.tags[0]").stringValue("red").build(),
+            PartialArg.builder().jsonPath("$.tags[1]").stringValue("bl").build(),
+            PartialArg.builder().jsonPath("$.tags[1]").stringValue("ue").build(),
+            PartialArg.builder().jsonPath("$.items[0].name").stringValue("pen").build(),
+            PartialArg.builder().jsonPath("$.items[0].count").numberValue(2.0).build(),
+            PartialArg.builder().jsonPath("$.matrix[0][1]").numberValue(7.0).build());
+
+    Map<String, Object> args = streamedArgs(partialArgs);
+
+    assertThat(args)
+        .containsExactly(
+            "tags",
+            ImmutableList.of("red", "blue"),
+            "items",
+            ImmutableList.of(ImmutableMap.of("name", "pen", "count", 2)),
+            "matrix",
+            ImmutableList.of(Arrays.asList(null, 7)));
+  }
+
+  @Test
+  public void processRawResponses_streamedQuotedKeys_parseLikeAdkPython() {
+    ImmutableList<PartialArg> partialArgs =
+        ImmutableList.of(
+            PartialArg.builder().jsonPath("$['a.b']").stringValue("dotted").build(),
+            PartialArg.builder().jsonPath("$[\"x\"]").stringValue("double").build(),
+            PartialArg.builder().jsonPath("$['it\\'s']").stringValue("escaped").build(),
+            PartialArg.builder().jsonPath("$.foo['bar.baz']").stringValue("nested").build());
+
+    Map<String, Object> args = streamedArgs(partialArgs);
+
+    assertThat(args)
+        .containsExactly(
+            "a.b", "dotted",
+            "x", "double",
+            "it's", "escaped",
+            "foo", ImmutableMap.of("bar.baz", "nested"));
+  }
+
+  @Test
+  public void processRawResponses_streamedKeyEscapes_resolveLikeAdkPython() {
+    ImmutableList<PartialArg> partialArgs =
+        ImmutableList.of(
+            PartialArg.builder().jsonPath("$['a\\tb\\u00e9']").stringValue("tab").build(),
+            PartialArg.builder()
+                .jsonPath("$['a\\\\b\\$c\\u0024\\n\\r\\b\\f']")
+                .stringValue("special")
+                .build(),
+            PartialArg.builder().jsonPath("$.d\\\re").stringValue("raw").build());
+
+    Map<String, Object> args = streamedArgs(partialArgs);
+
+    assertThat(args)
+        .containsExactly("a\tb\u00e9", "tab", "a\\b$c$\n\r\b\f", "special", "d\re", "raw");
+  }
+
+  @Test
+  public void processRawResponses_streamedIndexLimit_isInclusive() {
+    ImmutableList<PartialArg> partialArgs =
+        ImmutableList.of(
+            PartialArg.builder().jsonPath("$.x[10000]").stringValue("last").build(),
+            PartialArg.builder().jsonPath("$.y[10001]").stringValue("ignored").build());
+
+    Map<String, Object> args = streamedArgs(partialArgs);
+
+    assertThat((List<?>) args.get("x")).hasSize(10_001);
+    assertThat(Iterables.getLast((List<?>) args.get("x"))).isEqualTo("last");
+    assertThat((List<?>) args.get("y")).isEmpty();
+  }
+
+  @Test
+  public void processRawResponses_streamedLongKeys_parseWithoutOverflowingTheStack() {
+    String plainKey = "k".repeat(100_000);
+    String quotedKey = "q.".repeat(50_000);
+    ImmutableList<PartialArg> partialArgs =
+        ImmutableList.of(
+            PartialArg.builder().jsonPath("$." + plainKey).stringValue("plain").build(),
+            PartialArg.builder().jsonPath("$['" + quotedKey + "']").stringValue("quoted").build());
+
+    Map<String, Object> args = streamedArgs(partialArgs);
+
+    assertThat(args).containsExactly(plainKey, "plain", quotedKey, "quoted");
+  }
+
+  @Test
+  public void processRawResponses_streamedIndicesWithSpacesOrZeros_parseLikeAdkPython() {
+    ImmutableList<PartialArg> partialArgs =
+        ImmutableList.of(
+            PartialArg.builder().jsonPath("$.tags[ 0 ]").stringValue("a").build(),
+            PartialArg.builder().jsonPath("$.tags[000001]").stringValue("b").build());
+
+    Map<String, Object> args = streamedArgs(partialArgs);
+
+    assertThat(args).containsExactly("tags", ImmutableList.of("a", "b"));
+  }
+
+  @Test
+  public void processRawResponses_streamedArrayPathsOutOfOrder_padWithNullsLikeAdkPython() {
+    ImmutableList<PartialArg> partialArgs =
+        ImmutableList.of(
+            PartialArg.builder().jsonPath("$.tags[2]").stringValue("c").build(),
+            PartialArg.builder().jsonPath("$.tags[0]").stringValue("a").build(),
+            PartialArg.builder().jsonPath("$.tags[20000]").stringValue("ignored").build(),
+            PartialArg.builder().jsonPath("$.tags[99999999999]").stringValue("ignored").build(),
+            PartialArg.builder().jsonPath("$.tags.key").stringValue("ignored").build());
+
+    Map<String, Object> args = streamedArgs(partialArgs);
+
+    assertThat(args).containsExactly("tags", Arrays.asList("a", null, "c"));
+  }
+
+  @Test
   public void processRawResponses_streamedNumbers_storesExactWholeNumbersAsIntegers() {
     ImmutableMap<String, Object> args =
         streamedArgs(
@@ -420,11 +536,15 @@ public final class GeminiTest {
               .numberValue(number.getValue())
               .build());
     }
+    return ImmutableMap.copyOf(streamedArgs(partialArgs.build()));
+  }
+
+  /** Streams one call through {@code partialArgs} and returns the arguments it ends with. */
+  private Map<String, Object> streamedArgs(ImmutableList<PartialArg> partialArgs) {
     LlmResponse last =
         Iterables.getLast(
-            Gemini.processRawResponses(streamedCall("f", partialArgs.build())).blockingIterable());
-    return ImmutableMap.copyOf(
-        last.content().get().parts().get().get(0).functionCall().get().args().get());
+            Gemini.processRawResponses(streamedCall("f", partialArgs)).blockingIterable());
+    return last.content().get().parts().get().get(0).functionCall().get().args().get();
   }
 
   /** Returns the raw chunks of one call to {@code name} streamed through {@code partialArgs}. */
@@ -2191,28 +2311,6 @@ public final class GeminiTest {
             .hasValue(expectedToolNames[i]);
       }
       assertThat(response.usageMetadata()).isEmpty();
-      return true;
-    };
-  }
-
-  private static Predicate<LlmResponse>
-      isFinalThoughtAndFunctionCallResponseWithUsageMetadataAndSignature(
-          String expectedThought,
-          GenerateContentResponseUsageMetadata expectedMetadata,
-          String expectedSignature,
-          String... expectedToolNames) {
-    return response -> {
-      assertThat(response.partial().orElse(false)).isFalse();
-      assertThat(response.content().get().parts().get()).hasSize(expectedToolNames.length + 1);
-      assertThat(response.content().get().parts().get().get(0).text()).hasValue(expectedThought);
-      assertThat(response.content().get().parts().get().get(0).thought()).hasValue(true);
-      for (int i = 0; i < expectedToolNames.length; i++) {
-        Part part = response.content().get().parts().get().get(i + 1);
-        assertThat(part.functionCall().get().name()).hasValue(expectedToolNames[i]);
-        assertThat(part.thoughtSignature().orElse(new byte[0]))
-            .isEqualTo(expectedSignature.getBytes(UTF_8));
-      }
-      assertThat(response.usageMetadata()).hasValue(expectedMetadata);
       return true;
     };
   }
