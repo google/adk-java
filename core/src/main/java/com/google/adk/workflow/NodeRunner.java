@@ -689,11 +689,20 @@ public final class NodeRunner {
         return event;
       }
       EventActions actions = event.actions().toBuilder().build();
-      actions.stateDelta().putAll(stateDelta);
-      actions.artifactDelta().putAll(artifactDelta);
-      stateDelta.clear();
-      artifactDelta.clear();
+      moveEntries(stateDelta, actions.stateDelta());
+      moveEntries(artifactDelta, actions.artifactDelta());
       return event.toBuilder().actions(actions).build();
+    }
+
+    /**
+     * Moves the entries of the concurrent map {@code from} to {@code to}, but keeps in {@code from}
+     * an entry another thread changed after it was copied.
+     */
+    private static <V> void moveEntries(Map<String, V> from, Map<String, V> to) {
+      for (Map.Entry<String, V> entry : from.entrySet()) {
+        to.put(entry.getKey(), entry.getValue());
+        from.remove(entry.getKey(), entry.getValue());
+      }
     }
 
     /** Attributes {@code event} to its author and to this run of the node. */

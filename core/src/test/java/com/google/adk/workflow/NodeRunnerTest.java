@@ -23,8 +23,11 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.runner.Runner;
+import com.google.adk.sessions.Session;
 import com.google.adk.testing.TestBaseAgent;
 import com.google.adk.testing.TestCallback;
 import com.google.adk.testing.TestNode;
@@ -44,6 +47,8 @@ import io.reactivex.rxjava3.subjects.SingleSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -360,6 +365,46 @@ public final class NodeRunnerTest {
     assertThat(sentEvents).hasSize(2);
     assertThat(sentEvents.get(0).actions().stateDelta()).isEmpty();
     assertThat(sentEvents.get(1).actions().stateDelta()).containsExactly("key", "value");
+  }
+
+  @Test
+  @SuppressWarnings("deprecation") // setStateDelta is the only way to install the hook map.
+  public void run_stateWrittenWhileDeltasMove_reachesTheStoredSession() {
+    Node writer =
+        new TestNode(
+            "writer",
+            (ctx, input) -> {
+              // Changes count to 2 in the first remove(key, value) or clear() the move calls.
+              ctx.eventActions()
+                  .setStateDelta(
+                      new ConcurrentHashMap<String, Object>() {
+                        @Override
+                        public boolean remove(Object key, Object value) {
+                          replace("count", 1, 2);
+                          return super.remove(key, value);
+                        }
+
+                        @Override
+                        public void clear() {
+                          replace("count", 1, 2);
+                          super.clear();
+                        }
+                      });
+              ctx.eventActions().stateDelta().put("count", 1);
+              return Flowable.<Object>just(newEvent().content(MESSAGE).build(), "done");
+            });
+    Runner runner =
+        Runner.builder().app(App.builder().name("app").rootNode(writer).build()).build();
+    Session session = runner.sessionService().createSession("app", "user").blockingGet();
+
+    runner.runAsync("user", session.id(), MESSAGE).ignoreElements().blockingAwait();
+
+    Session stored =
+        runner
+            .sessionService()
+            .getSession("app", "user", session.id(), Optional.empty())
+            .blockingGet();
+    assertThat(stored.state()).containsEntry("count", 2);
   }
 
   @Test
