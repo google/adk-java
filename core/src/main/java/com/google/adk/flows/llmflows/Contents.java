@@ -21,6 +21,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.adk.JsonBaseModel;
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.Role;
@@ -81,7 +82,7 @@ public final class Contents implements RequestProcessor {
 
     ImmutableList<Event> sessionEvents = context.session().immutableEvents();
 
-    if (llmAgent.includeContents() == LlmAgent.IncludeContents.NONE) {
+    if (includeContents(llmAgent, context) == LlmAgent.IncludeContents.NONE) {
       return Single.just(
           RequestProcessor.RequestProcessingResult.create(
               request.toBuilder()
@@ -105,6 +106,20 @@ public final class Contents implements RequestProcessor {
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(
             request.toBuilder().contents(contents).build(), ImmutableList.of()));
+  }
+
+  /**
+   * Returns {@code agent}'s history setting in {@code context}: {@link
+   * LlmAgent.IncludeContents#NONE} for a single-turn workflow node unless {@code includeContents}
+   * was set.
+   */
+  private static LlmAgent.IncludeContents includeContents(
+      LlmAgent agent, InvocationContext context) {
+    boolean singleTurnNode =
+        context.agentMode(agent).filter(AgentMode.SINGLE_TURN::equals).isPresent();
+    return singleTurnNode && !agent.includeContentsExplicit()
+        ? LlmAgent.IncludeContents.NONE
+        : agent.includeContents();
   }
 
   /** Gets contents for the current turn only (no conversation history). */

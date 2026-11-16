@@ -190,6 +190,68 @@ public final class LlmAgentAsNodeTest {
   }
 
   @Test
+  public void runAsync_singleTurnNode_seesOnlyItsInputByDefault() {
+    LlmAgent first = singleTurnAgent("first", modelAnswering("Paris"));
+    TestLlm secondModel = TestLlm.create("done");
+    LlmAgent second = singleTurnAgent("second", secondModel);
+
+    run(chain(first, second), "Capital of France?");
+
+    assertThat(secondModel.getLastRequest().contents()).containsExactly(userTurn("Paris"));
+  }
+
+  @Test
+  public void runAsync_singleTurnNodeWithIncludeContentsSet_keepsTheHistory() {
+    LlmAgent first = singleTurnAgent("first", modelAnswering("Paris"));
+    TestLlm secondModel = TestLlm.create("done");
+    LlmAgent second =
+        LlmAgent.builder()
+            .name("second")
+            .model(secondModel)
+            .mode(AgentMode.SINGLE_TURN)
+            .includeContents(LlmAgent.IncludeContents.DEFAULT)
+            .build();
+
+    run(chain(first, second), "Capital of France?");
+
+    assertThat(secondModel.getLastRequest().contents()).contains(userTurn("Capital of France?"));
+  }
+
+  @Test
+  public void runAsync_agentWithoutAModeAfterASingleTurnNode_keepsTheHistory() {
+    LlmAgent first = singleTurnAgent("first", modelAnswering("Paris"));
+    TestLlm laterModel = TestLlm.create("done");
+    LlmAgent later = LlmAgent.builder().name("later").model(laterModel).build();
+
+    run(chain(first, later), "Capital of France?");
+
+    assertThat(laterModel.getLastRequest().contents()).contains(userTurn("Capital of France?"));
+  }
+
+  @Test
+  public void runAsync_subAgentReachedFromASingleTurnNode_keepsTheHistory() {
+    TestLlm helperModel = TestLlm.create("help");
+    LlmAgent helper = LlmAgent.builder().name("helper").model(helperModel).build();
+    TestLlm routerModel =
+        TestLlm.create(
+            createFunctionCallLlmResponse(
+                "call_1", "transfer_to_agent", ImmutableMap.of("agent_name", "helper")));
+    LlmAgent router =
+        LlmAgent.builder()
+            .name("router")
+            .model(routerModel)
+            .mode(AgentMode.SINGLE_TURN)
+            .subAgents(helper)
+            .build();
+
+    Node source = new TestNode("source", (context, input) -> Flowable.just("route this"));
+
+    run(chain(source, router), "Help me, please.");
+
+    assertThat(helperModel.getLastRequest().contents()).contains(userTurn("Help me, please."));
+  }
+
+  @Test
   public void runAsync_agentWithoutAMode_doesNotGetItsNodeInput() {
     TestLlm model = TestLlm.create("done");
 
@@ -692,6 +754,13 @@ public final class LlmAgentAsNodeTest {
 
     assertThat(thrown).hasMessageThat().contains("node input");
     assertThat(thrown).hasMessageThat().doesNotContain("secret-day");
+  }
+
+  private static Workflow chain(Node first, Node second) {
+    return Workflow.builder()
+        .name("wf")
+        .edges(new Edge(Start.INSTANCE, first), new Edge(first, second))
+        .build();
   }
 
   private static LlmAgent singleTurnAgent(String name, TestLlm model) {

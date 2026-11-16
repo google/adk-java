@@ -105,6 +105,7 @@ public class LlmAgent extends BaseAgent {
   private final ImmutableList<BaseToolset> toolsets;
   private final Optional<GenerateContentConfig> generateContentConfig;
   private final IncludeContents includeContents;
+  private final boolean includeContentsExplicit;
 
   private final boolean planning;
   private final Optional<Integer> maxSteps;
@@ -139,6 +140,7 @@ public class LlmAgent extends BaseAgent {
         requireNonNullElse(builder.globalInstruction, new Instruction.Static(""));
     this.generateContentConfig = Optional.ofNullable(builder.generateContentConfig);
     this.includeContents = requireNonNullElse(builder.includeContents, IncludeContents.DEFAULT);
+    this.includeContentsExplicit = builder.includeContents != null;
     this.planning = requireNonNullElse(builder.planning, false);
     this.maxSteps = Optional.ofNullable(builder.maxSteps);
     this.disallowTransferToParent = requireNonNullElse(builder.disallowTransferToParent, false);
@@ -259,6 +261,10 @@ public class LlmAgent extends BaseAgent {
       return this;
     }
 
+    /**
+     * Sets how much session history the agent sees. Unset, it is {@link IncludeContents#DEFAULT},
+     * except that a {@code SINGLE_TURN} workflow node then runs with {@link IncludeContents#NONE}.
+     */
     @CanIgnoreReturnValue
     public Builder includeContents(IncludeContents includeContents) {
       this.includeContents = includeContents;
@@ -857,9 +863,10 @@ public class LlmAgent extends BaseAgent {
   }
 
   /**
-   * Runs this agent as a workflow node. A {@link AgentMode#SINGLE_TURN} agent gets the node input
-   * as its user turn, and its first final model turn is the node output. An agent without a mode
-   * runs as {@link BaseAgent#runNode} runs it.
+   * Runs this agent as a workflow node. A {@link AgentMode#SINGLE_TURN} agent sees no history
+   * unless {@link Builder#includeContents} was set, gets the node input as its user turn, and gives
+   * its first final model turn as the node output. An agent without a mode runs as {@link
+   * BaseAgent#runNode} runs it.
    */
   @Experimental
   @Override
@@ -1111,8 +1118,23 @@ public class LlmAgent extends BaseAgent {
     return generateContentConfig;
   }
 
+  /**
+   * Returns the configured history setting, {@link IncludeContents#DEFAULT} when unset. A {@code
+   * SINGLE_TURN} workflow node overrides an unset one; see {@link #includeContentsExplicit()}.
+   */
   public IncludeContents includeContents() {
     return includeContents;
+  }
+
+  /**
+   * Returns whether {@link Builder#includeContents(IncludeContents)} was set, which a {@code
+   * SINGLE_TURN} workflow node then uses instead of running without history.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public boolean includeContentsExplicit() {
+    return includeContentsExplicit;
   }
 
   /** Returns how this agent converses when it runs as a workflow node, or empty without a mode. */
