@@ -28,14 +28,11 @@ import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Schema;
-import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.MaybeEmitter;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -58,24 +55,11 @@ public final class FunctionNode<I, O> extends BaseNode {
   private static final PortCodec<Object> ANY =
       PortCodec.output(PortCodec.javaType(Object.class), "an event output");
 
-  private static final String CONFIRMATION_INTERRUPT_PREFIX = "wf_tool_confirmation:";
-
   private static final ConfirmationPredicate<Object> ALWAYS_CONFIRM = (context, input) -> true;
 
   /** The output of a run the user rejected. */
   private static final ImmutableMap<String, String> REJECTED_OUTPUT =
       ImmutableMap.of("error", "This tool call is rejected.");
-
-  /** The schema of an answer to a confirmation request. */
-  private static final Schema TOOL_CONFIRMATION_SCHEMA =
-      Schema.builder()
-          .type(Type.Known.OBJECT)
-          .properties(
-              ImmutableMap.of(
-                  "hint", Schema.builder().type(Type.Known.STRING).nullable(true).build(),
-                  "confirmed", Schema.builder().type(Type.Known.BOOLEAN).nullable(true).build(),
-                  "payload", Schema.builder().build()))
-          .build();
 
   private final PortCodec<I> inputCodec;
   private final PortCodec<O> outputCodec;
@@ -220,8 +204,10 @@ public final class FunctionNode<I, O> extends BaseNode {
    */
   private @Nullable RunOutcome<O> runFunction(
       Context context, @Nullable Object nodeInput, MaybeEmitter<Object> emitter) throws Exception {
-    I input = inputCodec.decode(nodeInput, "input of node '" + name() + "'");
-    ToolConfirmation confirmation = confirmationAnswer(context);
+    String what = "input of node '" + name() + "'";
+    I input = inputCodec.decode(nodeInput, what);
+    ToolConfirmation confirmation =
+        confirmationPredicate != null ? ToolConfirmations.answer(context, name()) : null;
     if (confirmation != null) {
       context.toolConfirmation(confirmation);
       if (!confirmation.confirmed()) {
@@ -230,7 +216,14 @@ public final class FunctionNode<I, O> extends BaseNode {
     } else if (confirmationPredicate != null
         && !emitter.isDisposed()
         && confirmationPredicate.test(context, input)) {
-      return new RunOutcome<>(null, confirmationRequest(context, input), null);
+      RequestInput request =
+          ToolConfirmations.request(
+              context,
+              name(),
+              inputCodec.encode(input, what),
+              /* hint= */ null,
+              /* confirmationPayload= */ null);
+      return new RunOutcome<>(null, request, null);
     }
     return emitter.isDisposed()
         ? null
@@ -250,10 +243,10 @@ public final class FunctionNode<I, O> extends BaseNode {
       if (state.hasOutputDelegate()) {
         return output instanceof Event event
             ? event.toBuilder().output(null).build()
-            : finishedEvent(context);
+            : newEventBuilder(context.invocationContext()).build();
       }
       if (output == null) {
-        return finishedEvent(context);
+        return newEventBuilder(context.invocationContext()).build();
       }
     }
     // After a delegation, NodeRunner drops a returned output.
@@ -299,65 +292,6 @@ public final class FunctionNode<I, O> extends BaseNode {
     if (encoded != null && !encoded.equals(delegated.get())) {
       state.replaceDelegatedOutput(encoded);
     }
-  }
-
-  private static Event finishedEvent(Context context) {
-    return Event.builder()
-        .id(context.invocationContext().newUuid())
-        .timestamp(context.invocationContext().now().toEpochMilli())
-        .author("")
-        .build();
-  }
-
-  private static String confirmationInterruptId(Context context) {
-    return CONFIRMATION_INTERRUPT_PREFIX + context.requireNodeState().nodePath();
-  }
-
-  /** Returns the request that asks the user to approve this run with {@code input}. */
-  private RequestInput confirmationRequest(Context context, @Nullable I input) {
-    String interruptId = confirmationInterruptId(context);
-    Map<String, @Nullable Object> payload = new LinkedHashMap<>();
-    payload.put("tool_name", name());
-    payload.put("args", inputCodec.encode(input, "input of node '" + name() + "'"));
-    return RequestInput.builder()
-        .interruptId(interruptId)
-        .message("Please approve or reject the tool call " + name() + "().")
-        .payload(payload)
-        .responseSchema(TOOL_CONFIRMATION_SCHEMA)
-        .build();
-  }
-
-  /**
-   * Returns the user's answer to this run's confirmation request, or null if the node requires no
-   * confirmation or has no answer yet. A field left out or null takes its default.
-   *
-   * @throws WorkflowDataException if the answer is not a {@link ToolConfirmation}
-   */
-  private @Nullable ToolConfirmation confirmationAnswer(Context context) {
-    if (confirmationPredicate == null) {
-      return null;
-    }
-    Object answer = context.resumeInputs().get(confirmationInterruptId(context));
-    if (answer == null) {
-      return null;
-    }
-    if (!(answer instanceof Map<?, ?> map)
-        || !TOOL_CONFIRMATION_SCHEMA.properties().orElseThrow().keySet().containsAll(map.keySet())
-        || (map.get("confirmed") != null && !(map.get("confirmed") instanceof Boolean))
-        || (map.get("hint") != null && !(map.get("hint") instanceof String))) {
-      throw new WorkflowDataException(
-          "The answer to the confirmation request of node '"
-              + name()
-              + "' is not a ToolConfirmation.");
-    }
-    ToolConfirmation.Builder confirmation = ToolConfirmation.builder();
-    if (map.get("hint") instanceof String hint) {
-      confirmation.hint(hint);
-    }
-    return confirmation
-        .confirmed(map.get("confirmed") instanceof Boolean confirmed && confirmed)
-        .payload(map.get("payload"))
-        .build();
   }
 
   /** Returns the event or JSON value to send for {@code result}, or {@code null} for none. */
