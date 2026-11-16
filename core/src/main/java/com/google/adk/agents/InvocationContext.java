@@ -34,6 +34,7 @@ import com.google.adk.sessions.BaseSessionService;
 import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.workflow.Node;
+import com.google.adk.workflow.NodeInfo;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -48,6 +49,7 @@ import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -79,6 +81,8 @@ public class InvocationContext {
   // Shared by reference so a sub-agent's checkpoint is visible to its parent and the runner.
   private final Map<String, Map<String, Object>> agentStates;
   private final Map<String, Boolean> endOfAgents;
+  // Shared by reference, so every context of the invocation sees the inputs that nodes inject.
+  private final Set<Event> nodeInputs;
   @Nullable private final Scheduler scheduler;
   private final InstantSource instantSource;
   private final UuidProvider uuidProvider;
@@ -87,6 +91,7 @@ public class InvocationContext {
   private BaseAgent agent;
   private final @Nullable Node node;
   private final @Nullable AgentModeOverride agentModeOverride;
+  private final @Nullable String nodePath;
   private boolean endInvocation;
 
   protected InvocationContext(Builder builder) {
@@ -102,6 +107,7 @@ public class InvocationContext {
     this.agent = builder.agent;
     this.node = builder.node;
     this.agentModeOverride = builder.agentModeOverride;
+    this.nodePath = builder.nodePath;
     this.session = builder.session;
     this.userContent = builder.userContent;
     this.runConfig = builder.runConfig;
@@ -116,6 +122,7 @@ public class InvocationContext {
     this.callbackContextData = builder.callbackContextData;
     this.agentStates = builder.agentStates;
     this.endOfAgents = builder.endOfAgents;
+    this.nodeInputs = builder.nodeInputs;
     this.scheduler = builder.scheduler;
     this.instantSource = builder.instantSource;
     this.uuidProvider = builder.uuidProvider;
@@ -209,6 +216,37 @@ public class InvocationContext {
         : Optional.empty();
   }
 
+  /**
+   * Returns the path of the workflow node the agent runs as, or empty outside a workflow.
+   * Sub-agents of the node share this path.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public Optional<String> nodePath() {
+    return Optional.ofNullable(nodePath);
+  }
+
+  /**
+   * Returns whether {@code event} is a user turn that a workflow node other than this context's
+   * added as its input, which the agent here does not see. Outside a node, every node's input is
+   * another node's.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public boolean isOtherNodeInput(Event event) {
+    return nodeInputs.contains(event) && !event.nodeInfo().map(NodeInfo::path).equals(nodePath());
+  }
+
+  /**
+   * Records {@code event} as a node's input for the rest of the invocation. It stays recorded after
+   * the node removes it, so a copy of the session events taken earlier still filters it out.
+   */
+  void trackNodeInput(Event event) {
+    nodeInputs.add(event);
+  }
+
   /** Returns the session associated with this invocation. */
   public Session session() {
     return session;
@@ -216,7 +254,7 @@ public class InvocationContext {
 
   /**
    * Returns a snapshot of the session's events, keeping only those on the branch this invocation is
-   * running on.
+   * running on, without other workflow nodes' inputs.
    *
    * <p>The rule is author-asymmetric on purpose, so a confirmation the user answered on a
    * sub-branch stays visible while a descendant agent's own events do not.
@@ -228,7 +266,9 @@ public class InvocationContext {
     // Only the user-response cross-check needs these, and a null or empty branch skips it.
     ImmutableSet<String> branchFunctionCallIds =
         isNullOrEmpty(scopeBranch) ? ImmutableSet.of() : branchFunctionCallIds(events, scopeBranch);
+    // Another node's input can be the latest user event, which confirmation and resume read.
     return events.stream()
+        .filter(event -> !isOtherNodeInput(event))
         .filter(event -> isOnCurrentBranch(event, scopeBranch, branchFunctionCallIds))
         .collect(toImmutableList());
   }
@@ -498,7 +538,7 @@ public class InvocationContext {
    * Returns the current session's events, optionally filtered to the current invocation and/or the
    * current branch. Reads the in-memory {@link Session#events()} list, which {@link
    * BaseSessionService#appendEvent} keeps in sync. A {@code null}-branch event is visible on any
-   * branch.
+   * branch, and other workflow nodes' inputs never are.
    *
    * @param currentInvocation whether to filter to events from this invocation.
    * @param currentBranch whether to filter to events on this branch (or with no branch).
@@ -511,6 +551,7 @@ public class InvocationContext {
       results = new ArrayList<>(eventsOnCurrentBranch());
     } else {
       results = new ArrayList<>(session.immutableEvents());
+      results.removeIf(this::isOtherNodeInput);
     }
     if (currentInvocation) {
       results.removeIf(event -> !invocationId.equals(event.invocationId()));
@@ -688,6 +729,7 @@ public class InvocationContext {
       this.agent = context.agent;
       this.node = context.node;
       this.agentModeOverride = context.agentModeOverride;
+      this.nodePath = context.nodePath;
       this.session = context.session;
       this.userContent = context.userContent;
       this.runConfig = context.runConfig;
@@ -703,6 +745,7 @@ public class InvocationContext {
       // Shared by reference, not copied: the checkpoints belong to the invocation, not a context.
       this.agentStates = context.agentStates;
       this.endOfAgents = context.endOfAgents;
+      this.nodeInputs = context.nodeInputs;
       this.scheduler = context.scheduler;
       this.instantSource = context.instantSource;
       this.uuidProvider = context.uuidProvider;
@@ -721,6 +764,7 @@ public class InvocationContext {
     private BaseAgent agent;
     private @Nullable Node node;
     private @Nullable AgentModeOverride agentModeOverride;
+    private @Nullable String nodePath;
     private Session session;
     @Nullable private Content userContent = null;
     private RunConfig runConfig = RunConfig.builder().build();
@@ -732,6 +776,8 @@ public class InvocationContext {
     private Map<String, Object> callbackContextData = new ConcurrentHashMap<>();
     private Map<String, Map<String, Object>> agentStates = new ConcurrentHashMap<>();
     private Map<String, Boolean> endOfAgents = new ConcurrentHashMap<>();
+    private Set<Event> nodeInputs =
+        Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<>()));
     @Nullable private Scheduler scheduler = null;
     private InstantSource instantSource = InstantSource.system();
     private UuidProvider uuidProvider = UuidProvider.SYSTEM;
@@ -841,6 +887,13 @@ public class InvocationContext {
     @Experimental
     public Builder node(@Nullable Node node) {
       this.node = node;
+      return this;
+    }
+
+    /** Sets the path of the workflow node that the agent runs as. */
+    @CanIgnoreReturnValue
+    Builder nodePath(String nodePath) {
+      this.nodePath = nodePath;
       return this;
     }
 
@@ -1054,6 +1107,7 @@ public class InvocationContext {
         && Objects.equals(agent, that.agent)
         && Objects.equals(node, that.node)
         && Objects.equals(agentModeOverride, that.agentModeOverride)
+        && Objects.equals(nodePath, that.nodePath)
         && Objects.equals(session, that.session)
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
@@ -1081,6 +1135,7 @@ public class InvocationContext {
         agent,
         node,
         agentModeOverride,
+        nodePath,
         session,
         userContent,
         runConfig,

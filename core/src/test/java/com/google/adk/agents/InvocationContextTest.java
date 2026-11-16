@@ -33,6 +33,7 @@ import com.google.adk.sessions.Session;
 import com.google.adk.summarizer.EventsCompactionConfig;
 import com.google.adk.testing.TestNode;
 import com.google.adk.workflow.Node;
+import com.google.adk.workflow.NodeInfo;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -1023,6 +1024,27 @@ public final class InvocationContextTest {
     assertThat(contextOnBranch("agent_1", rootCall, reply).eventsOnCurrentBranch()).isEmpty();
   }
 
+  @Test
+  public void eventsOnCurrentBranch_anotherNodesInput_isExcluded() {
+    // Confirmation and resume read the latest user event, which a parallel node's input can be.
+    Event ownInput = userEventOfNode("worker@1");
+    Event otherInput = userEventOfNode("other@1");
+    Event customNodeEvent = userEventOfNode("custom@1");
+    InvocationContext context =
+        contextOnBranch("agent_1", ownInput, otherInput, customNodeEvent).toBuilder()
+            .nodePath("worker@1")
+            .build();
+    context.trackNodeInput(ownInput);
+    context.trackNodeInput(otherInput);
+
+    assertThat(context.eventsOnCurrentBranch())
+        .containsExactly(ownInput, customNodeEvent)
+        .inOrder();
+    assertThat(context.events(/* currentInvocation= */ false, /* currentBranch= */ false))
+        .containsExactly(ownInput, customNodeEvent)
+        .inOrder();
+  }
+
   private InvocationContext contextOnBranch(@Nullable String branch, Event... events) {
     return InvocationContext.builder()
         .sessionService(mockSessionService)
@@ -1039,6 +1061,14 @@ public final class InvocationContextTest {
 
   private static Event userEvent(@Nullable String branch) {
     return Event.builder().author("user").branch(branch).build();
+  }
+
+  private static Event userEventOfNode(String nodePath) {
+    return Event.builder()
+        .author("user")
+        .branch("agent_1")
+        .nodeInfo(NodeInfo.builder().path(nodePath).build())
+        .build();
   }
 
   private static Event agentEvent(@Nullable String branch) {

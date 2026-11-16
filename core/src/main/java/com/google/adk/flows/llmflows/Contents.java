@@ -80,7 +80,10 @@ public final class Contents implements RequestProcessor {
             .groupFunctionResponsesInHistoryOverride()
             .orElse(modelName.contains("gemini-3"));
 
-    ImmutableList<Event> sessionEvents = context.session().immutableEvents();
+    ImmutableList<Event> sessionEvents =
+        context.session().immutableEvents().stream()
+            .filter(event -> !context.isOtherNodeInput(event))
+            .collect(toImmutableList());
 
     if (includeContents(llmAgent, context) == LlmAgent.IncludeContents.NONE) {
       return Single.just(

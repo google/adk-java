@@ -956,6 +956,8 @@ public class LlmAgent extends BaseAgent {
             .nodeInfo(NodeInfo.builder().path(context.requireNodeState().nodePath()).build())
             .timestamp(invocationContext.now().toEpochMilli())
             .build();
+    // Tracked before it is added, so every copy of the session events that holds it can filter it.
+    invocationContext.trackNodeInput(event);
     invocationContext.session().addEvent(event);
     return Optional.of(event);
   }

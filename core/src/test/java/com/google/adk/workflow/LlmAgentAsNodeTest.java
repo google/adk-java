@@ -29,12 +29,14 @@ import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertThrows;
 
 import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.Role;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.models.BaseLlm;
@@ -59,10 +61,13 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -654,6 +659,60 @@ public final class LlmAgentAsNodeTest {
   }
 
   @Test
+  public void runAsync_singleTurnNodesRunningAtOnce_doNotSeeEachOthersInput() {
+    CountDownLatch otherAsked = new CountDownLatch(1);
+    // The other node's model answers only once this node asked, so both inputs exist at once.
+    TestLlm otherModel =
+        new TestLlm(() ->
+            Flowable.fromCallable(
+                    () -> {
+                      assertThat(otherAsked.await(10, SECONDS)).isTrue();
+                      return createTextLlmResponse("done");
+                    })
+                .subscribeOn(Schedulers.io()));
+    TestLlm model =
+        new TestLlm(() -> {
+          otherAsked.countDown();
+          return Flowable.just(createTextLlmResponse("done"));
+        });
+    LlmAgent other = singleTurnAgent("other", otherModel);
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("worker")
+            .model(model)
+            .mode(AgentMode.SINGLE_TURN)
+            .includeContents(LlmAgent.IncludeContents.DEFAULT)
+            .build();
+
+    run(
+        Workflow.builder()
+            .name("wf")
+            .edges(new Edge(Start.INSTANCE, runningAtOnce(other, "other input", agent, "my input")))
+            .build(),
+        "go");
+
+    assertThat(model.getLastRequest().contents()).contains(userTurn("my input"));
+    assertThat(model.getLastRequest().contents()).doesNotContain(userTurn("other input"));
+  }
+
+  @Test
+  public void runAsync_userEventFromACustomNode_staysVisibleToALaterAgent() {
+    Node custom =
+        new TestNode(
+            "custom",
+            (context, input) -> {
+              context.eventAuthor(Role.USER);
+              return Flowable.just(
+                  Event.builder().id("relayed").content(userTurn("relayed message")).build());
+            });
+    TestLlm model = TestLlm.create("done");
+
+    run(chain(custom, LlmAgent.builder().name("later").model(model).build()), "go");
+
+    assertThat(model.getLastRequest().contents()).contains(userTurn("relayed message"));
+  }
+
+  @Test
   public void runNode_singleTurnNode_givesItsInputTheNodeBranchAndPath() {
     InMemorySessionService sessionService = new InMemorySessionService();
     Session session = sessionService.createSession(APP_NAME, USER_ID).blockingGet();
@@ -694,6 +753,37 @@ public final class LlmAgentAsNodeTest {
         .blockingAwait();
 
     assertThat(getOnlyElement(eventsAtCompletion)).isEmpty();
+  }
+
+  @Test
+  @SuppressWarnings("deprecation") // eventsView lets the test check each event as it is added.
+  public void runNode_singleTurnNode_tracksItsInputBeforeAddingItAndKeepsTrackingIt() {
+    // The outer context has no node path, so it sees the input as another node's.
+    LlmAgent agent = singleTurnAgent("worker", TestLlm.create("done"));
+    AtomicReference<InvocationContext> invocationContext = new AtomicReference<>();
+    List<Event> added = new ArrayList<>();
+    List<Boolean> hiddenWhenAdded = new ArrayList<>();
+    List<Event> events =
+        new ArrayList<>() {
+          @Override
+          public boolean add(Event event) {
+            added.add(event);
+            hiddenWhenAdded.add(invocationContext.get().isOtherNodeInput(event));
+            return super.add(event);
+          }
+        };
+    Session session =
+        Session.builder("session").appName(APP_NAME).userId(USER_ID).eventsView(events).build();
+    invocationContext.set(createInvocationContext(agent, new InMemorySessionService(), session));
+
+    agent
+        .runNode(nodeContext(agent, invocationContext.get()), "input")
+        .ignoreElements()
+        .blockingAwait();
+
+    assertThat(hiddenWhenAdded).containsExactly(true);
+    assertThat(events).isEmpty();
+    assertThat(invocationContext.get().isOtherNodeInput(getOnlyElement(added))).isTrue();
   }
 
   @Test
@@ -754,6 +844,29 @@ public final class LlmAgentAsNodeTest {
 
     assertThat(thrown).hasMessageThat().contains("node input");
     assertThat(thrown).hasMessageThat().doesNotContain("secret-day");
+  }
+
+  /** Returns a node that runs both agents on its own branch at once, each on its own input. */
+  private static Node runningAtOnce(
+      LlmAgent first, Object firstInput, LlmAgent second, Object secondInput) {
+    return new Node() {
+      @Override
+      public String name() {
+        return "both";
+      }
+
+      @Override
+      public boolean rerunOnResume() {
+        return true;
+      }
+
+      @Override
+      public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
+        return Maybe.merge(context.runNode(first, firstInput), context.runNode(second, secondInput))
+            .ignoreElements()
+            .toFlowable();
+      }
+    };
   }
 
   private static Workflow chain(Node first, Node second) {

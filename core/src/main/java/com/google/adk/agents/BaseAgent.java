@@ -516,7 +516,10 @@ public abstract class BaseAgent extends BaseNode {
   final Flowable<Event> runAsNode(
       com.google.adk.agents.Context context, InvocationContext invocationContext) {
     NodeExecutionState nodeState = context.requireNodeState();
-    return runWithCallbacks(invocationContext, /* keepBranch= */ true, this::runAsyncImpl)
+    return runWithCallbacks(
+            invocationContext.toBuilder().nodePath(nodeState.nodePath()).build(),
+            /* keepBranch= */ true,
+            this::runAsyncImpl)
         .doOnNext(event -> {
           if (!isNullOrEmpty(event.author())) {
             nodeState.eventAuthor(event.author());
