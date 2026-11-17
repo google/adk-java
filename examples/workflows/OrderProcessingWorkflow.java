@@ -15,6 +15,7 @@
  */
 package com.example.workflows;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
@@ -403,6 +404,8 @@ public final class OrderProcessingWorkflow {
             """)
         .outputSchema(RISK_SCHEMA)
         .outputKey(RISK_KEY)
+        // Takes the joined checks, or the order on a recheck, and outputs the parsed decision.
+        .mode(AgentMode.SINGLE_TURN)
         .build();
   }
 
@@ -438,6 +441,8 @@ public final class OrderProcessingWorkflow {
             """)
         .outputSchema(REVIEW_SCHEMA)
         .outputKey(FINANCE_KEY)
+        // Takes the order as its user turn, reads the rest from state, and outputs the verdict.
+        .mode(AgentMode.SINGLE_TURN)
         .build();
   }
 
@@ -455,6 +460,8 @@ public final class OrderProcessingWorkflow {
             """)
         .outputSchema(REVIEW_SCHEMA)
         .outputKey(COMPLIANCE_KEY)
+        // Takes the order as its user turn, reads the rest from state, and outputs the verdict.
+        .mode(AgentMode.SINGLE_TURN)
         .build();
   }
 

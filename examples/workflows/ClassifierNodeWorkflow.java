@@ -15,6 +15,7 @@
  */
 package com.example.workflows;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
@@ -164,6 +165,8 @@ public final class ClassifierNodeWorkflow {
     return LlmAgent.builder()
         .name("billing_agent")
         .model(model)
+        // Takes the ticket that triage passes through as its user turn and outputs its reply.
+        .mode(AgentMode.SINGLE_TURN)
         .instruction("You are a billing specialist. Reply to this ticket: {ticket}")
         .build();
   }
@@ -172,6 +175,8 @@ public final class ClassifierNodeWorkflow {
     return LlmAgent.builder()
         .name("faq_agent")
         .model(model)
+        // Takes the ticket that triage passes through as its user turn and outputs its reply.
+        .mode(AgentMode.SINGLE_TURN)
         .instruction("You answer general product questions. Reply to: {ticket}")
         .build();
   }

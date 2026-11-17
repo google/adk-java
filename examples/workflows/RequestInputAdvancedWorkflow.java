@@ -17,6 +17,7 @@ package com.example.workflows;
 
 import static java.util.stream.Collectors.joining;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
@@ -235,6 +236,8 @@ public final class RequestInputAdvancedWorkflow {
                 + " request.")
         .outputSchema(TIME_OFF_REQUEST_SCHEMA)
         .outputKey(REQUEST_KEY)
+        // Takes the user's message as its user turn and outputs the parsed request.
+        .mode(AgentMode.SINGLE_TURN)
         .build();
   }
 

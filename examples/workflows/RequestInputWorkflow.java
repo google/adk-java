@@ -17,6 +17,7 @@ package com.example.workflows;
 
 import static java.util.stream.Collectors.joining;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
@@ -225,6 +226,8 @@ public final class RequestInputWorkflow {
             "{feedback?}"
             """)
         .outputKey(DRAFT_KEY)
+        // Reads the complaint and any feedback from state and outputs the draft for review.
+        .mode(AgentMode.SINGLE_TURN)
         .build();
   }
 

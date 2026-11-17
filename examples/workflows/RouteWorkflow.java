@@ -15,6 +15,7 @@
  */
 package com.example.workflows;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
@@ -156,6 +157,8 @@ public final class RouteWorkflow {
     return LlmAgent.builder()
         .name("classify_input")
         .model(model)
+        // Takes the user's message as its user turn and outputs the parsed category.
+        .mode(AgentMode.SINGLE_TURN)
         .instruction("Based on this input, decide which category it belongs to: {input}")
         .outputSchema(INPUT_CATEGORY_SCHEMA)
         .outputKey(CATEGORY_KEY)
@@ -166,6 +169,8 @@ public final class RouteWorkflow {
     return LlmAgent.builder()
         .name("answer_question")
         .model(model)
+        // Takes the user's message as its user turn and outputs its reply.
+        .mode(AgentMode.SINGLE_TURN)
         .instruction("Answer the question: {input}")
         .build();
   }
@@ -174,6 +179,8 @@ public final class RouteWorkflow {
     return LlmAgent.builder()
         .name("comment_on_statement")
         .model(model)
+        // Takes the user's message as its user turn and outputs its reply.
+        .mode(AgentMode.SINGLE_TURN)
         .instruction("Comment on the statement: {input}")
         .build();
   }

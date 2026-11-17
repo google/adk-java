@@ -15,6 +15,7 @@
  */
 package com.example.workflows;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
@@ -178,6 +179,8 @@ public final class ResearchWorkflow {
             If this review of an earlier brief asks for more, target the gap it names:
             {review?}
             """)
+        // Takes the user's question as its user turn and outputs the researchers' sub-questions.
+        .mode(AgentMode.SINGLE_TURN)
         .build();
   }
 
@@ -190,6 +193,8 @@ public final class ResearchWorkflow {
                 + " bullets, each ending with its source.")
         .tools(GoogleSearchTool.INSTANCE)
         .outputKey(WEB_NOTES_KEY)
+        // Takes the planner's sub-questions as its user turn and outputs its notes.
+        .mode(AgentMode.SINGLE_TURN)
         .build();
   }
 
@@ -202,6 +207,8 @@ public final class ResearchWorkflow {
                 + " documentation. Reply with at most three bullets, each ending with its source.")
         .tools(GoogleSearchTool.INSTANCE)
         .outputKey(DOCS_NOTES_KEY)
+        // Takes the planner's sub-questions as its user turn and outputs its notes.
+        .mode(AgentMode.SINGLE_TURN)
         .build();
   }
 
@@ -218,6 +225,8 @@ public final class ResearchWorkflow {
             {docs_notes?}
             """)
         .outputKey(BRIEF_KEY)
+        // Takes the joined notes as its user turn and outputs the brief the reviewer takes.
+        .mode(AgentMode.SINGLE_TURN)
         .build();
   }
 
@@ -257,6 +266,8 @@ public final class ResearchWorkflow {
             """)
         .outputSchema(REVIEW_SCHEMA)
         .outputKey(REVIEW_KEY)
+        // Takes the brief as its user turn and outputs the parsed verdict.
+        .mode(AgentMode.SINGLE_TURN)
         .build();
   }
 
