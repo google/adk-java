@@ -651,12 +651,13 @@ public final class NodeRunner {
       Event outgoing = stamped.partial().orElse(false) ? stamped : withPendingDeltas(stamped);
       return eventSink
           .send(outgoing, /* nodeFailure= */ null)
-          .doOnComplete(
-              () -> {
-                if (outgoing.output().isPresent() || messageAsOutput) {
-                  nodeState.markOutputEmitted();
-                }
-              });
+          .doOnComplete(() -> {
+            if (outgoing.output().isPresent() || messageAsOutput) {
+              nodeState.markOutputEmitted();
+            }
+            // Releases a body that waits in Context.emit for this event.
+            nodeState.markProcessed(outgoing);
+          });
     }
 
     /** Sends a final event carrying any output, routes, or deltas that no earlier event carried. */

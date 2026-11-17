@@ -16,12 +16,15 @@
 
 package com.google.adk.workflow;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Strings.isNullOrEmpty;
 
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
+import com.google.adk.events.Event;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -83,6 +86,7 @@ public final class NodeExecutionState {
   private @Nullable Exception failure;
   private @Nullable String failureNodePath;
   private @Nullable ImmutableMap<String, ResumeScan.RecoveredNode> recoveredChildren;
+  private final AtomicReference<FunctionNode.@Nullable BodyRun> bodyRun = new AtomicReference<>();
 
   private NodeExecutionState(Builder builder) {
     checkState(builder.node != null, "A node state needs a node.");
@@ -250,6 +254,33 @@ public final class NodeExecutionState {
 
   NodeRunner.EventSink eventSink() {
     return eventSink;
+  }
+
+  /**
+   * Sends {@code event}, which needs an ID, on behalf of {@link Context#emit(Event)}; false if no
+   * body runs.
+   */
+  public boolean emitFromBody(Event event) {
+    checkArgument(!isNullOrEmpty(checkNotNull(event).id()), "Context.emit needs an event ID.");
+    FunctionNode.BodyRun run = bodyRun.get();
+    return run != null && run.emit(event);
+  }
+
+  /**
+   * Makes {@code run} the body run that {@link #emitFromBody} sends to; false if another run
+   * claimed this state first.
+   */
+  boolean claimBodyRun(FunctionNode.BodyRun run) {
+    return bodyRun.compareAndSet(null, run);
+  }
+
+  /** Releases the {@link #emitFromBody} call that waits for {@code event}, if any. */
+  void markProcessed(Event event) {
+    FunctionNode.BodyRun run = bodyRun.get();
+    // A partial event never waits, so it must not release a later event with the same ID.
+    if (run != null && !event.partial().orElse(false)) {
+      run.markProcessed(event.id());
+    }
   }
 
   /**

@@ -63,8 +63,12 @@ import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.runner.Runner;
+import com.google.adk.sessions.BaseSessionService;
+import com.google.adk.sessions.GetSessionConfig;
+import com.google.adk.sessions.InMemorySessionService;
+import com.google.adk.sessions.ListEventsResponse;
+import com.google.adk.sessions.ListSessionsResponse;
 import com.google.adk.sessions.Session;
-import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
@@ -85,6 +89,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.schedulers.Schedulers;
@@ -109,12 +114,16 @@ import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -137,6 +146,11 @@ public final class FunctionNodeTest {
   private static final String PAY_CONFIRMATION = "wf_tool_confirmation:wf@1/pay@1";
   private static final ImmutableMap<String, String> REJECTED =
       ImmutableMap.of("error", "This tool call is rejected.");
+  private static final Duration SLOW_APPEND = Duration.ofMillis(100);
+
+  /** Runs work inline on the calling thread, as a direct executor does. */
+  private static final Scheduler DIRECT = Schedulers.from(Runnable::run);
+
   private static final Schema ANY = Schema.builder().build();
   private static final Schema STRING = typed(Type.Known.STRING);
   private static final Schema INTEGER = typed(Type.Known.INTEGER);
@@ -1773,9 +1787,9 @@ public final class FunctionNodeTest {
   }
 
   @Test
-  public void nodeTimeoutWithRetry_bodyRunsAnotherNodeUnderItsContext_retryWaitsForTheOuterBody()
+  public void nodeTimeoutWithRetry_bodyTriesToRunAnotherNodeUnderItsContext_retryWaitsForTheBody()
       throws Exception {
-    // "inner" runs under "outer"'s context and returns at once; "outer" then outlives its timeout.
+    // "outer" tries to run "inner" under its own context, which fails, then outlives its timeout.
     AtomicInteger attempts = new AtomicInteger();
     List<String> timeline = Collections.synchronizedList(new ArrayList<>());
     CountDownLatch retryStarted = new CountDownLatch(1);
@@ -1799,8 +1813,9 @@ public final class FunctionNodeTest {
               int attempt = attempts.incrementAndGet();
               timeline.add("start " + attempt);
               if (attempt == 1) {
-                inner.runNode(ctx, null).blockingSubscribe();
-                timeline.add("inner returned");
+                Completable innerRun = inner.runNode(ctx, null).ignoreElements();
+                assertThrows(IllegalStateException.class, innerRun::blockingAwait);
+                timeline.add("inner refused");
                 var unused = Uninterruptibles.awaitUninterruptibly(retryStarted, 2, SECONDS);
                 timeline.add("end 1");
                 firstReturned.countDown();
@@ -1820,7 +1835,7 @@ public final class FunctionNodeTest {
       executor.shutdownNow();
     }
 
-    assertThat(timeline).containsExactly("start 1", "inner returned", "end 1", "start 2").inOrder();
+    assertThat(timeline).containsExactly("start 1", "inner refused", "end 1", "start 2").inOrder();
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/outer@1")).isEqualTo("retried");
   }
@@ -3511,6 +3526,192 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void emit_stateWrittenAroundEvents_isSentWithTheNextEventAndReadsBackAfterTheStore()
+      throws Exception {
+    onEveryScheduler(scheduler -> {
+      // The store completes on its own threads, as a session service does, not the Runner's.
+      SlowStore store = new SlowStore(Schedulers.io(), SLOW_APPEND);
+      AtomicReference<String> readBack = new AtomicReference<>();
+      FunctionNode<Content, Object> counter =
+          emittingNode(
+              scheduler,
+              "counter",
+              (ctx, message) -> {
+                ctx.state().put("n", 1);
+                ctx.emit(text("first"));
+                ctx.state().put("n", 2);
+                // "first" is stored by now, so its n=1 can no longer land over n=2.
+                readBack.set(ctx.state().get("n") + " " + store.storedTexts);
+                ctx.emit(text("second"));
+                ctx.state().put("after_second", 3);
+                return ctx.state().get("n");
+              });
+
+      RunResult result = run(chain(counter), scheduler, store);
+
+      assertThat(readBack.get()).isEqualTo("2 [first]");
+      result.assertCompleted();
+      assertThat(
+              result.eventsAt("wf@1/counter@1").stream()
+                  .map(e -> describe(e) + e.actions().stateDelta()))
+          .containsExactly("first{n=1}", "second{n=2}", "2{after_second=3}")
+          .inOrder();
+    });
+  }
+
+  @Test
+  public void emit_fromTheBodyOrAHelperStillWaitingAtReturn_returnsOnceStored() throws Exception {
+    onEveryScheduler(scheduler -> {
+      // Arrange: the body returns no output while its helper still waits in emit.
+      // The store completes on its own threads, as a session service does, not the Runner's.
+      SlowStore store = new SlowStore(Schedulers.io(), SLOW_APPEND);
+      AtomicReference<ImmutableList<String>> storedWhenHelperReturned = new AtomicReference<>();
+      ExecutorService helper = Executors.newSingleThreadExecutor();
+      AtomicReference<Future<?>> helperEmit = new AtomicReference<>();
+      FunctionNode<Content, Object> reporter =
+          emittingNode(
+              scheduler,
+              "reporter",
+              (ctx, message) -> {
+                ctx.emit(text("from the body"));
+                helperEmit.set(
+                    helper.submit(() -> {
+                      ctx.emit(text("from a helper"));
+                      storedWhenHelperReturned.set(ImmutableList.copyOf(store.storedTexts));
+                    }));
+                assertThat(store.appendsStarted.tryAcquire(2, 10, SECONDS)).isTrue();
+                return null;
+              });
+
+      try {
+        run(chain(reporter), scheduler, store).assertCompleted();
+        helperEmit.get().get(10, SECONDS);
+      } finally {
+        helper.shutdownNow();
+      }
+
+      assertThat(storedWhenHelperReturned.get())
+          .containsExactly("from the body", "from a helper")
+          .inOrder();
+    });
+  }
+
+  @Test
+  public void emit_runDisposedWhileWaiting_throwsCancellationOnThisAndEveryLaterCall()
+      throws Exception {
+    onEveryScheduler(scheduler -> {
+      // Arrange: the store never finishes a node event, so emit waits until the cancel.
+      // The store completes on its own threads, as a session service does, not the Runner's.
+      SlowStore store = new SlowStore(Schedulers.io(), Duration.ofHours(1));
+      // The canceled run drops what the body returns, so the body reports through this.
+      CompletableFuture<ImmutableList<String>> outcomes = new CompletableFuture<>();
+      FunctionNode<Content, Object> stuck =
+          emittingNode(
+              scheduler,
+              "stuck",
+              (ctx, message) -> {
+                String first = emitOutcome(ctx, "stuck");
+                outcomes.complete(ImmutableList.of(first, emitOutcome(ctx, "after the cancel")));
+                return "dropped";
+              });
+      Runner runner = runner(chain(stuck), scheduler, store);
+      Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+      Disposable run = runner.runAsync(USER, session.id(), text("go")).subscribe();
+      assertThat(store.appendsStarted.tryAcquire(10, SECONDS)).isTrue();
+
+      run.dispose();
+
+      assertThat(outcomes.get(10, SECONDS))
+          .containsExactly("CancellationException", "CancellationException");
+    });
+  }
+
+  @Test
+  public void emit_runDisposedWhileTheBodyWorks_everyLaterCallThrowsCancellation()
+      throws Exception {
+    // Arrange: the body works between calls and learns of the cancel only from its interrupt.
+    CountDownLatch working = new CountDownLatch(1);
+    CompletableFuture<ImmutableList<String>> outcomes = new CompletableFuture<>();
+    FunctionNode<Content, Object> importer =
+        node(
+            "importer",
+            (ctx, message) -> {
+              working.countDown();
+              try {
+                Thread.sleep(10_000);
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt(); // The cancel reached the body first.
+              }
+              String first = emitOutcome(ctx, "batch 1");
+              outcomes.complete(ImmutableList.of(first, emitOutcome(ctx, "batch 2")));
+              return "dropped";
+            });
+    Runner runner = runner(chain(importer), null);
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    Disposable run = runner.runAsync(USER, session.id(), text("go")).subscribe();
+    assertThat(working.await(10, SECONDS)).isTrue();
+
+    run.dispose();
+
+    assertThat(outcomes.get(10, SECONDS))
+        .containsExactly("CancellationException", "CancellationException");
+  }
+
+  @Test
+  public void emit_partialEvent_isNotStoredAndReleasesNoLaterEventWithItsId() throws Exception {
+    // Arrange: a helper's event keeps the run busy, so the partial event waits in line.
+    SlowStore store = new SlowStore(Schedulers.io(), SLOW_APPEND);
+    ExecutorService helper = Executors.newSingleThreadExecutor();
+    AtomicReference<ImmutableList<String>> storedWhenEmitReturned = new AtomicReference<>();
+    FunctionNode<Content, Object> typist =
+        node(
+            "typist",
+            (ctx, message) -> {
+              Future<?> first = helper.submit(() -> ctx.emit(text("first")));
+              assertThat(store.appendsStarted.tryAcquire(10, SECONDS)).isTrue();
+              ctx.state().put("k", 1);
+              ctx.emit(Event.builder().id("x").partial(true).content(text("typing")).build());
+              ctx.emit(Event.builder().id("x").content(text("typed")).build());
+              storedWhenEmitReturned.set(ImmutableList.copyOf(store.storedTexts));
+              first.get(10, SECONDS);
+              return "done";
+            });
+
+    RunResult result;
+    try {
+      result = run(chain(typist), Schedulers.io(), store);
+    } finally {
+      helper.shutdownNow();
+    }
+
+    result.assertCompleted();
+    ImmutableList<Event> events = result.eventsAt("wf@1/typist@1");
+    assertThat(events.stream().map(e -> describe(e) + e.actions().stateDelta()))
+        .containsExactly("first{}", "typing{}", "typed{k=1}", "done{}")
+        .inOrder();
+    assertThat(storedWhenEmitReturned.get()).containsExactly("first", "typed").inOrder();
+  }
+
+  @Test
+  public void emit_eventWithOutput_throwsIllegalArgument() {
+    AtomicReference<IllegalArgumentException> error = new AtomicReference<>();
+    FunctionNode<Content, Object> eager =
+        node(
+            "eager",
+            (ctx, message) -> {
+              error.set(
+                  assertThrows(
+                      IllegalArgumentException.class,
+                      () -> ctx.emit(Event.builder().output("too soon").build())));
+              return "done";
+            });
+
+    run(chain(eager)).assertCompleted();
+
+    assertThat(error.get()).hasMessageThat().contains("return the value from the body");
+  }
+
+  @Test
   public void builder_withoutAName_failsAtBuild() {
     FunctionNode.Builder<String, String> builder =
         FunctionNodes.builder(String.class, String.class).body((ctx, text) -> text);
@@ -4858,7 +5059,8 @@ public final class FunctionNodeTest {
   public void runNode_answerThatIsNotAMap_throwsWorkflowDataException() {
     FunctionNode<Content, String> transfer =
         transfer(new AtomicInteger()).requireConfirmation(true).build();
-    Context context = nodeContext(ImmutableMap.of("wf_tool_confirmation:transfer@1", "approved"));
+    Context context =
+        nodeContext(transfer, ImmutableMap.of("wf_tool_confirmation:transfer@1", "approved"));
     Flowable<?> run = transfer.runNode(context, null);
 
     WorkflowDataException error = assertThrows(WorkflowDataException.class, run::blockingFirst);
@@ -4875,6 +5077,7 @@ public final class FunctionNodeTest {
         transfer(new AtomicInteger()).requireConfirmation(true).build();
     Context context =
         nodeContext(
+            transfer,
             ImmutableMap.of(
                 "wf_tool_confirmation:transfer@1", ImmutableMap.of("confirmed", "yes")));
     Flowable<?> run = transfer.runNode(context, null);
@@ -4893,6 +5096,7 @@ public final class FunctionNodeTest {
         transfer(new AtomicInteger()).requireConfirmation(true).build();
     Context context =
         nodeContext(
+            transfer,
             ImmutableMap.of(
                 "wf_tool_confirmation:transfer@1", ImmutableMap.of("confirmed", true, "hint", 5)));
     Flowable<?> run = transfer.runNode(context, null);
@@ -4911,6 +5115,7 @@ public final class FunctionNodeTest {
         transfer(new AtomicInteger()).requireConfirmation(true).build();
     Context context =
         nodeContext(
+            transfer,
             ImmutableMap.of(
                 "wf_tool_confirmation:transfer@1",
                 ImmutableMap.of("confirmed", true, "approved", true)));
@@ -5135,11 +5340,11 @@ public final class FunctionNodeTest {
   }
 
   /** Returns the context of a run of node {@code transfer} that resumes with {@code answers}. */
-  private static Context nodeContext(Map<String, @Nullable Object> answers) {
+  private static Context nodeContext(Node node, Map<String, @Nullable Object> answers) {
     return new Context(
         TestUtils.createInvocationContext(TestUtils.createRootAgent()),
         NodeExecutionState.builder()
-            .node(TestNode.of("transfer"))
+            .node(node)
             .eventSink((event, nodeFailure) -> Completable.complete())
             .runId("1")
             .resumeInputs(answers)
@@ -5281,9 +5486,14 @@ public final class FunctionNodeTest {
     return run(root, null);
   }
 
-  /** Runs {@code root} as an app's root node through a {@link Runner} on a "go" message. */
   private static RunResult run(Node root, @Nullable Scheduler scheduler) {
-    Runner runner = runner(root, scheduler);
+    return run(root, scheduler, new InMemorySessionService());
+  }
+
+  /** Runs {@code root} as an app's root node through a {@link Runner} on a "go" message. */
+  private static RunResult run(
+      Node root, @Nullable Scheduler scheduler, BaseSessionService sessionService) {
+    Runner runner = runner(root, scheduler, sessionService);
     Session session = runner.sessionService().createSession(APP, USER).blockingGet();
     List<Event> events = new ArrayList<>();
     AtomicReference<Throwable> error = new AtomicReference<>();
@@ -5315,10 +5525,146 @@ public final class FunctionNodeTest {
   }
 
   private static Runner runner(Node root, @Nullable Scheduler scheduler) {
+    return runner(root, scheduler, new InMemorySessionService());
+  }
+
+  private static Runner runner(
+      Node root, @Nullable Scheduler scheduler, BaseSessionService sessionService) {
     return Runner.builder()
         .app(App.builder().name(APP).rootNode(root).build())
+        .sessionService(sessionService)
         .scheduler(scheduler)
         .build();
+  }
+
+  /** Runs {@code check} on its own thread, for a bounded time, with each Runner scheduler. */
+  private static void onEveryScheduler(SchedulerCheck check) throws Exception {
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    ExecutorService checks = Executors.newCachedThreadPool();
+    try {
+      for (Scheduler scheduler :
+          ImmutableList.of(
+              Schedulers.io(),
+              Schedulers.trampoline(),
+              Schedulers.single(),
+              Schedulers.from(pool),
+              DIRECT)) {
+        Future<?> done =
+            checks.submit(() -> {
+              check.run(scheduler);
+              return null;
+            });
+        try {
+          done.get(20, SECONDS);
+        } catch (ExecutionException | TimeoutException e) {
+          throw new AssertionError("on " + scheduler + ": " + e.getMessage(), e);
+        }
+      }
+    } finally {
+      checks.shutdownNow();
+      pool.shutdownNow();
+    }
+  }
+
+  private interface SchedulerCheck {
+    void run(Scheduler scheduler) throws Exception;
+  }
+
+  /** Returns a node named {@code name} that runs {@code body} on the user's message. */
+  private static FunctionNode<Content, Object> node(String name, NodeBody<Content, Object> body) {
+    return FunctionNodes.of(name, Content.class, Object.class, body);
+  }
+
+  /**
+   * Returns {@link #node}, on {@code Schedulers.io()} if {@code runnerScheduler} runs work inline,
+   * since an emitting body cannot.
+   */
+  private static FunctionNode<Content, Object> emittingNode(
+      Scheduler runnerScheduler, String name, NodeBody<Content, Object> body) {
+    if (runnerScheduler != Schedulers.trampoline() && runnerScheduler != DIRECT) {
+      return node(name, body);
+    }
+    return FunctionNodes.builder(Content.class, Object.class)
+        .name(name)
+        .scheduler(Schedulers.io())
+        .body(body)
+        .build();
+  }
+
+  private static Content text(String text) {
+    return Content.fromParts(Part.fromText(text));
+  }
+
+  /** Emits {@code text} and returns "returned", or the simple name of what the call threw. */
+  private static String emitOutcome(Context ctx, String text) {
+    try {
+      ctx.emit(text(text));
+      return "returned";
+    } catch (RuntimeException e) {
+      return e.getClass().getSimpleName();
+    }
+  }
+
+  /** Returns the event's text or output, whichever it carries. */
+  private static String describe(Event event) {
+    return event.content().map(Content::text).orElse("") + event.output().orElse("");
+  }
+
+  /** A session service that stores each node event {@code delay} late, on {@code appendOn}. */
+  private static final class SlowStore implements BaseSessionService {
+    private final InMemorySessionService delegate = new InMemorySessionService();
+    private final Scheduler appendOn;
+    private final Duration delay;
+    final List<String> storedTexts = new CopyOnWriteArrayList<>();
+    final Semaphore appendsStarted = new Semaphore(0);
+
+    SlowStore(Scheduler appendOn, Duration delay) {
+      this.appendOn = appendOn;
+      this.delay = delay;
+    }
+
+    @Override
+    public Single<Event> appendEvent(Session session, Event event) {
+      if (event.nodeInfo().isEmpty()) {
+        return delegate.appendEvent(session, event);
+      }
+      appendsStarted.release();
+      return Single.timer(delay.toMillis(), MILLISECONDS, appendOn)
+          .flatMap(unused -> delegate.appendEvent(session, event))
+          .doOnSuccess(unused -> storedTexts.add(describe(event)));
+    }
+
+    // BaseSessionService's only abstract createSession overload is deprecated.
+    @SuppressWarnings("deprecation")
+    @Override
+    public Single<Session> createSession(
+        String appName,
+        String userId,
+        @Nullable ConcurrentMap<String, Object> state,
+        @Nullable String sessionId) {
+      return delegate.createSession(appName, userId, state, sessionId);
+    }
+
+    @Override
+    public Maybe<Session> getSession(
+        String appName, String userId, String sessionId, Optional<GetSessionConfig> config) {
+      return delegate.getSession(appName, userId, sessionId, config);
+    }
+
+    @Override
+    public Single<ListSessionsResponse> listSessions(String appName, String userId) {
+      return delegate.listSessions(appName, userId);
+    }
+
+    @Override
+    public Completable deleteSession(String appName, String userId, String sessionId) {
+      return delegate.deleteSession(appName, userId, sessionId);
+    }
+
+    @Override
+    public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
+      return delegate.listEvents(appName, userId, sessionId);
+    }
   }
 
   /** The events a run streamed and the error it failed with, if any. */

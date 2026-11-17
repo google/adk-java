@@ -18,6 +18,7 @@ package com.google.adk.agents;
 
 import com.google.adk.annotations.Experimental;
 import com.google.adk.artifacts.ListArtifactsResponse;
+import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
 import com.google.adk.memory.SearchMemoryResponse;
@@ -29,7 +30,9 @@ import com.google.adk.workflow.NodeRunner;
 import com.google.adk.workflow.Route;
 import com.google.adk.workflow.RunNodeConfig;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
+import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -37,6 +40,7 @@ import io.reactivex.rxjava3.core.Single;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -343,6 +347,46 @@ public class Context extends ReadonlyContext {
   @Experimental
   public final int attemptCount() {
     return requireNodeState().attemptCount();
+  }
+
+  /**
+   * Sends {@code event} from this workflow node's {@code FunctionNode} body, after the events of
+   * earlier calls and before the output. It returns once the run has stored the event and handed it
+   * to the run's caller, and any thread of the body may call it. On a {@code Runner} that runs work
+   * inline, the node needs a {@code FunctionNode.Builder#scheduler} that does not, such as {@code
+   * Schedulers.io()}. The {@link com.google.adk.workflow.FunctionNode} documentation gives the
+   * rules for state, threads, events, cancellation and resumes.
+   *
+   * @throws IllegalArgumentException if {@code event} has an output, or has the ID of an event
+   *     another {@code emit} call still waits on
+   * @throws IllegalStateException if no {@code FunctionNode} body of this node is running
+   * @throws CancellationException if the node is canceled, or the calling thread is interrupted
+   *     while this call waits; the thread stays interrupted
+   */
+  @Experimental
+  public final void emit(Event event) {
+    Preconditions.checkNotNull(event);
+    if (Strings.isNullOrEmpty(event.id())) {
+      event = event.toBuilder().id(invocationContext.newUuid()).build();
+    }
+    if (nodeState == null || !nodeState.emitFromBody(event)) {
+      throw new IllegalStateException(
+          "Context.emit works only while the FunctionNode body of this context's node runs; a"
+              + " custom node sends events as items of its Flowable, and a tool or callback"
+              + " returns its result.");
+    }
+  }
+
+  /** Sends {@code message} as an event without an output, as {@link #emit(Event)} does. */
+  @Experimental
+  public final void emit(Content message) {
+    Preconditions.checkNotNull(message);
+    emit(
+        Event.builder()
+            .author("")
+            .timestamp(invocationContext.now().toEpochMilli())
+            .content(message)
+            .build());
   }
 
   /**

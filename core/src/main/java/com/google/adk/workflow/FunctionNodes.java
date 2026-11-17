@@ -32,7 +32,8 @@ public final class FunctionNodes {
 
   /**
    * Returns a node named {@code name} that runs {@code body} on each input read as {@code
-   * inputType} and writes its {@code outputType} output in JSON form.
+   * inputType} and writes its {@code outputType} output in JSON form. The body may send events
+   * first with {@link com.google.adk.agents.Context#emit}.
    *
    * @throws WorkflowConfigurationException if Jackson cannot read and write {@code inputType} or
    *     write {@code outputType}, or if a port type has no single concrete JSON shape or is an

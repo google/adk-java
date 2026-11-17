@@ -102,7 +102,9 @@ public interface Node {
   }
 
   /**
-   * Runs the node on {@code nodeInput}, the output it receives from its predecessors.
+   * Runs the node on {@code nodeInput}, the output it receives from its predecessors. The workflow
+   * runner calls this method; to run a node from another node's body, call {@link
+   * Context#runNode(Node, Object)}.
    *
    * <p>An emitted {@link Event} passes through, an emitted {@link RequestInput} pauses the workflow
    * until the user answers it, and any other emitted value becomes the node's output (at most one

@@ -28,18 +28,25 @@ import com.google.adk.telemetry.Tracing;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.FlowableEmitter;
 import io.reactivex.rxjava3.core.Maybe;
-import io.reactivex.rxjava3.core.MaybeEmitter;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.Phaser;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -51,6 +58,34 @@ import org.jspecify.annotations.Nullable;
  * same value whether it comes live or from a stored session. A body that gives its output to a
  * child with {@code useAsOutput} outputs the child's output written as {@code O}, as if it had
  * returned it.
+ *
+ * <p>The body may send events before its output with {@link Context#emit(Event)}:
+ *
+ * <ul>
+ *   <li>State: a write made before {@code emit} is sent with that event, or with an event another
+ *       thread sent just before it; a later write is sent with a later event or the output, and
+ *       reads on the calling thread after {@code emit} returns see the body's own writes.
+ *   <li>Threads: any thread the body uses may call it, and a call waits even if the body returns; a
+ *       call deadlocks in a {@code ctx.runNode(...)} callback such as {@code doOnSuccess}, which
+ *       runs inside the dispatch. A body that calls it cannot run inline, so on a {@code Runner}
+ *       that does, such as {@code Schedulers.trampoline()} or a direct executor, set a {@link
+ *       Builder#scheduler} that does not, such as {@code Schedulers.io()}; ADK Kotlin runs bodies
+ *       on {@code Dispatchers.IO}, where none is needed.
+ *   <li>Events: a missing ID is filled in; long-running tool IDs, a route or a transfer act as on a
+ *       returned event; a partial event is sent without waiting, not stored, and carries no state
+ *       writes; the events precede the output unless a {@code useAsOutput} child already sent it.
+ *   <li>Cancellation: a cancel of the node, or an interrupt of the waiting thread, ends the wait
+ *       with a {@code CancellationException}, and the event may still be stored; after a cancel
+ *       every call throws one and the output is dropped.
+ *   <li>Resumes: a body rerun after a pause sends its events again. If the turn is canceled after
+ *       an emitted event was stored, a later resume reruns the body only if the node sets {@code
+ *       waitForOutput}, or runs through {@code ctx.runNode} or as the app's root node with {@code
+ *       rerunOnResume} false.
+ * </ul>
+ *
+ * <p>Only the workflow runner runs a {@code FunctionNode}; from another node's body, run it with
+ * {@code ctx.runNode}, since calling {@link #runNode} directly fails with an {@code
+ * IllegalStateException}.
  */
 @Experimental
 public final class FunctionNode<I, O> extends BaseNode {
@@ -157,7 +192,7 @@ public final class FunctionNode<I, O> extends BaseNode {
 
   @Override
   public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-    // defer, so that each subscription keeps its caller's trace context.
+    // defer, so that each subscription has its own body run and keeps its caller's trace context.
     return Flowable.defer(() -> runOnce(context, nodeInput));
   }
 
@@ -165,60 +200,82 @@ public final class FunctionNode<I, O> extends BaseNode {
     io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
     Scheduler runnerScheduler = context.invocationContext().scheduler();
     Scheduler bodyScheduler = scheduler != null ? scheduler : runnerScheduler;
+    BodyRun run = new BodyRun();
+    NodeExecutionState state = context.requireNodeState();
+    // Only the runner gives a run a state of its own; claimed on subscribe, before any user code.
+    if (state.node() != this || !state.claimBodyRun(run)) {
+      return Flowable.error(
+          new IllegalStateException(
+              "Node '"
+                  + name()
+                  + "' runs only through the workflow runner; to run it from a node's body, call"
+                  + " ctx.runNode."));
+    }
     // create rather than defer, so that canceling the node reaches the body while it runs.
-    Maybe<Object> outcome =
-        Maybe.<Object>create(
+    Flowable<Object> outcome =
+        Flowable.<Object>create(
                 emitter -> {
                   // The timeout waits for the body to return, so a retry cannot overlap it.
                   CompletableSubject returned = CompletableSubject.create();
-                  NodeExecutionState state = context.requireNodeState();
-                  // Under another node's context, leave that node's signal in place.
-                  if (state.node() == this) {
-                    // Not on the body's thread, which may be interrupted, or the busy Runner.
-                    state.markBodyStarted(returned.observeOn(Schedulers.computation()));
-                  }
+                  // Not on the body's thread, which may be interrupted, or the busy Runner.
+                  state.markBodyStarted(returned.observeOn(Schedulers.computation()));
                   try {
-                    runBody(context, nodeInput, emitter);
+                    // Serialized, as the body's helper threads may emit at the same time.
+                    runBody(context, nodeInput, run, emitter.serialize());
                   } finally {
                     returned.onComplete();
                   }
-                })
+                },
+                BackpressureStrategy.BUFFER)
             .compose(Tracing.withContext(traceContext));
     // Unlike subscribeOn, canceling this hop does not interrupt the handling of the body's output.
-    Flowable<Object> output =
-        Completable.complete().observeOn(bodyScheduler).andThen(outcome).toFlowable();
+    Flowable<Object> events =
+        // Via a Maybe, as andThen(Publisher) can interrupt the thread on a cancel.
+        Completable.complete()
+            .observeOn(bodyScheduler)
+            .andThen(Maybe.just(outcome))
+            .flatMapPublisher(f -> f);
     // Back on the Runner's scheduler, through an Executor so that a cancel cannot interrupt it.
-    return bodyScheduler.equals(runnerScheduler)
-        ? output
-        : output
-            .observeOn(Schedulers.from(runnerScheduler::scheduleDirect))
-            .compose(Tracing.withContext(traceContext));
+    return (bodyScheduler.equals(runnerScheduler)
+            ? events
+            : events
+                .observeOn(Schedulers.from(runnerScheduler::scheduleDirect), /* delayError= */ true)
+                .compose(Tracing.withContext(traceContext)))
+        // A cancel ends the waits; after completion, each wait ends when its event is stored.
+        .doOnCancel(run::cancel);
   }
 
   /**
-   * Runs the confirmation predicate and the body on the calling thread and sends the output or
-   * failure to {@code emitter}. Canceling the node interrupts that thread.
+   * Runs the confirmation predicate and the body on the calling thread and sends the body's events,
+   * then its outcome, to {@code events}. Canceling the node interrupts that thread.
    */
-  private void runBody(Context context, @Nullable Object nodeInput, MaybeEmitter<Object> emitter) {
-    Worker<RunOutcome<O>> worker = new Worker<>(() -> runFunction(context, nodeInput, emitter));
-    emitter.setCancellable(worker::cancel);
+  private void runBody(
+      Context context, @Nullable Object nodeInput, BodyRun run, FlowableEmitter<Object> events) {
+    Worker<RunOutcome<O>> worker =
+        new Worker<>(() -> {
+          try {
+            return runFunction(context, nodeInput, run, events);
+          } finally {
+            run.close();
+          }
+        });
+    events.setCancellable(worker::cancel);
     Object output;
     try {
       RunOutcome<O> outcome = worker.run();
-      if (outcome == null || emitter.isDisposed()) {
+      if (outcome == null || events.isCancelled()) {
         return;
       }
       output = outcome.replacement() != null ? outcome.replacement() : finishRun(context, outcome);
     } catch (Exception e) {
       // tryOnError, as a canceled run can no longer take a failure.
-      emitter.tryOnError(e);
+      events.tryOnError(e);
       return;
     }
-    if (output == null) {
-      emitter.onComplete();
-    } else {
-      emitter.onSuccess(output);
+    if (output != null) {
+      events.onNext(output);
     }
+    events.onComplete();
   }
 
   /**
@@ -226,7 +283,8 @@ public final class FunctionNode<I, O> extends BaseNode {
    * request replaces it. Runs in the worker, as the predicate is user code like the body.
    */
   private @Nullable RunOutcome<O> runFunction(
-      Context context, @Nullable Object nodeInput, MaybeEmitter<Object> emitter) throws Exception {
+      Context context, @Nullable Object nodeInput, BodyRun run, FlowableEmitter<Object> events)
+      throws Exception {
     String what = "input of node '" + name() + "'";
     I input = inputCodec.decode(nodeInput, what);
     ToolConfirmation confirmation =
@@ -237,7 +295,7 @@ public final class FunctionNode<I, O> extends BaseNode {
         return new RunOutcome<>(confirmation, REJECTED_OUTPUT, null);
       }
     } else if (confirmationPredicate != null
-        && !emitter.isDisposed()
+        && !events.isCancelled()
         && confirmationPredicate.test(context, input)) {
       RequestInput request =
           ToolConfirmations.request(
@@ -248,7 +306,8 @@ public final class FunctionNode<I, O> extends BaseNode {
               /* confirmationPayload= */ null);
       return new RunOutcome<>(null, request, null);
     }
-    return emitter.isDisposed()
+    run.open(events);
+    return events.isCancelled()
         ? null
         : new RunOutcome<>(confirmation, null, body.apply(context, input));
   }
@@ -371,6 +430,96 @@ public final class FunctionNode<I, O> extends BaseNode {
         Throwables.throwIfInstanceOf(e.getCause(), Exception.class);
         Throwables.throwIfUnchecked(e.getCause());
         throw e;
+      }
+    }
+  }
+
+  /** Delivers the events of one body run's {@code Context.emit} calls. */
+  static final class BodyRun {
+    // Counts the calls from admission to the end of their send; close waits for them.
+    private final Phaser sending = new Phaser(1);
+
+    @GuardedBy("this")
+    private final Map<String, CompletableFuture<Void>> pending = new HashMap<>();
+
+    @GuardedBy("this")
+    private @Nullable FlowableEmitter<Object> events;
+
+    @GuardedBy("this")
+    private boolean canceled;
+
+    synchronized void open(FlowableEmitter<Object> events) {
+      this.events = events;
+    }
+
+    /**
+     * Sends {@code event} and waits for its store unless it is partial. Returns false once the body
+     * has returned, and throws a CancellationException once the node is canceled.
+     */
+    boolean emit(Event event) {
+      boolean partial = event.partial().orElse(false);
+      CompletableFuture<Void> processed = new CompletableFuture<>();
+      FlowableEmitter<Object> sink;
+      synchronized (this) {
+        if (canceled) {
+          throw new CancellationException("The node was canceled.");
+        }
+        if (events == null) {
+          return false;
+        }
+        checkArgument(
+            event.output().isEmpty()
+                && !event.nodeInfo().map(NodeInfo::messageAsOutput).orElse(false),
+            "Context.emit takes an event without an output; return the value from the body.");
+        checkArgument(
+            partial || pending.putIfAbsent(event.id(), processed) == null,
+            "Another Context.emit call still waits on an event with this ID.");
+        sending.register();
+        sink = events;
+      }
+      try {
+        sink.onNext(event); // Outside the lock: the downstream may run on this thread.
+      } finally {
+        sending.arriveAndDeregister();
+      }
+      if (!partial) {
+        awaitStore(processed);
+      }
+      return true;
+    }
+
+    /** Waits until the run stores the event; a cancel or an interrupt ends the wait. */
+    private static void awaitStore(CompletableFuture<Void> processed) {
+      try {
+        processed.get(); // Throws CancellationException once the node is canceled.
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new CancellationException("Interrupted while waiting for the event's store.");
+      } catch (ExecutionException e) {
+        throw new IllegalStateException(e); // Unreachable: the signal never fails.
+      }
+    }
+
+    /** Stops admitting events, then waits until each admitted call has handed its event on. */
+    void close() {
+      synchronized (this) {
+        events = null;
+      }
+      // Afterwards serialize() has sent or queued every admitted event, so all precede the output.
+      sending.arriveAndAwaitAdvance();
+    }
+
+    /** Ends each wait with a CancellationException, and makes every later call throw one. */
+    synchronized void cancel() {
+      canceled = true;
+      pending.values().forEach(signal -> signal.cancel(/* mayInterruptIfRunning= */ false));
+      pending.clear();
+    }
+
+    synchronized void markProcessed(@Nullable String eventId) {
+      CompletableFuture<Void> signal = pending.remove(eventId);
+      if (signal != null) {
+        signal.complete(null);
       }
     }
   }
@@ -498,14 +647,14 @@ public final class FunctionNode<I, O> extends BaseNode {
 
     /**
      * Sets the scheduler that decodes the input and runs the confirmation predicate and the body,
-     * or {@code null} (the default) for the {@code Runner}'s scheduler. A body that waits for other
-     * work needs a thread of its own, so an inline or small fixed-size scheduler can hang the run;
-     * ADK Kotlin instead defaults to {@code Dispatchers.IO}, which gives each waiting body a
-     * thread. Once that work ends, even when a confirmation skips the body, the outcome is handed
-     * back on the {@code Runner}'s scheduler, unless that scheduler equals this one (two {@code
-     * Schedulers.from} of one executor do not) or runs work inline, in which case it stays on this
-     * thread. The scheduler must accept this work: a rejected body leaves the run waiting, as a
-     * {@code Runner} scheduler that rejects work does.
+     * or {@code null} (the default) for the {@code Runner}'s scheduler. A body that calls {@link
+     * Context#emit} cannot run inline, and bodies that wait for one another need a thread each, so
+     * a small fixed-size scheduler can hang the run; ADK Kotlin instead defaults to {@code
+     * Dispatchers.IO}, which gives each waiting body a thread. Once that work ends, even when a
+     * confirmation skips the body, the outcome is handed back on the {@code Runner}'s scheduler,
+     * unless that scheduler equals this one (two {@code Schedulers.from} of one executor do not) or
+     * runs work inline, in which case it stays on this thread. The scheduler must accept this work:
+     * a rejected body leaves the run waiting, as a {@code Runner} scheduler that rejects work does.
      */
     @CanIgnoreReturnValue
     public Builder<I, O> scheduler(@Nullable Scheduler scheduler) {
