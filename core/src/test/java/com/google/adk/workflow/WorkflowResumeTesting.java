@@ -117,6 +117,23 @@ final class WorkflowResumeTesting {
     return answer(interruptId, response, RequestInput.FUNCTION_CALL_NAME);
   }
 
+  /** Returns the answer {@code {"result": result}} to the request {@code interruptId}. */
+  static Content requestResult(String interruptId, Object result) {
+    return requestAnswer(interruptId, ImmutableMap.of("result", result));
+  }
+
+  /** Returns the {@code RequestInput} calls among {@code events}. */
+  static ImmutableList<FunctionCall> requests(List<Event> events) {
+    return events.stream()
+        .flatMap(event -> event.functionCalls().stream())
+        .filter(call -> call.name().orElse("").equals(RequestInput.FUNCTION_CALL_NAME))
+        .collect(toImmutableList());
+  }
+
+  static FunctionCall onlyRequest(List<Event> events) {
+    return requests(events).stream().collect(onlyElement());
+  }
+
   static Content callContent(String name, String id) {
     return Content.builder()
         .role("model")

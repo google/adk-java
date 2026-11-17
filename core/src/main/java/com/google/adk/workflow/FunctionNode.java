@@ -90,7 +90,7 @@ import org.jspecify.annotations.Nullable;
 @Experimental
 public final class FunctionNode<I, O> extends BaseNode {
 
-  private static final PortCodec<Object> ANY =
+  static final PortCodec<Object> ANY =
       PortCodec.output(PortCodec.javaType(Object.class), "an event output");
 
   private static final ConfirmationPredicate<Object> ALWAYS_CONFIRM = (context, input) -> true;
@@ -267,8 +267,8 @@ public final class FunctionNode<I, O> extends BaseNode {
         return;
       }
       output = outcome.replacement() != null ? outcome.replacement() : finishRun(context, outcome);
-    } catch (Exception e) {
-      // tryOnError, as a canceled run can no longer take a failure.
+    } catch (Exception | NodeInterruptedException e) {
+      // tryOnError, as a canceled run can no longer take a failure or a pause.
       events.tryOnError(e);
       return;
     }
@@ -383,8 +383,8 @@ public final class FunctionNode<I, O> extends BaseNode {
       throw new IllegalArgumentException(
           "node '"
               + name()
-              + "' returned a RequestInput, which a NodeBody cannot send; return the output"
-              + " instead.");
+              + "' returned a RequestInput, which a NodeBody cannot send; call"
+              + " FunctionNodes.requestInput(...) instead.");
     }
     if (result instanceof Event event) {
       // A returned event's output is sent in JSON form too, as a stored session hands it back.

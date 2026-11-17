@@ -416,9 +416,9 @@ public class Context extends ReadonlyContext {
   /**
    * Returns a {@link Maybe} that, when subscribed, runs {@code node} as a child of this workflow
    * node and emits the child's output, or completes empty if it has none. Include it in this node's
-   * run and catch only failures you handle, such as {@link DynamicNodeFailedException}: when the
-   * child waits, it fails with an internal {@link RuntimeException} that must propagate to end this
-   * node's run, so that it waits too.
+   * run: when the child waits, the {@code Maybe} fails with an internal {@link Error} so that this
+   * node waits too, which {@code catch (Exception e)} lets through but {@code catch (Throwable t)}
+   * and Rx error handlers such as {@code onErrorResumeNext} stop.
    *
    * <p>It fails with {@link DynamicNodeFailedException} if the child fails; with {@link
    * IllegalStateException} if this is not a workflow node's context, if this node's {@link

@@ -22,8 +22,10 @@ import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.go;
 import static com.google.adk.workflow.WorkflowResumeTesting.longRunningAsk;
+import static com.google.adk.workflow.WorkflowResumeTesting.onlyRequest;
 import static com.google.adk.workflow.WorkflowResumeTesting.replyInput;
 import static com.google.adk.workflow.WorkflowResumeTesting.requestAnswer;
+import static com.google.adk.workflow.WorkflowResumeTesting.requestResult;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.MoreCollectors.onlyElement;
@@ -104,6 +106,7 @@ import java.math.BigInteger;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -663,6 +666,8 @@ public final class FunctionNodeTest {
   record Authored(String author) {}
 
   record TreeNode(String label, List<TreeNode> children) {}
+
+  record Leave(LocalDate day) {}
 
   /** Holds a declaration annotation named like the {@code @Nullable} of other packages. */
   static final class OtherNullness {
@@ -4930,8 +4935,241 @@ public final class FunctionNodeTest {
 
     assertThat(result.errorMessage("IllegalArgumentException"))
         .isEqualTo(
-            "node 'ask' returned a RequestInput, which a NodeBody cannot send; return the output"
-                + " instead.");
+            "node 'ask' returned a RequestInput, which a NodeBody cannot send; call"
+                + " FunctionNodes.requestInput(...) instead.");
+  }
+
+  @Test
+  @SuppressWarnings("CatchingUnchecked") // Bodies often catch Exception.
+  public void requestInput_caughtAsException_stillPausesTheNode() {
+    FunctionNode<Content, String> asker =
+        FunctionNodes.of(
+            "asker",
+            Content.class,
+            String.class,
+            (ctx, message) -> {
+              try {
+                return FunctionNodes.requestInput("ok_1", "ok?");
+              } catch (Exception e) {
+                return "swallowed";
+              }
+            });
+    WorkflowSession session = new WorkflowSession(chain(asker, captureInput("reply")));
+
+    ImmutableList<Event> paused = session.turn(go());
+    ImmutableList<Event> events = session.turn(requestResult("ok_1", "yes"));
+
+    assertThat(WorkflowResumeTesting.pathsOf(paused)).doesNotContain("wf@1/reply@1");
+    assertThat(replyInput(events)).isEqualTo("yes");
+  }
+
+  @Test
+  public void requestInput_fromACustomNode_asksAndOutputsTheAnswer() {
+    Node asker =
+        new TestNode(
+            "asker",
+            (ctx, input) -> Flowable.fromCallable(() -> FunctionNodes.requestInput("ok_1")));
+    WorkflowSession session = new WorkflowSession(chain(asker, captureInput("reply")));
+
+    ImmutableList<Event> paused = session.turn(go());
+    ImmutableList<Event> events = session.turn(requestResult("ok_1", "yes"));
+
+    assertThat(WorkflowResumeTesting.pathsOf(paused)).doesNotContain("wf@1/reply@1");
+    assertThat(replyInput(events)).isEqualTo("yes");
+  }
+
+  @Test
+  public void requestInput_caughtAsThrowable_doesNotAskAndOutputsTheFallback() {
+    FunctionNode<Content, String> asker =
+        FunctionNodes.of(
+            "asker",
+            Content.class,
+            String.class,
+            (ctx, message) -> {
+              try {
+                return FunctionNodes.requestInput("ok_1", "ok?");
+              } catch (Throwable t) {
+                return "fallback";
+              }
+            });
+
+    ImmutableList<Event> events =
+        new WorkflowSession(chain(asker, captureInput("reply"))).turn(go());
+
+    assertThat(WorkflowResumeTesting.requests(events)).isEmpty();
+    assertThat(replyInput(events)).isEqualTo("fallback");
+  }
+
+  @Test
+  public void requestInput_recordPayloadWithADate_sendsTheDateAsText() {
+    FunctionNode<Content, String> asker =
+        FunctionNodes.of(
+            "asker",
+            Content.class,
+            String.class,
+            (ctx, message) ->
+                FunctionNodes.requestInput(
+                    "day_1", "Approve?", new Leave(LocalDate.of(2026, 12, 24))));
+
+    ImmutableList<Event> paused = new WorkflowSession(chain(asker)).turn(go());
+
+    assertThat(onlyRequest(paused).args().orElseThrow())
+        .containsEntry(RequestInput.PAYLOAD_KEY, ImmutableMap.of("day", "2026-12-24"));
+  }
+
+  @Test
+  public void requestInput_messageAndResponseSchema_sendsTheMessageAndChecksTheAnswer() {
+    FunctionNode<Content, Object> asker =
+        FunctionNodes.of(
+            "asker",
+            Content.class,
+            Object.class,
+            (ctx, message) ->
+                FunctionNodes.requestInput(
+                    "age_1", "How old?", /* payload= */ null, WorkflowResumeTesting.AGE_SCHEMA));
+    WorkflowSession session = new WorkflowSession(chain(asker, captureInput("reply")));
+
+    ImmutableList<Event> paused = session.turn(go());
+    WorkflowResumeTesting.FailedTurn turn =
+        session.failingTurn(requestAnswer("age_1", ImmutableMap.of("age", "old")));
+
+    assertThat(onlyRequest(paused).args().orElseThrow())
+        .containsEntry(RequestInput.MESSAGE_KEY, "How old?");
+    assertThat(turn.error()).hasMessageThat().startsWith("Validation failed for interrupt age_1:");
+    assertThat(turn.error()).hasMessageThat().doesNotContain("old");
+  }
+
+  @Test
+  public void requestInput_payloadWithNoJsonForm_failsTheAskingNode() {
+    FunctionNode<Content, String> asker =
+        FunctionNodes.of(
+            "asker",
+            Content.class,
+            String.class,
+            (ctx, message) -> FunctionNodes.requestInput("ok_1", "ok?", new Object()));
+
+    WorkflowResumeTesting.FailedTurn turn = new WorkflowSession(chain(asker)).failingTurn(go());
+
+    assertThat(turn.error())
+        .hasMessageThat()
+        .isEqualTo("payload of requestInput has no JSON form as java.lang.Object.");
+    assertThat(
+            turn.events().stream()
+                .filter(event -> event.errorCode().isPresent())
+                .map(WorkflowResumeTesting::pathOf))
+        .containsExactly("wf@1/asker@1");
+  }
+
+  @Test
+  public void requestInput_responseSchemaWithNoJsonForm_failsTheAskingNode() {
+    Schema noJsonForm = Schema.builder().default_(new Object()).build();
+    FunctionNode<Content, String> asker =
+        FunctionNodes.of(
+            "asker",
+            Content.class,
+            String.class,
+            (ctx, message) ->
+                FunctionNodes.requestInput("ok_1", "ok?", /* payload= */ null, noJsonForm));
+
+    WorkflowResumeTesting.FailedTurn turn = new WorkflowSession(chain(asker)).failingTurn(go());
+
+    assertThat(turn.error()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(
+            turn.events().stream()
+                .filter(event -> event.errorCode().isPresent())
+                .map(WorkflowResumeTesting::pathOf))
+        .containsExactly("wf@1/asker@1");
+  }
+
+  @Test
+  @SuppressWarnings("CatchingUnchecked") // Bodies often catch Exception.
+  public void runNode_childPauseCaughtAsException_stillPausesTheParent() {
+    FunctionNode<Content, Object> parent =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              try {
+                return ctx.runNode(
+                        longRunningAsk("asker", "name_1"),
+                        null,
+                        RunNodeConfig.builder().runId("b").build())
+                    .blockingGet();
+              } catch (Exception e) {
+                return "swallowed";
+              }
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(parent, captureInput("reply")));
+    ImmutableMap<String, Object> details = ImmutableMap.of("name", "John");
+
+    ImmutableList<Event> paused = session.turn(go());
+    ImmutableList<Event> events = session.turn(answer("name_1", details));
+
+    assertThat(WorkflowResumeTesting.pathsOf(paused)).doesNotContain("wf@1/parent@1");
+    assertThat(WorkflowResumeTesting.pathsOf(paused)).doesNotContain("wf@1/reply@1");
+    assertThat(replyInput(events)).isEqualTo(details);
+  }
+
+  @Test
+  public void builder_rerunOnResumeBodyAsking_readsTheAnswerFromResumeInputs() {
+    FunctionNode<Content, String> asker =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("asker")
+            .rerunOnResume(true)
+            .body((ctx, message) ->
+                ctx.resumeInputs().containsKey("ok_1")
+                    ? "answered " + ctx.resumeInputs().get("ok_1")
+                    : FunctionNodes.requestInput("ok_1", "ok?"))
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(asker, captureInput("reply")));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(requestResult("ok_1", "yes"));
+
+    assertThat(replyInput(events)).isEqualTo("answered yes");
+  }
+
+  @Test
+  public void of_requestInputAnsweredWithAMapOnARecordOutput_keepsKeysTheRecordLacks() {
+    // As in ADK Kotlin, the answer is not read as an Order, so it keeps the key Order lacks.
+    WorkflowSession session =
+        new WorkflowSession(chain(asker(Order.class, "o_1"), captureInput("reply")));
+    session.advance(go());
+    ImmutableMap<String, Object> answer = ImmutableMap.of("id", "a1", "quantity", 3L, "gift", true);
+
+    ImmutableList<Event> events = session.turn(requestResult("o_1", answer));
+
+    assertThat(WorkflowResumeTesting.outputEventAt(events, "wf@1/asker@1").output())
+        .hasValue(answer);
+    assertThat(replyInput(events)).isEqualTo(answer);
+  }
+
+  @Test
+  public void of_requestInputAnsweredWithAnotherType_outputsItAndTheSuccessorRejectsIt() {
+    FunctionNode<Integer, Integer> twice =
+        FunctionNodes.of("twice", Integer.class, Integer.class, (ctx, n) -> n * 2);
+    WorkflowSession session = new WorkflowSession(chain(asker(Integer.class, "n_1"), twice));
+    session.advance(go());
+
+    WorkflowResumeTesting.FailedTurn turn = session.failingTurn(requestResult("n_1", "abc"));
+
+    assertThat(WorkflowResumeTesting.outputEventAt(turn.events(), "wf@1/asker@1").output())
+        .hasValue("abc");
+    assertThat(turn.error())
+        .hasMessageThat()
+        .isEqualTo("validation error: input of node 'twice' does not match java.lang.Integer.");
+  }
+
+  @Test
+  public void of_requestInputAnsweredOnAVoidOutput_outputsTheAnswer() {
+    WorkflowSession session =
+        new WorkflowSession(chain(asker(Void.class, "p_1"), captureInput("reply")));
+    session.advance(go());
+
+    ImmutableList<Event> events = session.turn(requestResult("p_1", "yes"));
+
+    assertThat(replyInput(events)).isEqualTo("yes");
   }
 
   @Test
@@ -6125,6 +6363,12 @@ public final class FunctionNodeTest {
       previous = node;
     }
     return Workflow.builder().name("wf").edges(edges.toArray(new Edge[0])).build();
+  }
+
+  /** Returns a node {@code asker} with a {@code type} output that asks for input as {@code id}. */
+  private static <O> FunctionNode<Content, O> asker(Class<O> type, String id) {
+    return FunctionNodes.of(
+        "asker", Content.class, type, (ctx, message) -> FunctionNodes.requestInput(id, "?"));
   }
 
   /**

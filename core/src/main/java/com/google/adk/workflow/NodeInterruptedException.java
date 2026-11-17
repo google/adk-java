@@ -17,16 +17,29 @@
 package com.google.adk.workflow;
 
 import com.google.adk.annotations.Experimental;
+import org.jspecify.annotations.Nullable;
 
 /**
- * A signal that ends a node's run when a child it ran with {@link NodeRunner#runChild} waits, so
- * the node waits too. Node code that catches this signal (for example, by catching every {@link
- * RuntimeException}) keeps running past the wait, and anything it then emits is still recorded.
+ * A signal that ends a node's run while it waits for input: thrown by {@link
+ * FunctionNodes#requestInput} with its request, or when a child the node ran with {@link
+ * NodeRunner#runChild} waits, so the node waits too. A pause is not an {@link Exception}, so {@code
+ * catch (Exception e)} in a body does not stop it; {@code catch (Throwable t)} still does.
  */
 @Experimental
-final class NodeInterruptedException extends RuntimeException {
+final class NodeInterruptedException extends Error {
+  private final @Nullable RequestInput request;
 
   NodeInterruptedException() {
+    this(null);
+  }
+
+  NodeInterruptedException(@Nullable RequestInput request) {
     super("Node interrupted.");
+    this.request = request;
+  }
+
+  /** Returns the request for input to send, or null when a child waits. */
+  @Nullable RequestInput request() {
+    return request;
   }
 }

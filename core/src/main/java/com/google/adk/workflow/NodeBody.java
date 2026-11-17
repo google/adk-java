@@ -36,7 +36,8 @@ public interface NodeBody<I, O> {
    * Returns {@code null} for no output, an {@code Event} to send with any output in JSON form, or
    * the output, which is sent in its JSON form; a returned {@code Content} is the output, not a
    * message. {@code input} is null when the predecessor sent no output or the port is {@code Void};
-   * a primitive port fails with {@link NodeInputValidationException} instead.
+   * a primitive port fails with {@link NodeInputValidationException} instead. To ask the user for
+   * input, call {@link FunctionNodes#requestInput}.
    */
   @Nullable O apply(Context context, @Nullable I input) throws Exception;
 }

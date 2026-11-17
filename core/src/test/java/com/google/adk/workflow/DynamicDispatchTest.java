@@ -432,9 +432,9 @@ public final class DynamicDispatchTest {
   }
 
   @Test
-  public void runChild_callerCatchingTheWaitSignal_keepsRunningButStillWaits() {
+  public void runChild_callerCatchingTheWaitSignalAsThrowable_keepsRunningButStillWaits() {
     Node dispatcher =
-        handling("dispatcher", interrupting("child", "ask"), DEFAULTS, RuntimeException.class, "X");
+        handling("dispatcher", interrupting("child", "ask"), DEFAULTS, Throwable.class, "X");
     Node after = emitter("after", "AFTER");
 
     Context context = run(workflow(new Edge(START, dispatcher), new Edge(dispatcher, after)));
@@ -602,7 +602,7 @@ public final class DynamicDispatchTest {
       String name,
       Node child,
       RunNodeConfig config,
-      Class<? extends Exception> handled,
+      Class<? extends Throwable> handled,
       @Nullable Object fallback) {
     return dispatcher(
         name,

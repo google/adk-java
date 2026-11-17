@@ -402,7 +402,7 @@ public final class NodeRunner {
   /**
    * Runs the node on {@code nodeInput}, retrying it as its retry policy allows, and returns the
    * context of its last attempt. An exception from the node is recorded on the context's node state
-   * rather than signaled, while an {@code Error} propagates.
+   * rather than signaled, while an {@code Error} other than a pause propagates.
    */
   Single<Context> run(@Nullable Object nodeInput) {
     return Single.defer(
@@ -570,9 +570,9 @@ public final class NodeRunner {
     }
 
     private Completable onError(Throwable error) {
-      if (error instanceof NodeInterruptedException) {
-        // A child waits, or raiseOnWait ended the run; any interrupt IDs are already recorded.
-        return flushPending();
+      if (error instanceof NodeInterruptedException pause) {
+        // A waiting child's interrupt IDs are already recorded; ask sends and records a request's.
+        return pause.request() == null ? flushPending() : ask(pause.request());
       }
       if (error instanceof DynamicNodeFailedException childFailure) {
         // The child already sent an error event, so the node takes on its failure without one.
@@ -658,6 +658,17 @@ public final class NodeRunner {
             // Releases a body that waits in Context.emit for this event.
             nodeState.markProcessed(outgoing);
           });
+    }
+
+    /** Asks for {@code request}; a request that has no JSON form fails the node. */
+    private Completable ask(RequestInput request) {
+      Event event;
+      try {
+        event = request.toEvent(context.invocationContext());
+      } catch (IllegalArgumentException e) {
+        return fail(e);
+      }
+      return dispatch(event).andThen(Completable.defer(this::flushPending));
     }
 
     /** Sends a final event carrying any output, routes, or deltas that no earlier event carried. */
