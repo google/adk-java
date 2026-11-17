@@ -106,6 +106,18 @@ public final class ContextTest {
   }
 
   @Test
+  public void emit_fromAToolContext_throwsNamingTheAlternative() {
+    ToolContext tool = ToolContext.builder(newInvocationContext()).build();
+
+    Content message = Content.fromParts(Part.fromText("x"));
+
+    IllegalStateException error =
+        assertThrows(IllegalStateException.class, () -> tool.emit(message));
+
+    assertThat(error).hasMessageThat().contains("a tool or callback returns its result");
+  }
+
+  @Test
   public void runNode_configPassedAsTheInput_throwsIllegalArgumentException() {
     CallbackContext context = new CallbackContext(newInvocationContext(), null);
     Node child = TestNode.of("child");
