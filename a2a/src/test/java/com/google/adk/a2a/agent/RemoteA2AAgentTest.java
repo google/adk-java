@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -84,6 +85,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import org.jspecify.annotations.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -798,6 +800,144 @@ public final class RemoteA2AAgentTest {
         .sendMessage(any(Message.class), any(List.class), any(Consumer.class), any());
   }
 
+  @Test
+  public void runAsync_afterRemoteResponse_sendsItsContextId() {
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("hello").build()),
+            remoteResponse("context-1", Part.builder().text("hi").build()),
+            event("user", Part.builder().text("how are you?").build()));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getContextId()).isEqualTo("context-1");
+    assertThat(message.getTaskId()).isNull();
+  }
+
+  @Test
+  public void runAsync_afterLaterEventWithoutResponse_sendsLastResponsesContextId() {
+    // An event this agent authored without a recorded response, such as a callback's.
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("hello").build()),
+            remoteResponse("context-1", Part.builder().text("hi").build()),
+            event("remote-agent", Part.builder().text("noted").build()),
+            event("user", Part.builder().text("how are you?").build()));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getContextId()).isEqualTo("context-1");
+  }
+
+  @Test
+  public void runAsync_afterAnotherAgentsResponse_sendsOwnContextId() {
+    Event otherAgentsResponse =
+        remoteResponse("context-2", Part.builder().text("bye").build()).toBuilder()
+            .author("other-agent")
+            .build();
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("hello").build()),
+            remoteResponse("context-1", Part.builder().text("hi").build()),
+            otherAgentsResponse,
+            event("user", Part.builder().text("how are you?").build()));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getContextId()).isEqualTo("context-1");
+  }
+
+  @Test
+  public void runAsync_afterEventWithContextButNoResponse_sendsItsContextId() {
+    // When a response fails to serialize, its event keeps the context ID but no a2a:response.
+    Event unrecordedResponse =
+        event("remote-agent", Part.builder().text("hi").build()).toBuilder()
+            .customMetadata(ImmutableList.of(metadata("a2a:context_id", "context-1")))
+            .build();
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("hello").build()),
+            unrecordedResponse,
+            event("user", Part.builder().text("how are you?").build()));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getContextId()).isEqualTo("context-1");
+  }
+
+  @Test
+  @SuppressWarnings("unchecked") // cast for Mockito
+  public void runAsync_secondTurnAfterTaskReply_sendsItsContextId() {
+    RemoteA2AAgent agent = createAgent();
+    InvocationContext firstTurn =
+        historyContext(event("user", Part.builder().text("hello").build()));
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("hi"), agentCard));
+    List<Event> replies = agent.runAsync(firstTurn).toList().blockingGet();
+
+    ImmutableList<Event> history =
+        ImmutableList.<Event>builder()
+            .addAll(firstTurn.session().immutableEvents())
+            .addAll(replies)
+            .add(event("user", Part.builder().text("how are you?").build()))
+            .build();
+    var unused =
+        agent.runAsync(historyContext(history.toArray(new Event[0]))).toList().blockingGet();
+
+    ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+    verify(mockClient, times(2))
+        .sendMessage(messageCaptor.capture(), any(List.class), any(Consumer.class), any());
+    assertThat(messageCaptor.getAllValues().get(1).getContextId()).isEqualTo("context-1");
+  }
+
+  @Test
+  @SuppressWarnings("unchecked") // cast for Mockito
+  public void runAsync_secondTurnAfterStreamedReply_sendsItsContextId() {
+    RemoteA2AAgent agent = createAgent();
+    InvocationContext firstTurn =
+        historyContext(event("user", Part.builder().text("hello").build()));
+    mockStreamResponse(consumer -> {
+      consumer.accept(createPartialEvent("Hello ", true, false), agentCard);
+      consumer.accept(createPartialEvent("World!", true, false), agentCard);
+      consumer.accept(createFinalEvent("Done"), agentCard);
+    });
+    List<Event> replies = agent.runAsync(firstTurn).toList().blockingGet();
+
+    ImmutableList<Event> history =
+        ImmutableList.<Event>builder()
+            .addAll(firstTurn.session().immutableEvents())
+            .addAll(replies)
+            .add(event("user", Part.builder().text("how are you?").build()))
+            .build();
+    var unused =
+        agent.runAsync(historyContext(history.toArray(new Event[0]))).toList().blockingGet();
+
+    ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+    verify(mockClient, times(2))
+        .sendMessage(messageCaptor.capture(), any(List.class), any(Consumer.class), any());
+    assertThat(messageCaptor.getAllValues().get(1).getContextId()).isEqualTo("context-1");
+  }
+
+  @Test
+  public void runAsync_afterResponseWithoutContext_sendsNoContextId() {
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("hello").build()),
+            remoteResponse(null, Part.builder().text("hi").build()),
+            event("user", Part.builder().text("how are you?").build()));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getContextId()).isNull();
+  }
+
+  @Test
+  public void runAsync_firstTurn_sendsNoContextId() {
+    Message message =
+        sendAndCapture(historyContext(event("user", Part.builder().text("hello").build())));
+
+    assertThat(message.getContextId()).isNull();
+  }
+
   /** Runs the agent in {@code context} and returns the message sent. */
   @SuppressWarnings("unchecked") // cast for Mockito
   private Message sendAndCapture(InvocationContext context) {
@@ -821,6 +961,16 @@ public final class RemoteA2AAgentTest {
             .events(ImmutableList.copyOf(events))
             .build();
     return invocationContext.toBuilder().session(session).build();
+  }
+
+  /** An event recording a response from the remote agent in {@code contextId}, if not null. */
+  private static Event remoteResponse(@Nullable String contextId, Part... parts) {
+    ImmutableList.Builder<CustomMetadata> entries = ImmutableList.builder();
+    if (contextId != null) {
+      entries.add(metadata("a2a:context_id", contextId));
+    }
+    entries.add(metadata("a2a:response", "{}"));
+    return event("remote-agent", parts).toBuilder().customMetadata(entries.build()).build();
   }
 
   private static Event event(String author, Part... parts) {

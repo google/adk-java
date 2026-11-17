@@ -211,9 +211,31 @@ public class RemoteA2AAgent extends BaseAgent {
     }
     ImmutableList<io.a2a.spec.Part<?>> parts =
         EventConverter.messagePartsFromContext(invocationContext);
-    return parts.isEmpty()
-        ? null
-        : newA2AMessage(invocationContext, Message.Role.USER, parts).build();
+    if (parts.isEmpty()) {
+      return null;
+    }
+    // As in ADK Python, the next turn continues the context of this agent's last remote response.
+    return newA2AMessage(invocationContext, Message.Role.USER, parts)
+        .contextId(emptyToNull(lastRemoteContextId(events)))
+        .build();
+  }
+
+  /**
+   * Returns the context ID of this agent's last event that records a remote response or a context
+   * ID, or "". A response that could not be serialized still records its context ID.
+   */
+  private String lastRemoteContextId(ImmutableList<Event> events) {
+    return events.reverse().stream()
+        .filter(event -> event.author().equals(name()))
+        .filter(event -> recordsResponse(event) || !EventConverter.contextId(event).isEmpty())
+        .findFirst()
+        .map(EventConverter::contextId)
+        .orElse("");
+  }
+
+  private static boolean recordsResponse(Event event) {
+    return event.customMetadata().orElse(ImmutableList.of()).stream()
+        .anyMatch(m -> m.key().orElse("").equals(A2AMetadata.Key.RESPONSE.getValue()));
   }
 
   @Override
