@@ -10,9 +10,11 @@ an adk-python workflow sample.
 | `FanOutFanInWorkflow` | Three nodes transform the user's text concurrently, and a join combines their outputs. | No |
 | `LoopSelfWorkflow` | A node routes back to itself until it guesses the user's number. | No |
 | `LoopWorkflow` | An agent writes a headline, a grader agent with an output schema judges it, and a node routes on the grader's output back to the writer until it passes. | Yes |
+| `MessageTriageWorkflow` | An agent labels a message, and a node emits a route per label so several handlers run. | Yes |
 | `MessageWorkflow` | Nodes send text, an inline image, several messages, and a streamed sentence. | No |
 | `MultiTriggersWorkflow` | Three nodes transform the user's text concurrently, and each one triggers its own run of the same node. | No |
 | `NestedWorkflow` | A nested workflow of two agents runs beside a third agent, and a join hands both branches' answers to a node that combines them. | Yes |
+| `NodeOutputWorkflow` | Nodes output a string and an event, an agent with an output schema outputs structured data, and the last node reads it as a record. | Yes |
 | `OrderProcessingWorkflow` | Nested workflows and a tool check an order concurrently, then a node routes it based on an agent's risk decision: charge, review, or freeze as fraud. | Yes |
 | `RequestInputAdvancedWorkflow` | A node asks a manager to decide, sending a payload and asking for an answer that matches a schema. | Yes |
 | `RequestInputRerunWorkflow` | The `RequestInputWorkflow` review in one node, which reruns when the human answers. | Yes |
@@ -21,7 +23,9 @@ an adk-python workflow sample.
 | `RetryWorkflow` | A retry policy reruns a failing node before the next node reports its result. | No |
 | `ReturnsWorkflow` | Function tools run as graph steps, and a routing map matches groups of statuses with `anyOf`. | No |
 | `RouteWorkflow` | An agent classifies the input, and a node routes it to the agent or node that handles it. | Yes |
+| `SequenceWorkflow` | One agent names a fruit, and the next agent receives that answer as its input and tells a health benefit of it. | Yes |
 | `StateWorkflow` | Nodes write session state through the context and through an event, then read it back. | No |
+| `SupportTriageWorkflow` | An agent classifies a support request, a routing map sends it to a specialist agent that uses a function tool, and a summarizer agent writes the reply. | Yes |
 
 ## Project Layout
 
