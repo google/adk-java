@@ -801,6 +801,107 @@ public final class RemoteA2AAgentTest {
   }
 
   @Test
+  @SuppressWarnings("unchecked") // cast for Mockito
+  public void runAsync_textReplyToPausedTask_resumesIt() {
+    RemoteA2AAgent agent = createAgent();
+    InvocationContext firstTurn =
+        historyContext(event("user", Part.builder().text("paint it").build()));
+    mockStreamResponse(
+        consumer -> consumer.accept(new TaskEvent(task(TaskState.INPUT_REQUIRED)), agentCard));
+    List<Event> replies = agent.runAsync(firstTurn).take(1).toList().blockingGet();
+
+    var unused =
+        agent
+            .runAsync(
+                historyContext(
+                    ImmutableList.<Event>builder()
+                        .addAll(firstTurn.session().immutableEvents())
+                        .addAll(replies)
+                        .add(event("user", Part.builder().text("blue").build()))
+                        .build()
+                        .toArray(new Event[0])))
+            .take(1)
+            .toList()
+            .blockingGet();
+
+    ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+    verify(mockClient, times(2))
+        .sendMessage(messageCaptor.capture(), any(List.class), any(Consumer.class), any());
+    Message second = messageCaptor.getAllValues().get(1);
+    assertThat(second.getTaskId()).isEqualTo("task-1");
+    assertThat(second.getContextId()).isEqualTo("context-1");
+  }
+
+  @Test
+  public void runAsync_textReplyAfterCompletedTask_startsNewTask() {
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("paint it").build()),
+            recordedTask(TaskState.COMPLETED),
+            event("user", Part.builder().text("again").build()));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getTaskId()).isNull();
+    assertThat(message.getContextId()).isEqualTo("context-1");
+  }
+
+  @Test
+  public void runAsync_textReplyAfterFailedRequest_startsNewTask() {
+    // A failed request may already have resumed the paused task. RemoteA2AAgent records no such
+    // event yet, so this test builds one.
+    Event failedRequest =
+        event("remote-agent").toBuilder()
+            .errorMessage("Failed to communicate with the remote agent")
+            .customMetadata(ImmutableList.of(metadata("a2a:request", "{}")))
+            .build();
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("paint it").build()),
+            recordedTask(TaskState.INPUT_REQUIRED),
+            failedRequest,
+            event("user", Part.builder().text("blue").build()));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getTaskId()).isNull();
+  }
+
+  @Test
+  public void runAsync_textReplyAfterUnrecordedResponse_startsNewTask() {
+    // A later response that failed to serialize keeps its context ID but no a2a:response.
+    Event unrecordedResponse =
+        event("remote-agent", Part.builder().text("Painted.").build()).toBuilder()
+            .customMetadata(ImmutableList.of(metadata("a2a:context_id", "context-1")))
+            .build();
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("paint it").build()),
+            recordedTask(TaskState.INPUT_REQUIRED),
+            event("user", Part.builder().text("blue").build()),
+            unrecordedResponse,
+            event("user", Part.builder().text("thanks").build()));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getTaskId()).isNull();
+    assertThat(message.getContextId()).isEqualTo("context-1");
+  }
+
+  @Test
+  public void runAsync_textReplyToAuthRequiredTask_resumesIt() {
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("paint it").build()),
+            recordedTask(TaskState.AUTH_REQUIRED),
+            event("user", Part.builder().text("done").build()));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getTaskId()).isEqualTo("task-1");
+  }
+
+  @Test
   public void runAsync_afterRemoteResponse_sendsItsContextId() {
     InvocationContext context =
         historyContext(
@@ -1002,6 +1103,29 @@ public final class RemoteA2AAgentTest {
     return Part.builder()
         .functionCall(FunctionCall.builder().name(name).id(id).build())
         .partMetadata(ImmutableMap.of("adk_type", "function_call"))
+        .build();
+  }
+
+  private static Task task(TaskState state) {
+    return new Task.Builder()
+        .id("task-1")
+        .contextId("context-1")
+        .status(new TaskStatus(state))
+        .build();
+  }
+
+  /** An event recording a Task response in {@code state}, as the agent records it. */
+  private static Event recordedTask(TaskState state) {
+    String response =
+        "{\"task\":{\"id\":\"task-1\",\"contextId\":\"context-1\",\"status\":{\"state\":\""
+            + state.asString()
+            + "\"},\"kind\":\"task\"}}";
+    return event("remote-agent", Part.builder().text("Which color?").build()).toBuilder()
+        .customMetadata(
+            ImmutableList.of(
+                metadata("a2a:task_id", "task-1"),
+                metadata("a2a:context_id", "context-1"),
+                metadata("a2a:response", response)))
         .build();
   }
 

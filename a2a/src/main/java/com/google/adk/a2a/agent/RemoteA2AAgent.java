@@ -19,6 +19,7 @@ import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.base.Strings.nullToEmpty;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.google.adk.a2a.common.A2AClientError;
@@ -31,6 +32,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.adk.utils.AgentEnums.AgentOrigin;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
@@ -78,6 +80,9 @@ import org.slf4j.LoggerFactory;
 public class RemoteA2AAgent extends BaseAgent {
 
   private static final Logger logger = LoggerFactory.getLogger(RemoteA2AAgent.class);
+  private static final ImmutableSet<String> PAUSED_TASK_STATES =
+      ImmutableSet.of(TaskState.INPUT_REQUIRED.asString(), TaskState.AUTH_REQUIRED.asString());
+
   private static final ObjectMapper objectMapper =
       new ObjectMapper().registerModule(new JavaTimeModule());
 
@@ -214,9 +219,12 @@ public class RemoteA2AAgent extends BaseAgent {
     if (parts.isEmpty()) {
       return null;
     }
-    // As in ADK Python, the next turn continues the context of this agent's last remote response.
+    // The next turn continues the context of this agent's last remote response, and a text reply
+    // to a task paused for input or authorization resumes it.
+    String contextId = lastRemoteContextId(events);
     return newA2AMessage(invocationContext, Message.Role.USER, parts)
-        .contextId(emptyToNull(lastRemoteContextId(events)))
+        .contextId(emptyToNull(contextId))
+        .taskId(resumableTaskId(events, contextId))
         .build();
   }
 
@@ -236,6 +244,59 @@ public class RemoteA2AAgent extends BaseAgent {
   private static boolean recordsResponse(Event event) {
     return event.customMetadata().orElse(ImmutableList.of()).stream()
         .anyMatch(m -> m.key().orElse("").equals(A2AMetadata.Key.RESPONSE.getValue()));
+  }
+
+  /**
+   * Returns the ID of the task that this agent's last remote response in {@code contextId} left
+   * waiting for input or authorization, or null. Returns null if a recorded failed request came
+   * after that response, since the request may already have resumed the task.
+   */
+  private @Nullable String resumableTaskId(ImmutableList<Event> events, String contextId) {
+    if (contextId.isEmpty()) {
+      return null;
+    }
+    for (Event event : events.reverse()) {
+      if (!event.author().equals(name())) {
+        continue;
+      }
+      if (event.errorMessage().isPresent()
+          && metadataValue(event, A2AMetadata.Key.REQUEST).isPresent()) {
+        return null;
+      }
+      Optional<String> response = metadataValue(event, A2AMetadata.Key.RESPONSE);
+      if (response.isEmpty()) {
+        // A response that kept its context ID but could not be recorded hides the task's state.
+        if (!EventConverter.contextId(event).isEmpty()) {
+          return null;
+        }
+        continue;
+      }
+      if (!EventConverter.contextId(event).equals(contextId)
+          || !PAUSED_TASK_STATES.contains(taskState(response.get()))) {
+        return null;
+      }
+      return emptyToNull(EventConverter.taskId(event));
+    }
+    return null;
+  }
+
+  /** Returns the task state in a recorded response, or "" if it holds none or is not JSON. */
+  private static String taskState(String response) {
+    try {
+      JsonNode root = objectMapper.readTree(response);
+      JsonNode task = root.has("task") ? root.get("task") : root;
+      return task.path("status").path("state").asText("");
+    } catch (JsonProcessingException e) {
+      // A response that is not JSON holds no task state, so it resumes nothing.
+      return "";
+    }
+  }
+
+  private static Optional<String> metadataValue(Event event, A2AMetadata.Key key) {
+    return event.customMetadata().orElse(ImmutableList.of()).stream()
+        .filter(m -> m.key().orElse("").equals(key.getValue()))
+        .findFirst()
+        .flatMap(CustomMetadata::stringValue);
   }
 
   @Override
