@@ -782,7 +782,7 @@ public final class RemoteA2AAgentTest {
     InvocationContext context =
         historyContext(
             event("user", Part.builder().text("hello").build()),
-            event("remote-agent", Part.builder().text("hi").build()));
+            remoteResponse("context-1", Part.builder().text("hi").build()));
 
     assertEmitsEmptyEventWithoutCalling(agent, context);
   }

@@ -220,22 +220,10 @@ public class RemoteA2AAgent extends BaseAgent {
         .build();
   }
 
-  /**
-   * Returns the context ID of this agent's last event that records a remote response or a context
-   * ID, or "". A response that could not be serialized still records its context ID.
-   */
+  /** Returns the context ID of this agent's last remote response, or "". */
   private String lastRemoteContextId(ImmutableList<Event> events) {
-    return events.reverse().stream()
-        .filter(event -> event.author().equals(name()))
-        .filter(event -> recordsResponse(event) || !EventConverter.contextId(event).isEmpty())
-        .findFirst()
-        .map(EventConverter::contextId)
-        .orElse("");
-  }
-
-  private static boolean recordsResponse(Event event) {
-    return event.customMetadata().orElse(ImmutableList.of()).stream()
-        .anyMatch(m -> m.key().orElse("").equals(A2AMetadata.Key.RESPONSE.getValue()));
+    int index = EventConverter.lastRemoteResponseIndex(events, name());
+    return index < 0 ? "" : EventConverter.contextId(events.get(index));
   }
 
   @Override
