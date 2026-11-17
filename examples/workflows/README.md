@@ -9,8 +9,10 @@ an adk-python workflow sample.
 | `ClassifierNodeWorkflow` | A classifier node routes a support ticket to the team that handles it, and a second classifier node decides whether a technical ticket is urgent. | Yes |
 | `FanOutFanInWorkflow` | Three nodes transform the user's text concurrently, and a join combines their outputs. | No |
 | `LoopSelfWorkflow` | A node routes back to itself until it guesses the user's number. | No |
+| `LoopWorkflow` | An agent writes a headline, a grader agent with an output schema judges it, and a node routes on the grader's output back to the writer until it passes. | Yes |
 | `MessageWorkflow` | Nodes send text, an inline image, several messages, and a streamed sentence. | No |
 | `MultiTriggersWorkflow` | Three nodes transform the user's text concurrently, and each one triggers its own run of the same node. | No |
+| `NestedWorkflow` | A nested workflow of two agents runs beside a third agent, and a join hands both branches' answers to a node that combines them. | Yes |
 | `OrderProcessingWorkflow` | Nested workflows and a tool check an order concurrently, then a node routes it based on an agent's risk decision: charge, review, or freeze as fraud. | Yes |
 | `RequestInputAdvancedWorkflow` | A node asks a manager to decide, sending a payload and asking for an answer that matches a schema. | Yes |
 | `RequestInputRerunWorkflow` | The `RequestInputWorkflow` review in one node, which reruns when the human answers. | Yes |
