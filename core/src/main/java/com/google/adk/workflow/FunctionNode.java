@@ -33,6 +33,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.MaybeEmitter;
+import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.Optional;
@@ -68,6 +69,7 @@ public final class FunctionNode<I, O> extends BaseNode {
   private final NodeBody<? super I, ? extends O> body;
   private final @Nullable ConfirmationPredicate<? super I> confirmationPredicate;
   private final @Nullable Boolean explicitRerunOnResume;
+  private final @Nullable Scheduler scheduler;
 
   private FunctionNode(Builder<I, O> builder) {
     super(
@@ -86,6 +88,7 @@ public final class FunctionNode<I, O> extends BaseNode {
     this.body = checkNotNull(builder.body);
     this.confirmationPredicate = builder.confirmationPredicate;
     this.explicitRerunOnResume = builder.rerunOnResume;
+    this.scheduler = builder.scheduler;
   }
 
   /**
@@ -105,6 +108,7 @@ public final class FunctionNode<I, O> extends BaseNode {
         .inputSchema(super.inputSchema().orElse(null))
         .outputSchema(super.outputSchema().orElse(null))
         .stateSchema(stateSchema().orElse(null))
+        .scheduler(scheduler)
         .body(body);
   }
 
@@ -159,29 +163,36 @@ public final class FunctionNode<I, O> extends BaseNode {
 
   private Flowable<Object> runOnce(Context context, @Nullable Object nodeInput) {
     io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
-    return Completable.complete()
-        // Unlike subscribeOn, canceling this hop does not interrupt the handling of the output.
-        .observeOn(context.invocationContext().scheduler())
-        // create rather than defer, so that canceling the node reaches the body while it runs.
-        .andThen(
-            Maybe.<Object>create(
-                    emitter -> {
-                      // The timeout waits for the body to return, so a retry cannot overlap it.
-                      CompletableSubject returned = CompletableSubject.create();
-                      NodeExecutionState state = context.requireNodeState();
-                      // Under another node's context, leave that node's signal in place.
-                      if (state.node() == this) {
-                        // Not on the body's thread, which may be interrupted, or the busy Runner.
-                        state.markBodyStarted(returned.observeOn(Schedulers.computation()));
-                      }
-                      try {
-                        runBody(context, nodeInput, emitter);
-                      } finally {
-                        returned.onComplete();
-                      }
-                    })
-                .compose(Tracing.withContext(traceContext)))
-        .toFlowable();
+    Scheduler runnerScheduler = context.invocationContext().scheduler();
+    Scheduler bodyScheduler = scheduler != null ? scheduler : runnerScheduler;
+    // create rather than defer, so that canceling the node reaches the body while it runs.
+    Maybe<Object> outcome =
+        Maybe.<Object>create(
+                emitter -> {
+                  // The timeout waits for the body to return, so a retry cannot overlap it.
+                  CompletableSubject returned = CompletableSubject.create();
+                  NodeExecutionState state = context.requireNodeState();
+                  // Under another node's context, leave that node's signal in place.
+                  if (state.node() == this) {
+                    // Not on the body's thread, which may be interrupted, or the busy Runner.
+                    state.markBodyStarted(returned.observeOn(Schedulers.computation()));
+                  }
+                  try {
+                    runBody(context, nodeInput, emitter);
+                  } finally {
+                    returned.onComplete();
+                  }
+                })
+            .compose(Tracing.withContext(traceContext));
+    // Unlike subscribeOn, canceling this hop does not interrupt the handling of the body's output.
+    Flowable<Object> output =
+        Completable.complete().observeOn(bodyScheduler).andThen(outcome).toFlowable();
+    // Back on the Runner's scheduler, through an Executor so that a cancel cannot interrupt it.
+    return bodyScheduler.equals(runnerScheduler)
+        ? output
+        : output
+            .observeOn(Schedulers.from(runnerScheduler::scheduleDirect))
+            .compose(Tracing.withContext(traceContext));
   }
 
   /**
@@ -382,6 +393,7 @@ public final class FunctionNode<I, O> extends BaseNode {
     private @Nullable Schema outputSchema;
     private @Nullable Schema stateSchema;
     private @Nullable NodeBody<? super I, ? extends O> body;
+    private @Nullable Scheduler scheduler;
 
     Builder(PortCodec<I> inputCodec, PortCodec<O> outputCodec) {
       this.inputCodec = inputCodec;
@@ -481,6 +493,23 @@ public final class FunctionNode<I, O> extends BaseNode {
     @CanIgnoreReturnValue
     public Builder<I, O> body(NodeBody<? super I, ? extends O> body) {
       this.body = checkNotNull(body);
+      return this;
+    }
+
+    /**
+     * Sets the scheduler that decodes the input and runs the confirmation predicate and the body,
+     * or {@code null} (the default) for the {@code Runner}'s scheduler. A body that waits for other
+     * work needs a thread of its own, so an inline or small fixed-size scheduler can hang the run;
+     * ADK Kotlin instead defaults to {@code Dispatchers.IO}, which gives each waiting body a
+     * thread. Once that work ends, even when a confirmation skips the body, the outcome is handed
+     * back on the {@code Runner}'s scheduler, unless that scheduler equals this one (two {@code
+     * Schedulers.from} of one executor do not) or runs work inline, in which case it stays on this
+     * thread. The scheduler must accept this work: a rejected body leaves the run waiting, as a
+     * {@code Runner} scheduler that rejects work does.
+     */
+    @CanIgnoreReturnValue
+    public Builder<I, O> scheduler(@Nullable Scheduler scheduler) {
+      this.scheduler = scheduler;
       return this;
     }
 

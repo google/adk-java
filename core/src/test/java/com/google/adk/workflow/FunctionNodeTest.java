@@ -108,6 +108,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -1146,9 +1147,126 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void singleThreadRunner_parallelBodiesThatWaitForEachOtherOnIo_complete() {
+    // Each body blocks until both run, so they need a thread each, which the Runner's lacks.
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    CountDownLatch bothRunning = new CountDownLatch(2);
+    List<Boolean> met = new CopyOnWriteArrayList<>();
+    NodeBody<Content, Object> body =
+        (ctx, message) -> {
+          bothRunning.countDown();
+          met.add(bothRunning.await(10, SECONDS));
+          return null; // A parallel pair may not both output as terminal nodes.
+        };
+    FunctionNode<Content, Object> a =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("a")
+            .scheduler(Schedulers.io())
+            .body(body)
+            .build();
+    FunctionNode<Content, Object> b = a.toBuilder().name("b").build();
+    Workflow workflow =
+        Workflow.builder()
+            .name("wf")
+            .edges(new Edge(Start.INSTANCE, a), new Edge(Start.INSTANCE, b))
+            .build();
+
+    RunResult result;
+    try {
+      result = run(workflow, Schedulers.from(executor));
+    } finally {
+      executor.shutdownNow();
+    }
+
+    result.assertCompleted();
+    assertThat(met).containsExactly(true, true);
+  }
+
+  @Test
+  public void builderScheduler_body_runsOnThatScheduler() {
+    ExecutorService nodeExecutor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "node-scheduler"));
+    ExecutorService runnerExecutor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "app-scheduler"));
+    FunctionNode<Content, String> where =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("where")
+            .scheduler(Schedulers.from(nodeExecutor))
+            .body((ctx, message) -> Thread.currentThread().getName())
+            .build();
+
+    RunResult result;
+    try {
+      result = run(chain(where), Schedulers.from(runnerExecutor));
+    } finally {
+      nodeExecutor.shutdownNow();
+      runnerExecutor.shutdownNow();
+    }
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/where@1")).isEqualTo("node-scheduler");
+  }
+
+  @Test
+  public void builderScheduler_afterTheBody_successorAndCallerRunOnTheRunnersScheduler() {
+    ExecutorService nodeExecutor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "node-scheduler"));
+    ExecutorService appExecutor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "app-scheduler"));
+    Map<String, String> threads = new ConcurrentHashMap<>();
+    FunctionNode<Content, String> first =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("first")
+            .scheduler(Schedulers.from(nodeExecutor))
+            .body((ctx, message) -> {
+              threads.put("body", Thread.currentThread().getName());
+              // Returns after the Runner's thread is idle, so a broken hand-back cannot hide.
+              appExecutor.submit(() -> {}).get(10, SECONDS);
+              return "out";
+            })
+            .build();
+    Node second =
+        dispatcher(
+            "second",
+            (ctx, input) ->
+                Flowable.fromCallable(() -> {
+                  threads.put("successor", Thread.currentThread().getName());
+                  return "done";
+                }));
+    Runner runner = runner(chain(first, second), Schedulers.from(appExecutor));
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    AtomicReference<Throwable> error = new AtomicReference<>();
+
+    try {
+      runner
+          .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+          // The Runner's thread subscribes, so a quick first node cannot start "second" on main.
+          .subscribeOn(Schedulers.from(appExecutor))
+          .doOnNext(event -> {
+            if (RunResult.pathOf(event).equals("wf@1/first@1") && event.output().isPresent()) {
+              threads.put("onNext", Thread.currentThread().getName());
+            }
+          })
+          .timeout(30, SECONDS)
+          // Requests every event up front, so that no later request drains them on this thread.
+          .ignoreElements()
+          .blockingSubscribe(() -> {}, error::set);
+    } finally {
+      nodeExecutor.shutdownNow();
+      appExecutor.shutdownNow();
+    }
+
+    assertThat(error.get()).isNull();
+    assertThat(threads)
+        .containsExactly(
+            "body", "node-scheduler", "successor", "app-scheduler", "onNext", "app-scheduler");
+  }
+
+  @Test
   public void body_callerTraceContext_reachesTheBodyItsChildAndTheOutputsCallback() {
     ContextKey<String> key = ContextKey.named("caller");
     List<String> seen = new CopyOnWriteArrayList<>();
+    ExecutorService nodeExecutor = Executors.newSingleThreadExecutor();
     Node child =
         dispatcher(
             "child",
@@ -1161,6 +1279,8 @@ public final class FunctionNodeTest {
         FunctionNodes.builder(Content.class, Object.class)
             .name("parent")
             .rerunOnResume(true)
+            // Adds the hop back to the Runner's scheduler, which must keep the context too.
+            .scheduler(Schedulers.from(nodeExecutor))
             .body((ctx, message) -> {
               seen.add("body: " + io.opentelemetry.context.Context.current().get(key));
               return ctx.runNode(child).blockingGet();
@@ -1180,6 +1300,8 @@ public final class FunctionNodeTest {
     try (Scope unused = io.opentelemetry.context.Context.current().with(key, "set").makeCurrent()) {
       ImmutableList<Event> unusedEvents =
           new WorkflowSession(chain(parent), /* resumable= */ false, recorder).turn(go());
+    } finally {
+      nodeExecutor.shutdownNow();
     }
 
     assertThat(seen).containsExactly("body: set", "child: set", "output: set").inOrder();
@@ -1190,12 +1312,12 @@ public final class FunctionNodeTest {
     // Arrange: an executor scheduler, which does not interrupt on its own when disposed.
     CountDownLatch started = new CountDownLatch(1);
     CountDownLatch interrupted = new CountDownLatch(1);
+    ExecutorService executor = Executors.newCachedThreadPool();
     FunctionNode<Content, String> sleeper =
-        FunctionNodes.of(
-            "sleeper",
-            Content.class,
-            String.class,
-            (ctx, message) -> {
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .scheduler(Schedulers.from(executor))
+            .body((ctx, message) -> {
               started.countDown();
               try {
                 Thread.sleep(60_000);
@@ -1203,10 +1325,10 @@ public final class FunctionNodeTest {
                 interrupted.countDown();
               }
               return "late";
-            });
-    ExecutorService executor = Executors.newCachedThreadPool();
+            })
+            .build();
     try {
-      Runner runner = runner(chain(sleeper), Schedulers.from(executor));
+      Runner runner = runner(chain(sleeper), /* scheduler= */ null);
       Session session = runner.sessionService().createSession(APP, USER).blockingGet();
       Disposable run =
           runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
@@ -1227,8 +1349,10 @@ public final class FunctionNodeTest {
     CountDownLatch started = new CountDownLatch(1);
     CountDownLatch interrupted = new CountDownLatch(1);
     AtomicInteger runs = new AtomicInteger();
+    ExecutorService executor = Executors.newCachedThreadPool();
     FunctionNode<Content, String> transfer =
         transfer(runs)
+            .scheduler(Schedulers.from(executor))
             .requireConfirmation((ctx, message) -> {
               started.countDown();
               try {
@@ -1240,7 +1364,6 @@ public final class FunctionNodeTest {
               return false;
             })
             .build();
-    ExecutorService executor = Executors.newCachedThreadPool();
     try {
       Runner runner = runner(chain(transfer), Schedulers.from(executor));
       Session session = runner.sessionService().createSession(APP, USER).blockingGet();
@@ -1266,9 +1389,11 @@ public final class FunctionNodeTest {
     SlowToDecode.decoding = new CountDownLatch(1);
     AtomicInteger predicateRuns = new AtomicInteger();
     AtomicInteger runs = new AtomicInteger();
+    ExecutorService executor = Executors.newCachedThreadPool();
     FunctionNode<SlowToDecode, String> transfer =
         FunctionNodes.builder(SlowToDecode.class, String.class)
             .name("transfer")
+            .scheduler(Schedulers.from(executor))
             .requireConfirmation((ctx, input) -> {
               predicateRuns.incrementAndGet();
               return false;
@@ -1278,7 +1403,6 @@ public final class FunctionNodeTest {
               return "sent";
             })
             .build();
-    ExecutorService executor = Executors.newCachedThreadPool();
     try {
       Runner runner =
           runner(
@@ -1318,11 +1442,10 @@ public final class FunctionNodeTest {
     CountDownLatch finished = new CountDownLatch(1);
     AtomicBoolean sawInterrupt = new AtomicBoolean();
     FunctionNode<Content, String> spinner =
-        FunctionNodes.of(
-            "spinner",
-            Content.class,
-            String.class,
-            (ctx, message) -> {
+        FunctionNodes.builder(Content.class, String.class)
+            .name("spinner")
+            .scheduler(Schedulers.from(tasks::add))
+            .body((ctx, message) -> {
               started.countDown();
               long deadline = System.nanoTime() + SECONDS.toNanos(10);
               while (!Thread.currentThread().isInterrupted() && System.nanoTime() < deadline) {
@@ -1331,7 +1454,8 @@ public final class FunctionNodeTest {
               sawInterrupt.set(Thread.currentThread().isInterrupted());
               finished.countDown();
               return "late";
-            });
+            })
+            .build();
     try {
       Runner runner = runner(chain(spinner), Schedulers.from(tasks::add));
       Session session = runner.sessionService().createSession(APP, USER).blockingGet();
@@ -1359,11 +1483,10 @@ public final class FunctionNodeTest {
     CountDownLatch started = new CountDownLatch(1);
     AtomicBoolean sawInterrupt = new AtomicBoolean();
     FunctionNode<Content, String> sleeper =
-        FunctionNodes.of(
-            "sleeper",
-            Content.class,
-            String.class,
-            (ctx, message) -> {
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .scheduler(Schedulers.trampoline())
+            .body((ctx, message) -> {
               started.countDown();
               try {
                 Thread.sleep(60_000);
@@ -1372,7 +1495,8 @@ public final class FunctionNodeTest {
                 Thread.currentThread().interrupt();
               }
               return "late";
-            });
+            })
+            .build();
     TestSubscriber<Event> subscriber = new TestSubscriber<>();
     ExecutorService caller = Executors.newSingleThreadExecutor();
     try {
@@ -1395,14 +1519,14 @@ public final class FunctionNodeTest {
     // Arrange: a trampoline scheduler runs the body on the caller's thread, interrupted beforehand.
     AtomicBoolean bodySawInterrupt = new AtomicBoolean();
     FunctionNode<Content, String> quick =
-        FunctionNodes.of(
-            "quick",
-            Content.class,
-            String.class,
-            (ctx, message) -> {
+        FunctionNodes.builder(Content.class, String.class)
+            .name("quick")
+            .scheduler(Schedulers.trampoline())
+            .body((ctx, message) -> {
               bodySawInterrupt.set(Thread.currentThread().isInterrupted());
               return "done";
-            });
+            })
+            .build();
     TestSubscriber<Event> subscriber = new TestSubscriber<>();
     ExecutorService caller = Executors.newSingleThreadExecutor();
     try {
@@ -1427,11 +1551,10 @@ public final class FunctionNodeTest {
     AtomicBoolean sawCancel = new AtomicBoolean();
     AtomicBoolean cancelInterruptedTheBody = new AtomicBoolean();
     FunctionNode<Content, String> waiter =
-        FunctionNodes.of(
-            "waiter",
-            Content.class,
-            String.class,
-            (ctx, message) -> {
+        FunctionNodes.builder(Content.class, String.class)
+            .name("waiter")
+            .scheduler(Schedulers.trampoline())
+            .body((ctx, message) -> {
               boolean callerInterrupt = Thread.interrupted();
               started.countDown();
               sawCancel.set(Uninterruptibles.awaitUninterruptibly(canceled, 10, SECONDS));
@@ -1440,7 +1563,8 @@ public final class FunctionNodeTest {
                 Thread.currentThread().interrupt();
               }
               return "late";
-            });
+            })
+            .build();
     TestSubscriber<Event> subscriber = new TestSubscriber<>();
     ExecutorService caller = Executors.newSingleThreadExecutor();
     try {
@@ -1463,14 +1587,14 @@ public final class FunctionNodeTest {
   public void inlineScheduler_bodyInterruptsItself_callerSeesTheInterrupt() throws Exception {
     // Arrange: nothing cancels the node, so only the body interrupts the caller's thread.
     FunctionNode<Content, String> restorer =
-        FunctionNodes.of(
-            "restorer",
-            Content.class,
-            String.class,
-            (ctx, message) -> {
+        FunctionNodes.builder(Content.class, String.class)
+            .name("restorer")
+            .scheduler(Schedulers.trampoline())
+            .body((ctx, message) -> {
               Thread.currentThread().interrupt();
               return "done";
-            });
+            })
+            .build();
     TestSubscriber<Event> subscriber = new TestSubscriber<>();
     ExecutorService caller = Executors.newSingleThreadExecutor();
     try {
@@ -1486,10 +1610,41 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void inlineRunnerScheduler_bodyOnItsOwnScheduler_sendsTheOutputFromTheBodysThread() {
+    // Arrange: an inline Runner scheduler has no thread to hand the outcome back to.
+    AtomicReference<Thread> bodyThread = new AtomicReference<>();
+    FunctionNode<Content, String> worker =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("worker")
+            .scheduler(Schedulers.io())
+            .body((ctx, message) -> {
+              bodyThread.set(Thread.currentThread());
+              return "done";
+            })
+            .build();
+    Runner runner = runner(chain(worker), Schedulers.trampoline());
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+
+    Thread outputThread =
+        runner
+            .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+            .filter(event -> RunResult.pathOf(event).equals("wf@1/worker@1"))
+            .map(unused -> Thread.currentThread())
+            .timeout(30, SECONDS)
+            .blockingFirst();
+
+    assertThat(outputThread).isSameInstanceAs(bodyThread.get());
+  }
+
+  @Test
   public void inlineScheduler_bodyReturns_leavesTheCallerUninterrupted() throws Exception {
     // Arrange: RxJava calls the node's cancellable after the body's result is sent.
     FunctionNode<Content, String> quick =
-        FunctionNodes.of("quick", Content.class, String.class, (ctx, message) -> "done");
+        FunctionNodes.builder(Content.class, String.class)
+            .name("quick")
+            .scheduler(Schedulers.trampoline())
+            .body((ctx, message) -> "done")
+            .build();
     TestSubscriber<Event> subscriber = new TestSubscriber<>();
     ExecutorService caller = Executors.newSingleThreadExecutor();
     try {
@@ -1521,16 +1676,10 @@ public final class FunctionNodeTest {
               return "late";
             })
             .build();
-    ExecutorService executor = Executors.newCachedThreadPool();
 
-    RunResult result;
-    try {
-      result = run(chain(sleeper), Schedulers.from(executor));
-      assertThat(interrupted.await(10, SECONDS)).isTrue();
-    } finally {
-      executor.shutdownNow();
-    }
+    RunResult result = run(chain(sleeper));
 
+    assertThat(interrupted.await(10, SECONDS)).isTrue();
     assertThat(result.error()).isInstanceOf(NodeTimeoutException.class);
     assertThat(result.errorMessage("NodeTimeoutException")).contains("'sleeper'");
   }
@@ -1684,10 +1833,12 @@ public final class FunctionNodeTest {
     List<String> timeline = Collections.synchronizedList(new ArrayList<>());
     CountDownLatch release = new CountDownLatch(1);
     ExecutorService executor = Executors.newSingleThreadExecutor();
+    Scheduler one = Schedulers.from(executor);
     FunctionNode<Content, String> sleeper =
         FunctionNodes.builder(Content.class, String.class)
             .name("sleeper")
             .config(NodeConfig.builder().timeout(Duration.ofMillis(200)).build())
+            .scheduler(one)
             .body((ctx, message) -> {
               timeline.add("sleeper started");
               try {
@@ -1702,6 +1853,7 @@ public final class FunctionNodeTest {
         FunctionNodes.builder(Content.class, String.class)
             .name("busy")
             .config(NodeConfig.builder().timeout(Duration.ofHours(1)).build())
+            .scheduler(one)
             .body((ctx, message) -> {
               timeline.add("busy started");
               release.await();
@@ -1714,7 +1866,7 @@ public final class FunctionNodeTest {
             .name("wf")
             .edges(new Edge(Start.INSTANCE, sleeper), new Edge(Start.INSTANCE, busy))
             .build();
-    Runner runner = runner(workflow, Schedulers.from(executor));
+    Runner runner = runner(workflow, one);
     Session session = runner.sessionService().createSession(APP, USER).blockingGet();
     TestSubscriber<Event> subscriber = new TestSubscriber<>();
 
@@ -1747,6 +1899,7 @@ public final class FunctionNodeTest {
         FunctionNodes.builder(Content.class, String.class)
             .name("stubborn")
             .config(NodeConfig.builder().timeout(Duration.ofMillis(200)).build())
+            .scheduler(Schedulers.trampoline())
             .body((ctx, message) -> {
               Uninterruptibles.sleepUninterruptibly(400, MILLISECONDS);
               return "late";
@@ -1795,12 +1948,67 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void nodeTimeout_sleepingBodyOnBuilderScheduler_isInterrupted()
+      throws InterruptedException {
+    // An executor scheduler does not interrupt its task on its own when disposed.
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "node-scheduler"));
+    AtomicReference<String> interruptedOn = new AtomicReference<>();
+    CountDownLatch interrupted = new CountDownLatch(1);
+    FunctionNode<Content, String> sleeper =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .config(NodeConfig.builder().timeout(Duration.ofSeconds(1)).build())
+            .scheduler(Schedulers.from(executor))
+            .body((ctx, message) -> {
+              try {
+                Thread.sleep(60_000);
+              } catch (InterruptedException e) {
+                interruptedOn.set(Thread.currentThread().getName());
+                interrupted.countDown();
+              }
+              return "late";
+            })
+            .build();
+
+    RunResult result;
+    try {
+      result = run(chain(sleeper));
+      assertThat(interrupted.await(10, SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertThat(result.error()).isInstanceOf(NodeTimeoutException.class);
+    assertThat(interruptedOn.get()).isEqualTo("node-scheduler");
+  }
+
+  @Test
+  public void
+      nodeTimeout_afterABodyOnAnotherSchedulerReturned_doesNotInterruptTheHandlingOfItsOutput() {
+    // The run hops back to io(), the Runner's default, whose canceled observeOn would interrupt.
+    ExecutorService executor = Executors.newCachedThreadPool();
+    try {
+      assertTimeoutLeavesTheOutputHandlerUninterrupted(Schedulers.from(executor));
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
   public void nodeTimeout_afterTheBodyReturned_doesNotInterruptTheHandlingOfItsOutput() {
-    // io(), the Runner's default, interrupts a canceled subscribeOn; from(executor) does not.
+    // The node and the Runner default to io(), which interrupts a canceled subscribeOn.
+    assertTimeoutLeavesTheOutputHandlerUninterrupted(/* nodeScheduler= */ null);
+  }
+
+  /** Times out a node on {@code nodeScheduler} while the caller still handles its output. */
+  private static void assertTimeoutLeavesTheOutputHandlerUninterrupted(
+      @Nullable Scheduler nodeScheduler) {
     FunctionNode<Content, String> quick =
         FunctionNodes.builder(Content.class, String.class)
             .name("quick")
             .config(NodeConfig.builder().timeout(Duration.ofSeconds(1)).build())
+            .scheduler(nodeScheduler)
             .body((ctx, message) -> "out")
             .build();
     Runner runner = runner(chain(quick), /* scheduler= */ null);
@@ -1840,12 +2048,12 @@ public final class FunctionNodeTest {
     CountDownLatch finished = new CountDownLatch(1);
     List<Throwable> undeliverable = new CopyOnWriteArrayList<>();
     var previousErrorHandler = RxJavaPlugins.getErrorHandler();
+    ExecutorService executor = Executors.newCachedThreadPool();
     FunctionNode<Content, String> sleeper =
-        FunctionNodes.of(
-            "sleeper",
-            Content.class,
-            String.class,
-            (ctx, message) -> {
+        FunctionNodes.builder(Content.class, String.class)
+            .name("sleeper")
+            .scheduler(Schedulers.from(executor))
+            .body((ctx, message) -> {
               started.countDown();
               try {
                 Thread.sleep(60_000);
@@ -1853,8 +2061,8 @@ public final class FunctionNodeTest {
               } finally {
                 finished.countDown();
               }
-            });
-    ExecutorService executor = Executors.newCachedThreadPool();
+            })
+            .build();
     RxJavaPlugins.setErrorHandler(undeliverable::add);
     try {
       Runner runner = runner(chain(sleeper), Schedulers.from(executor));
@@ -1880,10 +2088,12 @@ public final class FunctionNodeTest {
       throws InterruptedException {
     // Arrange: the child outputs a map, so only the node would convert it to a Constructed.
     CountDownLatch started = new CountDownLatch(1);
+    ExecutorService executor = Executors.newCachedThreadPool();
     FunctionNode<Content, Constructed> router =
         FunctionNodes.builder(Content.class, Constructed.class)
             .name("router")
             .rerunOnResume(true)
+            .scheduler(Schedulers.from(executor))
             .body((ctx, message) -> {
               Object unused =
                   ctx.runNode(
@@ -1900,10 +2110,9 @@ public final class FunctionNodeTest {
               return null;
             })
             .build();
-    ExecutorService executor = Executors.newCachedThreadPool();
     Constructed.instances.set(0);
     try {
-      Runner runner = runner(chain(router), Schedulers.from(executor));
+      Runner runner = runner(chain(router), /* scheduler= */ null);
       Session session = runner.sessionService().createSession(APP, USER).blockingGet();
       Disposable run =
           runner.runAsync(USER, session.id(), Content.fromParts(Part.fromText("go"))).subscribe();
@@ -1924,12 +2133,12 @@ public final class FunctionNodeTest {
     // Arrange: the workflow cancels the nodes still running when one fails.
     CountDownLatch started = new CountDownLatch(1);
     CountDownLatch interrupted = new CountDownLatch(1);
+    ExecutorService executor = Executors.newCachedThreadPool();
     FunctionNode<Content, Void> sleeper =
-        FunctionNodes.of(
-            "sleeper",
-            Content.class,
-            Void.class,
-            (ctx, message) -> {
+        FunctionNodes.builder(Content.class, Void.class)
+            .name("sleeper")
+            .scheduler(Schedulers.from(executor))
+            .body((ctx, message) -> {
               started.countDown();
               try {
                 Thread.sleep(60_000);
@@ -1937,7 +2146,8 @@ public final class FunctionNodeTest {
                 interrupted.countDown();
               }
               return null;
-            });
+            })
+            .build();
     FunctionNode<Content, Void> broken =
         FunctionNodes.of(
             "broken",
@@ -1954,11 +2164,10 @@ public final class FunctionNodeTest {
             .name("wf")
             .edges(new Edge(Start.INSTANCE, sleeper), new Edge(Start.INSTANCE, broken))
             .build();
-    ExecutorService executor = Executors.newCachedThreadPool();
 
     RunResult result;
     try {
-      result = run(workflow, Schedulers.from(executor));
+      result = run(workflow);
       assertThat(interrupted.await(10, SECONDS)).isTrue();
     } finally {
       executor.shutdownNow();
@@ -1982,6 +2191,28 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/copy@1")).isEqualTo("a1");
+  }
+
+  @Test
+  public void toBuilder_copy_keepsTheScheduler() {
+    ExecutorService executor =
+        Executors.newSingleThreadExecutor(task -> new Thread(task, "node-scheduler"));
+    FunctionNode<Content, String> where =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("where")
+            .scheduler(Schedulers.from(executor))
+            .body((ctx, message) -> Thread.currentThread().getName())
+            .build();
+
+    RunResult result;
+    try {
+      result = run(chain(where.toBuilder().name("copy").build()));
+    } finally {
+      executor.shutdownNow();
+    }
+
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/copy@1")).isEqualTo("node-scheduler");
   }
 
   @Test
