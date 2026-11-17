@@ -369,10 +369,14 @@ public class InvocationContext {
   /**
    * Returns the {@link Scheduler} on which this invocation runs the work ADK hands to worker
    * threads: the sub-agents of a {@code ParallelAgent}, tool calls in {@code
-   * ToolExecutionMode.PARALLEL_SUBSCRIBE} mode, workflow node retries and attempts with a timeout,
-   * the bodies of workflow {@code FunctionNode}s, and the hop that starts the live send loop. An
-   * agent-level setting ({@code ParallelAgent.Builder#scheduler}, {@code
-   * LlmAgent.Builder#executor}) takes precedence over it. Defaults to {@link Schedulers#io()}.
+   * ToolExecutionMode.PARALLEL_SUBSCRIBE} mode, the nodes of a workflow graph and the items of a
+   * {@code parallelNode}, workflow node retries and attempts with a timeout, the bodies of workflow
+   * {@code FunctionNode}s, and the hop that starts the live send loop. An agent-level setting
+   * ({@code ParallelAgent.Builder#scheduler}, {@code LlmAgent.Builder#executor}) takes precedence
+   * over this scheduler, which defaults to {@link Schedulers#io()}. A bounded scheduler limits how
+   * many thread-blocking graph nodes run at once, and it deadlocks once every thread holds a node
+   * blocked on {@code runNode(...).blockingGet()} for a child, such as a nested workflow or a
+   * {@code FunctionNode}, that also needs a thread.
    */
   public Scheduler scheduler() {
     return scheduler != null ? scheduler : Schedulers.io();

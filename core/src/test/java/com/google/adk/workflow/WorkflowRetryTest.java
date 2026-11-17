@@ -50,10 +50,12 @@ import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FinishReason;
 import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.schedulers.Schedulers;
+import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -552,15 +554,13 @@ public final class WorkflowRetryTest {
 
   @Test
   public void aRetriedWorkflow_rerunsANodeThatTheFailureCanceledMidRun() {
-    CountingNode done = new CountingNode("done", (ctx, run) -> Flowable.just("done_out"));
-    CountingNode stalled = stalledOnItsFirstRun("stalled");
+    FlakyFork fork = forkWithAFlakyBranch("sub");
 
     ImmutableList<Event> events =
-        new WorkflowSession(workflow(new Edge(START, forkWithAFlakyBranch("sub", done, stalled))))
-            .turn(go());
+        new WorkflowSession(workflow(new Edge(START, fork.workflow()))).turn(go());
 
-    assertThat(done.runs()).isEqualTo(1);
-    assertThat(stalled.runs()).isEqualTo(2);
+    assertThat(fork.done().runs()).isEqualTo(1);
+    assertThat(fork.stalled().runs()).isEqualTo(2);
     assertThat(outputEventAt(events, "wf@1/sub@1/join@1").output())
         .hasValue(
             ImmutableMap.of("done", "done_out", "stalled", "stalled_out", "flaky", "recovered"));
@@ -568,14 +568,12 @@ public final class WorkflowRetryTest {
 
   @Test
   public void aRetriedRootWorkflow_rerunsANodeThatTheFailureCanceledMidRun() {
-    CountingNode done = new CountingNode("done", (ctx, run) -> Flowable.just("done_out"));
-    CountingNode stalled = stalledOnItsFirstRun("stalled");
+    FlakyFork fork = forkWithAFlakyBranch("wf");
 
-    ImmutableList<Event> events =
-        new WorkflowSession(forkWithAFlakyBranch("wf", done, stalled)).turn(go());
+    ImmutableList<Event> events = new WorkflowSession(fork.workflow()).turn(go());
 
-    assertThat(done.runs()).isEqualTo(1);
-    assertThat(stalled.runs()).isEqualTo(2);
+    assertThat(fork.done().runs()).isEqualTo(1);
+    assertThat(fork.stalled().runs()).isEqualTo(2);
     assertThat(outputEventAt(events, "wf@1/join@1").output())
         .hasValue(
             ImmutableMap.of("done", "done_out", "stalled", "stalled_out", "flaky", "recovered"));
@@ -789,24 +787,45 @@ public final class WorkflowRetryTest {
   }
 
   /**
-   * Returns a workflow with a retry policy that forks to {@code done}, {@code stalled} and a node
-   * that fails its first run, and joins the three; the failure cancels {@code stalled}.
+   * A workflow built by {@link #forkWithAFlakyBranch} along with the nodes whose runs a test
+   * counts.
    */
-  private static Workflow forkWithAFlakyBranch(String name, Node done, Node stalled) {
+  private record FlakyFork(Workflow workflow, CountingNode done, CountingNode stalled) {}
+
+  /**
+   * Returns a {@link FlakyFork} whose workflow uses a retry policy, forks into {@code done}, {@code
+   * stalled}, and a node that fails on its first run, and then joins all three. On its first run,
+   * the failing node waits until {@code done} finishes and {@code stalled} reports progress, so the
+   * failure cancels {@code stalled} mid-run.
+   */
+  private static FlakyFork forkWithAFlakyBranch(String name) {
+    CompletableSubject doneFinished = CompletableSubject.create();
+    CompletableSubject stalledStarted = CompletableSubject.create();
+    CountingNode done =
+        new CountingNode(
+            "done", (ctx, run) -> Flowable.just("done_out").doOnComplete(doneFinished::onComplete));
+    CountingNode stalled = stalledOnItsFirstRun("stalled", stalledStarted);
     Node flaky =
-        new CountingNode("flaky", (ctx, run) -> run == 1 ? fail() : Flowable.just("recovered"));
+        new CountingNode(
+            "flaky",
+            (ctx, run) ->
+                run == 1
+                    ? doneFinished.mergeWith(stalledStarted).andThen(fail())
+                    : Flowable.just("recovered"));
     Node join = JoinNode.builder().name("join").build();
-    return Workflow.builder()
-        .name(name)
-        .edges(
-            new Edge(START, done),
-            new Edge(START, stalled),
-            new Edge(START, flaky),
-            new Edge(done, join),
-            new Edge(stalled, join),
-            new Edge(flaky, join))
-        .config(retrying(2))
-        .build();
+    Workflow workflow =
+        Workflow.builder()
+            .name(name)
+            .edges(
+                new Edge(START, done),
+                new Edge(START, stalled),
+                new Edge(START, flaky),
+                new Edge(done, join),
+                new Edge(stalled, join),
+                new Edge(flaky, join))
+            .config(retrying(2))
+            .build();
+    return new FlakyFork(workflow, done, stalled);
   }
 
   /**
@@ -814,11 +833,21 @@ public final class WorkflowRetryTest {
    * it started, and on later runs outputs its name followed by {@code _out}.
    */
   private static CountingNode stalledOnItsFirstRun(String name) {
+    return stalledOnItsFirstRun(name, CompletableSubject.create());
+  }
+
+  /**
+   * Returns a node like {@link #stalledOnItsFirstRun(String)} that also completes {@code started}
+   * once its first run reports progress.
+   */
+  private static CountingNode stalledOnItsFirstRun(String name, CompletableSubject started) {
     return new CountingNode(
         name,
         (ctx, run) ->
             run == 1
-                ? Flowable.<Object>just(progress()).concatWith(Flowable.never())
+                ? Flowable.<Object>just(progress())
+                    .concatWith(Completable.fromAction(started::onComplete))
+                    .concatWith(Flowable.never())
                 : Flowable.just(name + "_out"));
   }
 

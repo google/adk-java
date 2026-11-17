@@ -24,6 +24,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.telemetry.Tracing;
 import com.google.adk.workflow.ResumeScan.Interception;
 import com.google.adk.workflow.ResumeScan.RecoveredNode;
 import com.google.common.base.Splitter;
@@ -118,6 +119,9 @@ final class Scheduler {
     private final Queue<Completion> completions = new ConcurrentLinkedQueue<>();
     private final FlowableProcessor<Boolean> wakeUps =
         UnicastProcessor.<Boolean>create().toSerialized();
+    // Nodes start on other threads, so each run restores the loop's trace context.
+    private final io.opentelemetry.context.Context traceContext =
+        io.opentelemetry.context.Context.current();
     private boolean failed;
 
     Completable drive() {
@@ -252,6 +256,8 @@ final class Scheduler {
       // The node starts once its checkpoint is processed, as each of its own events is.
       Disposable run =
           checkpointed
+              // Off the loop thread, so a node that blocks its thread cannot hold up the others.
+              .andThen(NodeRunner.completeOn(context.invocationContext().scheduler()))
               .andThen(
                   NodeRunner.builder()
                       .node(node)
@@ -262,7 +268,8 @@ final class Scheduler {
                       .overrideBranch(trigger.branch())
                       .resumeInputs(interception.resumeInputs())
                       .build()
-                      .run(trigger.input()))
+                      .run(trigger.input())
+                      .compose(Tracing.withContext(traceContext)))
               .subscribe(
                   childContext -> {
                     completions.add(new Completion(nodeName, childContext));

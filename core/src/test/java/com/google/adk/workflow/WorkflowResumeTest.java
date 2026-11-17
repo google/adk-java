@@ -935,14 +935,19 @@ public final class WorkflowResumeTest {
   @Test
   public void resume_nodeThatFailedInAnEarlierTurn_runsAgain() {
     AtomicInteger flakyRuns = new AtomicInteger();
+    CompletableSubject asked = CompletableSubject.create();
+    // The first run fails only after ask has emitted its question, so the failure cannot cancel it.
     Node flaky =
         new TestNode(
             "flaky",
             (ctx, input) ->
                 flakyRuns.incrementAndGet() == 1
-                    ? Flowable.error(new IllegalStateException("first run fails"))
+                    ? asked.andThen(Flowable.error(new IllegalStateException("first run fails")))
                     : Flowable.just("recovered"));
-    Node ask = longRunningAsk("ask", "ask_1");
+    Node ask =
+        new TestNode(
+            "ask",
+            (ctx, input) -> Flowable.just(interrupt("ask_1")).doOnComplete(asked::onComplete));
     JoinNode join = JoinNode.builder().name("j").build();
     WorkflowSession session =
         new WorkflowSession(

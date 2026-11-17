@@ -24,23 +24,36 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.apps.App;
 import com.google.adk.apps.ResumabilityConfig;
 import com.google.adk.events.Event;
+import com.google.adk.models.LlmResponse;
+import com.google.adk.runner.Runner;
+import com.google.adk.sessions.Session;
+import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
 import com.google.adk.testing.TestUtils;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.genai.types.Content;
 import com.google.genai.types.FinishReason;
+import com.google.genai.types.Part;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.observers.TestObserver;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -57,7 +70,8 @@ public final class SchedulerTest {
   private static final Route YES = new Route.Tag("yes");
   private static final Route NO = new Route.Tag("no");
 
-  private final List<Event> sentEvents = new ArrayList<>();
+  // Nodes run on other threads, so their events can arrive concurrently.
+  private final List<Event> sentEvents = new CopyOnWriteArrayList<>();
   private final NodeRunner.EventSink recordingSink =
       (event, nodeFailure) -> Completable.fromAction(() -> sentEvents.add(event));
   private final AtomicInteger activeRuns = new AtomicInteger();
@@ -274,7 +288,7 @@ public final class SchedulerTest {
                 new Edge(START, gated("c", gate)))
             .build();
 
-    TestObserver<Context> observer = runner(workflow, "root").run(/* nodeInput= */ null).test();
+    TestObserver<Context> observer = inlineRunner(workflow).run(/* nodeInput= */ null).test();
     gate.onComplete();
 
     observer.assertComplete();
@@ -290,11 +304,121 @@ public final class SchedulerTest {
             new Edge(START, gated("b", gate)),
             new Edge(START, gated("c", gate)));
 
-    TestObserver<Context> observer = runner(workflow, "root").run(/* nodeInput= */ null).test();
+    TestObserver<Context> observer = inlineRunner(workflow).run(/* nodeInput= */ null).test();
     gate.onComplete();
 
     observer.assertComplete();
     assertThat(peakRuns.get()).isEqualTo(3);
+  }
+
+  @Test
+  public void forkedNodesThatBlockTheirThreads_runAtOnce() {
+    CountDownLatch allRunning = new CountDownLatch(3);
+    Workflow workflow =
+        workflow(
+            new Edge(START, blocksUntil("a", allRunning)),
+            new Edge(START, blocksUntil("b", allRunning)),
+            new Edge(START, blocksUntil("c", allRunning)));
+
+    Context context = runner(workflow, "root").run(/* nodeInput= */ null).blockingGet();
+
+    assertThat(context.requireNodeState().failure()).isEmpty();
+  }
+
+  @Test
+  public void forkedAgentsBlockedOnTheirModel_callItAtOnce() {
+    CountDownLatch allCalling = new CountDownLatch(2);
+    // Each call blocks its thread until both are in flight, like Gemini's non-streaming call.
+    TestLlm model =
+        new TestLlm(() ->
+            Flowable.fromCallable(() -> {
+              allCalling.countDown();
+              awaitRelease(allCalling);
+              return LlmResponse.builder()
+                  .content(Content.fromParts(Part.fromText("done")))
+                  .build();
+            }));
+    Workflow workflow =
+        workflow(
+            new Edge(START, LlmAgent.builder().name("first").model(model).build()),
+            new Edge(START, LlmAgent.builder().name("second").model(model).build()));
+    Runner runner =
+        Runner.builder().app(App.builder().name("app").rootNode(workflow).build()).build();
+    Session session = runner.sessionService().createSession("app", "user").blockingGet();
+
+    ImmutableList<Event> events =
+        ImmutableList.copyOf(
+            runner
+                .runAsync("user", session.id(), Content.fromParts(Part.fromText("go")))
+                .timeout(30, SECONDS)
+                .toList()
+                .blockingGet());
+
+    assertThat(model.getRequests()).hasSize(2);
+    assertThat(events.stream().filter(event -> event.errorCode().isPresent())).isEmpty();
+  }
+
+  @Test
+  public void aFailingNode_doesNotInterruptASiblingThatBlocksItsThread() throws Exception {
+    CountDownLatch blockedStarted = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    CountDownLatch blockedDone = new CountDownLatch(1);
+    AtomicBoolean siblingInterrupted = new AtomicBoolean();
+    Node blocked =
+        new TestNode(
+            "blocked",
+            (ctx, input) ->
+                Flowable.fromCallable(() -> {
+                  blockedStarted.countDown();
+                  try {
+                    boolean unused = release.await(10, SECONDS);
+                  } catch (InterruptedException e) {
+                    siblingInterrupted.set(true);
+                    Thread.currentThread().interrupt();
+                  } finally {
+                    blockedDone.countDown();
+                  }
+                  return "late";
+                }));
+    Node failing =
+        new TestNode(
+            "failing",
+            (ctx, input) ->
+                Flowable.defer(() -> {
+                  awaitRelease(blockedStarted);
+                  return Flowable.error(new IllegalStateException("boom"));
+                }));
+
+    Context context =
+        runner(workflow(new Edge(START, blocked), new Edge(START, failing)), "root")
+            .run(/* nodeInput= */ null)
+            .blockingGet();
+    release.countDown();
+
+    assertThat(context.requireNodeState().failure().orElseThrow())
+        .hasMessageThat()
+        .isEqualTo("boom");
+    assertThat(blockedDone.await(10, SECONDS)).isTrue();
+    assertThat(siblingInterrupted.get()).isFalse();
+  }
+
+  @Test
+  public void nodesStartedOnOtherThreads_keepTheCallersTraceContext() {
+    ContextKey<String> key = ContextKey.named("caller");
+    Map<String, String> seenByNode = new ConcurrentHashMap<>();
+    Node a = traceRecorder("a", key, seenByNode);
+    Node b = traceRecorder("b", key, seenByNode);
+
+    try (Scope unused =
+        io.opentelemetry.context.Context.current().with(key, "parent").makeCurrent()) {
+      run(
+          workflow(
+              new Edge(START, a),
+              new Edge(START, b),
+              new Edge(a, traceRecorder("c", key, seenByNode))));
+    }
+
+    assertThat(seenByNode).containsExactly("a", "parent", "b", "parent", "c", "parent");
   }
 
   @Test
@@ -316,10 +440,9 @@ public final class SchedulerTest {
                     }));
 
     TestObserver<Context> observer =
-        runner(
+        inlineRunner(
                 workflow(
-                    new Edge(START, a), new Edge(START, g), new Edge(a, slow), new Edge(g, slow)),
-                "root")
+                    new Edge(START, a), new Edge(START, g), new Edge(a, slow), new Edge(g, slow)))
             .run(/* nodeInput= */ null)
             .test();
     gate.onComplete();
@@ -443,12 +566,11 @@ public final class SchedulerTest {
     List<Object> received = new ArrayList<>();
 
     TestObserver<Context> observer =
-        runner(
+        inlineRunner(
                 workflow(
                     new Edge(START, slow),
                     new Edge(START, boom),
-                    new Edge(boom, recorder("next", received))),
-                "root")
+                    new Edge(boom, recorder("next", received))))
             .run(/* nodeInput= */ null)
             .test();
 
@@ -482,7 +604,7 @@ public final class SchedulerTest {
             new Edge(b, recorder("afterB", received)),
             new Edge(c, recorder("afterC", received)));
 
-    Context context = runner(workflow, "root").run(/* nodeInput= */ null).blockingGet();
+    Context context = inlineRunner(workflow).run(/* nodeInput= */ null).blockingGet();
 
     assertThat(context.requireNodeState().failure()).hasValue(failure);
     assertThat(received).isEmpty();
@@ -497,7 +619,7 @@ public final class SchedulerTest {
             (ctx, input) ->
                 CompletableSubject.create().toFlowable().doOnCancel(() -> canceled.set(true)));
 
-    runner(workflow(new Edge(START, slow)), "root").run(/* nodeInput= */ null).test().dispose();
+    inlineRunner(workflow(new Edge(START, slow))).run(/* nodeInput= */ null).test().dispose();
 
     assertThat(canceled.get()).isTrue();
   }
@@ -527,16 +649,16 @@ public final class SchedulerTest {
             .invocationContext(
                 TestUtils.createInvocationContext(TestUtils.createRootAgent()).toBuilder()
                     .resumabilityConfig(ResumabilityConfig.builder().resumable(true).build())
+                    .scheduler(Schedulers.trampoline())
                     .build())
             // Records each event when sent, as the root's sink does, so a late checkpoint shows.
-            .eventSink(
-                (event, nodeFailure) -> {
-                  sent.add(event);
-                  return Completable.complete();
-                })
+            .eventSink((event, nodeFailure) -> {
+              sent.add(event);
+              return Completable.complete();
+            })
             .build();
     TestObserver<Context> observer = new TestObserver<>();
-    // The run starts its nodes on this thread, which the blocking node then holds.
+    // With the trampoline scheduler, the run starts nodes on the new thread, which the node blocks.
     Thread thread = new Thread(() -> runner.run(/* nodeInput= */ null).subscribe(observer));
     thread.start();
 
@@ -555,9 +677,8 @@ public final class SchedulerTest {
   public void anErrorFromANode_failsTheWorkflowRun() {
     AssertionError fatal = new AssertionError("fatal");
 
-    runner(
-            workflow(new Edge(START, new TestNode("fatal", (ctx, input) -> Flowable.error(fatal)))),
-            "root")
+    inlineRunner(
+            workflow(new Edge(START, new TestNode("fatal", (ctx, input) -> Flowable.error(fatal)))))
         .run(/* nodeInput= */ null)
         .test()
         .assertError(fatal);
@@ -599,15 +720,29 @@ public final class SchedulerTest {
 
   /** Returns a runner of {@code workflow} at the root of a run on {@code branch}. */
   private NodeRunner runner(Workflow workflow, @Nullable String branch) {
+    return runner(workflow, branch, /* scheduler= */ null);
+  }
+
+  private NodeRunner runner(
+      Workflow workflow, @Nullable String branch, @Nullable Scheduler scheduler) {
     InvocationContext invocationContext =
         TestUtils.createInvocationContext(TestUtils.createRootAgent()).toBuilder()
             .branch(branch)
+            .scheduler(scheduler)
             .build();
     return NodeRunner.builder()
         .node(workflow)
         .invocationContext(invocationContext)
         .eventSink(recordingSink)
         .build();
+  }
+
+  /**
+   * Returns a runner of {@code workflow} at the root of a run on the "root" branch. It uses the
+   * trampoline scheduler, so each node starts on the thread that starts or wakes the loop.
+   */
+  private NodeRunner inlineRunner(Workflow workflow) {
+    return runner(workflow, "root", Schedulers.trampoline());
   }
 
   private Event eventAt(String nodePath) {
@@ -639,6 +774,35 @@ public final class SchedulerTest {
                   // Leaves before completing, since the scheduler may start the next node then.
                   return gate.toFlowable().doOnComplete(activeRuns::decrementAndGet);
                 }));
+  }
+
+  /** Returns a node that blocks its running thread until {@code latch} reaches zero. */
+  private static Node blocksUntil(String name, CountDownLatch latch) {
+    return new TestNode(
+        name,
+        (ctx, input) ->
+            Flowable.fromAction(() -> {
+              latch.countDown();
+              awaitRelease(latch);
+            }));
+  }
+
+  /** Returns a node that records the value of {@code key} from the trace context it starts with. */
+  private static Node traceRecorder(
+      String name, ContextKey<String> key, Map<String, String> seenByNode) {
+    return new TestNode(
+        name,
+        (ctx, input) -> {
+          seenByNode.put(name, String.valueOf(io.opentelemetry.context.Context.current().get(key)));
+          return Flowable.empty();
+        });
+  }
+
+  /** Waits for {@code latch} to be released, or fails the node if it times out. */
+  private static void awaitRelease(CountDownLatch latch) throws InterruptedException {
+    if (!latch.await(10, SECONDS)) {
+      throw new IllegalStateException("The latch was not released.");
+    }
   }
 
   private static Workflow workflow(Edge... edges) {

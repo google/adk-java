@@ -42,6 +42,7 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.observers.TestObserver;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.CompletableSubject;
 import io.reactivex.rxjava3.subjects.SingleSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
@@ -840,8 +841,7 @@ public final class NodeRunnerTest {
             .build();
 
     TestSubscriber<Event> subscriber =
-        NodeRunner.runRoot(workflow, invocationContext(/* branch= */ null), this::holdProcessing)
-            .test();
+        NodeRunner.runRoot(workflow, inlineInvocationContext(), this::holdProcessing).test();
     processings.get(0).onError(processingFailure);
 
     subscriber.assertError(processingFailure);
@@ -865,8 +865,7 @@ public final class NodeRunnerTest {
             .build();
 
     TestSubscriber<Event> subscriber =
-        NodeRunner.runRoot(workflow, invocationContext(/* branch= */ null), this::holdProcessing)
-            .test();
+        NodeRunner.runRoot(workflow, inlineInvocationContext(), this::holdProcessing).test();
     Event inProcessing = getOnlyElement(eventsInProcessing);
     processings.get(0).onError(processingFailure);
 
@@ -986,6 +985,16 @@ public final class NodeRunnerTest {
   private static InvocationContext invocationContext(@Nullable String branch) {
     return TestUtils.createInvocationContext(TestUtils.createRootAgent()).toBuilder()
         .branch(branch)
+        .build();
+  }
+
+  /**
+   * Returns an invocation context that uses the trampoline scheduler, so a workflow starts each
+   * node on the thread that starts or wakes its loop.
+   */
+  private static InvocationContext inlineInvocationContext() {
+    return TestUtils.createInvocationContext(TestUtils.createRootAgent()).toBuilder()
+        .scheduler(Schedulers.trampoline())
         .build();
   }
 

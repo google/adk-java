@@ -184,16 +184,20 @@ public class Runner {
     /**
      * Sets the {@link Scheduler} for the work ADK hands off to worker threads in this runner's
      * invocations: the sub-agents of a {@code ParallelAgent}, tool calls in {@link
-     * RunConfig.ToolExecutionMode#PARALLEL_SUBSCRIBE} mode, workflow node retries and attempts with
-     * a timeout, the bodies of workflow {@code FunctionNode}s, and the hop that starts the live
-     * send loop. The runs that an {@code AgentTool} nests inherit it. An agent-level {@code
+     * RunConfig.ToolExecutionMode#PARALLEL_SUBSCRIBE} mode, the nodes of a workflow graph and the
+     * items of a {@code parallelNode}, workflow node retries and attempts with a timeout, the
+     * bodies of workflow {@code FunctionNode}s, and the hop that starts the live send loop. The
+     * runs that an {@code AgentTool} nests inherit it. An agent-level {@code
      * ParallelAgent.Builder#scheduler} or {@code LlmAgent.Builder#executor} takes precedence.
      * {@code null} (the default) selects {@code Schedulers.io()}.
      *
      * <p>Only these hand-offs are affected; work that completes asynchronously elsewhere (model
      * clients, session services, MCP, plugins) stays on its own threads. {@code
-     * Schedulers.trampoline()} runs the hand-offs inline, so sub-agents and tools are subscribed
-     * sequentially, but anything they start asynchronously can still overlap.
+     * Schedulers.trampoline()} runs these hand-offs inline, so sub-agents, tools, and graph nodes
+     * are subscribed sequentially, though anything they start asynchronously can still overlap;
+     * similarly, a bounded scheduler limits how many thread-blocking graph nodes run at once, and
+     * deadlocks once every thread holds a node blocked on {@code runNode(...).blockingGet()} for a
+     * child, such as a nested workflow or a {@code FunctionNode}, that also needs a thread.
      */
     @CanIgnoreReturnValue
     public Builder scheduler(@Nullable Scheduler scheduler) {
