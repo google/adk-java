@@ -7,6 +7,8 @@ an adk-python workflow sample.
 | Sample | What it shows | Calls Gemini |
 | --- | --- | --- |
 | `ClassifierNodeWorkflow` | A classifier node routes a support ticket to the team that handles it, and a second classifier node decides whether a technical ticket is urgent. | Yes |
+| `DynamicFanOutFanInWorkflow` | A node runs a headline agent on each of the user's topics concurrently with `runNode` and tabulates the headlines. | Yes |
+| `DynamicNodesWorkflow` | A node runs a headline agent and a grader agent with `runNode` in a loop until the grader accepts the headline. | Yes |
 | `FanOutFanInWorkflow` | Three nodes transform the user's text concurrently, and a join combines their outputs. | No |
 | `LoopSelfWorkflow` | A node routes back to itself until it guesses the user's number. | No |
 | `LoopWorkflow` | An agent writes a headline, a grader agent with an output schema judges it, and a node routes on the grader's output back to the writer until it passes. | Yes |
@@ -16,6 +18,7 @@ an adk-python workflow sample.
 | `NestedWorkflow` | A nested workflow of two agents runs beside a third agent, and a join hands both branches' answers to a node that combines them. | Yes |
 | `NodeOutputWorkflow` | Nodes output a string and an event, an agent with an output schema outputs structured data, and the last node reads it as a record. | Yes |
 | `OrderProcessingWorkflow` | Nested workflows and a tool check an order concurrently, then a node routes it based on an agent's risk decision: charge, review, or freeze as fraud. | Yes |
+| `ParallelWorkerWorkflow` | An agent lists related topics, a function and an agent process each topic as parallel workers, and a node joins the explanations. | Yes |
 | `RequestInputAdvancedWorkflow` | A node asks a manager to decide, sending a payload and asking for an answer that matches a schema. | Yes |
 | `RequestInputRerunWorkflow` | The `RequestInputWorkflow` review in one node, which reruns when the human answers. | Yes |
 | `RequestInputWorkflow` | A node pauses the workflow until a human approves, rejects, or asks to revise a draft. | Yes |
@@ -26,6 +29,7 @@ an adk-python workflow sample.
 | `SequenceWorkflow` | One agent names a fruit, and the next agent receives that answer as its input and tells a health benefit of it. | Yes |
 | `StateWorkflow` | Nodes write session state through the context and through an event, then read it back. | No |
 | `SupportTriageWorkflow` | An agent classifies a support request, a routing map sends it to a specialist agent that uses a function tool, and a summarizer agent writes the reply. | Yes |
+| `UseAsOutputWorkflow` | A node runs a summarizer agent with `runNode` and `useAsOutput`, so the summary becomes the node's output for the next node. | Yes |
 
 ## Project Layout
 
