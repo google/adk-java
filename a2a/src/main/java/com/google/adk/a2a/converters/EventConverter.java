@@ -16,53 +16,98 @@
 package com.google.adk.a2a.converters;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
+import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import io.a2a.spec.Part;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 
 /** Converter for ADK Events to A2A Messages. */
 public final class EventConverter {
-  public static final String ADK_TASK_ID_KEY = "adk_task_id";
-  public static final String ADK_CONTEXT_ID_KEY = "adk_context_id";
+  // Keys that older sessions recorded task and context IDs under, read here without deprecation.
+  static final String LEGACY_TASK_ID_KEY = "adk_task_id";
+  static final String LEGACY_CONTEXT_ID_KEY = "adk_context_id";
+
+  /**
+   * Legacy task ID key, read only for events with neither {@code a2a:} ID key.
+   *
+   * @deprecated Use {@code AdkMetadataKey.TASK_ID.getType()}, the key task IDs are recorded under.
+   */
+  @Deprecated public static final String ADK_TASK_ID_KEY = LEGACY_TASK_ID_KEY;
+
+  /**
+   * Legacy context ID key, read only for events with neither {@code a2a:} ID key.
+   *
+   * @deprecated Use {@code AdkMetadataKey.CONTEXT_ID.getType()}, the key context IDs are recorded
+   *     under.
+   */
+  @Deprecated public static final String ADK_CONTEXT_ID_KEY = LEGACY_CONTEXT_ID_KEY;
+
+  private static final String REQUEST_CREDENTIAL_CALL_NAME = "adk_request_credential";
+
+  // Calls whose answers carry credentials; the mock auth call itself holds the remote's prompt.
+  private static final ImmutableSet<String> CREDENTIAL_CALL_NAMES =
+      ImmutableSet.of(REQUEST_CREDENTIAL_CALL_NAME, "mock_function_call_for_required_user_auth");
+
+  private static final ImmutableList<String> AUTH_CONFIG_ARG_KEYS =
+      ImmutableList.of("authConfig", "auth_config");
+
+  // Top-level keys of a serialized AuthConfig, in both spellings.
+  private static final ImmutableSet<String> AUTH_CONFIG_KEYS =
+      ImmutableSet.of(
+          "authScheme",
+          "auth_scheme",
+          "rawAuthCredential",
+          "raw_auth_credential",
+          "exchangedAuthCredential",
+          "exchanged_auth_credential");
 
   private EventConverter() {}
 
   /**
    * Returns the task ID from the event.
    *
-   * <p>Task ID is stored in the event's custom metadata with the key {@link #ADK_TASK_ID_KEY}.
+   * <p>Task ID is stored in the event's custom metadata under {@code a2a:task_id}, where {@link
+   * ResponseConverter} and ADK Python write it. An event with neither {@code a2a:task_id} nor
+   * {@code a2a:context_id} is read from the legacy {@code adk_task_id} key.
    *
    * @param event The event to get the task ID from.
    * @return The task ID, or an empty string if not found.
    */
   public static String taskId(Event event) {
-    return metadataValue(event, ADK_TASK_ID_KEY);
+    return remoteId(event, AdkMetadataKey.TASK_ID.getType(), LEGACY_TASK_ID_KEY);
   }
 
   /**
    * Returns the context ID from the event.
    *
-   * <p>Context ID is stored in the event's custom metadata with the key {@link
-   * #ADK_CONTEXT_ID_KEY}.
+   * <p>Context ID is stored in the event's custom metadata under {@code a2a:context_id}, where
+   * {@link ResponseConverter} and ADK Python write it. An event with neither {@code a2a:task_id}
+   * nor {@code a2a:context_id} is read from the legacy {@code adk_context_id} key.
    *
    * @param event The event to get the context ID from.
    * @return The context ID, or an empty string if not found.
    */
   public static String contextId(Event event) {
-    return metadataValue(event, ADK_CONTEXT_ID_KEY);
+    return remoteId(event, AdkMetadataKey.CONTEXT_ID.getType(), LEGACY_CONTEXT_ID_KEY);
   }
 
   /**
-   * Returns the last user function call event from the list of events.
+   * Returns the call event that the last event's first non-credential function response answers.
    *
    * @param events The list of events to find the user function call event from.
    * @return The user function call event, or null if not found.
@@ -72,7 +117,8 @@ public final class EventConverter {
     if (!candidate.author().equals("user")) {
       return null;
     }
-    FunctionResponse functionResponse = findUserFunctionResponse(candidate);
+    FunctionResponse functionResponse =
+        findUserFunctionResponse(candidate, credentialCallIds(events));
     if (functionResponse == null || functionResponse.id().isEmpty()) {
       return null;
     }
@@ -85,30 +131,39 @@ public final class EventConverter {
     return null;
   }
 
-  private static @Nullable FunctionResponse findUserFunctionResponse(Event candidate) {
-    if (candidate.content().isEmpty() || candidate.content().get().parts().isEmpty()) {
-      return null;
-    }
-    return candidate.content().get().parts().get().stream()
-        .filter(part -> part.functionResponse().isPresent())
+  /** Returns the first function response in {@code candidate} that carries no credential. */
+  private static @Nullable FunctionResponse findUserFunctionResponse(
+      Event candidate, ImmutableSet<String> credentialCallIds) {
+    return withoutCredentialParts(candidate, credentialCallIds).stream()
+        .flatMap(part -> part.functionResponse().stream())
         .findFirst()
-        .map(part -> part.functionResponse().get())
         .orElse(null);
   }
 
   private static boolean isUserFunctionCall(Event event, String functionResponseId) {
-    if (event.content().isEmpty()) {
-      return false;
-    }
-    return event.content().get().parts().get().stream()
-        .anyMatch(
-            part ->
-                part.functionCall().isPresent()
-                    && part.functionCall()
-                        .get()
-                        .id()
-                        .map(id -> id.equals(functionResponseId))
-                        .orElse(false));
+    return event.functionCalls().stream()
+        .anyMatch(call -> call.id().map(functionResponseId::equals).orElse(false));
+  }
+
+  /**
+   * Returns the parts of the user's answer to send to the remote agent whose call it answers.
+   * Credential parts are never sent, nor is text beside a function response, which an ADK runner
+   * rejects.
+   *
+   * @param events The session events, ending with the user's answer; must not be empty.
+   * @return The answer's parts to send, possibly none.
+   */
+  @Experimental
+  public static ImmutableList<Part<?>> answerParts(List<Event> events) {
+    Event answer = Iterables.getLast(events);
+    ImmutableList<com.google.genai.types.Part> kept =
+        withoutCredentialParts(answer, credentialCallIds(events));
+    boolean hasResponse = kept.stream().anyMatch(part -> part.functionResponse().isPresent());
+    boolean partial = answer.partial().orElse(false);
+    return kept.stream()
+        .filter(part -> !hasResponse || part.text().isEmpty())
+        .map(part -> PartConverter.fromGenaiPart(part, partial))
+        .collect(toImmutableList());
   }
 
   /**
@@ -132,16 +187,17 @@ public final class EventConverter {
    * <p>All session events from the previous remote agent response (or the beginning of the session
    * in case of the first agent invocation) are included into the A2A message. Events from other
    * agents are presented as user messages and rephased as if a user was telling what happened in
-   * the session up to the point.
+   * the session up to the point. Credential parts are left out.
    *
    * @param context The invocation context to get the parts from.
    * @return A list of A2A Parts.
    */
   public static ImmutableList<Part<?>> messagePartsFromContext(InvocationContext context) {
-    if (context.session().events().isEmpty()) {
+    ImmutableList<Event> events = context.session().immutableEvents();
+    if (events.isEmpty()) {
       return ImmutableList.of();
     }
-    List<Event> events = context.session().events();
+    ImmutableSet<String> credentialCallIds = credentialCallIds(events);
     int lastResponseIndex = -1;
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
@@ -152,7 +208,8 @@ public final class EventConverter {
     }
     ImmutableList.Builder<Part<?>> partsBuilder = ImmutableList.builder();
     for (int i = lastResponseIndex + 1; i < events.size(); i++) {
-      Event event = events.get(i);
+      // Drop credentials before another agent's turn is flattened to text.
+      Event event = withoutCredentials(events.get(i), credentialCallIds);
       Optional<Content> content;
       boolean partial;
       if (!event.author().equals("user") && !event.author().equals(context.agent().name())) {
@@ -196,14 +253,82 @@ public final class EventConverter {
             .build());
   }
 
-  private static String metadataValue(Event event, String key) {
-    if (event.customMetadata().isEmpty()) {
-      return "";
-    }
-    return event.customMetadata().get().stream()
-        .filter(m -> m.key().map(k -> k.equals(key)).orElse(false))
-        .findFirst()
-        .flatMap(m -> m.stringValue())
+  /**
+   * Returns the ID under {@code key}, or under {@code legacyKey} if the event has neither new key.
+   */
+  private static String remoteId(Event event, String key, String legacyKey) {
+    boolean hasNewKeys =
+        findMetadata(event, AdkMetadataKey.TASK_ID.getType()).isPresent()
+            || findMetadata(event, AdkMetadataKey.CONTEXT_ID.getType()).isPresent();
+    return findMetadata(event, hasNewKeys ? key : legacyKey)
+        .flatMap(CustomMetadata::stringValue)
         .orElse("");
+  }
+
+  private static Optional<CustomMetadata> findMetadata(Event event, String key) {
+    return event.customMetadata().stream()
+        .flatMap(List::stream)
+        .filter(m -> m.key().map(k -> k.equals(key)).orElse(false))
+        .findFirst();
+  }
+
+  /** Returns the IDs of the credential calls in {@code events}, with "" for a call without one. */
+  private static ImmutableSet<String> credentialCallIds(List<Event> events) {
+    return events.stream()
+        .flatMap(event -> event.functionCalls().stream())
+        .filter(call -> CREDENTIAL_CALL_NAMES.contains(call.name().orElse("")))
+        .map(call -> call.id().orElse(""))
+        .collect(toImmutableSet());
+  }
+
+  private static Event withoutCredentials(Event event, ImmutableSet<String> credentialCallIds) {
+    if (event.content().isEmpty()) {
+      return event;
+    }
+    ImmutableList<com.google.genai.types.Part> kept =
+        withoutCredentialParts(event, credentialCallIds);
+    return event.toBuilder().content(event.content().get().toBuilder().parts(kept).build()).build();
+  }
+
+  private static ImmutableList<com.google.genai.types.Part> withoutCredentialParts(
+      Event event, ImmutableSet<String> credentialCallIds) {
+    return event.content().flatMap(Content::parts).orElse(ImmutableList.of()).stream()
+        .filter(part -> !carriesCredential(part, credentialCallIds))
+        .collect(toImmutableList());
+  }
+
+  /**
+   * Whether {@code part} carries a credential. A call does if it is named {@code
+   * adk_request_credential} or its {@code authConfig} argument holds an AuthConfig. A response does
+   * if it is named for a credential call, answers one of {@code credentialCallIds} (a response
+   * without an ID matches a call without one), or holds an AuthConfig.
+   */
+  private static boolean carriesCredential(
+      com.google.genai.types.Part part, ImmutableSet<String> credentialCallIds) {
+    if (part.functionResponse().isPresent()) {
+      FunctionResponse response = part.functionResponse().get();
+      return CREDENTIAL_CALL_NAMES.contains(response.name().orElse(""))
+          || credentialCallIds.contains(response.id().orElse(""))
+          || isAuthConfig(response.response().orElse(null));
+    }
+    if (part.functionCall().isPresent()) {
+      FunctionCall call = part.functionCall().get();
+      Map<String, Object> args = call.args().orElse(ImmutableMap.of());
+      return call.name().orElse("").equals(REQUEST_CREDENTIAL_CALL_NAME)
+          || AUTH_CONFIG_ARG_KEYS.stream().anyMatch(key -> isAuthConfig(args.get(key)));
+    }
+    return false;
+  }
+
+  /** Whether {@code payload}, bare or wrapped as {@code {"result": ...}}, is an AuthConfig. */
+  private static boolean isAuthConfig(@Nullable Object payload) {
+    Object candidate = payload;
+    if (payload instanceof Map<?, ?> wrapper
+        && wrapper.size() == 1
+        && wrapper.containsKey("result")) {
+      candidate = wrapper.get("result");
+    }
+    return candidate instanceof Map<?, ?> map
+        && AUTH_CONFIG_KEYS.stream().anyMatch(map::containsKey);
   }
 }

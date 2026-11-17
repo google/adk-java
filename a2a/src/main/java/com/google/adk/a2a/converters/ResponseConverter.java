@@ -68,8 +68,8 @@ public final class ResponseConverter {
       ImmutableSet.of(
           AdkMetadataKey.TASK_ID.getType(),
           AdkMetadataKey.CONTEXT_ID.getType(),
-          EventConverter.ADK_TASK_ID_KEY,
-          EventConverter.ADK_CONTEXT_ID_KEY);
+          EventConverter.LEGACY_TASK_ID_KEY,
+          EventConverter.LEGACY_CONTEXT_ID_KEY);
   private static final ImmutableSet<TaskState> PENDING_STATES =
       ImmutableSet.of(TaskState.WORKING, TaskState.SUBMITTED);
 

@@ -22,6 +22,7 @@ import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -40,8 +41,10 @@ import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import io.a2a.client.Client;
@@ -89,6 +92,9 @@ import org.mockito.ArgumentCaptor;
 
 @RunWith(JUnit4.class)
 public final class RemoteA2AAgentTest {
+
+  private static final ImmutableMap<String, Object> AUTH_CONFIG =
+      ImmutableMap.of("authScheme", "oauth2", "rawAuthCredential", "secret");
 
   private Client mockClient;
   private AgentCard agentCard;
@@ -650,6 +656,225 @@ public final class RemoteA2AAgentTest {
     assertThat(((TextPart) message.getParts().get(1)).getText()).isEqualTo("For context:");
     assertThat(((TextPart) message.getParts().get(2)).getText()).isEqualTo("[model] said: hi");
     assertThat(((TextPart) message.getParts().get(3)).getText()).isEqualTo("how are you?");
+  }
+
+  @Test
+  public void runAsync_answeringRemoteCall_sendsAnswerInItsTask() {
+    // Recorded under the keys ResponseConverter writes.
+    Message message =
+        sendAnswer(
+            functionCall("fn", "call-1"),
+            ImmutableList.of(
+                metadata("a2a:task_id", "task-1"), metadata("a2a:context_id", "context-1")),
+            functionResponse("fn", "call-1", ImmutableMap.of("result", "ok")));
+
+    assertThat(message.getTaskId()).isEqualTo("task-1");
+    assertThat(message.getContextId()).isEqualTo("context-1");
+    DataPart answer = (DataPart) Iterables.getOnlyElement(message.getParts());
+    assertThat(answer.getMetadata()).containsEntry("adk_type", "function_response");
+    assertThat(answer.getData()).containsEntry("id", "call-1");
+  }
+
+  @Test
+  public void runAsync_answeringRemoteCallWithoutIds_sendsNoIds() {
+    Message message =
+        sendAnswer(
+            functionCall("fn", "call-1"),
+            ImmutableList.of(),
+            functionResponse("fn", "call-1", ImmutableMap.of("result", "ok")));
+
+    assertThat(message.getTaskId()).isNull();
+    assertThat(message.getContextId()).isNull();
+  }
+
+  @Test
+  public void runAsync_answerWithTextBesideResponse_sendsOnlyResponse() {
+    Message message =
+        sendAnswer(
+            functionCall("fn", "call-1"),
+            ImmutableList.of(),
+            Part.builder().text("Here you go").build(),
+            functionResponse("fn", "call-1", ImmutableMap.of("result", "ok")));
+
+    DataPart answer = (DataPart) Iterables.getOnlyElement(message.getParts());
+    assertThat(answer.getData()).containsEntry("id", "call-1");
+  }
+
+  @Test
+  public void runAsync_answerWithCredentialBesideResponse_sendsOnlyResponse() {
+    Message message =
+        sendAnswer(
+            functionCall("fn", "call-1"),
+            ImmutableList.of(metadata("a2a:task_id", "task-1")),
+            functionResponse("fn", "call-1", ImmutableMap.of("result", "ok")),
+            functionResponse("adk_request_credential", "cred-1", ImmutableMap.of("token", "t")),
+            functionResponse("other", "x-1", ImmutableMap.of("result", AUTH_CONFIG)));
+
+    assertThat(message.getTaskId()).isEqualTo("task-1");
+    DataPart answer = (DataPart) Iterables.getOnlyElement(message.getParts());
+    assertThat(answer.getData()).containsEntry("id", "call-1");
+  }
+
+  @Test
+  public void runAsync_answerWithCredentialResponseFirst_resumesItsTask() {
+    Message message =
+        sendAnswer(
+            functionCall("fn", "call-1"),
+            ImmutableList.of(metadata("a2a:task_id", "task-1")),
+            functionResponse("adk_request_credential", "cred-1", ImmutableMap.of("token", "t")),
+            functionResponse("fn", "call-1", ImmutableMap.of("result", "ok")));
+
+    assertThat(message.getTaskId()).isEqualTo("task-1");
+    DataPart answer = (DataPart) Iterables.getOnlyElement(message.getParts());
+    assertThat(answer.getData()).containsEntry("id", "call-1");
+  }
+
+  @Test
+  public void runAsync_credentialOnlyAnswer_emitsEmptyEventWithoutCalling() {
+    RemoteA2AAgent agent = createAgent();
+    InvocationContext context =
+        answerContext(
+            credentialCall(),
+            ImmutableList.of(),
+            functionResponse("adk_request_credential", "cred-1", AUTH_CONFIG));
+
+    assertEmitsEmptyEventWithoutCalling(agent, context);
+  }
+
+  @Test
+  public void runAsync_credentialOnlyAnswerToRelayedCall_sendsHistoryWithoutCredentials() {
+    // Another agent relayed the call, so the history since this agent's last turn holds more.
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("hello").build()),
+            event("other_agent", credentialCall()),
+            event("user", functionResponse("adk_request_credential", "cred-1", AUTH_CONFIG)));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getTaskId()).isNull();
+    assertThat(((TextPart) Iterables.getOnlyElement(message.getParts())).getText())
+        .isEqualTo("hello");
+  }
+
+  @Test
+  public void runAsync_historyWithCredentials_sendsItWithoutThem() {
+    InvocationContext context =
+        historyContext(
+            event(
+                "other_agent",
+                functionResponse("lookup", "x-1", ImmutableMap.of("result", AUTH_CONFIG)),
+                Part.builder().text("done").build()),
+            event("user", Part.builder().text("next question").build()));
+
+    Message message = sendAndCapture(context);
+
+    assertThat(message.getParts().stream().map(part -> ((TextPart) part).getText()))
+        .containsExactly("For context:", "[other_agent] said: done", "next question")
+        .inOrder();
+  }
+
+  @Test
+  public void runAsync_nothingSinceLastTurn_emitsEmptyEventWithoutCalling() {
+    RemoteA2AAgent agent = createAgent();
+    InvocationContext context =
+        historyContext(
+            event("user", Part.builder().text("hello").build()),
+            event("remote-agent", Part.builder().text("hi").build()));
+
+    assertEmitsEmptyEventWithoutCalling(agent, context);
+  }
+
+  /** Asserts that the agent ends the turn with one empty event and makes no remote call. */
+  @SuppressWarnings("unchecked") // cast for Mockito
+  private void assertEmitsEmptyEventWithoutCalling(
+      RemoteA2AAgent agent, InvocationContext context) {
+    List<Event> events = agent.runAsync(context).toList().blockingGet();
+
+    Event event = Iterables.getOnlyElement(events);
+    assertThat(event.author()).isEqualTo("remote-agent");
+    assertThat(event.content().flatMap(Content::parts)).isEmpty();
+    verify(mockClient, never())
+        .sendMessage(any(Message.class), any(List.class), any(Consumer.class), any());
+  }
+
+  /** Runs the agent in {@code context} and returns the message sent. */
+  @SuppressWarnings("unchecked") // cast for Mockito
+  private Message sendAndCapture(InvocationContext context) {
+    RemoteA2AAgent agent = createAgent();
+    mockStreamResponse(consumer -> consumer.accept(createFinalEvent("ok"), agentCard));
+
+    var unused = agent.runAsync(context).toList().blockingGet();
+
+    ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+    verify(mockClient)
+        .sendMessage(messageCaptor.capture(), any(List.class), any(Consumer.class), any());
+    return messageCaptor.getValue();
+  }
+
+  /** A context whose session holds {@code events}. */
+  private InvocationContext historyContext(Event... events) {
+    Session session =
+        Session.builder("session-5")
+            .appName("demo")
+            .userId("user")
+            .events(ImmutableList.copyOf(events))
+            .build();
+    return invocationContext.toBuilder().session(session).build();
+  }
+
+  private static Event event(String author, Part... parts) {
+    return Event.builder()
+        .author(author)
+        .content(Content.builder().parts(ImmutableList.copyOf(parts)).build())
+        .build();
+  }
+
+  /**
+   * Runs the agent on a session where the user answers {@code call}, recorded with {@code
+   * callMetadata}, with {@code answer}, and returns the message sent.
+   */
+  private Message sendAnswer(
+      Part call, ImmutableList<CustomMetadata> callMetadata, Part... answer) {
+    return sendAndCapture(answerContext(call, callMetadata, answer));
+  }
+
+  /** A context whose session holds the remote agent's {@code call}, then the user's answer. */
+  private InvocationContext answerContext(
+      Part call, ImmutableList<CustomMetadata> callMetadata, Part... answer) {
+    return historyContext(
+        event("remote-agent", call).toBuilder().customMetadata(callMetadata).build(),
+        event("user", answer));
+  }
+
+  /** A function-call part as converted from the remote's function-call part. */
+  private static Part functionCall(String name, String id) {
+    return Part.builder()
+        .functionCall(FunctionCall.builder().name(name).id(id).build())
+        .partMetadata(ImmutableMap.of("adk_type", "function_call"))
+        .build();
+  }
+
+  /** A credential request whose arguments hold an AuthConfig. */
+  private static Part credentialCall() {
+    return Part.builder()
+        .functionCall(
+            FunctionCall.builder()
+                .name("adk_request_credential")
+                .id("cred-1")
+                .args(ImmutableMap.of("authConfig", AUTH_CONFIG))
+                .build())
+        .build();
+  }
+
+  private static CustomMetadata metadata(String key, String value) {
+    return CustomMetadata.builder().key(key).stringValue(value).build();
+  }
+
+  private static Part functionResponse(String name, String id, Map<String, Object> response) {
+    return Part.builder()
+        .functionResponse(FunctionResponse.builder().name(name).id(id).response(response).build())
+        .build();
   }
 
   @Test

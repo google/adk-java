@@ -15,6 +15,7 @@
  */
 package com.google.adk.a2a.agent;
 
+import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.base.Strings.nullToEmpty;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -196,34 +197,49 @@ public class RemoteA2AAgent extends BaseAgent {
     return new Message.Builder().messageId(invocationContext.newUuid()).role(role).parts(parts);
   }
 
-  private Message prepareMessage(InvocationContext invocationContext) {
-    Event userCall = EventConverter.findUserFunctionCall(invocationContext.session().events());
-    if (userCall != null) {
-      ImmutableList<io.a2a.spec.Part<?>> parts =
-          EventConverter.contentToParts(userCall.content(), userCall.partial().orElse(false));
-      return newA2AMessage(invocationContext, Message.Role.USER, parts)
-          .taskId(EventConverter.taskId(userCall))
-          .contextId(EventConverter.contextId(userCall))
+  /** Returns the message to send, or null if there are no parts to send. */
+  private @Nullable Message prepareMessage(
+      InvocationContext invocationContext, ImmutableList<Event> events) {
+    // An answer that was all credentials answers no call, so history is sent instead.
+    Event callEvent = EventConverter.findUserFunctionCall(events);
+    if (callEvent != null) {
+      // As in ADK Python, a call that came without ids sends none.
+      return newA2AMessage(invocationContext, Message.Role.USER, EventConverter.answerParts(events))
+          .taskId(emptyToNull(EventConverter.taskId(callEvent)))
+          .contextId(emptyToNull(EventConverter.contextId(callEvent)))
           .build();
     }
-    return newA2AMessage(
-            invocationContext,
-            Message.Role.USER,
-            EventConverter.messagePartsFromContext(invocationContext))
-        .build();
+    ImmutableList<io.a2a.spec.Part<?>> parts =
+        EventConverter.messagePartsFromContext(invocationContext);
+    return parts.isEmpty()
+        ? null
+        : newA2AMessage(invocationContext, Message.Role.USER, parts).build();
   }
 
   @Override
   protected Flowable<Event> runAsyncImpl(InvocationContext invocationContext) {
-    // Construct A2A Message from the last ADK event
-    List<Event> sessionEvents = invocationContext.session().events();
+    // One snapshot, so the call found and the answer sent come from the same list.
+    ImmutableList<Event> sessionEvents = invocationContext.session().immutableEvents();
 
     if (sessionEvents.isEmpty()) {
       logger.warn("No events in session, cannot send message to remote agent.");
       return Flowable.empty();
     }
 
-    Message originalMessage = prepareMessage(invocationContext);
+    Message originalMessage = prepareMessage(invocationContext, sessionEvents);
+    if (originalMessage == null) {
+      // As in ADK Python, the turn still ends with an event from this agent.
+      logger.warn("No parts to send to remote agent; emitting an empty event.");
+      return Flowable.just(
+          Event.builder()
+              .id(invocationContext.newUuid())
+              .invocationId(invocationContext.invocationId())
+              .author(name())
+              .branch(invocationContext.branch().orElse(null))
+              .content(Content.builder().build())
+              .timestamp(invocationContext.now().toEpochMilli())
+              .build());
+    }
     String requestJson = serializeMessageToJson(originalMessage);
 
     return Flowable.create(
