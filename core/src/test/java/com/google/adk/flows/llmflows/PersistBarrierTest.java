@@ -29,6 +29,7 @@ import io.reactivex.rxjava3.observers.TestObserver;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import org.junit.Before;
 import org.junit.Test;
@@ -175,6 +176,24 @@ public final class PersistBarrierTest {
 
     observer.assertError(error);
     assertThat(PersistBarrier.pendingCount(context)).isEqualTo(0);
+  }
+
+  @Test
+  public void copiedContextData_awaitCompletesWhenOriginalMarks() {
+    // A copy of callbackContextData made after enable() must see the Runner's marks.
+    PersistBarrier.enable(context);
+    InvocationContext copy =
+        context.toBuilder()
+            .callbackContextData(new ConcurrentHashMap<>(context.callbackContextData()))
+            .build();
+
+    TestObserver<Void> observer =
+        PersistBarrier.awaitPersisted(copy, ImmutableList.of(event("e1"))).test();
+    observer.assertNotComplete();
+
+    PersistBarrier.markPersisted(context, "e1");
+
+    observer.assertComplete();
   }
 
   @Test

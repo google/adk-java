@@ -60,6 +60,8 @@ public final class PersistBarrier {
    */
   public static void enable(InvocationContext context) {
     context.callbackContextData().put(ENABLED_KEY, true);
+    // Created now, not on first use, so a copy of callbackContextData made later shares it.
+    var unused = barriers(context);
   }
 
   /**

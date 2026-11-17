@@ -829,6 +829,52 @@ public final class RunnerTest {
   }
 
   @Test
+  public void runAsync_agentCopiesCallbackContextData_toolCallingSubAgentCompletes() {
+    LlmAgent worker =
+        createTestAgentBuilder(testLlmWithFunctionCall).tools(ImmutableList.of(echoTool)).build();
+    // Copies before the Runner has persisted any event, like an agent isolating per-shard data.
+    BaseAgent copier =
+        new BaseAgent(
+            "copier",
+            "runs the worker on a copy of callbackContextData",
+            ImmutableList.of(),
+            ImmutableList.of(),
+            ImmutableList.of()) {
+          @Override
+          protected Flowable<Event> runAsyncImpl(InvocationContext context) {
+            InvocationContext copy =
+                context.toBuilder()
+                    .callbackContextData(new ConcurrentHashMap<>(context.callbackContextData()))
+                    .build();
+            return worker.runAsync(copy);
+          }
+
+          @Override
+          protected Flowable<Event> runLiveImpl(InvocationContext context) {
+            return runAsyncImpl(context);
+          }
+        };
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(copier).build()).build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), createContent("from user"))
+            // Fail fast if the worker's await never sees the Runner's marks, instead of hanging.
+            .timeout(10, SECONDS)
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(events))
+        .containsExactly(
+            "test agent: FunctionCall(name=echo_tool, args={args_name=args_value})",
+            "test agent: FunctionResponse(name=echo_tool,"
+                + " response={result={args_name=args_value}})",
+            "test agent: done");
+  }
+
+  @Test
   public void runAsync_passesSessionSnapshotToPersistenceService() {
     BaseSessionService mockSessionService = mock(BaseSessionService.class);
     Event agentEvent = Event.builder().id("agent-event").author("agent").build();
