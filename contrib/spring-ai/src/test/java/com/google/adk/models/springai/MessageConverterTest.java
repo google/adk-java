@@ -75,6 +75,78 @@ class MessageConverterTest {
   }
 
   @Test
+  void toLlmPrompt_nonToolCallingDefaults_warnsOnceAndNamesOptionsClass() {
+    ch.qos.logback.classic.Logger converterLogger =
+        (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(MessageConverter.class);
+    ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+        new ch.qos.logback.core.read.ListAppender<>();
+    appender.start();
+    converterLogger.addAppender(appender);
+    try {
+      // What Basic sends: contents and an empty config, no tools; defaults keep the interface
+      // default (an empty DefaultChatOptions, not ToolCallingChatOptions).
+      LlmRequest request =
+          LlmRequest.builder()
+              .contents(
+                  java.util.List.of(
+                      com.google.genai.types.Content.builder()
+                          .role("user")
+                          .parts(java.util.List.of(com.google.genai.types.Part.fromText("hello")))
+                          .build()))
+              .config(com.google.genai.types.GenerateContentConfig.builder().build())
+              .build();
+      ChatOptions defaults = ChatOptions.builder().build();
+      org.assertj.core.api.Assertions.assertThat(defaults)
+          .isNotInstanceOf(org.springframework.ai.model.tool.ToolCallingChatOptions.class);
+
+      messageConverter.toLlmPrompt(request, defaults);
+      messageConverter.toLlmPrompt(request, defaults);
+
+      java.util.List<ch.qos.logback.classic.spi.ILoggingEvent> warnings =
+          appender.list.stream()
+              .filter(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN)
+              .toList();
+      org.assertj.core.api.Assertions.assertThat(warnings).hasSize(1);
+      org.assertj.core.api.Assertions.assertThat(warnings.get(0).getFormattedMessage())
+          .contains("org.springframework.ai.chat.prompt.DefaultChatOptions");
+    } finally {
+      converterLogger.detachAppender(appender);
+    }
+  }
+
+  @Test
+  void toLlmPrompt_toolCallingDefaults_doNotWarn() {
+    ch.qos.logback.classic.Logger converterLogger =
+        (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(MessageConverter.class);
+    ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+        new ch.qos.logback.core.read.ListAppender<>();
+    appender.start();
+    converterLogger.addAppender(appender);
+    try {
+      LlmRequest request =
+          LlmRequest.builder()
+              .contents(
+                  java.util.List.of(
+                      com.google.genai.types.Content.builder()
+                          .role("user")
+                          .parts(java.util.List.of(com.google.genai.types.Part.fromText("hello")))
+                          .build()))
+              .build();
+
+      messageConverter.toLlmPrompt(
+          request, org.springframework.ai.model.tool.ToolCallingChatOptions.builder().build());
+
+      org.assertj.core.api.Assertions.assertThat(
+              appender.list.stream()
+                  .filter(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN)
+                  .toList())
+          .isEmpty();
+    } finally {
+      converterLogger.detachAppender(appender);
+    }
+  }
+
+  @Test
   void testToLlmPromptWithUserMessage() {
     Content userContent =
         Content.builder().role("user").parts(List.of(Part.fromText("Hello, how are you?"))).build();
