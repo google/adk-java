@@ -43,7 +43,11 @@ public class SetModelResponseTool extends BaseTool {
   // Marker after which SchemaUtils appends the schema dump; stripped from feedback best-effort.
   private static final String OUTPUT_SCHEMA_DUMP_MARKER = " does not match agent output schema: ";
 
-  private final Schema outputSchema;
+  // Function parameters must be an object, so a non-object output schema goes into this field.
+  private static final String RESPONSE_PARAMETER = "response";
+
+  private final boolean wrapsOutputSchema;
+  private final Schema parameters;
 
   public SetModelResponseTool(Schema outputSchema) {
     super(
@@ -51,16 +55,35 @@ public class SetModelResponseTool extends BaseTool {
         "Set your final response using the required output schema. "
             + "After using any other tools needed to complete the task, always call"
             + " set_model_response with your final answer in the specified schema format.");
-    this.outputSchema = outputSchema;
+    this.wrapsOutputSchema = !SchemaUtils.describesObject(outputSchema);
+    if (wrapsOutputSchema) {
+      // Vertex AI rejects an untyped parameter; a wrapped untyped schema has only items.
+      this.parameters =
+          Schema.builder()
+              .type(Type.Known.OBJECT)
+              .properties(
+                  ImmutableMap.of(
+                      RESPONSE_PARAMETER, withDefaultType(outputSchema, Type.Known.ARRAY)))
+              .required(ImmutableList.of(RESPONSE_PARAMETER))
+              .build();
+    } else {
+      this.parameters = withDefaultType(outputSchema, Type.Known.OBJECT);
+    }
+  }
+
+  /** Returns {@code schema}, typed {@code type} if it has no known type. */
+  private static Schema withDefaultType(Schema schema, Type.Known type) {
+    boolean typed =
+        schema
+            .type()
+            .map(Type::knownEnum)
+            .filter(known -> known != Type.Known.TYPE_UNSPECIFIED)
+            .isPresent();
+    return typed ? schema : schema.toBuilder().type(type).build();
   }
 
   @Override
   public Optional<FunctionDeclaration> declaration() {
-    // Function parameters must be an object, so an untyped object schema gets that type.
-    Schema parameters =
-        outputSchema.type().isPresent()
-            ? outputSchema
-            : outputSchema.toBuilder().type(Type.Known.OBJECT).build();
     return Optional.of(
         FunctionDeclaration.builder()
             .name(name())
@@ -73,22 +96,35 @@ public class SetModelResponseTool extends BaseTool {
   public Single<Map<String, Object>> runAsync(Map<String, Object> args, ToolContext toolContext) {
     // Record validated responses on the event actions; return validation feedback so the model can
     // retry.
-    return Single.fromCallable(
-        () -> {
-          try {
-            SchemaUtils.validateMapOnSchema(args, outputSchema, /* isInput= */ false);
-          } catch (IllegalArgumentException e) {
-            return ImmutableMap.of(
-                "error",
-                "Validation Error found:\n"
-                    + sanitizeValidationMessage(e.getMessage())
-                    + "\nRecall the set_model_response function correctly, fix the errors, and"
-                    + " call it again with all required fields using the correct types.");
-          }
-          Map<String, Object> validatedResponse = excludeNullFields(args, outputSchema);
-          toolContext.actions().setSetModelResponse(validatedResponse);
-          return validatedResponse;
-        });
+    return Single.fromCallable(() -> {
+      try {
+        SchemaUtils.validateMapOnSchema(args, parameters, /* isInput= */ false);
+      } catch (IllegalArgumentException e) {
+        return validationFeedback(sanitizeValidationMessage(e.getMessage()));
+      }
+      Map<String, Object> validatedResponse = excludeNullFields(args, parameters);
+      if (wrapsOutputSchema) {
+        Object response = validatedResponse.get(RESPONSE_PARAMETER);
+        if (response == null) {
+          // A null answer cannot end the run, so the model has to give a value.
+          return validationFeedback("Output arg: " + RESPONSE_PARAMETER + " must not be null");
+        }
+        toolContext.actions().setSetModelResponse(response);
+        // Like a function tool's non-map result.
+        return ImmutableMap.of("result", response);
+      }
+      toolContext.actions().setSetModelResponse(validatedResponse);
+      return validatedResponse;
+    });
+  }
+
+  private static ImmutableMap<String, Object> validationFeedback(String message) {
+    return ImmutableMap.of(
+        "error",
+        "Validation Error found:\n"
+            + message
+            + "\nRecall the set_model_response function correctly, fix the errors, and"
+            + " call it again with all required fields using the correct types.");
   }
 
   /**

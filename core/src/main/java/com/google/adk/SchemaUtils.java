@@ -211,6 +211,47 @@ public final class SchemaUtils {
   }
 
   /**
+   * Returns whether {@code schema} is an object: typed {@code OBJECT}, or without a known type
+   * unless it has {@code items} and neither {@code properties} nor {@code required}.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  public static boolean describesObject(Schema schema) {
+    Type.Known type = schema.type().map(Type::knownEnum).orElse(Type.Known.TYPE_UNSPECIFIED);
+    if (type != Type.Known.TYPE_UNSPECIFIED) {
+      return type == Type.Known.OBJECT;
+    }
+    return schema.items().isEmpty()
+        || schema.properties().isPresent()
+        || schema.required().isPresent();
+  }
+
+  /**
+   * Parses {@code output} and validates it against {@code schema}. An object schema goes through
+   * {@link #validateOutputSchema}; for an array or primitive schema this returns the parsed value,
+   * such as a list, which may be null.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   *
+   * @throws IllegalArgumentException If the output does not match the schema.
+   * @throws JsonProcessingException If the output cannot be parsed.
+   */
+  public static @Nullable Object validateOutput(String output, Schema schema)
+      throws JsonProcessingException {
+    if (describesObject(schema)) {
+      return validateOutputSchema(output, schema);
+    }
+    Object value = readStrictJson(output);
+    String reason = mismatch(value, schema);
+    if (reason != null) {
+      // The reason names only parts of the schema, never the model's output.
+      throw new IllegalArgumentException(
+          "validation error: the output does not match its schema; " + reason + ".");
+    }
+    return value;
+  }
+
+  /**
    * Validates an output string against a schema.
    *
    * @param output The output string to validate.

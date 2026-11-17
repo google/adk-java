@@ -681,7 +681,12 @@ public class LlmAgent extends BaseAgent {
       }
     } else if (outputSchema.isPresent()) {
       try {
-        output = SchemaUtils.validateOutputSchema(rawResult, outputSchema.get());
+        output = SchemaUtils.validateOutput(rawResult, outputSchema.get());
+        if (output == null) {
+          // A JSON null for a nullable array or primitive schema. State cannot hold null, so save
+          // "", which {key} renders as Python renders None. Single-turn mode skips the save.
+          output = "";
+        }
       } catch (JsonProcessingException e) {
         logger.error(
             "LlmAgent output for outputKey '{}' was not valid JSON, despite an outputSchema being"

@@ -42,6 +42,7 @@ import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import io.reactivex.rxjava3.core.Single;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -209,38 +210,41 @@ public class AgentTool extends BaseTool {
         .createSession(toolContext.agentName(), "tmp-user", toolContext.state(), null)
         .flatMapPublisher(
             session -> runner.runAsync(session.userId(), session.id(), content, runConfig))
-        .doOnNext(
-            event -> {
-              if (event.actions() != null
-                  && event.actions().stateDelta() != null
-                  && !event.actions().stateDelta().isEmpty()) {
-                updateState(event.actions().stateDelta(), toolContext.state());
-              }
-            })
+        .doOnNext(event -> {
+          if (event.actions() != null
+              && event.actions().stateDelta() != null
+              && !event.actions().stateDelta().isEmpty()) {
+            updateState(event.actions().stateDelta(), toolContext.state());
+          }
+        })
         .lastElement()
         .map(Optional::of)
         .defaultIfEmpty(Optional.empty())
-        .map(
-            optionalLastEvent -> {
-              if (optionalLastEvent.isEmpty()) {
-                return ImmutableMap.of();
-              }
-              Event lastEvent = optionalLastEvent.get();
-              Optional<String> outputText = lastEvent.content().map(Content::text);
+        .map(optionalLastEvent -> {
+          if (optionalLastEvent.isEmpty()) {
+            return ImmutableMap.of();
+          }
+          Event lastEvent = optionalLastEvent.get();
+          Optional<String> outputText = lastEvent.content().map(Content::text);
 
-              if (outputText.isEmpty()) {
-                return ImmutableMap.of();
-              }
-              String output = outputText.get();
+          if (outputText.isEmpty()) {
+            return ImmutableMap.of();
+          }
+          String output = outputText.get();
 
-              Optional<Schema> agentOutputSchema = getOutputSchema(agent);
+          Optional<Schema> agentOutputSchema = getOutputSchema(agent);
 
-              if (agentOutputSchema.isPresent()) {
-                return SchemaUtils.validateOutputSchema(output, agentOutputSchema.get());
-              } else {
-                return ImmutableMap.of("result", output);
-              }
-            });
+          if (agentOutputSchema.isPresent()) {
+            Schema schema = agentOutputSchema.get();
+            if (SchemaUtils.describesObject(schema)) {
+              return SchemaUtils.validateOutputSchema(output, schema);
+            }
+            // Like a function tool's non-map result; the value may be null.
+            return Collections.singletonMap("result", SchemaUtils.validateOutput(output, schema));
+          } else {
+            return ImmutableMap.of("result", output);
+          }
+        });
   }
 
   /**

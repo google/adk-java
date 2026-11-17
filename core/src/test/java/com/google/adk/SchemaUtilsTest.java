@@ -19,6 +19,7 @@ package com.google.adk;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Schema;
@@ -435,5 +436,62 @@ public final class SchemaUtilsTest {
   public void parseModelOutput_jsonNullWithANonNullableSchema_throwsIllegalArgumentException() {
     assertThrows(
         IllegalArgumentException.class, () -> SchemaUtils.parseModelOutput("null", INTEGER));
+  }
+
+  @Test
+  public void validateOutput_arraySchema_returnsTheList() throws Exception {
+    Schema schema = Schema.builder().type("ARRAY").items(STRING).build();
+
+    Object output = SchemaUtils.validateOutput("[\"a\",\"b\"]", schema);
+
+    assertThat(output).isEqualTo(ImmutableList.of("a", "b"));
+  }
+
+  @Test
+  public void validateOutput_untypedSchemaWithOnlyItems_returnsTheList() throws Exception {
+    Schema schema = Schema.builder().items(STRING).build();
+
+    Object output = SchemaUtils.validateOutput("[\"a\"]", schema);
+
+    assertThat(output).isEqualTo(ImmutableList.of("a"));
+  }
+
+  @Test
+  public void validateOutput_objectSchema_returnsTheMap() throws Exception {
+    Schema schema =
+        Schema.builder().type("OBJECT").properties(ImmutableMap.of("a", INTEGER)).build();
+
+    Object output = SchemaUtils.validateOutput("{\"a\":1}", schema);
+
+    assertThat(output).isEqualTo(ImmutableMap.of("a", 1));
+  }
+
+  @Test
+  public void validateOutput_arrayItemOfTheWrongType_throws() {
+    Schema schema = Schema.builder().type("ARRAY").items(INTEGER).build();
+
+    assertThrows(
+        IllegalArgumentException.class, () -> SchemaUtils.validateOutput("[1,\"two\"]", schema));
+  }
+
+  @Test
+  public void validateOutput_textForAnArraySchema_throwsJsonProcessingException() {
+    Schema schema = Schema.builder().type("ARRAY").items(STRING).build();
+
+    assertThrows(
+        JsonProcessingException.class, () -> SchemaUtils.validateOutput("not json", schema));
+  }
+
+  @Test
+  public void describesObject_unknownTypeWithProperties_isAnObject() {
+    Schema schema =
+        Schema.builder().type("TYPE_UNSPECIFIED").properties(ImmutableMap.of("a", INTEGER)).build();
+
+    assertThat(SchemaUtils.describesObject(schema)).isTrue();
+  }
+
+  @Test
+  public void describesObject_untypedSchemaWithOnlyItems_isNotAnObject() {
+    assertThat(SchemaUtils.describesObject(Schema.builder().items(STRING).build())).isFalse();
   }
 }

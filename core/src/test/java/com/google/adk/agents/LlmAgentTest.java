@@ -145,6 +145,52 @@ public final class LlmAgentTest {
   }
 
   @Test
+  public void testRun_withOutputKeyAndArrayOutputSchema_savesTheList() {
+    Schema outputSchema =
+        Schema.builder().type("ARRAY").items(Schema.builder().type("STRING").build()).build();
+    TestLlm testLlm = createTestLlm(createTextLlmResponse("[\"a\",\"b\"]"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).outputSchema(outputSchema).outputKey("answer").build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(getOnlyElement(events).actions().stateDelta())
+        .containsEntry("answer", ImmutableList.of("a", "b"));
+  }
+
+  @Test
+  public void testRun_withOutputKeyAndIntegerOutputSchema_savesTheNumber() {
+    Schema outputSchema = Schema.builder().type("INTEGER").build();
+    TestLlm testLlm = createTestLlm(createTextLlmResponse("7"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).outputSchema(outputSchema).outputKey("answer").build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(getOnlyElement(events).actions().stateDelta()).containsEntry("answer", 7);
+  }
+
+  @Test
+  public void testRun_withOutputKeyAndNullForANullableArrayOutputSchema_savesAnEmptyString() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("ARRAY")
+            .items(Schema.builder().type("STRING").build())
+            .nullable(true)
+            .build();
+    TestLlm testLlm = createTestLlm(createTextLlmResponse("null"));
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).outputSchema(outputSchema).outputKey("answer").build();
+    InvocationContext invocationContext = createInvocationContext(agent);
+
+    List<Event> events = agent.runAsync(invocationContext).toList().blockingGet();
+
+    assertThat(getOnlyElement(events).actions().stateDelta()).containsEntry("answer", "");
+  }
+
+  @Test
   public void testRun_withOutputKeyAndFreeFormOutputSchema_savesParsedState() {
     Schema outputSchema =
         Schema.builder()

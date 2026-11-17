@@ -594,6 +594,108 @@ public final class OutputSchemaTest {
         .hasValue(untypedSchema.toBuilder().type(Type.Known.OBJECT).build());
   }
 
+  @Test
+  public void runner_arrayOutputSchemaWithTools_endsWithTheArray() {
+    Schema arraySchema =
+        Schema.builder().type("ARRAY").items(Schema.builder().type("STRING").build()).build();
+    TestLlm scriptedLlm =
+        createTestLlm(
+            createLlmResponse(
+                Content.fromParts(
+                    Part.fromFunctionCall(
+                        SetModelResponseTool.NAME,
+                        ImmutableMap.of("response", ImmutableList.of("a", "b"))))));
+    LlmAgent agent =
+        agentBuilder(new RenamedLlm(GEMINI_2_MODEL, scriptedLlm), arraySchema, new TestTool())
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent, "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                Content.fromParts(Part.fromText("hello")),
+                // A rejected answer would make the model retry; stop instead of looping.
+                RunConfig.builder().maxLlmCalls(2).build())
+            .toList()
+            .blockingGet();
+
+    Event finalEvent = events.get(events.size() - 1);
+    assertThat(finalEvent.content().get().parts().get().get(0).text()).hasValue("[\"a\",\"b\"]");
+  }
+
+  @Test
+  public void runner_arrayOutputSchemaWithToolsAndOutputKey_savesTheList() {
+    Schema arraySchema =
+        Schema.builder().type("ARRAY").items(Schema.builder().type("STRING").build()).build();
+    TestLlm scriptedLlm =
+        createTestLlm(
+            createLlmResponse(
+                Content.fromParts(
+                    Part.fromFunctionCall(
+                        SetModelResponseTool.NAME,
+                        ImmutableMap.of("response", ImmutableList.of("a", "b"))))));
+    LlmAgent agent =
+        agentBuilder(new RenamedLlm(GEMINI_2_MODEL, scriptedLlm), arraySchema, new TestTool())
+            .outputKey("answer")
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent, "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("hello")))
+            .toList()
+            .blockingGet();
+
+    Event finalEvent = events.get(events.size() - 1);
+    assertThat(finalEvent.actions().stateDelta())
+        .containsEntry("answer", ImmutableList.of("a", "b"));
+  }
+
+  @Test
+  public void runner_nullForNullableArrayOutputSchema_retriesUntilAnArray() {
+    Schema nullableArraySchema =
+        Schema.builder()
+            .type("ARRAY")
+            .items(Schema.builder().type("STRING").build())
+            .nullable(true)
+            .build();
+    Map<String, Object> nullAnswer = new LinkedHashMap<>();
+    nullAnswer.put("response", null);
+    TestLlm scriptedLlm =
+        createTestLlm(
+            createLlmResponse(
+                Content.fromParts(Part.fromFunctionCall(SetModelResponseTool.NAME, nullAnswer))),
+            createLlmResponse(
+                Content.fromParts(
+                    Part.fromFunctionCall(
+                        SetModelResponseTool.NAME,
+                        ImmutableMap.of("response", ImmutableList.of("a", "b"))))));
+    LlmAgent agent =
+        agentBuilder(
+                new RenamedLlm(GEMINI_2_MODEL, scriptedLlm), nullableArraySchema, new TestTool())
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent, "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync(
+                "user",
+                session.id(),
+                Content.fromParts(Part.fromText("hello")),
+                RunConfig.builder().maxLlmCalls(3).build())
+            .toList()
+            .blockingGet();
+
+    Event finalEvent = events.get(events.size() - 1);
+    assertThat(finalEvent.content().get().parts().get().get(0).text()).hasValue("[\"a\",\"b\"]");
+    assertThat(scriptedLlm.getRequests()).hasSize(2);
+  }
+
   /**
    * Forwards generateContent and connect to {@code delegate} under the model name {@code name}. It
    * does not forward capabilities(), which follows {@code name}.

@@ -27,6 +27,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.Schema;
+import com.google.genai.types.Type;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -427,5 +428,143 @@ public final class SetModelResponseToolTest {
     assertThat(result).containsEntry("tags", ImmutableList.of("tag1", "tag2"));
     assertThat(result).containsEntry("metadata", ImmutableMap.of("key", "value"));
     assertThat(toolContext.actions().setModelResponse()).hasValue(complexArgs);
+  }
+
+  @Test
+  public void declaration_arraySchema_wrapsItInAResponseParameter() {
+    SetModelResponseTool tool = new SetModelResponseTool(STRING_ARRAY_SCHEMA);
+
+    FunctionDeclaration declaration = tool.declaration().get();
+
+    assertThat(declaration.parameters()).hasValue(wrapped(STRING_ARRAY_SCHEMA));
+  }
+
+  @Test
+  public void declaration_untypedSchemaWithOnlyItems_wrapsItAsAnArray() {
+    Schema itemsOnly = Schema.builder().items(Schema.builder().type("STRING").build()).build();
+    SetModelResponseTool tool = new SetModelResponseTool(itemsOnly);
+
+    FunctionDeclaration declaration = tool.declaration().get();
+
+    assertThat(declaration.parameters())
+        .hasValue(wrapped(itemsOnly.toBuilder().type(Type.Known.ARRAY).build()));
+  }
+
+  @Test
+  public void runAsync_unspecifiedTypeWithOnlyItems_acceptsAnArray() {
+    Schema itemsOnly =
+        Schema.builder()
+            .type(Type.Known.TYPE_UNSPECIFIED)
+            .items(Schema.builder().type("STRING").build())
+            .build();
+    SetModelResponseTool tool = new SetModelResponseTool(itemsOnly);
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("response", ImmutableList.of("a", "b")), toolContext)
+            .blockingGet();
+
+    assertThat(result).containsExactly("result", ImmutableList.of("a", "b"));
+  }
+
+  @Test
+  public void runAsync_arraySchema_recordsTheArrayAndReturnsItAsResult() {
+    SetModelResponseTool tool = new SetModelResponseTool(STRING_ARRAY_SCHEMA);
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("response", ImmutableList.of("a", "b")), toolContext)
+            .blockingGet();
+
+    assertThat(result).containsExactly("result", ImmutableList.of("a", "b"));
+    assertThat(toolContext.actions().setModelResponse()).hasValue(ImmutableList.of("a", "b"));
+  }
+
+  @Test
+  public void runAsync_primitiveSchema_recordsTheValue() {
+    SetModelResponseTool tool = new SetModelResponseTool(Schema.builder().type("INTEGER").build());
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> unused =
+        tool.runAsync(ImmutableMap.of("response", 7), toolContext).blockingGet();
+
+    assertThat(toolContext.actions().setModelResponse()).hasValue(7);
+  }
+
+  @Test
+  public void runAsync_arrayOfObjectsSchema_dropsOptionalNulls() {
+    Schema arrayOfObjects =
+        Schema.builder()
+            .type("ARRAY")
+            .items(
+                Schema.builder()
+                    .type("OBJECT")
+                    .properties(
+                        ImmutableMap.of(
+                            "name", Schema.builder().type("STRING").build(),
+                            "note", Schema.builder().type("STRING").nullable(true).build()))
+                    .build())
+            .build();
+    SetModelResponseTool tool = new SetModelResponseTool(arrayOfObjects);
+    ToolContext toolContext = createToolContext();
+    Map<String, Object> item = new LinkedHashMap<>();
+    item.put("name", "a");
+    item.put("note", null);
+
+    Map<String, Object> unused =
+        tool.runAsync(ImmutableMap.of("response", ImmutableList.of(item)), toolContext)
+            .blockingGet();
+
+    assertThat(toolContext.actions().setModelResponse())
+        .hasValue(ImmutableList.of(ImmutableMap.of("name", "a")));
+  }
+
+  @Test
+  public void runAsync_arraySchemaWithAWrongValue_returnsValidationFeedback() {
+    SetModelResponseTool tool = new SetModelResponseTool(STRING_ARRAY_SCHEMA);
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> result =
+        tool.runAsync(ImmutableMap.of("response", "a"), toolContext).blockingGet();
+
+    assertThat((String) result.get("error")).contains("Output arg: response does not match");
+    assertThat(toolContext.actions().setModelResponse()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_arraySchemaWithoutResponse_returnsValidationFeedback() {
+    SetModelResponseTool tool = new SetModelResponseTool(STRING_ARRAY_SCHEMA);
+    ToolContext toolContext = createToolContext();
+
+    Map<String, Object> result = tool.runAsync(ImmutableMap.of(), toolContext).blockingGet();
+
+    assertThat((String) result.get("error")).contains("does not contain required response");
+    assertThat(toolContext.actions().setModelResponse()).isEmpty();
+  }
+
+  @Test
+  public void runAsync_nullableArraySchemaWithNullResponse_returnsValidationFeedback() {
+    SetModelResponseTool tool =
+        new SetModelResponseTool(STRING_ARRAY_SCHEMA.toBuilder().nullable(true).build());
+    ToolContext toolContext = createToolContext();
+    Map<String, Object> args = new LinkedHashMap<>();
+    args.put("response", null);
+
+    Map<String, Object> result = tool.runAsync(args, toolContext).blockingGet();
+
+    assertThat((String) result.get("error")).contains("response must not be null");
+    assertThat(toolContext.actions().setModelResponse()).isEmpty();
+  }
+
+  private static final Schema STRING_ARRAY_SCHEMA =
+      Schema.builder().type("ARRAY").items(Schema.builder().type("STRING").build()).build();
+
+  /** The set_model_response parameters that carry {@code schema} in a {@code response} field. */
+  private static Schema wrapped(Schema schema) {
+    return Schema.builder()
+        .type("OBJECT")
+        .properties(ImmutableMap.of("response", schema))
+        .required(ImmutableList.of("response"))
+        .build();
   }
 }

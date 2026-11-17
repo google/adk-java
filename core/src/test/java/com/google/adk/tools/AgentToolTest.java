@@ -292,6 +292,29 @@ public final class AgentToolTest {
   }
 
   @Test
+  public void call_withArrayOutputSchema_returnsTheListAsResult() throws Exception {
+    Schema outputSchema =
+        Schema.builder().type("ARRAY").items(Schema.builder().type("STRING").build()).build();
+    LlmAgent testAgent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    LlmResponse.builder()
+                        .content(Content.fromParts(Part.fromText("[\"a\",\"b\"]")))
+                        .build()))
+            .name("agent_name")
+            .description("agent description")
+            .outputSchema(outputSchema)
+            .build();
+    AgentTool agentTool = AgentTool.create(testAgent);
+    ToolContext toolContext = createToolContext(testAgent);
+
+    Map<String, Object> result =
+        agentTool.runAsync(ImmutableMap.of("request", "test"), toolContext).blockingGet();
+
+    assertThat(result).containsExactly("result", ImmutableList.of("a", "b"));
+  }
+
+  @Test
   public void call_withInputAndOutputSchema_successful() throws Exception {
     Schema inputSchema =
         Schema.builder()
