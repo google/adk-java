@@ -24,6 +24,7 @@ import com.google.adk.agents.Context;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.ToolConfirmation;
+import com.google.adk.telemetry.Tracing;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
@@ -152,26 +153,34 @@ public final class FunctionNode<I, O> extends BaseNode {
 
   @Override
   public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
+    // defer, so that each subscription keeps its caller's trace context.
+    return Flowable.defer(() -> runOnce(context, nodeInput));
+  }
+
+  private Flowable<Object> runOnce(Context context, @Nullable Object nodeInput) {
+    io.opentelemetry.context.Context traceContext = io.opentelemetry.context.Context.current();
     return Completable.complete()
         // Unlike subscribeOn, canceling this hop does not interrupt the handling of the output.
         .observeOn(context.invocationContext().scheduler())
         // create rather than defer, so that canceling the node reaches the body while it runs.
         .andThen(
-            Maybe.<Object>create(emitter -> {
-              // A timeout fails the node only once the body returns, so a retry cannot overlap it.
-              CompletableSubject returned = CompletableSubject.create();
-              NodeExecutionState state = context.requireNodeState();
-              // A body run under another node's context must not replace that node's signal.
-              if (state.node() == this) {
-                // Not on the body's thread, which may be interrupted, nor the Runner's busy pool.
-                state.markBodyStarted(returned.observeOn(Schedulers.computation()));
-              }
-              try {
-                runBody(context, nodeInput, emitter);
-              } finally {
-                returned.onComplete();
-              }
-            }))
+            Maybe.<Object>create(
+                    emitter -> {
+                      // The timeout waits for the body to return, so a retry cannot overlap it.
+                      CompletableSubject returned = CompletableSubject.create();
+                      NodeExecutionState state = context.requireNodeState();
+                      // Under another node's context, leave that node's signal in place.
+                      if (state.node() == this) {
+                        // Not on the body's thread, which may be interrupted, or the busy Runner.
+                        state.markBodyStarted(returned.observeOn(Schedulers.computation()));
+                      }
+                      try {
+                        runBody(context, nodeInput, emitter);
+                      } finally {
+                        returned.onComplete();
+                      }
+                    })
+                .compose(Tracing.withContext(traceContext)))
         .toFlowable();
   }
 

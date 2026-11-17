@@ -16,6 +16,7 @@
 
 package com.google.adk.workflow;
 
+import static com.google.adk.testing.WorkflowTestNodes.dispatcher;
 import static com.google.adk.testing.WorkflowTestNodes.emitter;
 import static com.google.adk.workflow.WorkflowResumeTesting.answer;
 import static com.google.adk.workflow.WorkflowResumeTesting.captureInput;
@@ -78,6 +79,8 @@ import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import com.google.genai.types.VideoMetadata;
+import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.Scope;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
@@ -1140,6 +1143,46 @@ public final class FunctionNodeTest {
 
     result.assertCompleted();
     assertThat(result.outputAt("wf@1/where@1")).isEqualTo("app-scheduler");
+  }
+
+  @Test
+  public void body_callerTraceContext_reachesTheBodyItsChildAndTheOutputsCallback() {
+    ContextKey<String> key = ContextKey.named("caller");
+    List<String> seen = new CopyOnWriteArrayList<>();
+    Node child =
+        dispatcher(
+            "child",
+            (ctx, input) ->
+                Flowable.fromCallable(() -> {
+                  seen.add("child: " + io.opentelemetry.context.Context.current().get(key));
+                  return "done";
+                }));
+    FunctionNode<Content, Object> parent =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              seen.add("body: " + io.opentelemetry.context.Context.current().get(key));
+              return ctx.runNode(child).blockingGet();
+            })
+            .build();
+    BasePlugin recorder =
+        new BasePlugin("recorder") {
+          @Override
+          public Maybe<Event> onEventCallback(InvocationContext invocationContext, Event event) {
+            if (RunResult.pathOf(event).equals("wf@1/parent@1") && event.output().isPresent()) {
+              seen.add("output: " + io.opentelemetry.context.Context.current().get(key));
+            }
+            return Maybe.empty();
+          }
+        };
+
+    try (Scope unused = io.opentelemetry.context.Context.current().with(key, "set").makeCurrent()) {
+      ImmutableList<Event> unusedEvents =
+          new WorkflowSession(chain(parent), /* resumable= */ false, recorder).turn(go());
+    }
+
+    assertThat(seen).containsExactly("body: set", "child: set", "output: set").inOrder();
   }
 
   @Test
