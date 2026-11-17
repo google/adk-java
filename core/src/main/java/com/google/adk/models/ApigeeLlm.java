@@ -120,6 +120,9 @@ public class ApigeeLlm extends BaseLlm {
       Client.Builder apiClientBuilder = Client.builder().httpOptions(this.httpOptions);
       if (isVertexAiModel(modelName)) {
         apiClientBuilder.vertexAI(true);
+      } else if (modelName.startsWith("apigee/gemini/")) {
+        // Otherwise the client picks Vertex AI when the environment selects it.
+        apiClientBuilder.vertexAI(false);
       }
       this.apiClient = apiClientBuilder.build();
       this.geminiDelegate =
@@ -241,9 +244,10 @@ public class ApigeeLlm extends BaseLlm {
      * <p><b>Components:</b>
      *
      * <ul>
-     *   <li><b>{@code provider}</b> (optional): {@code vertex_ai} or {@code gemini}. If omitted,
-     *       behavior depends on the {@code GOOGLE_GENAI_USE_VERTEXAI} environment variable. If that
-     *       is not set to {@code TRUE} or {@code 1}, it defaults to {@code gemini}.
+     *   <li><b>{@code provider}</b> (optional): {@code vertex_ai} always uses Vertex AI and {@code
+     *       gemini} always uses the Gemini API. If omitted, Vertex AI is used when {@code
+     *       GOOGLE_GENAI_USE_VERTEXAI} is {@code true} or {@code 1}; otherwise the genai client
+     *       picks the backend from the environment, as for {@link Gemini}.
      *   <li><b>{@code version}</b> (optional): The API version (e.g., {@code v1}, {@code v1beta}).
      *       If omitted, the default version for the provider is used.
      *   <li><b>{@code model_id}</b> (required): The model identifier (e.g., {@code

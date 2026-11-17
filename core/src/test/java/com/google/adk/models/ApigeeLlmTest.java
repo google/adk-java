@@ -36,6 +36,7 @@ import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.net.InetAddresses;
+import com.google.genai.Client;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import com.sun.net.httpserver.Headers;
@@ -184,12 +185,13 @@ public class ApigeeLlmTest {
     ApigeeLlm llm =
         ApigeeLlm.builder().modelName("apigee/whatever-model").proxyUrl(PROXY_URL).build();
     String useVertexAi = System.getenv("GOOGLE_GENAI_USE_VERTEXAI");
+    // Unless the variable is true or 1, ApigeeLlm leaves the backend to the genai client.
+    boolean expectVertexAi =
+        Boolean.parseBoolean(useVertexAi)
+            || Objects.equals(useVertexAi, "1")
+            || Client.builder().build().vertexAI();
 
-    if (Objects.equals(useVertexAi, "true") || Objects.equals(useVertexAi, "1")) {
-      assertThat(llm.getApiClient().vertexAI()).isTrue();
-    } else {
-      assertThat(llm.getApiClient().vertexAI()).isFalse();
-    }
+    assertThat(llm.getApiClient().vertexAI()).isEqualTo(expectVertexAi);
   }
 
   @Test

@@ -293,6 +293,7 @@
                 <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
                 <GOOGLE_GENAI_USE_VERTEXAI>false</GOOGLE_GENAI_USE_VERTEXAI>
               </environmentVariables>
+              <excludedEnvironmentVariables>GOOGLE_GENAI_USE_ENTERPRISE</excludedEnvironmentVariables>
             </configuration>
           </execution>
           <execution>
@@ -301,12 +302,27 @@
               <goal>test</goal>
             </goals>
             <configuration>
-              <test>ApigeeLlmTest#generateContent_setsVertexAiFlagCorrectly_withOrWithoutVertexAi</test>
+              <test>ApigeeLlmTest#generateContent_setsVertexAiFlagCorrectly_withOrWithoutVertexAi+generateContent_setsVertexAiFlagCorrectly_withGemini</test>
               <environmentVariables>
                 <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
                 <!-- runs a second variant of the test method -->
                 <GOOGLE_GENAI_USE_VERTEXAI>true</GOOGLE_GENAI_USE_VERTEXAI>
               </environmentVariables>
+              <excludedEnvironmentVariables>GOOGLE_GENAI_USE_ENTERPRISE</excludedEnvironmentVariables>
+            </configuration>
+          </execution>
+          <execution>
+            <id>apigee-llm-enterprise</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <test>ApigeeLlmTest#generateContent_setsVertexAiFlagCorrectly_withOrWithoutVertexAi+generateContent_setsVertexAiFlagCorrectly_withGemini</test>
+              <environmentVariables>
+                <GOOGLE_API_KEY>api-key</GOOGLE_API_KEY>
+                <GOOGLE_GENAI_USE_ENTERPRISE>true</GOOGLE_GENAI_USE_ENTERPRISE>
+              </environmentVariables>
+              <excludedEnvironmentVariables>GOOGLE_GENAI_USE_VERTEXAI</excludedEnvironmentVariables>
             </configuration>
           </execution>
           <execution>
