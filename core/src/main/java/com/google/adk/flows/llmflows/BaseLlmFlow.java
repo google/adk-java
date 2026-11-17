@@ -842,7 +842,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
     return self.concatWith(
         PersistBarrier.awaitPersisted(context, ImmutableList.of(event))
             .andThen(
-                // Not around the barrier: andThen subscribes the target on the append's thread.
+                // Not around the barrier: andThen may subscribe the target on another thread.
                 Flowable.defer(() -> target.runAsync(context))
                     .compose(Tracing.withContext(spanContext))));
   }

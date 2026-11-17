@@ -27,6 +27,7 @@ import com.google.adk.agents.Callbacks.BeforeAgentCallback;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
+import com.google.adk.flows.llmflows.PersistBarrier;
 import com.google.adk.plugins.Plugin;
 import com.google.adk.telemetry.Instrumentation;
 import com.google.adk.telemetry.Instrumentation.AgentInvocation;
@@ -41,12 +42,14 @@ import com.google.genai.types.Content;
 import io.opentelemetry.context.Context;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.FlowableTransformer;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -494,6 +497,40 @@ public abstract class BaseAgent extends BaseNode {
         .branch(context.branch().orElse(null))
         .actions(actions)
         .build();
+  }
+
+  /**
+   * Delays a sub-agent's completion until the {@code Runner} has saved its last non-partial event
+   * that has an id; partial events are not appended to the session, and {@link PersistBarrier}
+   * tracks events by id. The {@code Runner} saves events in order, so once that event is saved the
+   * earlier ones are too, and the next sub-agent sees their state. That event must reach the {@code
+   * Runner} as it is emitted, or the returned stream never completes.
+   */
+  static FlowableTransformer<Event, Event> completeAfterPersisted(InvocationContext context) {
+    return events ->
+        Flowable.defer(() -> {
+          Context spanContext = Context.current();
+          AtomicReference<Event> lastPersistable = new AtomicReference<>();
+          return events
+              .doOnNext(event -> {
+                if (!event.partial().orElse(false) && event.id() != null) {
+                  lastPersistable.set(event);
+                }
+              })
+              .concatWith(
+                  Completable.defer(
+                          () -> {
+                            Event last = lastPersistable.get();
+                            if (last == null) {
+                              return Completable.complete();
+                            }
+                            return PersistBarrier.awaitPersisted(context, ImmutableList.of(last))
+                                // Runner fails the run; complete() would start the next sub-agent.
+                                .onErrorResumeNext(unusedError -> Completable.never());
+                          })
+                      // The wait can end on another thread, without the workflow's trace context.
+                      .compose(Tracing.withContext(spanContext)));
+        });
   }
 
   /**

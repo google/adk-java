@@ -57,6 +57,7 @@ import com.google.adk.agents.Callbacks.AfterModelCallback;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LiveRequestQueue;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.LoopAgent;
 import com.google.adk.agents.ParallelAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.agents.SequentialAgent;
@@ -112,6 +113,8 @@ import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.functions.Consumer;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import io.reactivex.rxjava3.subjects.PublishSubject;
 import io.reactivex.rxjava3.subscribers.TestSubscriber;
@@ -119,6 +122,7 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -126,8 +130,11 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 import org.junit.After;
 import org.junit.Before;
@@ -829,6 +836,52 @@ public final class RunnerTest {
   }
 
   @Test
+  public void runAsync_agentCopiesCallbackContextData_toolCallingSubAgentCompletes() {
+    LlmAgent worker =
+        createTestAgentBuilder(testLlmWithFunctionCall).tools(ImmutableList.of(echoTool)).build();
+    // Copies before the Runner has persisted any event, like an agent isolating per-shard data.
+    BaseAgent copier =
+        new BaseAgent(
+            "copier",
+            "runs the worker on a copy of callbackContextData",
+            ImmutableList.of(),
+            ImmutableList.of(),
+            ImmutableList.of()) {
+          @Override
+          protected Flowable<Event> runAsyncImpl(InvocationContext context) {
+            InvocationContext copy =
+                context.toBuilder()
+                    .callbackContextData(new ConcurrentHashMap<>(context.callbackContextData()))
+                    .build();
+            return worker.runAsync(copy);
+          }
+
+          @Override
+          protected Flowable<Event> runLiveImpl(InvocationContext context) {
+            return runAsyncImpl(context);
+          }
+        };
+    Runner runner =
+        Runner.builder().app(App.builder().name("test").rootAgent(copier).build()).build();
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), createContent("from user"))
+            // Fail fast if the worker's await never sees the Runner's marks, instead of hanging.
+            .timeout(10, SECONDS)
+            .toList()
+            .blockingGet();
+
+    assertThat(simplifyEvents(events))
+        .containsExactly(
+            "test agent: FunctionCall(name=echo_tool, args={args_name=args_value})",
+            "test agent: FunctionResponse(name=echo_tool,"
+                + " response={result={args_name=args_value}})",
+            "test agent: done");
+  }
+
+  @Test
   public void runAsync_passesSessionSnapshotToPersistenceService() {
     BaseSessionService mockSessionService = mock(BaseSessionService.class);
     Event agentEvent = Event.builder().id("agent-event").author("agent").build();
@@ -1171,7 +1224,7 @@ public final class RunnerTest {
   }
 
   /**
-   * With a slow appendEvent, the append's thread releases the transfer target; the target's {@code
+   * With a slow appendEvent, the transfer target starts on another thread; the target's {@code
    * invoke_agent} span must still be a child of the transferring agent's, not start a new trace.
    */
   @Test
@@ -1310,6 +1363,429 @@ public final class RunnerTest {
       return Single.timer(appendDelayMs, MILLISECONDS)
           .flatMap(unused -> delegate.appendEvent(session, event));
     }
+  }
+
+  /**
+   * Regression test for a {@link SequentialAgent} streaming over SSE: the next sub-agent must read
+   * the previous one's {@code outputKey}, and every event must reach the caller and the session.
+   */
+  @Test
+  public void runAsync_sseSequentialAgent_nextSubAgentReadsPreviousOutput() {
+    TestLlm editorLlm = createTestLlm(createTextLlmResponse("edited"));
+    SequentialAgent pipeline =
+        SequentialAgent.builder()
+            .name("pipeline")
+            .subAgents(streamingWriter(), editor(editorLlm))
+            .build();
+
+    SseRun run = runSse(App.builder().name("test").rootAgent(pipeline).build());
+
+    assertThat(run.error()).isNull();
+    assertThat(editorInstruction(editorLlm)).contains("Polish the draft: written draft");
+    assertThat(finalTexts(run.events())).containsExactly("written draft", "edited").inOrder();
+    assertThat(finalTexts(run.session().events())).containsExactly("written draft", "edited");
+    assertThat(run.session().state()).containsEntry("draft", "written draft");
+  }
+
+  /** The same race through every way a workflow agent can run its sub-agents. */
+  @Test
+  @SuppressWarnings("deprecation") // The plain-text continuation shim is deprecated by design.
+  public void runAsync_sseWorkflowAgents_nextSubAgentReadsPreviousOutput() {
+    ResumabilityConfig resumable = ResumabilityConfig.builder().resumable(true).build();
+    ResumabilityConfig legacy =
+        ResumabilityConfig.builder().plainTextContinuationAutoResume(true).build();
+    Map<String, Function<TestLlm, App>> cases = new LinkedHashMap<>();
+    cases.put("loop", editorLlm -> app(writerEditorLoop(editorLlm), null));
+    cases.put("resumable sequence", editorLlm -> app(writerEditorSequence(editorLlm), resumable));
+    cases.put("resumable loop", editorLlm -> app(writerEditorLoop(editorLlm), resumable));
+    cases.put("legacy sequence", editorLlm -> app(writerEditorSequence(editorLlm), legacy));
+    cases.put("legacy loop", editorLlm -> app(writerEditorLoop(editorLlm), legacy));
+    cases.put(
+        "transfer to sequence",
+        editorLlm ->
+            app(
+                createTestAgentBuilder(createTestLlm(createTransferToAgentResponse("pipeline")))
+                    .name("router")
+                    .subAgents(writerEditorSequence(editorLlm))
+                    .build(),
+                null));
+
+    cases.forEach((name, appFor) -> {
+      TestLlm editorLlm = createTestLlm(createTextLlmResponse("edited"));
+      SseRun run = runSse(appFor.apply(editorLlm));
+      assertWithMessage(name).that(run.error()).isNull();
+      assertWithMessage(name)
+          .that(editorInstruction(editorLlm))
+          .contains("Polish the draft: written draft");
+    });
+  }
+
+  /** A slow {@code appendEvent} opens the same race without streaming. */
+  @Test
+  public void runAsync_sequentialAgentWithSlowAppendEvent_nextSubAgentReadsPreviousOutput() {
+    TestLlm editorLlm = createTestLlm(createTextLlmResponse("edited"));
+    LlmAgent writer =
+        LlmAgent.builder()
+            .name("writer")
+            .model(createTestLlm(createTextLlmResponse("written draft")))
+            .instruction("Write a draft.")
+            .outputKey("draft")
+            .build();
+    SequentialAgent pipeline =
+        SequentialAgent.builder().name("pipeline").subAgents(writer, editor(editorLlm)).build();
+    BaseSessionService sessionService =
+        new AppendDelayingSessionService(new InMemorySessionService(), 50);
+    Runner slowRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(pipeline).build())
+            .sessionService(sessionService)
+            .build();
+    Session slowSession = sessionService.createSession("test", "user").blockingGet();
+
+    var unused =
+        slowRunner
+            .runAsync("user", slowSession.id(), createContent("start"))
+            .timeout(10, SECONDS)
+            .toList()
+            .blockingGet();
+
+    assertThat(editorInstruction(editorLlm)).contains("Polish the draft: written draft");
+  }
+
+  /**
+   * With a slow appendEvent, the next sub-agent starts on another thread; its {@code invoke_agent}
+   * span must still be a child of the {@link SequentialAgent}'s, not a new trace.
+   */
+  @Test
+  public void runAsync_sequentialAgentWithSlowAppendEvent_nextSubAgentSpanIsChildOfWorkflowSpan() {
+    SequentialAgent pipeline =
+        SequentialAgent.builder()
+            .name("pipeline")
+            .subAgents(
+                createTestAgentBuilder(createTestLlm(createTextLlmResponse("first")))
+                    .name("first")
+                    .build(),
+                createTestAgentBuilder(createTestLlm(createTextLlmResponse("second")))
+                    .name("second")
+                    .build())
+            .build();
+    Runner slowRunner =
+        Runner.builder()
+            .app(App.builder().name("test").rootAgent(pipeline).build())
+            .sessionService(new AppendDelayingSessionService(new InMemorySessionService(), 50))
+            .build();
+    Session slowSession = slowRunner.sessionService().createSession("test", "user").blockingGet();
+
+    var unused =
+        slowRunner
+            .runAsync("user", slowSession.id(), createContent("start"))
+            .timeout(10, SECONDS)
+            .toList()
+            .blockingGet();
+
+    List<SpanData> spans = openTelemetryRule.getSpans();
+    SpanData pipelineSpan =
+        spans.stream()
+            .filter(s -> s.getName().equals("invoke_agent pipeline"))
+            .findFirst()
+            .orElseThrow();
+    SpanData secondSpan =
+        spans.stream()
+            .filter(s -> s.getName().equals("invoke_agent second"))
+            .findFirst()
+            .orElseThrow();
+    assertThat(secondSpan.getParentSpanContext().getSpanId())
+        .isEqualTo(pipelineSpan.getSpanContext().getSpanId());
+  }
+
+  /** A failed append of a sub-agent's last event fails the run once and starts no next agent. */
+  @Test
+  public void runAsync_sequentialAgentWithFailedAppend_failsOnceWithoutStartingNextSubAgent() {
+    List<Throwable> undeliverable = Collections.synchronizedList(new ArrayList<>());
+    Consumer<? super Throwable> previousHandler = RxJavaPlugins.getErrorHandler();
+    RxJavaPlugins.setErrorHandler(undeliverable::add);
+    try {
+      TestLlm editorLlm = createTestLlm(createTextLlmResponse("edited"));
+      RuntimeException appendError = new RuntimeException("append failed");
+
+      SseRun run =
+          runSse(
+              App.builder().name("test").rootAgent(writerEditorSequence(editorLlm)).build(),
+              new FailingAppendSessionService(new InMemorySessionService(), appendError));
+
+      assertThat(run.error()).isSameInstanceAs(appendError);
+      assertThat(editorLlm.getRequests()).isEmpty();
+      assertThat(undeliverable).isEmpty();
+    } finally {
+      RxJavaPlugins.setErrorHandler(previousHandler);
+    }
+  }
+
+  /** {@link BaseSessionService} whose {@link #appendEvent} fails for every agent event. */
+  private static final class FailingAppendSessionService implements BaseSessionService {
+    private final BaseSessionService delegate;
+    private final RuntimeException error;
+
+    FailingAppendSessionService(BaseSessionService delegate, RuntimeException error) {
+      this.delegate = delegate;
+      this.error = error;
+    }
+
+    // Wrapper must preserve the deprecated overload's signature.
+    @SuppressWarnings("deprecation")
+    @Override
+    public Single<Session> createSession(
+        String appName, String userId, ConcurrentMap<String, Object> state, String sessionId) {
+      return delegate.createSession(appName, userId, state, sessionId);
+    }
+
+    @Override
+    public Maybe<Session> getSession(
+        String appName, String userId, String sessionId, Optional<GetSessionConfig> config) {
+      return delegate.getSession(appName, userId, sessionId, config);
+    }
+
+    @Override
+    public Single<ListSessionsResponse> listSessions(String appName, String userId) {
+      return delegate.listSessions(appName, userId);
+    }
+
+    @Override
+    public Completable deleteSession(String appName, String userId, String sessionId) {
+      return delegate.deleteSession(appName, userId, sessionId);
+    }
+
+    @Override
+    public Single<ListEventsResponse> listEvents(String appName, String userId, String sessionId) {
+      return delegate.listEvents(appName, userId, sessionId);
+    }
+
+    @Override
+    public Single<Event> appendEvent(Session session, Event event) {
+      // The user message goes through so the agents run.
+      return event.author().equals("user")
+          ? delegate.appendEvent(session, event)
+          : Single.error(error);
+    }
+  }
+
+  @Test
+  public void runAsync_loopAgentWithManyIterations_doesNotOverflowStack() {
+    int iterations = 10_000;
+    AtomicInteger eventCount = new AtomicInteger();
+    LoopAgent loop =
+        LoopAgent.builder()
+            .name("loop")
+            .subAgents(
+                createSubAgent(
+                    "step",
+                    () -> Flowable.just(createEvent("event-" + eventCount.getAndIncrement()))))
+            .maxIterations(iterations)
+            .build();
+
+    SseRun run = runSse(App.builder().name("test").rootAgent(loop).build());
+
+    assertThat(run.error()).isNull();
+    assertThat(run.events()).hasSize(iterations);
+  }
+
+  /**
+   * With appends that complete on another thread, the caller gets the writer's final event while
+   * the editor's model call is still running, not after it returns.
+   */
+  @Test
+  public void runAsync_sequentialAgentWithAsyncAppends_callerGetsEventBeforeNextModelCallEnds() {
+    CountDownLatch received = new CountDownLatch(1);
+
+    List<Event> events =
+        runWithAsyncAppends(
+            app(writerEditorSequence(createTestLlm(() -> blockingResponse(received))), null),
+            event -> event.author().equals("writer") && !event.partial().orElse(false),
+            received);
+
+    assertThat(Iterables.getLast(events).stringifyContent()).isEqualTo("received");
+  }
+
+  @Test
+  public void runAsync_loopAgentWithAsyncAppends_callerGetsEventBeforeNextModelCallEnds() {
+    CountDownLatch received = new CountDownLatch(1);
+
+    List<Event> events =
+        runWithAsyncAppends(
+            app(writerEditorLoop(createTestLlm(() -> blockingResponse(received))), null),
+            event -> event.author().equals("writer") && !event.partial().orElse(false),
+            received);
+
+    assertThat(Iterables.getLast(events).stringifyContent()).isEqualTo("received");
+  }
+
+  @Test
+  public void runAsync_transferWithAsyncAppends_callerGetsEventBeforeTargetModelCallEnds() {
+    CountDownLatch received = new CountDownLatch(1);
+    LlmAgent target =
+        LlmAgent.builder()
+            .name("target")
+            .model(createTestLlm(() -> blockingResponse(received)))
+            .build();
+    LlmAgent router =
+        createTestAgentBuilder(createTestLlm(createTransferToAgentResponse("target")))
+            .name("router")
+            .subAgents(target)
+            .build();
+
+    List<Event> events =
+        runWithAsyncAppends(
+            app(router, null), event -> event.actions().transferToAgent().isPresent(), received);
+
+    assertThat(Iterables.getLast(events).stringifyContent()).isEqualTo("received");
+  }
+
+  @Test
+  public void runAsync_toolCallWithAsyncAppends_callerGetsResponseBeforeNextModelCallEnds() {
+    CountDownLatch received = new CountDownLatch(1);
+    LlmAgent agent =
+        createTestAgentBuilder(
+                createTestLlm(
+                    Flowable.just(
+                        createFunctionCallLlmResponse(
+                            "call-1", echoTool.name(), ImmutableMap.of("message", "hi"))),
+                    blockingResponse(received)))
+            .tools(ImmutableList.of(echoTool))
+            .build();
+
+    List<Event> events =
+        runWithAsyncAppends(
+            app(agent, null), event -> !event.functionResponses().isEmpty(), received);
+
+    assertThat(Iterables.getLast(events).stringifyContent()).isEqualTo("received");
+  }
+
+  /**
+   * Model response that blocks its subscriber, as a real model call does, until {@code received}
+   * opens or 5 seconds pass; its text says which.
+   */
+  private static Flowable<LlmResponse> blockingResponse(CountDownLatch received) {
+    return Flowable.fromCallable(
+        () -> createTextLlmResponse(received.await(5, SECONDS) ? "received" : "timed out"));
+  }
+
+  /**
+   * Runs {@code app} with appends that complete on another thread, and opens {@code received} once
+   * the caller gets an event matching {@code awaited}. Returns the events the caller got.
+   */
+  private List<Event> runWithAsyncAppends(
+      App app, Predicate<Event> awaited, CountDownLatch received) {
+    BaseSessionService sessionService =
+        new AppendDelayingSessionService(new InMemorySessionService(), 50);
+    Runner asyncRunner = Runner.builder().app(app).sessionService(sessionService).build();
+    Session asyncSession = sessionService.createSession("test", "user").blockingGet();
+    List<Event> events = new ArrayList<>();
+
+    asyncRunner
+        .runAsync("user", asyncSession.id(), createContent("start"))
+        .timeout(10, SECONDS)
+        .blockingForEach(event -> {
+          events.add(event);
+          if (awaited.test(event)) {
+            received.countDown();
+          }
+        });
+    return events;
+  }
+
+  /** Writer streaming partial chunks before its final response, saved under {@code draft}. */
+  private static LlmAgent streamingWriter() {
+    TestLlm writerLlm =
+        createTestLlm(() ->
+            Flowable.just(
+                partialTextResponse("written "),
+                partialTextResponse("draft"),
+                createTextLlmResponse("written draft")));
+    return LlmAgent.builder()
+        .name("writer")
+        .model(writerLlm)
+        .instruction("Write a draft.")
+        .outputKey("draft")
+        .build();
+  }
+
+  private static LlmAgent editor(TestLlm editorLlm) {
+    return LlmAgent.builder()
+        .name("editor")
+        .model(editorLlm)
+        .instruction("Polish the draft: {draft}")
+        .build();
+  }
+
+  private static SequentialAgent writerEditorSequence(TestLlm editorLlm) {
+    return SequentialAgent.builder()
+        .name("pipeline")
+        .subAgents(streamingWriter(), editor(editorLlm))
+        .build();
+  }
+
+  private static LoopAgent writerEditorLoop(TestLlm editorLlm) {
+    return LoopAgent.builder()
+        .name("loop")
+        .subAgents(streamingWriter(), editor(editorLlm))
+        .maxIterations(1)
+        .build();
+  }
+
+  private static App app(BaseAgent rootAgent, @Nullable ResumabilityConfig resumabilityConfig) {
+    App.Builder builder = App.builder().name("test").rootAgent(rootAgent);
+    if (resumabilityConfig != null) {
+      builder.resumabilityConfig(resumabilityConfig);
+    }
+    return builder.build();
+  }
+
+  private static LlmResponse partialTextResponse(String text) {
+    return LlmResponse.builder()
+        .content(Content.builder().role("model").parts(Part.fromText(text)).build())
+        .partial(true)
+        .build();
+  }
+
+  private static String editorInstruction(TestLlm editorLlm) {
+    return String.join("\n", editorLlm.getLastRequest().getSystemInstructions());
+  }
+
+  /** Texts of the non-partial model events, in order. */
+  private static ImmutableList<String> finalTexts(List<Event> events) {
+    return events.stream()
+        .filter(event -> !event.partial().orElse(false) && event.content().isPresent())
+        .filter(event -> !event.author().equals("user"))
+        .map(event -> event.content().get().text())
+        .collect(toImmutableList());
+  }
+
+  private record SseRun(List<Event> events, @Nullable Throwable error, Session session) {}
+
+  private SseRun runSse(App app) {
+    return runSse(app, new InMemorySessionService());
+  }
+
+  /** Runs {@code app} in SSE mode and consumes it with {@code blockingSubscribe}, as callers do. */
+  private SseRun runSse(App app, BaseSessionService sessionService) {
+    Runner sseRunner = Runner.builder().app(app).sessionService(sessionService).build();
+    Session sseSession = sessionService.createSession("test", "user").blockingGet();
+    List<Event> events = new ArrayList<>();
+    AtomicReference<Throwable> error = new AtomicReference<>();
+
+    sseRunner
+        .runAsync(
+            "user",
+            sseSession.id(),
+            createContent("start"),
+            RunConfig.builder().setStreamingMode(RunConfig.StreamingMode.SSE).build())
+        // A stalled run fails the test instead of hanging it.
+        .timeout(10, SECONDS)
+        .blockingSubscribe(events::add, error::set);
+
+    Session persisted =
+        sessionService.getSession("test", "user", sseSession.id(), Optional.empty()).blockingGet();
+    return new SseRun(events, error.get(), persisted);
   }
 
   /**
