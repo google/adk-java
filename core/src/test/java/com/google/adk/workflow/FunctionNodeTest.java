@@ -106,6 +106,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -794,6 +795,49 @@ public final class FunctionNodeTest {
     assertThat(routerOutput.output()).hasValue(asTicket);
     assertThat(Event.fromJson(routerOutput.toJson()).output()).hasValue(asTicket);
     assertThat(replyInput(events)).isEqualTo(asTicket);
+  }
+
+  @Test
+  public void resume_bodyRunningChildren_sendsItsEventsAgainAndReplaysTheFinishedChild() {
+    // Arrange: the body sends a message, runs first, then asker, which pauses.
+    AtomicInteger firstRuns = new AtomicInteger();
+    FunctionNode<Object, String> first =
+        FunctionNodes.of(
+            "first",
+            Object.class,
+            String.class,
+            (ctx, input) -> {
+              firstRuns.incrementAndGet();
+              return "a_out";
+            });
+    Node asker = longRunningAsk("asker", "name_1");
+    FunctionNode<Content, Object> parent =
+        FunctionNodes.builder(Content.class, Object.class)
+            .name("parent")
+            .rerunOnResume(true)
+            .body((ctx, message) -> {
+              ctx.emit(text("working"));
+              Object firstOutput = ctx.runNode(first).blockingGet();
+              Object answer = ctx.runNode(asker, firstOutput).blockingGet();
+              // Arrays.asList takes a null answer, so a missed pause shows as an early output.
+              return Arrays.asList(firstOutput, answer);
+            })
+            .build();
+    WorkflowSession session = new WorkflowSession(chain(parent, captureInput("reply")));
+    ImmutableList<Event> paused = session.turn(go());
+    ImmutableMap<String, Object> details = ImmutableMap.of("name", "John");
+
+    ImmutableList<Event> events = session.turn(answer("name_1", details));
+
+    assertThat(
+            paused.stream().filter(e -> e.output().isPresent()).map(WorkflowResumeTesting::pathOf))
+        .doesNotContain("wf@1/parent@1");
+    assertThat(paused.stream().flatMap(e -> e.content().stream()).map(Content::text))
+        .contains("working");
+    assertThat(events.stream().flatMap(e -> e.content().stream()).map(Content::text))
+        .contains("working");
+    assertThat(firstRuns.get()).isEqualTo(1);
+    assertThat(replyInput(events)).isEqualTo(ImmutableList.of("a_out", details));
   }
 
   @Test

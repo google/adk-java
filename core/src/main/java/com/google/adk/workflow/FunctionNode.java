@@ -565,7 +565,10 @@ public final class FunctionNode<I, O> extends BaseNode {
 
     /**
      * Sets whether a resume runs the node again rather than using the resuming answer. Unset, it is
-     * true for a node that requires confirmation and false otherwise.
+     * true for a node that requires confirmation and false otherwise. A body that runs child nodes
+     * through {@link Context#runNode(Node, Object, RunNodeConfig)} requires {@code true}: on resume
+     * the body runs again from the start, a child that asked resumes with its answer, and the other
+     * children resume as {@link RunNodeConfig#runId} describes.
      */
     @CanIgnoreReturnValue
     public Builder<I, O> rerunOnResume(boolean rerunOnResume) {
