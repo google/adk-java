@@ -366,8 +366,7 @@ public final class ResponseConverter {
       eventBuilder.customMetadata(customMetadata);
     }
 
-    eventBuilder.errorCode(
-        parseMetadata(clientMetadata, A2AMetadataKey.ERROR_CODE, FinishReason.class));
+    eventBuilder.errorCode(errorCode(clientMetadata));
 
     return eventBuilder.build();
   }
@@ -397,6 +396,27 @@ public final class ResponseConverter {
     } catch (IllegalArgumentException | JsonProcessingException e) {
       logDroppedMetadata(key, e);
       return null;
+    }
+  }
+
+  /**
+   * Returns the error code in {@code clientMetadata}. ADK Python and Go send it as a bare string; a
+   * JSON string is decoded first, and other text, such as a number Go sends, is the error code
+   * itself.
+   */
+  private static @Nullable FinishReason errorCode(Map<String, Object> clientMetadata) {
+    if (!(clientMetadata.get(A2AMetadataKey.ERROR_CODE.getType()) instanceof String value)) {
+      return parseMetadata(clientMetadata, A2AMetadataKey.ERROR_CODE, FinishReason.class);
+    }
+    if (value.isEmpty()) {
+      return null;
+    }
+    try {
+      FinishReason reason = objectMapper.readValue(value, FinishReason.class);
+      // A JSON-encoded empty string reports no error code either, as in ADK Python.
+      return reason == null || reason.toString().isEmpty() ? null : reason;
+    } catch (JsonProcessingException e) {
+      return new FinishReason(value);
     }
   }
 

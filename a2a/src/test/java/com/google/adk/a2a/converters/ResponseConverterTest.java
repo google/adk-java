@@ -17,6 +17,7 @@
 package com.google.adk.a2a.converters;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.stream.Collectors.joining;
 
@@ -263,6 +264,60 @@ public final class ResponseConverterTest {
   }
 
   @Test
+  public void messageToEvent_withBareStringErrorCode_readsIt() {
+    // As ADK Python and Go send it.
+    Message a2aMessage =
+        agentMessage()
+            .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"))
+            .build();
+
+    Event event = ResponseConverter.messageToEvent(a2aMessage, invocationContext);
+
+    assertThat(event.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+  }
+
+  @Test
+  public void messageToEvent_withJsonStringErrorCode_readsIt() {
+    Message a2aMessage =
+        agentMessage()
+            .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "\"SAFETY\""))
+            .build();
+
+    Event event = ResponseConverter.messageToEvent(a2aMessage, invocationContext);
+
+    assertThat(event.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+  }
+
+  @Test
+  public void messageToEvent_withEmptyErrorCode_readsNone() {
+    for (String empty : ImmutableList.of("", "\"\"")) {
+      Message a2aMessage =
+          agentMessage()
+              .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), empty))
+              .build();
+
+      Event event = ResponseConverter.messageToEvent(a2aMessage, invocationContext);
+
+      assertWithMessage(empty).that(event.errorCode()).isEmpty();
+    }
+  }
+
+  @Test
+  public void messageToEvent_withErrorCodeNotAJsonString_readsTextAsIs() {
+    // Text that is not a JSON string, such as a numeric code Go sends.
+    for (String text : ImmutableList.of("418", "{}", "  ")) {
+      Message a2aMessage =
+          agentMessage()
+              .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), text))
+              .build();
+
+      Event event = ResponseConverter.messageToEvent(a2aMessage, invocationContext);
+
+      assertWithMessage(text).that(event.errorCode()).hasValue(new FinishReason(text));
+    }
+  }
+
+  @Test
   public void taskToEvent_withMalformedMetadata_dropsFieldsAndConverts() {
     Message statusMessage =
         new Message.Builder()
@@ -279,7 +334,7 @@ public final class ResponseConverterTest {
                     A2AMetadataKey.GROUNDING_METADATA.getType(), "not-valid-json",
                     A2AMetadataKey.USAGE_METADATA.getType(), "not-valid-json",
                     A2AMetadataKey.CUSTOM_METADATA.getType(), "not-valid-json",
-                    A2AMetadataKey.ERROR_CODE.getType(), "not-valid-json"))
+                    A2AMetadataKey.ERROR_CODE.getType(), ImmutableMap.of()))
             .build();
 
     Event event = ResponseConverter.taskToEvent(task, invocationContext);
