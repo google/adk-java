@@ -2433,6 +2433,50 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void build_untypedEnumOfADigitIntoAnIntegerPort_buildsAndRuns() {
+    // Arrange: "1" in an untyped enum also spells the number 1.
+    FunctionNode<Integer, Integer> increment =
+        FunctionNodes.of("increment", Integer.class, Integer.class, (ctx, n) -> n + 1);
+
+    // Act
+    RunResult result = run(chain(untypedEnumNode("1"), increment));
+
+    // Assert
+    result.assertCompleted();
+    assertThat(result.outputAt("wf@1/increment@1")).isEqualTo(2);
+  }
+
+  @Test
+  public void build_untypedEnumOfADigitIntoAStringPort_fails() {
+    // Arrange
+    FunctionNode<Content, String> one = untypedEnumNode("1");
+    FunctionNode<String, String> shout =
+        FunctionNodes.of("shout", String.class, String.class, (ctx, text) -> text + "!");
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(one, shout));
+
+    // Assert
+    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge constant -> shout.");
+  }
+
+  @Test
+  public void build_untypedEnumOfJsonObjectTextIntoAStringPort_fails() {
+    // Arrange: "{}" also spells a JSON object, which a String port does not take.
+    FunctionNode<Content, String> object = untypedEnumNode("{}");
+    FunctionNode<String, String> shout =
+        FunctionNodes.of("shout", String.class, String.class, (ctx, text) -> text + "!");
+
+    // Act
+    WorkflowConfigurationException error =
+        assertThrows(WorkflowConfigurationException.class, () -> chain(object, shout));
+
+    // Assert
+    assertThat(error).hasMessageThat().startsWith("Schema mismatch on edge constant -> shout.");
+  }
+
+  @Test
   public void build_integerIntoANullableIntegerSchema_buildsAndRuns() {
     // Arrange
     FunctionNode<Content, Integer> three =
@@ -4959,6 +5003,15 @@ public final class FunctionNodeTest {
         Content.class,
         new TypeReference<List<FullOrder>>() {},
         (ctx, m) -> ImmutableList.of(new FullOrder("a1", 9.5, "rush")));
+  }
+
+  /** Returns a node {@code constant} that returns {@code value} under {@code {"enum": [value]}}. */
+  private static FunctionNode<Content, String> untypedEnumNode(String value) {
+    return FunctionNodes.builder(Content.class, String.class)
+        .name("constant")
+        .outputSchema(Schema.builder().enum_(value).build())
+        .body((ctx, message) -> value)
+        .build();
   }
 
   /** Returns a workflow named {@code wf} that runs {@code nodes} in sequence from START. */

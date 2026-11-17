@@ -118,8 +118,8 @@ public final class SchemaFitTest {
 
   @Test
   public void fits_enums_stayWithinTheTargetEnum() {
-    // Arrange: an untyped enum lists strings, as a typed one does.
-    Schema untypedRed = Schema.builder().enum_("red").build();
+    // Arrange: an untyped enum of words lists strings, as a typed one does.
+    Schema untypedRed = untypedEnum("red");
 
     // Act / Assert
     assertThat(fits(RED, COLORS)).isTrue();
@@ -127,7 +127,76 @@ public final class SchemaFitTest {
     assertThat(fits(STRING, RED)).isFalse();
     assertThat(fits(untypedRed, STRING)).isTrue();
     assertThat(fits(untypedRed, INTEGER)).isFalse();
-    assertThat(fits(Schema.builder().enum_("green").build(), COLORS)).isFalse();
+    assertThat(fits(untypedEnum("green"), COLORS)).isFalse();
+  }
+
+  @Test
+  public void fits_untypedEnum_readsEachValueAsTheNumberOrBooleanItSpells() {
+    // Arrange: "1" spells the number 1 and "true" the boolean, which a string schema rejects.
+    Schema one = untypedEnum("1");
+    Schema booleans = untypedEnum("true", "false");
+    Schema wordOrOne = untypedEnum("a", "1");
+
+    // Act / Assert
+    assertThat(fits(one, INTEGER)).isTrue();
+    assertThat(fits(one, NUMBER)).isTrue();
+    assertThat(fits(one, STRING)).isFalse();
+    assertThat(fits(one, Schema.builder().type(Type.Known.STRING).enum_("1").build())).isFalse();
+    assertThat(fits(booleans, typed(Type.Known.BOOLEAN))).isTrue();
+    assertThat(fits(booleans, STRING)).isFalse();
+    assertThat(fits(wordOrOne, INTEGER_OR_STRING)).isTrue();
+    assertThat(fits(wordOrOne, INTEGER)).isFalse();
+    // Each value may fit a different branch of a union.
+    assertThat(
+            fits(
+                wordOrOne,
+                Schema.builder()
+                    .anyOf(
+                        INTEGER.toBuilder().enum_("1").build(),
+                        STRING.toBuilder().enum_("a").build())
+                    .build()))
+        .isTrue();
+    // Text that is not a finite JSON number stays a string, and so does a null value.
+    assertThat(fits(untypedEnum("01", "+1", "1a", "1e400"), STRING)).isTrue();
+    assertThat(fits(untypedEnum("a", null), STRING)).isTrue();
+  }
+
+  @Test
+  public void fits_untypedEnumOfNumberText_isAnIntegerOnlyAsPlainIntegerTextThatFitsALong() {
+    // Arrange: an integer port reads neither "1.0" nor "1e2", so they fit only a number.
+    Schema maxLong = untypedEnum("9223372036854775807");
+    Schema pastMaxLong = untypedEnum("9223372036854775808");
+
+    // Act / Assert
+    assertThat(fits(maxLong, INTEGER)).isTrue();
+    assertThat(fits(untypedEnum("-1", "0", "-0"), INTEGER)).isTrue();
+    assertThat(fits(pastMaxLong, INTEGER)).isFalse();
+    assertThat(fits(pastMaxLong, NUMBER)).isTrue();
+    assertThat(fits(untypedEnum("1.0"), INTEGER)).isFalse();
+    assertThat(fits(untypedEnum("1e2"), INTEGER)).isFalse();
+    assertThat(fits(untypedEnum("1.5", "0.5", "1.0", "1e-2", "1e2", "1E+2"), NUMBER)).isTrue();
+  }
+
+  @Test
+  public void fits_untypedEnumOfOtherJsonText_fitsWhereItsTextAndItsLiteralBothDo() {
+    // Arrange: " 1", "{}" and "[1]" spell JSON values, so each must fit as text and as that value.
+    Schema padded = untypedEnum(" 1");
+    Schema object = untypedEnum("{}");
+    Schema array = untypedEnum("[1]");
+
+    // Act / Assert
+    assertThat(fits(padded, STRING)).isFalse();
+    assertThat(fits(padded, INTEGER)).isFalse();
+    assertThat(fits(padded, INTEGER_OR_STRING)).isTrue();
+    assertThat(fits(untypedEnum(" true"), typed(Type.Known.BOOLEAN))).isFalse();
+    assertThat(fits(object, STRING)).isFalse();
+    assertThat(fits(object, INTEGER_OR_STRING)).isFalse();
+    assertThat(fits(object, typed(Type.Known.OBJECT))).isFalse();
+    assertThat(fits(object, Schema.builder().build())).isTrue();
+    assertThat(fits(array, STRING)).isFalse();
+    assertThat(fits(array, typed(Type.Known.ARRAY))).isFalse();
+    // Text that is not one finite JSON value, or is a JSON string, is only text.
+    assertThat(fits(untypedEnum("[1e400]", "[01]", "{} x", "\"a\""), STRING)).isTrue();
   }
 
   @Test
@@ -185,8 +254,8 @@ public final class SchemaFitTest {
     assertThat(fits(Schema.builder().anyOf(RED).build(), COLORS)).isTrue();
     assertThat(fits(Schema.builder().anyOf(RED, green).build(), COLORS)).isFalse();
     assertThat(fits(Schema.builder().enum_("green").anyOf(COLORS).build(), COLORS)).isFalse();
-    // An untyped union's own enum takes its branches' type.
-    assertThat(fits(Schema.builder().enum_("1").anyOf(INTEGER).build(), INTEGER)).isTrue();
+    // An untyped union's own enum takes its branches' type, so "1" is a string here.
+    assertThat(fits(Schema.builder().enum_("1").anyOf(STRING).build(), STRING)).isTrue();
     // An untyped branch takes its union's type, so its keys count.
     assertThat(
             fits(Schema.builder().type(Type.Known.OBJECT).anyOf(requiresId).build(), requiresNote))
@@ -197,8 +266,8 @@ public final class SchemaFitTest {
     // A NULL branch does not count toward the type an untyped union's own enum takes.
     assertThat(
             fits(
-                Schema.builder().enum_("1").nullable(true).anyOf(INTEGER, NULL).build(),
-                INTEGER.toBuilder().nullable(true).build()))
+                Schema.builder().enum_("1").nullable(true).anyOf(STRING, NULL).build(),
+                STRING.toBuilder().nullable(true).build()))
         .isTrue();
     // Untyped branches imply a type by their keys or items, so the union's own part is checked.
     assertThat(
@@ -232,6 +301,10 @@ public final class SchemaFitTest {
 
   private static Schema typed(Type.Known type) {
     return Schema.builder().type(type).build();
+  }
+
+  private static Schema untypedEnum(String... values) {
+    return Schema.builder().enum_(values).build();
   }
 
   private static Schema array(Schema items) {

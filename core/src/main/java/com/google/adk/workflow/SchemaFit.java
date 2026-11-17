@@ -18,8 +18,13 @@ package com.google.adk.workflow;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectReader;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import java.util.ArrayList;
@@ -34,6 +39,10 @@ import org.jspecify.annotations.Nullable;
  * input that accepts its nulls, and an object output that lists no keys fits any object input.
  */
 final class SchemaFit {
+
+  /** Reads one standard JSON value, with nothing after it. */
+  private static final ObjectReader STRICT_JSON =
+      PortCodec.MAPPER.reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
   /**
    * Whether {@code source} fits {@code target} by types, enums, keys and nullability. With {@code
@@ -54,8 +63,12 @@ final class SchemaFit {
               || fits(source.toBuilder().clearNullable().build(), target, closed));
     }
     if (type == null && source.enum_().isPresent()) {
-      // An enum lists strings, as a typed one does.
-      return fits(source.toBuilder().type(Type.Known.STRING).build(), target, closed);
+      // Each value must fit as each of its readings, such as 1 for "1".
+      return source.enum_().get().stream()
+          .allMatch(value ->
+              readings(value).stream()
+                  .allMatch(reading ->
+                      fits(source.toBuilder().type(reading).enum_(value).build(), target, closed)));
     }
     if (target.anyOf().isPresent()) {
       return fits(source, target.toBuilder().clearAnyOf().build(), closed)
@@ -169,6 +182,54 @@ final class SchemaFit {
                 .anyOf()
                 .map(branches -> branches.stream().anyMatch(SchemaFit::acceptsNull))
                 .orElse(true));
+  }
+
+  /**
+   * Returns the types an untyped enum value must fit as: the type of the JSON value it spells, plus
+   * STRING unless it is a bare number or boolean. Other text is only text.
+   */
+  private static ImmutableSet<Type.Known> readings(@Nullable String value) {
+    JsonNode literal = value == null ? null : jsonLiteral(value);
+    if (value == null || literal == null) {
+      return ImmutableSet.of(Type.Known.STRING);
+    }
+    Type.Known type =
+        switch (literal.getNodeType()) {
+          case OBJECT -> Type.Known.OBJECT;
+          case ARRAY -> Type.Known.ARRAY;
+          case BOOLEAN -> Type.Known.BOOLEAN;
+          // An integer port does not read "1.0" or "1e2".
+          case NUMBER ->
+              literal.isIntegralNumber() && literal.canConvertToLong()
+                  ? Type.Known.INTEGER
+                  : Type.Known.NUMBER;
+          default -> Type.Known.STRING;
+        };
+    return literal.isValueNode() && value.equals(value.strip())
+        ? ImmutableSet.of(type)
+        : ImmutableSet.of(Type.Known.STRING, type);
+  }
+
+  /** Returns the one JSON value {@code value} spells, or null if none or a number is not finite. */
+  private static @Nullable JsonNode jsonLiteral(String value) {
+    try {
+      JsonNode node = STRICT_JSON.readTree(value);
+      return isFinite(node) ? node : null;
+    } catch (JsonProcessingException e) {
+      return null;
+    }
+  }
+
+  private static boolean isFinite(JsonNode node) {
+    if (node.isNumber()) {
+      return Double.isFinite(node.doubleValue());
+    }
+    for (JsonNode child : node) {
+      if (!isFinite(child)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private static boolean isNullable(Schema schema) {
