@@ -28,6 +28,7 @@ import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Schema;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.MaybeEmitter;
@@ -151,9 +152,12 @@ public final class FunctionNode<I, O> extends BaseNode {
 
   @Override
   public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-    // Maybe.create rather than defer, so that canceling the node reaches the body while it runs.
-    return Maybe.<Object>create(
-            emitter -> {
+    return Completable.complete()
+        // Unlike subscribeOn, canceling this hop does not interrupt the handling of the output.
+        .observeOn(context.invocationContext().scheduler())
+        // create rather than defer, so that canceling the node reaches the body while it runs.
+        .andThen(
+            Maybe.<Object>create(emitter -> {
               // A timeout fails the node only once the body returns, so a retry cannot overlap it.
               CompletableSubject returned = CompletableSubject.create();
               NodeExecutionState state = context.requireNodeState();
@@ -167,8 +171,7 @@ public final class FunctionNode<I, O> extends BaseNode {
               } finally {
                 returned.onComplete();
               }
-            })
-        .subscribeOn(context.invocationContext().scheduler())
+            }))
         .toFlowable();
   }
 

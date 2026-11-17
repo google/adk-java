@@ -1752,6 +1752,45 @@ public final class FunctionNodeTest {
   }
 
   @Test
+  public void nodeTimeout_afterTheBodyReturned_doesNotInterruptTheHandlingOfItsOutput() {
+    // io(), the Runner's default, interrupts a canceled subscribeOn; from(executor) does not.
+    FunctionNode<Content, String> quick =
+        FunctionNodes.builder(Content.class, String.class)
+            .name("quick")
+            .config(NodeConfig.builder().timeout(Duration.ofSeconds(1)).build())
+            .body((ctx, message) -> "out")
+            .build();
+    Runner runner = runner(chain(quick), /* scheduler= */ null);
+    Session session = runner.sessionService().createSession(APP, USER).blockingGet();
+    AtomicBoolean handled = new AtomicBoolean();
+    AtomicBoolean interrupted = new AtomicBoolean();
+    AtomicReference<Throwable> error = new AtomicReference<>();
+
+    runner
+        .runAsync(USER, session.id(), Content.fromParts(Part.fromText("go")))
+        .doOnNext(event -> {
+          if (RunResult.pathOf(event).equals("wf@1/quick@1") && event.output().isPresent()) {
+            try {
+              // Outlasts the timeout on the thread that delivers the node's output.
+              Thread.sleep(2000);
+              handled.set(true);
+            } catch (InterruptedException e) {
+              interrupted.set(true);
+              Thread.currentThread().interrupt();
+            }
+          }
+        })
+        .timeout(30, SECONDS)
+        .blockingSubscribe(event -> {}, error::set);
+
+    assertWithMessage("whether the timeout interrupted the handler")
+        .that(interrupted.get())
+        .isFalse();
+    assertWithMessage("whether the output event reached the handler").that(handled.get()).isTrue();
+    assertThat(error.get()).isInstanceOf(NodeTimeoutException.class);
+  }
+
+  @Test
   public void runDisposed_bodyThatThrowsAfterTheInterrupt_reportsNoUndeliverableError()
       throws InterruptedException {
     CountDownLatch started = new CountDownLatch(1);
