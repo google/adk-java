@@ -63,6 +63,13 @@ public final class ResponseConverter {
   private static final Logger logger = LoggerFactory.getLogger(ResponseConverter.class);
   private static final JavaType CUSTOM_METADATA_LIST_TYPE =
       objectMapper.getTypeFactory().constructCollectionType(List.class, CustomMetadata.class);
+  // Custom metadata keys that hold a task or context ID.
+  private static final ImmutableSet<String> REMOTE_ID_KEYS =
+      ImmutableSet.of(
+          AdkMetadataKey.TASK_ID.getType(),
+          AdkMetadataKey.CONTEXT_ID.getType(),
+          EventConverter.ADK_TASK_ID_KEY,
+          EventConverter.ADK_CONTEXT_ID_KEY);
   private static final ImmutableSet<TaskState> PENDING_STATES =
       ImmutableSet.of(TaskState.WORKING, TaskState.SUBMITTED);
 
@@ -306,16 +313,17 @@ public final class ResponseConverter {
     return new ConvertedParts(parts.build(), longRunningToolIds.build());
   }
 
+  /**
+   * Returns a copy of {@code event} with the grounding, usage, custom metadata and error code from
+   * {@code clientMetadata}, plus {@code taskId} and {@code contextId} when not null. Task and
+   * context IDs in the forwarded custom metadata are dropped, since they belong to calls the remote
+   * agent made itself.
+   */
   private static Event updateEventMetadata(
       Event event,
       @Nullable Map<String, Object> clientMetadata,
       @Nullable String taskId,
       @Nullable String contextId) {
-    if (taskId == null || contextId == null) {
-      logger.warn("Task ID or context ID is null, skipping metadata update.");
-      return event;
-    }
-
     if (clientMetadata == null) {
       clientMetadata = ImmutableMap.of();
     }
@@ -329,23 +337,34 @@ public final class ResponseConverter {
             GenerateContentResponseUsageMetadata.class));
 
     ImmutableList.Builder<CustomMetadata> customMetadataList = ImmutableList.builder();
-    customMetadataList
-        .add(
-            CustomMetadata.builder()
-                .key(AdkMetadataKey.TASK_ID.getType())
-                .stringValue(taskId)
-                .build())
-        .add(
-            CustomMetadata.builder()
-                .key(AdkMetadataKey.CONTEXT_ID.getType())
-                .stringValue(contextId)
-                .build());
+    if (taskId != null) {
+      customMetadataList.add(
+          CustomMetadata.builder()
+              .key(AdkMetadataKey.TASK_ID.getType())
+              .stringValue(taskId)
+              .build());
+    }
+    if (contextId != null) {
+      customMetadataList.add(
+          CustomMetadata.builder()
+              .key(AdkMetadataKey.CONTEXT_ID.getType())
+              .stringValue(contextId)
+              .build());
+    }
     List<CustomMetadata> parsedCustomMetadata =
         parseMetadata(clientMetadata, A2AMetadataKey.CUSTOM_METADATA, CUSTOM_METADATA_LIST_TYPE);
     if (parsedCustomMetadata != null) {
-      customMetadataList.addAll(parsedCustomMetadata);
+      for (CustomMetadata m : parsedCustomMetadata) {
+        // A peer can send a null entry, which is dropped like other malformed metadata.
+        if (m != null && m.key().filter(REMOTE_ID_KEYS::contains).isEmpty()) {
+          customMetadataList.add(m);
+        }
+      }
     }
-    eventBuilder.customMetadata(customMetadataList.build());
+    ImmutableList<CustomMetadata> customMetadata = customMetadataList.build();
+    if (!customMetadata.isEmpty()) {
+      eventBuilder.customMetadata(customMetadata);
+    }
 
     eventBuilder.errorCode(
         parseMetadata(clientMetadata, A2AMetadataKey.ERROR_CODE, FinishReason.class));

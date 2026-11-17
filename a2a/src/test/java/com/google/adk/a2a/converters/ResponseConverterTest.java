@@ -349,17 +349,95 @@ public final class ResponseConverterTest {
   }
 
   @Test
-  public void messageToEvent_withMissingTaskId_returnsEvent() {
+  public void messageToEvent_withTaskIdOnly_recordsTaskId() {
+    Event event =
+        ResponseConverter.messageToEvent(
+            agentMessage().taskId("task-1").build(), invocationContext);
+
+    assertThat(event.customMetadata().get())
+        .containsExactly(customMetadata("a2a:task_id", "task-1"));
+  }
+
+  @Test
+  public void messageToEvent_withoutTaskId_recordsContextIdAndMetadata() {
     Message a2aMessage =
-        new Message.Builder()
-            .messageId("msg-1")
-            .role(Message.Role.USER)
-            .taskId("task-1")
-            .parts(ImmutableList.of(new TextPart("test-message")))
+        agentMessage()
+            .contextId("context-1")
+            .metadata(
+                ImmutableMap.<String, Object>builder()
+                    .putAll(forwardedMetadata(customMetadata("k", "v")))
+                    .put(A2AMetadataKey.ERROR_CODE.getType(), "\"SAFETY\"")
+                    .buildOrThrow())
             .build();
+
     Event event = ResponseConverter.messageToEvent(a2aMessage, invocationContext);
-    assertThat(event).isNotNull();
+
+    assertThat(event.customMetadata().get())
+        .containsExactly(customMetadata("a2a:context_id", "context-1"), customMetadata("k", "v"))
+        .inOrder();
+    assertThat(event.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+  }
+
+  @Test
+  public void messageToEvent_withoutIdsButForwardedIds_recordsNoIds() {
+    Message a2aMessage =
+        agentMessage()
+            .metadata(
+                forwardedMetadata(
+                    customMetadata("a2a:task_id", "inner-task"),
+                    customMetadata("a2a:context_id", "inner-context"),
+                    customMetadata("adk_task_id", "legacy-task"),
+                    customMetadata("adk_context_id", "legacy-context"),
+                    customMetadata("k", "v")))
+            .build();
+
+    Event event = ResponseConverter.messageToEvent(a2aMessage, invocationContext);
+
+    assertThat(event.customMetadata().get()).containsExactly(customMetadata("k", "v"));
+  }
+
+  @Test
+  public void messageToEvent_withNullForwardedEntry_dropsIt() {
+    Message a2aMessage =
+        agentMessage()
+            .contextId("context-1")
+            .metadata(
+                ImmutableMap.of(
+                    A2AMetadataKey.CUSTOM_METADATA.getType(),
+                    "[null," + customMetadata("k", "v").toJson() + "]"))
+            .build();
+
+    Event event = ResponseConverter.messageToEvent(a2aMessage, invocationContext);
+
+    assertThat(event.customMetadata().get())
+        .containsExactly(customMetadata("a2a:context_id", "context-1"), customMetadata("k", "v"))
+        .inOrder();
+  }
+
+  @Test
+  public void messageToEvent_withoutIdsOrMetadata_recordsNoMetadata() {
+    Event event = ResponseConverter.messageToEvent(agentMessage().build(), invocationContext);
+
     assertThat(event.customMetadata()).isEmpty();
+  }
+
+  @Test
+  public void taskToEvent_withForwardedIds_keepsOnlyItsOwnIds() {
+    Task task =
+        testTask()
+            .status(new TaskStatus(TaskState.COMPLETED, null, null))
+            .metadata(
+                forwardedMetadata(
+                    customMetadata("a2a:task_id", "inner-task"),
+                    customMetadata("a2a:context_id", "inner-context")))
+            .build();
+
+    Event event = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(event.customMetadata().get())
+        .containsExactly(
+            customMetadata("a2a:task_id", "task-1"), customMetadata("a2a:context_id", "context-1"))
+        .inOrder();
   }
 
   @Test
@@ -1004,5 +1082,23 @@ public final class ResponseConverterTest {
     protected Flowable<Event> runLiveImpl(InvocationContext invocationContext) {
       return Flowable.empty();
     }
+  }
+
+  private static Message.Builder agentMessage() {
+    return new Message.Builder()
+        .messageId("msg-1")
+        .role(Message.Role.AGENT)
+        .parts(ImmutableList.of(new TextPart("Hello")));
+  }
+
+  private static CustomMetadata customMetadata(String key, String value) {
+    return CustomMetadata.builder().key(key).stringValue(value).build();
+  }
+
+  /** A2A metadata forwarding {@code entries} as the remote agent's custom metadata. */
+  private static ImmutableMap<String, Object> forwardedMetadata(CustomMetadata... entries) {
+    String json =
+        Arrays.stream(entries).map(CustomMetadata::toJson).collect(joining(",", "[", "]"));
+    return ImmutableMap.of(A2AMetadataKey.CUSTOM_METADATA.getType(), json);
   }
 }
