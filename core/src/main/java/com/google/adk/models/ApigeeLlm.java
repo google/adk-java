@@ -117,14 +117,14 @@ public class ApigeeLlm extends BaseLlm {
       this.geminiDelegate = null;
       this.chatCompletionsClient = new ChatCompletionsHttpClient(this.httpOptions);
     } else {
-      Client.Builder apiClientBuilder = Client.builder().httpOptions(this.httpOptions);
+      Client.Builder apiClientBuilder = Client.builder();
       if (isVertexAiModel(modelName)) {
         apiClientBuilder.vertexAI(true);
       } else if (modelName.startsWith("apigee/gemini/")) {
         // Otherwise the client picks Vertex AI when the environment selects it.
         apiClientBuilder.vertexAI(false);
       }
-      this.apiClient = apiClientBuilder.build();
+      this.apiClient = Gemini.buildOnGeminiApiVersion(apiClientBuilder, this.httpOptions);
       this.geminiDelegate =
           new Gemini(modelName, apiClient, /* clientSendsTrackingHeaders= */ true);
       this.chatCompletionsClient = null;
@@ -249,7 +249,8 @@ public class ApigeeLlm extends BaseLlm {
      *       GOOGLE_GENAI_USE_VERTEXAI} is {@code true} or {@code 1}; otherwise the genai client
      *       picks the backend from the environment, as for {@link Gemini}.
      *   <li><b>{@code version}</b> (optional): The API version (e.g., {@code v1}, {@code v1beta}).
-     *       If omitted, the default version for the provider is used.
+     *       If omitted, {@code GOOGLE_GENAI_API_VERSION} is used when set; otherwise {@code gemini}
+     *       defaults to {@code v1beta} and {@code vertex_ai} to {@code v1beta1}.
      *   <li><b>{@code model_id}</b> (required): The model identifier (e.g., {@code
      *       gemini-2.5-flash}).
      * </ul>

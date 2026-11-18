@@ -55,7 +55,7 @@ public final class KtRunnerToJavaShowcaseTest {
 
     // Ordinary ADK Java components adapted onto the engine: a model and a FunctionTool.
     Gemini javaModel =
-        new Gemini("gemini-flash-latest", Client.builder().apiKey(apiKey).vertexAI(false).build());
+        new Gemini("gemini-3.8-flash", Client.builder().apiKey(apiKey).vertexAI(false).build());
     LlmAgent agent =
         LlmAgent.builder()
             .name("assistant")

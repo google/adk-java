@@ -16,6 +16,8 @@
 
 package com.google.adk.models;
 
+import static com.google.common.base.Strings.isNullOrEmpty;
+
 import com.google.adk.internal.http.HttpClientFactory;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
@@ -64,6 +66,11 @@ public class Gemini extends BaseLlm {
 
   private static final Logger logger = LoggerFactory.getLogger(Gemini.class);
 
+  /** The Gemini API version that ADK-built clients use; the genai SDK's default before 2.0. */
+  private static final String GEMINI_API_VERSION = "v1beta";
+
+  private static final String API_VERSION_ENV_VARIABLE_NAME = "GOOGLE_GENAI_API_VERSION";
+
   private static OkHttpClient prepareHttpClient(@Nullable ExecutorService executorService) {
     OkHttpClient client =
         executorService == null
@@ -77,17 +84,40 @@ public class Gemini extends BaseLlm {
         .build();
   }
 
-  // Every client ADK builds starts here, so each sends ADK's tracking tag.
   private static Client.Builder adkClientBuilder(@Nullable ExecutorService executorService) {
     return Client.builder()
-        .httpOptions(HttpOptions.builder().headers(TrackingHeaders.GENAI_SDK_HEADERS).build())
         .clientOptions(
             ClientOptions.builder().customHttpClient(prepareHttpClient(executorService)).build());
   }
 
+  // Every client ADK builds is built here, so each sends ADK's tracking tag.
+  private static Client buildAdkClient(Client.Builder builder) {
+    return buildOnGeminiApiVersion(
+        builder, HttpOptions.builder().headers(TrackingHeaders.GENAI_SDK_HEADERS).build());
+  }
+
+  /**
+   * Builds a client with {@code httpOptions}, on API version {@code v1beta} if it targets the
+   * Gemini API and neither {@code httpOptions} nor {@code GOOGLE_GENAI_API_VERSION} sets a version.
+   * The genai SDK defaults the Gemini API to {@code v1}, which lacks context caching, the Live API,
+   * speech output and the {@code -latest} model aliases.
+   */
+  static Client buildOnGeminiApiVersion(Client.Builder builder, HttpOptions httpOptions) {
+    Client client = builder.httpOptions(httpOptions).build();
+    if (client.vertexAI()
+        || httpOptions.apiVersion().isPresent()
+        || !isNullOrEmpty(System.getenv(API_VERSION_ENV_VARIABLE_NAME))) {
+      return client;
+    }
+    // The environment can pick the backend, so only the built client tells which one it targets.
+    return builder
+        .httpOptions(httpOptions.toBuilder().apiVersion(GEMINI_API_VERSION).build())
+        .build();
+  }
+
   private static Client buildApiKeyClient(
       String apiKey, @Nullable ExecutorService executorService) {
-    return adkClientBuilder(executorService).apiKey(apiKey).build();
+    return buildAdkClient(adkClientBuilder(executorService).apiKey(apiKey));
   }
 
   private static Client buildVertexClient(
@@ -96,11 +126,11 @@ public class Gemini extends BaseLlm {
     vertexCredentials.project().ifPresent(apiClientBuilder::project);
     vertexCredentials.location().ifPresent(apiClientBuilder::location);
     vertexCredentials.credentials().ifPresent(apiClientBuilder::credentials);
-    return apiClientBuilder.build();
+    return buildAdkClient(apiClientBuilder);
   }
 
   private static Client buildDefaultClient(@Nullable ExecutorService executorService) {
-    return adkClientBuilder(executorService).build();
+    return buildAdkClient(adkClientBuilder(executorService));
   }
 
   private final Client apiClient;
@@ -112,6 +142,10 @@ public class Gemini extends BaseLlm {
    * ADK's tracking tag, which the genai SDK appends to the client's tracking headers. If the
    * client's own headers already carry an ADK tag, requests send two because the SDK does not
    * expose a client's headers.
+   *
+   * <p>If {@code apiClient} targets the Gemini API with no API version set, google-genai 2.x uses
+   * {@code v1}, which lacks context caching, the Live API, speech output and the {@code -latest}
+   * model aliases; build it with {@code HttpOptions.builder().apiVersion("v1beta")} to keep them.
    *
    * @param modelName The name of the Gemini model to use (e.g., "gemini-2.0-flash").
    * @param apiClient The genai {@link com.google.genai.Client} instance for making API calls.
@@ -190,7 +224,8 @@ public class Gemini extends BaseLlm {
      * Sets the explicit {@link com.google.genai.Client} instance for making API calls. If this is
      * set, apiKey and vertexCredentials will be ignored.
      *
-     * @param apiClient The client instance.
+     * @param apiClient The client instance, used as is; see {@link Gemini#Gemini(String, Client)}
+     *     for its API version.
      * @return This builder.
      */
     @CanIgnoreReturnValue
