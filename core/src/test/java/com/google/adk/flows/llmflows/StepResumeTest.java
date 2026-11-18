@@ -18,6 +18,7 @@ package com.google.adk.flows.llmflows;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.ResumabilityConfig;
@@ -38,7 +39,7 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 /**
- * Tests for {@link StepResume}. Each history ends with the user answering another agent's
+ * Tests for {@link StepResume}. Most histories end with the user answering another agent's
  * long-running call, so the step checks whether this agent's earlier calls still need replaying.
  */
 @RunWith(JUnit4.class)
@@ -122,6 +123,143 @@ public final class StepResumeTest {
 
     assertThat(decision.action).isEqualTo(StepResume.Action.REPLAY_CALLS);
     assertThat(decision.replayEvent().functionCalls()).containsExactly(call("x", null));
+  }
+
+  @Test
+  public void decide_agentWithoutAgentTools_continuesAfterAnAnswerOnItsCallsBranch() {
+    LlmAgent coordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .subAgents(LlmAgent.builder().name("worker").build())
+            .build();
+
+    StepResume.Decision decision =
+        StepResume.decide(answeredOnCallBranch(coordinator), ImmutableMap.of());
+
+    assertThat(decision.action).isEqualTo(StepResume.Action.CONTINUE);
+  }
+
+  @Test
+  public void decide_agentWithASingleTurnTool_replaysTheCallThatOpenedTheAnswersBranch() {
+    LlmAgent coordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .subAgents(LlmAgent.builder().name("worker").mode(AgentMode.SINGLE_TURN).build())
+            .build();
+
+    StepResume.Decision decision =
+        StepResume.decide(answeredOnCallBranch(coordinator), ImmutableMap.of());
+
+    assertThat(decision.action).isEqualTo(StepResume.Action.REPLAY_CALLS);
+    assertThat(decision.replayEvent().functionCalls()).containsExactly(call("worker", "c1"));
+  }
+
+  @Test
+  public void decide_agentWithASingleTurnTool_replaysOnlyTheCallsNothingAnswered() {
+    StepResume.Decision decision =
+        StepResume.decide(
+            contextWith(
+                coordinatorWithSingleTurnWorker(),
+                /* branch= */ null,
+                event("coordinator", callPart("worker", "c1"), callPart("lookup", "l1")),
+                event(USER, responsePart("lookup", "l1")),
+                event(USER, responsePart("approve", "w1")).toBuilder().branch("worker@c1").build()),
+            ImmutableMap.of());
+
+    assertThat(decision.action).isEqualTo(StepResume.Action.REPLAY_CALLS);
+    assertThat(decision.replayEvent().functionCalls()).containsExactly(call("worker", "c1"));
+  }
+
+  @Test
+  public void decide_agentWithASingleTurnTool_doesNotReplayAPendingLongRunningCall() {
+    StepResume.Decision decision =
+        StepResume.decide(
+            contextWith(
+                coordinatorWithSingleTurnWorker(),
+                /* branch= */ null,
+                event("coordinator", callPart("worker", "c1"), callPart("lookup", "l1")).toBuilder()
+                    .longRunningToolIds(ImmutableSet.of("l1"))
+                    .build(),
+                event(USER, responsePart("approve", "w1")).toBuilder().branch("worker@c1").build()),
+            ImmutableMap.of());
+
+    assertThat(decision.action).isEqualTo(StepResume.Action.REPLAY_CALLS);
+    assertThat(decision.replayEvent().functionCalls()).containsExactly(call("worker", "c1"));
+  }
+
+  @Test
+  public void decide_answerBelowACallOfTheSameIdAboveTheAgentsBranch_replaysTheAgentsOwnCall() {
+    // The coordinator runs on the branch its parent's call c1 opened, and also made a call c1.
+    StepResume.Decision decision =
+        StepResume.decide(
+            contextWith(
+                coordinatorWithSingleTurnWorker(),
+                /* branch= */ "coordinator@c1",
+                event("coordinator", callPart("worker", "c2")).toBuilder()
+                    .branch("coordinator@c1")
+                    .build(),
+                event("coordinator", callPart("worker", "c1")).toBuilder()
+                    .branch("coordinator@c1")
+                    .build(),
+                event("worker", callPart("approve", "w1")).toBuilder()
+                    .branch("coordinator@c1.worker@c2")
+                    .build(),
+                event(USER, responsePart("approve", "w1")).toBuilder()
+                    .branch("coordinator@c1.worker@c2")
+                    .build()),
+            ImmutableMap.of());
+
+    assertThat(decision.action).isEqualTo(StepResume.Action.REPLAY_CALLS);
+    assertThat(decision.replayEvent().functionCalls()).containsExactly(call("worker", "c2"));
+  }
+
+  @Test
+  public void decide_answerOnTheBranchOfACallAlreadyAnswered_continues() {
+    StepResume.Decision decision =
+        StepResume.decide(
+            contextWith(
+                coordinatorWithSingleTurnWorker(),
+                /* branch= */ null,
+                event("coordinator", callPart("worker", "c1")),
+                event(USER, responsePart("worker", "c1")),
+                event(USER, responsePart("approve", "w1")).toBuilder().branch("worker@c1").build()),
+            ImmutableMap.of());
+
+    assertThat(decision.action).isEqualTo(StepResume.Action.CONTINUE);
+  }
+
+  private static LlmAgent coordinatorWithSingleTurnWorker() {
+    return LlmAgent.builder()
+        .name("coordinator")
+        .subAgents(LlmAgent.builder().name("worker").mode(AgentMode.SINGLE_TURN).build())
+        .build();
+  }
+
+  /**
+   * Returns a context, not resumable, whose session has the coordinator's call {@code c1} and then
+   * the user's answer to another call on branch {@code worker@c1}.
+   */
+  private static InvocationContext answeredOnCallBranch(LlmAgent coordinator) {
+    return contextWith(
+        coordinator,
+        /* branch= */ null,
+        event("coordinator", callPart("worker", "c1")),
+        event(USER, responsePart("approve", "w1")).toBuilder().branch("worker@c1").build());
+  }
+
+  /** Returns a context, not resumable, for {@code agent} on {@code branch} over {@code events}. */
+  private static InvocationContext contextWith(
+      LlmAgent agent, @Nullable String branch, Event... events) {
+    InMemorySessionService sessionService = new InMemorySessionService();
+    Session session = sessionService.createSession("app", USER).blockingGet();
+    session.addEvents(ImmutableList.copyOf(events));
+    return InvocationContext.builder()
+        .invocationId(INVOCATION)
+        .agent(agent)
+        .branch(branch)
+        .session(session)
+        .sessionService(sessionService)
+        .build();
   }
 
   /**

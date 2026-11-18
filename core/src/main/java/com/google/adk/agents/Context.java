@@ -420,11 +420,15 @@ public class Context extends ReadonlyContext {
    * node waits too, which {@code catch (Exception e)} lets through but {@code catch (Throwable t)}
    * and Rx error handlers such as {@code onErrorResumeNext} stop.
    *
+   * <p>When {@code node} is an agent that hands off to a sub-agent in an agent tree with modes, the
+   * sub-agent runs as a child of {@code node}, and the result is that of the last agent to run.
+   *
    * <p>It fails with {@link DynamicNodeFailedException} if the child fails; with {@link
    * IllegalStateException} if this is not a workflow node's context, if this node's {@link
    * Node#rerunOnResume} is false, or if {@code config} delegates an output that this node already
-   * has or has delegated; and with {@link IllegalArgumentException} if the child's name cannot form
-   * a node path.
+   * has or has delegated; and with {@link IllegalArgumentException} if the name of the child, or of
+   * an agent it hands off to, cannot form a node path, or if it hands off to a task or single-turn
+   * agent.
    */
   @Experimental
   public final Maybe<Object> runNode(Node node, @Nullable Object nodeInput, RunNodeConfig config) {
