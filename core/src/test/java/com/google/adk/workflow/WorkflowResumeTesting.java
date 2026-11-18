@@ -236,15 +236,15 @@ final class WorkflowResumeTesting {
     }
 
     ImmutableList<String> invocationIds() {
+      return storedEvents().stream().map(Event::invocationId).distinct().collect(toImmutableList());
+    }
+
+    ImmutableList<Event> storedEvents() {
       return runner
           .sessionService()
           .getSession(APP, USER, sessionId, Optional.empty())
           .blockingGet()
-          .immutableEvents()
-          .stream()
-          .map(Event::invocationId)
-          .distinct()
-          .collect(toImmutableList());
+          .immutableEvents();
     }
   }
 

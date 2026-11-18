@@ -298,6 +298,10 @@ final class ResumeScan {
     @Nullable ImmutableList<Route> route;
     @Nullable String branch;
     @Nullable String transferToAgent;
+
+    /** The non-empty scope the node ran in, kept on a rerun as Python does, or null for none. */
+    @Nullable String isolationScope;
+
     final Set<String> interruptIds = new LinkedHashSet<>();
     final Map<String, @Nullable Object> resolvedResponses = new LinkedHashMap<>();
 
@@ -422,6 +426,12 @@ final class ResumeScan {
       // False for an event that a descendant of the owner emitted.
       boolean isDirect = eventPath.equals(ownerPath);
       RecoveredNode node = recovered.computeIfAbsent(key, unused -> new RecoveredNode());
+      if (isDirect) {
+        event
+            .isolationScope()
+            .filter(scope -> !scope.isEmpty())
+            .ifPresent(scope -> node.isolationScope = scope);
+      }
       // The finish check below reads the failure and the interrupts that these record.
       recordOutcome(event, isDirect, ownerPath, node);
       boolean raisedAny = recordRaisedInterrupts(event, node);

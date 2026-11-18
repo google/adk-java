@@ -62,6 +62,7 @@ import com.google.adk.workflow.NodeRunner;
 import com.google.adk.workflow.Workflow;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.MapMaker;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.AudioTranscriptionConfig;
@@ -533,24 +534,9 @@ public class Runner {
       InvocationContext invocationContext,
       boolean saveInputBlobsAsArtifacts,
       @Nullable Map<String, Object> stateDelta) {
-    // As on the resumable path, a function response takes the branch of the call it answers.
-    return appendNewMessageToSession(
-        session,
-        newMessage,
-        invocationContext,
-        saveInputBlobsAsArtifacts,
-        stateDelta,
-        matchingFunctionCallEvent(session, newMessage).flatMap(Event::branch).orElse(null));
-  }
-
-  private Single<Event> appendNewMessageToSession(
-      Session session,
-      Content newMessage,
-      InvocationContext invocationContext,
-      boolean saveInputBlobsAsArtifacts,
-      @Nullable Map<String, Object> stateDelta,
-      @Nullable String branch) {
     checkArgument(newMessage.parts().isPresent(), "No parts in the new_message.");
+    // As in Python, the call that the first answer matches gives the branch and scope.
+    Event answeredCall = callAnsweredFirst(session, newMessage).orElse(null);
 
     Content messageToAppend = newMessage;
     Completable saveArtifactsFlow = Completable.complete();
@@ -584,8 +570,13 @@ public class Runner {
             .timestamp(invocationContext.now().toEpochMilli())
             .invocationId(invocationContext.invocationId())
             .author(Role.USER)
-            .branch(branch)
             .content(messageToAppend);
+    if (answeredCall != null) {
+      // A function response takes the branch and scope of the call it answers.
+      eventBuilder
+          .branch(answeredCall.branch().orElse(null))
+          .isolationScope(answeredCall.isolationScope().orElse(null));
+    }
 
     // Add state delta if provided
     if (stateDelta != null && !stateDelta.isEmpty()) {
@@ -1069,85 +1060,85 @@ public class Runner {
       @Nullable Content newMessage,
       RunConfig runConfig,
       @Nullable Map<String, Object> stateDelta) {
-    return Flowable.defer(
-        () -> {
-          Context capturedContext = Context.current();
+    return Flowable.defer(() -> {
+      Context capturedContext = Context.current();
 
-          // Not new input: Python drops newMessage, and outside the node path stateDelta too.
-          boolean supersededByOriginalMessage =
-              newMessage != null
-                  && !carriesFunctionResponse(newMessage)
-                  && findOriginalUserMessage(session, resolvedInvocationId).isPresent();
-          Content message = supersededByOriginalMessage ? null : newMessage;
-          Map<String, Object> delta =
-              supersededByOriginalMessage && node == null ? null : stateDelta;
+      // Not new input: Python drops newMessage, and outside the node path stateDelta too.
+      boolean supersededByOriginalMessage =
+          newMessage != null
+              && !carriesFunctionResponse(newMessage)
+              && findOriginalUserMessage(session, resolvedInvocationId).isPresent();
+      Content message = supersededByOriginalMessage ? null : newMessage;
+      Map<String, Object> delta = supersededByOriginalMessage && node == null ? null : stateDelta;
 
-          // Merged eagerly so the on-user-message callback sees it.
-          if (delta != null && !delta.isEmpty()) {
-            delta.forEach((key, value) -> session.state().put(key, value));
-          }
+      // Merged eagerly so the on-user-message callback sees it.
+      if (delta != null && !delta.isEmpty()) {
+        delta.forEach((key, value) -> session.state().put(key, value));
+      }
 
-          // For the pre-run plugin callbacks; the agent is resolved later, in runResumedAgent.
-          InvocationContext initialContext =
-              newInvocationContextBuilder(session)
-                  .invocationId(resolvedInvocationId)
-                  .runConfig(runConfig)
-                  .userContent(userContentFor(session, resolvedInvocationId, newMessage))
-                  .build();
+      // For the pre-run plugin callbacks; the agent is resolved later, in runResumedAgent.
+      InvocationContext initialContext =
+          newInvocationContextBuilder(session)
+              .invocationId(resolvedInvocationId)
+              .runConfig(runConfig)
+              .userContent(userContentFor(session, resolvedInvocationId, newMessage))
+              .build();
 
-          Flowable<Event> events;
-          if (message != null) {
-            // Inherit the branch of the call it answers, so routing and rehydration see it.
-            String branch =
-                matchingFunctionCallEvent(session, message).flatMap(Event::branch).orElse(null);
-            events =
-                this.pluginManager
-                    .onUserMessageCallback(initialContext, message)
-                    .compose(Tracing.<Content>withContext(capturedContext))
-                    .defaultIfEmpty(message)
-                    .flatMap(
-                        content -> {
-                          // A plugin's message must not mix answers and text either.
-                          if (node != null) {
-                            checkNoTextWithFunctionResponses(content);
-                          }
-                          return appendNewMessageToSession(
-                              session,
-                              content,
-                              initialContext,
-                              runConfig.saveInputBlobsAsArtifacts(),
-                              delta,
-                              branch);
-                        })
-                    // Persist first: an unpersisted response leaves the call looking unanswered.
-                    .flatMap(userEvent -> this.sessionService.appendEvent(session, userEvent))
-                    .flatMapPublisher(
-                        userEvent ->
-                            runResumedAgent(initialContext, userEvent.content().orElse(null)));
-          } else if (delta != null && !delta.isEmpty()) {
-            // No message to carry the delta, so persist a content-less event, as Python does.
-            Event stateDeltaEvent =
-                Event.builder()
-                    .id(initialContext.newUuid())
-                    .timestamp(initialContext.now().toEpochMilli())
-                    .invocationId(resolvedInvocationId)
-                    .author(Role.USER)
-                    .actions(
-                        EventActions.builder().stateDelta(new ConcurrentHashMap<>(delta)).build())
-                    .build();
-            events =
-                this.sessionService
-                    .appendEvent(session, stateDeltaEvent)
-                    .ignoreElement()
-                    .andThen(runResumedAgent(initialContext, /* userContent= */ null));
-          } else {
-            events = runResumedAgent(initialContext, /* userContent= */ null);
-          }
+      Flowable<Event> events;
+      if (message != null) {
+        events =
+            this.pluginManager
+                .onUserMessageCallback(initialContext, message)
+                .compose(Tracing.<Content>withContext(capturedContext))
+                .defaultIfEmpty(message)
+                .flatMap(content -> {
+                  // A plugin's message must not mix answers and text either.
+                  if (node != null) {
+                    checkNoTextWithFunctionResponses(content);
+                  }
+                  // A plugin's answers must still resume the invocation this run resumes.
+                  validateResumeMessage(session, content, /* requireFirstId= */ false);
+                  String answered = resolveInvocationId(session, content, /* invocationId= */ null);
+                  checkArgument(
+                      answered == null || answered.equals(resolvedInvocationId),
+                      "The on-user-message callback replaced the message with answers to another"
+                          + " invocation's calls.");
+                  // Built from the plugin's message, as in Python, so a replaced answer takes the
+                  // branch and scope of the call it now answers.
+                  return createUserMessageEvent(
+                      session,
+                      content,
+                      initialContext,
+                      runConfig.saveInputBlobsAsArtifacts(),
+                      delta);
+                })
+                // Persist first: an unpersisted response leaves the call looking unanswered.
+                .flatMap(userEvent -> this.sessionService.appendEvent(session, userEvent))
+                .flatMapPublisher(
+                    userEvent -> runResumedAgent(initialContext, userEvent.content().orElse(null)));
+      } else if (delta != null && !delta.isEmpty()) {
+        // No message to carry the delta, so persist a content-less event, as Python does.
+        Event stateDeltaEvent =
+            Event.builder()
+                .id(initialContext.newUuid())
+                .timestamp(initialContext.now().toEpochMilli())
+                .invocationId(resolvedInvocationId)
+                .author(Role.USER)
+                .actions(EventActions.builder().stateDelta(new ConcurrentHashMap<>(delta)).build())
+                .build();
+        events =
+            this.sessionService
+                .appendEvent(session, stateDeltaEvent)
+                .ignoreElement()
+                .andThen(runResumedAgent(initialContext, /* userContent= */ null));
+      } else {
+        events = runResumedAgent(initialContext, /* userContent= */ null);
+      }
 
-          return events
-              .doOnError(throwable -> runOnRunError(initialContext, throwable))
-              .compose(Tracing.<Event>withContext(capturedContext));
-        });
+      return events
+          .doOnError(throwable -> runOnRunError(initialContext, throwable))
+          .compose(Tracing.<Event>withContext(capturedContext));
+    });
   }
 
   /**
@@ -1160,41 +1151,38 @@ public class Runner {
    */
   private Flowable<Event> runResumedAgent(
       InvocationContext initialContext, @Nullable Content userContent) {
-    return Flowable.defer(
-        () -> {
-          Session session = initialContext.session();
-          BaseAgent rootAgent = this.agent;
-          InvocationContext rootContext =
-              initialContext.toBuilder()
-                  .agent(rootAgent)
-                  .userContent(userContentFor(session, initialContext.invocationId(), userContent))
+    return Flowable.defer(() -> {
+      Session session = initialContext.session();
+      BaseAgent rootAgent = this.agent;
+      InvocationContext rootContext =
+          initialContext.toBuilder()
+              .agent(rootAgent)
+              .userContent(userContentFor(session, initialContext.invocationId(), userContent))
+              .build();
+      // Rehydrate before routing, as Python does, so a root that checkpointed re-enters itself.
+      rootContext.populateInvocationAgentStates();
+      BaseAgent resumeAgent =
+          rootContext.endOfAgents().containsKey(rootAgent.name())
+              ? rootAgent
+              : findAgentToRun(session, rootAgent);
+      InvocationContext context =
+          resumeAgent.equals(rootAgent)
+              ? rootContext
+              : rootContext.toBuilder()
+                  .agent(resumeAgent)
+                  .branch(resumeParentBranch(session, initialContext.invocationId(), resumeAgent))
                   .build();
-          // Rehydrate before routing, as Python does, so a root that checkpointed re-enters itself.
-          rootContext.populateInvocationAgentStates();
-          BaseAgent resumeAgent =
-              rootContext.endOfAgents().containsKey(rootAgent.name())
-                  ? rootAgent
-                  : findAgentToRun(session, rootAgent);
-          InvocationContext context =
-              resumeAgent.equals(rootAgent)
-                  ? rootContext
-                  : rootContext.toBuilder()
-                      .agent(resumeAgent)
-                      .branch(
-                          resumeParentBranch(session, initialContext.invocationId(), resumeAgent))
-                      .build();
 
-          // No-op guard: a completed invocation (its active agent already finished) is not re-run.
-          if (context.endOfAgents().getOrDefault(context.agent().name(), false)) {
-            return Flowable.<Event>empty();
-          }
+      // No-op guard: a completed invocation (its active agent already finished) is not re-run.
+      if (context.endOfAgents().getOrDefault(context.agent().name(), false)) {
+        return Flowable.<Event>empty();
+      }
 
-          // before_run may short-circuit the run with a model event, as on the new-invocation path.
-          Maybe<Event> beforeRunEvent = beforeRunEventFor(context);
+      // before_run may short-circuit the run with a model event, as on the new-invocation path.
+      Maybe<Event> beforeRunEvent = beforeRunEventFor(context);
 
-          return executeAgentPipeline(
-              context, session, beforeRunEvent, /* onEachPersisted= */ null);
-        });
+      return executeAgentPipeline(context, session, beforeRunEvent, /* onEachPersisted= */ null);
+    });
   }
 
   /**
@@ -1292,22 +1280,40 @@ public class Runner {
   }
 
   /**
-   * Returns the session event whose function call matches a function response id carried by {@code
-   * newMessage}, searching newest-first. Both the resumed invocation id and the branch of the
-   * appended function-response event are derived from it.
+   * Returns the newest session event with a call that a function response in {@code newMessage}
+   * answers, which gives the invocation the message resumes.
    */
   private static Optional<Event> matchingFunctionCallEvent(Session session, Content newMessage) {
-    Set<String> responseIds = functionResponseIds(newMessage);
-    if (responseIds.isEmpty()) {
+    return newestCallEvent(session, functionResponseIds(newMessage));
+  }
+
+  /**
+   * Returns the newest event whose function call the first function response in {@code message}
+   * answers, as Python's {@code find_matching_function_call} does; the answer event takes its
+   * branch and isolation scope.
+   */
+  private static Optional<Event> callAnsweredFirst(Session session, Content message) {
+    return message.parts().stream()
+        .flatMap(List::stream)
+        .map(Part::functionResponse)
+        .flatMap(Optional::stream)
+        .findFirst()
+        .flatMap(FunctionResponse::id)
+        .filter(id -> !id.isEmpty())
+        .flatMap(id -> newestCallEvent(session, ImmutableSet.of(id)));
+  }
+
+  /** Returns the newest session event with a function call whose ID is in {@code callIds}. */
+  private static Optional<Event> newestCallEvent(Session session, Set<String> callIds) {
+    if (callIds.isEmpty()) {
       return Optional.empty();
     }
     ImmutableList<Event> events = session.immutableEvents();
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
-      for (FunctionCall call : event.functionCalls()) {
-        if (call.id().filter(responseIds::contains).isPresent()) {
-          return Optional.of(event);
-        }
+      if (event.functionCalls().stream()
+          .anyMatch(call -> call.id().filter(callIds::contains).isPresent())) {
+        return Optional.of(event);
       }
     }
     return Optional.empty();
@@ -1361,8 +1367,8 @@ public class Runner {
    * Rejects a resume message no invocation can be resumed from: one whose first function response
    * carries no id when {@code requireFirstId} is set, one whose response ids match no call in
    * session history (it would feed the model an orphan response), and one whose responses span more
-   * than one invocation. Counts rather than ids are reported, since the ids come from the caller.
-   * Text alongside a function response is accepted, as on Python's agent path.
+   * than one invocation or isolation scope. Counts rather than ids are reported, since the ids come
+   * from the caller. Text alongside a function response is accepted, as on Python's agent path.
    *
    * @throws IllegalArgumentException if {@code newMessage} is not resumable.
    */
@@ -1384,12 +1390,14 @@ public class Runner {
         "A function response id is required to resume an invocation.");
     Set<String> unmatched = functionResponseIds(newMessage);
     Set<String> invocationIds = new HashSet<>();
+    Set<Optional<String>> scopes = new HashSet<>();
     ImmutableList<Event> events = session.immutableEvents();
     for (int i = events.size() - 1; i >= 0 && !unmatched.isEmpty(); i--) {
       Event event = events.get(i);
       for (FunctionCall call : event.functionCalls()) {
         if (call.id().filter(unmatched::remove).isPresent()) {
           invocationIds.add(event.invocationId());
+          scopes.add(event.isolationScope());
         }
       }
     }
@@ -1402,6 +1410,12 @@ public class Runner {
         "The resume message's function responses span %s invocations; all of them must answer the"
             + " same one.",
         invocationIds.size());
+    // The answer event takes one scope, so answers to calls in other scopes would be hidden.
+    checkArgument(
+        scopes.size() <= 1,
+        "The resume message's function responses span %s isolation scopes; all of them must answer"
+            + " calls in the same one.",
+        scopes.size());
   }
 
   private static Set<String> functionResponseIds(Content message) {
