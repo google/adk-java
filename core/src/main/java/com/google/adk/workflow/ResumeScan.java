@@ -25,6 +25,7 @@ import com.google.adk.JsonBaseModel;
 import com.google.adk.SchemaUtils;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
@@ -152,6 +153,12 @@ final class ResumeScan {
     if (!recovered.interruptIds.isEmpty() && !node.rerunOnResume()) {
       Object answers = resolved.size() == 1 ? resolved.values().iterator().next() : resolved;
       return Interception.replay(answers, /* route= */ null, branch, /* transferToAgent= */ null);
+    }
+    // An agent node that already replied in this invocation waits for the next turn, so a sibling's
+    // resume does not call its model again.
+    if (node instanceof LlmAgent && node.waitForOutput() && recovered.finishedAfterResume) {
+      return Interception.replay(
+          /* output= */ null, /* route= */ null, branch, /* transferToAgent= */ null);
     }
     // A rerun node that finished without an output stays done, so its side effects don't repeat.
     boolean shouldRun =

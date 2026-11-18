@@ -20,6 +20,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableListMultimap.toImmutableListMultimap;
 import static java.util.stream.Collectors.joining;
 
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.annotations.Experimental;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
@@ -56,6 +57,52 @@ final class GraphValidation {
     validateDefaultRoutes(edges);
     validateNoUnconditionalCycles(edges, nodeNames);
     validateNodeOutgoingEdges(nodes, edges);
+    validateChatAgentWiring(edges);
+  }
+
+  /**
+   * Rejects a chat agent that follows any node but {@link Start}, since it reads the conversation
+   * rather than a predecessor's output. {@link Workflow} checks again when it runs, since a parent
+   * agent built after the graph can make a node a chat agent.
+   */
+  static void validateChatAgentWiring(List<Edge> edges) {
+    for (Edge edge : edges) {
+      if (!edge.from().name().equals(Start.NAME)
+          && edge.to() instanceof LlmAgent agent
+          && agent.waitForOutput()) {
+        throw invalid(
+            "The agent '"
+                + agent.name()
+                + "' has been added to the workflow with AgentMode.CHAT following node '"
+                + edge.from().name()
+                + "'. This is not supported because chat-mode agents rely on conversational"
+                + " history (session events) and cannot consume direct node inputs from preceding"
+                + " nodes. Please change the agent's mode to AgentMode.SINGLE_TURN."
+                + (agent.mode().isEmpty()
+                    ? " The agent has no mode, so it runs as AgentMode.CHAT because another agent"
+                        + " in its tree sets a mode."
+                    : ""));
+      }
+    }
+  }
+
+  /**
+   * Rejects a chat agent in a workflow that runs inside another one, since the nested workflow ends
+   * while the conversation is still open.
+   */
+  static void validateNoChatAgentInNestedWorkflow(String workflowName, List<Edge> edges) {
+    for (Edge edge : edges) {
+      if (edge.to() instanceof LlmAgent agent && agent.waitForOutput()) {
+        throw invalid(
+            "The agent '"
+                + agent.name()
+                + "' runs with AgentMode.CHAT in workflow '"
+                + workflowName
+                + "', which runs inside another workflow. This is not supported because the nested"
+                + " workflow ends while the conversation is still open. Run the chat agent in the"
+                + " outer workflow, or change its mode to AgentMode.SINGLE_TURN.");
+      }
+    }
   }
 
   private static GraphValidationException invalid(String message) {

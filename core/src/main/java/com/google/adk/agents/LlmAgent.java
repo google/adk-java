@@ -591,7 +591,8 @@ public class LlmAgent extends BaseAgent {
 
     /**
      * Sets how this agent converses when it runs as a workflow node. An agent without a mode runs
-     * as it does outside a workflow.
+     * as {@link AgentMode#CHAT} when another agent in its tree sets a mode, and otherwise as it
+     * does outside a workflow.
      */
     @CanIgnoreReturnValue
     @Experimental
@@ -870,8 +871,9 @@ public class LlmAgent extends BaseAgent {
   /**
    * Runs this agent as a workflow node. A {@link AgentMode#SINGLE_TURN} agent sees no history
    * unless {@link Builder#includeContents} was set, gets the node input as its user turn, and gives
-   * its first final model turn as the node output. An agent without a mode runs as {@link
-   * BaseAgent#runNode} runs it.
+   * its first final model turn as the node output. Any other agent runs as {@link
+   * BaseAgent#runNode} runs it; a {@link AgentMode#CHAT} agent's node then stays open, as {@link
+   * #waitForOutput} says.
    */
   @Experimental
   @Override
@@ -900,6 +902,17 @@ public class LlmAgent extends BaseAgent {
         },
         injected -> injected.ifPresent(event -> removeEvent(invocationContext.session(), event)),
         /* eager= */ true);
+  }
+
+  /**
+   * Returns {@code true} for a {@link AgentMode#CHAT} agent, whose node stays open across turns
+   * until it produces an output. An agent without a mode is a chat agent when another agent in its
+   * tree sets a mode.
+   */
+  @Experimental
+  @Override
+  public boolean waitForOutput() {
+    return defaultMode() == AgentMode.CHAT;
   }
 
   /**
@@ -1155,6 +1168,22 @@ public class LlmAgent extends BaseAgent {
 
   private boolean hasMode(AgentMode expected) {
     return mode.equals(Optional.of(expected));
+  }
+
+  /**
+   * Returns this agent's mode, or else {@link AgentMode#CHAT} when another agent in its tree sets a
+   * mode, or else null, so the agent runs as it does outside a workflow.
+   */
+  private @Nullable AgentMode defaultMode() {
+    if (mode.isPresent()) {
+      return mode.get();
+    }
+    return setsMode(rootAgent()) ? AgentMode.CHAT : null;
+  }
+
+  private static boolean setsMode(BaseAgent agent) {
+    return (agent instanceof LlmAgent llmAgent && llmAgent.mode.isPresent())
+        || agent.subAgents().stream().anyMatch(LlmAgent::setsMode);
   }
 
   public Single<List<BaseTool>> tools() {
