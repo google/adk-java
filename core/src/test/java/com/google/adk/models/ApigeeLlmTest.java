@@ -30,15 +30,24 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.models.ApigeeLlm.ApiType;
 import com.google.adk.models.chat.ChatCompletionsClient;
+import com.google.adk.runner.InMemoryRunner;
+import com.google.adk.sessions.Session;
+import com.google.adk.tools.BaseTool;
+import com.google.adk.tools.SetModelResponseTool;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.net.InetAddresses;
 import com.google.genai.Client;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionDeclaration;
+import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
+import com.google.genai.types.Schema;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpServer;
 import io.reactivex.rxjava3.core.Flowable;
@@ -47,6 +56,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Before;
 import org.junit.Rule;
@@ -66,6 +76,11 @@ public class ApigeeLlmTest {
   @Mock private ChatCompletionsClient mockCcClient;
 
   private static final String PROXY_URL = "https://test.apigee.net";
+  private static final Schema OUTPUT_SCHEMA =
+      Schema.builder()
+          .type("OBJECT")
+          .properties(ImmutableMap.of("answer", Schema.builder().type("STRING").build()))
+          .build();
 
   @Before
   public void checkApiKey() {
@@ -144,6 +159,60 @@ public class ApigeeLlmTest {
     verify(mockCcClient).complete(requestCaptor.capture(), eq(false));
     verify(mockGeminiDelegate, never()).generateContent(any(), anyBoolean());
     assertThat(requestCaptor.getValue().model()).hasValue("gpt-4");
+  }
+
+  @Test
+  public void runner_openAiModelWithToolsAndOutputSchema_sendsResponseSchema() {
+    when(mockCcClient.complete(any(), anyBoolean())).thenReturn(Flowable.just(jsonAnswer()));
+    ApigeeLlm llm = new ApigeeLlm("apigee/openai/gpt-4o", mockGeminiDelegate, mockCcClient);
+
+    runAgentWithToolAndOutputSchema(llm);
+
+    ArgumentCaptor<LlmRequest> requestCaptor = ArgumentCaptor.forClass(LlmRequest.class);
+    verify(mockCcClient).complete(requestCaptor.capture(), anyBoolean());
+    verify(mockGeminiDelegate, never()).capabilities();
+    LlmRequest request = requestCaptor.getValue();
+    assertThat(request.tools()).doesNotContainKey(SetModelResponseTool.NAME);
+    assertThat(request.config().flatMap(GenerateContentConfig::responseSchema))
+        .hasValue(OUTPUT_SCHEMA);
+  }
+
+  @Test
+  public void capabilities_geminiProvider_isFalseForAnyModel() {
+    ApigeeLlm llm =
+        ApigeeLlm.builder()
+            .modelName("apigee/gemini/v1/gemini-4-argon")
+            .proxyUrl(PROXY_URL)
+            .build();
+
+    assertThat(llm.capabilities().outputSchemaAndTools()).isFalse();
+  }
+
+  @Test
+  public void capabilities_vertexAiProviderListedModel_isFalse() {
+    ApigeeLlm llm =
+        ApigeeLlm.builder()
+            .modelName("apigee/vertex_ai/v1/gemini-3.1-pro-preview")
+            .proxyUrl(PROXY_URL)
+            .build();
+
+    assertThat(llm.capabilities().outputSchemaAndTools()).isFalse();
+  }
+
+  @Test
+  public void runner_vertexAiListedModel_sendsSetModelResponse() {
+    JsonNode body = firstGeminiRequestBody("apigee/vertex_ai/v1/gemini-3.8-flash");
+
+    assertThat(functionNames(body)).contains(SetModelResponseTool.NAME);
+    assertThat(body.path("generationConfig").has("responseSchema")).isFalse();
+  }
+
+  @Test
+  public void runner_vertexAiUnlistedModel_sendsResponseSchema() {
+    JsonNode body = firstGeminiRequestBody("apigee/vertex_ai/v1/gemini-4-argon");
+
+    assertThat(functionNames(body)).doesNotContain(SetModelResponseTool.NAME);
+    assertThat(body.path("generationConfig").has("responseSchema")).isTrue();
   }
 
   @Test
@@ -461,6 +530,57 @@ public class ApigeeLlmTest {
 
     assertThat(headers.get("user-agent")).containsExactly("custom-agent " + TrackingHeaders.VALUE);
     assertThat(headers.get("x-goog-api-client")).containsExactly(TrackingHeaders.VALUE);
+  }
+
+  /**
+   * Runs an agent with a tool and an output schema through an {@link ApigeeLlm} whose real Gemini
+   * delegate calls a fake Vertex AI, and returns the first request body that delegate sends.
+   */
+  private static JsonNode firstGeminiRequestBody(String modelName) {
+    FakeGeminiApi api = new FakeGeminiApi();
+
+    runAgentWithToolAndOutputSchema(
+        new ApigeeLlm(modelName, new Gemini(modelName, api.vertexClient())));
+
+    return api.bodies(FakeGeminiApi.Kind.GENERATE).get(0);
+  }
+
+  private static ImmutableList<String> functionNames(JsonNode body) {
+    ImmutableList.Builder<String> names = ImmutableList.builder();
+    for (JsonNode tool : body.path("tools")) {
+      tool.path("functionDeclarations")
+          .forEach(declaration -> names.add(declaration.path("name").asText()));
+    }
+    return names.build();
+  }
+
+  private static LlmResponse jsonAnswer() {
+    return LlmResponse.builder()
+        .content(Content.builder().role("model").parts(Part.fromText("{}")).build())
+        .build();
+  }
+
+  /** Runs an agent with a function tool and an object output schema once on {@code llm}. */
+  private static void runAgentWithToolAndOutputSchema(BaseLlm llm) {
+    BaseTool lookupTool =
+        new BaseTool("lookup", "Looks something up") {
+          @Override
+          public Optional<FunctionDeclaration> declaration() {
+            return Optional.of(FunctionDeclaration.builder().name(name()).build());
+          }
+        };
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(llm)
+            .tools(lookupTool)
+            .outputSchema(OUTPUT_SCHEMA)
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent, "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+    runner
+        .runAsync("user", session.id(), Content.fromParts(Part.fromText("hi")))
+        .blockingSubscribe();
   }
 
   /**

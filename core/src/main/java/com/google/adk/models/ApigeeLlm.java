@@ -357,6 +357,15 @@ public class ApigeeLlm extends BaseLlm {
     return geminiDelegate.connect(newLlmRequest);
   }
 
+  /**
+   * Returns the Gemini delegate's capabilities, which depend on its backend, or the default for a
+   * chat completions endpoint.
+   */
+  @Override
+  public LlmCapabilities capabilities() {
+    return apiType == ApiType.GENAI ? geminiDelegate.capabilities() : super.capabilities();
+  }
+
   private static boolean validateModelString(String model) {
     if (!model.startsWith("apigee/")) {
       return false;

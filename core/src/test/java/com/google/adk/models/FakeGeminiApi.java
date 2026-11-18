@@ -79,13 +79,23 @@ final class FakeGeminiApi implements Interceptor {
   private int numberedAnswers = 0;
   private int numberedCaches = 0;
 
+  /** Returns a Gemini API client served by this fake. */
   Client client() {
+    return client(/* vertexAi= */ false);
+  }
+
+  private Client client(boolean vertexAi) {
     OkHttpClient httpClient = new OkHttpClient.Builder().addInterceptor(this).build();
     return Client.builder()
         .apiKey("test-api-key")
-        .vertexAI(false)
+        .vertexAI(vertexAi)
         .clientOptions(ClientOptions.builder().customHttpClient(httpClient).build())
         .build();
+  }
+
+  /** Returns a Vertex AI client served by this fake. */
+  Client vertexClient() {
+    return client(/* vertexAi= */ true);
   }
 
   /**

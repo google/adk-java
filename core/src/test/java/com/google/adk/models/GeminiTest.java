@@ -15,10 +15,14 @@
  */
 package com.google.adk.models;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
 import com.google.adk.events.Event;
@@ -2419,6 +2423,185 @@ public final class GeminiTest {
         .candidatesTokenCount(candidateTokens)
         .totalTokenCount(totalTokens)
         .build();
+  }
+
+  @Test
+  public void runner_listedModelOnVertexAi_putsOutputSchemaInSetModelResponse() {
+    FakeGeminiApi api = new FakeGeminiApi();
+    Gemini gemini = new Gemini("gemini-3.8-flash", api.vertexClient());
+
+    JsonNode body = firstGenerateBody(gemini, api);
+
+    assertThat(functionNames(body)).containsExactly("lookup", "set_model_response");
+    assertThat(functionDeclaration(body, "set_model_response").at("/parameters/properties"))
+        .isEqualTo(answerPropertiesJson());
+    assertThat(body.path("generationConfig").has("responseSchema")).isFalse();
+  }
+
+  @Test
+  public void runner_unlistedModelOnVertexAi_sendsResponseSchemaWithTools() {
+    FakeGeminiApi api = new FakeGeminiApi();
+    Gemini gemini = new Gemini("gemini-4-argon", api.vertexClient());
+
+    JsonNode body = firstGenerateBody(gemini, api);
+
+    assertThat(functionNames(body)).containsExactly("lookup");
+    assertThat(body.at("/generationConfig/responseSchema/properties"))
+        .isEqualTo(answerPropertiesJson());
+  }
+
+  @Test
+  public void runner_unlistedModelOnGeminiApi_putsOutputSchemaInSetModelResponse() {
+    FakeGeminiApi api = new FakeGeminiApi();
+    Gemini gemini = new Gemini("gemini-4-argon", api.client());
+
+    JsonNode body = firstGenerateBody(gemini, api);
+
+    assertThat(functionNames(body)).containsExactly("lookup", "set_model_response");
+    assertThat(functionDeclaration(body, "set_model_response").at("/parameters/properties"))
+        .isEqualTo(answerPropertiesJson());
+    assertThat(body.path("generationConfig").has("responseSchema")).isFalse();
+  }
+
+  @Test
+  public void runner_geminiReportingOutputSchemaAndTools_sendsResponseSchemaWithTools() {
+    FakeGeminiApi api = new FakeGeminiApi();
+    Gemini gemini =
+        new Gemini("gemini-3.8-flash", api.vertexClient()) {
+          @Override
+          public LlmCapabilities capabilities() {
+            return LlmCapabilities.builder().outputSchemaAndTools(true).build();
+          }
+        };
+
+    JsonNode body = firstGenerateBody(gemini, api);
+
+    assertThat(functionNames(body)).containsExactly("lookup");
+    assertThat(body.at("/generationConfig/responseSchema/properties"))
+        .isEqualTo(answerPropertiesJson());
+    assertThat(body.at("/generationConfig/responseMimeType").asText())
+        .isEqualTo("application/json");
+  }
+
+  @Test
+  public void capabilitiesOnGeminiApi_anyModel_isFalse() {
+    assertThat(outputSchemaAndToolsOnGeminiApi("gemini-4-argon")).isFalse();
+    assertThat(outputSchemaAndToolsOnGeminiApi("gemma-4-31b-it")).isFalse();
+    assertThat(outputSchemaAndToolsOnGeminiApi("my-tuned-model")).isFalse();
+  }
+
+  @Test
+  public void capabilitiesOnVertexAi_gemini2_isFalse() {
+    assertThat(outputSchemaAndToolsOnVertexAi("gemini-2.5-pro")).isFalse();
+    assertThat(outputSchemaAndToolsOnVertexAi("gemini-2.0-flash-001")).isFalse();
+    assertThat(outputSchemaAndToolsOnVertexAi("models/gemini-2.5-flash")).isFalse();
+  }
+
+  @Test
+  public void capabilitiesOnVertexAi_listedModel_isFalse() {
+    for (String model :
+        ImmutableList.of(
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-pro-preview",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-3.7-flash",
+            "gemini-3.8-flash",
+            "gemini-4-hydrogen")) {
+      assertWithMessage(model).that(outputSchemaAndToolsOnVertexAi(model)).isFalse();
+    }
+  }
+
+  @Test
+  public void capabilitiesOnVertexAi_listedModelUnderAnotherForm_isFalse() {
+    assertThat(outputSchemaAndToolsOnVertexAi("gemini-3.8-flash-001")).isFalse();
+    assertThat(outputSchemaAndToolsOnVertexAi("models/gemini-3.5-flash")).isFalse();
+    assertThat(outputSchemaAndToolsOnVertexAi("apigee/vertex_ai/v1/gemini-3.7-flash")).isFalse();
+    assertThat(
+            outputSchemaAndToolsOnVertexAi(
+                "projects/p/locations/global/publishers/google/models/gemini-3.6-flash"))
+        .isFalse();
+  }
+
+  @Test
+  public void capabilitiesOnVertexAi_otherModelSharingAListedPrefix_isTrue() {
+    assertThat(outputSchemaAndToolsOnVertexAi("gemini-3.1-flash-lite-image")).isTrue();
+    assertThat(outputSchemaAndToolsOnVertexAi("gemini-3.1-flash-lite-preview")).isTrue();
+    assertThat(outputSchemaAndToolsOnVertexAi("gemini-3.1-pro-preview-customtools")).isTrue();
+  }
+
+  @Test
+  public void capabilitiesOnVertexAi_unlistedModel_isTrue() {
+    assertThat(outputSchemaAndToolsOnVertexAi("gemini-4-argon")).isTrue();
+    assertThat(outputSchemaAndToolsOnVertexAi("gemini-4-carbon")).isTrue();
+    assertThat(outputSchemaAndToolsOnVertexAi("gemini-pro-latest")).isTrue();
+    assertThat(outputSchemaAndToolsOnVertexAi("my-tuned-model")).isTrue();
+    assertThat(outputSchemaAndToolsOnVertexAi(null)).isTrue();
+  }
+
+  /** Returns what a Gemini on a Gemini API client named {@code modelName} reports. */
+  private static boolean outputSchemaAndToolsOnGeminiApi(String modelName) {
+    return new Gemini(modelName, new FakeGeminiApi().client())
+        .capabilities()
+        .outputSchemaAndTools();
+  }
+
+  /** Returns what a Gemini on a Vertex AI client named {@code modelName} reports. */
+  private static boolean outputSchemaAndToolsOnVertexAi(String modelName) {
+    return new Gemini(modelName, new FakeGeminiApi().vertexClient())
+        .capabilities()
+        .outputSchemaAndTools();
+  }
+
+  /** Runs an agent with a tool and an output schema, and returns its first request body. */
+  private static JsonNode firstGenerateBody(Gemini gemini, FakeGeminiApi api) {
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(gemini)
+            .tools(FunctionTool.create(GeminiTest.class, "lookup"))
+            .outputSchema(
+                Schema.builder()
+                    .type("OBJECT")
+                    .properties(ImmutableMap.of("answer", Schema.builder().type("STRING").build()))
+                    .build())
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(agent, "test-app");
+    Session session = runner.sessionService().createSession("test-app", "user").blockingGet();
+    runner
+        .runAsync("user", session.id(), Content.fromParts(Part.fromText("hello")))
+        .blockingSubscribe();
+    return api.bodies(FakeGeminiApi.Kind.GENERATE).get(0);
+  }
+
+  /** The JSON of the {@code answer} property in the output schema of the agents above. */
+  private static JsonNode answerPropertiesJson() {
+    return JsonNodeFactory.instance
+        .objectNode()
+        .set("answer", JsonNodeFactory.instance.objectNode().put("type", "STRING"));
+  }
+
+  private static ImmutableList<JsonNode> functionDeclarations(JsonNode body) {
+    ImmutableList.Builder<JsonNode> declarations = ImmutableList.builder();
+    for (JsonNode tool : body.path("tools")) {
+      tool.path("functionDeclarations").forEach(declarations::add);
+    }
+    return declarations.build();
+  }
+
+  private static ImmutableList<String> functionNames(JsonNode body) {
+    return functionDeclarations(body).stream()
+        .map(declaration -> declaration.path("name").asText())
+        .collect(toImmutableList());
+  }
+
+  private static JsonNode functionDeclaration(JsonNode body, String name) {
+    return functionDeclarations(body).stream()
+        .filter(declaration -> declaration.path("name").asText().equals(name))
+        .findFirst()
+        .orElseThrow();
   }
 
   @Test

@@ -17,9 +17,12 @@
 package com.google.adk.models;
 
 import com.google.adk.internal.http.HttpClientFactory;
+import com.google.adk.utils.ModelNameUtils;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Ints;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.Client;
@@ -63,6 +66,26 @@ import org.slf4j.LoggerFactory;
 public class Gemini extends BaseLlm {
 
   private static final Logger logger = LoggerFactory.getLogger(Gemini.class);
+
+  /**
+   * Gemini models that failed with tools at least once on Vertex AI when a request also carried a
+   * response schema. Each id also matches its pinned versions, such as {@code
+   * gemini-3.8-flash-001}.
+   */
+  private static final ImmutableSet<String>
+      MODELS_REQUIRING_SCHEMA_SET_MODEL_RESPONSE_TOOL_FALLBACK =
+          ImmutableSet.of(
+              "gemini-3-flash-preview",
+              "gemini-3.1-flash-lite",
+              "gemini-3.1-pro-preview",
+              "gemini-3.5-flash",
+              "gemini-3.5-flash-lite",
+              "gemini-3.6-flash",
+              "gemini-3.7-flash",
+              "gemini-3.8-flash",
+              "gemini-4-hydrogen");
+
+  private static final Pattern PINNED_VERSION_SUFFIX = Pattern.compile("-\\d+$");
 
   private static OkHttpClient prepareHttpClient(@Nullable ExecutorService executorService) {
     OkHttpClient client =
@@ -420,6 +443,26 @@ public class Gemini extends BaseLlm {
   static Flowable<LlmResponse> processRawResponses(Flowable<GenerateContentResponse> rawResponses) {
     return Flowable.defer(
         () -> new StreamingResponseAggregator().process(rawResponses, /* cacheMetadata= */ null));
+  }
+
+  /**
+   * Reports {@link LlmCapabilities#outputSchemaAndTools()} as false on the Gemini API, as ADK
+   * Python does. On Vertex AI, it is false for {@code gemini-2.*} and for the Gemini models that
+   * failed with tools in JSON mode, such as {@code gemini-3.8-flash}, and true for any other model.
+   */
+  @Override
+  public LlmCapabilities capabilities() {
+    return LlmCapabilities.builder()
+        .outputSchemaAndTools(apiClient.vertexAI() && takesOutputSchemaWithToolsOnVertexAi(model()))
+        .build();
+  }
+
+  private static boolean takesOutputSchemaWithToolsOnVertexAi(@Nullable String modelName) {
+    String name = Strings.nullToEmpty(modelName);
+    String modelId = name.substring(name.lastIndexOf('/') + 1);
+    return !ModelNameUtils.isGemini2Model(modelId)
+        && !MODELS_REQUIRING_SCHEMA_SET_MODEL_RESPONSE_TOOL_FALLBACK.contains(
+            PINNED_VERSION_SUFFIX.matcher(modelId).replaceFirst(""));
   }
 
   @Override
