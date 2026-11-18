@@ -52,8 +52,11 @@ public final class AgentTransfer implements RequestProcessor {
     }
 
     LlmRequest.Builder builder = request.toBuilder();
-    // As in Python ADK, a single-turn node can transfer but is not told to.
-    if (context.agentMode(agent).filter(AgentMode.SINGLE_TURN::equals).isEmpty()) {
+    // As in Python ADK, a task or single-turn node can transfer but is not told to.
+    if (context
+        .agentMode(agent)
+        .filter(mode -> mode == AgentMode.SINGLE_TURN || mode == AgentMode.TASK)
+        .isEmpty()) {
       builder.appendInstructions(ImmutableList.of(buildTargetAgentsInstructions(agent, targets)));
     }
 

@@ -21,8 +21,10 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
 import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.common.collect.ImmutableList;
@@ -110,10 +112,14 @@ public final class NodeExecutionState {
             ? ImmutableList.<String>builder().add(nodePath).addAll(outputParent.outputFor).build()
             : ImmutableList.of(nodePath);
     this.eventAuthor = parentState == null ? "" : parentState.eventAuthor;
-    this.isolationScope =
-        builder.isolationScope == null && parentState != null
-            ? parentState.isolationScope
-            : builder.isolationScope;
+    if (builder.isolationScope != null) {
+      this.isolationScope = builder.isolationScope;
+    } else if (node instanceof LlmAgent agent && agent.hasMode(AgentMode.TASK)) {
+      // A task works in a scope of its own, named by its node path.
+      this.isolationScope = nodePath;
+    } else {
+      this.isolationScope = parentState == null ? null : parentState.isolationScope;
+    }
     NodeExecutionState previousAttempt = builder.previousAttempt;
     this.attemptCount = previousAttempt == null ? 1 : previousAttempt.attemptCount + 1;
     NodeExecutionState turnRecords = parentState != null ? parentState : previousAttempt;

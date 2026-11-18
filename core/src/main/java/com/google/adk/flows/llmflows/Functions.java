@@ -620,6 +620,9 @@ public final class Functions {
         });
   }
 
+  // A finish_task response ends a task, so it is never kept from a step that did not end.
+  private static final String FINISH_TASK = "finish_task";
+
   /**
    * The wait of a call's child node, carrying the merged responses of the calls in the same step
    * that already finished, so the agent records them before it waits and a resume does not run them
@@ -641,7 +644,7 @@ public final class Functions {
 
   /**
    * Returns the merged responses in {@code finished} that only carry a tool's result: one with a
-   * control-flow action belongs to a step that never ended.
+   * control-flow action, or a {@code finish_task} response, belongs to a step that never ended.
    */
   private static @Nullable Event keptResponses(
       InvocationContext invocationContext, Collection<Event> finished) {
@@ -657,7 +660,9 @@ public final class Functions {
             .artifactDelta(new ConcurrentHashMap<>())
             .skipSummarization(null)
             .build();
-    return actions.equals(new EventActions());
+    return actions.equals(new EventActions())
+        && event.functionResponses().stream()
+            .noneMatch(response -> response.name().filter(FINISH_TASK::equals).isPresent());
   }
 
   private static Optional<Event> mergeParallelFunctionResponseEvents(

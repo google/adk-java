@@ -69,7 +69,7 @@ final class GraphValidation {
     for (Edge edge : edges) {
       if (!edge.from().name().equals(Start.NAME)
           && edge.to() instanceof LlmAgent agent
-          && agent.waitForOutput()) {
+          && agent.isChatNode()) {
         throw invalid(
             "The agent '"
                 + agent.name()
@@ -87,8 +87,8 @@ final class GraphValidation {
   }
 
   /**
-   * Rejects a chat agent in a workflow that runs inside another one, since the nested workflow ends
-   * while the conversation is still open.
+   * Rejects a chat or task agent in a workflow that runs inside another one, since the nested
+   * workflow ends while the agent still waits for an output.
    */
   static void validateNoChatAgentInNestedWorkflow(String workflowName, List<Edge> edges) {
     for (Edge edge : edges) {
@@ -96,10 +96,12 @@ final class GraphValidation {
         throw invalid(
             "The agent '"
                 + agent.name()
-                + "' runs with AgentMode.CHAT in workflow '"
+                + "' runs with AgentMode."
+                + (agent.isChatNode() ? "CHAT" : "TASK")
+                + " in workflow '"
                 + workflowName
                 + "', which runs inside another workflow. This is not supported because the nested"
-                + " workflow ends while the conversation is still open. Run the chat agent in the"
+                + " workflow ends while the agent still waits for an output. Run the agent in the"
                 + " outer workflow, or change its mode to AgentMode.SINGLE_TURN.");
       }
     }

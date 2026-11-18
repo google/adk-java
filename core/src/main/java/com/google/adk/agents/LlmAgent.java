@@ -59,9 +59,12 @@ import com.google.adk.tools.BaseToolset;
 import com.google.adk.workflow.NodeInfo;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
+import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.GenerateContentConfig;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
@@ -76,6 +79,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -156,10 +160,15 @@ public class LlmAgent extends BaseAgent {
     this.outputSchema = Optional.ofNullable(builder.outputSchema);
     this.executor = Optional.ofNullable(builder.executor);
     this.outputKey = Optional.ofNullable(builder.outputKey);
-    // A single-turn sub-agent is offered as a tool, not as a transfer target.
+    // A task agent ends its task with finish_task; a single-turn sub-agent is offered as a tool.
     this.toolsUnion =
         ImmutableList.builder()
             .addAll(requireNonNullElse(builder.toolsUnion, ImmutableList.of()))
+            .addAll(
+                builder.mode == AgentMode.TASK
+                    ? ImmutableList.of(
+                        outputSchema.map(FinishTaskTool::new).orElseGet(FinishTaskTool::new))
+                    : ImmutableList.of())
             .addAll(
                 subAgents().stream()
                     .filter(LlmAgent::runsAsTool)
@@ -659,7 +668,11 @@ public class LlmAgent extends BaseAgent {
           "Skipping output save for agent {}: event authored by {}", name(), event.author());
       return;
     }
-    if (outputKey().isEmpty() || !event.finalResponse() || event.content().isEmpty()) {
+    // A task node's output comes from finish_task, not from a text turn.
+    if (outputKey().isEmpty()
+        || !event.finalResponse()
+        || event.content().isEmpty()
+        || runsAsTask(this, invocationContext)) {
       return;
     }
     List<Part> parts = event.content().flatMap(Content::parts).orElseGet(ImmutableList::of);
@@ -878,13 +891,16 @@ public class LlmAgent extends BaseAgent {
   /**
    * Runs this agent as a workflow node. A {@link AgentMode#SINGLE_TURN} agent sees no history
    * unless {@link Builder#includeContents} was set, gets the node input as its user turn, and gives
-   * its first final model turn as the node output. Any other agent runs as {@link
-   * BaseAgent#runNode} runs it; a {@link AgentMode#CHAT} agent's node then stays open, as {@link
-   * #waitForOutput} says.
+   * its first final model turn as the node output. A {@link AgentMode#TASK} agent works on its task
+   * until a {@code finish_task} call succeeds. Any other agent runs as {@link BaseAgent#runNode}
+   * runs it; a {@link AgentMode#CHAT} agent's node then stays open, as {@link #waitForOutput} says.
    */
   @Experimental
   @Override
   public Flowable<Event> runNode(Context context, @Nullable Object nodeInput) {
+    if (hasMode(AgentMode.TASK)) {
+      return runTask(context, nodeInput);
+    }
     if (!hasMode(AgentMode.SINGLE_TURN)) {
       return super.runNode(context, nodeInput);
     }
@@ -912,14 +928,106 @@ public class LlmAgent extends BaseAgent {
   }
 
   /**
-   * Returns {@code true} for a {@link AgentMode#CHAT} agent, whose node stays open across turns
-   * until it produces an output. An agent without a mode is a chat agent when another agent in its
-   * tree sets a mode.
+   * Works on a task until a {@code finish_task} call succeeds, whose output becomes the node's
+   * output and {@link #outputKey} value. The node input, when given, opens the task.
+   */
+  private Flowable<Event> runTask(Context context, @Nullable Object nodeInput) {
+    InvocationContext invocationContext = context.invocationContext();
+    InvocationContext taskContext =
+        invocationContext.toBuilder()
+            .agentMode(this, AgentMode.TASK)
+            .userContent(
+                nodeInput == null
+                    ? invocationContext.userContent().orElse(null)
+                    : nodeInputToUserContent(nodeInput))
+            .build();
+    FinishTaskTool finishTool =
+        toolsUnion.stream()
+            .filter(FinishTaskTool.class::isInstance)
+            .map(FinishTaskTool.class::cast)
+            .findFirst()
+            .orElseThrow();
+    return Flowable.defer(() -> {
+      AtomicReference<Map<String, Object>> finishArgs = new AtomicReference<>();
+      return runAsNode(context, taskContext)
+          .map(event -> {
+            // A transfer target's events stream through here, but its finish_task is not ours.
+            if (!name().equals(event.author())) {
+              return event;
+            }
+            if (!event.partial().orElse(false)) {
+              event.functionCalls().stream()
+                  .filter(call -> call.name().filter(FinishTaskTool.NAME::equals).isPresent())
+                  .findFirst()
+                  .ifPresent(call -> finishArgs.set(call.args().orElse(ImmutableMap.of())));
+            }
+            if (finishArgs.get() == null && FinishTaskTool.isSuccessResponse(event)) {
+              answeredFinishArgs(invocationContext, event).ifPresent(finishArgs::set);
+            }
+            if (finishArgs.get() == null || !FinishTaskTool.isSuccessResponse(event)) {
+              return event;
+            }
+            Object output = finishTool.taskOutput(finishArgs.get());
+            if (output == null) {
+              return event;
+            }
+            if (outputKey().isPresent()) {
+              var unused = context.state().put(outputKey().get(), output);
+            }
+            return event.toBuilder().output(output).build();
+          })
+          .takeUntil((Event event) ->
+              name().equals(event.author())
+                  && finishArgs.get() != null
+                  && FinishTaskTool.isSuccessResponse(event));
+    });
+  }
+
+  /**
+   * Returns the arguments of this agent's {@code finish_task} call that {@code event} answers, from
+   * the session, since a resumed run replays the call without emitting its call event again.
+   */
+  private Optional<Map<String, Object>> answeredFinishArgs(
+      InvocationContext invocationContext, Event event) {
+    Optional<String> callId =
+        event.functionResponses().stream()
+            .filter(response -> response.name().filter(FinishTaskTool.NAME::equals).isPresent())
+            .findFirst()
+            .flatMap(FunctionResponse::id)
+            .filter(id -> !id.isEmpty());
+    if (callId.isEmpty()) {
+      return Optional.empty();
+    }
+    // The newest matching call on this branch in this invocation, so a reused ID finds this one.
+    ImmutableList<Event> events =
+        invocationContext.events(/* currentInvocation= */ true, /* currentBranch= */ true);
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event earlier = events.get(i);
+      if (!name().equals(earlier.author())) {
+        continue;
+      }
+      Optional<FunctionCall> call =
+          earlier.functionCalls().stream()
+              .filter(c -> c.name().filter(FinishTaskTool.NAME::equals).isPresent())
+              .filter(c -> c.id().equals(callId))
+              .findFirst();
+      if (call.isPresent()) {
+        return Optional.of(call.get().args().orElse(ImmutableMap.of()));
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Returns {@code true} for a {@link AgentMode#CHAT} or {@link AgentMode#TASK} agent, whose node
+   * stays open across turns until it produces an output. An agent without a mode is a chat agent
+   * when another agent in its tree sets a mode.
    */
   @Experimental
   @Override
   public boolean waitForOutput() {
-    return defaultMode() == AgentMode.CHAT;
+    AgentMode nodeMode = defaultMode();
+    return nodeMode == AgentMode.CHAT || nodeMode == AgentMode.TASK;
   }
 
   /**
@@ -1173,8 +1281,25 @@ public class LlmAgent extends BaseAgent {
     return mode;
   }
 
-  private boolean hasMode(AgentMode expected) {
+  /**
+   * Returns whether this agent's own mode is {@code expected}.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public boolean hasMode(AgentMode expected) {
     return mode.equals(Optional.of(expected));
+  }
+
+  /**
+   * Returns whether this agent runs as a {@link AgentMode#CHAT} workflow node, either set or
+   * because another agent in its tree sets a mode.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public boolean isChatNode() {
+    return defaultMode() == AgentMode.CHAT;
   }
 
   /**
@@ -1186,6 +1311,28 @@ public class LlmAgent extends BaseAgent {
       return mode.get();
     }
     return setsMode(rootAgent()) ? AgentMode.CHAT : null;
+  }
+
+  /**
+   * Returns whether {@code agent} runs as a {@link AgentMode#TASK} workflow node in {@code
+   * context}, so it ends its task with {@code finish_task}. A task agent run any other way runs as
+   * an agent without a mode does.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean runsAsTask(BaseAgent agent, InvocationContext context) {
+    return context.agentMode(agent).filter(AgentMode.TASK::equals).isPresent();
+  }
+
+  /**
+   * Returns whether {@code tool} is the {@code finish_task} tool a task agent gets.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean isFinishTaskTool(Object tool) {
+    return tool instanceof FinishTaskTool;
   }
 
   /**
@@ -1209,8 +1356,8 @@ public class LlmAgent extends BaseAgent {
   }
 
   /**
-   * Returns the configured tools and toolsets, followed by one tool per {@link
-   * AgentMode#SINGLE_TURN} sub-agent.
+   * Returns the configured tools and toolsets, then {@code finish_task} for a {@link
+   * AgentMode#TASK} agent, then one tool per {@link AgentMode#SINGLE_TURN} sub-agent.
    */
   public List<Object> toolsUnion() {
     return toolsUnion;

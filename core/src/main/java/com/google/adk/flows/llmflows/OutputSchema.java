@@ -54,7 +54,11 @@ public final class OutputSchema implements RequestProcessor {
     LlmAgent agent = (LlmAgent) context.agent();
     String modelName = request.model().orElse("");
 
-    if (agent.outputSchema().isEmpty() || !needsSetModelResponseTool(context, agent, modelName)) {
+    // A task node reports its structured output through finish_task instead.
+    if (agent.outputSchema().isEmpty()
+        || LlmAgent.runsAsTask(agent, context)
+        || !needsSetModelResponseTool(agent, modelName, context)) {
+
       return Single.just(RequestProcessingResult.create(request, ImmutableList.of()));
     }
 
@@ -84,9 +88,15 @@ public final class OutputSchema implements RequestProcessor {
    * and its model cannot take a response schema alongside them.
    */
   static boolean needsSetModelResponseTool(
-      InvocationContext context, LlmAgent agent, String modelName) {
+      LlmAgent agent, String modelName, InvocationContext context) {
+    // finish_task is offered only to a task node, so it is no tool anywhere else.
+
     boolean hasFunctionTools =
-        !agent.toolsUnion().isEmpty() || !agent.transferTargets(context).isEmpty();
+        agent.toolsUnion().stream()
+                .anyMatch(
+                    tool -> LlmAgent.runsAsTask(agent, context) || !LlmAgent.isFinishTaskTool(tool))
+            || !agent.transferTargets(context).isEmpty();
+
     return hasFunctionTools && !takesOutputSchemaWithTools(agent.resolvedModel(), modelName);
   }
 
