@@ -99,7 +99,7 @@ public final class FunctionsTest {
   }
 
   @Test
-  public void handleFunctionCalls_missingTool() {
+  public void handleFunctionCalls_missingTool_answersWithError() {
     InvocationContext invocationContext = createInvocationContext(createRootAgent());
     Event event =
         createEvent("event").toBuilder()
@@ -112,7 +112,103 @@ public final class FunctionsTest {
         Functions.handleFunctionCalls(invocationContext, event, /* tools= */ ImmutableMap.of())
             .blockingGet();
 
-    assertThat(functionResponseEvent).isNull();
+    assertThat(functionResponseEvent.functionResponses())
+        .containsExactly(
+            FunctionResponse.builder()
+                .id("")
+                .name("missing_tool")
+                .response(
+                    ImmutableMap.of(
+                        "error",
+                        "Invoking `missing_tool()` failed as no tool with that name is available."
+                            + " The tools you can call are: none. You could retry, but it is"
+                            + " IMPORTANT that you only call a tool from that list."))
+                .build());
+  }
+
+  @Test
+  public void handleFunctionCalls_unnamedFunctionCall_answersWithError() {
+    InvocationContext invocationContext = createInvocationContext(createRootAgent());
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.builder()
+                        .functionCall(FunctionCall.builder().args(ImmutableMap.of()).build())
+                        .build()))
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(invocationContext, event, /* tools= */ ImmutableMap.of())
+            .blockingGet();
+
+    assertThat(functionResponseEvent.functionResponses()).hasSize(1);
+    assertThat(functionResponseEvent.functionResponses().get(0).name()).hasValue("<unnamed>");
+  }
+
+  @Test
+  public void handleFunctionCalls_onlyFrameworkFunctionCalls_leavesThemUnanswered() {
+    InvocationContext invocationContext = createInvocationContext(createRootAgent());
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromFunctionCall(
+                        Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME, ImmutableMap.of()),
+                    Part.fromFunctionCall("adk_request_input", ImmutableMap.of()),
+                    Part.fromFunctionCall("adk_request_credential", ImmutableMap.of())))
+            .build();
+
+    assertThat(
+            Functions.handleFunctionCalls(invocationContext, event, /* tools= */ ImmutableMap.of())
+                .blockingGet())
+        .isNull();
+    assertThat(
+            Functions.handleFunctionCallsLive(
+                    invocationContext, event, /* tools= */ ImmutableMap.of())
+                .blockingGet())
+        .isNull();
+  }
+
+  @Test
+  public void handleFunctionCalls_frameworkFunctionCallBesideMissingTool_answersOnlyMissingTool() {
+    InvocationContext invocationContext = createInvocationContext(createRootAgent());
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromFunctionCall(
+                        Functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME, ImmutableMap.of()),
+                    Part.fromFunctionCall("missing_tool", ImmutableMap.of())))
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(invocationContext, event, /* tools= */ ImmutableMap.of())
+            .blockingGet();
+
+    assertThat(functionResponseEvent.functionResponses().stream().map(r -> r.name().orElse("")))
+        .containsExactly("missing_tool");
+  }
+
+  @Test
+  public void handleFunctionCalls_toolRegisteredUnderFrameworkName_runsTool() {
+    InvocationContext invocationContext = createInvocationContext(createRootAgent());
+    Event event =
+        createEvent("event").toBuilder()
+            .content(
+                Content.fromParts(
+                    Part.fromFunctionCall("adk_request_input", ImmutableMap.of("key", "value"))))
+            .build();
+
+    Event functionResponseEvent =
+        Functions.handleFunctionCalls(
+                invocationContext,
+                event,
+                ImmutableMap.of("adk_request_input", new TestUtils.EchoTool()))
+            .blockingGet();
+
+    assertThat(functionResponseEvent.functionResponses().get(0).response())
+        .hasValue(ImmutableMap.of("result", ImmutableMap.of("key", "value")));
   }
 
   @Test

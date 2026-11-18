@@ -49,10 +49,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * within a scope, so a success with one tool resets that tool's counter without forgiving
  * another's.
  *
- * <p>A failure is an error a tool emits, such as {@code Single.error}, or an error the {@link
- * ResultErrorExtractor} finds in a result. {@code FunctionTool} returns an exception thrown by its
- * method as a {@code {"status": "error"}} result, so such failures reach this plugin only through a
- * result error extractor. Calls to a tool name the agent does not have never reach this plugin.
+ * <p>A failure is an error a tool emits, such as {@code Single.error}, a call to a tool name the
+ * agent does not have, or an error the {@link ResultErrorExtractor} finds in a result. {@code
+ * FunctionTool} returns an exception thrown by its method as a {@code {"status": "error"}} result,
+ * so such failures reach this plugin only through a result error extractor.
  *
  * <p>Port of adk-python's {@code ReflectAndRetryToolPlugin} ({@code
  * plugins/reflect_retry_tool_plugin.py}).
@@ -127,7 +127,8 @@ public final class ReflectAndRetryToolPlugin extends BasePlugin {
       5.  **Wrong Function Name**: Does the error indicates the tool is not found? Please check \
       again and only use available tools.
 
-      Formulate a new plan based on your analysis and try a corrected or different approach.""";
+      Formulate a new plan based on your analysis and try a corrected or different approach.\
+      """;
 
   private static final String EXHAUSTED_GUIDANCE =
       """
@@ -146,7 +147,8 @@ public final class ReflectAndRetryToolPlugin extends BasePlugin {
       **Final Instruction:**
       **Do not attempt to use the `%s` tool again for this task.** You must now try a different \
       approach. Acknowledge the failure and devise a new strategy, potentially using other \
-      available tools or informing the user that the task cannot be completed.""";
+      available tools or informing the user that the task cannot be completed.\
+      """;
 
   private final int maxRetries;
   private final boolean throwExceptionIfRetryExceeded;
@@ -318,23 +320,10 @@ public final class ReflectAndRetryToolPlugin extends BasePlugin {
       resetFailures(tool, toolContext);
       return Maybe.empty();
     }
-    return handleResultError(tool, toolArgs, toolContext, error.get());
+    return handleToolError(tool, toolArgs, toolContext, error.get());
   }
 
-  /**
-   * Handles an error found inside a tool result, emitting the error where {@link #handleToolError}
-   * completes empty.
-   */
-  private Maybe<Map<String, Object>> handleResultError(
-      BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext, Object error) {
-    return handleToolError(tool, toolArgs, toolContext, error)
-        .switchIfEmpty(Maybe.error(asThrowable(error)));
-  }
-
-  /**
-   * Counts the failure and returns guidance or the give-up message. Completes empty when the limit
-   * is reached and the original error should propagate.
-   */
+  /** Counts the failure and returns guidance, the give-up message, or the error to propagate. */
   private Maybe<Map<String, Object>> handleToolError(
       BaseTool tool, Map<String, Object> toolArgs, ToolContext toolContext, Object error) {
     if (maxRetries == 0) {
@@ -347,11 +336,11 @@ public final class ReflectAndRetryToolPlugin extends BasePlugin {
     return exhausted(tool, toolArgs, error);
   }
 
-  /** Completes empty to let the error propagate, or hands back the give-up message. */
+  /** Emits the error to fail the run, or hands back the give-up message. */
   private Maybe<Map<String, Object>> exhausted(
       BaseTool tool, Map<String, Object> toolArgs, Object error) {
     return throwExceptionIfRetryExceeded
-        ? Maybe.empty()
+        ? Maybe.error(asThrowable(error))
         : Maybe.just(retryExceeded(tool, toolArgs, error));
   }
 

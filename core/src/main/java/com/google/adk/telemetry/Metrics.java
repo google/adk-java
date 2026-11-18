@@ -162,11 +162,26 @@ public final class Metrics {
   /** Records the duration of the tool execution. */
   public static void recordToolExecutionDuration(
       String toolName, String agentName, Duration duration, @Nullable Throwable error) {
+    recordToolExecutionDuration(toolName, agentName, duration, error, /* errorType= */ null);
+  }
+
+  /**
+   * Records the duration of the tool execution. {@code errorType} names a failure the call answered
+   * rather than emitted, and is ignored when {@code error} is set.
+   */
+  static void recordToolExecutionDuration(
+      String toolName,
+      String agentName,
+      Duration duration,
+      @Nullable Throwable error,
+      @Nullable String errorType) {
     MetricHolder holder = metricHolder.get();
     AttributesBuilder attrs =
         Attributes.builder().put(GEN_AI_AGENT_NAME, agentName).put(GEN_AI_TOOL_NAME, toolName);
     if (error != null) {
       attrs.put(ERROR_TYPE, error.getClass().getSimpleName());
+    } else if (errorType != null) {
+      attrs.put(ERROR_TYPE, errorType);
     }
     holder.toolExecutionDuration.record((double) duration.toMillis(), attrs.build());
   }

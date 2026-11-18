@@ -20,6 +20,7 @@ import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.events.Event;
 import com.google.adk.tools.BaseTool;
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.context.Context;
@@ -231,9 +232,12 @@ public final class Instrumentation {
 
   /** AutoCloseable telemetry tracking scope for tool executions. */
   public static final class ToolExecution extends ClosableTelemetryScope {
+    private static final AttributeKey<String> ERROR_TYPE = AttributeKey.stringKey("error.type");
+
     private final BaseTool tool;
     private final BaseAgent agent;
     private final Map<String, Object> functionArgs;
+    private volatile @Nullable String errorType;
 
     /**
      * Constructs a new {@code ToolExecution} telemetry scope.
@@ -256,6 +260,14 @@ public final class Instrumentation {
       this.functionArgs = functionArgs;
     }
 
+    /**
+     * Records the type of a failure the call answered rather than emitted, such as a call to a tool
+     * name the agent does not have. An emitted error, set by {@link #setError}, takes precedence.
+     */
+    public void setErrorType(String errorType) {
+      this.errorType = errorType;
+    }
+
     /** Traces the tool execution attributes on the span before it ends. */
     @Override
     protected void beforeSpanEnd() {
@@ -268,6 +280,12 @@ public final class Instrumentation {
           functionArgs,
           responseEvent,
           caughtError);
+      String answeredErrorType = errorType;
+      if (caughtError == null && answeredErrorType != null) {
+        span.setAttribute(ERROR_TYPE, answeredErrorType);
+        // The type, not the error message, so no tool content lands in the status.
+        span.setStatus(StatusCode.ERROR, answeredErrorType);
+      }
     }
 
     /**
@@ -278,7 +296,7 @@ public final class Instrumentation {
      */
     @Override
     protected void recordMetrics(Duration elapsed, @Nullable Throwable error) {
-      Metrics.recordToolExecutionDuration(tool.name(), agent.name(), elapsed, error);
+      Metrics.recordToolExecutionDuration(tool.name(), agent.name(), elapsed, error, errorType);
       Metrics.recordToolRequestSize(tool.name(), agent.name(), functionArgs);
       Event responseEvent = error == null ? context().functionResponseEvent() : null;
       Metrics.recordToolResponseSize(tool.name(), agent.name(), responseEvent);

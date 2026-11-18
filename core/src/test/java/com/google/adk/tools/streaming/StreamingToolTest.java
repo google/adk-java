@@ -167,6 +167,64 @@ public final class StreamingToolTest {
     assertThat(functionResponseFound).isTrue();
   }
 
+  @Test
+  public void runLive_unknownTool_answersModelWithErrorListingTools() throws Exception {
+    LlmResponse response1 =
+        LlmResponse.builder()
+            .content(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.builder()
+                            .functionCall(
+                                FunctionCall.builder()
+                                    .id("call-missing")
+                                    .name("no_such_tool")
+                                    .args(ImmutableMap.of())))
+                    .build())
+            .turnComplete(false)
+            .build();
+    LlmResponse response2 = LlmResponse.builder().turnComplete(true).build();
+    TestLlm testLlm = new TestLlm(ImmutableList.of(response1, response2));
+    LlmAgent rootAgent =
+        LlmAgent.builder()
+            .name("root_agent")
+            .model(testLlm)
+            .tools(ImmutableList.of(FunctionTool.create(StreamingToolTest.class, "getWeather")))
+            // Sends to the model inline; on a worker the run can end before the response is sent.
+            .executor(Runnable::run)
+            .build();
+    InMemoryRunner runner = new InMemoryRunner(rootAgent);
+    Session session = runner.sessionService().createSession("test-app", "test-user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runLive(session, new LiveRequestQueue(), BIDI_STREAMING_RUN_CONFIG)
+            .toList()
+            .blockingGet();
+
+    FunctionResponse expected =
+        FunctionResponse.builder()
+            .id("call-missing")
+            .name("no_such_tool")
+            .response(
+                ImmutableMap.of(
+                    "error",
+                    "Invoking `no_such_tool()` failed as no tool with that name is available. The"
+                        + " tools you can call are: getWeather. You could retry, but it is"
+                        + " IMPORTANT that you only call a tool from that list."))
+            .build();
+    assertThat(events.stream().flatMap(event -> event.functionResponses().stream()).toList())
+        .containsExactly(expected);
+    assertThat(
+            testLlm.getLiveRequestHistory().stream()
+                .flatMap(request -> request.content().stream())
+                .flatMap(content -> content.parts().orElse(ImmutableList.of()).stream())
+                .flatMap(part -> part.functionResponse().stream())
+                .toList())
+        .containsExactly(expected);
+  }
+
   public static ImmutableMap<String, Object> getWeatherWithError(String location) {
     if (location.equals("Invalid Location")) {
       return ImmutableMap.of("error", "Location not found");

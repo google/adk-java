@@ -34,6 +34,7 @@ import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.TestUtils.simplifyEvents;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -80,6 +81,7 @@ import com.google.adk.sessions.ListSessionsResponse;
 import com.google.adk.sessions.Session;
 import com.google.adk.sessions.SessionKey;
 import com.google.adk.summarizer.EventsCompactionConfig;
+import com.google.adk.telemetry.Metrics;
 import com.google.adk.telemetry.Tracing;
 import com.google.adk.testing.RecordingScheduler;
 import com.google.adk.testing.TestLlm;
@@ -102,10 +104,15 @@ import com.google.genai.types.Part;
 import com.google.genai.types.PartialArg;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Transcription;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.metrics.Meter;
+import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.context.Scope;
+import io.opentelemetry.sdk.metrics.data.HistogramPointData;
 import io.opentelemetry.sdk.testing.junit4.OpenTelemetryRule;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.reactivex.rxjava3.core.Completable;
@@ -633,6 +640,176 @@ public final class RunnerTest {
             "test agent: FunctionResponse(name=echo_tool, response={result=from plugin})",
             "test agent: done");
     verify(plugin).onToolErrorCallback(any(), any(), any(), any());
+  }
+
+  private static final String UNKNOWN_TOOL_ERROR =
+      "Invoking `no_such_tool()` failed as no tool with that name is available. The tools you can"
+          + " call are: echoTool. You could retry, but it is IMPORTANT that you only call a tool"
+          + " from that list.";
+
+  private static final AttributeKey<String> ERROR_TYPE = AttributeKey.stringKey("error.type");
+
+  private Runner unknownToolRunner(TestLlm testLlm) {
+    LlmAgent agent =
+        createTestAgentBuilder(testLlm).tools(FunctionTool.create(Tools.class, "echoTool")).build();
+    return Runner.builder()
+        .app(App.builder().name("test").rootAgent(agent).plugins(ImmutableList.of(plugin)).build())
+        .build();
+  }
+
+  @Test
+  public void runAsync_unknownTool_answersModelWithErrorListingTools() {
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse("call-missing", "no_such_tool", ImmutableMap.of()),
+            createTextLlmResponse("done"));
+    Runner runner = unknownToolRunner(testLlm);
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
+
+    FunctionResponse expected =
+        FunctionResponse.builder()
+            .id("call-missing")
+            .name("no_such_tool")
+            .response(ImmutableMap.of("error", UNKNOWN_TOOL_ERROR))
+            .build();
+    assertThat(events).hasSize(3);
+    assertThat(events.get(1).functionResponses()).containsExactly(expected);
+    assertThat(simplifyEvents(events)).contains("test agent: done");
+    // The model sees the error on its next call instead of a placeholder user turn.
+    Content lastContentSentToModel = Iterables.getLast(testLlm.getRequests().get(1).contents());
+    assertThat(lastContentSentToModel.parts().get())
+        .containsExactly(Part.builder().functionResponse(expected).build());
+    // Before-tool and error callbacks get a chance to answer; after-tool callbacks do not run.
+    verify(plugin).beforeToolCallback(any(), any(), any());
+    verify(plugin).onToolErrorCallback(any(), any(), any(), any());
+    verify(plugin, never()).afterToolCallback(any(), any(), any(), any());
+  }
+
+  @Test
+  public void runAsync_unknownTool_recordsErrorTypeOnToolSpanAndMetric() {
+    Meter originalMeter = GlobalOpenTelemetry.getMeter("gcp.vertex.agent");
+    Metrics.setMeterForTesting(openTelemetryRule.getOpenTelemetry().getMeter("RunnerTest"));
+    try {
+      TestLlm testLlm =
+          createTestLlm(
+              createFunctionCallLlmResponse("call-missing", "no_such_tool", ImmutableMap.of()),
+              createTextLlmResponse("done"));
+      Runner runner = unknownToolRunner(testLlm);
+      Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+      var unused =
+          runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
+
+      SpanData toolSpan =
+          openTelemetryRule.getSpans().stream()
+              .filter(span -> span.getName().equals("execute_tool no_such_tool"))
+              .collect(onlyElement());
+      assertThat(toolSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.ERROR);
+      assertThat(toolSpan.getAttributes().get(ERROR_TYPE)).isEqualTo("IllegalArgumentException");
+      HistogramPointData toolDuration =
+          openTelemetryRule.getMetrics().stream()
+              .filter(metric -> metric.getName().equals("gen_ai.tool.execution.duration"))
+              .flatMap(metric -> metric.getHistogramData().getPoints().stream())
+              .collect(onlyElement());
+      assertThat(toolDuration.getAttributes().get(ERROR_TYPE))
+          .isEqualTo("IllegalArgumentException");
+    } finally {
+      Metrics.setMeterForTesting(originalMeter);
+    }
+  }
+
+  @Test
+  public void runAsync_unknownTool_beforeToolCallbackAnswers() {
+    when(plugin.beforeToolCallback(any(), any(), any()))
+        .thenReturn(Maybe.just(ImmutableMap.of("result", "from plugin")));
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse("call-missing", "no_such_tool", ImmutableMap.of()),
+            createTextLlmResponse("done"));
+    Runner runner = unknownToolRunner(testLlm);
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
+
+    assertThat(simplifyEvents(events))
+        .containsExactly(
+            "test agent: FunctionCall(name=no_such_tool, args={})",
+            "test agent: FunctionResponse(name=no_such_tool, response={result=from plugin})",
+            "test agent: done");
+    ArgumentCaptor<BaseTool> toolCaptor = ArgumentCaptor.forClass(BaseTool.class);
+    verify(plugin).beforeToolCallback(toolCaptor.capture(), any(), any());
+    assertThat(toolCaptor.getValue().name()).isEqualTo("no_such_tool");
+    verify(plugin, never()).onToolErrorCallback(any(), any(), any(), any());
+    verify(plugin).afterToolCallback(any(), any(), any(), any());
+  }
+
+  @Test
+  public void runAsync_unknownTool_onToolErrorCallbackAnswers() {
+    when(plugin.onToolErrorCallback(any(), any(), any(), any()))
+        .thenReturn(Maybe.just(ImmutableMap.of("result", "from plugin")));
+    TestLlm testLlm =
+        createTestLlm(
+            createFunctionCallLlmResponse("call-missing", "no_such_tool", ImmutableMap.of()),
+            createTextLlmResponse("done"));
+    Runner runner = unknownToolRunner(testLlm);
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
+
+    assertThat(simplifyEvents(events))
+        .containsExactly(
+            "test agent: FunctionCall(name=no_such_tool, args={})",
+            "test agent: FunctionResponse(name=no_such_tool, response={result=from plugin})",
+            "test agent: done");
+    verify(plugin, never()).afterToolCallback(any(), any(), any(), any());
+  }
+
+  @Test
+  public void runAsync_unknownToolNextToKnownTool_answersBothInCallOrder() {
+    TestLlm testLlm =
+        createTestLlm(
+            createLlmResponse(
+                Content.builder()
+                    .role("model")
+                    .parts(
+                        Part.builder()
+                            .functionCall(
+                                FunctionCall.builder()
+                                    .id("call-missing")
+                                    .name("no_such_tool")
+                                    .args(ImmutableMap.of())),
+                        Part.builder()
+                            .functionCall(
+                                FunctionCall.builder()
+                                    .id("call-echo")
+                                    .name("echoTool")
+                                    .args(ImmutableMap.of("message", "hi"))))
+                    .build()),
+            createTextLlmResponse("done"));
+    Runner runner = unknownToolRunner(testLlm);
+    Session session = runner.sessionService().createSession("test", "user").blockingGet();
+
+    List<Event> events =
+        runner.runAsync("user", session.id(), createContent("from user")).toList().blockingGet();
+
+    assertThat(events.get(1).functionResponses())
+        .containsExactly(
+            FunctionResponse.builder()
+                .id("call-missing")
+                .name("no_such_tool")
+                .response(ImmutableMap.of("error", UNKNOWN_TOOL_ERROR))
+                .build(),
+            FunctionResponse.builder()
+                .id("call-echo")
+                .name("echoTool")
+                .response(ImmutableMap.of("message", "hi"))
+                .build())
+        .inOrder();
   }
 
   /**
