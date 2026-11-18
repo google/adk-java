@@ -39,6 +39,7 @@ import com.google.adk.kt.agents.LlmAgent as KtLlmAgent
 import com.google.adk.kt.agents.ResumabilityConfig as KtResumabilityConfig
 import com.google.adk.kt.agents.RunConfig as KtRunConfig
 import com.google.adk.kt.agents.StreamingMode as KtStreamingMode
+import com.google.adk.kt.agents.ToolExecutionMode as KtToolExecutionMode
 import com.google.adk.kt.agents.TypedData
 import com.google.adk.kt.annotations.ExperimentalLiveApi
 import com.google.adk.kt.annotations.ExperimentalWorkflowApi
@@ -2037,6 +2038,7 @@ class KtRunnerInteropTest {
           JavaRunConfig.builder()
             .streamingMode(JavaRunConfig.StreamingMode.SSE)
             .maxLlmCalls(7)
+            .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
             .autoCreateSession(true)
             .build(),
         )
@@ -2047,6 +2049,11 @@ class KtRunnerInteropTest {
     val seen = assertNotNull(plugin.seen, "the plugin should have been handed the run config")
     assertEquals(JavaRunConfig.StreamingMode.SSE, seen.streamingMode(), "streamingMode should map")
     assertEquals(7, seen.maxLlmCalls(), "maxLlmCalls should map")
+    assertEquals(
+      JavaRunConfig.ToolExecutionMode.SEQUENTIAL,
+      seen.toolExecutionMode(),
+      "toolExecutionMode should map",
+    )
   }
 
   @Test
@@ -2353,10 +2360,7 @@ class KtRunnerInteropTest {
     val model = EchoLiveModel()
     val queue = LiveRequestQueue()
     val config =
-      JavaRunConfig.builder()
-        .autoCreateSession(true)
-        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
-        .build()
+      JavaRunConfig.builder().autoCreateSession(true).dollarEscapedPlaceholders(true).build()
 
     val unused = liveJavaRunner(model).runLive("u", "s", queue, config)
 
@@ -2367,17 +2371,14 @@ class KtRunnerInteropTest {
   @Test
   fun asJavaRunner_runLive_unsupportedRunConfig_failsTheStreamNamingTheSetting() {
     val config =
-      JavaRunConfig.builder()
-        .autoCreateSession(true)
-        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
-        .build()
+      JavaRunConfig.builder().autoCreateSession(true).dollarEscapedPlaceholders(true).build()
 
     val events =
       liveJavaRunner(EchoLiveModel()).runLive("u", "s", LiveRequestQueue(), config).test()
 
     events.awaitDone(10, TimeUnit.SECONDS)
     events.assertError {
-      it is IllegalArgumentException && "toolExecutionMode" in it.message.orEmpty()
+      it is IllegalArgumentException && "dollarEscapedPlaceholders" in it.message.orEmpty()
     }
   }
 
@@ -2649,7 +2650,6 @@ class KtRunnerInteropTest {
   fun runConfigFromJavaLive_settingsTheEngineCannotHonor_failNamingThem() {
     val java =
       JavaRunConfig.builder()
-        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
         .avatarConfig(GenaiAvatarConfig.builder().avatarName("a").build())
         .groupFunctionResponsesInHistoryOverride(Optional.of(true))
         .dollarEscapedPlaceholders(true)
@@ -2669,8 +2669,8 @@ class KtRunnerInteropTest {
     val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJavaLive(java) }
 
     assertEquals(
-      "RunConfig settings not supported by the ADK Kotlin engine: [toolExecutionMode, " +
-        "avatarConfig, groupFunctionResponsesInHistoryOverride, dollarEscapedPlaceholders, " +
+      "RunConfig settings not supported by the ADK Kotlin engine: " +
+        "[avatarConfig, groupFunctionResponsesInHistoryOverride, dollarEscapedPlaceholders, " +
         "outputAudioTranscription.languageAuto, outputAudioTranscription.languageHints, " +
         "outputAudioTranscription.adaptationPhrases, outputAudioTranscription.mode, " +
         "inputAudioTranscription.adaptationPhrases]",
@@ -2706,6 +2706,31 @@ class KtRunnerInteropTest {
 
     assertEquals(7, kt.maxLlmCalls)
     assertEquals<Map<String, Any?>?>(mapOf("k" to "v"), kt.customMetadata)
+  }
+
+  @Test
+  fun runConfigFromJavaLive_toolExecutionMode_maps() {
+    fun fromJavaLive(mode: JavaRunConfig.ToolExecutionMode) =
+      RunConfigCodec.fromJavaLive(JavaRunConfig.builder().toolExecutionMode(mode).build())
+        .toolExecutionMode
+
+    assertEquals(
+      KtToolExecutionMode.PARALLEL,
+      fromJavaLive(JavaRunConfig.ToolExecutionMode.NONE),
+      "NONE should default to PARALLEL",
+    )
+    assertEquals(
+      KtToolExecutionMode.PARALLEL,
+      fromJavaLive(JavaRunConfig.ToolExecutionMode.PARALLEL),
+    )
+    assertEquals(
+      KtToolExecutionMode.PARALLEL,
+      fromJavaLive(JavaRunConfig.ToolExecutionMode.PARALLEL_SUBSCRIBE),
+    )
+    assertEquals(
+      KtToolExecutionMode.SEQUENTIAL,
+      fromJavaLive(JavaRunConfig.ToolExecutionMode.SEQUENTIAL),
+    )
   }
 
   @Test
@@ -6891,7 +6916,6 @@ class KtRunnerInteropTest {
   fun runConfigFromJava_settingsNoRunCanHonor_failNamingThem() {
     val java =
       JavaRunConfig.builder()
-        .toolExecutionMode(JavaRunConfig.ToolExecutionMode.SEQUENTIAL)
         .avatarConfig(GenaiAvatarConfig.builder().avatarName("a").build())
         .groupFunctionResponsesInHistoryOverride(Optional.of(true))
         .dollarEscapedPlaceholders(true)
@@ -6900,8 +6924,8 @@ class KtRunnerInteropTest {
     val failure = assertFailsWith<IllegalArgumentException> { RunConfigCodec.fromJava(java) }
 
     assertEquals(
-      "RunConfig settings not supported by the ADK Kotlin engine: [toolExecutionMode, " +
-        "avatarConfig, groupFunctionResponsesInHistoryOverride, dollarEscapedPlaceholders]",
+      "RunConfig settings not supported by the ADK Kotlin engine: " +
+        "[avatarConfig, groupFunctionResponsesInHistoryOverride, dollarEscapedPlaceholders]",
       failure.message,
     )
   }
@@ -6956,6 +6980,37 @@ class KtRunnerInteropTest {
     assertEquals(5, kt.maxLlmCalls)
     assertEquals(KtStreamingMode.SSE, kt.streamingMode)
     assertEquals<Map<String, Any?>?>(mapOf("k" to "v"), kt.customMetadata)
+  }
+
+  @Test
+  fun runConfigFromJava_toolExecutionMode_maps() {
+    fun fromJava(mode: JavaRunConfig.ToolExecutionMode) =
+      RunConfigCodec.fromJava(JavaRunConfig.builder().toolExecutionMode(mode).build())
+        .toolExecutionMode
+
+    assertEquals(
+      KtToolExecutionMode.PARALLEL,
+      fromJava(JavaRunConfig.ToolExecutionMode.NONE),
+      "NONE should default to PARALLEL",
+    )
+    assertEquals(KtToolExecutionMode.PARALLEL, fromJava(JavaRunConfig.ToolExecutionMode.PARALLEL))
+    assertEquals(
+      KtToolExecutionMode.PARALLEL,
+      fromJava(JavaRunConfig.ToolExecutionMode.PARALLEL_SUBSCRIBE),
+    )
+    assertEquals(
+      KtToolExecutionMode.SEQUENTIAL,
+      fromJava(JavaRunConfig.ToolExecutionMode.SEQUENTIAL),
+    )
+  }
+
+  @Test
+  fun runConfigToJava_toolExecutionMode_maps() {
+    fun toJava(mode: KtToolExecutionMode) =
+      RunConfigCodec.toJava(KtRunConfig(toolExecutionMode = mode)).toolExecutionMode()
+
+    assertEquals(JavaRunConfig.ToolExecutionMode.PARALLEL, toJava(KtToolExecutionMode.PARALLEL))
+    assertEquals(JavaRunConfig.ToolExecutionMode.SEQUENTIAL, toJava(KtToolExecutionMode.SEQUENTIAL))
   }
 
   /**
