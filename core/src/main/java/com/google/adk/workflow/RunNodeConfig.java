@@ -52,6 +52,12 @@ public abstract class RunNodeConfig {
   public abstract Optional<String> overrideBranch();
 
   /**
+   * Returns the isolation scope the child runs in instead of its caller's, if any. The child's
+   * descendants inherit it, and their events carry it unless they set their own.
+   */
+  public abstract Optional<String> overrideIsolationScope();
+
+  /**
    * Returns whether a {@link Workflow} or wait-for-output child that finishes without an output
    * ends its caller's run, as an interrupt does, instead of completing the call empty.
    */
@@ -87,6 +93,9 @@ public abstract class RunNodeConfig {
 
     @CanIgnoreReturnValue
     public abstract Builder overrideBranch(@Nullable String overrideBranch);
+
+    @CanIgnoreReturnValue
+    public abstract Builder overrideIsolationScope(@Nullable String overrideIsolationScope);
 
     @CanIgnoreReturnValue
     public abstract Builder raiseOnWait(boolean raiseOnWait);

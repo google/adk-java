@@ -88,6 +88,7 @@ public final class NodeRunner {
   private final boolean useAsOutput;
   private final boolean useSubBranch;
   private final @Nullable String overrideBranch;
+  private final @Nullable String overrideIsolationScope;
   private final Map<String, @Nullable Object> resumeInputs;
 
   private NodeRunner(Builder builder) {
@@ -111,7 +112,19 @@ public final class NodeRunner {
     this.useAsOutput = builder.useAsOutput;
     this.useSubBranch = builder.useSubBranch;
     this.overrideBranch = builder.overrideBranch;
+    this.overrideIsolationScope = builder.overrideIsolationScope;
     this.resumeInputs = builder.resumeInputs;
+  }
+
+  /**
+   * Returns whether {@code error} signals that a child node waits, which must end its caller's run
+   * so the caller waits too, rather than count as a failure.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean isWaitSignal(Throwable error) {
+    return error instanceof NodeInterruptedException;
   }
 
   /** Returns a builder for a runner of one node. */
@@ -258,50 +271,50 @@ public final class NodeRunner {
 
   /**
    * Returns the run of {@code node} under {@code runId} shared by the caller's calls with that run
-   * ID, starting it if needed. A run that fails or waits for an output it did not produce is not
-   * shared, so a later call runs the child again. The run is canceled only once every call waiting
-   * on it is canceled.
+   * ID, starting it if needed, with the handoffs it requests. A run that fails or waits for an
+   * output it did not produce is not shared, so a later call runs the child again. The run is
+   * canceled only once every call waiting on it is canceled.
    */
   private static Single<Context> sharedChildRun(
       Context parent, Node node, @Nullable Object nodeInput, String runId, RunNodeConfig config) {
-    return Single.defer(
-        () -> {
-          ConcurrentMap<String, SharedChildRun> childRuns = parent.requireNodeState().childRuns();
-          String childKey = segment(node.name(), runId);
-          SharedChildRun created = new SharedChildRun();
-          SharedChildRun existing = childRuns.putIfAbsent(childKey, created);
-          SharedChildRun run = existing != null ? existing : created;
-          if (!run.join()) {
-            // The run was canceled as this call joined it, so this call starts a new run.
-            childRuns.remove(childKey, run);
-            return sharedChildRun(parent, node, nodeInput, runId, config);
-          }
-          Single<Context> call =
-              run.result.doOnDispose(
-                  () -> {
-                    if (run.leave()) {
-                      childRuns.remove(childKey, run);
-                    }
-                  });
-          if (existing != null) {
-            return call;
-          }
-          // Start after the call subscribes, so a cancel reaches a child blocked as it starts.
-          return Single.create(
-              emitter -> {
-                emitter.setDisposable(call.subscribe(emitter::onSuccess, emitter::onError));
-                run.start(
-                    // Defer so a throw from scan or intercept fails the run instead of leaking it.
-                    Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
-                        .doOnSuccess(
-                            child -> {
-                              if (!keepsItsRun(child)) {
-                                childRuns.remove(childKey, run);
-                              }
-                            })
-                        .doOnError(error -> childRuns.remove(childKey, run)));
-              });
-        });
+    return Single.defer(() -> {
+      ConcurrentMap<String, SharedChildRun> childRuns = parent.requireNodeState().childRuns();
+      String childKey = segment(node.name(), runId);
+      SharedChildRun created = new SharedChildRun();
+      SharedChildRun existing = childRuns.putIfAbsent(childKey, created);
+      SharedChildRun run = existing != null ? existing : created;
+      if (!run.join()) {
+        // The run was canceled as this call joined it, so this call starts a new run.
+        childRuns.remove(childKey, run);
+        return sharedChildRun(parent, node, nodeInput, runId, config);
+      }
+      Single<Context> call =
+          run.result.doOnDispose(() -> {
+            if (run.leave()) {
+              childRuns.remove(childKey, run);
+            }
+          });
+      if (existing != null) {
+        return call;
+      }
+      // Start after the call subscribes, so a cancel reaches a child blocked as it starts.
+      return Single.create(emitter -> {
+        emitter.setDisposable(call.subscribe(emitter::onSuccess, emitter::onError));
+        run.start(
+            // Defer so a throw from scan or intercept fails the run instead of leaking it.
+            Single.defer(() -> runOrReplayChild(parent, node, nodeInput, runId, config))
+                .flatMap(first ->
+                    followHandoffs(parent, node, first, config)
+                        .doOnSuccess(last -> {
+                          // A handoff keeps the run unless its last target failed.
+                          if (!keepsItsRun(first)
+                              || last.requireNodeState().failure().isPresent()) {
+                            childRuns.remove(childKey, run);
+                          }
+                        }))
+                .doOnError(error -> childRuns.remove(childKey, run)));
+      });
+    });
   }
 
   /**
@@ -322,10 +335,17 @@ public final class NodeRunner {
             parentState.childCanceledMidRun(childKey),
             parentState.childFailedThisTurn(childKey));
     if (!interception.shouldRun()) {
-      // The caller reads only the replayed result, not the branch, so the parent's context will do.
+      // A handoff target resumes under the replayed node, so the node keeps its branch.
+      InvocationContext scheduled =
+          scheduledContext(
+              parent.invocationContext(),
+              config.overrideBranch().orElse(null),
+              config.useSubBranch(),
+              node.name(),
+              runId);
       return Single.just(
           ResumeScan.replayContext(
-              parent, parent.invocationContext(), node, runId, config.useAsOutput(), interception));
+              parent, scheduled, node, runId, config.useAsOutput(), interception));
     }
     return builder()
         .node(node)
@@ -334,9 +354,62 @@ public final class NodeRunner {
         .useAsOutput(config.useAsOutput())
         .useSubBranch(config.useSubBranch())
         .overrideBranch(config.overrideBranch().orElse(null))
+        // As in Python, a rerun keeps the scope it ran in, so a caller that picks a fresh scope
+        // each turn does not split the child's history.
+        .overrideIsolationScope(
+            recovered != null && recovered.isolationScope != null
+                ? recovered.isolationScope.orElse(null)
+                : config.overrideIsolationScope().orElse(null))
         .resumeInputs(interception.resumeInputs())
         .build()
         .run(nodeInput);
+  }
+
+  /**
+   * Follows the handoffs that {@code first}, a run of {@code node} that {@code caller} started with
+   * {@code config}, requests, and returns the context of the run that ends the loop. Each target
+   * runs, or replays, under the context it resolves to with the branch settings of {@code config},
+   * or at the top of the invocation.
+   */
+  static Single<Context> followHandoffs(
+      Context caller, Node node, Context first, RunNodeConfig config) {
+    return TransferTarget.followHandoffs(
+        node,
+        first,
+        caller,
+        target -> {
+          String name = target.agent().name();
+          // An agent name may contain '.', which no node path or branch can hold.
+          NodeNames.validate(name);
+          Context parent = target.parent();
+          if (parent == null) {
+            return runAtTopLevel(target.agent(), caller);
+          }
+          String runId = parent.requireNodeState().nextChildRunId(name);
+          // Only a run under the caller can stand in for the caller's output.
+          RunNodeConfig hop =
+              config.toBuilder().useAsOutput(config.useAsOutput() && parent.equals(caller)).build();
+          return runOrReplayChild(parent, target.agent(), /* nodeInput= */ null, runId, hop);
+        });
+  }
+
+  /**
+   * Runs {@code node} at the top of the invocation, beside the root node above {@code context}, or
+   * replays it from history.
+   */
+  private static Single<Context> runAtTopLevel(Node node, Context context) {
+    Context root = context;
+    while (root.requireNodeState().parent().isPresent()) {
+      root = root.requireNodeState().parent().get();
+    }
+    NodeExecutionState rootState = root.requireNodeState();
+    return builder()
+        .node(node)
+        .invocationContext(root.invocationContext())
+        .eventSink(rootState.eventSink())
+        .runId(rootState.nextTopLevelRunId(node.name()))
+        .build()
+        .run(/* nodeInput= */ null);
   }
 
   /**
@@ -474,6 +547,7 @@ public final class NodeRunner {
             .parent(parent)
             .runId(runId)
             .useAsOutput(useAsOutput)
+            .isolationScope(overrideIsolationScope)
             .resumeInputs(resumeInputs)
             .previousAttempt(previousAttempt)
             .build());
@@ -754,6 +828,7 @@ public final class NodeRunner {
           .author(author.isEmpty() ? node.name() : author)
           .invocationId(eventContext.invocationId())
           .branch(event.branch().orElse(eventContext.branch().orElse(null)))
+          .isolationScope(event.isolationScope().orElse(nodeState.isolationScope().orElse(null)))
           .nodeInfo(
               nodeInfo.toBuilder()
                   .path(nodeState.nodePath())
@@ -881,6 +956,7 @@ public final class NodeRunner {
     private boolean useAsOutput;
     private boolean useSubBranch;
     private @Nullable String overrideBranch;
+    private @Nullable String overrideIsolationScope;
     private Map<String, @Nullable Object> resumeInputs = ImmutableMap.of();
 
     private Builder() {}
@@ -944,6 +1020,16 @@ public final class NodeRunner {
     @CanIgnoreReturnValue
     Builder overrideBranch(@Nullable String overrideBranch) {
       this.overrideBranch = overrideBranch;
+      return this;
+    }
+
+    /**
+     * Sets the isolation scope that replaces the inherited one, or null to keep the inherited
+     * scope.
+     */
+    @CanIgnoreReturnValue
+    Builder overrideIsolationScope(@Nullable String overrideIsolationScope) {
+      this.overrideIsolationScope = overrideIsolationScope;
       return this;
     }
 

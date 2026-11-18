@@ -62,14 +62,17 @@ public final class Basic implements RequestProcessor {
                     .orElseGet(() -> GenerateContentConfig.builder().build()))
             .liveConnectConfig(liveConnectConfigBuilder.build());
 
-    agent
-        .outputSchema()
-        .ifPresent(
-            outputSchema -> {
-              if (!OutputSchema.needsSetModelResponseTool(agent, modelName)) {
-                builder.outputSchema(outputSchema);
-              }
-            });
+    // A task node reports its structured output through finish_task instead.
+    if (!LlmAgent.runsAsTask(agent, context)) {
+      agent
+          .outputSchema()
+          .ifPresent(outputSchema -> {
+            if (!OutputSchema.needsSetModelResponseTool(agent, modelName, context)) {
+              builder.outputSchema(outputSchema);
+            }
+          });
+    }
+
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
   }

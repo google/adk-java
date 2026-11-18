@@ -16,7 +16,12 @@
 
 package com.google.adk.flows.llmflows;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+
 import com.google.adk.agents.InvocationContext;
+import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.Role;
 import com.google.adk.events.Event;
 import com.google.adk.tools.BaseTool;
 import com.google.common.collect.HashMultimap;
@@ -32,6 +37,8 @@ import com.google.genai.types.Part;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import org.jspecify.annotations.Nullable;
 
@@ -39,9 +46,8 @@ import org.jspecify.annotations.Nullable;
  * Decides how a resumable flow's next step continues: carry on to the model, stop because a call is
  * still unanswered, or run calls a previous run never executed.
  *
- * <p>Ports Python ADK's resume decision. Java has no per-call branch run ids, so the sub-branch
- * case Python recognizes (a HITL answer returning against a branch the call opened) has no
- * counterpart here and is treated as absent.
+ * <p>Ports Python ADK's resume decision. Of the sub-branch cases Python recognizes, only a user's
+ * answer on the branch a single-turn agent tool opened is handled, as in ADK Kotlin.
  */
 final class StepResume {
 
@@ -82,12 +88,20 @@ final class StepResume {
    * normal flow carries on, while a call that was never executed has to run first.
    */
   static Decision decide(InvocationContext context, Map<String, BaseTool> tools) {
-    if (!context.isResumable()) {
+    // Only branches that agent tools open are resumed here.
+    boolean hasAgentTools = context.agent().subAgents().stream().anyMatch(LlmAgent::runsAsTool);
+    if (!context.isResumable() && !hasAgentTools) {
       return CONTINUE;
     }
     ImmutableList<Event> events =
         context.events(/* currentInvocation= */ true, /* currentBranch= */ true);
-    if (events.isEmpty()) {
+    if (hasAgentTools) {
+      Optional<Event> subBranchCall = callThatOpenedBranchOfLatestAnswer(context, events);
+      if (subBranchCall.isPresent()) {
+        return new Decision(Action.REPLAY_CALLS, subBranchCall.get());
+      }
+    }
+    if (!context.isResumable() || events.isEmpty()) {
       return CONTINUE;
     }
     if (events.size() > 1) {
@@ -105,6 +119,54 @@ final class StepResume {
       return new Decision(Action.REPLAY_CALLS, last);
     }
     return CONTINUE;
+  }
+
+  /**
+   * Returns the agent's call event to replay when a user's answer came back on the {@code
+   * <agent>@<call id>} branch that one of the agent's calls opened for a single-turn agent tool,
+   * keeping only the calls nothing answered since. For example, a coordinator calls {@code helper}
+   * (id {@code c1}), the helper pauses on a long-running call, and the user answers on branch
+   * {@code helper@c1}: the coordinator runs the helper call again, which resumes the helper. Other
+   * events, such as the answer to a task delegated in the same step, can follow that answer.
+   */
+  private static Optional<Event> callThatOpenedBranchOfLatestAnswer(
+      InvocationContext context, List<Event> events) {
+    String agentName = context.agent().name();
+    @Nullable String agentBranch = context.branch().orElse(null);
+    for (int last = events.size() - 1; last >= 0; last--) {
+      Event answer = events.get(last);
+      // The agent's own later step means the answer was already taken up.
+      if (agentName.equals(answer.author()) && answer.content().isPresent()) {
+        return Optional.empty();
+      }
+      if (!Objects.equals(answer.author(), Role.USER) || answer.functionResponses().isEmpty()) {
+        continue;
+      }
+      // Only segments below the agent's own branch name the calls it made.
+      ImmutableSet<String> runIds =
+          BranchSegments.below(answer.branch().orElse(null), agentBranch).stream()
+              .flatMap(segment -> BranchSegments.runId(segment).stream())
+              .collect(toImmutableSet());
+      if (runIds.isEmpty()) {
+        continue;
+      }
+      for (int i = last - 1; i >= 0; i--) {
+        Event callEvent = events.get(i);
+        boolean opensBranch =
+            agentName.equals(callEvent.author())
+                && callEvent.functionCalls().stream()
+                    .anyMatch(call -> call.id().filter(runIds::contains).isPresent());
+        if (opensBranch) {
+          // A long-running call still waits for its own answer, so it does not run again here.
+          return Optional.ofNullable(
+                  unexecutedCalls(callEvent, events.subList(i + 1, events.size())))
+              .map(unexecuted ->
+                  withoutCalls(
+                      unexecuted, callEvent.longRunningToolIds().orElse(ImmutableSet.of())));
+        }
+      }
+    }
+    return Optional.empty();
   }
 
   /** The multi-event core: pause on an unanswered call, else replay an unexecuted one. */
@@ -209,6 +271,23 @@ final class StepResume {
     return callEvent.toBuilder()
         .content(callEvent.content().get().toBuilder().parts(keptParts).build())
         .build();
+  }
+
+  /** {@code event} without the calls whose IDs are in {@code ids}, or null when none is left. */
+  private static @Nullable Event withoutCalls(Event event, Set<String> ids) {
+    List<Part> parts = event.content().flatMap(Content::parts).orElse(ImmutableList.of());
+    ImmutableList<Part> kept =
+        parts.stream()
+            .filter(part ->
+                part.functionCall().flatMap(FunctionCall::id).filter(ids::contains).isEmpty())
+            .collect(toImmutableList());
+    if (kept.stream().noneMatch(part -> part.functionCall().isPresent())) {
+      return null;
+    }
+    if (kept.size() == parts.size()) {
+      return event;
+    }
+    return event.toBuilder().content(event.content().get().toBuilder().parts(kept).build()).build();
   }
 
   /**
