@@ -156,7 +156,16 @@ public class LlmAgent extends BaseAgent {
     this.outputSchema = Optional.ofNullable(builder.outputSchema);
     this.executor = Optional.ofNullable(builder.executor);
     this.outputKey = Optional.ofNullable(builder.outputKey);
-    this.toolsUnion = requireNonNullElse(builder.toolsUnion, ImmutableList.of());
+    // A single-turn sub-agent is offered as a tool, not as a transfer target.
+    this.toolsUnion =
+        ImmutableList.builder()
+            .addAll(requireNonNullElse(builder.toolsUnion, ImmutableList.of()))
+            .addAll(
+                subAgents().stream()
+                    .filter(LlmAgent::runsAsTool)
+                    .map(subAgent -> new SingleTurnAgentTool((LlmAgent) subAgent))
+                    .iterator())
+            .build();
     this.toolsets = extractToolsets(this.toolsUnion);
     this.codeExecutor = Optional.ofNullable(builder.codeExecutor);
     this.mode = Optional.ofNullable(builder.mode);
@@ -420,8 +429,7 @@ public class LlmAgent extends BaseAgent {
     public Builder beforeAgentCallbackSync(BeforeAgentCallbackSync beforeAgentCallbackSync) {
       this.beforeAgentCallback =
           ImmutableList.of(
-              (callbackContext) ->
-                  Maybe.fromOptional(beforeAgentCallbackSync.call(callbackContext)));
+              callbackContext -> Maybe.fromOptional(beforeAgentCallbackSync.call(callbackContext)));
       return this;
     }
 
@@ -429,8 +437,7 @@ public class LlmAgent extends BaseAgent {
     public Builder afterAgentCallbackSync(AfterAgentCallbackSync afterAgentCallbackSync) {
       this.afterAgentCallback =
           ImmutableList.of(
-              (callbackContext) ->
-                  Maybe.fromOptional(afterAgentCallbackSync.call(callbackContext)));
+              callbackContext -> Maybe.fromOptional(afterAgentCallbackSync.call(callbackContext)));
       return this;
     }
 
@@ -806,10 +813,10 @@ public class LlmAgent extends BaseAgent {
    * {@code BaseLlmFlow} when the target is gone; a resumed one has no such check, and returning
    * empty here would silently re-run this agent instead of the sub-agent it handed off to.
    */
-  private BaseAgent resolveTransferTarget(String targetName) {
+  private BaseAgent resolveTransferTarget(InvocationContext context, String targetName) {
     // Declared targets first, as in Python, so a same-named agent on an unrelated branch is not
     // resumed into; then the same tree-wide search the live transfer path uses.
-    for (BaseAgent target : transferTargets()) {
+    for (BaseAgent target : transferTargets(context)) {
       if (target.name().equals(targetName)) {
         return target;
       }
@@ -836,7 +843,7 @@ public class LlmAgent extends BaseAgent {
     }
     Event lastEvent = Iterables.getLast(events);
     if (name().equals(lastEvent.author())) {
-      return transferTargetNameFrom(lastEvent).map(this::resolveTransferTarget);
+      return transferTargetNameFrom(lastEvent).map(name -> resolveTransferTarget(context, name));
     }
     if (Objects.equals(lastEvent.author(), Role.USER) && !lastEvent.functionResponses().isEmpty()) {
       // IAE (not ISE): an unresolvable resume surfaces through Runner.runAsync's IAE contract.
@@ -862,7 +869,7 @@ public class LlmAgent extends BaseAgent {
       }
       Optional<String> targetName = transferTargetNameFrom(event);
       if (targetName.isPresent()) {
-        return Optional.of(resolveTransferTarget(targetName.get()));
+        return Optional.of(resolveTransferTarget(context, targetName.get()));
       }
     }
     return Optional.empty();
@@ -1181,6 +1188,17 @@ public class LlmAgent extends BaseAgent {
     return setsMode(rootAgent()) ? AgentMode.CHAT : null;
   }
 
+  /**
+   * Returns whether {@code agent} is a {@link AgentMode#SINGLE_TURN} agent, which its parent calls
+   * as a tool rather than transfers to.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean runsAsTool(BaseAgent agent) {
+    return agent instanceof LlmAgent llmAgent && llmAgent.hasMode(AgentMode.SINGLE_TURN);
+  }
+
   private static boolean setsMode(BaseAgent agent) {
     return (agent instanceof LlmAgent llmAgent && llmAgent.mode.isPresent())
         || agent.subAgents().stream().anyMatch(LlmAgent::setsMode);
@@ -1190,6 +1208,10 @@ public class LlmAgent extends BaseAgent {
     return canonicalTools().toList();
   }
 
+  /**
+   * Returns the configured tools and toolsets, followed by one tool per {@link
+   * AgentMode#SINGLE_TURN} sub-agent.
+   */
   public List<Object> toolsUnion() {
     return toolsUnion;
   }
@@ -1208,11 +1230,34 @@ public class LlmAgent extends BaseAgent {
 
   /**
    * Returns the agents this one may transfer to: its sub-agents, plus its parent and peers unless
-   * disallowed. Transfer to a parent or peer needs an {@link LlmAgent} parent. Package-private
-   * because {@code AgentTransfer} cannot reach it and keeps its own copy of the same rule.
+   * disallowed, in the order the model sees them. Transfer to a parent or peer needs an {@link
+   * LlmAgent} parent, and an agent its parent calls as a tool is no transfer target.
+   *
+   * <p>This method is only for use by Agent Development Kit.
    */
-  ImmutableList<BaseAgent> transferTargets() {
-    List<BaseAgent> targets = new ArrayList<>(subAgents());
+  @Experimental
+  public ImmutableList<BaseAgent> transferTargets() {
+    return transferTargets(/* inWorkflow= */ true);
+  }
+
+  /**
+   * Returns the agents this one may transfer to in {@code context}. Outside a workflow a
+   * single-turn agent cannot run as a tool, so it stays a transfer target, as before modes.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public ImmutableList<BaseAgent> transferTargets(InvocationContext context) {
+    return transferTargets(/* inWorkflow= */ context.nodePath().isPresent());
+  }
+
+  private ImmutableList<BaseAgent> transferTargets(boolean inWorkflow) {
+    List<BaseAgent> targets = new ArrayList<>();
+    for (BaseAgent subAgent : subAgents()) {
+      if (!inWorkflow || !runsAsTool(subAgent)) {
+        targets.add(subAgent);
+      }
+    }
     BaseAgent parent = parentAgent();
     if (!(parent instanceof LlmAgent)) {
       return ImmutableList.copyOf(targets);
@@ -1222,7 +1267,7 @@ public class LlmAgent extends BaseAgent {
     }
     if (!disallowTransferToPeers()) {
       for (BaseAgent peer : parent.subAgents()) {
-        if (!peer.name().equals(name())) {
+        if (!peer.name().equals(name()) && (!inWorkflow || !runsAsTool(peer))) {
           targets.add(peer);
         }
       }

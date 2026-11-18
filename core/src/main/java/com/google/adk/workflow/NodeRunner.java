@@ -116,6 +116,17 @@ public final class NodeRunner {
     this.resumeInputs = builder.resumeInputs;
   }
 
+  /**
+   * Returns whether {@code error} signals that a child node waits, which must end its caller's run
+   * so the caller waits too, rather than count as a failure.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean isWaitSignal(Throwable error) {
+    return error instanceof NodeInterruptedException;
+  }
+
   /** Returns a builder for a runner of one node. */
   static Builder builder() {
     return new Builder();

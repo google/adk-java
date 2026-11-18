@@ -93,6 +93,7 @@ public class InvocationContext {
   private final @Nullable AgentModeOverride agentModeOverride;
   private final @Nullable String nodePath;
   private final @Nullable String isolationScope;
+  private final @Nullable Context nodeContext;
   private boolean endInvocation;
 
   protected InvocationContext(Builder builder) {
@@ -110,6 +111,7 @@ public class InvocationContext {
     this.agentModeOverride = builder.agentModeOverride;
     this.nodePath = builder.nodePath;
     this.isolationScope = builder.isolationScope;
+    this.nodeContext = builder.nodeContext;
     this.session = builder.session;
     this.userContent = builder.userContent;
     this.runConfig = builder.runConfig;
@@ -238,6 +240,14 @@ public class InvocationContext {
   @Experimental
   public Optional<String> isolationScope() {
     return Optional.ofNullable(isolationScope);
+  }
+
+  /**
+   * Returns the context of the workflow node that the agent runs as, so its tools can run a
+   * sub-agent as a child node, or empty outside a workflow and for the node agent's sub-agents.
+   */
+  Optional<Context> nodeContext() {
+    return Optional.ofNullable(nodeContext);
   }
 
   /**
@@ -750,6 +760,7 @@ public class InvocationContext {
       this.agentModeOverride = context.agentModeOverride;
       this.nodePath = context.nodePath;
       this.isolationScope = context.isolationScope;
+      this.nodeContext = context.nodeContext;
       this.session = context.session;
       this.userContent = context.userContent;
       this.runConfig = context.runConfig;
@@ -786,6 +797,7 @@ public class InvocationContext {
     private @Nullable AgentModeOverride agentModeOverride;
     private @Nullable String nodePath;
     private @Nullable String isolationScope;
+    private @Nullable Context nodeContext;
     private Session session;
     @Nullable private Content userContent = null;
     private RunConfig runConfig = RunConfig.builder().build();
@@ -922,6 +934,13 @@ public class InvocationContext {
     @CanIgnoreReturnValue
     Builder isolationScope(@Nullable String isolationScope) {
       this.isolationScope = isolationScope;
+      return this;
+    }
+
+    /** Sets the context of the workflow node that the agent runs as. */
+    @CanIgnoreReturnValue
+    Builder nodeContext(@Nullable Context nodeContext) {
+      this.nodeContext = nodeContext;
       return this;
     }
 
@@ -1137,6 +1156,7 @@ public class InvocationContext {
         && Objects.equals(agentModeOverride, that.agentModeOverride)
         && Objects.equals(nodePath, that.nodePath)
         && Objects.equals(isolationScope, that.isolationScope)
+        && Objects.equals(nodeContext, that.nodeContext)
         && Objects.equals(session, that.session)
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
@@ -1166,6 +1186,7 @@ public class InvocationContext {
         agentModeOverride,
         nodePath,
         isolationScope,
+        nodeContext,
         session,
         userContent,
         runConfig,

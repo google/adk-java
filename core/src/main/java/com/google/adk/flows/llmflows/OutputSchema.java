@@ -54,7 +54,7 @@ public final class OutputSchema implements RequestProcessor {
     LlmAgent agent = (LlmAgent) context.agent();
     String modelName = request.model().orElse("");
 
-    if (agent.outputSchema().isEmpty() || !needsSetModelResponseTool(agent, modelName)) {
+    if (agent.outputSchema().isEmpty() || !needsSetModelResponseTool(context, agent, modelName)) {
       return Single.just(RequestProcessingResult.create(request, ImmutableList.of()));
     }
 
@@ -83,9 +83,10 @@ public final class OutputSchema implements RequestProcessor {
    * requests declare function tools, counting the transfer_to_agent tool that agent transfer adds,
    * and its model cannot take a response schema alongside them.
    */
-  static boolean needsSetModelResponseTool(LlmAgent agent, String modelName) {
+  static boolean needsSetModelResponseTool(
+      InvocationContext context, LlmAgent agent, String modelName) {
     boolean hasFunctionTools =
-        !agent.toolsUnion().isEmpty() || !AgentTransfer.transferTargets(agent).isEmpty();
+        !agent.toolsUnion().isEmpty() || !agent.transferTargets(context).isEmpty();
     return hasFunctionTools && !takesOutputSchemaWithTools(agent.resolvedModel(), modelName);
   }
 

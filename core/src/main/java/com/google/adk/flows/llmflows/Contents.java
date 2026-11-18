@@ -18,6 +18,7 @@ package com.google.adk.flows.llmflows;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.google.adk.JsonBaseModel;
@@ -88,10 +89,18 @@ public final class Contents implements RequestProcessor {
 
     @Nullable String nodePath = context.nodePath().orElse(null);
     @Nullable String isolationScope = context.isolationScope().orElse(null);
+    // An agent sees a tool that ran a node on its own branch only through the tool's response.
+    ImmutableSet<String> recordedCallIds =
+        context.session().immutableEvents().stream()
+            .flatMap(event -> callIds(event).stream())
+            .collect(toImmutableSet());
     ImmutableList<Event> sessionEvents =
         context.session().immutableEvents().stream()
             .filter(event -> Objects.equals(event.isolationScope().orElse(null), isolationScope))
             .filter(event -> !context.isOtherNodeInput(event))
+            .filter(event ->
+                !isOnToolBranch(
+                    event, context.branch().orElse(null), context.agent().name(), recordedCallIds))
             .collect(toImmutableList());
     LlmAgent.IncludeContents includeContents = includeContents(llmAgent, context);
     boolean singleTurn =
@@ -199,6 +208,21 @@ public final class Contents implements RequestProcessor {
     } catch (JsonProcessingException e) {
       return args.toString();
     }
+  }
+
+  /**
+   * Returns whether {@code event} sits below {@code currentBranch} on a {@code <tool>@<call id>}
+   * branch for a call in {@code callIds}, as in Python ADK, since the caller sees only the tool's
+   * response. A segment that names {@code agentName} is the agent's own branch when it runs as a
+   * tool, so it does not count.
+   */
+  private static boolean isOnToolBranch(
+      Event event, @Nullable String currentBranch, String agentName, Set<String> callIds) {
+    return !callIds.isEmpty()
+        && BranchSegments.below(event.branch().orElse(null), currentBranch).stream()
+            .anyMatch(segment ->
+                BranchSegments.runId(segment).filter(callIds::contains).isPresent()
+                    && !BranchSegments.name(segment).filter(agentName::equals).isPresent());
   }
 
   /**

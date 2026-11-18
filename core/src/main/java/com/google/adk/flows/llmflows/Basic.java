@@ -64,12 +64,11 @@ public final class Basic implements RequestProcessor {
 
     agent
         .outputSchema()
-        .ifPresent(
-            outputSchema -> {
-              if (!OutputSchema.needsSetModelResponseTool(agent, modelName)) {
-                builder.outputSchema(outputSchema);
-              }
-            });
+        .ifPresent(outputSchema -> {
+          if (!OutputSchema.needsSetModelResponseTool(context, agent, modelName)) {
+            builder.outputSchema(outputSchema);
+          }
+        });
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(builder.build(), ImmutableList.of()));
   }
