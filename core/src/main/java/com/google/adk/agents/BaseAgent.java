@@ -517,7 +517,10 @@ public abstract class BaseAgent extends BaseNode {
       com.google.adk.agents.Context context, InvocationContext invocationContext) {
     NodeExecutionState nodeState = context.requireNodeState();
     return runWithCallbacks(
-            invocationContext.toBuilder().nodePath(nodeState.nodePath()).build(),
+            invocationContext.toBuilder()
+                .nodePath(nodeState.nodePath())
+                .isolationScope(nodeState.isolationScope().orElse(null))
+                .build(),
             /* keepBranch= */ true,
             this::runAsyncImpl)
         .doOnNext(event -> {

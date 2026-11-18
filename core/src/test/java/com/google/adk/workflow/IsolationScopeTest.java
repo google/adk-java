@@ -16,6 +16,8 @@
 
 package com.google.adk.workflow;
 
+import static com.google.adk.testing.ResumabilityTestUtils.pendingFunctionTool;
+import static com.google.adk.testing.TestUtils.createFunctionCallLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.adk.testing.TestUtils.createTextLlmResponse;
 import static com.google.adk.testing.WorkflowTestNodes.dispatcher;
@@ -35,6 +37,7 @@ import static com.google.adk.workflow.WorkflowResumeTesting.pathOf;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
@@ -42,17 +45,22 @@ import com.google.adk.events.Event;
 import com.google.adk.plugins.BasePlugin;
 import com.google.adk.runner.Runner;
 import com.google.adk.sessions.Session;
+import com.google.adk.testing.TestLlm;
 import com.google.adk.testing.TestNode;
+import com.google.adk.testing.TestUtils.EchoTool;
 import com.google.adk.workflow.WorkflowResumeTesting.WorkflowSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
+import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.core.Maybe;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.jspecify.annotations.Nullable;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -62,6 +70,9 @@ public final class IsolationScopeTest {
 
   private static final RunNodeConfig TASK_SCOPE =
       RunNodeConfig.builder().overrideIsolationScope("task-1").build();
+  private static final String SINGLE_TURN_NOTE =
+      "Important: You will not receive any user replies or clarifications."
+          + " Complete the task using only the information provided above.";
 
   @Test
   public void runNode_overrideIsolationScope_scopesTheChildsEventsOnly() {
@@ -390,9 +401,215 @@ public final class IsolationScopeTest {
         .collect(onlyElement());
   }
 
+  @Test
+  public void scopedAgent_doesNotSeeUnscopedEvents() {
+    Node earlier = emitting("earlier", modelText("earlier reply"));
+    TestLlm model = TestLlm.create("done");
+    Node caller = runningInScope("caller", agent(model), TASK_SCOPE);
+
+    new WorkflowSession(workflow(new Edge(START, earlier), new Edge(earlier, caller)))
+        .advance(go());
+
+    assertThat(model.getLastRequest().contents()).containsExactly(go());
+  }
+
+  @Test
+  public void unscopedAgent_doesNotSeeScopedEvents() {
+    Node caller = runningInScope("caller", emitting("child", modelText("task reply")), TASK_SCOPE);
+    TestLlm model = TestLlm.create("done");
+    Node after = agent(model);
+
+    new WorkflowSession(workflow(new Edge(START, caller), new Edge(caller, after))).advance(go());
+
+    assertThat(model.getLastRequest().contents()).containsExactly(go());
+  }
+
+  @Test
+  public void scopedAgent_opensWithTheArgsOfTheCallWhoseIdIsTheScope() {
+    TestLlm model = TestLlm.create("done");
+
+    runAfterDelegation(ImmutableMap.of("request", "book a flight"), agent(model), null);
+
+    assertThat(model.getLastRequest().contents())
+        .containsExactly(userTurn(Part.fromText("{\"request\":\"book a flight\"}")));
+  }
+
+  @Test
+  public void scopedSingleTurnAgent_afterADelegatingCall_getsOnlyItsInput() {
+    TestLlm model = TestLlm.create(createTextLlmResponse("Paris"));
+    LlmAgent agent =
+        LlmAgent.builder().name("agent").model(model).mode(AgentMode.SINGLE_TURN).build();
+
+    runAfterDelegation(ImmutableMap.of("request", "book a flight"), agent, "Capital?");
+
+    assertThat(model.getLastRequest().contents())
+        .containsExactly(userTurn(Part.fromText("Capital?")));
+  }
+
+  @Test
+  public void scopedSingleTurnAgentWithoutInput_opensWithTheCallsArgsAndANoReplyNote() {
+    TestLlm model = TestLlm.create(createTextLlmResponse("Booked."));
+    LlmAgent agent =
+        LlmAgent.builder().name("agent").model(model).mode(AgentMode.SINGLE_TURN).build();
+
+    runAfterDelegation(ImmutableMap.of("request", "book a flight"), agent, null);
+
+    assertThat(model.getLastRequest().contents())
+        .containsExactly(
+            userTurn(
+                Part.fromText("{\"request\":\"book a flight\"}"), Part.fromText(SINGLE_TURN_NOTE)));
+  }
+
+  @Test
+  public void scopedAgent_callWithoutArgs_opensWithTheUsersMessage() {
+    TestLlm model = TestLlm.create("done");
+
+    runAfterDelegation(ImmutableMap.of(), agent(model), null);
+
+    assertThat(model.getLastRequest().contents()).containsExactly(go());
+  }
+
+  /** Runs {@code agent} on {@code input} in scope {@code task-1} after a call to {@code task-1}. */
+  private static void runAfterDelegation(
+      ImmutableMap<String, Object> args, LlmAgent agent, @Nullable Object input) {
+    Content delegation =
+        Content.builder()
+            .role("model")
+            .parts(
+                Part.builder()
+                    .functionCall(
+                        FunctionCall.builder().id("task-1").name("delegate").args(args).build())
+                    .build())
+            .build();
+    Node delegator = emitting("delegator", delegation);
+    Node caller =
+        dispatcher("caller", (ctx, unused) -> ctx.runNode(agent, input, TASK_SCOPE).toFlowable());
+    new WorkflowSession(workflow(new Edge(START, delegator), new Edge(delegator, caller)))
+        .advance(go());
+  }
+
+  @Test
+  public void scopedSingleTurnAgent_getsOnlyItsInputNotTheUsersMessage() {
+    TestLlm model = TestLlm.create(createTextLlmResponse("Paris"));
+    LlmAgent agent =
+        LlmAgent.builder().name("agent").model(model).mode(AgentMode.SINGLE_TURN).build();
+    Node caller =
+        dispatcher(
+            "caller", (ctx, input) -> ctx.runNode(agent, "Capital?", TASK_SCOPE).toFlowable());
+
+    new WorkflowSession(workflow(new Edge(START, caller))).advance(go());
+
+    assertThat(model.getLastRequest().contents())
+        .containsExactly(userTurn(Part.fromText("Capital?")));
+  }
+
+  @Test
+  public void scopedSingleTurnAgent_inputEqualToTheUsersMessage_stillGetsItInItsScope() {
+    TestLlm model = TestLlm.create(createTextLlmResponse("Paris"));
+    LlmAgent agent =
+        LlmAgent.builder().name("agent").model(model).mode(AgentMode.SINGLE_TURN).build();
+    Node caller =
+        dispatcher("caller", (ctx, input) -> ctx.runNode(agent, go(), TASK_SCOPE).toFlowable());
+
+    new WorkflowSession(workflow(new Edge(START, caller))).advance(go());
+
+    assertThat(model.getLastRequest().contents()).containsExactly(go());
+  }
+
+  @Test
+  public void scopedAgentWithoutHistoryOrATurnInItsScope_opensWithTheUsersMessage() {
+    TestLlm model = TestLlm.create("done");
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(model)
+            .includeContents(LlmAgent.IncludeContents.NONE)
+            .build();
+    Node caller = runningInScope("caller", agent, TASK_SCOPE);
+
+    new WorkflowSession(workflow(new Edge(START, caller))).advance(go());
+
+    assertThat(model.getLastRequest().contents()).containsExactly(go());
+  }
+
+  @Test
+  public void scopedAgentWithoutHistoryOrATurnInItsScope_opensWithTheDelegatingCallsArgs() {
+    TestLlm model = TestLlm.create("done");
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(model)
+            .includeContents(LlmAgent.IncludeContents.NONE)
+            .build();
+
+    runAfterDelegation(ImmutableMap.of("request", "book a flight"), agent, null);
+
+    assertThat(model.getLastRequest().contents())
+        .containsExactly(userTurn(Part.fromText("{\"request\":\"book a flight\"}")));
+  }
+
+  @Test
+  public void scopedAgentWithoutHistoryOrATurnInItsScope_seesItsOwnToolCallAndResponse() {
+    TestLlm model =
+        TestLlm.create(
+            createFunctionCallLlmResponse("call_1", "echo_tool", ImmutableMap.of("x", 1)),
+            createTextLlmResponse("done"));
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(model)
+            .includeContents(LlmAgent.IncludeContents.NONE)
+            .tools(new EchoTool())
+            .build();
+
+    runAfterDelegation(ImmutableMap.of("request", "book a flight"), agent, null);
+
+    List<Content> contents = model.getLastRequest().contents();
+    assertThat(contents).hasSize(3);
+    assertThat(contents.get(0))
+        .isEqualTo(userTurn(Part.fromText("{\"request\":\"book a flight\"}")));
+    assertThat(contents.get(1).parts().orElseThrow().get(0).functionCall()).isPresent();
+    assertThat(contents.get(2).parts().orElseThrow().get(0).functionResponse()).isPresent();
+  }
+
+  @Test
+  public void scopedAgent_seesTheUsersAnswerToItsCall() {
+    TestLlm model =
+        TestLlm.create(
+            createFunctionCallLlmResponse(
+                "call_1", "pendingTool", ImmutableMap.of("message", "hi")),
+            createTextLlmResponse("done"));
+    LlmAgent agent =
+        LlmAgent.builder().name("agent").model(model).tools(pendingFunctionTool()).build();
+    Node caller = runningInScope("caller", agent, TASK_SCOPE);
+    WorkflowSession session = new WorkflowSession(workflow(new Edge(START, caller)));
+    session.advance(go());
+
+    session.advance(answer("call_1", ImmutableMap.of("status", "approved"), "pendingTool"));
+
+    assertThat(
+            model.getLastRequest().contents().stream()
+                .flatMap(content -> content.parts().orElse(ImmutableList.of()).stream())
+                .flatMap(part -> part.functionResponse().stream())
+                .map(response -> response.response().orElse(ImmutableMap.of())))
+        .contains(ImmutableMap.of("status", "approved"));
+  }
+
   /** Returns a node that runs {@code child} with {@code config} and emits the child's output. */
   private static Node runningInScope(String name, Node child, RunNodeConfig config) {
     return dispatcher(name, (ctx, input) -> ctx.runNode(child, null, config).toFlowable());
+  }
+
+  private static Node emitting(String name, Content content) {
+    return new TestNode(name, (ctx, input) -> Flowable.just(newEvent().content(content).build()));
+  }
+
+  private static LlmAgent agent(TestLlm model) {
+    return LlmAgent.builder().name("agent").model(model).build();
+  }
+
+  private static Content userTurn(Part... parts) {
+    return Content.builder().role("user").parts(parts).build();
   }
 
   private static Optional<String> scopeAt(List<Event> events, String nodePath) {

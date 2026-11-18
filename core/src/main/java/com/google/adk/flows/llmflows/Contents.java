@@ -49,12 +49,17 @@ import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import org.jspecify.annotations.Nullable;
 
 /** {@link RequestProcessor} that populates content in request for LLM flows. */
 public final class Contents implements RequestProcessor {
+  private static final String SINGLE_TURN_NUDGE =
+      "Important: You will not receive any user replies or clarifications."
+          + " Complete the task using only the information provided above.";
+
   public Contents() {}
 
   @Override
@@ -82,13 +87,16 @@ public final class Contents implements RequestProcessor {
             .orElse(modelName.contains("gemini-3"));
 
     @Nullable String nodePath = context.nodePath().orElse(null);
+    @Nullable String isolationScope = context.isolationScope().orElse(null);
     ImmutableList<Event> sessionEvents =
         context.session().immutableEvents().stream()
+            .filter(event -> Objects.equals(event.isolationScope().orElse(null), isolationScope))
             .filter(event -> !context.isOtherNodeInput(event))
             .collect(toImmutableList());
     LlmAgent.IncludeContents includeContents = includeContents(llmAgent, context);
-    if (nodePath != null
-        && context.agentMode(llmAgent).filter(AgentMode.SINGLE_TURN::equals).isPresent()) {
+    boolean singleTurn =
+        context.agentMode(llmAgent).filter(AgentMode.SINGLE_TURN::equals).isPresent();
+    if (nodePath != null && singleTurn) {
       boolean keepAncestors = includeContents != LlmAgent.IncludeContents.NONE;
       // Filtered by branch first, so an answer to another branch's call counts as orphaned.
       sessionEvents =
@@ -99,26 +107,42 @@ public final class Contents implements RequestProcessor {
                   .collect(toImmutableList()));
     }
 
-    if (includeContents == LlmAgent.IncludeContents.NONE) {
-      return Single.just(
-          RequestProcessor.RequestProcessingResult.create(
-              request.toBuilder()
-                  .contents(
-                      getCurrentTurnContents(
-                          context.branch().orElse(null),
-                          sessionEvents,
-                          context.agent().name(),
-                          groupFunctionResponses))
-                  .build(),
-              ImmutableList.of()));
-    }
-
     ImmutableList<Content> contents =
-        getContents(
-            context.branch().orElse(null),
-            sessionEvents,
-            context.agent().name(),
-            groupFunctionResponses);
+        includeContents == LlmAgent.IncludeContents.NONE
+            ? getCurrentTurnContents(
+                context.branch().orElse(null),
+                sessionEvents,
+                context.agent().name(),
+                groupFunctionResponses)
+            : getContents(
+                context.branch().orElse(null),
+                sessionEvents,
+                context.agent().name(),
+                groupFunctionResponses);
+    boolean hasTurnInScope = !contents.isEmpty();
+    if (isolationScope != null && !hasTurnInScope) {
+      // With no turn in its scope, everything there is this agent's task, such as its own tool
+      // calls and their responses.
+      contents =
+          getContents(
+              context.branch().orElse(null),
+              sessionEvents,
+              context.agent().name(),
+              groupFunctionResponses);
+    }
+    if (isolationScope != null) {
+      // Without history, a turn in the scope comes after the delegating call, so only an agent
+      // with no turn there yet opens with that call's arguments.
+      Optional<Content> task =
+          taskInput(
+              context,
+              isolationScope,
+              includeContents != LlmAgent.IncludeContents.NONE || !hasTurnInScope,
+              singleTurn);
+      if (task.isPresent()) {
+        contents = ImmutableList.<Content>builder().add(task.get()).addAll(contents).build();
+      }
+    }
 
     return Single.just(
         RequestProcessor.RequestProcessingResult.create(
@@ -137,6 +161,44 @@ public final class Contents implements RequestProcessor {
     return singleTurnNode && !agent.includeContentsExplicit()
         ? LlmAgent.IncludeContents.NONE
         : agent.includeContents();
+  }
+
+  /**
+   * Returns the task of an agent in {@code isolationScope} as a user turn, since the scope hides
+   * the unscoped call that delegated it: with {@code searchCalls}, the arguments of the call whose
+   * ID is the scope, else the user's message, except for a single-turn agent, whose input is
+   * already in its scope. A single-turn agent is also told that no reply will come.
+   */
+  private static Optional<Content> taskInput(
+      InvocationContext context, String isolationScope, boolean searchCalls, boolean singleTurn) {
+    ImmutableList<Event> events =
+        searchCalls ? context.session().immutableEvents() : ImmutableList.of();
+    List<Part> task =
+        events.stream()
+            .flatMap(event -> event.functionCalls().stream())
+            .filter(call -> call.id().filter(isolationScope::equals).isPresent())
+            .flatMap(call -> call.args().filter(args -> !args.isEmpty()).stream())
+            .findFirst()
+            .<List<Part>>map(args -> ImmutableList.of(Part.fromText(argsText(args))))
+            .or(() -> singleTurn ? Optional.empty() : context.userContent().flatMap(Content::parts))
+            .orElse(ImmutableList.of());
+    if (task.isEmpty()) {
+      return Optional.empty();
+    }
+    List<Part> parts = new ArrayList<>(task);
+    if (singleTurn) {
+      parts.add(Part.fromText(SINGLE_TURN_NUDGE));
+    }
+    return Optional.of(Content.builder().role(Role.USER).parts(parts).build());
+  }
+
+  /** Writes call arguments as JSON, or as their text when a value has no JSON form. */
+  private static String argsText(Map<String, Object> args) {
+    try {
+      return JsonBaseModel.getMapper().writeValueAsString(args);
+    } catch (JsonProcessingException e) {
+      return args.toString();
+    }
   }
 
   /**

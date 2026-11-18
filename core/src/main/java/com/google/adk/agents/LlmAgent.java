@@ -946,9 +946,10 @@ public class LlmAgent extends BaseAgent {
    */
   private static Optional<Event> injectNodeInput(Context context, @Nullable Object nodeInput) {
     InvocationContext invocationContext = context.invocationContext();
+    String isolationScope = context.requireNodeState().isolationScope().orElse(null);
     if (nodeInput == null
         || !context.resumeInputs().isEmpty()
-        || isRecordedUserMessage(invocationContext, nodeInput)) {
+        || isRecordedUserMessage(invocationContext, nodeInput, isolationScope)) {
       return Optional.empty();
     }
     Event event =
@@ -959,6 +960,7 @@ public class LlmAgent extends BaseAgent {
             .content(nodeInputToUserContent(nodeInput))
             .branch(invocationContext.branch().orElse(null))
             .nodeInfo(NodeInfo.builder().path(context.requireNodeState().nodePath()).build())
+            .isolationScope(isolationScope)
             .timestamp(invocationContext.now().toEpochMilli())
             .build();
     // Tracked before it is added, so every copy of the session events that holds it can filter it.
@@ -969,13 +971,14 @@ public class LlmAgent extends BaseAgent {
 
   // As in ADK Kotlin; Python ADK adds the user message again and relies on its no-history default.
   private static boolean isRecordedUserMessage(
-      InvocationContext invocationContext, Object nodeInput) {
+      InvocationContext invocationContext, Object nodeInput, @Nullable String isolationScope) {
     return invocationContext.userContent().filter(nodeInput::equals).isPresent()
         && invocationContext.session().immutableEvents().stream()
             .anyMatch(event ->
                 invocationContext.invocationId().equals(event.invocationId())
                     && Objects.equals(event.author(), Role.USER)
                     && event.nodeInfo().map(NodeInfo::path).orElse("").isEmpty()
+                    && Objects.equals(event.isolationScope().orElse(null), isolationScope)
                     && event.content().filter(nodeInput::equals).isPresent());
   }
 

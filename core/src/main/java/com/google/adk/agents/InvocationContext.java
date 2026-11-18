@@ -92,6 +92,7 @@ public class InvocationContext {
   private final @Nullable Node node;
   private final @Nullable AgentModeOverride agentModeOverride;
   private final @Nullable String nodePath;
+  private final @Nullable String isolationScope;
   private boolean endInvocation;
 
   protected InvocationContext(Builder builder) {
@@ -108,6 +109,7 @@ public class InvocationContext {
     this.node = builder.node;
     this.agentModeOverride = builder.agentModeOverride;
     this.nodePath = builder.nodePath;
+    this.isolationScope = builder.isolationScope;
     this.session = builder.session;
     this.userContent = builder.userContent;
     this.runConfig = builder.runConfig;
@@ -225,6 +227,17 @@ public class InvocationContext {
   @Experimental
   public Optional<String> nodePath() {
     return Optional.ofNullable(nodePath);
+  }
+
+  /**
+   * Returns the isolation scope of the workflow node that the agent runs as, or empty when the node
+   * is unscoped or outside a workflow.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public Optional<String> isolationScope() {
+    return Optional.ofNullable(isolationScope);
   }
 
   /**
@@ -736,6 +749,7 @@ public class InvocationContext {
       this.node = context.node;
       this.agentModeOverride = context.agentModeOverride;
       this.nodePath = context.nodePath;
+      this.isolationScope = context.isolationScope;
       this.session = context.session;
       this.userContent = context.userContent;
       this.runConfig = context.runConfig;
@@ -771,6 +785,7 @@ public class InvocationContext {
     private @Nullable Node node;
     private @Nullable AgentModeOverride agentModeOverride;
     private @Nullable String nodePath;
+    private @Nullable String isolationScope;
     private Session session;
     @Nullable private Content userContent = null;
     private RunConfig runConfig = RunConfig.builder().build();
@@ -900,6 +915,13 @@ public class InvocationContext {
     @CanIgnoreReturnValue
     Builder nodePath(String nodePath) {
       this.nodePath = nodePath;
+      return this;
+    }
+
+    /** Sets the isolation scope of the workflow node that the agent runs as. */
+    @CanIgnoreReturnValue
+    Builder isolationScope(@Nullable String isolationScope) {
+      this.isolationScope = isolationScope;
       return this;
     }
 
@@ -1114,6 +1136,7 @@ public class InvocationContext {
         && Objects.equals(node, that.node)
         && Objects.equals(agentModeOverride, that.agentModeOverride)
         && Objects.equals(nodePath, that.nodePath)
+        && Objects.equals(isolationScope, that.isolationScope)
         && Objects.equals(session, that.session)
         && Objects.equals(userContent, that.userContent)
         && Objects.equals(runConfig, that.runConfig)
@@ -1142,6 +1165,7 @@ public class InvocationContext {
         node,
         agentModeOverride,
         nodePath,
+        isolationScope,
         session,
         userContent,
         runConfig,
