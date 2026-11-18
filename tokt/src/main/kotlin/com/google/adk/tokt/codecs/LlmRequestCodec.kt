@@ -18,6 +18,9 @@ package com.google.adk.tokt.codecs
 
 import com.google.adk.kt.models.LlmRequest as KtLlmRequest
 import com.google.adk.kt.types.GenerateContentConfig as KtConfig
+import com.google.adk.kt.types.LiveConnectConfig as KtLiveConnectConfig
+import com.google.adk.kt.types.Modality as KtModality
+import com.google.adk.kt.types.Role
 import com.google.adk.models.LlmRequest as JavaLlmRequest
 import kotlin.jvm.optionals.getOrNull
 
@@ -39,6 +42,37 @@ internal object LlmRequestCodec {
     builder.config(GenerateContentConfigCodec.toJava(request.config))
     return builder.build()
   }
+
+  /**
+   * Returns the Java [JavaLlmRequest] a Java model opens a live connection with. The agent's
+   * instruction, tools, thinking and safety settings are folded into its live config, because that
+   * is all a Java model reads when it connects. An unset response modality is sent as audio, which
+   * is what the Kotlin live config means by it; a Java connection without one opens as text.
+   */
+  fun toJavaLive(request: KtLlmRequest): JavaLlmRequest {
+    val liveConfig = request.liveConnectConfig.carryingAgentConfig(request.config)
+    val modalities = liveConfig.responseModalities.orEmpty().ifEmpty { listOf(KtModality.AUDIO) }
+    return toJava(request)
+      .toBuilder()
+      .liveConnectConfig(
+        LiveConnectConfigCodec.toJava(liveConfig.copy(responseModalities = modalities))
+      )
+      .build()
+  }
+
+  /**
+   * Returns this live config with the agent's instruction and tools, its thinking when set, and its
+   * safety settings when the live config has none.
+   */
+  private fun KtLiveConnectConfig.carryingAgentConfig(config: KtConfig): KtLiveConnectConfig =
+    copy(
+      // Instruction/tools replace the live config's; absent one omitted, not sent empty (1007).
+      systemInstruction = config.systemInstruction?.copy(role = Role.SYSTEM),
+      tools = config.tools,
+      // The agent's thinking wins; the live config's own safety wins over the agent's.
+      thinkingConfig = config.thinkingConfig ?: thinkingConfig,
+      safetySettings = safetySettings ?: config.safetySettings,
+    )
 
   /**
    * Returns the Kotlin [KtLlmRequest] view of the Java [request]. The model name is left unset; the
