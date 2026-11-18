@@ -16,6 +16,7 @@
 
 package com.google.adk.tokt.adapters
 
+import com.google.adk.kt.models.LlmCapabilities
 import com.google.adk.kt.models.LlmRequest
 import com.google.adk.kt.models.LlmResponse
 import com.google.adk.kt.models.Model
@@ -46,6 +47,13 @@ internal class JavaModelToKt(
 ) : Model {
 
   override val name: String = javaLlm.model()
+
+  // A Mockito mock of the Java model returns null; the Kotlin name rule decides then.
+  override val capabilities: LlmCapabilities
+    get() =
+      javaLlm.capabilities()?.let {
+        LlmCapabilities(outputSchemaAndTools = it.outputSchemaAndTools())
+      } ?: super.capabilities
 
   // Deferred into `flow {}` and run on dispatcher so the Java model's synchronous RxJava generation
   // (and any synchronous throw, routed through the Flow's error channel) stays off the engine loop.
