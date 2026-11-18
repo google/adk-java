@@ -1,15 +1,18 @@
 # Workflow Samples
 
-These samples build workflow graphs with the ADK workflow API. Each sample sets
-its workflow as an app's root node and runs it with `Runner`. Most of them port
-an adk-python workflow sample.
+These samples build workflow graphs with the ADK workflow API; the `*Demo`
+samples show parent agents calling single-turn or task sub-agents as tools. Each
+sample sets its workflow as an app's root node and runs it with `Runner`. Most
+of them port an adk-python sample.
 
 | Sample | What it shows | Calls Gemini |
 | --- | --- | --- |
+| `AgentInWorkflow` | A task agent chats with a patient until it has their name and phone number. A node routes back to it when no records match, or an agent looks up their orders with a tool requiring user approval. | Yes |
 | `ClassifierNodeWorkflow` | A classifier node routes a support ticket to the team that handles it, and a second classifier node decides whether a technical ticket is urgent. | Yes |
 | `DynamicFanOutFanInWorkflow` | A node runs a headline agent on each of the user's topics concurrently with `runNode` and tabulates the headlines. | Yes |
 | `DynamicNodesWorkflow` | A node runs a headline agent and a grader agent with `runNode` in a loop until the grader accepts the headline. | Yes |
 | `FanOutFanInWorkflow` | Three nodes transform the user's text concurrently, and a join combines their outputs. | No |
+| `InputOutputSchemaDemo` | A single-turn weather agent with input and output schemas is offered to its parent as a tool that takes a city and returns structured weather. | Yes |
 | `LoopSelfWorkflow` | A node routes back to itself until it guesses the user's number. | No |
 | `LoopWorkflow` | An agent writes a headline, a grader agent with an output schema judges it, and a node routes on the grader's output back to the writer until it passes. | Yes |
 | `MessageTriageWorkflow` | An agent labels a message, and a node emits a route per label so several handlers run. | Yes |
@@ -27,14 +30,17 @@ an adk-python workflow sample.
 | `ReturnsWorkflow` | Function tools run as graph steps, and a routing map matches groups of statuses with `anyOf`. | No |
 | `RouteWorkflow` | An agent classifies the input, and a node routes it to the agent or node that handles it. | Yes |
 | `SequenceWorkflow` | One agent names a fruit, and the next agent receives that answer as its input and tells a health benefit of it. | Yes |
+| `SingleTurnSubAgentDemo` | A sales assistant calls a single-turn sub-agent as a tool; the sub-agent checks prices with its own tool and returns a structured recommendation. | Yes |
 | `StateWorkflow` | Nodes write session state through the context and through an event, then read it back. | No |
 | `SupportTriageWorkflow` | An agent classifies a support request, a routing map sends it to a specialist agent that uses a function tool, and a summarizer agent writes the reply. | Yes |
+| `TaskSubAgentDemo` | A coordinator delegates to two task sub-agents that chat with the user until they finish with the order and payment details. The coordinator then places the order with a tool. | Yes |
 | `UseAsOutputWorkflow` | A node runs a summarizer agent with `runNode` and `useAsOutput`, so the summary becomes the node's output for the next node. | Yes |
 
 ## Project Layout
 
 ```
 ├── *Workflow.java  // One sample per file: its graph, nodes, agents and main
+├── *Demo.java      // One sample per file: its parent agent, sub-agents and main
 ├── pom.xml         // Maven configuration and default exec main class
 └── README.md       // This file
 ```
@@ -56,8 +62,9 @@ sample, pass its main class:
 mvn compile exec:java -Dexec.mainClass=com.example.workflows.RouteWorkflow
 ```
 
-The samples that call Gemini use `gemini-3.8-flash`. To try another model,
-pass its name:
+The samples that call Gemini use `gemini-3.8-flash`, except
+`SingleTurnSubAgentDemo`, which uses `gemini-4-argon`. To try another model, pass
+its name:
 
 ```bash
 mvn compile exec:java -Dexec.mainClass=com.example.workflows.RouteWorkflow \
