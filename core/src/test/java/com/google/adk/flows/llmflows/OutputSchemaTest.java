@@ -22,6 +22,7 @@ import static com.google.adk.testing.TestUtils.createTestAgent;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.RunConfig;
@@ -209,6 +210,43 @@ public final class OutputSchemaTest {
     assertThat(basicRequest.config().flatMap(GenerateContentConfig::responseSchema))
         .hasValue(TEST_OUTPUT_SCHEMA);
     assertThat(result.updatedRequest().tools()).doesNotContainKey(SetModelResponseTool.NAME);
+  }
+
+  @Test
+  public void processRequest_taskAgentWithoutToolsOutsideATaskNode_doesNothing() {
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(new RenamedLlm("gemini-2.0-pro", testLlm))
+            .mode(AgentMode.TASK)
+            .outputSchema(TEST_OUTPUT_SCHEMA)
+            .build();
+    InvocationContext context = createInvocationContext(agent);
+    LlmRequest request = LlmRequest.builder().model("gemini-2.0-pro").build();
+
+    RequestProcessingResult result =
+        outputSchemaProcessor.processRequest(context, request).blockingGet();
+
+    assertThat(result.updatedRequest()).isEqualTo(request);
+  }
+
+  @Test
+  public void processRequest_taskAgentWithToolsOutsideATaskNode_addsSetModelResponseTool() {
+    LlmAgent agent =
+        LlmAgent.builder()
+            .name("agent")
+            .model(new RenamedLlm("gemini-2.0-pro", testLlm))
+            .mode(AgentMode.TASK)
+            .outputSchema(TEST_OUTPUT_SCHEMA)
+            .tools(ImmutableList.of(new TestTool()))
+            .build();
+    InvocationContext context = createInvocationContext(agent);
+    LlmRequest request = LlmRequest.builder().model("gemini-2.0-pro").build();
+
+    RequestProcessingResult result =
+        outputSchemaProcessor.processRequest(context, request).blockingGet();
+
+    assertThat(result.updatedRequest().tools()).containsKey(SetModelResponseTool.NAME);
   }
 
   @Test

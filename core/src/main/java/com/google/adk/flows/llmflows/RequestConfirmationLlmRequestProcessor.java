@@ -32,6 +32,7 @@ import com.google.adk.events.ToolConfirmation;
 import com.google.adk.models.LlmRequest;
 import com.google.adk.telemetry.Tracing;
 import com.google.adk.tools.BaseTool;
+import com.google.adk.workflow.NodeRunner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -48,6 +49,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,7 +71,8 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
     }
 
-    Optional<ConfirmationResult> confirmationResult = findMostRecentConfirmations(events);
+    Optional<ConfirmationResult> confirmationResult =
+        findMostRecentConfirmations(events, invocationContext.branch().orElse(null));
     if (confirmationResult.isEmpty()) {
       logger.trace("No request confirmation function responses found.");
       return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
@@ -142,30 +145,40 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       }
 
       // If we found tools that were confirmed but not yet executed, execute them now.
+      // In the order the model called them, so a call that waits leaves the earlier ones answered.
+      ImmutableList<FunctionCall> callsInOrder =
+          functionCallsById.keySet().stream()
+              .filter(toolsToResumeWithArgs::containsKey)
+              .map(toolsToResumeWithArgs::get)
+              .collect(toImmutableList());
       return assembleEvent(
-              invocationContext,
-              toolsToResumeWithArgs.values(),
-              ImmutableMap.copyOf(toolsToResumeWithConfirmation))
-          .map(
-              assembledEvent ->
-                  RequestProcessingResult.create(llmRequest, ImmutableList.of(assembledEvent)))
+              invocationContext, callsInOrder, ImmutableMap.copyOf(toolsToResumeWithConfirmation))
+          .map(assembledEvent ->
+              RequestProcessingResult.create(llmRequest, ImmutableList.of(assembledEvent)))
           .toSingle()
-          .onErrorReturn(
-              e -> {
-                logger.error("Error processing request confirmation", e);
-                return RequestProcessingResult.create(llmRequest, ImmutableList.of());
-              });
+          .onErrorResumeNext(e -> {
+            // A confirmed call whose child node waits makes the agent wait too; the flow saves the
+            // finished calls' responses first, so they do not run again on resume.
+            Throwable wait =
+                e instanceof Functions.WaitWithFinishedResponses kept ? kept.getCause() : e;
+            if (NodeRunner.isWaitSignal(wait)) {
+              return Single.error(e);
+            }
+            logger.error("Error processing request confirmation", e);
+            return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
+          });
     }
 
     return Single.just(RequestProcessingResult.create(llmRequest, ImmutableList.of()));
   }
 
   private static Optional<ConfirmationResult> findMostRecentConfirmations(
-      ImmutableList<Event> events) {
-    // As in ADK Python, only the most recent user event can answer a pending confirmation.
+      ImmutableList<Event> events, @Nullable String agentBranch) {
+    // As in ADK Python, only the most recent user event can answer a pending confirmation. An
+    // answer on the branch a confirmed tool call opened belongs to that call, so it is skipped.
     for (int i = events.size() - 1; i >= 0; i--) {
       Event event = events.get(i);
-      if (!Objects.equals(event.author(), Role.USER)) {
+      if (!Objects.equals(event.author(), Role.USER) || answersToolSubBranch(event, agentBranch)) {
         continue;
       }
 
@@ -185,6 +198,11 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
           : Optional.of(new ConfirmationResult(confirmationsInEvent, i));
     }
     return Optional.empty();
+  }
+
+  private static boolean answersToolSubBranch(Event event, @Nullable String agentBranch) {
+    return BranchSegments.below(event.branch().orElse(null), agentBranch).stream()
+        .anyMatch(segment -> BranchSegments.runId(segment).isPresent());
   }
 
   /**
