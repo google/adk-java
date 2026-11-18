@@ -20,8 +20,10 @@ import com.google.adk.annotations.Experimental;
 
 /**
  * Thrown when a workflow graph is malformed, such as when {@link Start} cannot reach a node or a
- * cycle has no routed edge. Building the workflow throws it, so a malformed graph never runs. A
- * node throws it from {@link BaseNode#validateOutgoingEdges} for edges it cannot serve.
+ * cycle has no routed edge. Building the workflow or a node's {@link
+ * BaseNode#validateOutgoingEdges} throws it, and a run fails with it for a chat agent that follows
+ * a node other than {@link Start}, since a parent agent built after the graph can make a node a
+ * chat agent.
  */
 @Experimental
 public final class GraphValidationException extends IllegalArgumentException {

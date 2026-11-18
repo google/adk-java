@@ -279,6 +279,8 @@ public abstract class BaseAgent extends BaseNode {
     // An agent's context runs that agent, not the node that its parent context ran.
     builder.agent(this).node(null);
     if (!keepBranch) {
+      // Only the node's own agent runs child nodes, so a sub-agent's tools cannot reach the node.
+      builder.nodeContext(null);
       // Check for branch to be truthy (not None, not empty string),
       parentContext
           .branch()
@@ -517,7 +519,11 @@ public abstract class BaseAgent extends BaseNode {
       com.google.adk.agents.Context context, InvocationContext invocationContext) {
     NodeExecutionState nodeState = context.requireNodeState();
     return runWithCallbacks(
-            invocationContext.toBuilder().nodePath(nodeState.nodePath()).build(),
+            invocationContext.toBuilder()
+                .nodePath(nodeState.nodePath())
+                .isolationScope(nodeState.isolationScope().orElse(null))
+                .nodeContext(context)
+                .build(),
             /* keepBranch= */ true,
             this::runAsyncImpl)
         .doOnNext(event -> {
