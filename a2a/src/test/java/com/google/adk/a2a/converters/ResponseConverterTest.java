@@ -52,7 +52,9 @@ import io.a2a.spec.TextPart;
 import io.reactivex.rxjava3.core.Flowable;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.Before;
 import org.junit.Test;
@@ -61,6 +63,11 @@ import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public final class ResponseConverterTest {
+  // Invocation metadata an ADK Python agent writes on every task and update; no event field.
+  private static final ImmutableMap<String, Object> INVOCATION_METADATA =
+      ImmutableMap.of("adk_app_name", "app", "adk_user_id", "user", "adk_session_id", "session");
+  private static final String USAGE = A2AMetadataKey.USAGE_METADATA.getType();
+  private static final String USAGE_7 = "{\"totalTokenCount\":7}";
 
   private InvocationContext invocationContext;
   private Session session;
@@ -954,6 +961,279 @@ public final class ResponseConverterTest {
   }
 
   @Test
+  public void clientEventToEvent_withMetadataOnStatusMessage_readsIt() {
+    // ADK Python writes the error code on the status message and its invocation on the update.
+    Message statusMessage =
+        agentMessage()
+            .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.COMPLETED, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent("task-id-1", status, "context-1", true, INVOCATION_METADATA);
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+
+    assertThat(optionalEvent.flatMap(Event::errorCode))
+        .hasValue(new FinishReason(FinishReason.Known.SAFETY));
+  }
+
+  @Test
+  public void clientEventToEvent_withMetadataOnArtifact_readsIt() {
+    Artifact artifact =
+        artifact("artifact-1", ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"));
+    TaskArtifactUpdateEvent updateEvent =
+        new TaskArtifactUpdateEvent.Builder()
+            .lastChunk(true)
+            .contextId("context-1")
+            .artifact(artifact)
+            .taskId("task-1")
+            .metadata(INVOCATION_METADATA)
+            .build();
+    TaskUpdateEvent event =
+        new TaskUpdateEvent(
+            testTask().status(new TaskStatus(TaskState.WORKING)).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+
+    assertThat(optionalEvent.flatMap(Event::errorCode))
+        .hasValue(new FinishReason(FinishReason.Known.SAFETY));
+  }
+
+  @Test
+  public void clientEventToEvent_withMetadataOnUpdateAndStatusMessage_prefersStatusMessage() {
+    Message statusMessage =
+        agentMessage()
+            .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.COMPLETED, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent(
+            "task-id-1",
+            status,
+            "context-1",
+            true,
+            ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "MAX_TOKENS"));
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+
+    assertThat(optionalEvent.flatMap(Event::errorCode))
+        .hasValue(new FinishReason(FinishReason.Known.SAFETY));
+  }
+
+  @Test
+  public void clientEventToEvent_withNullKeyOnStatusMessage_keepsUpdatesKey() {
+    Map<String, Object> messageMetadata = new HashMap<>();
+    messageMetadata.put(A2AMetadataKey.ERROR_CODE.getType(), null);
+    Message statusMessage = agentMessage().metadata(messageMetadata).build();
+    TaskStatus status = new TaskStatus(TaskState.COMPLETED, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent(
+            "task-id-1",
+            status,
+            "context-1",
+            true,
+            ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"));
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
+
+    assertThat(optionalEvent.flatMap(Event::errorCode))
+        .hasValue(new FinishReason(FinishReason.Known.SAFETY));
+  }
+
+  @Test
+  public void clientEventToEvent_withMetadataOnStatusMessageOfWorkingUpdate_readsIt() {
+    Message statusMessage = agentMessage().metadata(ImmutableMap.of(USAGE, USAGE_7)).build();
+    TaskStatus status = new TaskStatus(TaskState.WORKING, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent("task-id-1", status, "context-1", false, INVOCATION_METADATA);
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Event result = ResponseConverter.clientEventToEvent(event, invocationContext).get();
+
+    assertThat(result.turnComplete().orElse(false)).isFalse();
+    assertThat(totalTokens(result)).hasValue(7);
+  }
+
+  @Test
+  public void taskToEvent_withMetadataOnArtifactAndStatusMessage_readsOnlyArtifact() {
+    Task task =
+        testTask()
+            .status(
+                new TaskStatus(
+                    TaskState.COMPLETED,
+                    agentMessage()
+                        .metadata(
+                            ImmutableMap.of(
+                                A2AMetadataKey.ERROR_CODE.getType(), "MAX_TOKENS", USAGE, USAGE_7))
+                        .build(),
+                    null))
+            .artifacts(
+                ImmutableList.of(
+                    artifact(
+                        "artifact-1",
+                        ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"))))
+            .metadata(INVOCATION_METADATA)
+            .build();
+
+    Event result = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(result.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+    assertThat(result.usageMetadata()).isEmpty();
+  }
+
+  @Test
+  public void taskToEvent_withMetadataOnTwoArtifacts_takesFirstThatSetsAField() {
+    Task task =
+        testTask()
+            .status(new TaskStatus(TaskState.COMPLETED))
+            .artifacts(
+                ImmutableList.of(
+                    artifact("artifact-1", INVOCATION_METADATA),
+                    artifact(
+                        "artifact-2",
+                        ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY")),
+                    artifact(
+                        "artifact-3",
+                        ImmutableMap.of(
+                            A2AMetadataKey.ERROR_CODE.getType(), "MAX_TOKENS", USAGE, USAGE_7))))
+            .build();
+
+    Event result = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(result.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+    assertThat(result.usageMetadata()).isEmpty();
+  }
+
+  @Test
+  public void taskToEvent_withArtifactWithoutEventFields_readsStatusMessage() {
+    Task task =
+        testTask()
+            .status(
+                new TaskStatus(
+                    TaskState.FAILED,
+                    agentMessage()
+                        .parts(ImmutableList.of(new TextPart("Blocked by safety")))
+                        .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"))
+                        .build(),
+                    null))
+            .artifacts(ImmutableList.of(artifact("artifact-1", INVOCATION_METADATA)))
+            .build();
+
+    Event result = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(result.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+    assertThat(result.errorMessage()).hasValue("Blocked by safety");
+  }
+
+  @Test
+  public void taskToEvent_withMetadataOnTaskAndStatusMessage_fillsInMissingKeys() {
+    Task task =
+        testTask()
+            .status(
+                new TaskStatus(
+                    TaskState.COMPLETED,
+                    agentMessage()
+                        .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"))
+                        .build(),
+                    null))
+            .metadata(
+                ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "MAX_TOKENS", USAGE, USAGE_7))
+            .build();
+
+    Event result = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(result.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+    assertThat(totalTokens(result)).hasValue(7);
+  }
+
+  @Test
+  public void taskToEvent_withUnparseableFieldOnFirstArtifact_takesNextArtifact() {
+    Task task =
+        testTask()
+            .status(new TaskStatus(TaskState.COMPLETED))
+            .artifacts(
+                ImmutableList.of(
+                    artifact("artifact-1", ImmutableMap.of(USAGE, "not json")),
+                    artifact(
+                        "artifact-2",
+                        ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"))))
+            .build();
+
+    Event result = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(result.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+  }
+
+  @Test
+  public void taskToEvent_withCitationOnFirstArtifact_skipsLaterArtifacts() {
+    Task task =
+        testTask()
+            .status(new TaskStatus(TaskState.COMPLETED))
+            .artifacts(
+                ImmutableList.of(
+                    artifact(
+                        "artifact-1",
+                        ImmutableMap.of(
+                            "adk_citation_metadata",
+                            ImmutableMap.of("citations", ImmutableList.of()))),
+                    artifact(
+                        "artifact-2",
+                        ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"))))
+            .build();
+
+    Event result = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(result.errorCode()).isEmpty();
+  }
+
+  @Test
+  public void taskToEvent_withCustomMetadataMapFromAdkPython_readsOtherFields() {
+    // ADK Python sends custom metadata as a map, which ADK Java's custom metadata list cannot hold.
+    Task task =
+        testTask()
+            .status(new TaskStatus(TaskState.COMPLETED))
+            .artifacts(
+                ImmutableList.of(
+                    artifact(
+                        "artifact-1",
+                        ImmutableMap.of(
+                            A2AMetadataKey.CUSTOM_METADATA.getType(),
+                            ImmutableMap.of("topic", "weather"),
+                            A2AMetadataKey.ERROR_CODE.getType(),
+                            "SAFETY"))))
+            .build();
+
+    Event result = ResponseConverter.taskToEvent(task, invocationContext);
+
+    assertThat(result.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+    assertThat(
+            result.customMetadata().orElse(ImmutableList.of()).stream()
+                .map(entry -> entry.key().orElse("")))
+        .containsExactly("a2a:task_id", "a2a:context_id");
+  }
+
+  @Test
+  public void clientEventToEvent_withMetadataOnUpdateAndStatusMessage_fillsInMissingKeys() {
+    Message statusMessage =
+        agentMessage()
+            .metadata(ImmutableMap.of(A2AMetadataKey.ERROR_CODE.getType(), "SAFETY"))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.COMPLETED, statusMessage, null);
+    TaskStatusUpdateEvent updateEvent =
+        new TaskStatusUpdateEvent(
+            "task-id-1", status, "context-1", true, ImmutableMap.of(USAGE, USAGE_7));
+    TaskUpdateEvent event = new TaskUpdateEvent(testTask().status(status).build(), updateEvent);
+
+    Event result = ResponseConverter.clientEventToEvent(event, invocationContext).get();
+
+    assertThat(result.errorCode()).hasValue(new FinishReason(FinishReason.Known.SAFETY));
+    assertThat(totalTokens(result)).hasValue(7);
+  }
+
+  @Test
   public void clientEventToEvent_withFinalTaskStatusUpdateEvent_withoutMessage_returnsEvent() {
     TaskStatus status = new TaskStatus(TaskState.COMPLETED, null, null);
     TaskStatusUpdateEvent updateEvent =
@@ -1131,6 +1411,19 @@ public final class ResponseConverterTest {
 
     Optional<Event> optionalEvent = ResponseConverter.clientEventToEvent(event, invocationContext);
     assertThat(optionalEvent).isEmpty();
+  }
+
+  /** An artifact with one text part and {@code metadata}. */
+  private static Artifact artifact(String id, Map<String, Object> metadata) {
+    return new Artifact.Builder()
+        .artifactId(id)
+        .parts(ImmutableList.of(new TextPart("Answer")))
+        .metadata(metadata)
+        .build();
+  }
+
+  private static Optional<Integer> totalTokens(Event event) {
+    return event.usageMetadata().flatMap(GenerateContentResponseUsageMetadata::totalTokenCount);
   }
 
   /** A file part whose bytes are not valid base64, so {@link PartConverter} cannot convert it. */

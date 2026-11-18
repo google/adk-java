@@ -38,6 +38,7 @@ import com.google.adk.agents.RunConfig;
 import com.google.adk.artifacts.InMemoryArtifactService;
 import com.google.adk.events.Event;
 import com.google.adk.plugins.PluginManager;
+import com.google.adk.runner.InMemoryRunner;
 import com.google.adk.sessions.InMemorySessionService;
 import com.google.adk.sessions.Session;
 import com.google.common.collect.ImmutableList;
@@ -45,6 +46,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.genai.types.Content;
 import com.google.genai.types.CustomMetadata;
+import com.google.genai.types.FinishReason;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
@@ -79,6 +81,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -1279,6 +1282,73 @@ public final class RemoteA2AAgentTest {
     assertThat(events).hasSize(1);
     assertText(events.get(0), "short circuit");
     verifyNoInteractions(mockClient);
+  }
+
+  @Test
+  public void runAsync_blockingTaskWithErrorCodeOnArtifact_emitsAndStoresIt() {
+    // ADK Python writes an event's error code on the artifact, not on the task.
+    Artifact artifact =
+        new Artifact.Builder()
+            .artifactId("artifact-1")
+            .parts(ImmutableList.of(new TextPart("Blocked")))
+            .metadata(ImmutableMap.of("adk_error_code", "SAFETY"))
+            .build();
+    Task task =
+        new Task.Builder()
+            .id("task-1")
+            .contextId("context-1")
+            .status(new TaskStatus(TaskState.COMPLETED))
+            .artifacts(ImmutableList.of(artifact))
+            .build();
+    mockStreamResponse(consumer -> consumer.accept(new TaskEvent(task), agentCard));
+
+    assertErrorCodeEmittedAndStored(getAgentBuilder().streaming(false).build());
+  }
+
+  @Test
+  public void runAsync_streamedStatusWithErrorCodeOnMessage_emitsAndStoresIt() {
+    // ADK Python writes an event's error code on the status message, not on the update.
+    Message message =
+        new Message.Builder()
+            .role(Message.Role.AGENT)
+            .parts(ImmutableList.of(new TextPart("Blocked")))
+            .metadata(ImmutableMap.of("adk_error_code", "SAFETY"))
+            .build();
+    TaskStatus status = new TaskStatus(TaskState.FAILED, message, null);
+    Task task = new Task.Builder().id("task-1").contextId("context-1").status(status).build();
+    TaskStatusUpdateEvent update =
+        new TaskStatusUpdateEvent("task-1", status, "context-1", true, null);
+    mockStreamResponse(consumer -> consumer.accept(new TaskUpdateEvent(task, update), agentCard));
+
+    assertErrorCodeEmittedAndStored(createAgent());
+  }
+
+  /** Runs {@code agent} once and checks that its event and the stored event carry SAFETY. */
+  private void assertErrorCodeEmittedAndStored(RemoteA2AAgent agent) {
+    InMemoryRunner runner = new InMemoryRunner(agent);
+    Session session = runner.sessionService().createSession(runner.appName(), "user").blockingGet();
+
+    List<Event> events =
+        runner
+            .runAsync("user", session.id(), Content.fromParts(Part.fromText("Hi")))
+            .toList()
+            .blockingGet();
+
+    Session stored =
+        runner
+            .sessionService()
+            .getSession(runner.appName(), "user", session.id(), Optional.empty())
+            .blockingGet();
+    FinishReason safety = new FinishReason(FinishReason.Known.SAFETY);
+    assertThat(errorCodes(events)).contains(safety);
+    assertThat(errorCodes(stored.immutableEvents())).contains(safety);
+  }
+
+  private static ImmutableList<FinishReason> errorCodes(List<Event> events) {
+    return events.stream()
+        .filter(event -> event.author().equals("remote-agent"))
+        .flatMap(event -> event.errorCode().stream())
+        .collect(ImmutableList.toImmutableList());
   }
 
   @Test
