@@ -23,6 +23,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
+import com.google.adk.workflow.FunctionNodes;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.RequestInput;
 import com.google.adk.workflow.Route;
@@ -33,7 +34,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
-import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import org.jspecify.annotations.Nullable;
 
@@ -52,24 +52,32 @@ public final class RequestInputWorkflow {
   /** Builds the workflow, with the drafting agent on {@code model}. */
   public static Workflow create(String model) {
     LlmAgent draftEmail = draftEmailAgent(model);
+    Node processInput =
+        FunctionNodes.of(
+            "process_input", Content.class, Void.class, RequestInputWorkflow::processInput);
+    Node requestHumanReview =
+        FunctionNodes.of(
+            "request_human_review",
+            Void.class,
+            String.class,
+            RequestInputWorkflow::requestHumanReview);
+    Node handleHumanReview =
+        FunctionNodes.of(
+            "handle_human_review",
+            String.class,
+            Void.class,
+            RequestInputWorkflow::handleHumanReview);
     return Workflow.builder()
         .name("request_input")
-        .edges(
-            g ->
-                g.fromStart()
-                    .chain(
-                        new ProcessInput(),
-                        draftEmail,
-                        new RequestHumanReview(),
-                        new HandleHumanReview())
-                    .route(
-                        r -> {
-                          r.on("revise").then(draftEmail);
-                          r.on("approved")
-                              .then(
-                                  new Reply("send_email", "Draft approved and sent successfully."));
-                          r.on("rejected").then(new Reply("reject_email", "Draft rejected."));
-                        }))
+        .edges(g ->
+            g.fromStart()
+                .chain(processInput, draftEmail, requestHumanReview, handleHumanReview)
+                .route(r -> {
+                  r.on("revise").then(draftEmail);
+                  r.on("approved")
+                      .then(reply("send_email", "Draft approved and sent successfully."));
+                  r.on("rejected").then(reply("reject_email", "Draft rejected."));
+                }))
         .build();
   }
 
@@ -139,78 +147,53 @@ public final class RequestInputWorkflow {
   /**
    * Stores the complaint in state, where the agent's instruction reads it, with no feedback yet.
    */
-  private static final class ProcessInput implements Node {
-    @Override
-    public String name() {
-      return "process_input";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      context.state().put("complaint", ((Content) nodeInput).text());
-      context.state().put("feedback", "");
-      return Flowable.empty();
-    }
+  private static Void processInput(Context context, Content message) {
+    context.state().put("complaint", message.text());
+    context.state().put("feedback", "");
+    return null;
   }
 
   /**
    * Asks a human to review the draft that the agent stored in state; the answer becomes this node's
    * output.
    */
-  private static final class RequestHumanReview implements Node {
-    @Override
-    public String name() {
-      return "request_human_review";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      return Flowable.just(
-          RequestInput.builder()
-              .message(
-                  "Please review the following draft email and provide 'approve', 'reject', or"
-                      + " feedback to revise.\n\n---\n"
-                      + context.state().get(DRAFT_KEY)
-                      + "\n---")
-              .build());
-    }
+  private static String requestHumanReview(Context context, Void unused) {
+    return FunctionNodes.requestInput(
+        RequestInput.builder()
+            .message(
+                "Please review the following draft email and provide 'approve', 'reject', or"
+                    + " feedback to revise.\n\n---\n"
+                    + context.state().get(DRAFT_KEY)
+                    + "\n---")
+            .build());
   }
 
   /** Routes on the reviewer's answer, and stores any feedback for the agent's next draft. */
-  private static final class HandleHumanReview implements Node {
-    @Override
-    public String name() {
-      return "handle_human_review";
+  private static Void handleHumanReview(Context context, String answer) {
+    String route =
+        switch (answer) {
+          case "reject" -> "rejected";
+          case "approve" -> "approved";
+          default -> "revise";
+        };
+    if (route.equals("revise")) {
+      context.state().put("feedback", answer);
     }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      String answer = String.valueOf(nodeInput);
-      String route =
-          switch (answer) {
-            case "reject" -> "rejected";
-            case "approve" -> "approved";
-            default -> "revise";
-          };
-      if (route.equals("revise")) {
-        context.state().put("feedback", answer);
-      }
-      context.routes(ImmutableList.of(new Route.Tag(route)));
-      return Flowable.empty();
-    }
+    context.routes(ImmutableList.of(new Route.Tag(route)));
+    return null;
   }
 
   /** A node that tells the user what happened to the draft. */
-  private record Reply(String name, String text) implements Node {
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      return Flowable.just(
-          Event.builder()
-              .id(context.invocationContext().newUuid())
-              .content(Content.builder().role("model").parts(Part.fromText(text)).build())
-              .build());
-    }
+  private static Node reply(String name, String text) {
+    return FunctionNodes.of(
+        name,
+        Void.class,
+        Event.class,
+        (context, unused) ->
+            Event.builder()
+                .id(context.invocationContext().newUuid())
+                .content(Content.builder().role("model").parts(Part.fromText(text)).build())
+                .build());
   }
 
   private static LlmAgent draftEmailAgent(String model) {

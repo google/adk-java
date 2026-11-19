@@ -17,12 +17,14 @@ package com.example.workflows;
 
 import static java.util.stream.Collectors.joining;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
+import com.google.adk.workflow.FunctionNodes;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.RequestInput;
 import com.google.adk.workflow.Workflow;
@@ -33,10 +35,8 @@ import com.google.genai.types.FunctionResponse;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
-import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
 import java.util.Map;
-import org.jspecify.annotations.Nullable;
 
 /**
  * A port of adk-python's {@code request_input_advanced} workflow sample: an agent extracts a
@@ -53,13 +53,22 @@ public final class RequestInputAdvancedWorkflow {
 
   /** Builds the workflow, with the agent on {@code model}. */
   public static Workflow create(String model) {
+    Node evaluateRequest =
+        FunctionNodes.of(
+            "evaluate_request",
+            Void.class,
+            Object.class,
+            RequestInputAdvancedWorkflow::evaluateRequest);
+    Node processDecision =
+        FunctionNodes.of(
+            "process_decision",
+            new TypeReference<Map<String, Object>>() {},
+            Event.class,
+            RequestInputAdvancedWorkflow::processDecision);
     return Workflow.builder()
         .name("request_input_advanced")
         .edges(
-            g ->
-                g.fromStart()
-                    .chain(
-                        processRequestAgent(model), new EvaluateRequest(), new ProcessDecision()))
+            g -> g.fromStart().chain(processRequestAgent(model), evaluateRequest, processDecision))
         .build();
   }
 
@@ -157,55 +166,35 @@ public final class RequestInputAdvancedWorkflow {
    * Approves a request of at most one day, and asks a manager to decide on anything longer. As in
    * adk-python's sample, it reads the request from the state key that the agent's output key sets.
    */
-  private static final class EvaluateRequest implements Node {
-    @Override
-    public String name() {
-      return "evaluate_request";
+  private static Object evaluateRequest(Context context, Void unused) {
+    Map<?, ?> request = (Map<?, ?>) context.state().get(REQUEST_KEY);
+    if (((Number) request.get("days")).intValue() <= 1) {
+      return ImmutableMap.of("approved", true);
     }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      Map<?, ?> request = (Map<?, ?>) context.state().get(REQUEST_KEY);
-      if (((Number) request.get("days")).intValue() <= 1) {
-        return Flowable.just(ImmutableMap.of("approved", true));
-      }
-      // The manager's answer, checked against the schema, becomes this node's output.
-      return Flowable.just(
-          RequestInput.builder()
-              .interruptId(MANAGER_APPROVAL_ID)
-              .message("Please review this time off request.")
-              .payload(request)
-              .responseSchema(TIME_OFF_DECISION_SCHEMA)
-              .build());
-    }
+    // The manager's answer, checked against the schema, becomes this node's output.
+    return FunctionNodes.requestInput(
+        MANAGER_APPROVAL_ID,
+        "Please review this time off request.",
+        request,
+        TIME_OFF_DECISION_SCHEMA);
   }
 
   /** Reports the decision, reading the requested day count from the request in state. */
-  private static final class ProcessDecision implements Node {
-    @Override
-    public String name() {
-      return "process_decision";
+  private static Event processDecision(Context context, Map<String, Object> decision) {
+    int requested =
+        ((Number) ((Map<?, ?>) context.state().get(REQUEST_KEY)).get("days")).intValue();
+    String message;
+    if (Boolean.TRUE.equals(decision.get("approved"))) {
+      Object approvedDays = decision.get("approved_days");
+      int approved = approvedDays == null ? requested : ((Number) approvedDays).intValue();
+      message = "Time Off Approved! " + approved + " out of " + requested + " days granted.";
+    } else {
+      message = "Time Off Denied.";
     }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      Map<?, ?> decision = (Map<?, ?>) nodeInput;
-      int requested =
-          ((Number) ((Map<?, ?>) context.state().get(REQUEST_KEY)).get("days")).intValue();
-      String message;
-      if (Boolean.TRUE.equals(decision.get("approved"))) {
-        Object approvedDays = decision.get("approved_days");
-        int approved = approvedDays == null ? requested : ((Number) approvedDays).intValue();
-        message = "Time Off Approved! " + approved + " out of " + requested + " days granted.";
-      } else {
-        message = "Time Off Denied.";
-      }
-      return Flowable.just(
-          Event.builder()
-              .id(context.invocationContext().newUuid())
-              .content(Content.builder().role("model").parts(Part.fromText(message)).build())
-              .build());
-    }
+    return Event.builder()
+        .id(context.invocationContext().newUuid())
+        .content(Content.builder().role("model").parts(Part.fromText(message)).build())
+        .build();
   }
 
   /** The agent's structured request, with the fields of adk-python's {@code TimeOffRequest}. */
