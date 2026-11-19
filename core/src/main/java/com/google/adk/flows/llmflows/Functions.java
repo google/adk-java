@@ -27,6 +27,7 @@ import com.google.adk.agents.InvocationContext;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.agents.Role;
 import com.google.adk.agents.RunConfig.ToolExecutionMode;
+import com.google.adk.annotations.Experimental;
 import com.google.adk.events.Event;
 import com.google.adk.events.EventActions;
 import com.google.adk.events.ToolConfirmation;
@@ -142,10 +143,9 @@ public final class Functions {
       String role =
           originalContent
               .role()
-              .orElseThrow(
-                  () ->
-                      new IllegalStateException(
-                          "Content role is missing in event: " + modelResponseEvent.id()));
+              .orElseThrow(() ->
+                  new IllegalStateException(
+                      "Content role is missing in event: " + modelResponseEvent.id()));
       Content newContent = Content.builder().role(role).parts(newParts).build();
       modelResponseEvent.setContent(newContent);
     }
@@ -266,14 +266,13 @@ public final class Functions {
         .toList()
         .toMaybe()
         .compose(Tracing.withContext(parentContext))
-        .flatMap(
-            events -> {
-              if (events.isEmpty()) {
-                return Maybe.empty();
-              }
-              return Maybe.fromOptional(
-                  Functions.mergeParallelFunctionResponseEvents(invocationContext, events));
-            });
+        .flatMap(events -> {
+          if (events.isEmpty()) {
+            return Maybe.empty();
+          }
+          return Maybe.fromOptional(
+              Functions.mergeParallelFunctionResponseEvents(invocationContext, events));
+        });
   }
 
   /**
@@ -529,22 +528,19 @@ public final class Functions {
         toolExecution -> {
           Context toolOtelContext = toolExecution.context().otelContext();
           Maybe<Map<String, Object>> maybeFunctionResult =
-              Maybe.defer(
-                      () ->
-                          maybeInvokeBeforeToolCall(
-                              invocationContext, tool, functionArgs, toolContext))
+              Maybe.defer(() ->
+                      maybeInvokeBeforeToolCall(invocationContext, tool, functionArgs, toolContext))
                   .compose(Tracing.withContext(toolOtelContext))
                   .switchIfEmpty(
-                      Maybe.defer(
-                              () ->
-                                  isLive
-                                      ? processFunctionLive(
-                                          invocationContext,
-                                          tool,
-                                          toolContext,
-                                          functionCall,
-                                          functionArgs)
-                                      : callTool(tool, functionArgs, toolContext))
+                      Maybe.defer(() ->
+                              isLive
+                                  ? processFunctionLive(
+                                      invocationContext,
+                                      tool,
+                                      toolContext,
+                                      functionCall,
+                                      functionArgs)
+                                  : callTool(tool, functionArgs, toolContext))
                           .compose(Tracing.withContext(toolOtelContext)));
           return processFunctionResult(
                   maybeFunctionResult,
@@ -595,6 +591,11 @@ public final class Functions {
         })
         .flatMapMaybe(optionalInitialResult -> {
           Map<String, Object> initialFunctionResult = optionalInitialResult.orElse(null);
+          // A task delegation answers when its task ends, so no callback may answer it now.
+          if (LlmAgent.delegatesTask(tool)
+              && (initialFunctionResult == null || initialFunctionResult.isEmpty())) {
+            return Maybe.empty();
+          }
 
           return Maybe.defer(() ->
                   maybeInvokeAfterToolCall(
@@ -605,12 +606,11 @@ public final class Functions {
               .flatMapMaybe(finalOptionalResult -> {
                 Map<String, Object> finalFunctionResult = finalOptionalResult.orElse(null);
                 boolean hasNoResult = finalFunctionResult == null || finalFunctionResult.isEmpty();
+                // A long-running tool with no result yet defers its response, so skip the
+                // function-response event to avoid re-invoking the model with a
+                // placeholder. The empty-map case is included because FunctionTool
+                // coerces an absent return into an empty map.
                 if (tool.longRunning() && hasNoResult) {
-                  // A long-running tool with no result yet defers its response, so skip the
-                  // function-response event to avoid re-invoking the model with a
-                  // placeholder. The empty-map case is included because FunctionTool
-                  // coerces
-                  // an absent return into an empty map.
                   return Maybe.empty();
                 }
                 Event event =
@@ -618,6 +618,36 @@ public final class Functions {
                 return Maybe.just(event);
               });
         });
+  }
+
+  /**
+   * Returns whether the agent's latest step in this invocation and branch called a task delegation
+   * that nothing answered since.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public static boolean leftADelegationUnanswered(
+      InvocationContext context, Map<String, BaseTool> tools) {
+    // Only an agent that can delegate scans its events, so other agents cost what they did.
+    if (tools.values().stream().noneMatch(LlmAgent::delegatesTask)) {
+      return false;
+    }
+    ImmutableList<Event> events =
+        context.events(/* currentInvocation= */ true, /* currentBranch= */ true);
+    Set<String> answered = new HashSet<>();
+    for (int i = events.size() - 1; i >= 0; i--) {
+      Event event = events.get(i);
+      event.functionResponses().forEach(response -> response.id().ifPresent(answered::add));
+      if (!context.agent().name().equals(event.author()) || event.functionCalls().isEmpty()) {
+        continue;
+      }
+      return event.functionCalls().stream()
+          .anyMatch(call ->
+              call.id().filter(id -> !id.isEmpty() && !answered.contains(id)).isPresent()
+                  && call.name().map(tools::get).filter(LlmAgent::delegatesTask).isPresent());
+    }
+    return false;
   }
 
   // A finish_task response ends a task, so it is never kept from a step that did not end.
@@ -717,13 +747,11 @@ public final class Functions {
       }
 
       Maybe<Map<String, Object>> callbackResult =
-          Maybe.defer(
-              () ->
-                  Flowable.fromIterable(callbacks)
-                      .concatMapMaybe(
-                          callback ->
-                              callback.call(invocationContext, tool, functionArgs, toolContext))
-                      .firstElement());
+          Maybe.defer(() ->
+              Flowable.fromIterable(callbacks)
+                  .concatMapMaybe(
+                      callback -> callback.call(invocationContext, tool, functionArgs, toolContext))
+                  .firstElement());
 
       return pluginResult.switchIfEmpty(callbackResult);
     }
@@ -758,13 +786,11 @@ public final class Functions {
       }
 
       Maybe<Map<String, Object>> callbackResult =
-          Maybe.defer(
-              () ->
-                  Flowable.fromIterable(callbacks)
-                      .concatMapMaybe(
-                          callback ->
-                              callback.call(invocationContext, tool, functionArgs, toolContext, ex))
-                      .firstElement());
+          Maybe.defer(() ->
+              Flowable.fromIterable(callbacks)
+                  .concatMapMaybe(callback ->
+                      callback.call(invocationContext, tool, functionArgs, toolContext, ex))
+                  .firstElement());
 
       return pluginResult.switchIfEmpty(callbackResult);
     }
@@ -791,18 +817,12 @@ public final class Functions {
       }
 
       Maybe<Map<String, Object>> callbackResult =
-          Maybe.defer(
-              () ->
-                  Flowable.fromIterable(callbacks)
-                      .concatMapMaybe(
-                          callback ->
-                              callback.call(
-                                  invocationContext,
-                                  tool,
-                                  functionArgs,
-                                  toolContext,
-                                  functionResult))
-                      .firstElement());
+          Maybe.defer(() ->
+              Flowable.fromIterable(callbacks)
+                  .concatMapMaybe(callback ->
+                      callback.call(
+                          invocationContext, tool, functionArgs, toolContext, functionResult))
+                  .firstElement());
 
       return pluginResult.switchIfEmpty(callbackResult);
     }

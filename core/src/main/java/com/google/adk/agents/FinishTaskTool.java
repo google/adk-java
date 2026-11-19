@@ -16,6 +16,8 @@
 
 package com.google.adk.agents;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+
 import com.google.adk.SchemaUtils;
 import com.google.adk.events.Event;
 import com.google.adk.models.LlmRequest;
@@ -23,12 +25,15 @@ import com.google.adk.tools.BaseTool;
 import com.google.adk.tools.ToolContext;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.genai.types.Content;
 import com.google.genai.types.FunctionDeclaration;
 import com.google.genai.types.FunctionResponse;
+import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -44,6 +49,11 @@ final class FinishTaskTool extends BaseTool {
   private static final String SUCCESS_RESULT = "Task completed.";
 
   private static final String RESULT_KEY = "result";
+  private static final ImmutableMap<String, Object> REJECTED_RESPONSE =
+      ImmutableMap.of(
+          "error",
+          "finish_task was ignored because a task delegation was sent in the same turn. Call"
+              + " finish_task by itself once the delegated result is available.");
   private static final String DESCRIPTION =
       "Signal that this agent has completed its delegated task. Call this when you have finished"
           + " your delegated task.";
@@ -152,6 +162,35 @@ final class FinishTaskTool extends BaseTool {
   /** Returns the task's output from a call's arguments. */
   @Nullable Object taskOutput(Map<String, Object> args) {
     return resultKey == null ? args : args.get(resultKey);
+  }
+
+  /**
+   * Returns {@code event} with each {@code finish_task} response replaced by an error, as in Python
+   * ADK: a step that also delegated has not finished its task, so the model calls it again later.
+   */
+  static Event withRejectedResponses(Event event) {
+    Optional<Content> content = event.content();
+    List<Part> parts = content.flatMap(Content::parts).orElse(ImmutableList.of());
+    if (parts.stream().noneMatch(FinishTaskTool::isResponse)) {
+      return event;
+    }
+    ImmutableList<Part> rejected =
+        parts.stream()
+            .map(part ->
+                isResponse(part)
+                    ? part.toBuilder()
+                        .functionResponse(
+                            part.functionResponse().get().toBuilder()
+                                .response(REJECTED_RESPONSE)
+                                .build())
+                        .build()
+                    : part)
+            .collect(toImmutableList());
+    return event.toBuilder().content(content.get().toBuilder().parts(rejected).build()).build();
+  }
+
+  private static boolean isResponse(Part part) {
+    return part.functionResponse().flatMap(FunctionResponse::name).filter(NAME::equals).isPresent();
   }
 
   private static ImmutableMap<String, Object> validationError(String message) {

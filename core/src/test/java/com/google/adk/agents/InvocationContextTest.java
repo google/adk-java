@@ -156,6 +156,48 @@ public final class InvocationContextTest {
     assertThat(context.node()).isEmpty();
   }
 
+  @Test
+  public void contextsWithTheSameAgentMode_areEqual() {
+    InvocationContext first =
+        contextWith(/* resumabilityConfig= */ null).toBuilder()
+            .agentMode(mockAgent, AgentMode.CHAT)
+            .build();
+    InvocationContext second =
+        contextWith(/* resumabilityConfig= */ null).toBuilder()
+            .agentMode(mockAgent, AgentMode.CHAT)
+            .build();
+
+    assertThat(first).isEqualTo(second);
+    assertThat(first.hashCode()).isEqualTo(second.hashCode());
+  }
+
+  @Test
+  public void incrementLlmCallsCount_countsAStepOfTheNodesAgentInContextsCopiedFromIt()
+      throws Exception {
+    InvocationContext context =
+        contextWith(/* resumabilityConfig= */ null).toBuilder()
+            .agentMode(mockAgent, AgentMode.CHAT)
+            .build();
+    InvocationContext copy = context.toBuilder().build();
+
+    context.incrementLlmCallsCount();
+
+    assertThat(copy.stepsTaken(mockAgent)).isEqualTo(1);
+  }
+
+  @Test
+  public void stepsTaken_outsideANodeRunOrForAnotherAgent_isZero() throws Exception {
+    BaseAgent otherAgent = mock(BaseAgent.class);
+    InvocationContext plain = contextWith(/* resumabilityConfig= */ null);
+    InvocationContext nodeRun = plain.toBuilder().agentMode(mockAgent, AgentMode.CHAT).build();
+
+    plain.incrementLlmCallsCount();
+    nodeRun.incrementLlmCallsCount();
+
+    assertThat(plain.stepsTaken(mockAgent)).isEqualTo(0);
+    assertThat(nodeRun.stepsTaken(otherAgent)).isEqualTo(0);
+  }
+
   private InvocationContext contextWith(ResumabilityConfig resumabilityConfig) {
     return InvocationContext.builder()
         .sessionService(mockSessionService)

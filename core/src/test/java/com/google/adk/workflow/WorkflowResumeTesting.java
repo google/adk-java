@@ -32,6 +32,7 @@ import com.google.adk.testing.TestNode;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.genai.types.Content;
 import com.google.genai.types.FunctionCall;
 import com.google.genai.types.FunctionResponse;
@@ -173,6 +174,7 @@ final class WorkflowResumeTesting {
   static final class WorkflowSession {
     private final Runner runner;
     private final String sessionId;
+    private RunConfig runConfig = RunConfig.builder().build();
 
     WorkflowSession(Node root) {
       this(root, /* resumable= */ true);
@@ -187,9 +189,20 @@ final class WorkflowResumeTesting {
       this.sessionId = runner.sessionService().createSession(APP, USER).blockingGet().id();
     }
 
+    /** Runs the later turns with {@code runConfig}. */
+    @CanIgnoreReturnValue
+    WorkflowSession withRunConfig(RunConfig runConfig) {
+      this.runConfig = runConfig;
+      return this;
+    }
+
     ImmutableList<Event> turn(Content message) {
       return ImmutableList.copyOf(
-          runner.runAsync(USER, sessionId, message).timeout(30, SECONDS).toList().blockingGet());
+          runner
+              .runAsync(USER, sessionId, message, runConfig)
+              .timeout(30, SECONDS)
+              .toList()
+              .blockingGet());
     }
 
     ImmutableList<Event> resume(String invocationId) {

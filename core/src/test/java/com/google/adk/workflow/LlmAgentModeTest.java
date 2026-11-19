@@ -38,6 +38,8 @@ import static org.junit.Assert.assertThrows;
 import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.BaseAgent;
 import com.google.adk.agents.LlmAgent;
+import com.google.adk.agents.RunConfig;
+import com.google.adk.agents.RunConfig.ToolExecutionMode;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.flows.llmflows.Functions;
@@ -388,6 +390,88 @@ public final class LlmAgentModeTest {
   }
 
   @Test
+  public void
+      sequentialConfirmedToolAfterAConfirmedSingleTurnSubAgentThatWaits_runsOnceAndResumes() {
+    LlmAgent helper =
+        LlmAgent.builder()
+            .name("helper")
+            .model(
+                TestLlm.create(
+                    createFunctionCallLlmResponse(
+                        "ask_1", "pendingTool", ImmutableMap.of("message", "?")),
+                    createTextLlmResponse("Paris")))
+            .mode(AgentMode.SINGLE_TURN)
+            .tools(pendingFunctionTool())
+            .build();
+    Content bookAndAsk =
+        Content.builder()
+            .role("model")
+            .parts(
+                Part.builder()
+                    .functionCall(
+                        FunctionCall.builder().id("b1").name("book").args(ImmutableMap.of()))
+                    .build(),
+                Part.builder()
+                    .functionCall(
+                        FunctionCall.builder()
+                            .id("call_1")
+                            .name("helper")
+                            .args(ImmutableMap.of("request", "Capital?")))
+                    .build())
+            .build();
+    TestLlm model =
+        TestLlm.create(createLlmResponse(bookAndAsk), createTextLlmResponse("Booked, Paris."));
+    AtomicInteger bookings = new AtomicInteger();
+    LlmAgent coordinator =
+        LlmAgent.builder()
+            .name("coordinator")
+            .model(model)
+            .mode(AgentMode.CHAT)
+            .tools(countingTool("book", bookings))
+            .subAgents(helper)
+            .beforeToolCallback((invocationContext, tool, args, toolContext) -> {
+              if (toolContext.toolConfirmation().isPresent()) {
+                return Maybe.empty();
+              }
+              toolContext.requestConfirmation("Approve?");
+              return Maybe.just(ImmutableMap.of("error", "Needs approval."));
+            })
+            .build();
+    // Confirmed calls run in the confirmation request's order, which follows hash order and may put
+    // helper first; book must still run exactly once.
+    WorkflowSession session =
+        new WorkflowSession(workflow(new Edge(START, coordinator)))
+            .withRunConfig(
+                RunConfig.builder().setToolExecutionMode(ToolExecutionMode.SEQUENTIAL).build());
+    ImmutableList<Event> first = session.turn(go());
+    ImmutableList<FunctionCall> confirmations =
+        first.stream()
+            .flatMap(event -> Functions.getAskUserConfirmationFunctionCalls(event).stream())
+            .collect(toImmutableList());
+    session.advance(
+        Content.builder()
+            .role("user")
+            .parts(
+                confirmations.stream()
+                    .map(call ->
+                        Part.builder()
+                            .functionResponse(
+                                FunctionResponse.builder()
+                                    .id(call.id().get())
+                                    .name(call.name().get())
+                                    .response(ImmutableMap.of("confirmed", true)))
+                            .build())
+                    .collect(toImmutableList()))
+            .build());
+
+    session.advance(answer("ask_1", ImmutableMap.of("status", "Paris"), "pendingTool"));
+
+    assertThat(bookings.get()).isEqualTo(1);
+    assertThat(functionResponses(model))
+        .containsAtLeast(ImmutableMap.of("result", "booked"), ImmutableMap.of("result", "Paris"));
+  }
+
+  @Test
   public void singleTurnSubAgentThatWaits_isNotHandledByAToolErrorCallback() {
     LlmAgent helper =
         LlmAgent.builder()
@@ -515,7 +599,7 @@ public final class LlmAgentModeTest {
             .failingTurn(go());
 
     assertThat(helperModel.getRequests()).isEmpty();
-    assertThat(failed.error()).hasMessageThat().contains("cannot transfer to single-turn agent");
+    assertThat(failed.error()).hasMessageThat().contains("which runs only as a tool");
   }
 
   @Test
@@ -735,6 +819,7 @@ public final class LlmAgentModeTest {
         .map(declaration -> declaration.name().orElse(""))
         .collect(toImmutableList());
   }
+
 
   private static String onlyResult(TestLlm model) {
     return (String) functionResponses(model).stream().collect(onlyElement()).get("result");

@@ -611,26 +611,22 @@ public class Runner {
       RunConfig runConfig,
       @Nullable Map<String, Object> stateDelta) {
     Flowable<Event> result =
-        Flowable.defer(
-                () ->
-                    this.sessionService
-                        .getSession(appName, userId, sessionId, Optional.empty())
-                        .switchIfEmpty(
-                            Single.defer(
-                                () -> {
-                                  if (runConfig.autoCreateSession()) {
-                                    return this.sessionService.createSession(
-                                        appName, userId, (Map<String, Object>) null, sessionId);
-                                  }
-                                  return Single.error(
-                                      new IllegalArgumentException(
-                                          String.format(
-                                              "Session not found: %s for user %s",
-                                              sessionId, userId)));
-                                }))
-                        .flatMapPublisher(
-                            session ->
-                                this.runAsyncImpl(session, newMessage, runConfig, stateDelta)))
+        Flowable.defer(() ->
+                this.sessionService
+                    .getSession(appName, userId, sessionId, Optional.empty())
+                    .switchIfEmpty(
+                        Single.defer(() -> {
+                          if (runConfig.autoCreateSession()) {
+                            return this.sessionService.createSession(
+                                appName, userId, (Map<String, Object>) null, sessionId);
+                          }
+                          return Single.error(
+                              new IllegalArgumentException(
+                                  String.format(
+                                      "Session not found: %s for user %s", sessionId, userId)));
+                        }))
+                    .flatMapPublisher(
+                        session -> this.runAsyncImpl(session, newMessage, runConfig, stateDelta)))
             .compose(Tracing.trace("invocation"));
 
     return serializePerSession(sessionId, result);
@@ -691,28 +687,24 @@ public class Runner {
         isResumable() || node != null,
         "Resuming an invocation requires an App configured with a resumable ResumabilityConfig.");
     Flowable<Event> result =
-        Flowable.defer(
-                () ->
-                    this.sessionService
-                        .getSession(appName, userId, sessionId, Optional.empty())
-                        .switchIfEmpty(
-                            Single.defer(
-                                () -> {
-                                  // Same get-or-create as a new run, as in Python.
-                                  if (runConfig.autoCreateSession()) {
-                                    return this.sessionService.createSession(
-                                        appName, userId, (Map<String, Object>) null, sessionId);
-                                  }
-                                  return Single.error(
-                                      new IllegalArgumentException(
-                                          String.format(
-                                              "Session not found: %s for user %s",
-                                              sessionId, userId)));
-                                }))
-                        .flatMapPublisher(
-                            session ->
-                                runResumableFromSession(
-                                    session, invocationId, newMessage, runConfig, stateDelta)))
+        Flowable.defer(() ->
+                this.sessionService
+                    .getSession(appName, userId, sessionId, Optional.empty())
+                    .switchIfEmpty(
+                        Single.defer(() -> {
+                          // Same get-or-create as a new run, as in Python.
+                          if (runConfig.autoCreateSession()) {
+                            return this.sessionService.createSession(
+                                appName, userId, (Map<String, Object>) null, sessionId);
+                          }
+                          return Single.error(
+                              new IllegalArgumentException(
+                                  String.format(
+                                      "Session not found: %s for user %s", sessionId, userId)));
+                        }))
+                    .flatMapPublisher(session ->
+                        runResumableFromSession(
+                            session, invocationId, newMessage, runConfig, stateDelta)))
             .compose(Tracing.trace("invocation"));
 
     // Resuming reads session events around an append, so it shares the new run's per-session turn.
@@ -732,34 +724,32 @@ public class Runner {
    * read and append the session's events concurrently. A null session id runs unsequenced.
    */
   private Flowable<Event> serializePerSession(@Nullable String sessionId, Flowable<Event> result) {
-    return Flowable.defer(
-        () -> {
-          if (sessionId == null) {
-            return result;
-          }
+    return Flowable.defer(() -> {
+      if (sessionId == null) {
+        return result;
+      }
 
-          CompletableSubject requestCompletion = CompletableSubject.create();
+      CompletableSubject requestCompletion = CompletableSubject.create();
 
-          Completable[] previousHolder = new Completable[1];
+      Completable[] previousHolder = new Completable[1];
 
-          activeSessionCompletables.compute(
-              sessionId,
-              (key, current) -> {
-                previousHolder[0] = current;
-                return requestCompletion;
-              });
+      activeSessionCompletables.compute(
+          sessionId,
+          (key, current) -> {
+            previousHolder[0] = current;
+            return requestCompletion;
+          });
 
-          Completable previous = previousHolder[0];
+      Completable previous = previousHolder[0];
 
-          Flowable<Event> sequenced =
-              (previous == null) ? result : previous.onErrorComplete().andThen(result);
+      Flowable<Event> sequenced =
+          (previous == null) ? result : previous.onErrorComplete().andThen(result);
 
-          return sequenced.doFinally(
-              () -> {
-                requestCompletion.onComplete();
-                activeSessionCompletables.remove(sessionId, requestCompletion);
-              });
-        });
+      return sequenced.doFinally(() -> {
+        requestCompletion.onComplete();
+        activeSessionCompletables.remove(sessionId, requestCompletion);
+      });
+    });
   }
 
   /**
@@ -821,29 +811,26 @@ public class Runner {
                   .onUserMessageCallback(initialContext, newMessage)
                   .compose(Tracing.<Content>withContext(capturedContext))
                   .defaultIfEmpty(newMessage)
-                  .flatMapPublisher(
-                      content -> {
-                        InvocationContext context =
-                            resolveNodeRootContext(session, initialContext, content);
-                        return createUserMessageEvent(
-                                session,
-                                content,
-                                context,
-                                runConfig.saveInputBlobsAsArtifacts(),
-                                stateDelta)
-                            .flatMapPublisher(
-                                userEvent ->
-                                    runAgentForUserEvent(context, session, userEvent, rootAgent)
-                                        .compose(Tracing.<Event>withContext(capturedContext)));
-                      })
+                  .flatMapPublisher(content -> {
+                    InvocationContext context =
+                        resolveNodeRootContext(session, initialContext, content);
+                    return createUserMessageEvent(
+                            session,
+                            content,
+                            context,
+                            runConfig.saveInputBlobsAsArtifacts(),
+                            stateDelta)
+                        .flatMapPublisher(userEvent ->
+                            runAgentForUserEvent(context, session, userEvent, rootAgent)
+                                .compose(Tracing.<Event>withContext(capturedContext)));
+                  })
                   .doOnError(throwable -> runOnRunError(initialContext, throwable));
             })
-        .doOnError(
-            throwable -> {
-              Span span = Span.current();
-              span.setStatus(StatusCode.ERROR, "Error in runAsync Flowable execution");
-              span.recordException(throwable);
-            });
+        .doOnError(throwable -> {
+          Span span = Span.current();
+          span.setStatus(StatusCode.ERROR, "Error in runAsync Flowable execution");
+          span.recordException(throwable);
+        });
   }
 
   /**
@@ -865,9 +852,8 @@ public class Runner {
       InvocationContext initialContext, Session session, Event userEvent, BaseAgent rootAgent) {
     return this.sessionService
         .appendEvent(session, userEvent)
-        .flatMapPublisher(
-            unusedPersistedEvent ->
-                runAgentWithUpdatedSession(initialContext, session, userEvent, rootAgent));
+        .flatMapPublisher(unusedPersistedEvent ->
+            runAgentWithUpdatedSession(initialContext, session, userEvent, rootAgent));
   }
 
   /**
@@ -989,15 +975,14 @@ public class Runner {
   private Maybe<Event> beforeRunEventFor(InvocationContext context) {
     return this.pluginManager
         .beforeRunCallback(context)
-        .map(
-            content ->
-                Event.builder()
-                    .id(context.newUuid())
-                    .timestamp(context.now().toEpochMilli())
-                    .invocationId(context.invocationId())
-                    .author("model")
-                    .content(content)
-                    .build());
+        .map(content ->
+            Event.builder()
+                .id(context.newUuid())
+                .timestamp(context.now().toEpochMilli())
+                .invocationId(context.invocationId())
+                .author("model")
+                .content(content)
+                .build());
   }
 
   /** Fires the on-run-error plugin callback; the run paths share this error handler. */
@@ -1018,35 +1003,33 @@ public class Runner {
       @Nullable Map<String, Object> stateDelta) {
     // As in Python, a role-less message is a user turn; otherwise the request drops it.
     Content newMessage = withUserRole(rawMessage);
-    return Flowable.defer(
-        () -> {
-          // Rejected before the invocation-id fallback; defer turns the throw into an error signal.
-          if (node != null) {
-            checkNoTextWithFunctionResponses(newMessage);
-          }
-          if (newMessage != null) {
-            validateResumeMessage(
-                session,
-                newMessage,
-                /* requireFirstId= */ node == null || providedInvocationId != null);
-          }
-          String resolvedInvocationId =
-              resolveInvocationId(session, newMessage, providedInvocationId);
-          if (resolvedInvocationId == null) {
-            if (newMessage == null) {
-              return Flowable.<Event>error(
-                  new IllegalArgumentException(
-                      "No new message provided and no resumable invocation to resume."));
-            }
-            return runNewInvocation(session, newMessage, runConfig, stateDelta);
-          }
-          if (session.immutableEvents().isEmpty()) {
-            // Only a wholly empty session is rejected; Python does not reject an unmatched id.
-            return Flowable.<Event>error(
-                new IllegalArgumentException("Session has no events to resume."));
-          }
-          return resumeCore(session, resolvedInvocationId, newMessage, runConfig, stateDelta);
-        });
+    return Flowable.defer(() -> {
+      // Rejected before the invocation-id fallback; defer turns the throw into an error signal.
+      if (node != null) {
+        checkNoTextWithFunctionResponses(newMessage);
+      }
+      if (newMessage != null) {
+        validateResumeMessage(
+            session,
+            newMessage,
+            /* requireFirstId= */ node == null || providedInvocationId != null);
+      }
+      String resolvedInvocationId = resolveInvocationId(session, newMessage, providedInvocationId);
+      if (resolvedInvocationId == null) {
+        if (newMessage == null) {
+          return Flowable.<Event>error(
+              new IllegalArgumentException(
+                  "No new message provided and no resumable invocation to resume."));
+        }
+        return runNewInvocation(session, newMessage, runConfig, stateDelta);
+      }
+      if (session.immutableEvents().isEmpty()) {
+        // Only a wholly empty session is rejected; Python does not reject an unmatched id.
+        return Flowable.<Event>error(
+            new IllegalArgumentException("Session has no events to resume."));
+      }
+      return resumeCore(session, resolvedInvocationId, newMessage, runConfig, stateDelta);
+    });
   }
 
   /**
@@ -1438,10 +1421,9 @@ public class Runner {
    */
   private static Content originalUserMessage(Session session, String invocationId) {
     return findOriginalUserMessage(session, invocationId)
-        .orElseThrow(
-            () ->
-                new IllegalArgumentException(
-                    "No user message to resume the requested invocation from."));
+        .orElseThrow(() ->
+            new IllegalArgumentException(
+                "No user message to resume the requested invocation from."));
   }
 
   /**
@@ -1475,11 +1457,10 @@ public class Runner {
         .map(event -> event.content().orElse(null))
         .filter(Objects::nonNull)
         .filter(content -> content.parts().stream().flatMap(List::stream).findAny().isPresent())
-        .filter(
-            content ->
-                content.parts().stream()
-                    .flatMap(List::stream)
-                    .noneMatch(part -> part.functionResponse().isPresent()))
+        .filter(content ->
+            content.parts().stream()
+                .flatMap(List::stream)
+                .noneMatch(part -> part.functionResponse().isPresent()))
         .findFirst();
   }
 
@@ -1559,24 +1540,22 @@ public class Runner {
    */
   public Flowable<Event> runLive(
       String userId, String sessionId, LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
-    return Flowable.defer(
-            () ->
-                this.sessionService
-                    .getSession(appName, userId, sessionId, Optional.empty())
-                    .switchIfEmpty(
-                        Single.defer(
-                            () -> {
-                              if (runConfig.autoCreateSession()) {
-                                return this.sessionService.createSession(
-                                    appName, userId, (Map<String, Object>) null, sessionId);
-                              }
-                              return Single.error(
-                                  new IllegalArgumentException(
-                                      String.format(
-                                          "Session not found: %s for user %s", sessionId, userId)));
-                            }))
-                    .flatMapPublisher(
-                        session -> this.runLiveImpl(session, liveRequestQueue, runConfig)))
+    return Flowable.defer(() ->
+            this.sessionService
+                .getSession(appName, userId, sessionId, Optional.empty())
+                .switchIfEmpty(
+                    Single.defer(() -> {
+                      if (runConfig.autoCreateSession()) {
+                        return this.sessionService.createSession(
+                            appName, userId, (Map<String, Object>) null, sessionId);
+                      }
+                      return Single.error(
+                          new IllegalArgumentException(
+                              String.format(
+                                  "Session not found: %s for user %s", sessionId, userId)));
+                    }))
+                .flatMapPublisher(
+                    session -> this.runLiveImpl(session, liveRequestQueue, runConfig)))
         .compose(Tracing.trace("invocation"));
   }
 
@@ -1598,51 +1577,46 @@ public class Runner {
    */
   protected Flowable<Event> runLiveImpl(
       Session session, @Nullable LiveRequestQueue liveRequestQueue, RunConfig runConfig) {
-    return Flowable.defer(
-        () -> {
-          if (node != null) {
-            return Flowable.<Event>error(
-                new UnsupportedOperationException(
-                    "Live runs of a workflow node root are not supported."));
-          }
-          Context capturedContext = Context.current();
-          InvocationContext invocationContext =
-              newInvocationContextForLive(session, liveRequestQueue, runConfig);
+    return Flowable.defer(() -> {
+      if (node != null) {
+        return Flowable.<Event>error(
+            new UnsupportedOperationException(
+                "Live runs of a workflow node root are not supported."));
+      }
+      Context capturedContext = Context.current();
+      InvocationContext invocationContext =
+          newInvocationContextForLive(session, liveRequestQueue, runConfig);
 
-          Single<InvocationContext> invocationContextSingle;
-          if (invocationContext.agent() instanceof LlmAgent agent) {
-            invocationContextSingle =
-                agent
-                    .tools()
-                    .map(
-                        tools -> {
-                          this.addActiveStreamingTools(invocationContext, tools);
-                          return invocationContext;
-                        });
-          } else {
-            invocationContextSingle = Single.just(invocationContext);
-          }
-          return invocationContextSingle
-              .flatMapPublisher(
-                  updatedInvocationContext ->
-                      updatedInvocationContext
-                          .agent()
-                          .runLive(updatedInvocationContext)
-                          // As in runAsync, partial events are streamed but not persisted.
-                          .concatMapSingle(
-                              event ->
-                                  event.partial().orElse(false)
-                                      ? Single.just(event)
-                                      : this.sessionService.appendEvent(session, event)))
-              .doOnError(
-                  throwable -> {
-                    Span span = Span.current();
-                    span.setStatus(StatusCode.ERROR, "Error in runLive Flowable execution");
-                    span.recordException(throwable);
-                    runOnRunError(invocationContext, throwable);
-                  })
-              .compose(Tracing.<Event>withContext(capturedContext));
-        });
+      Single<InvocationContext> invocationContextSingle;
+      if (invocationContext.agent() instanceof LlmAgent agent) {
+        invocationContextSingle =
+            agent
+                .tools()
+                .map(tools -> {
+                  this.addActiveStreamingTools(invocationContext, tools);
+                  return invocationContext;
+                });
+      } else {
+        invocationContextSingle = Single.just(invocationContext);
+      }
+      return invocationContextSingle
+          .flatMapPublisher(updatedInvocationContext ->
+              updatedInvocationContext
+                  .agent()
+                  .runLive(updatedInvocationContext)
+                  // As in runAsync, partial events are streamed but not persisted.
+                  .concatMapSingle(event ->
+                      event.partial().orElse(false)
+                          ? Single.just(event)
+                          : this.sessionService.appendEvent(session, event)))
+          .doOnError(throwable -> {
+            Span span = Span.current();
+            span.setStatus(StatusCode.ERROR, "Error in runLive Flowable execution");
+            span.recordException(throwable);
+            runOnRunError(invocationContext, throwable);
+          })
+          .compose(Tracing.<Event>withContext(capturedContext));
+    });
   }
 
   /**
@@ -1757,11 +1731,10 @@ public class Runner {
         .filter(FunctionTool.class::isInstance)
         .map(FunctionTool.class::cast)
         .filter(this::hasLiveRequestQueueParameter)
-        .forEach(
-            tool ->
-                invocationContext
-                    .activeStreamingTools()
-                    .put(tool.name(), new ActiveStreamingTool(new LiveRequestQueue())));
+        .forEach(tool ->
+            invocationContext
+                .activeStreamingTools()
+                .put(tool.name(), new ActiveStreamingTool(new LiveRequestQueue())));
   }
 
   private boolean hasLiveRequestQueueParameter(FunctionTool functionTool) {
@@ -1784,14 +1757,11 @@ public class Runner {
             .map(LlmAgent.class::cast)
             .flatMap(LlmAgent::model)
             .flatMap(Model::model)
-            .map(
-                baseLlm ->
-                    new LlmEventSummarizer(
-                        baseLlm, /* promptTemplate= */ null, instantSource, uuidProvider))
-            .orElseThrow(
-                () ->
-                    new IllegalArgumentException(
-                        "No BaseLlm model available for event compaction"));
+            .map(baseLlm ->
+                new LlmEventSummarizer(
+                    baseLlm, /* promptTemplate= */ null, instantSource, uuidProvider))
+            .orElseThrow(() ->
+                new IllegalArgumentException("No BaseLlm model available for event compaction"));
     return new EventsCompactionConfig(
         config.compactionInterval(),
         config.overlapSize(),

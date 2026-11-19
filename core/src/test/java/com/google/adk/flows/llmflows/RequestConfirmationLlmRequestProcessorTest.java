@@ -21,6 +21,8 @@ import static com.google.adk.testing.TestUtils.createLlmResponse;
 import static com.google.adk.testing.TestUtils.createTestAgentBuilder;
 import static com.google.adk.testing.TestUtils.createTestLlm;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.adk.agents.InvocationContext;
@@ -156,6 +158,111 @@ public class RequestConfirmationLlmRequestProcessorTest {
     assertThat(fr.id()).hasValue(ORIGINAL_FUNCTION_CALL_ID);
     assertThat(fr.name()).hasValue(ECHO_TOOL_NAME);
     assertThat(fr.response()).hasValue(ImmutableMap.of("result", ORIGINAL_FUNCTION_CALL_ARGS));
+  }
+
+  @Test
+  public void runAsync_severalConfirmations_runsTheCallsInTheOrderTheyWereConfirmed() {
+    LlmAgent agent = createAgentWithEchoTool();
+    ImmutableList<String> callIds = ImmutableList.of("fc_a", "fc_b", "fc_c");
+    Event callEvent =
+        Event.builder()
+            .author(AGENT_NAME)
+            .content(
+                Content.fromParts(
+                    callIds.stream()
+                        .map(id ->
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder()
+                                        .id(id)
+                                        .name(ECHO_TOOL_NAME)
+                                        .args(ORIGINAL_FUNCTION_CALL_ARGS)
+                                        .build())
+                                .build())
+                        .toArray(Part[]::new)))
+            .build();
+    Event requestedEvent =
+        Event.builder()
+            .author(AGENT_NAME)
+            .content(
+                Content.fromParts(
+                    callIds.stream()
+                        .map(id ->
+                            Part.builder()
+                                .functionResponse(
+                                    FunctionResponse.builder()
+                                        .id(id)
+                                        .name(ECHO_TOOL_NAME)
+                                        .response(ImmutableMap.of("error", "requires confirmation"))
+                                        .build())
+                                .build())
+                        .toArray(Part[]::new)))
+            .actions(
+                EventActions.builder()
+                    .requestedToolConfirmations(
+                        callIds.stream()
+                            .collect(
+                                toImmutableMap(
+                                    id -> id,
+                                    id -> ToolConfirmation.builder().hint("confirm").build())))
+                    .build())
+            .build();
+    // The confirmations are asked for in another order than the calls were made.
+    ImmutableList<String> confirmationOrder = ImmutableList.of("fc_c", "fc_a", "fc_b");
+    Event confirmationCalls =
+        Event.builder()
+            .author(AGENT_NAME)
+            .content(
+                Content.fromParts(
+                    confirmationOrder.stream()
+                        .map(id ->
+                            Part.builder()
+                                .functionCall(
+                                    FunctionCall.builder()
+                                        .id("confirm_" + id)
+                                        .name(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+                                        .args(
+                                            ImmutableMap.of(
+                                                "originalFunctionCall",
+                                                ImmutableMap.of(
+                                                    "id",
+                                                    Optional.of(id),
+                                                    "name",
+                                                    Optional.of(ECHO_TOOL_NAME),
+                                                    "args",
+                                                    Optional.of(ORIGINAL_FUNCTION_CALL_ARGS))))
+                                        .build())
+                                .build())
+                        .toArray(Part[]::new)))
+            .build();
+    Event approvals =
+        Event.builder()
+            .author("user")
+            .content(
+                Content.fromParts(
+                    callIds.stream()
+                        .map(id ->
+                            Part.builder()
+                                .functionResponse(
+                                    FunctionResponse.builder()
+                                        .id("confirm_" + id)
+                                        .name(REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+                                        .response(ImmutableMap.of("confirmed", true))
+                                        .build())
+                                .build())
+                        .toArray(Part[]::new)))
+            .build();
+    Session session =
+        Session.builder("session_id")
+            .events(ImmutableList.of(callEvent, requestedEvent, confirmationCalls, approvals))
+            .build();
+
+    Event resumed = getOnlyElement(resumedEvents(agent, session));
+
+    // As in Python, the calls run in the order of the confirmation request.
+    assertThat(resumed.functionResponses().stream().map(fr -> fr.id().orElseThrow()))
+        .containsExactlyElementsIn(confirmationOrder)
+        .inOrder();
   }
 
   @Test

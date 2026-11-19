@@ -115,7 +115,8 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       }
 
       Map<String, ToolConfirmation> toolsToResumeWithConfirmation = new HashMap<>();
-      Map<String, FunctionCall> toolsToResumeWithArgs = new HashMap<>();
+      // In the order of the confirmation request, as Python runs them.
+      Map<String, FunctionCall> toolsToResumeWithArgs = new LinkedHashMap<>();
 
       event.functionCalls().stream()
           .filter(
@@ -145,14 +146,10 @@ public class RequestConfirmationLlmRequestProcessor implements RequestProcessor 
       }
 
       // If we found tools that were confirmed but not yet executed, execute them now.
-      // In the order the model called them, so a call that waits leaves the earlier ones answered.
-      ImmutableList<FunctionCall> callsInOrder =
-          functionCallsById.keySet().stream()
-              .filter(toolsToResumeWithArgs::containsKey)
-              .map(toolsToResumeWithArgs::get)
-              .collect(toImmutableList());
       return assembleEvent(
-              invocationContext, callsInOrder, ImmutableMap.copyOf(toolsToResumeWithConfirmation))
+              invocationContext,
+              toolsToResumeWithArgs.values(),
+              ImmutableMap.copyOf(toolsToResumeWithConfirmation))
           .map(assembledEvent ->
               RequestProcessingResult.create(llmRequest, ImmutableList.of(assembledEvent)))
           .toSingle()

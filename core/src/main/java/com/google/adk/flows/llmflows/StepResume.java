@@ -88,6 +88,11 @@ final class StepResume {
    * normal flow carries on, while a call that was never executed has to run first.
    */
   static Decision decide(InvocationContext context, Map<String, BaseTool> tools) {
+    // A delegation answers when its task ends, so the step pauses until the delegation round
+    // answers it, rather than calling the model or running the call again.
+    if (Functions.leftADelegationUnanswered(context, tools)) {
+      return PAUSE;
+    }
     // Only branches that agent tools open are resumed here.
     boolean hasAgentTools = context.agent().subAgents().stream().anyMatch(LlmAgent::runsAsTool);
     if (!context.isResumable() && !hasAgentTools) {
@@ -120,6 +125,8 @@ final class StepResume {
     }
     return CONTINUE;
   }
+
+
 
   /**
    * Returns the agent's call event to replay when a user's answer came back on the {@code

@@ -137,26 +137,23 @@ public abstract class BaseLlmFlow implements BaseFlow {
 
       for (Object toolOrToolset : agent.toolsUnion()) {
         if (toolOrToolset instanceof BaseTool baseTool) {
-          processors.add(
-              (builder, ctx) -> {
-                Completable c = baseTool.processLlmRequest(builder, ctx);
-                return c == null ? Completable.complete() : c;
-              });
+          processors.add((builder, ctx) -> {
+            Completable c = baseTool.processLlmRequest(builder, ctx);
+            return c == null ? Completable.complete() : c;
+          });
         } else if (toolOrToolset instanceof BaseToolset baseToolset) {
           // First apply the toolset's own request processor, then unwrap all tools from the toolset
           // and apply each individual tool's request processor sequentially.
-          processors.add(
-              (builder, ctx) -> {
-                Completable c = baseToolset.processLlmRequest(builder, ctx);
-                Completable toolsetProcessor = c == null ? Completable.complete() : c;
-                return toolsetProcessor
-                    .andThen(baseToolset.getTools(readonlyContext))
-                    .concatMapCompletable(
-                        b -> {
-                          Completable tc = b.processLlmRequest(builder, ctx);
-                          return tc == null ? Completable.complete() : tc;
-                        });
-              });
+          processors.add((builder, ctx) -> {
+            Completable c = baseToolset.processLlmRequest(builder, ctx);
+            Completable toolsetProcessor = c == null ? Completable.complete() : c;
+            return toolsetProcessor
+                .andThen(baseToolset.getTools(readonlyContext))
+                .concatMapCompletable(b -> {
+                  Completable tc = b.processLlmRequest(builder, ctx);
+                  return tc == null ? Completable.complete() : tc;
+                });
+          });
         } else {
           throw new IllegalArgumentException(
               "Object in tools list is not of a supported type: "
@@ -192,24 +189,22 @@ public abstract class BaseLlmFlow implements BaseFlow {
       currentLlmResponse =
           currentLlmResponse
               .flatMap(response -> processor.processResponse(context, response))
-              .doOnSuccess(
-                  result -> {
-                    if (result.events() != null) {
-                      eventIterables.add(result.events());
-                    }
-                  })
+              .doOnSuccess(result -> {
+                if (result.events() != null) {
+                  eventIterables.add(result.events());
+                }
+              })
               .map(ResponseProcessingResult::updatedResponse);
     }
-    return currentLlmResponse.flatMapPublisher(
-        updatedResponse ->
-            buildPostprocessingEvents(
-                    updatedResponse,
-                    eventIterables,
-                    context,
-                    baseEventForLlmResponse,
-                    llmRequest,
-                    parentContext)
-                .compose(Tracing.withContext(parentContext)));
+    return currentLlmResponse.flatMapPublisher(updatedResponse ->
+        buildPostprocessingEvents(
+                updatedResponse,
+                eventIterables,
+                context,
+                baseEventForLlmResponse,
+                llmRequest,
+                parentContext)
+            .compose(Tracing.withContext(parentContext)));
   }
 
   /**
@@ -355,15 +350,13 @@ public abstract class BaseLlmFlow implements BaseFlow {
     }
 
     Maybe<LlmResponse> callbackResult =
-        Maybe.defer(
-            () ->
-                Flowable.fromIterable(callbacks)
-                    .concatMapMaybe(
-                        callback ->
-                            callback
-                                .call(callbackContext, llmRequestBuilder)
-                                .compose(Tracing.withContext(currentContext)))
-                    .firstElement());
+        Maybe.defer(() ->
+            Flowable.fromIterable(callbacks)
+                .concatMapMaybe(callback ->
+                    callback
+                        .call(callbackContext, llmRequestBuilder)
+                        .compose(Tracing.withContext(currentContext)))
+                .firstElement());
 
     return pluginResult.switchIfEmpty(callbackResult);
   }
@@ -396,17 +389,15 @@ public abstract class BaseLlmFlow implements BaseFlow {
     }
 
     Maybe<LlmResponse> callbackResult =
-        Maybe.defer(
-            () -> {
-              LlmRequest llmRequest = llmRequestBuilder.build();
-              return Flowable.fromIterable(callbacks)
-                  .concatMapMaybe(
-                      callback ->
-                          callback
-                              .call(callbackContext, llmRequest, ex)
-                              .compose(Tracing.withContext(currentContext)))
-                  .firstElement();
-            });
+        Maybe.defer(() -> {
+          LlmRequest llmRequest = llmRequestBuilder.build();
+          return Flowable.fromIterable(callbacks)
+              .concatMapMaybe(callback ->
+                  callback
+                      .call(callbackContext, llmRequest, ex)
+                      .compose(Tracing.withContext(currentContext)))
+              .firstElement();
+        });
 
     return pluginResult.switchIfEmpty(callbackResult);
   }
@@ -435,15 +426,13 @@ public abstract class BaseLlmFlow implements BaseFlow {
     }
 
     Maybe<LlmResponse> callbackResult =
-        Maybe.defer(
-            () ->
-                Flowable.fromIterable(callbacks)
-                    .concatMapMaybe(
-                        callback ->
-                            callback
-                                .call(callbackContext, llmResponse)
-                                .compose(Tracing.withContext(currentContext)))
-                    .firstElement());
+        Maybe.defer(() ->
+            Flowable.fromIterable(callbacks)
+                .concatMapMaybe(callback ->
+                    callback
+                        .call(callbackContext, llmResponse)
+                        .compose(Tracing.withContext(currentContext)))
+                .firstElement());
 
     return pluginResult.switchIfEmpty(callbackResult).defaultIfEmpty(llmResponse);
   }
@@ -535,20 +524,15 @@ public abstract class BaseLlmFlow implements BaseFlow {
   @Override
   public Flowable<Event> run(InvocationContext invocationContext) {
     Context spanContext = Context.current();
-    return Flowable.defer(
-        () -> {
-          AtomicInteger stepsCompleted = new AtomicInteger(0);
-          AtomicBoolean continueFlow = new AtomicBoolean(false);
-          // Resubscribe without growing the stack when steps complete synchronously.
-          return Flowable.defer(
-                  () ->
-                      runStepAndCheckContinue(
-                          spanContext,
-                          invocationContext,
-                          stepsCompleted.getAndIncrement(),
-                          continueFlow))
-              .repeatUntil(() -> !continueFlow.getAndSet(false));
-        });
+    return Flowable.defer(() -> {
+      AtomicInteger stepsCompleted = new AtomicInteger(0);
+      AtomicBoolean continueFlow = new AtomicBoolean(false);
+      // Resubscribe without growing the stack when steps complete synchronously.
+      return Flowable.defer(() ->
+              runStepAndCheckContinue(
+                  spanContext, invocationContext, stepsCompleted.getAndIncrement(), continueFlow))
+          .repeatUntil(() -> !continueFlow.getAndSet(false));
+    });
   }
 
   /**
@@ -562,7 +546,10 @@ public abstract class BaseLlmFlow implements BaseFlow {
       AtomicBoolean continueFlow) {
     Flowable<Event> currentStepEvents =
         cancellableCache(runOneStep(spanContext, invocationContext));
-    if (stepsCompleted + 1 >= maxSteps) {
+    // In a node run, only steps that called the model count, so a resume that replays calls
+    // leaves the budget alone.
+    boolean nodeRun = invocationContext.agentMode(invocationContext.agent()).isPresent();
+    if (!nodeRun && stepsCompleted + 1 >= maxSteps) {
       logger.debug("Ending flow execution because max steps reached.");
       return currentStepEvents;
     }
@@ -572,27 +559,28 @@ public abstract class BaseLlmFlow implements BaseFlow {
     return currentStepEvents.concatWith(
         currentStepEvents
             .toList()
-            .flatMapPublisher(
-                eventList -> {
-                  if (eventList.isEmpty()
-                      || Iterables.getLast(eventList).finalResponse()
-                      || Iterables.getLast(eventList).actions().endInvocation().orElse(false)) {
-                    logger.debug(
-                        "Ending flow execution based on final response, endInvocation action or"
-                            + " empty event list.");
-                    return Flowable.empty();
-                  } else if (legacyResumption && Functions.hasPendingLongRunningCall(eventList)) {
-                    // The resumable flow decides before the model call instead, in StepResume.
-                    logger.debug("Pausing flow execution on a pending long-running call.");
-                    return Flowable.empty();
-                  } else {
-                    logger.debug("Continuing to next step of the flow.");
-                    continueFlow.set(true);
-                    // Wait until the Runner has persisted this step's events so the next step's
-                    // request is not built from a stale session (see PersistBarrier).
-                    return PersistBarrier.awaitPersisted(invocationContext, eventList).toFlowable();
-                  }
-                }));
+            .flatMapPublisher(eventList -> {
+              if (eventList.isEmpty()
+                  || Iterables.getLast(eventList).finalResponse()
+                  || Iterables.getLast(eventList).actions().endOfAgent()
+                  || (nodeRun
+                      && invocationContext.stepsTaken(invocationContext.agent()) >= maxSteps)) {
+                logger.debug(
+                    "Ending flow execution based on final response, endInvocation action or"
+                        + " empty event list.");
+                return Flowable.empty();
+              } else if (legacyResumption && Functions.hasPendingLongRunningCall(eventList)) {
+                // The resumable flow decides before the model call instead, in StepResume.
+                logger.debug("Pausing flow execution on a pending long-running call.");
+                return Flowable.empty();
+              } else {
+                logger.debug("Continuing to next step of the flow.");
+                continueFlow.set(true);
+                // Wait until the Runner has persisted this step's events so the next step's
+                // request is not built from a stale session (see PersistBarrier).
+                return PersistBarrier.awaitPersisted(invocationContext, eventList).toFlowable();
+              }
+            }));
   }
 
   /**
@@ -751,7 +739,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
                       invocationContext.liveRequestQueue().get().content(event.content().get());
                     }
                     if (event.actions().transferToAgent().isPresent()
-                        || event.actions().endInvocation().orElse(false)) {
+                        || event.actions().endOfAgent()) {
                       sendTask.dispose();
                       connection.close();
                     }
@@ -760,9 +748,7 @@ public abstract class BaseLlmFlow implements BaseFlow {
           return Tracing.traceFlowable(
                   callLlmContext,
                   span,
-                  () ->
-                      receiveFlow.takeWhile(
-                          event -> !event.actions().endInvocation().orElse(false)))
+                  () -> receiveFlow.takeWhile(event -> !event.actions().endOfAgent()))
               .compose(Tracing.withContext(spanContext));
         }));
   }
@@ -825,15 +811,15 @@ public abstract class BaseLlmFlow implements BaseFlow {
       return self.concatWith(
           Flowable.error(new IllegalStateException("Agent not found: " + agentToTransfer)));
     }
-    // In a workflow a single-turn agent runs only as a tool, even when the model names it in a
-    // transfer.
+    // In a workflow an agent its parent calls as a tool runs only as one, even when the model names
+    // it in a transfer.
     if (context.nodePath().isPresent() && LlmAgent.runsAsTool(nextAgent.get())) {
       return self.concatWith(
           Flowable.error(
               new IllegalStateException(
                   "Agent "
                       + context.agent().name()
-                      + " cannot transfer to single-turn agent "
+                      + " cannot transfer to agent "
                       + agentToTransfer
                       + ", which runs only as a tool.")));
     }

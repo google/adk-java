@@ -221,6 +221,28 @@ public class InvocationContext {
   }
 
   /**
+   * Returns the model steps {@code agent} has taken in its workflow node run, which its delegation
+   * rounds share, or 0 outside such a run.
+   *
+   * <p>This method is only for use by Agent Development Kit.
+   */
+  @Experimental
+  public int stepsTaken(BaseAgent agent) {
+    return agentModeOverride != null && agentModeOverride.agent().equals(agent)
+        ? agentModeOverride.steps().count.get()
+        : 0;
+  }
+
+  /**
+   * Counts a model call of {@code agent} in its workflow node run, and does nothing outside one.
+   */
+  private void countStep(BaseAgent agent) {
+    if (agentModeOverride != null && agentModeOverride.agent().equals(agent)) {
+      agentModeOverride.steps().count.incrementAndGet();
+    }
+  }
+
+  /**
    * Returns the path of the workflow node the agent runs as, or empty outside a workflow.
    * Sub-agents of the node share this path.
    *
@@ -439,12 +461,14 @@ public class InvocationContext {
 
   /**
    * Increments the count of LLM calls made during this invocation and throws an exception if the
-   * limit defined in {@link RunConfig} is exceeded.
+   * limit defined in {@link RunConfig} is exceeded. In a workflow node run it also counts a model
+   * step of the node's agent, which its delegation rounds share.
    *
    * @throws LlmCallsLimitExceededException if the call limit is exceeded
    */
   public void incrementLlmCallsCount() throws LlmCallsLimitExceededException {
     this.invocationCostManager.incrementAndEnforceLlmCallsLimit(this.runConfig);
+    countStep(agent);
   }
 
   /** Returns the events compaction configuration for the current agent run. */
@@ -736,9 +760,28 @@ public class InvocationContext {
   }
 
   /**
-   * The mode one agent runs in, keyed to that agent so the sub-agents it reaches run without it.
+   * The mode a workflow node runs its agent in, keyed to that agent so the sub-agents it reaches
+   * run without it, and the model steps it took in the node run.
    */
-  private record AgentModeOverride(BaseAgent agent, AgentMode mode) {}
+  private record AgentModeOverride(BaseAgent agent, AgentMode mode, StepCounter steps) {}
+
+  /**
+   * The model steps an agent took in its node run, shared by the contexts copied from it. Equal by
+   * value, as {@link InvocationCostManager} is, so it keeps {@link InvocationContext#equals}.
+   */
+  private static final class StepCounter {
+    private final AtomicInteger count = new AtomicInteger();
+
+    @Override
+    public boolean equals(Object o) {
+      return this == o || (o instanceof StepCounter that && count.get() == that.count.get());
+    }
+
+    @Override
+    public int hashCode() {
+      return Integer.hashCode(count.get());
+    }
+  }
 
   /** Builder for {@link InvocationContext}. */
   public static class Builder {
@@ -947,7 +990,7 @@ public class InvocationContext {
     /** Sets the mode {@code agent} runs in as a workflow node, replacing any earlier one. */
     @CanIgnoreReturnValue
     Builder agentMode(BaseAgent agent, AgentMode mode) {
-      this.agentModeOverride = new AgentModeOverride(agent, mode);
+      this.agentModeOverride = new AgentModeOverride(agent, mode, new StepCounter());
       return this;
     }
 
