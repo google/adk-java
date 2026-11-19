@@ -30,6 +30,7 @@ import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 
+import com.fasterxml.jackson.databind.util.RawValue;
 import com.google.adk.agents.LlmAgent;
 import com.google.adk.events.Event;
 import com.google.adk.testing.TestLlm;
@@ -111,6 +112,19 @@ public final class WorkflowHitlTest {
   public void requestInput_withAPayloadThatHasNoJsonForm_failsTheAskingNode() {
     Node ask =
         ask("ask", RequestInput.builder().interruptId("ask_1").payload(new Object()).build());
+
+    FailedTurn turn = new WorkflowSession(workflow(new Edge(START, ask))).failingTurn(go());
+
+    assertThat(turn.error()).isInstanceOf(IllegalArgumentException.class);
+    assertThat(requestEvents(turn.events())).isEmpty();
+  }
+
+  @Test
+  public void requestInput_withARawPayloadWithTrailingText_failsTheAskingNode() {
+    Node ask =
+        ask(
+            "ask",
+            RequestInput.builder().interruptId("ask_1").payload(new RawValue("3 more")).build());
 
     FailedTurn turn = new WorkflowSession(workflow(new Edge(START, ask))).failingTurn(go());
 

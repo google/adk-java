@@ -16,6 +16,8 @@
 
 package com.google.adk.workflow;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.google.adk.JsonBaseModel;
 import com.google.adk.agents.InvocationContext;
 import com.google.adk.annotations.Experimental;
@@ -103,7 +105,16 @@ public abstract class RequestInput {
   }
 
   private static @Nullable Object toJsonValue(Object value) {
-    return JsonBaseModel.getMapper().convertValue(value, Object.class);
+    try {
+      // Parse JSON text so whole numbers match those in a stored session's FunctionCall.args.
+      return JsonBaseModel.getMapper()
+          .readerFor(Object.class)
+          .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+          .readValue(JsonBaseModel.getMapper().writeValueAsString(value));
+    } catch (JsonProcessingException unused) {
+      // Jackson's message can quote the value, so no cause.
+      throw new IllegalArgumentException("A request value has no JSON form.");
+    }
   }
 
   /** Builder for {@link RequestInput}. */

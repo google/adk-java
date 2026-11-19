@@ -142,8 +142,8 @@ public final class FunctionNodes {
    *
    * @param interruptId the ID the answer carries; keep it stable across reruns
    * @param message the text to show the user, or {@code null}
-   * @param payload data for rendering the request, written in JSON form as a node output is, or
-   *     {@code null}
+   * @param payload data for rendering the request, or {@code null}; written in JSON form with whole
+   *     numbers that fit in an {@code int} kept as {@code Integer}
    * @param responseSchema the schema the answer must match, or {@code null}
    * @throws IllegalArgumentException if the payload has no JSON form
    */
@@ -196,7 +196,7 @@ public final class FunctionNodes {
         payload == null
             ? request
             : request.toBuilder()
-                .payload(FunctionNode.ANY.encode(payload, "payload of requestInput"))
+                .payload(FunctionNode.ANY.encodePayload(payload, "payload of requestInput"))
                 .build());
   }
 
