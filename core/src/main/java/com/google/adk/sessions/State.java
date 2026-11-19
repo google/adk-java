@@ -27,7 +27,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
 
-/** A {@link State} object that also keeps track of the changes to the state. */
+/**
+ * Session state that also records each write made through {@link #put(String, Object)}, {@link
+ * #remove(Object)} and the other write methods in a delta. Writes through the {@link #entrySet()},
+ * {@link #keySet()} and {@link #values()} views and {@link #clear()} skip the delta, so no event
+ * carries them; in the {@link com.google.adk.agents.Context#state()} of a workflow node, they throw
+ * {@link UnsupportedOperationException}.
+ */
 @SuppressWarnings("ShouldNotSubclass")
 public final class State implements ConcurrentMap<String, Object> {
 
@@ -95,7 +101,8 @@ public final class State implements ConcurrentMap<String, Object> {
     if (!(o instanceof State other)) {
       return false;
     }
-    return state.equals(other.state);
+    // Compares entries: the backing map may be a State or a read-only wrapper around one.
+    return state.entrySet().equals(other.state.entrySet());
   }
 
   @Override

@@ -31,16 +31,21 @@ import com.google.adk.workflow.Route;
 import com.google.adk.workflow.RunNodeConfig;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
+import com.google.common.collect.ForwardingConcurrentMap;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Maybe;
 import io.reactivex.rxjava3.core.Single;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentMap;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -97,12 +102,22 @@ public class Context extends ReadonlyContext {
       @Nullable NodeExecutionState nodeState) {
     super(invocationContext);
     this.eventActions = eventActions != null ? eventActions : EventActions.builder().build();
-    this.state = new State(invocationContext.session().state(), this.eventActions.stateDelta());
+    Map<String, Object> sessionState = invocationContext.session().state();
+    // The session's state is a State, so this skips only a null one, which State rejects.
+    if (nodeState != null
+        && sessionState instanceof ConcurrentMap<String, Object> concurrentState) {
+      sessionState = new ReadOnlyViewsMap(concurrentState);
+    }
+    this.state = new State(sessionState, this.eventActions.stateDelta());
     this.eventId = eventId;
     this.nodeState = nodeState;
   }
 
-  /** Returns the delta-aware state of the current context. */
+  /**
+   * Returns the delta-aware state of the current context. In the context a workflow passes to a
+   * node, writing through its map views or {@link State#clear()} throws {@link
+   * UnsupportedOperationException}; see {@link State}.
+   */
   @Override
   public State state() {
     return state;
@@ -429,5 +444,43 @@ public class Context extends ReadonlyContext {
   @Experimental
   public final Maybe<Object> runNode(Node node, @Nullable Object nodeInput, RunNodeConfig config) {
     return NodeRunner.runChild(this, node, nodeInput, config);
+  }
+
+  /** The session state behind a workflow node's {@link State}, with read-only views. */
+  private static final class ReadOnlyViewsMap extends ForwardingConcurrentMap<String, Object> {
+    private final ConcurrentMap<String, Object> sessionState;
+    // unmodifiableMap also wraps each entry, so Entry.setValue throws.
+    private final Map<String, Object> readOnly;
+
+    ReadOnlyViewsMap(ConcurrentMap<String, Object> sessionState) {
+      this.sessionState = sessionState;
+      this.readOnly = Collections.unmodifiableMap(sessionState);
+    }
+
+    @Override
+    protected ConcurrentMap<String, Object> delegate() {
+      return sessionState;
+    }
+
+    @Override
+    public void clear() {
+      throw new UnsupportedOperationException(
+          "A workflow node cannot clear its state; remove each key with State.remove.");
+    }
+
+    @Override
+    public Set<Map.Entry<String, Object>> entrySet() {
+      return readOnly.entrySet();
+    }
+
+    @Override
+    public Set<String> keySet() {
+      return readOnly.keySet();
+    }
+
+    @Override
+    public Collection<Object> values() {
+      return readOnly.values();
+    }
   }
 }
