@@ -102,7 +102,9 @@ public class SetModelResponseTool extends BaseTool {
       } catch (IllegalArgumentException e) {
         return validationFeedback(sanitizeValidationMessage(e.getMessage()));
       }
-      Map<String, Object> validatedResponse = excludeNullFields(args, parameters);
+      // Fill defaults before dropping nulls so an explicit null is not replaced with a default.
+      Map<String, Object> validatedResponse =
+          excludeNullFields(SchemaUtils.withDefaults(args, parameters), parameters);
       if (wrapsOutputSchema) {
         Object response = validatedResponse.get(RESPONSE_PARAMETER);
         if (response == null) {

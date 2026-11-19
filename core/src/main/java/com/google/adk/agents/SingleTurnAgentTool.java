@@ -71,7 +71,7 @@ final class SingleTurnAgentTool extends BaseTool {
       } catch (IllegalArgumentException e) {
         return Single.just(result("Error validating input: " + e.getMessage()));
       }
-      nodeInput = args;
+      nodeInput = SchemaUtils.withDefaults(args, agent.inputSchema().get());
     }
     Optional<Context> parentNode = toolContext.invocationContext().nodeContext();
     if (parentNode.isEmpty()) {

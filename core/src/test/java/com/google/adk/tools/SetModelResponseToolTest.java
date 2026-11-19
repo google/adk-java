@@ -431,6 +431,54 @@ public final class SetModelResponseToolTest {
   }
 
   @Test
+  public void runAsync_omittedPropertyWithDefault_recordsTheDefault() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "a",
+                    Schema.builder().type("STRING").build(),
+                    "b",
+                    Schema.builder().type("STRING").default_("fallback").build()))
+            .build();
+
+    ToolContext toolContext = createToolContext();
+    Map<String, Object> result =
+        new SetModelResponseTool(outputSchema)
+            .runAsync(ImmutableMap.of("a", "x"), toolContext)
+            .blockingGet();
+
+    assertThat(result).containsExactly("a", "x", "b", "fallback");
+    assertThat(toolContext.actions().setModelResponse())
+        .hasValue(ImmutableMap.of("a", "x", "b", "fallback"));
+  }
+
+  @Test
+  public void runAsync_nullForPropertyWithDefault_dropsItWithoutTheDefault() {
+    Schema outputSchema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "a",
+                    Schema.builder().type("STRING").build(),
+                    "b",
+                    Schema.builder().type("STRING").nullable(true).default_("fallback").build()))
+            .build();
+    Map<String, Object> args = new LinkedHashMap<>();
+    args.put("a", "x");
+    args.put("b", null);
+
+    ToolContext toolContext = createToolContext();
+    Map<String, Object> result =
+        new SetModelResponseTool(outputSchema).runAsync(args, toolContext).blockingGet();
+
+    assertThat(result).containsExactly("a", "x");
+    assertThat(toolContext.actions().setModelResponse()).hasValue(ImmutableMap.of("a", "x"));
+  }
+
+  @Test
   public void declaration_arraySchema_wrapsItInAResponseParameter() {
     SetModelResponseTool tool = new SetModelResponseTool(STRING_ARRAY_SCHEMA);
 

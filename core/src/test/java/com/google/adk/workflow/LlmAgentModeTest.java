@@ -625,6 +625,36 @@ public final class LlmAgentModeTest {
   }
 
   @Test
+  public void singleTurnSubAgentWithAnInputSchema_getsTheDefaultsOfOmittedArgs() {
+    TestLlm helperModel = TestLlm.create(createTextLlmResponse("Sunny"));
+    LlmAgent helper =
+        LlmAgent.builder()
+            .name("helper")
+            .model(helperModel)
+            .mode(AgentMode.SINGLE_TURN)
+            .inputSchema(
+                CITY_SCHEMA.toBuilder()
+                    .properties(
+                        ImmutableMap.of(
+                            "city",
+                            Schema.builder().type("STRING").build(),
+                            "unit",
+                            Schema.builder().type("STRING").default_("celsius").build()))
+                    .build())
+            .build();
+    TestLlm model =
+        TestLlm.create(
+            createFunctionCallLlmResponse("call_1", "helper", ImmutableMap.of("city", "Paris")),
+            createTextLlmResponse("done"));
+
+    new WorkflowSession(workflow(new Edge(START, chat("coordinator", model, helper))))
+        .advance(go());
+
+    assertThat(helperModel.getLastRequest().contents())
+        .containsExactly(userText("{\"city\":\"Paris\",\"unit\":\"celsius\"}"));
+  }
+
+  @Test
   public void agent_doesNotListASingleTurnPeerAsATransferTarget() {
     LlmAgent agent = LlmAgent.builder().name("agent").model(TestLlm.create("ok")).build();
     LlmAgent peer = LlmAgent.builder().name("peer").model(TestLlm.create("ok")).build();

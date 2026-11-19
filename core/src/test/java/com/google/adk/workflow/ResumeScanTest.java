@@ -479,6 +479,24 @@ public final class ResumeScanTest {
   }
 
   @Test
+  public void validateAnswer_answerOmittingADefaultedProperty_isReturnedWithoutTheDefault() {
+    Schema schema =
+        Schema.builder()
+            .type(Type.Known.OBJECT)
+            .properties(
+                ImmutableMap.of(
+                    "count",
+                    Schema.builder().type(Type.Known.INTEGER).build(),
+                    "unit",
+                    Schema.builder().type(Type.Known.STRING).default_("items").build()))
+            .build();
+
+    Object answer = ResumeScan.validateAnswer(schema, ImmutableMap.of("count", 1), "ask_1");
+
+    assertThat(answer).isEqualTo(ImmutableMap.of("count", 1));
+  }
+
+  @Test
   public void validateAnswer_objectTheSchemaRejects_failsWithoutTheValue() {
     IllegalArgumentException error =
         assertThrows(

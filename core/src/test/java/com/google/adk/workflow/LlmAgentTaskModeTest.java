@@ -167,6 +167,29 @@ public final class LlmAgentTaskModeTest {
   }
 
   @Test
+  public void taskAgentWithAnOutputSchema_savesTheFinishTaskArgsWithoutDefaults() {
+    Schema city =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "city",
+                    Schema.builder().type("STRING").build(),
+                    "country",
+                    Schema.builder().type("STRING").default_("France").build()))
+            .required(ImmutableList.of("city"))
+            .build();
+    TestLlm model = TestLlm.create(finishTask(ImmutableMap.of("city", "Paris")));
+    LlmAgent task = task(model).outputSchema(city).outputKey("booking").build();
+    WorkflowSession session = new WorkflowSession(withSuccessor(task));
+
+    var unused = session.turn(go());
+
+    assertThat(stateValues(session.storedEvents(), "booking"))
+        .containsExactly(ImmutableMap.of("city", "Paris"));
+  }
+
+  @Test
   public void taskAgentWithANonObjectOutputSchema_takesItsOutputUnderResult() {
     Schema text = Schema.builder().type("STRING").build();
     TestLlm model = TestLlm.create(finishTask(ImmutableMap.of("result", "Paris")));

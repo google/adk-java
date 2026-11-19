@@ -501,6 +501,27 @@ public final class LlmAgentAsNodeTest {
   }
 
   @Test
+  public void runAsync_singleTurnNodeWithAnOutputSchema_fillsTheDefaultsOfOmittedProperties() {
+    Schema schema =
+        Schema.builder()
+            .type("OBJECT")
+            .properties(
+                ImmutableMap.of(
+                    "title",
+                    Schema.builder().type("STRING").build(),
+                    "count",
+                    Schema.builder().type("INTEGER").default_(1).build()))
+            .build();
+    LlmAgent agent = schemaAgent(schema, "{\"title\": \"Story\"}").outputKey("meta").build();
+
+    NodeRun nodeRun = runWithSuccessor(agent);
+
+    ImmutableMap<String, Object> expected = ImmutableMap.of("title", "Story", "count", 1);
+    assertThat(nodeRun.output()).isEqualTo(expected);
+    assertThat(stateDeltaValues(nodeRun.events(), "meta")).containsExactly(expected);
+  }
+
+  @Test
   public void runAsync_singleTurnNodeWithAStringSchema_givesItsPlainText() {
     LlmAgent agent =
         schemaAgent(Schema.builder().type("STRING").build(), "The answer is 42").build();
