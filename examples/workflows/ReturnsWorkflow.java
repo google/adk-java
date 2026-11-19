@@ -15,11 +15,13 @@
  */
 package com.example.workflows;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.agents.Context;
 import com.google.adk.apps.App;
 import com.google.adk.runner.Runner;
 import com.google.adk.tools.Annotations.Schema;
 import com.google.adk.tools.FunctionTool;
+import com.google.adk.workflow.FunctionNodes;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.NodeInfo;
 import com.google.adk.workflow.Route;
@@ -29,9 +31,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
-import io.reactivex.rxjava3.core.Flowable;
 import java.util.Map;
-import org.jspecify.annotations.Nullable;
 
 /**
  * A returns desk whose steps include the function tools of {@link OrderSystem}. A routing map sends
@@ -45,23 +45,30 @@ public final class ReturnsWorkflow {
   /** Builds the workflow. It calls no model. */
   public static Workflow create() {
     OrderSystem orders = new OrderSystem();
+    Node returnDesk =
+        FunctionNodes.of(
+            "return_desk",
+            new TypeReference<Map<String, String>>() {},
+            new TypeReference<Map<String, String>>() {},
+            ReturnsWorkflow::returnDesk);
+    Node decline =
+        FunctionNodes.of(
+            "decline",
+            new TypeReference<Map<String, String>>() {},
+            String.class,
+            ReturnsWorkflow::decline);
     return Workflow.builder()
         .name("returns")
-        .edges(
-            g ->
-                g.fromStart()
-                    .chain(
-                        ToolNodes.asNode(FunctionTool.create(orders, "lookupOrder")),
-                        new ReturnDesk())
-                    .route(
-                        r -> {
-                          r.on(r.anyOf("processing", "packed"))
-                              .then(ToolNodes.asNode(FunctionTool.create(orders, "cancelOrder")));
-                          r.on(r.anyOf("shipped", "delivered"))
-                              .then(
-                                  ToolNodes.asNode(FunctionTool.create(orders, "sendReturnLabel")));
-                          r.otherwise(new Decline());
-                        }))
+        .edges(g ->
+            g.fromStart()
+                .chain(ToolNodes.asNode(FunctionTool.create(orders, "lookupOrder")), returnDesk)
+                .route(r -> {
+                  r.on(r.anyOf("processing", "packed"))
+                      .then(ToolNodes.asNode(FunctionTool.create(orders, "cancelOrder")));
+                  r.on(r.anyOf("shipped", "delivered"))
+                      .then(ToolNodes.asNode(FunctionTool.create(orders, "sendReturnLabel")));
+                  r.otherwise(decline);
+                }))
         .build();
   }
 
@@ -121,33 +128,15 @@ public final class ReturnsWorkflow {
   }
 
   /** Routes on the order's status and passes the order ID to the next step. */
-  private static final class ReturnDesk implements Node {
-    @Override
-    public String name() {
-      return "return_desk";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // A function tool outputs the map it returns.
-      Map<?, ?> order = (Map<?, ?>) nodeInput;
-      context.routes(ImmutableList.of(new Route.Tag((String) order.get("status"))));
-      return Flowable.just(ImmutableMap.of("orderId", order.get("orderId")));
-    }
+  private static Map<String, String> returnDesk(Context context, Map<String, String> lookup) {
+    // A function tool outputs the map it returns.
+    context.routes(ImmutableList.of(new Route.Tag(lookup.get("status"))));
+    return ImmutableMap.of("orderId", lookup.get("orderId"));
   }
 
   /** Declines a return for any other status, such as an already returned order. */
-  private static final class Decline implements Node {
-    @Override
-    public String name() {
-      return "decline";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      return Flowable.just(
-          "Order " + ((Map<?, ?>) nodeInput).get("orderId") + " can't be returned.");
-    }
+  private static String decline(Context context, Map<String, String> request) {
+    return "Order " + request.get("orderId") + " can't be returned.";
   }
 
   private ReturnsWorkflow() {}

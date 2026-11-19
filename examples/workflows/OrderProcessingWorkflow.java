@@ -15,6 +15,7 @@
  */
 package com.example.workflows;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.adk.agents.AgentMode;
 import com.google.adk.agents.Context;
 import com.google.adk.agents.LlmAgent;
@@ -23,6 +24,7 @@ import com.google.adk.runner.Runner;
 import com.google.adk.tools.Annotations;
 import com.google.adk.tools.FunctionTool;
 import com.google.adk.tools.ToolContext;
+import com.google.adk.workflow.FunctionNodes;
 import com.google.adk.workflow.JoinNode;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.NodeInfo;
@@ -38,7 +40,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
-import io.reactivex.rxjava3.core.Flowable;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
@@ -76,69 +77,71 @@ public final class OrderProcessingWorkflow {
     Workflow fraudCheck =
         Workflow.builder()
             .name("fraud_check")
-            .edges(
-                g ->
-                    g.fromStart()
-                        .chain(
-                            new Step("geo_check", OrderProcessingWorkflow::geoCheck),
-                            new Step("fraud_score", OrderProcessingWorkflow::fraudScore)))
+            .edges(g ->
+                g.fromStart()
+                    .chain(
+                        step("geo_check", OrderProcessingWorkflow::geoCheck),
+                        step("fraud_score", OrderProcessingWorkflow::fraudScore)))
             .build();
     Workflow inventory =
         Workflow.builder()
             .name("inventory")
-            .edges(
-                g ->
-                    g.fromStart()
-                        .chain(
-                            new Step(
-                                "reserve_inventory", OrderProcessingWorkflow::reserveInventory),
-                            new Step("warehouse_hold", OrderProcessingWorkflow::warehouseHold)))
+            .edges(g ->
+                g.fromStart()
+                    .chain(
+                        step("reserve_inventory", OrderProcessingWorkflow::reserveInventory),
+                        step("warehouse_hold", OrderProcessingWorkflow::warehouseHold)))
             .build();
+    Node parseOrder =
+        FunctionNodes.of(
+            "parse_order",
+            Content.class,
+            new TypeReference<Map<String, Object>>() {},
+            OrderProcessingWorkflow::parseOrder);
     Node creditCheck = ToolNodes.asNode(FunctionTool.create(new CreditBureau(), "creditCheck"));
     Node assessRisk = riskAgent(model);
+    Node riskDecision =
+        FunctionNodes.of(
+            "risk_decision", Void.class, Void.class, OrderProcessingWorkflow::riskDecision);
     Node financeReview = financeReviewAgent(model);
     Node complianceReview = complianceReviewAgent(model);
-    Node chargeCard = new Step("charge_card", OrderProcessingWorkflow::chargeCard);
-    Node freezeAccount = new Step("freeze_account", OrderProcessingWorkflow::freezeAccount);
-    Node alertSecOps = new Step("alert_sec_ops", OrderProcessingWorkflow::alertSecOps);
-    Node cancelOrder = new Step("cancel_order", OrderProcessingWorkflow::cancelOrder);
-    Node sendReceipt = new Step("send_receipt", OrderProcessingWorkflow::sendReceipt);
+    Node chargeCard = step("charge_card", OrderProcessingWorkflow::chargeCard);
+    Node freezeAccount = step("freeze_account", OrderProcessingWorkflow::freezeAccount);
+    Node alertSecOps = step("alert_sec_ops", OrderProcessingWorkflow::alertSecOps);
+    Node cancelOrder = step("cancel_order", OrderProcessingWorkflow::cancelOrder);
+    Node sendReceipt = step("send_receipt", OrderProcessingWorkflow::sendReceipt);
     return Workflow.builder()
         .name("order_processing")
-        .edges(
-            g -> {
-              // Stage 1: the three branches run concurrently; risk_join waits for all of them.
-              g.fromStart()
-                  .then(new ParseOrder())
-                  .then(fraudCheck, inventory, creditCheck)
-                  .joinTo(JoinNode.create("risk_join"))
-                  .chain(assessRisk, new RiskDecision())
-                  // Stage 2: route on risk decision; a route mapped to two nodes fans out.
-                  .route(
-                      r -> {
-                        r.on("auto_approve").then(chargeCard);
-                        r.on(r.anyOf("manual_review", "high_value"))
-                            .then(financeReview, complianceReview);
-                        r.on("fraud").then(freezeAccount, alertSecOps);
-                        r.otherwise(cancelOrder);
-                      });
-              g.from(financeReview, complianceReview)
-                  .joinTo(JoinNode.create("review_join"))
-                  .then(new ReviewGate(/* maxRounds= */ 2))
-                  .route(
-                      r -> {
-                        r.on("approved").then(chargeCard);
-                        r.on("recheck").then(assessRisk); // Loops back for another assessment.
-                        r.otherwise(cancelOrder);
-                      });
-              g.from(freezeAccount, alertSecOps)
-                  .joinTo(JoinNode.create("audit_join"))
-                  .then(cancelOrder);
-              // Stage 3: only one outcome runs per order, so the receipt needs no JoinNode.
-              g.from(chargeCard)
-                  .chain(new Step("ship_order", OrderProcessingWorkflow::shipOrder), sendReceipt);
-              g.from(cancelOrder).then(sendReceipt);
-            })
+        .edges(g -> {
+          // Stage 1: the three branches run concurrently; risk_join waits for all of them.
+          g.fromStart()
+              .then(parseOrder)
+              .then(fraudCheck, inventory, creditCheck)
+              .joinTo(JoinNode.create("risk_join"))
+              .chain(assessRisk, riskDecision)
+              // Stage 2: route on risk decision; a route mapped to two nodes fans out.
+              .route(r -> {
+                r.on("auto_approve").then(chargeCard);
+                r.on(r.anyOf("manual_review", "high_value")).then(financeReview, complianceReview);
+                r.on("fraud").then(freezeAccount, alertSecOps);
+                r.otherwise(cancelOrder);
+              });
+          g.from(financeReview, complianceReview)
+              .joinTo(JoinNode.create("review_join"))
+              .then(reviewGate(/* maxRounds= */ 2))
+              .route(r -> {
+                r.on("approved").then(chargeCard);
+                r.on("recheck").then(assessRisk); // Loops back for another assessment.
+                r.otherwise(cancelOrder);
+              });
+          g.from(freezeAccount, alertSecOps)
+              .joinTo(JoinNode.create("audit_join"))
+              .then(cancelOrder);
+          // Stage 3: only one outcome runs per order, so the receipt needs no JoinNode.
+          g.from(chargeCard)
+              .chain(step("ship_order", OrderProcessingWorkflow::shipOrder), sendReceipt);
+          g.from(cancelOrder).then(sendReceipt);
+        })
         .build();
   }
 
@@ -201,76 +204,56 @@ public final class OrderProcessingWorkflow {
    * Parses the order's {@code key=value} fields into state, where the steps and agents read them,
    * and outputs the credit check's arguments.
    */
-  private static final class ParseOrder implements Node {
-    @Override
-    public String name() {
-      return "parse_order";
+  private static Map<String, Object> parseOrder(Context context, Content message) {
+    for (String token :
+        Splitter.on(CharMatcher.whitespace()).omitEmptyStrings().split(message.text())) {
+      // Splits at first '=' and never fails: a token without '=' maps to itself.
+      int separator = token.indexOf('=');
+      String key = separator < 0 ? token : token.substring(0, separator);
+      String value = separator < 0 ? token : token.substring(separator + 1);
+      Integer number = Ints.tryParse(value);
+      context.state().put(key, number != null ? number : value);
     }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      String text = ((Content) nodeInput).text();
-      for (String token : Splitter.on(CharMatcher.whitespace()).omitEmptyStrings().split(text)) {
-        // Splits at first '=' and never fails: a token without '=' maps to itself.
-        int separator = token.indexOf('=');
-        String key = separator < 0 ? token : token.substring(0, separator);
-        String value = separator < 0 ? token : token.substring(separator + 1);
-        Integer number = Ints.tryParse(value);
-        context.state().put(key, number != null ? number : value);
-      }
-      // Every fan-out branch gets this output; only the tool reads it as its arguments.
-      return Flowable.just(
-          ImmutableMap.of(
-              "customerId",
-              context.state().get("customer_id"),
-              "orderTotalUsd",
-              context.state().get("total_usd")));
-    }
+    // Every fan-out branch gets this output; only the tool reads it as its arguments.
+    return ImmutableMap.of(
+        "customerId",
+        context.state().get("customer_id"),
+        "orderTotalUsd",
+        context.state().get("total_usd"));
   }
 
   /** Routes on the risk agent's decision, since an {@link LlmAgent} node emits no route. */
-  private static final class RiskDecision implements Node {
-    @Override
-    public String name() {
-      return "risk_decision";
+  private static Void riskDecision(Context context, Void unused) {
+    // Without a decision, this node emits no route, so `otherwise` cancels the order.
+    if (readStateField(context, RISK_KEY, "decision") instanceof String decision) {
+      context.routes(ImmutableList.of(new Route.Tag(decision)));
     }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // Without a decision, this node emits no route, so `otherwise` cancels the order.
-      if (readStateField(context, RISK_KEY, "decision") instanceof String decision) {
-        context.routes(ImmutableList.of(new Route.Tag(decision)));
-      }
-      return Flowable.empty();
-    }
+    return null;
   }
 
   /**
-   * Routes on both reviewers' verdicts: it emits approved when both approve, recheck when either
-   * asks for one and fewer than {@code maxRounds} reviews have run, and no route otherwise, which
-   * cancels the order.
+   * Returns the node that routes on both reviewers' verdicts: approved when both approve, recheck
+   * when either asks for one and fewer than {@code maxRounds} reviews have run, and no route
+   * otherwise, which cancels the order.
    */
-  private record ReviewGate(int maxRounds) implements Node {
-    @Override
-    public String name() {
-      return "review_gate";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      Object finance = readStateField(context, FINANCE_KEY, "verdict");
-      Object compliance = readStateField(context, COMPLIANCE_KEY, "verdict");
-      // The run id counts this node's runs in this invocation, so it is the review round.
-      int round = Integer.parseInt(context.requireNodeState().runId());
-      if (Objects.equals(finance, "approve") && Objects.equals(compliance, "approve")) {
-        context.routes(ImmutableList.of(new Route.Tag("approved")));
-      } else if ((Objects.equals(finance, "recheck") || Objects.equals(compliance, "recheck"))
-          && round < maxRounds) {
-        context.routes(ImmutableList.of(new Route.Tag("recheck")));
-      }
-      return Flowable.empty();
-    }
+  private static Node reviewGate(int maxRounds) {
+    return FunctionNodes.of(
+        "review_gate",
+        Void.class,
+        Void.class,
+        (context, unused) -> {
+          Object finance = readStateField(context, FINANCE_KEY, "verdict");
+          Object compliance = readStateField(context, COMPLIANCE_KEY, "verdict");
+          // The run id counts this node's runs in this invocation, so it is the review round.
+          int round = Integer.parseInt(context.requireNodeState().runId());
+          if (Objects.equals(finance, "approve") && Objects.equals(compliance, "approve")) {
+            context.routes(ImmutableList.of(new Route.Tag("approved")));
+          } else if ((Objects.equals(finance, "recheck") || Objects.equals(compliance, "recheck"))
+              && round < maxRounds) {
+            context.routes(ImmutableList.of(new Route.Tag("recheck")));
+          }
+          return null;
+        });
   }
 
   /**
@@ -280,12 +263,10 @@ public final class OrderProcessingWorkflow {
     return context.state().get(key) instanceof Map<?, ?> map ? map.get(field) : null;
   }
 
-  /** A step that stands in for a backend call and outputs what it did. */
-  private record Step(String name, Function<Context, String> body) implements Node {
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      return Flowable.just(body.apply(context));
-    }
+  /** Returns a step that stands in for a backend call and outputs what it did. */
+  private static Node step(String name, Function<Context, String> body) {
+    return FunctionNodes.of(
+        name, Void.class, String.class, (context, unused) -> body.apply(context));
   }
 
   private static String geoCheck(Context context) {
@@ -366,7 +347,7 @@ public final class OrderProcessingWorkflow {
         + ".";
   }
 
-  /** The risk agent's structured decision, which {@link RiskDecision} routes on. */
+  /** The risk agent's structured decision, which {@code risk_decision} routes on. */
   private static final Schema RISK_SCHEMA =
       Schema.builder()
           .type(Type.Known.OBJECT)
@@ -409,7 +390,7 @@ public final class OrderProcessingWorkflow {
         .build();
   }
 
-  /** A reviewer's structured verdict, which {@link ReviewGate} routes on. */
+  /** A reviewer's structured verdict, which {@code review_gate} routes on. */
   private static final Schema REVIEW_SCHEMA =
       Schema.builder()
           .type(Type.Known.OBJECT)

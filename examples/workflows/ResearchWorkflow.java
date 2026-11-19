@@ -21,6 +21,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
 import com.google.adk.runner.Runner;
 import com.google.adk.tools.GoogleSearchTool;
+import com.google.adk.workflow.FunctionNodes;
 import com.google.adk.workflow.JoinNode;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.NodeInfo;
@@ -32,7 +33,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
-import io.reactivex.rxjava3.core.Flowable;
 import java.util.Map;
 import java.util.Objects;
 import org.jspecify.annotations.Nullable;
@@ -54,26 +54,27 @@ public final class ResearchWorkflow {
 
   /** Builds the workflow, with every agent on {@code model}. */
   public static Workflow create(String model) {
+    // START hands the first node the user's message as Content.
+    Node saveQuestion =
+        FunctionNodes.of(
+            "save_question", Content.class, Void.class, ResearchWorkflow::saveQuestion);
+    Node briefPublisher =
+        FunctionNodes.of("publisher", Void.class, Object.class, ResearchWorkflow::publishBrief);
     LlmAgent plan = plannerAgent(model);
     return Workflow.builder()
         .name("research")
-        .edges(
-            g ->
-                g.fromStart()
-                    .chain(new SaveQuestion(), plan)
-                    // Fans out; the writer and reviewer prompts read the notes from state.
-                    .then(webResearcherAgent(model), docsResearcherAgent(model))
-                    .joinTo(JoinNode.create("gather")) // Waits for both.
-                    .chain(
-                        writerAgent(model),
-                        reviewerAgent(model),
-                        new ReviewGate(/* maxRounds= */ 3))
-                    .route(
-                        r -> {
-                          // Loops back while the reviewer asks for more.
-                          r.on("needs-more").then(plan);
-                          r.on("done").then(new BriefPublisher());
-                        }))
+        .edges(g ->
+            g.fromStart()
+                .chain(saveQuestion, plan)
+                // Fans out; the writer and reviewer prompts read the notes from state.
+                .then(webResearcherAgent(model), docsResearcherAgent(model))
+                .joinTo(JoinNode.create("gather")) // Waits for both.
+                .chain(writerAgent(model), reviewerAgent(model), reviewGate(/* maxRounds= */ 3))
+                .route(r -> {
+                  // Loops back while the reviewer asks for more.
+                  r.on("needs-more").then(plan);
+                  r.on("done").then(briefPublisher);
+                }))
         .build();
   }
 
@@ -106,64 +107,45 @@ public final class ResearchWorkflow {
   }
 
   /** Stores the user's question in state, where the planner, writer and reviewer read it. */
-  private static final class SaveQuestion implements Node {
-    @Override
-    public String name() {
-      return "save_question";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      context.state().put("question", ((Content) nodeInput).text());
-      return Flowable.empty();
-    }
+  private static Void saveQuestion(Context context, Content message) {
+    context.state().put("question", message.text());
+    return null;
   }
 
   /** Outputs the brief the writer stored, which makes it the workflow's output. */
-  private static final class BriefPublisher implements Node {
-    @Override
-    public String name() {
-      return "publisher";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // Consumes the brief, so a later question never publishes this one's answer.
-      Object brief = context.state().remove(BRIEF_KEY);
-      return brief == null ? Flowable.empty() : Flowable.just(brief);
-    }
+  private static @Nullable Object publishBrief(Context context, Void unused) {
+    // Consumes the brief, so a later question never publishes this one's answer.
+    return context.state().remove(BRIEF_KEY);
   }
 
   /**
-   * Routes on the reviewer's verdict, since an {@link LlmAgent} node emits no route. It stops the
-   * loop after {@code maxRounds} research rounds even if the reviewer still asks for more.
+   * Returns the node that routes on the reviewer's verdict, since an {@link LlmAgent} node emits no
+   * route. It stops the loop after {@code maxRounds} research rounds even if the reviewer still
+   * asks for more.
    */
-  private record ReviewGate(int maxRounds) implements Node {
-    @Override
-    public String name() {
-      return "review_gate";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      Object verdict =
-          context.state().get(REVIEW_KEY) instanceof Map<?, ?> review
-              ? review.get("verdict")
-              : null;
-      // The run id counts this node's runs in this invocation, so it is the round number.
-      int round = Integer.parseInt(context.requireNodeState().runId());
-      String route =
-          Objects.equals(verdict, "needs-more") && round < maxRounds ? "needs-more" : "done";
-      // Clears the review and notes when the loop ends, so the next question starts fresh.
-      if (route.equals("done")) {
-        for (String key : ImmutableList.of(REVIEW_KEY, WEB_NOTES_KEY, DOCS_NOTES_KEY)) {
-          context.state().remove(key);
-        }
-      }
-      context.routes(ImmutableList.of(new Route.Tag(route)));
-      return Flowable.empty();
-    }
+  private static Node reviewGate(int maxRounds) {
+    return FunctionNodes.of(
+        "review_gate",
+        Void.class,
+        Void.class,
+        (context, unused) -> {
+          Object verdict =
+              context.state().get(REVIEW_KEY) instanceof Map<?, ?> review
+                  ? review.get("verdict")
+                  : null;
+          // The run id counts this node's runs in this invocation, so it is the round number.
+          int round = Integer.parseInt(context.requireNodeState().runId());
+          String route =
+              Objects.equals(verdict, "needs-more") && round < maxRounds ? "needs-more" : "done";
+          // Clears the review and notes when the loop ends, so the next question starts fresh.
+          if (route.equals("done")) {
+            for (String key : ImmutableList.of(REVIEW_KEY, WEB_NOTES_KEY, DOCS_NOTES_KEY)) {
+              context.state().remove(key);
+            }
+          }
+          context.routes(ImmutableList.of(new Route.Tag(route)));
+          return null;
+        });
   }
 
   private static LlmAgent plannerAgent(String model) {
@@ -230,7 +212,7 @@ public final class ResearchWorkflow {
         .build();
   }
 
-  /** The reviewer's structured verdict, which {@link ReviewGate} routes on. */
+  /** The reviewer's structured verdict, which {@code review_gate} routes on. */
   private static final Schema REVIEW_SCHEMA =
       Schema.builder()
           .type(Type.Known.OBJECT)

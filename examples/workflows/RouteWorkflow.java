@@ -21,6 +21,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
+import com.google.adk.workflow.FunctionNodes;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.Route;
 import com.google.adk.workflow.Workflow;
@@ -30,9 +31,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import com.google.genai.types.Schema;
 import com.google.genai.types.Type;
-import io.reactivex.rxjava3.core.Flowable;
-import java.util.Map;
-import org.jspecify.annotations.Nullable;
 
 /**
  * A port of adk-python's {@code route} workflow sample: an agent classifies the user's input as a
@@ -43,22 +41,27 @@ public final class RouteWorkflow {
 
   private static final String DEFAULT_MODEL = "gemini-3.8-flash";
   private static final String USER_ID = "user";
-  private static final String CATEGORY_KEY = "category";
 
   /** Builds the workflow, with every agent on {@code model}. */
   public static Workflow create(String model) {
+    // START hands the first node the user's message as Content.
+    Node processInput =
+        FunctionNodes.of("process_input", Content.class, Void.class, RouteWorkflow::processInput);
+    Node routeOnCategory =
+        FunctionNodes.of(
+            "route_on_category", InputCategory.class, Void.class, RouteWorkflow::routeOnCategory);
+    Node handleOther =
+        FunctionNodes.of("handle_other", Void.class, Event.class, RouteWorkflow::handleOther);
     return Workflow.builder()
         .name("route")
-        .edges(
-            g ->
-                g.fromStart()
-                    .chain(new ProcessInput(), classifyInputAgent(model), new RouteOnCategory())
-                    .route(
-                        r -> {
-                          r.on("question").then(answerQuestionAgent(model));
-                          r.on("statement").then(commentOnStatementAgent(model));
-                          r.on("other").then(new HandleOther());
-                        }))
+        .edges(g ->
+            g.fromStart()
+                .chain(processInput, classifyInputAgent(model), routeOnCategory)
+                .route(r -> {
+                  r.on("question").then(answerQuestionAgent(model));
+                  r.on("statement").then(commentOnStatementAgent(model));
+                  r.on("other").then(handleOther);
+                }))
         .build();
   }
 
@@ -93,53 +96,29 @@ public final class RouteWorkflow {
   }
 
   /** Stores the user's input in state, where the agents' instructions read it. */
-  private static final class ProcessInput implements Node {
-    @Override
-    public String name() {
-      return "process_input";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      context.state().put("input", ((Content) nodeInput).text());
-      return Flowable.empty();
-    }
+  private static Void processInput(Context context, Content message) {
+    context.state().put("input", message.text());
+    return null;
   }
 
-  /** Routes on the category that the classifier stored in state, as adk-python's sample does. */
-  private static final class RouteOnCategory implements Node {
-    @Override
-    public String name() {
-      return "route_on_category";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      Map<?, ?> answer = (Map<?, ?>) context.state().get(CATEGORY_KEY);
-      context.routes(ImmutableList.of(new Route.Tag((String) answer.get("category"))));
-      return Flowable.empty();
-    }
+  /** Routes on the classifier's category. */
+  private static Void routeOnCategory(Context context, InputCategory category) {
+    context.routes(ImmutableList.of(new Route.Tag(category.category())));
+    return null;
   }
 
-  private static final class HandleOther implements Node {
-    @Override
-    public String name() {
-      return "handle_other";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      String reply = "Sorry I can only answer questions or comment on statements.";
-      return Flowable.just(
-          Event.builder()
-              .id(context.invocationContext().newUuid())
-              .content(Content.builder().role("model").parts(Part.fromText(reply)).build())
-              .build());
-    }
+  private static Event handleOther(Context context, Void unused) {
+    String reply = "Sorry I can only answer questions or comment on statements.";
+    return Event.builder()
+        .id(context.invocationContext().newUuid())
+        .content(Content.builder().role("model").parts(Part.fromText(reply)).build())
+        .build();
   }
 
   /** The classifier's structured answer, with the field of adk-python's {@code InputCategory}. */
+  private record InputCategory(String category) {}
+
+  /** The schema of {@link InputCategory}, which the classifier's answer must match. */
   private static final Schema INPUT_CATEGORY_SCHEMA =
       Schema.builder()
           .type(Type.Known.OBJECT)
@@ -161,7 +140,7 @@ public final class RouteWorkflow {
         .mode(AgentMode.SINGLE_TURN)
         .instruction("Based on this input, decide which category it belongs to: {input}")
         .outputSchema(INPUT_CATEGORY_SCHEMA)
-        .outputKey(CATEGORY_KEY)
+        .outputKey("category")
         .build();
   }
 
