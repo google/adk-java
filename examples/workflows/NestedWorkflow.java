@@ -28,11 +28,9 @@ import com.google.adk.workflow.Node;
 import com.google.adk.workflow.Workflow;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
-import io.reactivex.rxjava3.core.Flowable;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.jspecify.annotations.Nullable;
 
 /**
  * A port of adk-python's {@code nested_workflow} sample: for the year the user names, a nested
@@ -54,6 +52,8 @@ public final class NestedWorkflow {
             .name("find_famous_person")
             .edges(g -> g.fromStart().chain(findNameAgent(model), generateBioAgent(model)))
             .build();
+    Node processInput =
+        FunctionNodes.of("process_input", Content.class, Void.class, NestedWorkflow::processInput);
     Node aggregateResults =
         FunctionNodes.of(
             "aggregate_results",
@@ -64,7 +64,7 @@ public final class NestedWorkflow {
         .name("nested_workflow")
         .edges(g ->
             g.fromStart()
-                .then(new ProcessInput())
+                .then(processInput)
                 .then(findFamousPerson, findHistoricalEventAgent(model))
                 .joinTo(JoinNode.create("join_for_aggregation"))
                 .then(aggregateResults))
@@ -91,27 +91,15 @@ public final class NestedWorkflow {
         });
   }
 
-  /**
-   * Stores the year from the user's message in state, and fails the run if there is none. It is a
-   * {@link Node} rather than a function node because it sends a message before it fails.
-   */
-  private static final class ProcessInput implements Node {
-    @Override
-    public String name() {
-      return "process_input";
+  /** Stores the year from the user's message in state, and fails the run if there is none. */
+  private static Void processInput(Context context, Content message) {
+    Matcher year = YEAR.matcher(message.text());
+    if (!year.find()) {
+      context.emit(message(context, "Please provide a valid 4-digit year (e.g., 1955)."));
+      throw new IllegalArgumentException("Invalid year format.");
     }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      Matcher year = YEAR.matcher(((Content) nodeInput).text());
-      if (!year.find()) {
-        return Flowable.just(message(context, "Please provide a valid 4-digit year (e.g., 1955)."))
-            .concatWith(Flowable.error(new IllegalArgumentException("Invalid year format.")));
-      }
-      context.state().put("year", year.group());
-      return Flowable.empty();
-    }
+    context.state().put("year", year.group());
+    return null;
   }
 
   /** Combines both branches' answers, which the join passes on keyed by branch name. */

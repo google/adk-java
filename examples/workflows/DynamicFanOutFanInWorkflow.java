@@ -21,6 +21,7 @@ import com.google.adk.agents.LlmAgent;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
+import com.google.adk.workflow.FunctionNodes;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.RunNodeConfig;
 import com.google.adk.workflow.Workflow;
@@ -29,7 +30,6 @@ import com.google.genai.types.Content;
 import com.google.genai.types.Part;
 import io.reactivex.rxjava3.core.Flowable;
 import java.util.List;
-import org.jspecify.annotations.Nullable;
 
 /**
  * A port of adk-python's {@code dynamic_fan_out_fan_in} workflow sample: one node splits the user's
@@ -46,7 +46,7 @@ public final class DynamicFanOutFanInWorkflow {
   public static Workflow create(String model) {
     return Workflow.builder()
         .name("dynamic_fan_out_fan_in")
-        .edges(g -> g.fromStart().then(new Orchestrator(generatorAgent(model))))
+        .edges(g -> g.fromStart().then(orchestrator(generatorAgent(model))))
         .build();
   }
 
@@ -71,52 +71,40 @@ public final class DynamicFanOutFanInWorkflow {
         });
   }
 
-  /**
-   * Runs {@code generator} once per topic and tabulates the headlines. It sends two messages, which
-   * a function node cannot, so it implements {@link Node}.
-   */
-  private record Orchestrator(Node generator) implements Node {
-    @Override
-    public String name() {
-      return "orchestrator";
-    }
+  /** Returns the node that runs {@code generator} on each topic. */
+  private static Node orchestrator(Node generator) {
+    return FunctionNodes.builder(Content.class, Event.class)
+        .name("orchestrator")
+        // Calls runNode, so it reruns on resume to collect a child's output after a pause.
+        .rerunOnResume(true)
+        .body((context, message) -> orchestrate(context, message, generator))
+        .build();
+  }
 
-    // Calls runNode, so it reruns on resume to collect a child's output after a pause.
-    @Override
-    public boolean rerunOnResume() {
-      return true;
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      List<String> topics =
-          Splitter.on(',')
-              .trimResults()
-              .omitEmptyStrings()
-              .splitToList(((Content) nodeInput).text());
-      Event processing = message(context, "Processing " + topics.size() + " topics in parallel.");
-      // Fans out: each run gets its own sub-branch, so it sees only its own topic.
-      Flowable<String> headlines =
-          Flowable.range(0, topics.size())
-              .concatMapEager(i -> {
-                // Concurrent runs need explicit run IDs, which must contain a non-digit.
-                RunNodeConfig config =
-                    RunNodeConfig.builder().runId("topic_" + (i + 1)).useSubBranch(true).build();
-                return context
-                    .runNode(generator, topics.get(i), config)
-                    .map(String::valueOf)
-                    // A run with no output leaves its cell empty.
-                    .defaultIfEmpty("")
-                    // Runs each call on its own thread, since a model call blocks its thread.
-                    .subscribeOn(context.invocationContext().scheduler())
-                    .toFlowable();
-              });
-      // Fans in: one table row per topic, in topic order.
-      Flowable<Event> table =
-          headlines.toList().map(rows -> message(context, formatTable(topics, rows))).toFlowable();
-      return Flowable.concat(Flowable.just(processing), table);
-    }
+  /** Runs {@code generator} once per topic concurrently and tabulates the headlines. */
+  private static Event orchestrate(Context context, Content message, Node generator) {
+    List<String> topics =
+        Splitter.on(',').trimResults().omitEmptyStrings().splitToList(message.text());
+    context.emit(message(context, "Processing " + topics.size() + " topics in parallel."));
+    // Fans out: each run gets its own sub-branch, so it sees only its own topic.
+    Flowable<String> headlines =
+        Flowable.range(0, topics.size())
+            .concatMapEager(i -> {
+              // Concurrent runs need explicit run IDs, which must contain a non-digit.
+              RunNodeConfig config =
+                  RunNodeConfig.builder().runId("topic_" + (i + 1)).useSubBranch(true).build();
+              return context
+                  .runNode(generator, topics.get(i), config)
+                  .map(String::valueOf)
+                  // A run with no output leaves its cell empty.
+                  .defaultIfEmpty("")
+                  // Runs each call on its own thread, since a model call blocks its thread.
+                  .subscribeOn(context.invocationContext().scheduler())
+                  .toFlowable();
+            });
+    // Fans in: one table row per topic, in topic order.
+    List<String> rows = headlines.toList().blockingGet();
+    return message(context, formatTable(topics, rows));
   }
 
   private static String formatTable(List<String> topics, List<String> headlines) {

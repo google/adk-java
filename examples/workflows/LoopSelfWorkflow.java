@@ -19,15 +19,14 @@ import com.google.adk.agents.Context;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
+import com.google.adk.workflow.FunctionNodes;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.Route;
 import com.google.adk.workflow.Workflow;
 import com.google.common.collect.ImmutableList;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
-import io.reactivex.rxjava3.core.Flowable;
 import java.util.concurrent.ThreadLocalRandom;
-import org.jspecify.annotations.Nullable;
 
 /**
  * A port of adk-python's {@code loop_self} workflow sample: the user picks a number from 0 to 10,
@@ -40,14 +39,17 @@ public final class LoopSelfWorkflow {
 
   /** Builds the workflow. It calls no model. */
   public static Workflow create() {
-    Node guessNumber = new GuessNumber();
+    Node validateInput =
+        FunctionNodes.of(
+            "validate_input", Content.class, Void.class, LoopSelfWorkflow::validateInput);
+    Node guessNumber =
+        FunctionNodes.of("guess_number", Void.class, Void.class, LoopSelfWorkflow::guessNumber);
     return Workflow.builder()
         .name("loop_self")
-        .edges(
-            g ->
-                g.fromStart()
-                    .chain(new ValidateInput(), guessNumber)
-                    .route(r -> r.on("guessed_wrong").then(guessNumber)))
+        .edges(g ->
+            g.fromStart()
+                .chain(validateInput, guessNumber)
+                .route(r -> r.on("guessed_wrong").then(guessNumber)))
         .build();
   }
 
@@ -70,42 +72,26 @@ public final class LoopSelfWorkflow {
   }
 
   /** Stores the user's number in state, and fails the run if it is out of range. */
-  private static final class ValidateInput implements Node {
-    @Override
-    public String name() {
-      return "validate_input";
+  private static Void validateInput(Context context, Content message) {
+    int number = Integer.parseInt(message.text().trim());
+    if (number < 0 || number > 10) {
+      context.emit(message(context, "Please provide a number between 0 and 10."));
+      throw new IllegalArgumentException("Invalid input.");
     }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // START hands the first node the user's message as Content.
-      int number = Integer.parseInt(((Content) nodeInput).text().trim());
-      if (number < 0 || number > 10) {
-        return Flowable.just(message(context, "Please provide a number between 0 and 10."))
-            .concatWith(Flowable.error(new IllegalArgumentException("Invalid input.")));
-      }
-      context.state().put(TARGET_NUMBER_KEY, number);
-      return Flowable.empty();
-    }
+    context.state().put(TARGET_NUMBER_KEY, number);
+    return null;
   }
 
   /** Guesses a number, and routes back to itself when the guess is wrong. */
-  private static final class GuessNumber implements Node {
-    @Override
-    public String name() {
-      return "guess_number";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      int guess = ThreadLocalRandom.current().nextInt(0, 11);
-      Event guessing = message(context, "Guessing " + guess + "...");
-      if (guess == ((Number) context.state().get(TARGET_NUMBER_KEY)).intValue()) {
-        return Flowable.just(guessing, message(context, "Correct!"));
-      }
+  private static Void guessNumber(Context context, Void unused) {
+    int guess = ThreadLocalRandom.current().nextInt(0, 11);
+    context.emit(message(context, "Guessing " + guess + "..."));
+    if (guess == ((Number) context.state().get(TARGET_NUMBER_KEY)).intValue()) {
+      context.emit(message(context, "Correct!"));
+    } else {
       context.routes(ImmutableList.of(new Route.Tag("guessed_wrong")));
-      return Flowable.just(guessing);
     }
+    return null;
   }
 
   /** A user-facing message from a node, with {@code text} as its content. */

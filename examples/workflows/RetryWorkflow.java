@@ -19,16 +19,15 @@ import com.google.adk.agents.Context;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
+import com.google.adk.workflow.FunctionNodes;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.NodeConfig;
 import com.google.adk.workflow.RetryConfig;
 import com.google.adk.workflow.Workflow;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
-import io.reactivex.rxjava3.core.Flowable;
 import java.time.Duration;
 import java.util.concurrent.ThreadLocalRandom;
-import org.jspecify.annotations.Nullable;
 
 /**
  * A port of adk-python's {@code retry} workflow sample: a weather lookup fails at random, and its
@@ -41,9 +40,24 @@ public final class RetryWorkflow {
 
   /** Builds the workflow. It calls no model. */
   public static Workflow create() {
+    Node getWeather =
+        FunctionNodes.builder(Void.class, String.class)
+            .name("get_weather")
+            .config(
+                NodeConfig.builder()
+                    .retryConfig(
+                        RetryConfig.builder()
+                            .maxAttempts(5)
+                            .initialDelay(Duration.ofSeconds(1))
+                            .build())
+                    .build())
+            .body(RetryWorkflow::getWeather)
+            .build();
+    Node reportWeather =
+        FunctionNodes.of("report_weather", String.class, Event.class, RetryWorkflow::reportWeather);
     return Workflow.builder()
         .name("retry")
-        .edges(g -> g.fromStart().chain(new GetWeather(), new ReportWeather()))
+        .edges(g -> g.fromStart().chain(getWeather, reportWeather))
         .build();
   }
 
@@ -75,42 +89,17 @@ public final class RetryWorkflow {
   }
 
   /** A mock weather lookup that fails 70% of the time, retried with backoff from one second. */
-  private static final class GetWeather implements Node {
-    @Override
-    public String name() {
-      return "get_weather";
+  private static String getWeather(Context context, Void unused) {
+    context.emit(message(context, "Getting weather... attempt " + context.attemptCount()));
+    if (ThreadLocalRandom.current().nextDouble() < 0.7) {
+      throw new HttpException(500, "Internal Server Error");
     }
-
-    @Override
-    public NodeConfig config() {
-      return NodeConfig.builder()
-          .retryConfig(
-              RetryConfig.builder().maxAttempts(5).initialDelay(Duration.ofSeconds(1)).build())
-          .build();
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      Event attempt = message(context, "Getting weather... attempt " + context.attemptCount());
-      if (ThreadLocalRandom.current().nextDouble() < 0.7) {
-        return Flowable.just(attempt)
-            .concatWith(Flowable.error(new HttpException(500, "Internal Server Error")));
-      }
-      return Flowable.just(attempt, "sunny");
-    }
+    return "sunny";
   }
 
   /** Reports the weather the lookup returned. */
-  private static final class ReportWeather implements Node {
-    @Override
-    public String name() {
-      return "report_weather";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      return Flowable.just(message(context, "The weather is " + nodeInput));
-    }
+  private static Event reportWeather(Context context, String weather) {
+    return message(context, "The weather is " + weather);
   }
 
   /** A user-facing message from a node, with {@code text} as its content. */

@@ -19,14 +19,13 @@ import com.google.adk.agents.Context;
 import com.google.adk.apps.App;
 import com.google.adk.events.Event;
 import com.google.adk.runner.Runner;
+import com.google.adk.workflow.FunctionNodes;
 import com.google.adk.workflow.Node;
 import com.google.adk.workflow.Workflow;
 import com.google.genai.types.Content;
 import com.google.genai.types.Part;
-import io.reactivex.rxjava3.core.Flowable;
 import java.util.Locale;
 import java.util.function.Function;
-import org.jspecify.annotations.Nullable;
 
 /**
  * A port of adk-python's {@code multi_triggers} workflow sample: three nodes transform the user's
@@ -38,11 +37,13 @@ public final class MultiTriggersWorkflow {
 
   /** Builds the workflow. It calls no model. */
   public static Workflow create() {
-    Node makeUppercase = new TextStep("make_uppercase", text -> text.toUpperCase(Locale.ROOT));
-    Node countCharacters = new TextStep("count_characters", String::length);
+    Node makeUppercase = textStep("make_uppercase", text -> text.toUpperCase(Locale.ROOT));
+    Node countCharacters = textStep("count_characters", String::length);
     Node reverseString =
-        new TextStep("reverse_string", text -> new StringBuilder(text).reverse().toString());
-    Node sendMessage = new SendMessage();
+        textStep("reverse_string", text -> new StringBuilder(text).reverse().toString());
+    Node sendMessage =
+        FunctionNodes.of(
+            "send_message", Object.class, Event.class, MultiTriggersWorkflow::sendMessage);
     return Workflow.builder()
         .name("multi_triggers")
         .edges(
@@ -74,31 +75,23 @@ public final class MultiTriggersWorkflow {
             });
   }
 
-  /** A step that outputs what {@code transform} makes of the text of the user's message. */
-  private record TextStep(String name, Function<String, Object> transform) implements Node {
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      // ADK Java applies no workflow input schema, so START hands each branch Content, not text.
-      return Flowable.just(transform.apply(((Content) nodeInput).text()));
-    }
+  /** Returns a step that outputs what {@code transform} makes of the text of the user's message. */
+  private static Node textStep(String name, Function<String, Object> transform) {
+    // ADK Java applies no workflow input schema, so START hands each branch Content, not text.
+    return FunctionNodes.of(
+        name, Content.class, Object.class, (context, message) -> transform.apply(message.text()));
   }
 
   /** Reports the output of whichever predecessor triggered this run. */
-  private static final class SendMessage implements Node {
-    @Override
-    public String name() {
-      return "send_message";
-    }
-
-    @Override
-    public Flowable<?> runNode(Context context, @Nullable Object nodeInput) {
-      String message = "Triggered for input: " + nodeInput;
-      return Flowable.just(
-          Event.builder()
-              .id(context.invocationContext().newUuid())
-              .content(Content.builder().role("model").parts(Part.fromText(message)).build())
-              .build());
-    }
+  private static Event sendMessage(Context context, Object triggerInput) {
+    return Event.builder()
+        .id(context.invocationContext().newUuid())
+        .content(
+            Content.builder()
+                .role("model")
+                .parts(Part.fromText("Triggered for input: " + triggerInput))
+                .build())
+        .build();
   }
 
   private MultiTriggersWorkflow() {}
