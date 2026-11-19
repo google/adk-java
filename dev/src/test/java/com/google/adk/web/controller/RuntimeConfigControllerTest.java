@@ -117,7 +117,7 @@ public class RuntimeConfigControllerTest {
           .perform(get(CONFIG))
           .andExpect(status().isOk())
           // Compact JSON proves the controller answered rather than the pretty-printed static file.
-          .andExpect(content().string("{\"backendUrl\":\"\"}"));
+          .andExpect(content().string("{\"backendUrl\":\"\",\"telemetry\":false}"));
     }
 
     @Test
